@@ -7,36 +7,16 @@ import (
 )
 
 type capabilityPinResponse struct {
-	PublisherID              string `json:"publisher_id"`
-	ContractID               string `json:"contract_id"`
-	ContractVersion          string `json:"contract_version"`
-	ArtifactRef              string `json:"artifact_ref"`
-	ArtifactSHA256           string `json:"artifact_sha256"`
-	ManifestRef              string `json:"manifest_ref"`
-	ManifestSHA256           string `json:"manifest_sha256"`
-	SignatureRef             string `json:"signature_ref"`
-	SignatureSHA256          string `json:"signature_sha256"`
-	SignatureKeyID           string `json:"signature_key_id"`
-	SignaturePolicyEpoch     string `json:"signature_policy_epoch"`
-	SignatureRevocationEpoch string `json:"signature_revocation_epoch"`
-	CompatibilityRef         string `json:"compatibility_ref"`
-	CompatibilitySHA256      string `json:"compatibility_sha256"`
-	GeneratedClientRef       string `json:"generated_client_ref"`
-	GeneratedClientSHA256    string `json:"generated_client_sha256"`
-	NoticesRef               string `json:"notices_ref"`
-	NoticesSHA256            string `json:"notices_sha256"`
+	PublisherID     string `json:"publisher_id"`
+	ContractID      string `json:"contract_id"`
+	ContractVersion string `json:"contract_version"`
+	ArtifactSHA256  string `json:"artifact_sha256"`
 }
 
 func publicCapabilityPin(pin capabilitycontract.Pin) capabilityPinResponse {
 	return capabilityPinResponse{
 		PublisherID: pin.PublisherID, ContractID: pin.ContractID, ContractVersion: pin.ContractVersion,
-		ArtifactRef: pin.ArtifactRef, ArtifactSHA256: pin.ArtifactSHA256,
-		ManifestRef: pin.ManifestRef, ManifestSHA256: pin.ManifestSHA256,
-		SignatureRef: pin.SignatureRef, SignatureSHA256: pin.SignatureSHA256, SignatureKeyID: pin.SignatureKeyID,
-		SignaturePolicyEpoch: pin.SignaturePolicyEpoch, SignatureRevocationEpoch: pin.SignatureRevocationEpoch,
-		CompatibilityRef: pin.CompatibilityRef, CompatibilitySHA256: pin.CompatibilitySHA256,
-		GeneratedClientRef: pin.GeneratedClientRef, GeneratedClientSHA256: pin.GeneratedClientSHA256,
-		NoticesRef: pin.NoticesRef, NoticesSHA256: pin.NoticesSHA256,
+		ArtifactSHA256: pin.ArtifactSHA256,
 	}
 }
 

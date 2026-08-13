@@ -41,7 +41,6 @@ GO_FUZZ_PACKAGES=(
   ./pkg/manifest
   ./pkg/capability
   ./internal/runtimeclient
-  ./pkg/stream
   ./pkg/plugindata
 )
 GO_FUZZ_TARGETS=(
@@ -50,7 +49,6 @@ GO_FUZZ_TARGETS=(
   FuzzDecode
   FuzzPrepareResponseData
   FuzzReadIPCFrame
-  FuzzMemoryStreamState
   FuzzSQLiteTokens
 )
 

@@ -1248,24 +1248,10 @@ func validManifestJSON() string {
 
 func validCapabilityPin() capabilitycontract.Pin {
 	return capabilitycontract.Pin{
-		PublisherID:              "example.publisher",
-		ContractID:               "example.resources.v1",
-		ContractVersion:          "1.0.0",
-		ArtifactRef:              "capabilities/example.resources/v1.0.0/contract.json",
-		ArtifactSHA256:           strings.Repeat("1", 64),
-		ManifestRef:              "capabilities/example.resources/v1.0.0/manifest.json",
-		ManifestSHA256:           strings.Repeat("2", 64),
-		SignatureRef:             "capabilities/example.resources/v1.0.0/manifest.sig",
-		SignatureSHA256:          strings.Repeat("3", 64),
-		SignatureKeyID:           "example-key",
-		SignaturePolicyEpoch:     "1",
-		SignatureRevocationEpoch: "1",
-		CompatibilityRef:         "capabilities/example.resources/v1.0.0/compatibility.json",
-		CompatibilitySHA256:      strings.Repeat("4", 64),
-		GeneratedClientRef:       "capabilities/example.resources/v1.0.0/client.ts",
-		GeneratedClientSHA256:    strings.Repeat("5", 64),
-		NoticesRef:               "capabilities/example.resources/v1.0.0/notices.json",
-		NoticesSHA256:            strings.Repeat("6", 64),
+		PublisherID:     "example.publisher",
+		ContractID:      "example.resources.v1",
+		ContractVersion: "1.0.0",
+		ArtifactSHA256:  strings.Repeat("1", 64),
 	}
 }
 

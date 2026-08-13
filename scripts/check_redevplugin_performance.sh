@@ -43,7 +43,6 @@ done
 cd "$ROOT_DIR"
 if [[ "$MODE" == "fast" ]]; then
   GOWORK=off REDEVPLUGIN_PERFORMANCE_GATE=fast go test ./internal/runtimeclient -run '^(TestRuntimeLimitsMustBeExplicitAndValid|TestRuntimeAdmissionCancellationDoesNotConsumeCapacity|TestRuntimeAdmissionPreservesQueueCapacityForOtherPlugins|TestProcessSupervisorMultiplexesSameShardInvocations|TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFull|TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime)$' -count=1
-  GOWORK=off REDEVPLUGIN_PERFORMANCE_GATE=fast go test ./pkg/stream -run '^(TestPerformanceStreamWaitersAndBackpressure|TestSQLiteEmptyObservationDoesNotAcquireWriteGate|TestPerformanceSQLiteStreamBatchDelivery)$' -count=1
   npm run typecheck
   npm run test:ui
   exit 0
@@ -174,10 +173,6 @@ GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERF
   go test ./pkg/pluginpkg -run '^TestPerformance' -count=1
 GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   go test ./pkg/registry -run '^TestPerformance' -count=1
-GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
-  go test ./pkg/operation -run '^TestPerformance' -count=1
-GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
-  go test ./pkg/stream -run '^TestPerformance' -count=1
 node scripts/measure_http_route_authorization_performance.mjs \
   --output "$MEASUREMENTS" \
   --comparison-output "$COMPARISONS" \

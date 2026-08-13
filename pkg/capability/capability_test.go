@@ -2,8 +2,6 @@ package capability
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -226,7 +224,7 @@ func largeExecutionBindingFixture() ExecutionBinding {
 func TestRegistryOwnsExactContractPins(t *testing.T) {
 	t.Parallel()
 	registry := NewRegistry()
-	contracts := []capabilitycontract.VerifiedContract{
+	contracts := []capabilitycontract.KnownContract{
 		testVerifiedContract(t, "1.0.0", "1.0.0"),
 		testVerifiedContract(t, "1.0.0", "1.1.0"),
 	}
@@ -261,7 +259,7 @@ func TestRegistryDeepClonesContractBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := first.Contract.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["minLength"]; got != float64(1) {
+	if got := first.Contract.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["minLength"]; got != 1 {
 		t.Fatalf("registry retained caller mutation: %#v", got)
 	}
 	first.Contract.Methods[0].ResponseSchema["properties"].(map[string]any)["accepted"].(map[string]any)["type"] = "string"
@@ -310,7 +308,7 @@ func (*testAdapter) Invoke(_ context.Context, _ Invocation) (Result, error) {
 	return Result{Data: map[string]any{"accepted": true}}, nil
 }
 
-func testVerifiedContract(t *testing.T, capabilityVersion, contractVersion string) capabilitycontract.VerifiedContract {
+func testVerifiedContract(t *testing.T, capabilityVersion, contractVersion string) capabilitycontract.KnownContract {
 	t.Helper()
 	contract := capabilitycontract.Contract{
 		SchemaVersion:     capabilitycontract.SchemaVersion,
@@ -333,25 +331,7 @@ func testVerifiedContract(t *testing.T, capabilityVersion, contractVersion strin
 			ResponseSchema:   testObjectSchema("accepted", map[string]any{"type": "boolean"}),
 		}},
 	}
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
-		Contract: contract, PublisherID: contract.PublisherID,
-		ArtifactBaseRef: "capabilities/example/" + contractVersion,
-		GeneratedAt:     time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC), SourceCommit: strings.Repeat("a", 40),
-		MinReDevPluginVersion: "0.3.0", SignatureKeyID: "example-key", SignaturePolicyEpoch: "1", SignatureRevocationEpoch: "1",
-		PrivateKey: privateKey,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
-		Bundle: bundle, ExpectedPin: bundle.Pin,
-		TrustedKey:                capabilitycontract.TrustedKey{PublisherID: contract.PublisherID, KeyID: "example-key", PublicKey: publicKey, PolicyEpoch: "1", RevocationEpoch: "1"},
-		CurrentReDevPluginVersion: "0.3.0",
-	})
+	verified, err := capabilitycontract.NewKnownContract(contract)
 	if err != nil {
 		t.Fatal(err)
 	}

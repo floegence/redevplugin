@@ -81,17 +81,37 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/external-packages/commit",
+    "path": "/_redevplugin/api/plugins/executions/{execution_id}/cancel",
     "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/external-packages/commit/query",
+    "path": "/_redevplugin/api/plugins/executions/{execution_id}/events/query",
     "effect": "query"
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/executions/{execution_id}/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/executions/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/executions/release-installs",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/external-packages/inspect",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/external-packages/install",
     "effect": "mutation"
   },
   {
@@ -121,21 +141,6 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/operations/{operation_id}/cancel",
-    "effect": "mutation"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/operations/{operation_id}/query",
-    "effect": "query"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/operations/query",
-    "effect": "query"
-  },
-  {
-    "method": "POST",
     "path": "/_redevplugin/api/plugins/permissions/grant",
     "effect": "mutation"
   },
@@ -157,26 +162,6 @@
   {
     "method": "POST",
     "path": "/_redevplugin/api/plugins/platform/compatibility/query",
-    "effect": "query"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/release-install-operations",
-    "effect": "query"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/release-install-operations",
-    "effect": "mutation"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/release-install-operations/{operation_id}",
-    "effect": "query"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/release-install-operations/by-request/{request_id}",
     "effect": "query"
   },
   {
@@ -211,7 +196,12 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/runtime/refresh-enabled",
+    "path": "/_redevplugin/api/plugins/runtime/recover-enabled",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/runtime/recover/retry",
     "effect": "mutation"
   },
   {
@@ -286,28 +276,8 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel",
-    "effect": "mutation"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/query",
-    "effect": "query"
-  },
-  {
-    "method": "POST",
     "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare",
     "effect": "mutation"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack",
-    "effect": "mutation"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read",
-    "effect": "query"
   },
   {
     "method": "POST",

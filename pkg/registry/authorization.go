@@ -346,6 +346,91 @@ func evaluateAuthorization(state AuthorizationState, grants []permissions.Record
 	return evaluateAuthorizationDecision(state, grants, policyEvaluation, req)
 }
 
+// EvaluateAuthorizationSnapshot applies the canonical permission, policy, and
+// revision checks to an authorization snapshot owned by another durable store.
+func EvaluateAuthorizationSnapshot(snapshot AuthorizationSnapshot, req AuthorizeRequest) (AuthorizationDecision, error) {
+	if err := ensureAuthorizationRevisions(snapshot.Plugin.PluginInstanceID, req.Expected, snapshot.Plugin); err != nil {
+		return AuthorizationDecision{}, err
+	}
+	return evaluateAuthorization(authorizationStateFromRecord(snapshot.Plugin), snapshot.Grants, snapshot.Policy, req)
+}
+
+func PrepareGrantPermission(snapshot AuthorizationSnapshot, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	if err := ensureAuthorizationRevisions(req.PluginInstanceID, expected, snapshot.Plugin); err != nil {
+		return AuthorizationSnapshot{}, err
+	}
+	grant, err := permissions.NewGrant(req)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
+	found := false
+	for index := range snapshot.Grants {
+		if snapshot.Grants[index].PermissionID == grant.PermissionID {
+			snapshot.Grants[index] = grant
+			found = true
+		}
+	}
+	if !found {
+		snapshot.Grants = append(snapshot.Grants, grant)
+	}
+	snapshot.Plugin.PolicyRevision++
+	snapshot.Plugin.UpdatedAt = grant.GrantedAt
+	return snapshot, nil
+}
+
+func PrepareRevokePermission(snapshot AuthorizationSnapshot, req permissions.RevokeRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	if err := ensureAuthorizationRevisions(req.PluginInstanceID, expected, snapshot.Plugin); err != nil {
+		return AuthorizationSnapshot{}, err
+	}
+	for index, current := range snapshot.Grants {
+		if current.PermissionID != strings.TrimSpace(req.PermissionID) {
+			continue
+		}
+		revoked, err := permissions.Revoke(current, req)
+		if err != nil {
+			return AuthorizationSnapshot{}, err
+		}
+		snapshot.Grants[index] = revoked
+		snapshot.Plugin.PolicyRevision++
+		snapshot.Plugin.RevokeEpoch++
+		snapshot.Plugin.UpdatedAt = *revoked.RevokedAt
+		return snapshot, nil
+	}
+	return AuthorizationSnapshot{}, permissions.ErrGrantNotFound
+}
+
+func PrepareSecurityPolicy(snapshot AuthorizationSnapshot, req security.PutPolicyRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	if err := ensureAuthorizationRevisions(req.PluginInstanceID, expected, snapshot.Plugin); err != nil {
+		return AuthorizationSnapshot{}, err
+	}
+	policy, err := security.NewPolicy(req)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
+	snapshot.Policy = &policy
+	snapshot.Plugin.PolicyRevision++
+	snapshot.Plugin.RevokeEpoch++
+	snapshot.Plugin.UpdatedAt = policy.UpdatedAt
+	return snapshot, nil
+}
+
+func PrepareDeleteSecurityPolicy(snapshot AuthorizationSnapshot, pluginInstanceID string, now time.Time, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	if err := security.ValidatePolicyID(pluginInstanceID); err != nil {
+		return AuthorizationSnapshot{}, err
+	}
+	if err := ensureAuthorizationRevisions(pluginInstanceID, expected, snapshot.Plugin); err != nil {
+		return AuthorizationSnapshot{}, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	snapshot.Policy = nil
+	snapshot.Plugin.PolicyRevision++
+	snapshot.Plugin.RevokeEpoch++
+	snapshot.Plugin.UpdatedAt = now
+	return snapshot, nil
+}
+
 func evaluateAuthorizationDecision(state AuthorizationState, grants []permissions.Record, policyEvaluation security.PolicyEvaluation, req AuthorizeRequest) (AuthorizationDecision, error) {
 	granted, missing, err := permissions.Evaluate(grants, permissions.CheckRequest{
 		PluginInstanceID: state.PluginInstanceID,

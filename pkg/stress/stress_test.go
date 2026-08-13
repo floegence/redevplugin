@@ -3,8 +3,6 @@ package stress_test
 import (
 	"bufio"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -26,26 +24,19 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/internal/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/httpadapter"
-	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
-	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 	_ "modernc.org/sqlite"
@@ -54,30 +45,6 @@ import (
 type stressSummary struct {
 	Category string         `json:"category"`
 	Counters map[string]int `json:"counters"`
-}
-
-type stressAuditSink struct {
-	mu     sync.Mutex
-	events []observability.AuditEvent
-}
-
-func (s *stressAuditSink) AppendPluginAudit(_ context.Context, event observability.AuditEvent) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.events = append(s.events, event)
-	return nil
-}
-
-func (s *stressAuditSink) count(pluginInstanceID string, eventType string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	count := 0
-	for _, event := range s.events {
-		if event.PluginInstanceID == pluginInstanceID && event.Type == eventType {
-			count++
-		}
-	}
-	return count
 }
 
 var stressEvidenceMu sync.Mutex
@@ -90,276 +57,49 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T) {
-	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
-	defer cancel()
-
-	streams := stream.NewMemoryStore()
-	operations := operation.NewMemoryStore()
-	payload := make([]byte, 64)
-	var backpressure atomic.Int64
-
-	const workerCount = 24
-	var wg sync.WaitGroup
-	errs := make(chan error, workerCount+1)
-	for worker := 0; worker < workerCount; worker++ {
-		wg.Add(1)
-		go func(worker int) {
-			defer wg.Done()
-			streamID := fmt.Sprintf("stream_%02d", worker)
-			if _, err := streams.Register(ctx, stream.RegisterRequest{
-				StreamID: streamID,
-				ExecutionBinding: capability.ExecutionBinding{
-					PluginID:             "com.example.stress.logs",
-					PluginInstanceID:     "plugini_stress_stream",
-					Method:               "stress.logs.tail",
-					Execution:            "subscription",
-					OwnerSessionHash:     "stress_session",
-					OwnerUserHash:        "stress_user",
-					OwnerEnvHash:         "stress_env",
-					SessionChannelIDHash: "stress_channel",
-				},
-				Direction:        stream.DirectionRead,
-				MaxBufferedBytes: 256,
-			}); err != nil {
-				errs <- err
-				return
-			}
-			for {
-				if err := ctx.Err(); err != nil {
-					errs <- err
-					return
-				}
-				_, err := streams.Append(ctx, stream.AppendRequest{StreamID: streamID, Data: payload})
-				if errors.Is(err, stream.ErrBackpressure) {
-					backpressure.Add(1)
-					return
-				}
-				if err != nil {
-					errs <- err
-					return
-				}
-			}
-		}(worker)
-	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 96; i++ {
-			if err := ctx.Err(); err != nil {
-				errs <- err
-				return
-			}
-			operationID := fmt.Sprintf("core_operation_%03d", i)
-			if _, err := operations.Register(ctx, operation.RegisterRequest{
-				OperationID: operationID,
-				ExecutionBinding: capability.ExecutionBinding{
-					PluginInstanceID:     "plugini_core_control",
-					Method:               "core.diagnostics.ping",
-					Execution:            "operation",
-					OwnerSessionHash:     "stress_session",
-					OwnerUserHash:        "stress_user",
-					OwnerEnvHash:         "stress_env",
-					SessionChannelIDHash: "stress_channel",
-				},
-				DisableBehavior:   operation.DisableBehaviorCancel,
-				UninstallBehavior: operation.UninstallBehaviorForceCleanupAllowed,
-			}); err != nil {
-				errs <- err
-				return
-			}
-			if _, err := operations.Get(ctx, operationID); err != nil {
-				errs <- err
-				return
-			}
-			if _, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_core_control", AllOwners: true}); err != nil {
-				errs <- err
-				return
-			}
-		}
-	}()
-
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := backpressure.Load(); got != workerCount {
-		t.Fatalf("backpressure count = %d, want %d", got, workerCount)
-	}
-	page, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_core_control", AllOwners: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	records := page.Records
-	if len(records) != 96 {
-		t.Fatalf("operation records = %d, want 96", len(records))
-	}
-	var closedStreams int
-	var postCloseAppendDenials int
-	for worker := 0; worker < workerCount; worker++ {
-		streamID := fmt.Sprintf("stream_%02d", worker)
-		closed, err := streams.Close(ctx, stream.CloseRequest{
-			StreamID: streamID,
-			Status:   stream.StatusCanceled,
-			Reason:   "stress shutdown",
-		})
-		if err != nil {
-			t.Fatalf("Streams.Close(%s) error = %v", streamID, err)
-		}
-		if closed.Status != stream.StatusCanceled || closed.ClosedAt == nil {
-			t.Fatalf("closed stream mismatch: %#v", closed)
-		}
-		closedStreams++
-		if _, err := streams.Append(ctx, stream.AppendRequest{StreamID: streamID, Data: payload}); errors.Is(err, stream.ErrStreamClosed) {
-			postCloseAppendDenials++
-		} else {
-			t.Fatalf("Append(%s) after close error = %v, want ErrStreamClosed", streamID, err)
-		}
-	}
-	logStressSummary(t, stressSummary{
-		Category: "stream_backpressure",
-		Counters: map[string]int{
-			"workers":                     workerCount,
-			"backpressure_denials":        int(backpressure.Load()),
-			"core_operation_checks":       len(records),
-			"stream_close_requests":       closedStreams,
-			"closed_streams":              closedStreams,
-			"post_close_append_denials":   postCloseAppendDenials,
-			"stream_close_status_checked": 1,
-		},
-	})
-}
-
 func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
 	defer cancel()
 
-	audit := &stressAuditSink{}
 	diagnostics := observability.NewMemoryStore()
-	operations := operation.NewMemoryStore()
-	operationAdapter := &stressOperationAdapter{}
-	verified := stressVerifiedCapabilityContract(t)
-	capabilities := capability.NewRegistry()
-	if err := capabilities.Register(capability.Registration{Contract: verified, TargetProjector: operationAdapter, Adapter: operationAdapter}); err != nil {
-		t.Fatal(err)
-	}
 	connectivityBroker := connectivity.NewMemoryBroker()
 	platformAdapter := stressPlatformAdapter{}
-	registryStore := registry.NewMemoryStore()
-	pluginData, err := plugindata.Open(ctx, filepath.Join(t.TempDir(), "plugin-data"), registryStore)
-	if err != nil {
-		t.Fatal(err)
-	}
 	securityJournal := observability.NewMemorySecurityAuditJournal()
-	sessionScopeStore, err := sessionscope.NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "session-scopes.sqlite"), sessionscope.StoreOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sessionScopeStore.Close()
-	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
-	if err != nil {
-		t.Fatal(err)
-	}
 	pluginHost, err := host.Open(ctx, host.Config{
+		StateRoot: filepath.Join(t.TempDir(), "control-state"),
 		Core: host.CoreAdapters{
 			Policy:               stressPolicy{},
 			Authorization:        stressAuthorization{},
 			PackageTrustVerifier: platformAdapter,
-			Registry:             registryStore,
-			Audit:                audit,
+			Audit:                diagnostics,
 			SecurityAudit:        securityJournal,
 			Diagnostics:          diagnostics,
 			SurfaceCatalog:       platformAdapter,
 			Assets:               pluginpkg.NewMemoryAssetStore(),
-			InstallStages:        installstage.NewMemoryStore(),
-			SurfaceTokens:        bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-			PluginData:           pluginData,
-			Operations:           operations,
-			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
-			Streams:              stream.NewMemoryStore(),
-			SessionLifecycle:     newStressSessionLifecycle(),
-			SessionScopes:        sessionScopes,
 		},
-		Capability:   &host.CapabilityModule{Registry: capabilities},
 		Connectivity: &host.ConnectivityModule{Broker: connectivityBroker, NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
 		Secrets:      &host.SecretsModule{Store: secrets.NewMemoryStore()},
 		CoreAction:   &host.CoreActionModule{Adapter: platformAdapter},
 	})
 	if err != nil {
-		_ = pluginData.Close()
 		t.Fatal(err)
 	}
 	defer pluginHost.Close()
 
-	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	for _, operationID := range []string{"op_stress_cancel_success", "op_stress_cancel_fail"} {
-		ownerSessionHash := "stress_session"
-		ownerUserHash := "stress_user"
-		ownerEnvHash := "stress_env"
-		sessionChannelIDHash := "stress_channel"
-		if operationID == "op_stress_cancel_fail" {
-			ownerSessionHash = "session_hash_stress"
-			ownerUserHash = "user_hash_stress"
-			ownerEnvHash = "environment_hash_stress"
-			sessionChannelIDHash = "channel_hash_stress"
-		}
-		if _, err := operations.Register(ctx, operation.RegisterRequest{
-			OperationID: operationID,
-			ExecutionBinding: capability.ExecutionBinding{
-				PluginID:             "com.example.stress.documents",
-				PluginInstanceID:     "plugini_stress_documents",
-				RouteKind:            capability.RouteCapability,
-				CapabilityID:         verified.Contract.CapabilityID,
-				CapabilityVersion:    verified.Contract.CapabilityVersion,
-				Contract:             &verified.Pin,
-				Method:               "documents.archive",
-				Effect:               capability.EffectExecute,
-				Execution:            "operation",
-				SurfaceInstanceID:    "surface_stress_operation",
-				OwnerSessionHash:     ownerSessionHash,
-				OwnerUserHash:        ownerUserHash,
-				OwnerEnvHash:         ownerEnvHash,
-				SessionChannelIDHash: sessionChannelIDHash,
-				BridgeChannelID:      "bridge_stress_operation",
-				Permissions:          capability.PermissionEvidence{Required: []string{}, Granted: []string{}},
-			},
-			DisableBehavior:   operation.DisableBehaviorCancel,
-			UninstallBehavior: operation.UninstallBehaviorCancelThenBlockDelete,
-			Now:               now,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	canceled, err := pluginHost.CancelOperation(ctx, host.CancelOperationRequest{
-		OperationID: "op_stress_cancel_success",
-		Reason:      "user",
-		Now:         now.Add(time.Second),
-	})
-	if err != nil {
-		t.Fatalf("CancelOperation(success) error = %v", err)
-	}
-	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
-		t.Fatalf("CancelOperation(success) mismatch: %#v", canceled)
-	}
-	if len(operationAdapter.requests) != 0 {
-		t.Fatalf("inactive persisted operation unexpectedly dispatched through capability registry: %#v", operationAdapter.requests)
+	if _, err := pluginHost.CancelExecution(ctx, "execution_stress_missing_direct", "user"); err == nil {
+		t.Fatal("CancelExecution(missing) succeeded")
 	}
 
 	handler, err := httpadapter.NewHandler(httpadapter.Dependencies{Host: pluginHost, Guard: stressWebSecurityGuard{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/operations/op_stress_cancel_fail/cancel", strings.NewReader(`{"reason":"user"}`)).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/executions/execution_stress_missing_http/cancel", strings.NewReader(`{"reason":"user"}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("durable cancel status = %d body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("owner-scoped cancel status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	var response struct {
 		OK    bool `json:"ok"`
@@ -370,42 +110,24 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if !response.OK || response.Error != nil {
-		t.Fatalf("durable cancel response mismatch: %#v", response)
+	if response.OK || response.Error == nil {
+		t.Fatalf("missing execution cancel response mismatch: %#v", response)
 	}
 
-	page, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_stress_documents", AllOwners: true})
+	records, nextCursor, err := pluginHost.ListExecutions(ctx, "", 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	records := page.Records
-	var cancelRequested int
-	for _, record := range records {
-		if record.Status == operation.StatusCancelRequested {
-			cancelRequested++
-		}
-	}
-	if cancelRequested != 2 {
-		t.Fatalf("cancel_requested records = %d, want 2: %#v", cancelRequested, records)
-	}
-	if len(operationAdapter.requests) != 0 {
-		t.Fatalf("persisted operations must not rediscover an execution adapter by contract id: %#v", operationAdapter.requests)
-	}
-
-	auditCount := audit.count("plugini_stress_documents", "plugin.operation.cancel_requested")
-	if auditCount != 2 {
-		t.Fatalf("cancel audit events = %d, want 2", auditCount)
+	if len(records) != 0 || nextCursor != 0 {
+		t.Fatalf("unexpected executions after rejected cancellation: records=%#v next_cursor=%d", records, nextCursor)
 	}
 
 	logStressSummary(t, stressSummary{
-		Category: "operation_cancel_ownership",
+		Category: "execution_cancel_ownership",
 		Counters: map[string]int{
-			"operations_registered":                 len(records),
-			"cancel_requested_records":              cancelRequested,
-			"durable_requests_without_active_lease": 2,
-			"http_accepted_requests":                1,
-			"audit_cancel_requested_events":         auditCount,
-			"registry_redispatches":                 len(operationAdapter.requests),
+			"owner_scoped_cancel_requests": 2,
+			"missing_executions_rejected":  2,
+			"parallel_store_records":       len(records),
 		},
 	})
 }
@@ -1021,77 +743,6 @@ func stressResourceScope(t testing.TB, ctx context.Context, kind sessionctx.Scop
 	return scope
 }
 
-type stressOperationAdapter struct {
-	requests []capability.OperationCancellation
-}
-
-func (c *stressOperationAdapter) ProjectTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
-	return capability.TargetDescriptor{Kind: "stress", Fields: req.TargetInput}, nil
-}
-
-func (c *stressOperationAdapter) Invoke(_ context.Context, _ capability.Invocation) (capability.Result, error) {
-	return capability.Result{}, nil
-}
-
-func (c *stressOperationAdapter) CancelOperation(_ context.Context, req capability.OperationCancellation) error {
-	c.requests = append(c.requests, req)
-	return nil
-}
-
-func stressVerifiedCapabilityContract(t *testing.T) capabilitycontract.VerifiedContract {
-	t.Helper()
-	emptyObject := map[string]any{"type": "object", "additionalProperties": false}
-	contract := capabilitycontract.Contract{
-		SchemaVersion:     capabilitycontract.SchemaVersion,
-		ContractID:        "example.stress.documents.v1",
-		ContractVersion:   "1.0.0",
-		PublisherID:       "example.stress",
-		CapabilityID:      "example.capability.stress.documents",
-		CapabilityVersion: "1.0.0",
-		ClientName:        "StressDocumentsClient",
-		Methods: []capabilitycontract.Method{{
-			Name:             "documents.archive",
-			ClientMethod:     "archiveDocument",
-			Effect:           "execute",
-			Execution:        "operation",
-			TargetFields:     []string{},
-			TargetSchema:     emptyObject,
-			RequestTypeName:  "StressArchiveRequest",
-			ResponseTypeName: "StressArchiveResponse",
-			RequestSchema:    emptyObject,
-			ResponseSchema:   emptyObject,
-			CancelPolicy: &capabilitycontract.CancelPolicy{
-				Cancelable: true, DisableBehavior: "cancel", UninstallBehavior: "cancel_then_block_delete", AckTimeoutMS: 1000,
-			},
-		}},
-	}
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
-		Contract: contract, PublisherID: contract.PublisherID,
-		ArtifactBaseRef: "capabilities/stress/1.0.0",
-		GeneratedAt:     time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC), SourceCommit: strings.Repeat("f", 40),
-		MinReDevPluginVersion: "0.3.0", SignatureKeyID: "stress-key", SignaturePolicyEpoch: "1", SignatureRevocationEpoch: "1",
-		PrivateKey: privateKey,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
-		Bundle: bundle, ExpectedPin: bundle.Pin,
-		TrustedKey: capabilitycontract.TrustedKey{
-			PublisherID: contract.PublisherID, KeyID: "stress-key", PublicKey: publicKey, PolicyEpoch: "1", RevocationEpoch: "1",
-		},
-		CurrentReDevPluginVersion: "0.3.0",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return verified
-}
-
 type stressPlatformAdapter struct{}
 
 func (stressPlatformAdapter) VerifyPackageTrust(context.Context, host.PackageTrustVerificationRequest) (host.PackageTrustVerificationResult, error) {
@@ -1113,79 +764,6 @@ func (stressPlatformAdapter) InvokeCoreAction(context.Context, capability.Invoca
 type stressPolicy struct{}
 
 type stressAuthorization struct{}
-
-type stressSessionLifecycle struct {
-	mu         sync.Mutex
-	identities map[sessionctx.SessionScope]sessionscope.TeardownIdentity
-	closed     map[sessionctx.SessionScope]bool
-}
-
-func newStressSessionLifecycle() *stressSessionLifecycle {
-	return &stressSessionLifecycle{
-		identities: make(map[sessionctx.SessionScope]sessionscope.TeardownIdentity),
-		closed:     make(map[sessionctx.SessionScope]bool),
-	}
-}
-
-func (a *stressSessionLifecycle) ReconcileRetainedSessionScopes(_ context.Context, req host.ReconcileRetainedSessionScopesRequest) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, retained := range req.Scopes {
-		if !a.closed[retained.SessionScope] || !a.identities[retained.SessionScope].Valid() {
-			return errors.New("stress closed session identity is unavailable")
-		}
-	}
-	return nil
-}
-
-func (a *stressSessionLifecycle) PrepareSessionScopeClose(_ context.Context, req host.PrepareSessionScopeCloseRequest) (sessionscope.TeardownIdentity, error) {
-	scope, err := req.Session.SessionScope()
-	if err != nil {
-		return sessionscope.TeardownIdentity{}, err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if identity := a.identities[scope]; identity.Valid() {
-		return identity, nil
-	}
-	proof, err := sessionscope.GenerateClosedSessionProof()
-	if err != nil {
-		return sessionscope.TeardownIdentity{}, err
-	}
-	identity, err := sessionscope.NewTeardownIdentity("stress_session_teardown", proof)
-	if err != nil {
-		return sessionscope.TeardownIdentity{}, err
-	}
-	a.identities[scope] = identity
-	return identity, nil
-}
-
-func (a *stressSessionLifecycle) CommitSessionScopeClose(_ context.Context, req host.CommitSessionScopeCloseRequest) error {
-	scope, err := req.Session.SessionScope()
-	if err != nil {
-		return err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !a.identities[scope].Matches(req.Identity) {
-		return errors.New("stress closed session identity mismatch")
-	}
-	a.closed[scope] = true
-	return nil
-}
-
-func (a *stressSessionLifecycle) ValidateClosedSessionScope(_ context.Context, req host.ValidateClosedSessionScopeRequest) error {
-	scope, err := req.Session.SessionScope()
-	if err != nil {
-		return err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !a.closed[scope] || !a.identities[scope].Matches(req.Identity) {
-		return errors.New("stress closed session identity mismatch")
-	}
-	return nil
-}
 
 func (stressAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
 	if !req.Session.Valid() || !req.Action.Valid() || !req.Target.Kind.Valid() || req.Target.Kind != req.Action.Resource() {

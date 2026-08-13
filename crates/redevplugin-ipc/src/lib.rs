@@ -580,8 +580,7 @@ struct WorkerLeasePayload {
     method: Option<String>,
     effect: Option<String>,
     execution: Option<String>,
-    operation_id: Option<String>,
-    stream_id: Option<String>,
+    execution_id: Option<String>,
     audit_correlation_id: Option<String>,
     target_descriptor_hashes: Option<Vec<String>>,
     limits: Option<WorkerLeaseLimitsPayload>,
@@ -633,8 +632,7 @@ struct WorkerInvocationPayload {
     owner_env_hash: Option<String>,
     session_channel_id_hash: Option<String>,
     bridge_channel_id: Option<String>,
-    operation_id: Option<String>,
-    stream_id: Option<String>,
+    execution_id: Option<String>,
     audit_correlation_id: Option<String>,
     policy_revision: Option<u64>,
     management_revision: Option<u64>,
@@ -753,8 +751,7 @@ pub struct WorkerInvocationContext {
     pub owner_env_hash: String,
     pub session_channel_id_hash: String,
     pub bridge_channel_id: String,
-    pub operation_id: String,
-    pub stream_id: String,
+    pub execution_id: String,
     pub policy_revision: u64,
     pub management_revision: u64,
     pub revoke_epoch: u64,
@@ -1068,8 +1065,7 @@ impl ParsedWorkerInvocation {
                 .clone()
                 .unwrap_or_default(),
             bridge_channel_id: invocation.bridge_channel_id.clone().unwrap_or_default(),
-            operation_id: invocation.operation_id.clone().unwrap_or_default(),
-            stream_id: invocation.stream_id.clone().unwrap_or_default(),
+            execution_id: invocation.execution_id.clone().unwrap_or_default(),
             policy_revision: required_safe_u64(self.lease.policy_revision, "policy_revision")?,
             management_revision: required_safe_u64(
                 self.lease.management_revision,
@@ -1569,11 +1565,10 @@ impl ParsedWorkerInvocation {
                 "bridge_channel_id",
             ),
             (
-                &lease.operation_id,
-                &invocation.operation_id,
-                "operation_id",
+                &lease.execution_id,
+                &invocation.execution_id,
+                "execution_id",
             ),
-            (&lease.stream_id, &invocation.stream_id, "stream_id"),
         ] {
             validate_runtime_lease_string_binding(lease_value, invocation_value, field, false)?;
         }
@@ -1584,16 +1579,8 @@ impl ParsedWorkerInvocation {
                 "runtime lease runtime_generation_id does not match the invocation frame",
             ));
         }
-        validate_runtime_execution_handles(
-            &lease.execution,
-            &lease.operation_id,
-            &lease.stream_id,
-        )?;
-        validate_runtime_execution_handles(
-            &invocation.execution,
-            &invocation.operation_id,
-            &invocation.stream_id,
-        )?;
+        validate_runtime_execution_binding(&lease.execution, &lease.execution_id)?;
+        validate_runtime_execution_binding(&invocation.execution, &invocation.execution_id)?;
         let invocation_target_hash = self.target_hash()?;
         let target_hashes = lease
             .target_descriptor_hashes
@@ -1675,8 +1662,7 @@ impl ParsedWorkerInvocation {
             optional_string(&invocation.owner_env_hash),
             optional_string(&invocation.session_channel_id_hash),
             optional_string(&invocation.bridge_channel_id),
-            optional_string(&invocation.operation_id),
-            optional_string(&invocation.stream_id),
+            optional_string(&invocation.execution_id),
             required_string(&invocation.audit_correlation_id, "audit_correlation_id")?,
             params_hash,
             broker_access_hash,
@@ -1723,19 +1709,16 @@ fn validate_runtime_lease_string_binding(
     Ok(())
 }
 
-fn validate_runtime_execution_handles(
+fn validate_runtime_execution_binding(
     execution: &Option<String>,
-    operation_id: &Option<String>,
-    stream_id: &Option<String>,
+    execution_id: &Option<String>,
 ) -> IpcResult<()> {
     let execution = required_string(execution, "execution")?;
-    let operation_id = optional_string_ref(operation_id).unwrap_or_default();
-    let stream_id = optional_string_ref(stream_id).unwrap_or_default();
+    let execution_id = optional_string_ref(execution_id).unwrap_or_default();
     match execution.as_str() {
-        "sync" if operation_id.is_empty() && stream_id.is_empty() => Ok(()),
-        "operation" if !operation_id.is_empty() && stream_id.is_empty() => Ok(()),
-        "subscription" if !operation_id.is_empty() && !stream_id.is_empty() => Ok(()),
-        _ => Err(invalid_field("runtime lease execution handles")),
+        "sync" if execution_id.is_empty() => Ok(()),
+        "operation" | "subscription" if !execution_id.is_empty() => Ok(()),
+        _ => Err(invalid_field("runtime lease execution binding")),
     }
 }
 
@@ -1820,11 +1803,9 @@ fn runtime_lease_signature_payload_json(
         &required_string(&lease.execution, "execution")?,
         true,
     );
-    validate_runtime_execution_handles(&lease.execution, &lease.operation_id, &lease.stream_id)?;
-    let operation_id = optional_string(&lease.operation_id);
-    let stream_id = optional_string(&lease.stream_id);
-    append_json_optional_string_field(&mut out, "operation_id", Some(&operation_id));
-    append_json_optional_string_field(&mut out, "stream_id", Some(&stream_id));
+    validate_runtime_execution_binding(&lease.execution, &lease.execution_id)?;
+    let execution_id = optional_string(&lease.execution_id);
+    append_json_optional_string_field(&mut out, "execution_id", Some(&execution_id));
     append_json_string_field(
         &mut out,
         "audit_correlation_id",
@@ -4966,14 +4947,19 @@ mod tests {
         );
 
         let mut mismatched: Value = serde_json::from_str(frame).expect("invocation fixture");
-        mismatched["payload"]["invocation"]["stream_id"] =
-            Value::String("stream_other".to_string());
+        mismatched["payload"]["invocation"]["execution_id"] =
+            Value::String("execution_other".to_string());
         let mismatch = validate_worker_runtime_lease(
             &serde_json::to_string(&mismatched).expect("mismatched invocation"),
             1_783_161_901_000,
         )
         .expect_err("execution handle mismatch must fail closed");
-        assert_eq!(mismatch, IpcError::InvalidField { field: "stream_id" });
+        assert_eq!(
+            mismatch,
+            IpcError::InvalidField {
+                field: "execution_id"
+            }
+        );
 
         let mut wrong_environment: Value = serde_json::from_str(frame).expect("invocation fixture");
         wrong_environment["payload"]["invocation"]["owner_env_hash"] =

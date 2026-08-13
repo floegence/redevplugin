@@ -1,15 +1,33 @@
 package releasepublisher
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
+
+func TestExternalSignerSchemasMatchCurrentExchange(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	for _, name := range []string{"external-signer-request-v1.schema.json", "external-signer-response-v1.schema.json"} {
+		raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, retired := range [][]byte{[]byte("subject_identity_sha256"), []byte("release-signing-subject"), []byte("ledger-checkpoint"), []byte("ledger-receipt")} {
+			if bytes.Contains(raw, retired) {
+				t.Fatalf("%s retains retired %q", name, retired)
+			}
+		}
+	}
+}
 
 func TestExternalSignerExchangeRoundTrip(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -20,12 +38,6 @@ func TestExternalSignerExchangeRoundTrip(t *testing.T) {
 	request, err := NewExternalSignerRequest(
 		releasecontract.SigningUsagePackage,
 		"official_signing_2026",
-		releasecontract.SigningSubjectV1{
-			SchemaVersion: releasecontract.SigningSubjectSchemaVersion,
-			Usage:         releasecontract.SigningSubjectUsagePackage,
-			SourceID:      "official_source", Channel: "stable", PublisherID: "com.example.official",
-			PluginID: "com.example.official.containers", Version: "4.0.0", ArtifactIdentitySHA256: hex.EncodeToString(make([]byte, sha256.Size)),
-		},
 		preimage,
 	)
 	if err != nil {
@@ -43,9 +55,9 @@ func TestExternalSignerExchangeRoundTrip(t *testing.T) {
 	response := ExternalSignerResponseV1{
 		SchemaVersion: ExternalSignerResponseSchemaVersion,
 		RequestID:     request.RequestID, Usage: request.Usage, KeyID: request.KeyID,
-		SubjectIdentitySHA256: request.SubjectIdentitySHA256, SigningPreimageSHA256: request.SigningPreimageSHA256,
-		Algorithm: releasecontract.SignatureAlgorithmEd25519,
-		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, digest)),
+		SigningPreimageSHA256: request.SigningPreimageSHA256,
+		Algorithm:             releasecontract.SignatureAlgorithmEd25519,
+		Signature:             base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, digest)),
 	}
 	responseBytes, err := CanonicalExternalSignerResponse(response)
 	if err != nil {
@@ -67,7 +79,7 @@ func TestExternalSignerExchangeRoundTrip(t *testing.T) {
 }
 
 func TestExternalSignerExchangeRejectsUnknownFields(t *testing.T) {
-	raw := []byte(`{"schema_version":"redevplugin.external_signer_response.v1","request_id":"` + hex.EncodeToString(make([]byte, 32)) + `","usage":"redevplugin.release-signing.package.v1","key_id":"key","subject_identity_sha256":"` + hex.EncodeToString(make([]byte, 32)) + `","signing_preimage_sha256":"` + hex.EncodeToString(make([]byte, 32)) + `","algorithm":"ed25519","signature":"` + base64.StdEncoding.EncodeToString(make([]byte, 64)) + `","unexpected":true}`)
+	raw := []byte(`{"schema_version":"redevplugin.external_signer_response.v1","request_id":"` + hex.EncodeToString(make([]byte, 32)) + `","usage":"redevplugin.release-signing.package.v1","key_id":"key","signing_preimage_sha256":"` + hex.EncodeToString(make([]byte, 32)) + `","algorithm":"ed25519","signature":"` + base64.StdEncoding.EncodeToString(make([]byte, 64)) + `","unexpected":true}`)
 	if _, err := DecodeExternalSignerResponse(raw); err == nil {
 		t.Fatal("unknown field was accepted")
 	}

@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sessionScopeSQLiteSchemaVersion = 1
+const sessionScopeSQLiteSchemaVersion = 2
 
 type SQLiteStore struct {
 	db      *sql.DB
@@ -376,8 +376,14 @@ func (s *SQLiteStore) initialize(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&schemaVersion); err != nil {
 		return err
 	}
-	if schemaVersion != 0 && schemaVersion != sessionScopeSQLiteSchemaVersion {
+	if schemaVersion < 0 || schemaVersion > sessionScopeSQLiteSchemaVersion {
 		return fmt.Errorf("%w: got %d, want %d", ErrSchemaVersion, schemaVersion, sessionScopeSQLiteSchemaVersion)
+	}
+	if schemaVersion == 1 {
+		if err := migrateSessionScopeV1ToV2(ctx, s.db); err != nil {
+			return err
+		}
+		schemaVersion = 2
 	}
 	if _, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_session_scope_fences (
@@ -392,12 +398,9 @@ CREATE TABLE IF NOT EXISTS plugin_session_scope_fences (
 	asset_sessions INTEGER NOT NULL CHECK (asset_sessions BETWEEN 0 AND 9007199254740991),
 	plugin_gateway_tokens INTEGER NOT NULL CHECK (plugin_gateway_tokens BETWEEN 0 AND 9007199254740991),
 	confirmation_tokens INTEGER NOT NULL CHECK (confirmation_tokens BETWEEN 0 AND 9007199254740991),
-	stream_tickets INTEGER NOT NULL CHECK (stream_tickets BETWEEN 0 AND 9007199254740991),
 	handle_grants INTEGER NOT NULL CHECK (handle_grants BETWEEN 0 AND 9007199254740991),
 	confirmations INTEGER NOT NULL CHECK (confirmations BETWEEN 0 AND 9007199254740991),
-	operations INTEGER NOT NULL CHECK (operations BETWEEN 0 AND 9007199254740991),
-	streams INTEGER NOT NULL CHECK (streams BETWEEN 0 AND 9007199254740991),
-	runtime_executions INTEGER NOT NULL CHECK (runtime_executions BETWEEN 0 AND 9007199254740991),
+	executions INTEGER NOT NULL CHECK (executions BETWEEN 0 AND 9007199254740991),
 	active_network_requests INTEGER NOT NULL CHECK (active_network_requests BETWEEN 0 AND 9007199254740991),
 	sockets INTEGER NOT NULL CHECK (sockets BETWEEN 0 AND 9007199254740991),
 	network_streams INTEGER NOT NULL CHECK (network_streams BETWEEN 0 AND 9007199254740991),
@@ -416,7 +419,7 @@ CREATE TABLE IF NOT EXISTS plugin_session_scope_teardown_phases (
 	owner_user_hash TEXT NOT NULL,
 	owner_env_hash TEXT NOT NULL,
 	session_channel_id_hash TEXT NOT NULL,
-	phase TEXT NOT NULL CHECK (phase IN ('bridge', 'confirmation', 'execution', 'operation', 'stream', 'runtime')),
+	phase TEXT NOT NULL CHECK (phase IN ('bridge', 'confirmation', 'execution', 'runtime')),
 	counts_json BLOB NOT NULL CHECK (length(counts_json) BETWEEN 2 AND 4096),
 	PRIMARY KEY (owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, phase),
 	FOREIGN KEY (owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash)
@@ -426,7 +429,7 @@ CREATE TABLE IF NOT EXISTS plugin_session_scope_teardown_phases (
 		return err
 	}
 	if schemaVersion == 0 {
-		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version = 2`); err != nil {
 			return err
 		}
 	}
@@ -472,6 +475,51 @@ CREATE TABLE IF NOT EXISTS plugin_session_scope_teardown_phases (
 	return phaseRows.Err()
 }
 
+func migrateSessionScopeV1ToV2(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, statement := range []string{
+		`ALTER TABLE plugin_session_scope_fences RENAME TO plugin_session_scope_fences_v1`,
+		`ALTER TABLE plugin_session_scope_teardown_phases RENAME TO plugin_session_scope_teardown_phases_v1`,
+		`CREATE TABLE plugin_session_scope_fences (
+			owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, owner_env_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL,
+			state TEXT NOT NULL CHECK (state IN ('draining', 'incomplete', 'complete')), teardown_operation_id TEXT NOT NULL,
+			surfaces INTEGER NOT NULL CHECK (surfaces BETWEEN 0 AND 9007199254740991), asset_tickets INTEGER NOT NULL CHECK (asset_tickets BETWEEN 0 AND 9007199254740991),
+			asset_sessions INTEGER NOT NULL CHECK (asset_sessions BETWEEN 0 AND 9007199254740991), plugin_gateway_tokens INTEGER NOT NULL CHECK (plugin_gateway_tokens BETWEEN 0 AND 9007199254740991),
+			confirmation_tokens INTEGER NOT NULL CHECK (confirmation_tokens BETWEEN 0 AND 9007199254740991), handle_grants INTEGER NOT NULL CHECK (handle_grants BETWEEN 0 AND 9007199254740991),
+			confirmations INTEGER NOT NULL CHECK (confirmations BETWEEN 0 AND 9007199254740991), executions INTEGER NOT NULL CHECK (executions BETWEEN 0 AND 9007199254740991),
+			active_network_requests INTEGER NOT NULL CHECK (active_network_requests BETWEEN 0 AND 9007199254740991), sockets INTEGER NOT NULL CHECK (sockets BETWEEN 0 AND 9007199254740991),
+			network_streams INTEGER NOT NULL CHECK (network_streams BETWEEN 0 AND 9007199254740991), storage_hostcalls INTEGER NOT NULL CHECK (storage_hostcalls BETWEEN 0 AND 9007199254740991),
+			proof_sha256 BLOB, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+			PRIMARY KEY(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash), CHECK (length(teardown_operation_id) BETWEEN 1 AND 256 AND length(proof_sha256) = 32))`,
+		`INSERT INTO plugin_session_scope_fences SELECT owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash,
+			state, teardown_operation_id, surfaces, asset_tickets, asset_sessions, plugin_gateway_tokens, confirmation_tokens,
+			handle_grants, confirmations, max(operations, streams, runtime_executions), active_network_requests, sockets,
+			network_streams, storage_hostcalls, proof_sha256, created_at, updated_at FROM plugin_session_scope_fences_v1`,
+		`CREATE TABLE plugin_session_scope_teardown_phases (
+			owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, owner_env_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL,
+			phase TEXT NOT NULL CHECK (phase IN ('bridge', 'confirmation', 'execution', 'runtime')), counts_json BLOB NOT NULL CHECK (length(counts_json) BETWEEN 2 AND 4096),
+			PRIMARY KEY(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, phase),
+			FOREIGN KEY(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash) REFERENCES plugin_session_scope_fences(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash) ON DELETE RESTRICT)`,
+		`INSERT INTO plugin_session_scope_teardown_phases SELECT owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, phase, counts_json
+			FROM plugin_session_scope_teardown_phases_v1 WHERE phase IN ('bridge','confirmation','execution','runtime') AND phase != 'execution'`,
+		`INSERT INTO plugin_session_scope_teardown_phases SELECT owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, 'execution',
+			json_object('executions', max(CASE phase WHEN 'operation' THEN coalesce(json_extract(counts_json,'$.operations'),0) WHEN 'stream' THEN coalesce(json_extract(counts_json,'$.streams'),0) WHEN 'execution' THEN coalesce(json_extract(counts_json,'$.runtime_executions'),coalesce(json_extract(counts_json,'$.executions'),0)) ELSE 0 END))
+			FROM plugin_session_scope_teardown_phases_v1 WHERE phase IN ('execution','operation','stream') GROUP BY owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash`,
+		`DROP TABLE plugin_session_scope_teardown_phases_v1`,
+		`DROP TABLE plugin_session_scope_fences_v1`,
+		`PRAGMA user_version = 2`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("%w: v1 to v2: %v", ErrSchemaVersion, err)
+		}
+	}
+	return tx.Commit()
+}
+
 func decodePhaseCounts(encoded []byte) (Counts, error) {
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
@@ -492,8 +540,7 @@ func decodePhaseCounts(encoded []byte) (Counts, error) {
 const sqliteSessionScopeSelect = `
 SELECT owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash,
        state, teardown_operation_id, surfaces, asset_tickets, asset_sessions, plugin_gateway_tokens,
-       confirmation_tokens, stream_tickets, handle_grants, confirmations, operations,
-       streams, runtime_executions, active_network_requests, sockets, network_streams,
+       confirmation_tokens, handle_grants, confirmations, executions, active_network_requests, sockets, network_streams,
        storage_hostcalls, proof_sha256, created_at, updated_at
 FROM plugin_session_scope_fences`
 
@@ -526,9 +573,8 @@ func scanSQLiteSessionScope(scanner sqliteSessionScopeScanner) (record, error) {
 	err := scanner.Scan(
 		&current.Scope.OwnerSessionHash, &current.Scope.OwnerUserHash, &current.Scope.OwnerEnvHash, &current.Scope.SessionChannelIDHash,
 		&state, &current.TeardownOperationID, &current.Counts.Surfaces, &current.Counts.AssetTickets, &current.Counts.AssetSessions,
-		&current.Counts.PluginGatewayTokens, &current.Counts.ConfirmationTokens, &current.Counts.StreamTickets,
-		&current.Counts.HandleGrants, &current.Counts.Confirmations, &current.Counts.Operations,
-		&current.Counts.Streams, &current.Counts.RuntimeExecutions, &current.Counts.ActiveNetworkRequests,
+		&current.Counts.PluginGatewayTokens, &current.Counts.ConfirmationTokens,
+		&current.Counts.HandleGrants, &current.Counts.Confirmations, &current.Counts.Executions, &current.Counts.ActiveNetworkRequests,
 		&current.Counts.Sockets, &current.Counts.NetworkStreams, &current.Counts.StorageHostcalls,
 		&proof, &createdAt, &updatedAt,
 	)
@@ -573,10 +619,9 @@ func insertSQLiteSessionScope(ctx context.Context, tx *sql.Tx, current record) e
 INSERT INTO plugin_session_scope_fences (
 	owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash,
 	state, teardown_operation_id, surfaces, asset_tickets, asset_sessions, plugin_gateway_tokens,
-	confirmation_tokens, stream_tickets, handle_grants, confirmations, operations,
-	streams, runtime_executions, active_network_requests, sockets, network_streams,
+	confirmation_tokens, handle_grants, confirmations, executions, active_network_requests, sockets, network_streams,
 	storage_hostcalls, proof_sha256, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, sqliteSessionScopeArguments(current)...)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, sqliteSessionScopeArguments(current)...)
 	return err
 }
 
@@ -588,8 +633,7 @@ func updateSQLiteSessionScope(ctx context.Context, tx *sql.Tx, current record) e
 	result, err := tx.ExecContext(ctx, `
 UPDATE plugin_session_scope_fences SET
 	state = ?, teardown_operation_id = ?, surfaces = ?, asset_tickets = ?, asset_sessions = ?, plugin_gateway_tokens = ?,
-	confirmation_tokens = ?, stream_tickets = ?, handle_grants = ?, confirmations = ?, operations = ?,
-	streams = ?, runtime_executions = ?, active_network_requests = ?, sockets = ?, network_streams = ?,
+	confirmation_tokens = ?, handle_grants = ?, confirmations = ?, executions = ?, active_network_requests = ?, sockets = ?, network_streams = ?,
 	storage_hostcalls = ?, proof_sha256 = ?, created_at = ?, updated_at = ?
 WHERE owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?`,
 		append(args[4:], args[:4]...)...,
@@ -615,9 +659,8 @@ func sqliteSessionScopeArguments(current record) []any {
 	return []any{
 		current.Scope.OwnerSessionHash, current.Scope.OwnerUserHash, current.Scope.OwnerEnvHash, current.Scope.SessionChannelIDHash,
 		current.State, current.TeardownOperationID, current.Counts.Surfaces, current.Counts.AssetTickets, current.Counts.AssetSessions,
-		current.Counts.PluginGatewayTokens, current.Counts.ConfirmationTokens, current.Counts.StreamTickets,
-		current.Counts.HandleGrants, current.Counts.Confirmations, current.Counts.Operations,
-		current.Counts.Streams, current.Counts.RuntimeExecutions, current.Counts.ActiveNetworkRequests,
+		current.Counts.PluginGatewayTokens, current.Counts.ConfirmationTokens,
+		current.Counts.HandleGrants, current.Counts.Confirmations, current.Counts.Executions, current.Counts.ActiveNetworkRequests,
 		current.Counts.Sockets, current.Counts.NetworkStreams, current.Counts.StorageHostcalls,
 		proof, current.CreatedAt.UTC().UnixNano(), current.UpdatedAt.UTC().UnixNano(),
 	}

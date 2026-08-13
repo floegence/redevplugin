@@ -9,21 +9,21 @@ import (
 func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 	requests := []any{
 		ListDiagnosticEventsRequest{}, PackageTrustVerificationRequest{}, HostRequirementSelectionRequest{},
-		CapabilityContractResolveRequest{}, ReleaseArtifactResolveRequest{}, StartRuntimeRequest{},
-		ImportLocalPackageRequest{}, UpdateLocalPackageRequest{}, InstallReleaseRefRequest{}, StartReleaseInstallOperationRequest{}, UpdateReleaseRefRequest{},
+		ReleaseArtifactResolveRequest{}, StartRuntimeRequest{},
+		ImportLocalPackageRequest{}, UpdateLocalPackageRequest{}, InstallReleaseRefRequest{}, StartReleaseInstallExecutionRequest{}, UpdateReleaseRefRequest{},
+		InspectPluginDataRequest{}, ReadPluginDataFileRequest{}, WritePluginDataFileRequest{},
 		DowngradeRequest{}, EnableRequest{}, DisableRequest{}, UninstallRequest{}, ListRetainedDataRequest{},
 		DeleteRetainedDataRequest{}, BindRetainedDataRequest{}, CleanupExpiredRetainedDataRequest{}, ExportDataRequest{},
 		ImportDataRequest{}, DeleteExportDataRequest{}, GrantPermissionRequest{}, RevokePermissionRequest{},
-		InspectExternalPackageRequest{}, InspectUploadedExternalPackageRequest{}, CommitExternalPackageRequest{}, QueryExternalPackageCommitRequest{},
+		InspectExternalPackageRequest{}, InspectUploadedExternalPackageRequest{}, InstallInspectedPackageRequest{},
 		ListPermissionGrantsRequest{}, PutSecurityPolicyRequest{}, GetSecurityPolicyRequest{}, DeleteSecurityPolicyRequest{},
 		GetSettingsRequest{}, PatchSettingsRequest{}, OpenSurfaceRequest{}, PrepareSurfaceRequest{},
 		ReadSurfaceAssetRequest{}, ReadPluginIconRequest{}, DisposeSurfaceRequest{}, RevokeSessionScopeRequest{}, FinalizeSessionScopeRequest{},
 		CloseAuthenticatedSessionScopeRequest{}, ResumeClosedSessionScopeTeardownRequest{}, FinalizeClosedSessionScopeRequest{},
-		InspectSessionScopeMaintenanceRequest{}, ValidateTerminalSessionScopeCloseRequest{}, PrepareSessionScopeFinalizationRequest{},
 		MintBridgeTokenRequest{},
 		CallMethodRequest{}, ListIntentsRequest{}, InvokeIntentRequest{}, PrepareMethodConfirmationRequest{},
-		RejectMethodConfirmationRequest{}, ListOperationsRequest{}, CancelOperationRequest{}, CancelSurfaceOperationRequest{}, GetSurfaceOperationRequest{},
-		ReadStreamRequest{}, AcknowledgeStreamRequest{}, MintConnectionGrantRequest{}, MintStorageHandleGrantRequest{},
+		RejectMethodConfirmationRequest{},
+		MintConnectionGrantRequest{}, MintStorageHandleGrantRequest{},
 		AuthorizationRequest{}, AuthorizationTarget{},
 	}
 	internalFields := map[string]struct{}{

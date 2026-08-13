@@ -14,7 +14,7 @@ Trusted host UI may:
 - call management APIs through `PluginPlatformClient`;
 - mount `PluginSurfaceHost` inside product chrome;
 - provide the authenticated parent-side surface transport and confirmation UI;
-- show settings, permissions, retained data, operations, owner-scoped
+- show settings, permissions, retained data, executions, owner-scoped
   diagnostics, and host-mediated intents;
 - register product-specific session, origin, CSRF, and policy adapters on the
   Go Host side.
@@ -24,7 +24,8 @@ Plugin worker UI may:
 - receive one opaque surface handle and a private `MessagePort`;
 - render through typed virtual nodes and receive typed UI action events;
 - invoke declared plugin methods through Host-mediated bridge/RPC paths;
-- read parent-owned streams through opaque stream handles.
+- observe asynchronous work through opaque execution handles and ordered
+  Events.
 
 Sandboxed plugin UI must not receive host management credentials, parent-only
 storage/network grants, raw vault secrets, runtime-control tokens, or unrelated
@@ -33,22 +34,21 @@ product session authority.
 ## Bridge Protocol
 
 The current bridge protocol is described by `spec/plugin/bridge-v7.schema.json`
-and implemented by the TypeScript package. Installed `plugin-ui-v5` packages
-remain bound to the legacy `bridge-v5` and `opaque-surface-transport-v4`
-mapping, while installed v6 packages retain their exact v6 mapping. Contract
-checks keep these frame names, each supported UI protocol
-version, and forbidden response fields aligned with its schema:
+and implemented by the TypeScript package. Installed `plugin-ui-v7` packages
+use only `bridge-v7` and the current opaque-surface transport. Contract checks
+keep these frame names and forbidden response fields aligned with that schema:
 
 - `redevplugin.bridge.call`;
-- `redevplugin.bridge.stream.read`;
-- `redevplugin.bridge.operation.snapshot` in `plugin-ui-v6` and v7;
+- `redevplugin.bridge.execution.events`;
+- `redevplugin.bridge.execution.query`;
+- current execution events in `plugin-ui-v7`;
 - `redevplugin.ui.mount`;
 - `redevplugin.ui.patch`;
 - `redevplugin.bridge.cancel`;
 - `redevplugin.ui.action`;
 - `redevplugin.bridge.response`;
 - `redevplugin.bridge.lifecycle`;
-- `plugin-ui-v5`, v6, or v7, using the published exact mapping.
+- `plugin-ui-v7`, using the published exact mapping.
 
 The parent transfers one secret-free bootstrap port to the current iframe
 `contentWindow` and frame generation. Because the iframe has an opaque origin,
@@ -84,8 +84,7 @@ asset-session nonce, management revision, revoke epoch, UI protocol version,
 and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
 mint a parent-only gateway token if the transcript is missing or mismatched.
 This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
-`bridge-v7.schema.json` contract (or the retained bridge v5/v6 contract for an
-installed surface using that protocol).
+`bridge-v7.schema.json` contract.
 
 ## Restricted JSX
 
@@ -157,9 +156,9 @@ routes exposed by `pkg/httpadapter`, including:
   flows where the host page sends `PluginReleaseRef` rather than package bytes;
 - downgrade, enable, disable, uninstall, and surface open;
 - authenticated owner/session surface-scope revocation;
-- runtime start, health, refresh-enabled, and stop;
+- runtime start, health, recover-enabled, explicit recovery retry, and stop;
 - settings schema/read/patch;
-- operation list/get/cancel;
+- execution list/get/cancel;
 - data export/import;
 - permission grant/revoke/list;
 - secret bind/test/delete;
@@ -167,27 +166,26 @@ routes exposed by `pkg/httpadapter`, including:
 - host-mediated intent list/invoke;
 - owner-scoped diagnostic event list.
 
-`cancelOperation` is a trusted host-page command. It records
-`cancel_requested` in the Host operation store and signals the live execution
-lease that created the operation. That lease may carry a route-local
-`OperationCanceler` captured from the capability adapter, core action, or
-runtime supervisor. Inactive persisted operations are not looked up through a
-global capability registry and are not redispatched; their durable cancel state
-remains available through `getOperation` and `listOperations`.
+`cancelExecution` is a trusted host-page command. It records
+`cancel_requested` in the Host control database and signals the live execution
+lease. That lease may carry a route-local cancel hook captured from the
+capability adapter, core action, or runtime supervisor. Inactive persisted
+executions are not looked up through a global capability registry and are not
+redispatched; their durable cancel state remains available through
+`getExecution` and `listExecutions`.
 
-Plugin workers import generated host capability clients from signed artifact
-bundles. A generated client wraps `PluginBridgeClient`; it contains typed
-request, response, operation, stream, and business-error validation, but no URL,
-route, session, ticket, runtime lease, or host-product type. The matching bundle
-pin and compatibility metadata are verified by the Host before installation.
-Operation calls expose one opaque operation id. Subscription calls expose that
-operation id plus one opaque stream handle; raw stream ids and tickets remain in
-the trusted parent. Business-error guards narrow only when capability id,
-capability version, details-schema SHA-256, error code, and details payload all
-match the signed contract.
+Plugin workers use clients generated from the closed local capability registry.
+A generated client wraps `PluginBridgeClient`; it contains typed request,
+response, Execution/Event, and business-error validation, but no URL, route,
+session, ticket, runtime lease, or host-product type. The matching contract pin
+is verified by the Host before installation. Every asynchronous call exposes
+one opaque execution handle and reads ordered events by cursor; raw internal
+transport handles remain in the trusted parent. Business-error guards narrow
+only when capability id, capability version, details-schema SHA-256, error code,
+and details payload all match the registered contract.
 
 List helpers preserve the same data wrapper fields returned by the Go HTTP
-adapter, such as `operations`, `permissions`, and `diagnostic_events`, so host
+adapter, such as `executions`, `permissions`, and `diagnostic_events`, so host
 pages can consume the SDK and raw HTTP contract consistently. Audit events stay
 behind the host's internal `AuditSink`; the generic HTTP adapter and TypeScript
 client do not expose them.
@@ -253,7 +251,8 @@ both Go and TypeScript, so package validation and browser rendering accept the
 same tags, attributes, input types, and size/depth limits. Lazy image, font, and
 media blobs are created inside the opaque frame; executable plugin code runs
 only in the hardened Dedicated Worker. Asset sessions, tickets, gateway tokens,
-stream tickets, and confirmation tokens never cross into plugin code.
+internal transport credentials and confirmation tokens never cross into plugin
+code.
 
 `PluginBridgeClient.render(...)` validates that same generated policy in one
 worker-side pass before it queues a mount or patch. Invalid tags, attributes,
@@ -380,13 +379,13 @@ fixtures live separately under `internal/browserharness` and
   and mounts `surfaceHost.element` without a caller-provided frame, plugin
   server, subdomain, or cookie bootstrap;
 - bridge handshake, typed rendering/actions, ordinary RPC, lifecycle messages,
-  streams, confirmation, opening progress, and deterministic disposal are
+  Execution/Event observation, confirmation, opening progress, and deterministic disposal are
   tested;
 - sandbox security probes assert parent DOM/cookie/storage, localStorage,
   sessionStorage, IndexedDB, Cache API, Service Worker, direct fetch, WebSocket,
   nested Worker, dynamic import, eval, and Function constructors are blocked;
 - the Examples smoke uses the Go Host library, HTTP adapter, Rust runtime,
-  parent-only asset/stream transport, WASM workers, storage broker, and network
+  parent-only asset transport, WASM workers, storage broker, and network
   broker end to end for persistent Memos, saved Weather locations and external
   HTTP, plus the Sky Strike canvas, images, input, animation, FPS display, and
   semantic canvas status;
@@ -402,7 +401,7 @@ fixtures live separately under `internal/browserharness` and
   WASM/ABI regression loads 61 pinned notes as 24, 24, and 13 rows, proving the
   Showcase does not rely on an unbounded library response;
 - the opaque browser harness covers platform-only HTTP, WebSocket, TCP, UDP,
-  stream, confirmation, lifecycle, and security probes without presenting
+  execution events, confirmation, lifecycle, and security probes without presenting
   those probes as a user example.
 
 `npm run test:browser-harness:smoke` persists the A2 acceptance report and visual evidence

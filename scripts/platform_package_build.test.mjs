@@ -7,9 +7,9 @@ import test from "node:test";
 
 import { verifyPlatformPackageBuild, verifyRustPublishMetadata } from "./platform_package_build.mjs";
 
-const version = "0.7.27";
+const version = "1.0.0";
 const sourceCommit = "1".repeat(40);
-const contractSetSHA256 = "69b10431afd00c5436d1e03b2a328d93ca2becda2cddd4459526dac7ab6240a7";
+const contractSetSHA256 = "0e492220c7f4e19c851366a5e6d0e8d9eb9f531bc4af56b8a518e09a32e0ede9";
 
 test("platform package build manifest is closed, complete, and content addressed", () => {
   const fixture = createFixture();
@@ -46,7 +46,7 @@ test("Rust upload metadata is closed and binds the exact first-party dependency 
       (value) => { value.packages.pop(); },
       (value) => { value.packages[0].extra = true; },
       (value) => { value.packages[1].deps[0].version_req = "^0.6"; },
-      (value) => { value.packages[5].deps[0].kind = "dev"; },
+      (value) => { value.packages[4].deps[0].kind = "dev"; },
       (value) => { value.packages[0].deps.push(internalDependency("redevplugin-runtime", "normal")); },
     ]) {
       const candidate = structuredClone(valid);
@@ -64,13 +64,11 @@ function validRustPublishMetadata() {
     "redevplugin-contracts",
     "redevplugin-ipc",
     "redevplugin-wasm-abi",
-    "redevplugin-target-classifier",
     "redevplugin-worker-sdk",
     "redevplugin-runtime",
   ];
   const dependencies = new Map([
     ["redevplugin-ipc", [internalDependency("redevplugin-contracts", "dev")]],
-    ["redevplugin-target-classifier", [internalDependency("redevplugin-contracts", "dev")]],
     ["redevplugin-runtime", [
       internalDependency("redevplugin-ipc", "normal"),
       internalDependency("redevplugin-wasm-abi", "normal"),
@@ -127,7 +125,6 @@ function createFixture() {
       "redevplugin-contracts",
       "redevplugin-ipc",
       "redevplugin-wasm-abi",
-      "redevplugin-target-classifier",
       "redevplugin-worker-sdk",
       "redevplugin-runtime",
     ].map((name) => ["rust", name, `rust/${name}-${version}.crate`]),

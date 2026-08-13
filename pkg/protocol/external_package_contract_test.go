@@ -21,7 +21,7 @@ func TestExternalPackageFeatureIsPublishedByTheOpenAPIContract(t *testing.T) {
 	}
 }
 
-func TestExternalPackageRoutesExposeClosedInspectCommitAndQueryFlow(t *testing.T) {
+func TestExternalPackageRoutesExposeClosedInspectAndInstallFlow(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v15.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -44,20 +44,12 @@ func TestExternalPackageRoutesExposeClosedInspectCommitAndQueryFlow(t *testing.T
 			errorResponse: "MutationPlatformErrorResponse",
 		},
 		{
-			path:          "/_redevplugin/api/plugins/external-packages/commit",
-			operationID:   "commitExternalPackage",
+			path:          "/_redevplugin/api/plugins/external-packages/install",
+			operationID:   "installInspectedPackage",
 			effect:        "mutation",
-			requestBody:   "CommitExternalPackageRequest",
-			response:      "ExternalPackageCommitResponse",
+			requestBody:   "InstallInspectedPackageRequest",
+			response:      "InstalledExternalPackageResponse",
 			errorResponse: "MutationPlatformErrorResponse",
-		},
-		{
-			path:          "/_redevplugin/api/plugins/external-packages/commit/query",
-			operationID:   "queryExternalPackageCommit",
-			effect:        "query",
-			requestBody:   "QueryExternalPackageCommitRequest",
-			response:      "ExternalPackageCommitResponse",
-			errorResponse: "PlatformErrorResponse",
 		},
 	}
 	for _, tt := range tests {
@@ -79,6 +71,25 @@ func TestExternalPackageRoutesExposeClosedInspectCommitAndQueryFlow(t *testing.T
 	}
 }
 
+func TestExternalPackageDurableCommitAndQueryRoutesAreRetired(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v15.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	for _, retired := range []string{
+		"/_redevplugin/api/plugins/external-packages/commit:",
+		"/_redevplugin/api/plugins/external-packages/commit/query:",
+		"CommitExternalPackageRequest:",
+		"QueryExternalPackageCommitRequest:",
+		"ExternalPackageCommitResult:",
+	} {
+		if strings.Contains(source, retired) {
+			t.Fatalf("OpenAPI retained durable external-package lifecycle %q", retired)
+		}
+	}
+}
+
 func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v15.yaml"))
 	if err != nil {
@@ -90,8 +101,7 @@ func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 		properties []string
 	}{
 		{schema: "InspectExternalPackageRequest", properties: []string{"intent", "source"}},
-		{schema: "CommitExternalPackageRequest", properties: []string{"confirmation_digest", "inspection_id"}},
-		{schema: "QueryExternalPackageCommitRequest", properties: []string{"commit_id", "inspection_id"}},
+		{schema: "InstallInspectedPackageRequest", properties: []string{"expected_package_sha256", "inspection_id"}},
 	}
 	for _, tt := range tests {
 		block := openAPISchemaBlock(t, source, tt.schema)
@@ -133,7 +143,7 @@ func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
 	}
 	source := string(raw)
 	facts := []string{"signature_assessment", "source_provenance", "execution_approval", "update_eligibility"}
-	for _, schemaName := range []string{"ExternalPackageInspection", "ExternalPackageCommitResult"} {
+	for _, schemaName := range []string{"ExternalPackageInspection", "InstalledExternalPackage"} {
 		block := openAPISchemaBlock(t, source, schemaName)
 		for _, fact := range facts {
 			if !strings.Contains(block, fact) {

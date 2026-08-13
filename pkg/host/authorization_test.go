@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,22 +17,6 @@ import (
 type recordingAuthorizationAdapter struct {
 	err      error
 	requests []AuthorizationRequest
-}
-
-type authorizationProbeRegistry struct {
-	registry.Store
-	getCalls  int
-	listCalls int
-}
-
-func (r *authorizationProbeRegistry) GetPlugin(ctx context.Context, pluginInstanceID string) (registry.PluginRecord, error) {
-	r.getCalls++
-	return r.Store.GetPlugin(ctx, pluginInstanceID)
-}
-
-func (r *authorizationProbeRegistry) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
-	r.listCalls++
-	return r.Store.ListPlugins(ctx)
 }
 
 func authorizationTargetsEqual(left, right AuthorizationTarget) bool {
@@ -63,10 +48,6 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionPrepareSurface,
 		ManagementActionMintBridgeToken,
 		ManagementActionReadSurfaceAsset,
-		ManagementActionReadSurfaceStream,
-		ManagementActionAcknowledgeSurfaceStream,
-		ManagementActionGetSurfaceOperation,
-		ManagementActionCancelSurfaceOperation,
 		ManagementActionRejectSurfaceConfirmation,
 		ManagementActionDisposeSurface,
 		ManagementActionRevokeSessionScope,
@@ -77,19 +58,15 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionInvokeIntent,
 		ManagementActionImportLocalPackage,
 		ManagementActionInstallReleaseRef,
-		ManagementActionStartReleaseInstall,
-		ManagementActionGetReleaseInstall,
-		ManagementActionListReleaseInstalls,
 		ManagementActionInspectExternalPackage,
-		ManagementActionCommitExternalPackage,
-		ManagementActionQueryExternalPackageCommit,
+		ManagementActionInstallInspectedPackage,
 		ManagementActionUpdateLocalPackage,
 		ManagementActionUpdateReleaseRef,
 		ManagementActionDowngradePlugin,
 		ManagementActionListPlugins,
 		ManagementActionListFeatures,
 		ManagementActionGetCompatibility,
-		ManagementActionRefreshEnabledPlugins,
+		ManagementActionRecoverEnabledPlugins,
 		ManagementActionGrantPermission,
 		ManagementActionRevokePermission,
 		ManagementActionListPermissionGrants,
@@ -99,9 +76,6 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionListSecurityPolicies,
 		ManagementActionDeleteSecurityPolicy,
 		ManagementActionListDiagnosticEvents,
-		ManagementActionListOperations,
-		ManagementActionGetOperation,
-		ManagementActionCancelOperation,
 		ManagementActionStartRuntime,
 		ManagementActionStopRuntime,
 		ManagementActionGetRuntimeHealth,
@@ -118,6 +92,9 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionExportPluginData,
 		ManagementActionDeleteExportedPluginData,
 		ManagementActionImportPluginData,
+		ManagementActionInspectPluginData,
+		ManagementActionReadPluginDataFile,
+		ManagementActionWritePluginDataFile,
 		ManagementActionGetSettingsSchema,
 		ManagementActionGetPluginSettings,
 		ManagementActionPatchPluginSettings,
@@ -158,10 +135,6 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"prepare surface", ManagementActionPrepareSurface, func() error { _, err := h.PrepareSurface(ctx, PrepareSurfaceRequest{}); return err }},
 		{"mint bridge token", ManagementActionMintBridgeToken, func() error { _, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{}); return err }},
 		{"read surface asset", ManagementActionReadSurfaceAsset, func() error { _, err := h.ReadSurfaceAsset(ctx, ReadSurfaceAssetRequest{}); return err }},
-		{"read surface stream", ManagementActionReadSurfaceStream, func() error { _, err := h.ReadStream(ctx, ReadStreamRequest{}); return err }},
-		{"acknowledge surface stream", ManagementActionAcknowledgeSurfaceStream, func() error { _, err := h.AcknowledgeStream(ctx, AcknowledgeStreamRequest{}); return err }},
-		{"get surface operation", ManagementActionGetSurfaceOperation, func() error { _, err := h.GetSurfaceOperation(ctx, GetSurfaceOperationRequest{}); return err }},
-		{"cancel surface operation", ManagementActionCancelSurfaceOperation, func() error { _, err := h.CancelSurfaceOperation(ctx, CancelSurfaceOperationRequest{}); return err }},
 		{"reject surface confirmation", ManagementActionRejectSurfaceConfirmation, func() error { _, err := h.RejectMethodConfirmation(ctx, RejectMethodConfirmationRequest{}); return err }},
 		{"dispose surface", ManagementActionDisposeSurface, func() error { return h.DisposeSurface(ctx, DisposeSurfaceRequest{}) }},
 		{"revoke session scope", ManagementActionRevokeSessionScope, func() error { _, err := h.RevokeSessionScope(ctx, RevokeSessionScopeRequest{}); return err }},
@@ -175,19 +148,13 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"invoke intent", ManagementActionInvokeIntent, func() error { _, err := h.InvokeIntent(ctx, InvokeIntentRequest{}); return err }},
 		{"import local package", ManagementActionImportLocalPackage, func() error { _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{}); return err }},
 		{"install release ref", ManagementActionInstallReleaseRef, func() error { _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{}); return err }},
-		{"start release install", ManagementActionStartReleaseInstall, func() error {
-			_, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{})
-			return err
-		}},
-		{"get release install", ManagementActionGetReleaseInstall, func() error { _, err := h.GetReleaseInstallOperation(ctx, "missing"); return err }},
-		{"list release installs", ManagementActionListReleaseInstalls, func() error { _, err := h.ListReleaseInstallOperations(ctx); return err }},
 		{"update local package", ManagementActionUpdateLocalPackage, func() error { _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{}); return err }},
 		{"update release ref", ManagementActionUpdateReleaseRef, func() error { _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{}); return err }},
 		{"downgrade", ManagementActionDowngradePlugin, func() error { _, err := h.DowngradePlugin(ctx, DowngradeRequest{}); return err }},
 		{"list plugins", ManagementActionListPlugins, func() error { _, err := h.ListPlugins(ctx); return err }},
 		{"list features", ManagementActionListFeatures, func() error { _, err := h.Features(ctx); return err }},
 		{"get compatibility", ManagementActionGetCompatibility, func() error { _, err := h.GetCompatibility(ctx); return err }},
-		{"refresh enabled", ManagementActionRefreshEnabledPlugins, func() error { _, err := h.RefreshEnabledPlugins(ctx); return err }},
+		{"recover enabled", ManagementActionRecoverEnabledPlugins, func() error { _, err := h.RecoverEnabled(ctx); return err }},
 		{"grant permission", ManagementActionGrantPermission, func() error { _, err := h.GrantPermission(ctx, GrantPermissionRequest{}); return err }},
 		{"revoke permission", ManagementActionRevokePermission, func() error { _, err := h.RevokePermission(ctx, RevokePermissionRequest{}); return err }},
 		{"list permission grants", ManagementActionListPermissionGrants, func() error { _, err := h.ListPermissionGrants(ctx, ListPermissionGrantsRequest{}); return err }},
@@ -200,9 +167,6 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"list security policies", ManagementActionListSecurityPolicies, func() error { _, err := h.ListSecurityPolicies(ctx); return err }},
 		{"delete security policy", ManagementActionDeleteSecurityPolicy, func() error { _, err := h.DeleteSecurityPolicy(ctx, DeleteSecurityPolicyRequest{}); return err }},
 		{"list diagnostics", ManagementActionListDiagnosticEvents, func() error { _, err := h.ListDiagnosticEvents(ctx, ListDiagnosticEventsRequest{}); return err }},
-		{"list operations", ManagementActionListOperations, func() error { _, err := h.ListOperations(ctx, ListOperationsRequest{}); return err }},
-		{"get operation", ManagementActionGetOperation, func() error { _, err := h.GetOperation(ctx, ""); return err }},
-		{"cancel operation", ManagementActionCancelOperation, func() error { _, err := h.CancelOperation(ctx, CancelOperationRequest{}); return err }},
 		{"start runtime", ManagementActionStartRuntime, func() error { _, err := h.StartRuntime(ctx, StartRuntimeRequest{}); return err }},
 		{"stop runtime", ManagementActionStopRuntime, func() error { return h.StopRuntime(ctx) }},
 		{"runtime health", ManagementActionGetRuntimeHealth, func() error { _, err := h.RuntimeHealth(ctx); return err }},
@@ -293,7 +257,7 @@ func TestAuthorizationRunsBeforeSessionFenceAndFencedActionsAreRejected(t *testi
 	if _, err := h.sessionScopes.Snapshot(ctx, scope); !errors.Is(err, sessionscope.ErrScopeNotFound) {
 		t.Fatalf("denied authorization created a session gate: %v", err)
 	}
-	identity, err := h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
+	identity, err := h.sessionTeardownIdentity(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,8 +284,8 @@ func TestAuthorizeManagementDerivesOwnerAndResourceFromHostCall(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := h.authorizeManagement(ctx, ManagementActionCancelSurfaceOperation,
-		authorizationTarget(ResourceOperation, "operation_1"),
+	result, err := h.authorizeManagement(ctx, ManagementActionCancelExecution,
+		authorizationTarget(ResourceExecution, "operation_1"),
 		authorizationTarget(ResourceSurface, "surface_1"),
 		authorizationTarget(ResourceBridgeChannel, "channel_1"),
 	)
@@ -335,7 +299,7 @@ func TestAuthorizeManagementDerivesOwnerAndResourceFromHostCall(t *testing.T) {
 		t.Fatalf("authorization requests = %d, want 1", len(authorization.requests))
 	}
 	got := authorization.requests[0]
-	if got.Session != wantSession || got.Action != ManagementActionCancelSurfaceOperation || !authorizationTargetsEqual(got.Target, AuthorizationTarget{Kind: ResourceOperation, ID: "operation_1"}) {
+	if got.Session != wantSession || got.Action != ManagementActionCancelExecution || !authorizationTargetsEqual(got.Target, AuthorizationTarget{Kind: ResourceExecution, ID: "operation_1"}) {
 		t.Fatalf("authorization request = %#v", got)
 	}
 	if len(got.RelatedTargets) != 2 || !authorizationTargetsEqual(got.RelatedTargets[0], AuthorizationTarget{Kind: ResourceSurface, ID: "surface_1"}) || !authorizationTargetsEqual(got.RelatedTargets[1], AuthorizationTarget{Kind: ResourceBridgeChannel, ID: "channel_1"}) {
@@ -376,16 +340,9 @@ func TestDirectHostAPIsProjectClosedAuthorizationResources(t *testing.T) {
 			},
 		},
 		{
-			name: "read stream", action: ManagementActionReadSurfaceStream,
-			target: AuthorizationTarget{Kind: ResourceStream, ID: "stream_1"}, related: []AuthorizationTarget{{Kind: ResourceSurface, ID: "surface_1"}}, call: func() error {
-				_, err := h.ReadStream(ctx, ReadStreamRequest{StreamID: "stream_1", SurfaceInstanceID: "surface_1", ReadID: "read_1"})
-				return err
-			},
-		},
-		{
-			name: "cancel surface operation", action: ManagementActionCancelSurfaceOperation,
-			target: AuthorizationTarget{Kind: ResourceOperation, ID: "operation_1"}, related: []AuthorizationTarget{{Kind: ResourceSurface, ID: "surface_1"}, {Kind: ResourceBridgeChannel, ID: "channel_1"}}, call: func() error {
-				_, err := h.CancelSurfaceOperation(ctx, CancelSurfaceOperationRequest{OperationID: "operation_1", SurfaceInstanceID: "surface_1", BridgeChannelID: "channel_1"})
+			name: "list execution events", action: ManagementActionListExecutionEvents,
+			target: AuthorizationTarget{Kind: ResourceExecution, ID: "execution_1"}, call: func() error {
+				_, err := h.EventsAfter(ctx, "execution_1", 0, 10)
 				return err
 			},
 		},
@@ -419,22 +376,15 @@ func TestDirectHostAPIsProjectClosedAuthorizationResources(t *testing.T) {
 func TestOpenRejectsTypedNilAuthorizationAdapter(t *testing.T) {
 	config := func() Config {
 		h, _, _ := newTestHost(t, true, true)
-		return Config{Core: CoreAdapters{
+		return Config{StateRoot: filepath.Join(t.TempDir(), "typed-nil-control-state"), Core: CoreAdapters{
 			Policy:               h.adapters.Policy,
 			Authorization:        h.adapters.Authorization,
 			PackageTrustVerifier: h.adapters.PackageTrustVerifier,
-			Registry:             h.adapters.Registry,
 			Audit:                h.adapters.Audit,
 			SecurityAudit:        h.adapters.SecurityAudit,
 			Diagnostics:          h.adapters.Diagnostics,
 			SurfaceCatalog:       h.adapters.SurfaceCatalog,
-			SurfaceTokens:        h.adapters.SurfaceTokens,
-			PluginData:           h.adapters.PluginData,
 			Assets:               h.adapters.Assets,
-			InstallStages:        h.adapters.InstallStages,
-			Operations:           h.adapters.Operations,
-			ConfirmationIntents:  h.adapters.ConfirmationIntents,
-			Streams:              h.adapters.Streams,
 		}}
 	}()
 	var typedNil *recordingAuthorizationAdapter
@@ -521,17 +471,14 @@ func TestReleaseUpdateAndIntentAuthorizationPrecedeDiscovery(t *testing.T) {
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
 			authorization: authorization,
 		})
-		registryProbe := &authorizationProbeRegistry{Store: h.adapters.Registry}
-		h.adapters.Registry = registryProbe
-
 		_, err := h.UpdateReleaseRef(hostTestContext(), UpdateReleaseRefRequest{
 			PluginInstanceID: "  plugini_update_auth  ",
 		})
 		if !errors.Is(err, ErrActionDenied) {
 			t.Fatalf("UpdateReleaseRef() error = %v, want ErrActionDenied", err)
 		}
-		if registryProbe.getCalls != 0 || registryProbe.listCalls != 0 || artifactResolver.calls != 0 {
-			t.Fatalf("authorization denial reached discovery: registry get=%d list=%d artifact=%d", registryProbe.getCalls, registryProbe.listCalls, artifactResolver.calls)
+		if artifactResolver.calls != 0 {
+			t.Fatalf("authorization denial reached artifact discovery: calls=%d", artifactResolver.calls)
 		}
 		wantScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
 		if len(authorization.requests) != 1 || !authorizationTargetsEqual(authorization.requests[0].Target, AuthorizationTarget{Kind: ResourcePlugin, ID: "plugini_update_auth", Scope: &wantScope}) {
@@ -542,18 +489,12 @@ func TestReleaseUpdateAndIntentAuthorizationPrecedeDiscovery(t *testing.T) {
 	t.Run("intent invoke", func(t *testing.T) {
 		authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
-		registryProbe := &authorizationProbeRegistry{Store: h.adapters.Registry}
-		h.adapters.Registry = registryProbe
-
 		_, err := h.InvokeIntent(hostTestContext(), InvokeIntentRequest{
 			PluginInstanceID: "  plugini_intent_auth  ",
 			IntentID:         "  example.open  ",
 		})
 		if !errors.Is(err, ErrActionDenied) {
 			t.Fatalf("InvokeIntent() error = %v, want ErrActionDenied", err)
-		}
-		if registryProbe.getCalls != 0 || registryProbe.listCalls != 0 {
-			t.Fatalf("authorization denial reached registry: get=%d list=%d", registryProbe.getCalls, registryProbe.listCalls)
 		}
 		wantScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
 		if len(authorization.requests) != 1 || !authorizationTargetsEqual(authorization.requests[0].Target, AuthorizationTarget{Kind: ResourceIntent, ID: "example.open", Scope: &wantScope}) {

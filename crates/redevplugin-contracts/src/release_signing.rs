@@ -10,25 +10,12 @@ use std::fmt;
 pub const ROOT_DELEGATION_SCHEMA_VERSION: &str = "redevplugin.release_root_delegation.v1";
 pub const PACKAGE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.package_signature.v1";
 pub const RELEASE_METADATA_SCHEMA_VERSION: &str = "redevplugin.release_metadata.v8";
-pub const SOURCE_POLICY_SCHEMA_VERSION: &str = "redevplugin.release_source_policy.v2";
+pub const SOURCE_POLICY_SCHEMA_VERSION: &str = "redevplugin.release_source_policy.v3";
 pub const SOURCE_POLICY_POINTER_SCHEMA_VERSION: &str =
     "redevplugin.release_source_policy_pointer.v1";
 pub const REVOCATION_SCHEMA_VERSION: &str = "redevplugin.release_revocation.v2";
 pub const REVOCATION_POINTER_SCHEMA_VERSION: &str = "redevplugin.release_revocation_pointer.v1";
-pub const SIGNING_LEDGER_EVIDENCE_SCHEMA_VERSION: &str =
-    "redevplugin.release_signing_ledger_evidence.v1";
-pub const SIGNING_SUBJECT_SCHEMA_VERSION: &str = "redevplugin.release_signing_subject.v1";
-pub const SIGNATURE_ENVELOPE_SCHEMA_VERSION: &str = "redevplugin.release_signature_envelope.v1";
-pub const SIGNING_LEDGER_SCHEMA_VERSION: &str = "redevplugin.release_signing_ledger.v1";
-pub const SIGNING_LEDGER_ENTRY_SCHEMA_VERSION: &str = "redevplugin.release_signing_ledger_entry.v1";
-pub const SIGNING_LEDGER_LOG_LEAF_SCHEMA_VERSION: &str =
-    "redevplugin.release_signing_ledger_log_leaf.v1";
-pub const SIGNING_LEDGER_RECEIPT_SCHEMA_VERSION: &str =
-    "redevplugin.release_signing_ledger_receipt.v1";
 pub const SIGNATURE_ALGORITHM_ED25519: &str = "ed25519";
-pub const GENESIS_PREVIOUS_EPOCH: &str = "0";
-pub const GENESIS_PREVIOUS_DOCUMENT_SHA256: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
 
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const SIGNING_PREFIX: &[u8] = b"REDEVPLUGIN-SIGNING-V1\0";
@@ -64,8 +51,6 @@ pub enum DelegatedKeyUsage {
     Package,
     #[serde(rename = "release_metadata")]
     ReleaseMetadata,
-    #[serde(rename = "host_capability_contract")]
-    HostCapabilityContract,
     #[serde(rename = "source_policy_document")]
     SourcePolicy,
     #[serde(rename = "source_policy_pointer")]
@@ -74,10 +59,6 @@ pub enum DelegatedKeyUsage {
     Revocation,
     #[serde(rename = "revocation_pointer")]
     RevocationPointer,
-    #[serde(rename = "signing_ledger")]
-    SigningLedger,
-    #[serde(rename = "trusted_time")]
-    TrustedTime,
 }
 
 impl DelegatedKeyUsage {
@@ -85,13 +66,10 @@ impl DelegatedKeyUsage {
         match self {
             Self::Package => 0,
             Self::ReleaseMetadata => 1,
-            Self::HostCapabilityContract => 2,
-            Self::Revocation => 3,
-            Self::RevocationPointer => 4,
-            Self::SourcePolicy => 5,
-            Self::SourcePolicyPointer => 6,
-            Self::SigningLedger => 7,
-            Self::TrustedTime => 8,
+            Self::Revocation => 2,
+            Self::RevocationPointer => 3,
+            Self::SourcePolicy => 4,
+            Self::SourcePolicyPointer => 5,
         }
     }
 }
@@ -112,8 +90,6 @@ pub struct RootDelegatedKey {
 pub struct RootDelegationInput {
     pub source_id: String,
     pub root_epoch: String,
-    pub previous_root_epoch: String,
-    pub previous_delegation_sha256: String,
     pub generated_at: String,
     pub expires_at: String,
     pub delegated_keys: Vec<RootDelegatedKey>,
@@ -126,8 +102,6 @@ pub struct RootDelegationV1 {
     pub schema_version: String,
     pub source_id: String,
     pub root_epoch: String,
-    pub previous_root_epoch: String,
-    pub previous_delegation_sha256: String,
     pub generated_at: String,
     pub expires_at: String,
     pub delegated_keys: Vec<RootDelegatedKey>,
@@ -226,21 +200,7 @@ pub struct HostCapabilityContractRef {
     pub publisher_id: String,
     pub contract_id: String,
     pub contract_version: String,
-    pub artifact_ref: String,
     pub artifact_sha256: String,
-    pub manifest_ref: String,
-    pub manifest_sha256: String,
-    pub signature_ref: String,
-    pub signature_sha256: String,
-    pub signature_key_id: String,
-    pub signature_policy_epoch: String,
-    pub signature_revocation_epoch: String,
-    pub compatibility_ref: String,
-    pub compatibility_sha256: String,
-    pub generated_client_ref: String,
-    pub generated_client_sha256: String,
-    pub notices_ref: String,
-    pub notices_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -299,7 +259,6 @@ pub struct ReleaseMetadataV8 {
 pub struct SourcePolicyLimits {
     pub document_max_lifetime_seconds: u32,
     pub future_skew_seconds: u32,
-    pub activation_lease_max_seconds: u32,
     pub refresh_interval_max_seconds: u32,
     pub failure_teardown_deadline_seconds: u32,
 }
@@ -307,9 +266,8 @@ pub struct SourcePolicyLimits {
 impl Default for SourcePolicyLimits {
     fn default() -> Self {
         Self {
-            document_max_lifetime_seconds: 86_400,
+            document_max_lifetime_seconds: 7_776_000,
             future_skew_seconds: 300,
-            activation_lease_max_seconds: 300,
             refresh_interval_max_seconds: 60,
             failure_teardown_deadline_seconds: 30,
         }
@@ -321,17 +279,9 @@ impl Default for SourcePolicyLimits {
 pub struct SourcePolicyActiveKeys {
     pub package: Vec<String>,
     pub release_metadata: Vec<String>,
-    pub host_capability_contract: Vec<String>,
     pub source_policy_pointer: Vec<String>,
     pub revocation_document: Vec<String>,
     pub revocation_pointer: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourcePolicyCapabilityPublisherScope {
-    pub key_id: String,
-    pub allowed_publishers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -339,15 +289,12 @@ pub struct SourcePolicyInput {
     pub source_id: String,
     pub channel: String,
     pub epoch: String,
-    pub previous_epoch: String,
-    pub previous_document_sha256: String,
     pub root_epoch: String,
     pub source_type: String,
     pub source_class: String,
     pub allowed_publishers: Vec<String>,
     pub allowed_artifact_hosts: Vec<String>,
     pub active_keys: SourcePolicyActiveKeys,
-    pub capability_publisher_scopes: Vec<SourcePolicyCapabilityPublisherScope>,
     pub require_signature: bool,
     pub install_policy: String,
     pub unsigned_policy: String,
@@ -366,15 +313,12 @@ pub struct SourcePolicyV2 {
     pub source_id: String,
     pub channel: String,
     pub epoch: String,
-    pub previous_epoch: String,
-    pub previous_document_sha256: String,
     pub root_epoch: String,
     pub source_type: String,
     pub source_class: String,
     pub allowed_publishers: Vec<String>,
     pub allowed_artifact_hosts: Vec<String>,
     pub active_keys: SourcePolicyActiveKeys,
-    pub capability_publisher_scopes: Vec<SourcePolicyCapabilityPublisherScope>,
     pub require_signature: bool,
     pub install_policy: String,
     pub unsigned_policy: String,
@@ -392,8 +336,6 @@ pub struct ReleasePointerInput {
     pub source_id: String,
     pub channel: String,
     pub epoch: String,
-    pub previous_epoch: String,
-    pub previous_document_sha256: String,
     pub r#ref: String,
     pub document_sha256: String,
     pub generated_at: String,
@@ -408,8 +350,6 @@ pub struct SourcePolicyPointerV1 {
     pub source_id: String,
     pub channel: String,
     pub epoch: String,
-    pub previous_epoch: String,
-    pub previous_document_sha256: String,
     #[serde(rename = "ref")]
     pub r#ref: String,
     pub document_sha256: String,
@@ -434,8 +374,6 @@ pub struct RevocationInput {
     pub source_id: String,
     pub channel: String,
     pub epoch: String,
-    pub previous_epoch: String,
-    pub previous_document_sha256: String,
     pub root_epoch: String,
     pub generated_at: String,
     pub expires_at: String,
@@ -451,8 +389,6 @@ pub struct RevocationV2 {
     pub source_id: String,
     pub channel: String,
     pub epoch: String,
-    pub previous_epoch: String,
-    pub previous_document_sha256: String,
     pub root_epoch: String,
     pub generated_at: String,
     pub expires_at: String,
@@ -469,8 +405,6 @@ pub struct RevocationPointerV1 {
     pub source_id: String,
     pub channel: String,
     pub epoch: String,
-    pub previous_epoch: String,
-    pub previous_document_sha256: String,
     #[serde(rename = "ref")]
     pub r#ref: String,
     pub document_sha256: String,
@@ -478,203 +412,6 @@ pub struct RevocationPointerV1 {
     pub expires_at: String,
     pub key_id: String,
     pub signature: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningLedgerEvidenceV1 {
-    pub schema_version: String,
-    pub source_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    pub subject_identity_sha256: String,
-    pub signing_preimage_sha256: String,
-    pub signature_envelope_sha256: String,
-    pub receipt_ref: String,
-    pub receipt_sha256: String,
-    pub checkpoint_ref: String,
-    pub checkpoint_sha256: String,
-    pub inclusion_proof_ref: String,
-    pub inclusion_proof_sha256: String,
-    pub latest_proof_ref: String,
-    pub latest_proof_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consistency_proof_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consistency_proof_sha256: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SigningSubjectUsage {
-    RootDelegation,
-    Package,
-    ReleaseMetadata,
-    SourcePolicyDocument,
-    SourcePolicyPointer,
-    RevocationDocument,
-    RevocationPointer,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningSubjectV1 {
-    pub schema_version: String,
-    pub usage: SigningSubjectUsage,
-    pub source_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_epoch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publisher_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plugin_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_or_metadata_identity_sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub epoch: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SignatureEnvelopeV1 {
-    pub schema_version: String,
-    pub subject_identity_sha256: String,
-    pub signing_preimage_sha256: String,
-    pub algorithm: String,
-    pub key_id: String,
-    pub signature: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SigningLedgerEntryState {
-    Reserved,
-    Finalized,
-    TerminalFailed,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SigningLedgerFailureCode {
-    SignerRejected,
-    SubjectConflict,
-    LedgerRejected,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningLedgerEntryV1 {
-    pub schema_version: String,
-    pub state: SigningLedgerEntryState,
-    pub subject: SigningSubjectV1,
-    pub subject_identity_sha256: String,
-    pub signing_preimage_sha256: String,
-    pub algorithm: String,
-    pub key_id: String,
-    pub revision: u64,
-    pub reserved_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature_envelope: Option<SignatureEnvelopeV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature_envelope_sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finalized_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_code: Option<SigningLedgerFailureCode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failed_at: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningLedgerLogLeafV1 {
-    pub schema_version: String,
-    pub source_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    pub subject_identity_sha256: String,
-    pub signing_preimage_sha256: String,
-    pub signature_envelope_sha256: String,
-    pub sequence: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningLedgerCheckpointV1 {
-    pub schema_version: String,
-    pub kind: String,
-    pub log_id: String,
-    pub tree_size: u64,
-    pub log_root_hash: String,
-    pub latest_map_root_hash: String,
-    pub checkpoint_time: String,
-    pub key_id: String,
-    pub signature: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningLedgerReceiptV1 {
-    pub schema_version: String,
-    pub log_id: String,
-    pub source_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    pub subject_identity_sha256: String,
-    pub signing_preimage_sha256: String,
-    pub signature_envelope_sha256: String,
-    pub sequence: u64,
-    pub leaf_index: u64,
-    pub tree_size: u64,
-    pub log_root_hash: String,
-    pub latest_map_root_hash: String,
-    pub checkpoint_sha256: String,
-    pub checkpoint_time: String,
-    pub key_id: String,
-    pub signature: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningLedgerInclusionProofV1 {
-    pub schema_version: String,
-    pub kind: String,
-    pub log_id: String,
-    pub leaf_index: u64,
-    pub tree_size: u64,
-    pub nodes: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningLedgerLatestProofV1 {
-    pub schema_version: String,
-    pub kind: String,
-    pub log_id: String,
-    pub subject_identity_sha256: String,
-    pub present: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sequence: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signing_preimage_sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature_envelope_sha256: Option<String>,
-    pub siblings: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningLedgerConsistencyProofV1 {
-    pub schema_version: String,
-    pub kind: String,
-    pub log_id: String,
-    pub old_tree_size: u64,
-    pub new_tree_size: u64,
-    pub nodes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -747,8 +484,6 @@ pub fn verify_root_delegation(
     let input = RootDelegationInput {
         source_id: document.source_id.clone(),
         root_epoch: document.root_epoch.clone(),
-        previous_root_epoch: document.previous_root_epoch.clone(),
-        previous_delegation_sha256: document.previous_delegation_sha256.clone(),
         generated_at: document.generated_at.clone(),
         expires_at: document.expires_at.clone(),
         delegated_keys: document.delegated_keys.clone(),
@@ -928,8 +663,6 @@ pub fn build_source_policy_pointer(
         source_id: input.source_id.clone(),
         channel: input.channel.clone(),
         epoch: input.epoch.clone(),
-        previous_epoch: input.previous_epoch.clone(),
-        previous_document_sha256: input.previous_document_sha256.clone(),
         r#ref: input.r#ref.clone(),
         document_sha256: input.document_sha256.clone(),
         generated_at: input.generated_at.clone(),
@@ -949,8 +682,6 @@ pub fn source_policy_pointer_signing_preimage(
         source_id: input.source_id.clone(),
         channel: input.channel.clone(),
         epoch: input.epoch.clone(),
-        previous_epoch: input.previous_epoch.clone(),
-        previous_document_sha256: input.previous_document_sha256.clone(),
         r#ref: input.r#ref.clone(),
         document_sha256: input.document_sha256.clone(),
         generated_at: input.generated_at.clone(),
@@ -1030,8 +761,6 @@ pub fn build_revocation_pointer(
         source_id: input.source_id.clone(),
         channel: input.channel.clone(),
         epoch: input.epoch.clone(),
-        previous_epoch: input.previous_epoch.clone(),
-        previous_document_sha256: input.previous_document_sha256.clone(),
         r#ref: input.r#ref.clone(),
         document_sha256: input.document_sha256.clone(),
         generated_at: input.generated_at.clone(),
@@ -1051,8 +780,6 @@ pub fn revocation_pointer_signing_preimage(
         source_id: input.source_id.clone(),
         channel: input.channel.clone(),
         epoch: input.epoch.clone(),
-        previous_epoch: input.previous_epoch.clone(),
-        previous_document_sha256: input.previous_document_sha256.clone(),
         r#ref: input.r#ref.clone(),
         document_sha256: input.document_sha256.clone(),
         generated_at: input.generated_at.clone(),
@@ -1120,93 +847,11 @@ pub fn decode_revocation_pointer(raw: &[u8]) -> Result<RevocationPointerV1, Rele
     decode_canonical_document(raw, |value| validate_revocation_pointer(value, true))
 }
 
-pub fn decode_signing_ledger_evidence(
-    raw: &[u8],
-) -> Result<SigningLedgerEvidenceV1, ReleaseContractError> {
-    if raw.len() > 64 * 1024 {
-        return Err(ReleaseContractError::InvalidDocument);
-    }
-    decode_canonical_document(raw, validate_signing_ledger_evidence)
-}
-
-pub fn canonical_signing_subject(
-    value: &SigningSubjectV1,
-) -> Result<Vec<u8>, ReleaseContractError> {
-    validate_signing_subject(value)?;
-    canonical_json(value)
-}
-
-pub fn decode_signing_subject(raw: &[u8]) -> Result<SigningSubjectV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signing_subject)
-}
-
-pub fn canonical_signature_envelope(
-    value: &SignatureEnvelopeV1,
-) -> Result<Vec<u8>, ReleaseContractError> {
-    validate_signature_envelope(value)?;
-    canonical_json(value)
-}
-
-pub fn decode_signature_envelope(raw: &[u8]) -> Result<SignatureEnvelopeV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signature_envelope)
-}
-
-pub fn canonical_signing_ledger_entry(
-    value: &SigningLedgerEntryV1,
-) -> Result<Vec<u8>, ReleaseContractError> {
-    validate_signing_ledger_entry(value)?;
-    canonical_json(value)
-}
-
-pub fn decode_signing_ledger_entry(
-    raw: &[u8],
-) -> Result<SigningLedgerEntryV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signing_ledger_entry)
-}
-
-pub fn decode_signing_ledger_log_leaf(
-    raw: &[u8],
-) -> Result<SigningLedgerLogLeafV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signing_ledger_log_leaf)
-}
-
-pub fn decode_signing_ledger_checkpoint(
-    raw: &[u8],
-) -> Result<SigningLedgerCheckpointV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signing_ledger_checkpoint)
-}
-
-pub fn decode_signing_ledger_receipt(
-    raw: &[u8],
-) -> Result<SigningLedgerReceiptV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signing_ledger_receipt)
-}
-
-pub fn decode_signing_ledger_inclusion_proof(
-    raw: &[u8],
-) -> Result<SigningLedgerInclusionProofV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signing_ledger_inclusion_proof)
-}
-
-pub fn decode_signing_ledger_latest_proof(
-    raw: &[u8],
-) -> Result<SigningLedgerLatestProofV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signing_ledger_latest_proof)
-}
-
-pub fn decode_signing_ledger_consistency_proof(
-    raw: &[u8],
-) -> Result<SigningLedgerConsistencyProofV1, ReleaseContractError> {
-    decode_canonical_document(raw, validate_signing_ledger_consistency_proof)
-}
-
 fn root_delegation_from_input(input: &RootDelegationInput, signature: String) -> RootDelegationV1 {
     RootDelegationV1 {
         schema_version: ROOT_DELEGATION_SCHEMA_VERSION.to_owned(),
         source_id: input.source_id.clone(),
         root_epoch: input.root_epoch.clone(),
-        previous_root_epoch: input.previous_root_epoch.clone(),
-        previous_delegation_sha256: input.previous_delegation_sha256.clone(),
         generated_at: input.generated_at.clone(),
         expires_at: input.expires_at.clone(),
         delegated_keys: input.delegated_keys.clone(),
@@ -1221,15 +866,12 @@ fn source_policy_from_input(input: &SourcePolicyInput, signature: String) -> Sou
         source_id: input.source_id.clone(),
         channel: input.channel.clone(),
         epoch: input.epoch.clone(),
-        previous_epoch: input.previous_epoch.clone(),
-        previous_document_sha256: input.previous_document_sha256.clone(),
         root_epoch: input.root_epoch.clone(),
         source_type: input.source_type.clone(),
         source_class: input.source_class.clone(),
         allowed_publishers: input.allowed_publishers.clone(),
         allowed_artifact_hosts: input.allowed_artifact_hosts.clone(),
         active_keys: input.active_keys.clone(),
-        capability_publisher_scopes: input.capability_publisher_scopes.clone(),
         require_signature: input.require_signature,
         install_policy: input.install_policy.clone(),
         unsigned_policy: input.unsigned_policy.clone(),
@@ -1249,8 +891,6 @@ fn revocation_from_input(input: &RevocationInput, signature: String) -> Revocati
         source_id: input.source_id.clone(),
         channel: input.channel.clone(),
         epoch: input.epoch.clone(),
-        previous_epoch: input.previous_epoch.clone(),
-        previous_document_sha256: input.previous_document_sha256.clone(),
         root_epoch: input.root_epoch.clone(),
         generated_at: input.generated_at.clone(),
         expires_at: input.expires_at.clone(),
@@ -1294,15 +934,12 @@ fn source_policy_input_from_document(document: &SourcePolicyV2) -> SourcePolicyI
         source_id: document.source_id.clone(),
         channel: document.channel.clone(),
         epoch: document.epoch.clone(),
-        previous_epoch: document.previous_epoch.clone(),
-        previous_document_sha256: document.previous_document_sha256.clone(),
         root_epoch: document.root_epoch.clone(),
         source_type: document.source_type.clone(),
         source_class: document.source_class.clone(),
         allowed_publishers: document.allowed_publishers.clone(),
         allowed_artifact_hosts: document.allowed_artifact_hosts.clone(),
         active_keys: document.active_keys.clone(),
-        capability_publisher_scopes: document.capability_publisher_scopes.clone(),
         require_signature: document.require_signature,
         install_policy: document.install_policy.clone(),
         unsigned_policy: document.unsigned_policy.clone(),
@@ -1320,8 +957,6 @@ fn revocation_input_from_document(document: &RevocationV2) -> RevocationInput {
         source_id: document.source_id.clone(),
         channel: document.channel.clone(),
         epoch: document.epoch.clone(),
-        previous_epoch: document.previous_epoch.clone(),
-        previous_document_sha256: document.previous_document_sha256.clone(),
         root_epoch: document.root_epoch.clone(),
         generated_at: document.generated_at.clone(),
         expires_at: document.expires_at.clone(),
@@ -1336,8 +971,6 @@ fn pointer_input_from_source_policy(document: &SourcePolicyPointerV1) -> Release
         source_id: document.source_id.clone(),
         channel: document.channel.clone(),
         epoch: document.epoch.clone(),
-        previous_epoch: document.previous_epoch.clone(),
-        previous_document_sha256: document.previous_document_sha256.clone(),
         r#ref: document.r#ref.clone(),
         document_sha256: document.document_sha256.clone(),
         generated_at: document.generated_at.clone(),
@@ -1351,8 +984,6 @@ fn pointer_input_from_revocation(document: &RevocationPointerV1) -> ReleasePoint
         source_id: document.source_id.clone(),
         channel: document.channel.clone(),
         epoch: document.epoch.clone(),
-        previous_epoch: document.previous_epoch.clone(),
-        previous_document_sha256: document.previous_document_sha256.clone(),
         r#ref: document.r#ref.clone(),
         document_sha256: document.document_sha256.clone(),
         generated_at: document.generated_at.clone(),
@@ -1487,14 +1118,10 @@ fn validate_root_delegation(
     if value.schema_version != ROOT_DELEGATION_SCHEMA_VERSION
         || !valid_new_id(&value.source_id)
         || !valid_new_id(&value.key_id)
+        || !valid_positive_epoch(&value.root_epoch)
     {
         return invalid_document();
     }
-    validate_epoch_chain(
-        &value.root_epoch,
-        &value.previous_root_epoch,
-        &value.previous_delegation_sha256,
-    )?;
     let (_, expires_at) = validate_time_range(&value.generated_at, &value.expires_at, None)?;
     if value.delegated_keys.is_empty() || value.delegated_keys.len() > 32 {
         return invalid_document();
@@ -1513,7 +1140,7 @@ fn validate_root_delegation(
         if public_key.len() != 32 || BASE64_STANDARD.encode(&public_key) != key.public_key {
             return invalid_document();
         }
-        if key.usages.is_empty() || key.usages.len() > 9 {
+        if key.usages.is_empty() || key.usages.len() > 7 {
             return invalid_document();
         }
         let mut previous_usage = None;
@@ -1524,27 +1151,7 @@ fn validate_root_delegation(
             }
             previous_usage = Some(rank);
         }
-        let source_wide = key.usages.iter().all(|usage| {
-            matches!(
-                usage,
-                DelegatedKeyUsage::SigningLedger | DelegatedKeyUsage::TrustedTime
-            )
-        });
-        let has_source_wide = key.usages.iter().any(|usage| {
-            matches!(
-                usage,
-                DelegatedKeyUsage::SigningLedger | DelegatedKeyUsage::TrustedTime
-            )
-        });
-        if has_source_wide != source_wide {
-            return invalid_document();
-        }
-        validate_sorted_ids(
-            &key.channels,
-            if source_wide { 0 } else { 1 },
-            if source_wide { 0 } else { 16 },
-            true,
-        )?;
+        validate_sorted_ids(&key.channels, 1, 16, true)?;
         let (_, valid_until) = validate_time_range(&key.valid_from, &key.valid_until, None)?;
         if valid_until > expires_at {
             return invalid_document();
@@ -1727,36 +1334,10 @@ fn validate_capability_contract_ref(
 ) -> Result<(), ReleaseContractError> {
     if !valid_legacy_id(&value.publisher_id)
         || !valid_legacy_id(&value.contract_id)
-        || !valid_legacy_id(&value.signature_key_id)
         || !valid_semver(&value.contract_version)
-        || !valid_epoch(&value.signature_policy_epoch)
-        || !valid_epoch(&value.signature_revocation_epoch)
+        || !valid_sha256(&value.artifact_sha256)
     {
         return invalid_document();
-    }
-    for reference in [
-        &value.artifact_ref,
-        &value.manifest_ref,
-        &value.signature_ref,
-        &value.compatibility_ref,
-        &value.generated_client_ref,
-        &value.notices_ref,
-    ] {
-        if !valid_artifact_ref(reference) {
-            return invalid_document();
-        }
-    }
-    for digest in [
-        &value.artifact_sha256,
-        &value.manifest_sha256,
-        &value.signature_sha256,
-        &value.compatibility_sha256,
-        &value.generated_client_sha256,
-        &value.notices_sha256,
-    ] {
-        if !valid_sha256(digest) {
-            return invalid_document();
-        }
     }
     Ok(())
 }
@@ -1769,14 +1350,10 @@ fn validate_source_policy(
         || !valid_new_id(&value.source_id)
         || !valid_new_id(&value.channel)
         || !valid_new_id(&value.key_id)
+        || !valid_positive_epoch(&value.epoch)
     {
         return invalid_document();
     }
-    validate_epoch_chain(
-        &value.epoch,
-        &value.previous_epoch,
-        &value.previous_document_sha256,
-    )?;
     if !valid_positive_epoch(&value.root_epoch)
         || !valid_epoch(&value.minimum_revocation_epoch)
         || !matches!(value.source_type.as_str(), "registry" | "host_artifact")
@@ -1811,16 +1388,6 @@ fn validate_source_policy(
     ] {
         validate_sorted_ids(keys, 1, 16, true)?;
     }
-    validate_sorted_ids(&value.active_keys.host_capability_contract, 0, 16, true)?;
-    if value.capability_publisher_scopes.len() != value.active_keys.host_capability_contract.len() {
-        return invalid_document();
-    }
-    for (index, scope) in value.capability_publisher_scopes.iter().enumerate() {
-        if scope.key_id != value.active_keys.host_capability_contract[index] {
-            return invalid_document();
-        }
-        validate_sorted_ids(&scope.allowed_publishers, 1, 1024, false)?;
-    }
     if !matches!(
         value.install_policy.as_str(),
         "allow" | "review_required" | "block"
@@ -1832,7 +1399,11 @@ fn validate_source_policy(
     {
         return invalid_document();
     }
-    validate_time_range(&value.generated_at, &value.expires_at, Some(24 * 60 * 60))?;
+    validate_time_range(
+        &value.generated_at,
+        &value.expires_at,
+        Some(90 * 24 * 60 * 60),
+    )?;
     validate_signature_field(&value.signature, require_signature)
 }
 
@@ -1846,8 +1417,6 @@ fn validate_source_policy_pointer(
         &value.source_id,
         &value.channel,
         &value.epoch,
-        &value.previous_epoch,
-        &value.previous_document_sha256,
         &value.r#ref,
         &value.document_sha256,
         &value.generated_at,
@@ -1868,8 +1437,6 @@ fn validate_revocation_pointer(
         &value.source_id,
         &value.channel,
         &value.epoch,
-        &value.previous_epoch,
-        &value.previous_document_sha256,
         &value.r#ref,
         &value.document_sha256,
         &value.generated_at,
@@ -1887,8 +1454,6 @@ fn validate_pointer(
     source_id: &str,
     channel: &str,
     epoch: &str,
-    previous_epoch: &str,
-    previous_digest: &str,
     reference: &str,
     document_digest: &str,
     generated_at: &str,
@@ -1901,14 +1466,11 @@ fn validate_pointer(
         || !valid_new_id(source_id)
         || !valid_new_id(channel)
         || !valid_new_id(key_id)
+        || !valid_positive_epoch(epoch)
     {
         return invalid_document();
     }
-    validate_epoch_chain(epoch, previous_epoch, previous_digest)?;
-    if !valid_artifact_ref(reference)
-        || !valid_sha256(document_digest)
-        || document_digest == GENESIS_PREVIOUS_DOCUMENT_SHA256
-    {
+    if !valid_artifact_ref(reference) || !valid_sha256(document_digest) {
         return invalid_document();
     }
     validate_time_range(generated_at, expires_at, Some(24 * 60 * 60))?;
@@ -1923,14 +1485,10 @@ fn validate_revocation(
         || !valid_new_id(&value.source_id)
         || !valid_new_id(&value.channel)
         || !valid_new_id(&value.key_id)
+        || !valid_positive_epoch(&value.epoch)
     {
         return invalid_document();
     }
-    validate_epoch_chain(
-        &value.epoch,
-        &value.previous_epoch,
-        &value.previous_document_sha256,
-    )?;
     if !valid_positive_epoch(&value.root_epoch) {
         return invalid_document();
     }
@@ -1965,335 +1523,6 @@ fn validate_revocation(
     validate_signature_field(&value.signature, require_signature)
 }
 
-fn validate_signing_ledger_evidence(
-    value: &SigningLedgerEvidenceV1,
-) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_LEDGER_EVIDENCE_SCHEMA_VERSION
-        || !valid_new_id(&value.source_id)
-        || value
-            .channel
-            .as_deref()
-            .is_some_and(|item| !valid_new_id(item))
-    {
-        return Err(ReleaseContractError::InvalidDocument);
-    }
-    for digest in [
-        &value.subject_identity_sha256,
-        &value.signing_preimage_sha256,
-        &value.signature_envelope_sha256,
-        &value.receipt_sha256,
-        &value.checkpoint_sha256,
-        &value.inclusion_proof_sha256,
-        &value.latest_proof_sha256,
-    ] {
-        if !valid_sha256(digest) {
-            return Err(ReleaseContractError::InvalidDocument);
-        }
-    }
-    for reference in [
-        &value.receipt_ref,
-        &value.checkpoint_ref,
-        &value.inclusion_proof_ref,
-        &value.latest_proof_ref,
-    ] {
-        if !valid_artifact_ref(reference) {
-            return Err(ReleaseContractError::InvalidDocument);
-        }
-    }
-    if value.consistency_proof_ref.is_some() != value.consistency_proof_sha256.is_some() {
-        return Err(ReleaseContractError::InvalidDocument);
-    }
-    if let (Some(reference), Some(digest)) = (
-        value.consistency_proof_ref.as_deref(),
-        value.consistency_proof_sha256.as_deref(),
-    ) && (!valid_artifact_ref(reference) || !valid_sha256(digest))
-    {
-        return Err(ReleaseContractError::InvalidDocument);
-    }
-    Ok(())
-}
-
-fn validate_signing_subject(value: &SigningSubjectV1) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_SUBJECT_SCHEMA_VERSION || !valid_new_id(&value.source_id) {
-        return invalid_document();
-    }
-    let valid = match value.usage {
-        SigningSubjectUsage::RootDelegation => {
-            value
-                .root_epoch
-                .as_deref()
-                .is_some_and(valid_positive_epoch)
-                && value.channel.is_none()
-                && value.publisher_id.is_none()
-                && value.plugin_id.is_none()
-                && value.version.is_none()
-                && value.artifact_or_metadata_identity_sha256.is_none()
-                && value.epoch.is_none()
-        }
-        SigningSubjectUsage::Package | SigningSubjectUsage::ReleaseMetadata => {
-            value.channel.as_deref().is_some_and(valid_new_id)
-                && value.publisher_id.as_deref().is_some_and(valid_legacy_id)
-                && value.plugin_id.as_deref().is_some_and(valid_legacy_id)
-                && value.version.as_deref().is_some_and(valid_semver)
-                && value
-                    .artifact_or_metadata_identity_sha256
-                    .as_deref()
-                    .is_some_and(valid_sha256)
-                && value.root_epoch.is_none()
-                && value.epoch.is_none()
-        }
-        SigningSubjectUsage::SourcePolicyDocument
-        | SigningSubjectUsage::SourcePolicyPointer
-        | SigningSubjectUsage::RevocationDocument
-        | SigningSubjectUsage::RevocationPointer => {
-            value.channel.as_deref().is_some_and(valid_new_id)
-                && value.epoch.as_deref().is_some_and(valid_positive_epoch)
-                && value.root_epoch.is_none()
-                && value.publisher_id.is_none()
-                && value.plugin_id.is_none()
-                && value.version.is_none()
-                && value.artifact_or_metadata_identity_sha256.is_none()
-        }
-    };
-    if !valid {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn validate_signature_envelope(value: &SignatureEnvelopeV1) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNATURE_ENVELOPE_SCHEMA_VERSION
-        || !valid_sha256(&value.subject_identity_sha256)
-        || !valid_sha256(&value.signing_preimage_sha256)
-        || value.algorithm != SIGNATURE_ALGORITHM_ED25519
-        || !valid_new_id(&value.key_id)
-        || decode_signature(&value.signature).is_err()
-    {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn validate_signing_ledger_entry(value: &SigningLedgerEntryV1) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_LEDGER_ENTRY_SCHEMA_VERSION
-        || !valid_sha256(&value.subject_identity_sha256)
-        || !valid_sha256(&value.signing_preimage_sha256)
-        || value.algorithm != SIGNATURE_ALGORITHM_ED25519
-        || !valid_new_id(&value.key_id)
-        || !valid_json_safe_positive(value.revision)
-    {
-        return invalid_document();
-    }
-    validate_signing_subject(&value.subject)?;
-    if sha256_hex(&canonical_json(&value.subject)?) != value.subject_identity_sha256 {
-        return invalid_document();
-    }
-    let reserved_at = canonical_timestamp_seconds(&value.reserved_at)
-        .ok_or(ReleaseContractError::InvalidDocument)?;
-    match value.state {
-        SigningLedgerEntryState::Reserved => {
-            if value.signature_envelope.is_some()
-                || value.signature_envelope_sha256.is_some()
-                || value.finalized_at.is_some()
-                || value.failure_code.is_some()
-                || value.failed_at.is_some()
-            {
-                return invalid_document();
-            }
-        }
-        SigningLedgerEntryState::Finalized => {
-            let envelope = value
-                .signature_envelope
-                .as_ref()
-                .ok_or(ReleaseContractError::InvalidDocument)?;
-            validate_signature_envelope(envelope)?;
-            let envelope_digest = value
-                .signature_envelope_sha256
-                .as_deref()
-                .ok_or(ReleaseContractError::InvalidDocument)?;
-            let finalized_at = value
-                .finalized_at
-                .as_deref()
-                .and_then(canonical_timestamp_seconds)
-                .ok_or(ReleaseContractError::InvalidDocument)?;
-            if value.failure_code.is_some()
-                || value.failed_at.is_some()
-                || finalized_at < reserved_at
-                || envelope.subject_identity_sha256 != value.subject_identity_sha256
-                || envelope.signing_preimage_sha256 != value.signing_preimage_sha256
-                || envelope.algorithm != value.algorithm
-                || envelope.key_id != value.key_id
-                || !valid_sha256(envelope_digest)
-                || sha256_hex(&canonical_json(envelope)?) != envelope_digest
-            {
-                return invalid_document();
-            }
-        }
-        SigningLedgerEntryState::TerminalFailed => {
-            let failed_at = value
-                .failed_at
-                .as_deref()
-                .and_then(canonical_timestamp_seconds)
-                .ok_or(ReleaseContractError::InvalidDocument)?;
-            if value.signature_envelope.is_some()
-                || value.signature_envelope_sha256.is_some()
-                || value.finalized_at.is_some()
-                || value.failure_code.is_none()
-                || failed_at < reserved_at
-            {
-                return invalid_document();
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_signing_ledger_log_leaf(
-    value: &SigningLedgerLogLeafV1,
-) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_LEDGER_LOG_LEAF_SCHEMA_VERSION
-        || !valid_new_id(&value.source_id)
-        || value
-            .channel
-            .as_deref()
-            .is_some_and(|channel| !valid_new_id(channel))
-        || !valid_sha256(&value.subject_identity_sha256)
-        || !valid_sha256(&value.signing_preimage_sha256)
-        || !valid_sha256(&value.signature_envelope_sha256)
-        || !valid_json_safe_positive(value.sequence)
-    {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn validate_signing_ledger_checkpoint(
-    value: &SigningLedgerCheckpointV1,
-) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_LEDGER_SCHEMA_VERSION
-        || value.kind != "checkpoint"
-        || !valid_new_id(&value.log_id)
-        || !valid_json_safe_positive(value.tree_size)
-        || !valid_sha256(&value.log_root_hash)
-        || !valid_sha256(&value.latest_map_root_hash)
-        || canonical_timestamp_seconds(&value.checkpoint_time).is_none()
-        || !valid_new_id(&value.key_id)
-        || decode_signature(&value.signature).is_err()
-    {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn validate_signing_ledger_receipt(
-    value: &SigningLedgerReceiptV1,
-) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_LEDGER_RECEIPT_SCHEMA_VERSION
-        || !valid_new_id(&value.log_id)
-        || !valid_new_id(&value.source_id)
-        || value
-            .channel
-            .as_deref()
-            .is_some_and(|channel| !valid_new_id(channel))
-        || !valid_sha256(&value.subject_identity_sha256)
-        || !valid_sha256(&value.signing_preimage_sha256)
-        || !valid_sha256(&value.signature_envelope_sha256)
-        || !valid_json_safe_positive(value.sequence)
-        || value.leaf_index != value.sequence - 1
-        || !valid_json_safe_positive(value.tree_size)
-        || value.tree_size < value.sequence
-        || !valid_sha256(&value.log_root_hash)
-        || !valid_sha256(&value.latest_map_root_hash)
-        || !valid_sha256(&value.checkpoint_sha256)
-        || canonical_timestamp_seconds(&value.checkpoint_time).is_none()
-        || !valid_new_id(&value.key_id)
-        || decode_signature(&value.signature).is_err()
-    {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn valid_ledger_nodes(values: &[String], expected: Option<usize>) -> bool {
-    expected.map_or(values.len() <= 64, |count| values.len() == count)
-        && values.iter().all(|node| valid_sha256(node))
-}
-
-fn validate_signing_ledger_inclusion_proof(
-    value: &SigningLedgerInclusionProofV1,
-) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_LEDGER_SCHEMA_VERSION
-        || value.kind != "inclusion_proof"
-        || !valid_new_id(&value.log_id)
-        || !valid_json_safe_positive(value.tree_size)
-        || value.leaf_index >= value.tree_size
-        || !valid_ledger_nodes(&value.nodes, None)
-    {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn validate_signing_ledger_latest_proof(
-    value: &SigningLedgerLatestProofV1,
-) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_LEDGER_SCHEMA_VERSION
-        || value.kind != "latest_proof"
-        || !valid_new_id(&value.log_id)
-        || !valid_sha256(&value.subject_identity_sha256)
-        || !valid_ledger_nodes(&value.siblings, Some(256))
-    {
-        return invalid_document();
-    }
-    if value.present {
-        if !value.sequence.is_some_and(valid_json_safe_positive)
-            || !value
-                .signing_preimage_sha256
-                .as_deref()
-                .is_some_and(valid_sha256)
-            || !value
-                .signature_envelope_sha256
-                .as_deref()
-                .is_some_and(valid_sha256)
-        {
-            return invalid_document();
-        }
-    } else if value.sequence.is_some()
-        || value.signing_preimage_sha256.is_some()
-        || value.signature_envelope_sha256.is_some()
-    {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn validate_signing_ledger_consistency_proof(
-    value: &SigningLedgerConsistencyProofV1,
-) -> Result<(), ReleaseContractError> {
-    if value.schema_version != SIGNING_LEDGER_SCHEMA_VERSION
-        || value.kind != "consistency_proof"
-        || !valid_new_id(&value.log_id)
-        || !valid_json_safe_positive(value.old_tree_size)
-        || value.new_tree_size < value.old_tree_size
-        || value.new_tree_size > 9_007_199_254_740_991
-        || !valid_ledger_nodes(&value.nodes, None)
-    {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn valid_json_safe_positive(value: u64) -> bool {
-    value > 0 && value <= 9_007_199_254_740_991
-}
-
-fn sha256_hex(value: &[u8]) -> String {
-    Sha256::digest(value)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 fn invalid_document<T>() -> Result<T, ReleaseContractError> {
     Err(ReleaseContractError::InvalidDocument)
 }
@@ -2303,46 +1532,6 @@ fn validate_signature_field(value: &str, required: bool) -> Result<(), ReleaseCo
         return Ok(());
     }
     decode_signature(value).map(|_| ())
-}
-
-fn validate_epoch_chain(
-    epoch: &str,
-    previous_epoch: &str,
-    previous_digest: &str,
-) -> Result<(), ReleaseContractError> {
-    if !valid_positive_epoch(epoch)
-        || !valid_epoch(previous_epoch)
-        || !valid_sha256(previous_digest)
-        || increment_decimal(previous_epoch).as_deref() != Some(epoch)
-    {
-        return invalid_document();
-    }
-    if previous_epoch == GENESIS_PREVIOUS_EPOCH {
-        if previous_digest != GENESIS_PREVIOUS_DOCUMENT_SHA256 {
-            return invalid_document();
-        }
-    } else if previous_digest == GENESIS_PREVIOUS_DOCUMENT_SHA256 {
-        return invalid_document();
-    }
-    Ok(())
-}
-
-fn increment_decimal(value: &str) -> Option<String> {
-    if !valid_epoch(value) {
-        return None;
-    }
-    let mut bytes = value.as_bytes().to_vec();
-    let mut index = bytes.len();
-    while index > 0 {
-        index -= 1;
-        if bytes[index] < b'9' {
-            bytes[index] += 1;
-            return String::from_utf8(bytes).ok();
-        }
-        bytes[index] = b'0';
-    }
-    bytes.insert(0, b'1');
-    String::from_utf8(bytes).ok()
 }
 
 fn validate_time_range(

@@ -49,10 +49,9 @@
     "PLUGIN_LEASE_REPLAYED",
     "PLUGIN_GRANT_INVALID",
     "PLUGIN_STORAGE_QUOTA_EXCEEDED",
-    "PLUGIN_OPERATION_BLOCKED",
-    "PLUGIN_OPERATION_NOT_FOUND",
-    "PLUGIN_OPERATION_NOT_CANCELABLE",
-    "PLUGIN_OPERATION_RATE_LIMITED",
+    "PLUGIN_EXECUTION_BLOCKED",
+    "PLUGIN_EXECUTION_NOT_FOUND",
+    "PLUGIN_EXECUTION_NOT_CANCELABLE",
     "PLUGIN_NETWORK_TARGET_DENIED",
     "PLUGIN_NETWORK_RATE_LIMITED",
     "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -755,8 +754,6 @@
     #pendingRender;
     #renderLoop;
     #controlEditRevisions = /* @__PURE__ */ new Map();
-    #pendingStreamDeliveries = /* @__PURE__ */ new Map();
-    #streamReadTails = /* @__PURE__ */ new Map();
     #onMessage = (event) => {
       void this.#handleMessage(event);
     };
@@ -799,78 +796,45 @@
         request
       }, { mutation, signal: options.signal });
     }
-    readStream(streamHandle, options = {}) {
+    executionEvents(executionID, afterCursor, options = {}) {
       this.#assertActive();
-      if (!validOpaqueHandle(streamHandle, "stream")) {
-        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin stream handle is invalid");
+      if (!validOpaqueHandle(executionID, "execution") || !Number.isSafeInteger(afterCursor) || afterCursor < 0) {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin execution event cursor is invalid");
       }
-      const previous = this.#streamReadTails.get(streamHandle);
-      const read = (previous ? previous.catch(() => void 0) : Promise.resolve()).then(() => {
-        this.#assertActive();
-        if (options.signal?.aborted) throw streamReadAbortedError();
-        return this.#readStream(streamHandle, options.signal);
-      });
-      this.#streamReadTails.set(streamHandle, read);
-      void read.finally(() => {
-        if (this.#streamReadTails.get(streamHandle) === read) this.#streamReadTails.delete(streamHandle);
-      }).catch(() => void 0);
-      return abortableStreamRead(read, options.signal);
-    }
-    async #readStream(streamHandle, signal) {
-      const pending = this.#pendingStreamDeliveries.get(streamHandle);
-      if (pending) {
-        await this.#acknowledgeStream(streamHandle, pending.deliveryID, signal);
-        this.#pendingStreamDeliveries.delete(streamHandle);
-        return pending.result;
-      }
-      const id = this.#requestID("stream");
-      const privateResult = await this.#request(id, {
-        type: "redevplugin.bridge.stream.read",
+      const id = this.#requestID("execution");
+      return this.#request(id, {
+        type: "redevplugin.bridge.execution.events",
         id,
-        stream_handle: streamHandle
-      }, { cancellationKind: "stream", signal });
-      const { delivery_id: deliveryID, ...result } = privateResult;
-      if (!deliveryID) return result;
-      this.#pendingStreamDeliveries.set(streamHandle, { deliveryID, result });
-      await this.#acknowledgeStream(streamHandle, deliveryID, signal);
-      this.#pendingStreamDeliveries.delete(streamHandle);
-      return result;
+        execution_id: executionID,
+        after_cursor: afterCursor
+      }, { signal: options.signal });
     }
-    async #acknowledgeStream(streamHandle, deliveryID, signal) {
-      const id = this.#requestID("stream_ack");
-      await this.#request(id, {
-        type: "redevplugin.bridge.stream.ack",
-        id,
-        stream_handle: streamHandle,
-        delivery_id: deliveryID
-      }, { cancellationKind: "stream", signal });
-    }
-    cancelOperation(operationID, reason, options = {}) {
+    cancelExecution(executionID, reason, options = {}) {
       this.#assertActive();
-      if (!validOpaqueHandle(operationID, "operation") || reason !== void 0 && (typeof reason !== "string" || reason.length > 256)) {
-        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation cancellation is invalid");
+      if (!validOpaqueHandle(executionID, "execution") || reason !== void 0 && (typeof reason !== "string" || reason.length > 256)) {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin execution cancellation is invalid");
       }
-      const id = this.#requestID("operation");
+      const id = this.#requestID("execution");
       return this.#request(id, removeUndefined({
-        type: "redevplugin.bridge.operation.cancel",
+        type: "redevplugin.bridge.execution.cancel",
         id,
-        operation_id: operationID,
+        execution_id: executionID,
         reason
       }), { mutation: true, signal: options.signal });
     }
-    operationSnapshot(operationID, options = {}) {
+    executionSnapshot(executionID, options = {}) {
       this.#assertActive();
-      if (!validOpaqueHandle(operationID, "operation")) {
-        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation handle is invalid");
+      if (!validOpaqueHandle(executionID, "execution")) {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin execution handle is invalid");
       }
-      const id = this.#requestID("operation");
+      const id = this.#requestID("execution");
       return this.#request(id, {
-        type: "redevplugin.bridge.operation.snapshot",
+        type: "redevplugin.bridge.execution.query",
         id,
-        operation_id: operationID
+        execution_id: executionID
       }, { signal: options.signal }).then((snapshot) => {
-        if (!isPluginOperationSnapshot(snapshot) || snapshot.operation_id !== operationID) {
-          throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin operation snapshot is invalid");
+        if (!isPluginExecutionSnapshot(snapshot) || snapshot.execution_id !== executionID) {
+          throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin execution snapshot is invalid");
         }
         return snapshot;
       });
@@ -994,7 +958,6 @@
         pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} was disposed`));
       }
       this.#pending.clear();
-      this.#pendingStreamDeliveries.clear();
       this.#actionHandlers.clear();
       this.#canvasInputHandlers.clear();
       this.#lifecycleHandlers.clear();
@@ -1318,12 +1281,12 @@
       locale: Object.freeze({ language_tag: languageTag, direction: value.locale.direction })
     });
   }
-  function isPluginOperationSnapshot(value) {
-    if (!isRecord(value) || !validOpaqueHandle(value.operation_id, "operation") || typeof value.cancelable !== "boolean" || !Number.isInteger(value.retry_after_ms) || Number(value.retry_after_ms) < 500 || Number(value.retry_after_ms) > 1e4 || !validDateTime(value.created_at) || !validDateTime(value.updated_at)) return false;
-    const common = ["operation_id", "status", "cancelable", "created_at", "updated_at", "retry_after_ms"];
+  function isPluginExecutionSnapshot(value) {
+    if (!isRecord(value) || !validOpaqueHandle(value.execution_id, "execution") || typeof value.plugin_instance_id !== "string" || value.kind !== "operation" && value.kind !== "subscription" || typeof value.cancelable !== "boolean" || !Number.isSafeInteger(value.cursor) || Number(value.cursor) < 0 || !validDateTime(value.created_at) || !validDateTime(value.updated_at)) return false;
+    const common = ["execution_id", "plugin_instance_id", "kind", "status", "cursor", "cancelable", "created_at", "updated_at"];
     const withProgress = (keys) => hasAllowedKeys(value, [...keys, "progress"]) && (value.progress === void 0 || validOperationProgress(value.progress));
     if (value.status === "running" || value.status === "cancel_requested") return withProgress(common);
-    if (["completed", "canceled", "orphaned_after_disable", "orphaned_after_uninstall"].includes(String(value.status))) {
+    if (["completed", "canceled", "orphaned"].includes(String(value.status))) {
       return withProgress([...common, "terminal_at"]) && validDateTime(value.terminal_at);
     }
     return value.status === "failed" && withProgress([...common, "terminal_at", "failure_code"]) && validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
@@ -1513,7 +1476,7 @@
   var pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
   var pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
   var opaqueHandlePattern2 = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-  var bridgeRequestIDPattern = /^(rpc|stream|stream_ack|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/;
+  var bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset)_([1-9][0-9]{0,15})$/;
   function validBridgeRequestID(value, expectedKind) {
     if (typeof value !== "string") return false;
     const match = bridgeRequestIDPattern.exec(value);
@@ -1548,25 +1511,6 @@
       void 0,
       mutationOutcome(options, posted)
     );
-  }
-  function abortableStreamRead(read, signal) {
-    if (!signal) return read;
-    if (signal.aborted) return Promise.reject(streamReadAbortedError());
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (callback, value) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        callback(value);
-      };
-      const onAbort = () => finish(reject, streamReadAbortedError());
-      signal.addEventListener("abort", onAbort, { once: true });
-      read.then(
-        (value) => finish(resolve, value),
-        (error) => finish(reject, error)
-      );
-    });
   }
   function messageWithinLimit(value) {
     try {
@@ -1743,9 +1687,9 @@
   }
 
   // testdata/browser-harness/opaque-surface/plugin-worker.ts
-  function decodePluginStreamText2(event) {
-    if (!event.data) return "";
-    const binary = atob(event.data);
+  function decodeExecutionText(event) {
+    if (!event.payload?.data_base64) return "";
+    const binary = atob(event.payload.data_base64);
     return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
   }
   var bridge = new PluginBridgeClient({ timeoutMs: 8e3 });
@@ -1756,9 +1700,9 @@
     security: {}
   };
   bridge.onAction("call-host", () => void callHost());
-  bridge.onAction("read-stream", () => void readStream());
+  bridge.onAction("read-execution-events", () => void readExecutionEvents());
   bridge.onAction("dangerous-action", () => void runDangerousAction());
-  bridge.onAction("observe-operation", () => void observeOperation());
+  bridge.onAction("observe-execution", () => void observeExecution());
   bridge.onLifecycle((event) => {
     if (event.type === "visible" || event.type === "hidden") {
       state.status = `Lifecycle: ${event.type}`;
@@ -1778,28 +1722,35 @@
       return { method: "harness.echo", response };
     });
   }
-  async function readStream() {
-    await runAction("Opening parent-owned stream...", "Stream received", async () => {
+  async function readExecutionEvents() {
+    await runAction("Opening Host-owned execution...", "Execution events received", async () => {
       const response = await bridge.call("harness.logs", { lines: 2 });
-      if (!response.stream_handle) throw new Error("host response omitted stream_handle");
-      const events = await readStreamToEnd(response.stream_handle);
+      if (!response.execution_id) throw new Error("host response omitted execution_id");
+      const events = await readExecutionEventsToTerminal(response.execution_id);
       return {
         method: "harness.logs",
         events,
-        text: events.map((event) => decodePluginStreamText2(event)).join(""),
-        parent_stream_credential_visible: JSON.stringify(response).includes(["stream", "ticket"].join("_"))
+        text: events.map((event) => decodeExecutionText(event)).join(""),
+        parent_execution_credential_visible: JSON.stringify(response).includes("ticket")
       };
     });
   }
-  async function readStreamToEnd(streamHandle) {
+  async function readExecutionEventsToTerminal(executionID) {
     const events = [];
+    let cursor = 0;
+    let recoveredResponseLoss = false;
     while (true) {
-      const batch = await bridge.readStream(streamHandle);
-      events.push(...batch.events);
-      if (batch.done) return events;
-      if (batch.events.length === 0 && batch.retry_after_ms > 0) {
-        await new Promise((resolve) => setTimeout(resolve, batch.retry_after_ms));
+      let batch;
+      try {
+        batch = await bridge.executionEvents(executionID, cursor);
+      } catch (error) {
+        if (recoveredResponseLoss) throw error;
+        recoveredResponseLoss = true;
+        continue;
       }
+      events.push(...batch.events);
+      cursor = batch.cursor;
+      if (batch.events.some((event) => event.kind === "terminal")) return events;
     }
   }
   async function runDangerousAction() {
@@ -1808,22 +1759,22 @@
       response: await bridge.call("danger.run", { target: "harness-resource" })
     }));
   }
-  async function observeOperation() {
-    await runAction("Testing operation observation cancellation...", "Operation observation recovered", async () => {
+  async function observeExecution() {
+    await runAction("Testing execution observation cancellation...", "Execution observation recovered", async () => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 50);
       let firstErrorCode = "";
       try {
-        await bridge.operationSnapshot("operation_harness_1", { signal: controller.signal });
+        await bridge.executionSnapshot("execution_harness_1", { signal: controller.signal });
       } catch (error) {
         firstErrorCode = error.errorCode ?? "";
       } finally {
         clearTimeout(timer);
       }
       if (firstErrorCode !== "PLUGIN_BRIDGE_CANCELLED") {
-        throw new Error(`first operation observation was not cancelled: ${firstErrorCode}`);
+        throw new Error(`first execution observation was not cancelled: ${firstErrorCode}`);
       }
-      const snapshot = await bridge.operationSnapshot("operation_harness_1");
+      const snapshot = await bridge.executionSnapshot("execution_harness_1");
       return { first_cancelled: true, retry_status: snapshot.status };
     });
   }
@@ -1877,9 +1828,9 @@
           attributes: { class: "button-row" },
           children: [
             button("Call host", "call-host"),
-            button("Read stream", "read-stream"),
+            button("Read execution events", "read-execution-events"),
             button("Dangerous action", "dangerous-action"),
-            button("Observe operation", "observe-operation")
+            button("Observe execution", "observe-execution")
           ]
         },
         { type: "element", key: "security-title", tag: "h2", children: [text("security-title-text", "Worker security probe")] },

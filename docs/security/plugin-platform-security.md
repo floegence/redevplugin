@@ -46,14 +46,14 @@ ReDevPlugin rejects:
   configuration, and Cargo dependency sections;
 - package sizes and paths that exceed configured limits.
 
-Every manifest v5 method must provide request and response JSON Schemas whose
+Every manifest v8 method must provide request and response JSON Schemas whose
 root is a closed object. Every nested schema that declares `type: object` must
 also set `additionalProperties: false`. ReDevPlugin rejects remote `$ref`
 resources, schema documents over 256 KiB, excessive schema depth/node counts,
 and schemas that do not compile as draft 2020-12. The Host validates requests
 before any capability, core-action, or WASM invocation. It canonicalizes and
 redacts adapter/runtime data, then validates that plugin-visible response before
-registering operation or stream handles.
+registering an execution or publishing its events.
 
 Validation errors expose stable platform error codes and structured
 `error_details` such as reason, package path, and manifest JSON pointer. Product
@@ -338,7 +338,7 @@ itself. Unattested, typed-nil, malformed, or oversized errors fail closed as a
 contract mismatch without exposing adapter-controlled details.
 
 Other adapter failures are reduced to an immutable Host-owned RPC failure before
-operation cleanup or rejection reporting. The reduction preserves only stable
+execution cleanup or rejection reporting. The reduction preserves only stable
 allowlisted platform classifications, worker fields attested only at the
 `RuntimeManager.InvokeWorker` boundary, capability business details attested only
 after published-contract validation, and `not_committed` or `unknown` mutation
@@ -357,8 +357,8 @@ TCP execution is byte-stream transport only: host-neutral tests use a small mock
 database request/response protocol to prove bounded round trips, but database
 semantics stay inside the plugin protocol client rather than the broker.
 
-Long-lived subscriptions belong to the stream envelope contract, not to
-unbounded one-shot network execution.
+Long-lived subscriptions emit bounded Events under their Execution identity;
+they do not widen one-shot network execution into an unbounded transport.
 
 ## Runtime Revocation
 

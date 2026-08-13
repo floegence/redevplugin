@@ -3,60 +3,47 @@
 package version
 
 const (
-	PluginUIProtocolVersion                   = "plugin-ui-v7"
-	PluginHostProtocolVersion                 = "plugin-host-v11"
-	RustIPCVersion                            = "rust-ipc-v6"
-	WASMABIVersion                            = "redevplugin-wasm-worker-v2"
-	ManifestSchemaVersion                     = "manifest-v8"
-	PackageSignatureSchemaVersion             = "package-signature-v1"
-	ReleaseMetadataSchemaVersion              = "release-metadata-v8"
-	ReleaseRootDelegationSchemaVersion        = "release-root-delegation-v1"
-	ReleaseSourcePolicySchemaVersion          = "release-source-policy-v3"
-	ReleaseSourcePolicyPointerSchemaVersion   = "release-source-policy-pointer-v2"
-	ReleaseRevocationSchemaVersion            = "release-revocation-v3"
-	ReleaseRevocationPointerSchemaVersion     = "release-revocation-pointer-v2"
-	ReleaseTrustStateSchemaVersion            = "release-trust-state-v1"
-	TrustedTimeEvidenceSchemaVersion          = "trusted-time-evidence-v1"
-	TrustedTimeLeafSchemaVersion              = "trusted-time-leaf-v1"
-	ReleaseSigningLedgerSchemaVersion         = "release-signing-ledger-v1"
-	ReleaseSigningSubjectSchemaVersion        = "release-signing-subject-v1"
-	ReleaseSignatureEnvelopeSchemaVersion     = "release-signature-envelope-v1"
-	ReleaseSigningLedgerReceiptSchemaVersion  = "release-signing-ledger-receipt-v1"
-	ReleaseSigningLedgerEvidenceSchemaVersion = "release-signing-ledger-evidence-v1"
-	TokenTicketSchemaVersion                  = "token-ticket-v4"
-	BridgeSchemaVersion                       = "bridge-v7"
-	OpaqueSurfaceDocumentSchemaVersion        = "opaque-surface-document-v3"
-	OpaqueSurfaceTransportSchemaVersion       = "opaque-surface-transport-v6"
-	TargetClassifierVersion                   = "target-classifier-v2"
-	NetworkGrantSchemaVersion                 = "network-grant-v2"
-	ResourceScopeSchemaVersion                = "resource-scope-v1"
-	SessionScopeSchemaVersion                 = "session-scope-v1"
-	SessionScopeMaintenanceSchemaVersion      = "session-scope-maintenance-v1"
-	PluginPlatformOpenAPIVersion              = "plugin-platform-v15"
-	CompatibilityManifestVersion              = "redevplugin.compatibility.v17"
-	CompatibilitySchemaVersion                = "compatibility-manifest-v17"
-	WorkerInvocationSchemaVersion             = "worker-invocation-v3"
-	HostCapabilityContractSchemaVersion       = "host-capability-contract-v1"
-	HostCapabilityPinSchemaVersion            = "host-capability-pin-v1"
-	HostCapabilityManifestSchemaVersion       = "host-capability-manifest-v1"
-	HostCapabilityCompatibilitySchemaVersion  = "host-capability-compatibility-v1"
-	HostCapabilitySignatureSchemaVersion      = "host-capability-signature-v1"
-	HostCapabilityNoticesSchemaVersion        = "host-capability-notices-v1"
-	ErrorCodesSchemaVersion                   = "error-codes-v8"
-	PerformanceContractVersion                = "performance-contract-v4"
-	PerformanceEvidenceSchemaVersion          = "performance-evidence-v4"
-	ContractRegistryVersion                   = "contract-registry-v2"
-	PlatformPackageSetSchemaVersion           = "platform-package-set-v1"
-	PlatformPackagePublicationSchemaVersion   = "platform-package-publication-v1"
-	RuntimeAdmissionSchemaVersion             = "runtime-admission-v1"
-	RuntimeDescriptorSchemaVersion            = "runtime-descriptor-v2"
-	OwnerScopeInventoryRegistryVersion        = "owner-scope-inventory-registry-v1"
-	OwnerScopeInventorySchemaVersion          = "owner-scope-inventory-v1"
-	OwnerScopeMigrationSchemaVersion          = "owner-scope-migration-v1"
-	OwnerScopeRootRecoverySchemaVersion       = "owner-scope-root-recovery-v1"
-	ProcessContainmentSchemaVersion           = "process-containment-v1"
-	RuntimeExecJournalSchemaVersion           = "runtime-exec-journal-v1"
-	QuarantineCleanupSchemaVersion            = "quarantine-cleanup-v1"
+	PluginUIProtocolVersion                 = "plugin-ui-v7"
+	PluginHostProtocolVersion               = "plugin-host-v11"
+	RustIPCVersion                          = "rust-ipc-v6"
+	WASMABIVersion                          = "redevplugin-wasm-worker-v2"
+	ManifestSchemaVersion                   = "manifest-v8"
+	PackageSignatureSchemaVersion           = "package-signature-v1"
+	ReleaseMetadataSchemaVersion            = "release-metadata-v8"
+	ReleaseRootDelegationSchemaVersion      = "release-root-delegation-v1"
+	ReleaseSourcePolicySchemaVersion        = "release-source-policy-v3"
+	ReleaseSourcePolicyPointerSchemaVersion = "release-source-policy-pointer-v2"
+	ReleaseRevocationSchemaVersion          = "release-revocation-v3"
+	ReleaseRevocationPointerSchemaVersion   = "release-revocation-pointer-v2"
+	TokenTicketSchemaVersion                = "token-ticket-v4"
+	BridgeSchemaVersion                     = "bridge-v7"
+	OpaqueSurfaceDocumentSchemaVersion      = "opaque-surface-document-v3"
+	OpaqueSurfaceTransportSchemaVersion     = "opaque-surface-transport-v6"
+	TargetClassifierVersion                 = "target-classifier-v2"
+	NetworkGrantSchemaVersion               = "network-grant-v2"
+	ResourceScopeSchemaVersion              = "resource-scope-v1"
+	SessionScopeSchemaVersion               = "session-scope-v1"
+	PluginPlatformOpenAPIVersion            = "plugin-platform-v15"
+	CompatibilityManifestVersion            = "redevplugin.compatibility.v17"
+	CompatibilitySchemaVersion              = "compatibility-manifest-v17"
+	WorkerInvocationSchemaVersion           = "worker-invocation-v3"
+	HostCapabilityContractSchemaVersion     = "host-capability-contract-v1"
+	HostCapabilityPinSchemaVersion          = "host-capability-pin-v1"
+	ErrorCodesSchemaVersion                 = "error-codes-v8"
+	PerformanceContractVersion              = "performance-contract-v4"
+	PerformanceEvidenceSchemaVersion        = "performance-evidence-v4"
+	ContractRegistryVersion                 = "contract-registry-v2"
+	PlatformPackageSetSchemaVersion         = "platform-package-set-v2"
+	PlatformPackagePublicationSchemaVersion = "platform-package-publication-v1"
+	RuntimeAdmissionSchemaVersion           = "runtime-admission-v1"
+	RuntimeDescriptorSchemaVersion          = "runtime-descriptor-v2"
+	OwnerScopeInventoryRegistryVersion      = "owner-scope-inventory-registry-v1"
+	OwnerScopeInventorySchemaVersion        = "owner-scope-inventory-v1"
+	OwnerScopeMigrationSchemaVersion        = "owner-scope-migration-v1"
+	OwnerScopeRootRecoverySchemaVersion     = "owner-scope-root-recovery-v1"
+	ProcessContainmentSchemaVersion         = "process-containment-v1"
+	RuntimeExecJournalSchemaVersion         = "runtime-exec-journal-v1"
+	QuarantineCleanupSchemaVersion          = "quarantine-cleanup-v1"
 )
 
 var generatedContractArtifacts = []ContractArtifact{
@@ -64,37 +51,31 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "compatibility-manifest-schema",
 		Path:    "spec/plugin/compatibility-manifest-v17.schema.json",
 		Version: "compatibility-manifest-v17",
-		SHA256:  "f3d726ab1aa4de61acba453ed2511511c51749f67e614f422dcf525fb687ad6e",
+		SHA256:  "bc426e034b86ef81f947cae6c2fee838d22913c0066f727acb509fa9cbc22ebd",
 	},
 	{
 		ID:      "contract-registry-schema",
 		Path:    "spec/plugin/contract-registry-v2.schema.json",
 		Version: "contract-registry-v2",
-		SHA256:  "d516b3565158ac1b0d5e9f86b91b13ac19321ab3ff54468be41951b68d7085ac",
+		SHA256:  "664a80c4cb8e6fc30a46be56d66b40eed8f0a894e7ceb469757bdffe93b4ee97",
 	},
 	{
 		ID:      "error-codes-schema",
 		Path:    "spec/plugin/error-codes-v8.schema.json",
 		Version: "error-codes-v8",
-		SHA256:  "454e3c8b46e20bc524080ca1aa91dcf2ecdfe0a90cc33b5b328e87356d07e7e3",
+		SHA256:  "5ec127f0fdd6e749d8ee342e53796acd04d1c220fb03cca462bd5222c57b5944",
 	},
 	{
 		ID:      "external-signer-request-schema",
 		Path:    "spec/plugin/external-signer-request-v1.schema.json",
 		Version: "external-signer-request-v1",
-		SHA256:  "abc18af2e29dea6f0b49a28b75b046ef02f200597978c8238cc587fb7e670760",
+		SHA256:  "56884e9bb0b00d07fe7e8c52acfc33a4a7bab54f8a02d504f35b00bab42a03fb",
 	},
 	{
 		ID:      "external-signer-response-schema",
 		Path:    "spec/plugin/external-signer-response-v1.schema.json",
 		Version: "external-signer-response-v1",
-		SHA256:  "bbe657df5afdf459a4c5f83282ddc3ec6c80c1ebd25bb954eac92101f35afc6c",
-	},
-	{
-		ID:      "host-capability-compatibility-schema",
-		Path:    "spec/plugin/host-capability-compatibility-v1.schema.json",
-		Version: "host-capability-compatibility-v1",
-		SHA256:  "361ebbf7009aeb66c763ecde46427b17b6cf7d2307c01886c5987a1f4f1762de",
+		SHA256:  "b3b6d2b3dfe4f9bb680387e4c3a8010faef91d2d12fe28e76e51d5d84703a047",
 	},
 	{
 		ID:      "host-capability-contract-schema",
@@ -103,52 +84,16 @@ var generatedContractArtifacts = []ContractArtifact{
 		SHA256:  "0a653e36d44104f1d16b06ee424648086c146f23c907b176bdf470ae73025485",
 	},
 	{
-		ID:      "host-capability-manifest-schema",
-		Path:    "spec/plugin/host-capability-manifest-v1.schema.json",
-		Version: "host-capability-manifest-v1",
-		SHA256:  "5f13a8e5f918378b9cba9fdc133a9a75ba3a8311c30cb6a02ca0aba09035110e",
-	},
-	{
-		ID:      "host-capability-notices-schema",
-		Path:    "spec/plugin/host-capability-notices-v1.schema.json",
-		Version: "host-capability-notices-v1",
-		SHA256:  "6affd5d0ae90239f6fd08cbeddae4eef393efa2838c9e4935874ba3dc0e05948",
-	},
-	{
 		ID:      "host-capability-pin-schema",
 		Path:    "spec/plugin/host-capability-pin-v1.schema.json",
 		Version: "host-capability-pin-v1",
-		SHA256:  "20526a5934f0d85a3db7882492487266f09de5bcd176e2c7936f05d0b7fe0338",
-	},
-	{
-		ID:      "host-capability-publisher-config-schema",
-		Path:    "spec/plugin/host-capability-publisher-config-v1.schema.json",
-		Version: "host-capability-publisher-config-v1",
-		SHA256:  "f06ab3d70f3f9dd2114fe9d489841f1d6b5f169ee17b8c92aa1bfaf9bbf865c4",
-	},
-	{
-		ID:      "host-capability-signature-schema",
-		Path:    "spec/plugin/host-capability-signature-v1.schema.json",
-		Version: "host-capability-signature-v1",
-		SHA256:  "88cbc1d63afb7e289ca4f8b7c76f702b8d20156f7722c1b71f3ab9138a240a5e",
-	},
-	{
-		ID:      "host-capability-signer-request-schema",
-		Path:    "spec/plugin/host-capability-signer-request-v1.schema.json",
-		Version: "host-capability-signer-request-v1",
-		SHA256:  "7f22e9e0f813b91106693edfbb91309489dde1640152c29d878961fdef6b89d8",
-	},
-	{
-		ID:      "host-capability-signer-response-schema",
-		Path:    "spec/plugin/host-capability-signer-response-v1.schema.json",
-		Version: "host-capability-signer-response-v1",
-		SHA256:  "02a50b1fc0d1b8ae0611eab95b5560122c6425709ecc8de5e00bf0dd68085f44",
+		SHA256:  "23591639475c485134c842cae5e53a679dde1b30374a6430ce6e4827be4d18ed",
 	},
 	{
 		ID:      "iframe-bridge-schema",
 		Path:    "spec/plugin/bridge-v7.schema.json",
 		Version: "bridge-v7",
-		SHA256:  "fe8da4e5b14ac6d7c7bb3101e041246e92573c58e1c9537e8cda2c26bf175ef5",
+		SHA256:  "5a6e7307f1649eb70d13e83e5d16177458957bffb3262b9299b4cf6d443e284a",
 	},
 	{
 		ID:      "manifest-schema",
@@ -220,19 +165,19 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "platform-package-publication-schema",
 		Path:    "spec/plugin/platform-package-publication-v1.schema.json",
 		Version: "platform-package-publication-v1",
-		SHA256:  "20450b516c34d5a122020f4064ddfa03ffcb97ffea661e0868cd09760b3f08b0",
+		SHA256:  "0f4b6788858c3165b6acc94aeab4f771825317f8b05d82d3d202c5848c3f8fdd",
 	},
 	{
 		ID:      "platform-package-set-schema",
-		Path:    "spec/plugin/platform-package-set-v1.schema.json",
-		Version: "platform-package-set-v1",
-		SHA256:  "4d9979f5205ec047895b64c995312c588d998bb1c1448f6c9c559f1b7ab0d796",
+		Path:    "spec/plugin/platform-package-set-v2.schema.json",
+		Version: "platform-package-set-v2",
+		SHA256:  "ce46ba85443349481d7cf4b73fc70be716035c369e833aaaf2650710536f3ea8",
 	},
 	{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v15.yaml",
 		Version: "plugin-platform-v15",
-		SHA256:  "c91f95dddd8486529b8e8ce8da6656fa9561bfeabaeb88125b43974134a943ff",
+		SHA256:  "0c95cbb1352040a90acfd63109fb0e41ac452e36ab03a1c6645097d408344d48",
 	},
 	{
 		ID:      "presentation-icon-evidence-schema",
@@ -256,7 +201,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "publisher-release-ref-schema",
 		Path:    "spec/plugin/publisher-release-ref-v1.schema.json",
 		Version: "publisher-release-ref-v1",
-		SHA256:  "f9fd40c87197064ffa3e21a361780a4d057b51df2e886988aac64279785acdc0",
+		SHA256:  "f68241937dc291b1f660c2c184bd60a7058a4471d2966bd7954ba574c84fe726",
 	},
 	{
 		ID:      "quarantine-cleanup-schema",
@@ -268,79 +213,43 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "release-metadata-schema",
 		Path:    "spec/plugin/release-metadata-v8.schema.json",
 		Version: "release-metadata-v8",
-		SHA256:  "f454fc1923be10fd5a4b46df4a6e376f7e9fe1d462f3da57977b92ad7c7496b0",
+		SHA256:  "ad8888e6b5673786ea0fc82475be92835c3b177b685cca5bb3efd936d461b215",
 	},
 	{
 		ID:      "release-publisher-config-schema",
 		Path:    "spec/plugin/release-publisher-config-v1.schema.json",
 		Version: "release-publisher-config-v1",
-		SHA256:  "c18b11489f81ac657c8324ed344b88b61b259981383ee7b4f9f0b65603a171f8",
+		SHA256:  "47d782062652b85a77dc67a98c8859f2f1dc598d4496df13ca70c4ceb02df227",
 	},
 	{
 		ID:      "release-revocation-pointer-schema",
 		Path:    "spec/plugin/release-revocation-pointer-v2.schema.json",
 		Version: "release-revocation-pointer-v2",
-		SHA256:  "dd39ba618ab02698f135875305d4aa6eb562af7d15520c4ad312cd82e9a7032b",
+		SHA256:  "51ced7ca790d7d3d3dcb2e65faf3a3a74713ccefe7b2a5b97355a0b3226bdf34",
 	},
 	{
 		ID:      "release-revocation-schema",
 		Path:    "spec/plugin/release-revocation-v3.schema.json",
 		Version: "release-revocation-v3",
-		SHA256:  "bd2ca3ab93f047897d3b377adc7fa8b073fc946539a0c5495def1e64915a782b",
+		SHA256:  "930d2729719f5f44de108df23e9efbbae17f7a3072963c1c5471197b189aa8d9",
 	},
 	{
 		ID:      "release-root-delegation-schema",
 		Path:    "spec/plugin/release-root-delegation-v1.schema.json",
 		Version: "release-root-delegation-v1",
-		SHA256:  "c1adbb13eaeeca145d5ee787ff43777e60a5f329e460d20b8db358e4f5fc4825",
-	},
-	{
-		ID:      "release-signature-envelope-schema",
-		Path:    "spec/plugin/release-signature-envelope-v1.schema.json",
-		Version: "release-signature-envelope-v1",
-		SHA256:  "7df9afd22bfdebfa89dc3bdb46ecdbe22a91ecce35fa46c492dd9795c66fae29",
-	},
-	{
-		ID:      "release-signing-ledger-evidence-schema",
-		Path:    "spec/plugin/release-signing-ledger-evidence-v1.schema.json",
-		Version: "release-signing-ledger-evidence-v1",
-		SHA256:  "9ab8b7f65dedcd119d578debb4f6ff97fc35f4c7ac95c0e5435f8b0959bc1a5c",
-	},
-	{
-		ID:      "release-signing-ledger-receipt-schema",
-		Path:    "spec/plugin/release-signing-ledger-receipt-v1.schema.json",
-		Version: "release-signing-ledger-receipt-v1",
-		SHA256:  "29210cfefd967017c5c74bcf8489bd50511c5c9f36d17b0200056ccb90c30561",
-	},
-	{
-		ID:      "release-signing-ledger-schema",
-		Path:    "spec/plugin/release-signing-ledger-v1.schema.json",
-		Version: "release-signing-ledger-v1",
-		SHA256:  "0c72b30bfd6b857b9809e48e1b7eaaeb7134d5afd6a935aa8373465054403765",
-	},
-	{
-		ID:      "release-signing-subject-schema",
-		Path:    "spec/plugin/release-signing-subject-v1.schema.json",
-		Version: "release-signing-subject-v1",
-		SHA256:  "876b1459824f90042bd141e96bfea4633333bdf2a227e15b6e25c72db1179c8e",
+		SHA256:  "f46249f9d51610b7a8401adc4ed04c098adaad408f35661b092f8d67767e21f2",
 	},
 	{
 		ID:      "release-source-policy-pointer-schema",
 		Path:    "spec/plugin/release-source-policy-pointer-v2.schema.json",
 		Version: "release-source-policy-pointer-v2",
-		SHA256:  "735659143db7204abdd20c6fbc994ac7474618c41b85949aad4c28fb2912e034",
+		SHA256:  "a4b2ba0909a633cfd0a365dff87ca1b6eaf6df53ac38b4d2b458d7ea85da6dd1",
 	},
 	{
 		ID:      "release-source-policy-schema",
 		Path:    "spec/plugin/release-source-policy-v3.schema.json",
 		Version: "release-source-policy-v3",
-		SHA256:  "8814de028800c92b26c8c85a06298762598aeba1835f57048ec6c06430f8567b",
-	},
-	{
-		ID:      "release-trust-state-schema",
-		Path:    "spec/plugin/release-trust-state-v1.schema.json",
-		Version: "release-trust-state-v1",
-		SHA256:  "19ffa182932a22401a33ee4c9921e957c67895c2d8b041c9a27ee3530bdfb2d2",
+		SHA256:  "9b6964cbbaeab6400ab25ff3da6fca891b9833c7f644f56367b420382d096244",
 	},
 	{
 		ID:      "resource-scope-schema",
@@ -370,19 +279,13 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "rust-ipc-schema",
 		Path:    "spec/plugin/ipc-v6.schema.json",
 		Version: "rust-ipc-v6",
-		SHA256:  "9814ca091ac2e4e8435c1ab553e248e9d2e792de93ce9fd27bd030486774837f",
-	},
-	{
-		ID:      "session-scope-maintenance-contract",
-		Path:    "spec/plugin/session-scope-maintenance-v1.json",
-		Version: "session-scope-maintenance-v1",
-		SHA256:  "fd87b6654c954ee2a2dc67958ba214048b894aa421bb74a85fb02000ec51f37b",
+		SHA256:  "75d7fb83d4502be726e986025f7ec14fac592bcaeb7add6b28dff42a7360c5dc",
 	},
 	{
 		ID:      "session-scope-schema",
 		Path:    "spec/plugin/session-scope-v1.schema.json",
 		Version: "session-scope-v1",
-		SHA256:  "3df0084264f0aff9fe2261c237cea439adb5cdc2534bfaaa0488d5992d4a7d2e",
+		SHA256:  "38044d65de36ce5219929ac4080547660734a7c6bb4d26d9b90e5838b1db331a",
 	},
 	{
 		ID:      "target-classifier-fixture",
@@ -394,19 +297,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "token-ticket-schema",
 		Path:    "spec/plugin/token-ticket-v4.schema.json",
 		Version: "token-ticket-v4",
-		SHA256:  "5cf365b5b52a331ac0d3ad35a98be3c2ce668804ae88fdeaf9679a44db14feb1",
-	},
-	{
-		ID:      "trusted-time-evidence-schema",
-		Path:    "spec/plugin/trusted-time-evidence-v1.schema.json",
-		Version: "trusted-time-evidence-v1",
-		SHA256:  "4398cbd2a3eea42a85008ee16a69d7adb265673e6749b1f13a4f1610f36e5e38",
-	},
-	{
-		ID:      "trusted-time-leaf-schema",
-		Path:    "spec/plugin/trusted-time-leaf-v1.schema.json",
-		Version: "trusted-time-leaf-v1",
-		SHA256:  "1c25eb0040800eef145aa2bb4c0e1ae197ae584d365e9595ab89037e26fe5ddb",
+		SHA256:  "1576e35e4e06ba67c2fdc038934c5d5184fd1224adbd75c9f8eaf6a144ade238",
 	},
 	{
 		ID:      "wasm-worker-schema",
@@ -418,6 +309,6 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "worker-invocation-schema",
 		Path:    "spec/plugin/worker-invocation-v3.schema.json",
 		Version: "worker-invocation-v3",
-		SHA256:  "f08af491cbf5e7b71d1aeafbeac9ae581ee5fc3bcb76184daec369f94bab3927",
+		SHA256:  "f75b5b6ea0f5936e15f84a76d9b496690d7e1b7da7a05948ad26a88cc1360847",
 	},
 }

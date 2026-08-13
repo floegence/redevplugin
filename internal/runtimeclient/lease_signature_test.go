@@ -272,8 +272,7 @@ func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 	lease.IPCChannelID = health.IPCChannelID
 	lease.ConnectionNonce = health.ConnectionNonce
 	lease.Execution = "subscription"
-	lease.OperationID = ""
-	lease.StreamID = ""
+	lease.ExecutionID = ""
 
 	if _, err := supervisor.InvokeWorker(context.Background(), lease, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeLeaseInvalid) {
 		t.Fatalf("InvokeWorker(invalid lease) error = %v, want %v", err, ErrRuntimeLeaseInvalid)

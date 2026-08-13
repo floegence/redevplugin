@@ -27,31 +27,19 @@ type preparedRelease struct {
 	pkg                         pluginpkg.Package
 	packageInput                releasecontract.PackageSigningInput
 	packagePreimage             []byte
-	packageSubject              releasecontract.SigningSubjectV1
 	rootInput                   releasecontract.RootDelegationInput
 	rootPreimage                []byte
-	rootSubject                 releasecontract.SigningSubjectV1
 	policyInput                 releasecontract.SourcePolicyInput
 	policyPreimage              []byte
-	policySubject               releasecontract.SigningSubjectV1
 	revocationInput             releasecontract.RevocationInput
 	revocationPreimage          []byte
-	revocationSubject           releasecontract.SigningSubjectV1
 	metadata                    releasecontract.ReleaseMetadataV8
 	metadataBytes               []byte
 	metadataPreimage            []byte
-	metadataSubject             releasecontract.SigningSubjectV1
 	releaseMetadataRef          string
 	packageArtifactRef          string
 	packageSignatureRef         string
 	releaseMetadataSignatureRef string
-}
-
-type signedDocument struct {
-	subject   releasecontract.SigningSubjectV1
-	preimage  []byte
-	keyID     string
-	signature string
 }
 
 type signedPrimary struct {
@@ -66,10 +54,8 @@ type signedPrimary struct {
 	metadataSignature         []byte
 	policyPointerInput        releasecontract.ReleasePointerInput
 	policyPointerPreimage     []byte
-	policyPointerSubject      releasecontract.SigningSubjectV1
 	revocationPointerInput    releasecontract.ReleasePointerInput
 	revocationPointerPreimage []byte
-	revocationPointerSubject  releasecontract.SigningSubjectV1
 }
 
 type signedPointers struct {
@@ -78,14 +64,9 @@ type signedPointers struct {
 	policyPointerBytes     []byte
 	revocationPointer      releasecontract.RevocationPointerV1
 	revocationPointerBytes []byte
-	documents              []signedDocument
-	ledger                 ledgerDraft
 }
 
-func assemble(ctx context.Context, config ConfigV1, packageBytes []byte, responses map[string]string, previous *previousReleaseStateV1) (assemblyResult, error) {
-	if err := verifyPreviousLedgerKey(config, previous); err != nil {
-		return assemblyResult{}, err
-	}
+func assemble(ctx context.Context, config ConfigV1, packageBytes []byte, responses map[string]string) (assemblyResult, error) {
 	prepared, err := prepareRelease(ctx, config, packageBytes)
 	if err != nil {
 		return assemblyResult{}, err
@@ -93,16 +74,6 @@ func assemble(ctx context.Context, config ConfigV1, packageBytes []byte, respons
 	primaryRequests, err := requestsForPrimary(config, prepared)
 	if err != nil {
 		return assemblyResult{}, err
-	}
-	for _, usage := range []releasecontract.SigningUsage{
-		releasecontract.SigningUsageRootDelegation,
-		releasecontract.SigningUsageSourcePolicy,
-		releasecontract.SigningUsageRevocation,
-	} {
-		request, _ := requestForUsage(primaryRequests, usage)
-		if err := validateStableRequest(previous, usage, request); err != nil {
-			return assemblyResult{}, err
-		}
 	}
 	if pending := pendingRequests(primaryRequests, responses); len(pending) != 0 {
 		return assemblyResult{Phase: "primary_signatures", Pending: pending}, nil
@@ -115,50 +86,14 @@ func assemble(ctx context.Context, config ConfigV1, packageBytes []byte, respons
 	if err != nil {
 		return assemblyResult{}, err
 	}
-	for _, usage := range []releasecontract.SigningUsage{
-		releasecontract.SigningUsageSourcePolicyPointer,
-		releasecontract.SigningUsageRevocationPointer,
-	} {
-		request, _ := requestForUsage(pointerRequests, usage)
-		if err := validateStableRequest(previous, usage, request); err != nil {
-			return assemblyResult{}, err
-		}
-	}
 	if pending := pendingRequests(pointerRequests, responses); len(pending) != 0 {
 		return assemblyResult{Phase: "pointer_signatures", Pending: pending}, nil
 	}
-	pointers, err := buildSignedPointers(config, primary, pointerRequests, responses, previous)
+	pointers, err := buildSignedPointers(config, primary, pointerRequests, responses)
 	if err != nil {
 		return assemblyResult{}, err
 	}
-	checkpointRequest, err := NewExternalSignerRequest(
-		releasecontract.SigningUsageLedgerCheckpoint,
-		config.SigningLedger.KeyID,
-		prepared.rootSubject,
-		pointers.ledger.checkpointPreimage,
-	)
-	if err != nil {
-		return assemblyResult{}, err
-	}
-	if pending := pendingRequests([]ExternalSignerRequestV1{checkpointRequest}, responses); len(pending) != 0 {
-		return assemblyResult{Phase: "ledger_checkpoint_signature", Pending: pending}, nil
-	}
-	checkpointSignature, err := signatureFor(checkpointRequest, responses)
-	if err != nil {
-		return assemblyResult{}, err
-	}
-	checkpoint, checkpointBytes, err := finalizeLedgerCheckpoint(config, pointers.ledger, checkpointSignature)
-	if err != nil {
-		return assemblyResult{}, err
-	}
-	receiptDrafts, receiptRequests, err := prepareLedgerReceipts(config, pointers.ledger, checkpoint, checkpointBytes)
-	if err != nil {
-		return assemblyResult{}, err
-	}
-	if pending := pendingRequests(receiptRequests, responses); len(pending) != 0 {
-		return assemblyResult{Phase: "ledger_receipt_signatures", Pending: pending}, nil
-	}
-	return buildCompleteAssembly(config, pointers, checkpoint, checkpointBytes, receiptDrafts, receiptRequests, responses)
+	return buildCompleteAssembly(config, pointers, primaryRequests, responses)
 }
 
 func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (preparedRelease, error) {
@@ -190,14 +125,14 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 		return preparedRelease{}, ErrInvalidPublisherConfig
 	}
 	rootInput := releasecontract.RootDelegationInput{
-		SourceID: config.SourceID, RootEpoch: "1", PreviousRootEpoch: releasecontract.GenesisPreviousEpoch,
-		PreviousDelegationSHA256: releasecontract.GenesisPreviousDocumentSHA256,
-		GeneratedAt:              config.GeneratedAt, ExpiresAt: config.ExpiresAt,
+		SourceID:    config.SourceID,
+		RootEpoch:   "1",
+		GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt,
 		DelegatedKeys: []releasecontract.RootDelegatedKey{{
 			Algorithm: releasecontract.SignatureAlgorithmEd25519, KeyID: config.Signing.KeyID, PublicKey: config.Signing.PublicKey,
 			Usages: []releasecontract.DelegatedKeyUsage{
 				releasecontract.DelegatedKeyUsagePackage, releasecontract.DelegatedKeyUsageReleaseMetadata,
-				releasecontract.DelegatedKeyUsageHostCapabilityContract, releasecontract.DelegatedKeyUsageRevocation,
+				releasecontract.DelegatedKeyUsageRevocation,
 				releasecontract.DelegatedKeyUsageRevocationPointer, releasecontract.DelegatedKeyUsageSourcePolicy,
 				releasecontract.DelegatedKeyUsageSourcePolicyPointer,
 			},
@@ -211,17 +146,15 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 	}
 	policyInput := releasecontract.SourcePolicyInput{
 		SchemaVersion: releasecontract.SourcePolicySchemaVersion,
-		SourceID:      config.SourceID, Channel: config.Channel, Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
-		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, RootEpoch: "1",
+		SourceID:      config.SourceID, Channel: config.Channel, Epoch: "1", RootEpoch: "1",
 		SourceType: config.SourceType, SourceClass: config.SourceClass, AllowedPublishers: []string{publisherID},
 		AllowedArtifactHosts: slices.Clone(config.AllowedArtifactHosts),
 		ActiveKeys: releasecontract.SourcePolicyActiveKeys{
 			Package: []string{config.Signing.KeyID}, ReleaseMetadata: []string{config.Signing.KeyID},
-			HostCapabilityContract: []string{config.Signing.KeyID}, SourcePolicyPointer: []string{config.Signing.KeyID},
-			Revocation: []string{config.Signing.KeyID}, RevocationPointer: []string{config.Signing.KeyID},
+			SourcePolicyPointer: []string{config.Signing.KeyID},
+			Revocation:          []string{config.Signing.KeyID}, RevocationPointer: []string{config.Signing.KeyID},
 		},
-		CapabilityPublisherScopes: capabilityScopes(config.Signing.KeyID, publisherID, config.HostRequirements),
-		RequireSignature:          true, InstallPolicy: "allow", UnsignedPolicy: "block", DowngradePolicy: "block",
+		RequireSignature: true, InstallPolicy: "allow", UnsignedPolicy: "block", DowngradePolicy: "block",
 		MinimumRevocationEpoch: "1", Limits: releasecontract.PersonalMaintainerSourcePolicyLimits(),
 		GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, KeyID: config.Signing.KeyID,
 	}
@@ -231,8 +164,7 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 	}
 	revocationInput := releasecontract.RevocationInput{
 		SchemaVersion: releasecontract.RevocationSchemaVersion,
-		SourceID:      config.SourceID, Channel: config.Channel, Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
-		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, RootEpoch: "1",
+		SourceID:      config.SourceID, Channel: config.Channel, Epoch: "1", RootEpoch: "1",
 		GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, RevokedKeyIDs: []string{},
 		RevokedReleases: []releasecontract.RevokedRelease{}, KeyID: config.Signing.KeyID,
 	}
@@ -272,18 +204,12 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 	if err != nil {
 		return preparedRelease{}, err
 	}
-	metadataDigest := sha256Hex(metadataBytes)
 	return preparedRelease{
 		pkg: pkg, packageInput: packageInput, packagePreimage: packagePreimage,
-		packageSubject: releaseSubject(config, pkg, releasecontract.SigningSubjectUsagePackage, strings.TrimPrefix(pkg.PackageHash, "sha256:")),
-		rootInput:      rootInput, rootPreimage: rootPreimage,
-		rootSubject: releasecontract.SigningSubjectV1{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageRootDelegation, SourceID: config.SourceID, RootEpoch: "1"},
+		rootInput: rootInput, rootPreimage: rootPreimage,
 		policyInput: policyInput, policyPreimage: policyPreimage,
-		policySubject:   epochSubject(config, releasecontract.SigningSubjectUsageSourcePolicy),
 		revocationInput: revocationInput, revocationPreimage: revocationPreimage,
-		revocationSubject: epochSubject(config, releasecontract.SigningSubjectUsageRevocation),
-		metadata:          metadata, metadataBytes: metadataBytes, metadataPreimage: metadataPreimage,
-		metadataSubject:    releaseSubject(config, pkg, releasecontract.SigningSubjectUsageReleaseMetadata, metadataDigest),
+		metadata: metadata, metadataBytes: metadataBytes, metadataPreimage: metadataPreimage,
 		releaseMetadataRef: metadataRef, packageArtifactRef: packageArtifactRef,
 		packageSignatureRef: packageSignatureRef, releaseMetadataSignatureRef: metadataSignatureRef,
 	}, nil
@@ -293,18 +219,17 @@ func requestsForPrimary(config ConfigV1, prepared preparedRelease) ([]ExternalSi
 	inputs := []struct {
 		usage    releasecontract.SigningUsage
 		key      string
-		subject  releasecontract.SigningSubjectV1
 		preimage []byte
 	}{
-		{releasecontract.SigningUsageRootDelegation, config.Root.KeyID, prepared.rootSubject, prepared.rootPreimage},
-		{releasecontract.SigningUsagePackage, config.Signing.KeyID, prepared.packageSubject, prepared.packagePreimage},
-		{releasecontract.SigningUsageReleaseMetadata, config.Signing.KeyID, prepared.metadataSubject, prepared.metadataPreimage},
-		{releasecontract.SigningUsageSourcePolicy, config.Signing.KeyID, prepared.policySubject, prepared.policyPreimage},
-		{releasecontract.SigningUsageRevocation, config.Signing.KeyID, prepared.revocationSubject, prepared.revocationPreimage},
+		{releasecontract.SigningUsageRootDelegation, config.Root.KeyID, prepared.rootPreimage},
+		{releasecontract.SigningUsagePackage, config.Signing.KeyID, prepared.packagePreimage},
+		{releasecontract.SigningUsageReleaseMetadata, config.Signing.KeyID, prepared.metadataPreimage},
+		{releasecontract.SigningUsageSourcePolicy, config.Signing.KeyID, prepared.policyPreimage},
+		{releasecontract.SigningUsageRevocation, config.Signing.KeyID, prepared.revocationPreimage},
 	}
 	requests := make([]ExternalSignerRequestV1, 0, len(inputs))
 	for _, input := range inputs {
-		request, err := NewExternalSignerRequest(input.usage, input.key, input.subject, input.preimage)
+		request, err := NewExternalSignerRequest(input.usage, input.key, input.preimage)
 		if err != nil {
 			return nil, err
 		}
@@ -368,13 +293,13 @@ func buildSignedPrimary(config ConfigV1, prepared preparedRelease, requests []Ex
 	revocationRef := fmt.Sprintf("sources/%s/%s/revocation/1.json", config.SourceID, config.Channel)
 	policyPointerInput := releasecontract.ReleasePointerInput{
 		SchemaVersion: releasecontract.SourcePolicyPointerSchemaVersion, SourceID: config.SourceID, Channel: config.Channel,
-		Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch, PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256,
-		Ref: policyRef, DocumentSHA256: sha256Hex(policyBytes), GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, KeyID: config.Signing.KeyID,
+		Epoch: "1",
+		Ref:   policyRef, DocumentSHA256: sha256Hex(policyBytes), GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, KeyID: config.Signing.KeyID,
 	}
 	revocationPointerInput := releasecontract.ReleasePointerInput{
 		SchemaVersion: releasecontract.RevocationPointerSchemaVersion, SourceID: config.SourceID, Channel: config.Channel,
-		Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch, PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256,
-		Ref: revocationRef, DocumentSHA256: sha256Hex(revocationBytes), GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, KeyID: config.Signing.KeyID,
+		Epoch: "1",
+		Ref:   revocationRef, DocumentSHA256: sha256Hex(revocationBytes), GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, KeyID: config.Signing.KeyID,
 	}
 	policyPointerPreimage, err := releasecontract.SourcePolicyPointerSigningPreimage(policyPointerInput)
 	if err != nil {
@@ -389,25 +314,23 @@ func buildSignedPrimary(config ConfigV1, prepared preparedRelease, requests []Ex
 		policy: policy, policyBytes: policyBytes, revocation: revocation, revocationBytes: revocationBytes,
 		metadataSignature:  metadataSignature,
 		policyPointerInput: policyPointerInput, policyPointerPreimage: policyPointerPreimage,
-		policyPointerSubject:   epochSubject(config, releasecontract.SigningSubjectUsageSourcePolicyPointer),
 		revocationPointerInput: revocationPointerInput, revocationPointerPreimage: revocationPointerPreimage,
-		revocationPointerSubject: epochSubject(config, releasecontract.SigningSubjectUsageRevocationPointer),
 	}, nil
 }
 
 func requestsForPointers(config ConfigV1, primary signedPrimary) ([]ExternalSignerRequestV1, error) {
-	policy, err := NewExternalSignerRequest(releasecontract.SigningUsageSourcePolicyPointer, config.Signing.KeyID, primary.policyPointerSubject, primary.policyPointerPreimage)
+	policy, err := NewExternalSignerRequest(releasecontract.SigningUsageSourcePolicyPointer, config.Signing.KeyID, primary.policyPointerPreimage)
 	if err != nil {
 		return nil, err
 	}
-	revocation, err := NewExternalSignerRequest(releasecontract.SigningUsageRevocationPointer, config.Signing.KeyID, primary.revocationPointerSubject, primary.revocationPointerPreimage)
+	revocation, err := NewExternalSignerRequest(releasecontract.SigningUsageRevocationPointer, config.Signing.KeyID, primary.revocationPointerPreimage)
 	if err != nil {
 		return nil, err
 	}
 	return []ExternalSignerRequestV1{policy, revocation}, nil
 }
 
-func buildSignedPointers(config ConfigV1, primary signedPrimary, requests []ExternalSignerRequestV1, responses map[string]string, previous *previousReleaseStateV1) (signedPointers, error) {
+func buildSignedPointers(config ConfigV1, primary signedPrimary, requests []ExternalSignerRequestV1, responses map[string]string) (signedPointers, error) {
 	policySignature, _ := signatureForUsage(requests, responses, releasecontract.SigningUsageSourcePolicyPointer)
 	revocationSignature, _ := signatureForUsage(requests, responses, releasecontract.SigningUsageRevocationPointer)
 	policyPointer, err := releasecontract.BuildSourcePolicyPointer(primary.policyPointerInput, policySignature)
@@ -428,28 +351,7 @@ func buildSignedPointers(config ConfigV1, primary signedPrimary, requests []Exte
 	if err := releasecontract.VerifyRevocationPointer(revocationPointer, verifier); err != nil {
 		return signedPointers{}, err
 	}
-	primaryRequests, err := requestsForPrimary(config, primary.prepared)
-	if err != nil {
-		return signedPointers{}, err
-	}
-	primarySignatures := map[releasecontract.SigningUsage]string{}
-	for _, request := range primaryRequests {
-		primarySignatures[request.Usage] = responses[request.RequestID]
-	}
-	documents := []signedDocument{
-		{primary.prepared.rootSubject, primary.prepared.rootPreimage, config.Root.KeyID, primarySignatures[releasecontract.SigningUsageRootDelegation]},
-		{primary.policyPointerSubject, primary.policyPointerPreimage, config.Signing.KeyID, base64.StdEncoding.EncodeToString(policySignature)},
-		{primary.prepared.policySubject, primary.prepared.policyPreimage, config.Signing.KeyID, primarySignatures[releasecontract.SigningUsageSourcePolicy]},
-		{primary.revocationPointerSubject, primary.revocationPointerPreimage, config.Signing.KeyID, base64.StdEncoding.EncodeToString(revocationSignature)},
-		{primary.prepared.revocationSubject, primary.prepared.revocationPreimage, config.Signing.KeyID, primarySignatures[releasecontract.SigningUsageRevocation]},
-		{primary.prepared.metadataSubject, primary.prepared.metadataPreimage, config.Signing.KeyID, primarySignatures[releasecontract.SigningUsageReleaseMetadata]},
-		{primary.prepared.packageSubject, primary.prepared.packagePreimage, config.Signing.KeyID, primarySignatures[releasecontract.SigningUsagePackage]},
-	}
-	ledger, err := prepareLedger(config, documents, previous)
-	if err != nil {
-		return signedPointers{}, err
-	}
-	return signedPointers{primary: primary, policyPointer: policyPointer, policyPointerBytes: policyPointerBytes, revocationPointer: revocationPointer, revocationPointerBytes: revocationPointerBytes, documents: documents, ledger: ledger}, nil
+	return signedPointers{primary: primary, policyPointer: policyPointer, policyPointerBytes: policyPointerBytes, revocationPointer: revocationPointer, revocationPointerBytes: revocationPointerBytes}, nil
 }
 
 func pendingRequests(requests []ExternalSignerRequestV1, responses map[string]string) []ExternalSignerRequestV1 {
@@ -481,29 +383,6 @@ func signatureForUsage(requests []ExternalSignerRequestV1, responses map[string]
 		}
 	}
 	return nil, ErrWorkspaceIncomplete
-}
-
-func releaseSubject(config ConfigV1, pkg pluginpkg.Package, usage releasecontract.SigningSubjectUsage, identity string) releasecontract.SigningSubjectV1 {
-	return releasecontract.SigningSubjectV1{
-		SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: usage, SourceID: config.SourceID, Channel: config.Channel,
-		PublisherID: pkg.Manifest.Publisher.PublisherID, PluginID: pkg.Manifest.PluginID(), Version: pkg.Manifest.Version(), ArtifactIdentitySHA256: identity,
-	}
-}
-
-func epochSubject(config ConfigV1, usage releasecontract.SigningSubjectUsage) releasecontract.SigningSubjectV1 {
-	return releasecontract.SigningSubjectV1{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: usage, SourceID: config.SourceID, Channel: config.Channel, Epoch: "1"}
-}
-
-func capabilityScopes(keyID, publisherID string, requirements []releasecontract.ReleaseHostRequirement) []releasecontract.SourcePolicyCapabilityPublisherScope {
-	publishers := []string{publisherID}
-	for _, requirement := range requirements {
-		for _, capability := range requirement.RequiredCapabilityContracts {
-			publishers = append(publishers, capability.Contract.PublisherID)
-		}
-	}
-	slices.Sort(publishers)
-	publishers = slices.Compact(publishers)
-	return []releasecontract.SourcePolicyCapabilityPublisherScope{{KeyID: keyID, AllowedPublishers: publishers}}
 }
 
 func cloneHostRequirements(values []releasecontract.ReleaseHostRequirement) []releasecontract.ReleaseHostRequirement {

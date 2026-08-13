@@ -23,7 +23,6 @@ const (
 	TokenKindPluginGatewayToken TokenKind = "plugin_gateway_token"
 	TokenKindConfirmationToken  TokenKind = "confirmation_token"
 	TokenKindHandleGrant        TokenKind = "handle_grant"
-	TokenKindStreamTicket       TokenKind = "stream_ticket"
 )
 
 type TokenUse string
@@ -148,9 +147,6 @@ type Audience struct {
 	RuntimeShardID         string                   `json:"runtime_shard_id,omitempty"`
 	IPCChannelID           string                   `json:"ipc_channel_id,omitempty"`
 	ConnectionNonce        string                   `json:"connection_nonce,omitempty"`
-	StreamID               string                   `json:"stream_id,omitempty"`
-	StreamDirection        string                   `json:"stream_direction,omitempty"`
-	OperationID            string                   `json:"operation_id,omitempty"`
 	AuditCorrelationID     string                   `json:"audit_correlation_id,omitempty"`
 	HandleID               string                   `json:"handle_id,omitempty"`
 	ConfirmationID         string                   `json:"confirmation_id,omitempty"`
@@ -427,7 +423,6 @@ type SessionTokenRevocationCounts struct {
 	PluginGatewayTokens uint64 `json:"plugin_gateway_tokens"`
 	ConfirmationTokens  uint64 `json:"confirmation_tokens"`
 	HandleGrants        uint64 `json:"handle_grants"`
-	StreamTickets       uint64 `json:"stream_tickets"`
 }
 
 func (counts *SessionTokenRevocationCounts) increment(kind TokenKind) {
@@ -442,8 +437,6 @@ func (counts *SessionTokenRevocationCounts) increment(kind TokenKind) {
 		counts.ConfirmationTokens++
 	case TokenKindHandleGrant:
 		counts.HandleGrants++
-	case TokenKindStreamTicket:
-		counts.StreamTickets++
 	}
 }
 
@@ -1001,37 +994,6 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			return ErrTokenAudience
 		}
 		return nil
-	case TokenKindStreamTicket:
-		if err := require(
-			audience.PluginID,
-			audience.PluginVersion,
-			audience.RouteRole,
-			audience.OwnerSessionHash,
-			audience.OwnerUserHash,
-			audience.OwnerEnvHash,
-			audience.SessionChannelIDHash,
-			audience.StreamID,
-			audience.StreamDirection,
-			audience.Method,
-		); err != nil {
-			return err
-		}
-		switch audience.RouteRole {
-		case RouteRoleTrustedParent:
-			return require(
-				audience.SurfaceID,
-				audience.SurfaceInstanceID,
-				audience.EntryPath,
-				audience.EntrySHA256,
-				audience.AssetSessionNonce,
-				audience.BridgeChannelID,
-				audience.RuntimeGenerationID,
-			)
-		case RouteRoleTrustedIntent:
-			return nil
-		default:
-			return ErrMissingTokenAudience
-		}
 	default:
 		return ErrTokenKind
 	}
@@ -1048,7 +1010,7 @@ func defaultTokenUse(kind TokenKind) TokenUse {
 
 func validTokenKind(kind TokenKind) bool {
 	switch kind {
-	case TokenKindAssetTicket, TokenKindAssetSession, TokenKindPluginGatewayToken, TokenKindConfirmationToken, TokenKindHandleGrant, TokenKindStreamTicket:
+	case TokenKindAssetTicket, TokenKindAssetSession, TokenKindPluginGatewayToken, TokenKindConfirmationToken, TokenKindHandleGrant:
 		return true
 	default:
 		return false
@@ -1076,9 +1038,6 @@ func audienceMatches(expected Audience, got Audience) bool {
 		expected.RuntimeShardID == got.RuntimeShardID &&
 		expected.IPCChannelID == got.IPCChannelID &&
 		expected.ConnectionNonce == got.ConnectionNonce &&
-		expected.StreamID == got.StreamID &&
-		expected.StreamDirection == got.StreamDirection &&
-		expected.OperationID == got.OperationID &&
 		expected.AuditCorrelationID == got.AuditCorrelationID &&
 		expected.HandleID == got.HandleID &&
 		expected.ConfirmationID == got.ConfirmationID &&
@@ -1104,7 +1063,7 @@ func tokenAudienceOwnerEnvHash(kind TokenKind, audience Audience) (string, error
 			return "", err
 		}
 		return audience.ResourceScope.OwnerEnvHash, nil
-	case TokenKindAssetTicket, TokenKindAssetSession, TokenKindPluginGatewayToken, TokenKindConfirmationToken, TokenKindStreamTicket:
+	case TokenKindAssetTicket, TokenKindAssetSession, TokenKindPluginGatewayToken, TokenKindConfirmationToken:
 		if audience.ResourceScope != (sessionctx.ResourceScope{}) {
 			return "", ErrTokenAudience
 		}
@@ -1169,8 +1128,6 @@ func prefixedID(kind TokenKind) (string, error) {
 		return "ct_" + suffix, nil
 	case TokenKindHandleGrant:
 		return "hg_" + suffix, nil
-	case TokenKindStreamTicket:
-		return "st_" + suffix, nil
 	default:
 		return "tok_" + suffix, nil
 	}

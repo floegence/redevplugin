@@ -264,7 +264,7 @@ jobs:
       - run: npm ci
       - run: rustup show
       - run: rustup target add wasm32-unknown-unknown
-      - name: Build and verify two npm packages and six source crates
+      - name: Build and verify two npm packages and five source crates
         run: |
           node scripts/platform_package_build.mjs build \
             --out-dir dist/platform-packages \
@@ -405,20 +405,18 @@ jobs:
 
           manifest_path = root / "platform-package-build-v1.json"
           manifest = load_json(manifest_path, "package build manifest", 256 * 1024)
+          package_set = load_json(pathlib.Path("spec/plugin/platform-package-set-v2.json"), "platform package set", 128 * 1024)
           exact_keys(manifest, ["schema_version", "platform_version", "source_commit", "contract_set_sha256", "artifacts"], "package build manifest")
           if manifest["schema_version"] != "redevplugin.platform_package_build.v1" or manifest["source_commit"] != source_commit:
               raise SystemExit("package artifact source identity mismatch")
           if manifest["platform_version"] != version or not re.fullmatch(r"[0-9a-f]{64}", manifest["contract_set_sha256"]):
               raise SystemExit("package artifact platform identity mismatch")
-          if not isinstance(manifest["artifacts"], list) or len(manifest["artifacts"]) != 8:
+          expected_npm = {item["name"] for item in package_set["npm_packages"]}
+          expected_rust = {item["name"] for item in package_set["rust_crates"]}
+          if not isinstance(manifest["artifacts"], list) or len(manifest["artifacts"]) != len(expected_npm) + len(expected_rust):
               raise SystemExit("package artifact manifest is incomplete")
-          expected_rust = {
-              "redevplugin-contracts", "redevplugin-ipc", "redevplugin-wasm-abi",
-              "redevplugin-target-classifier", "redevplugin-worker-sdk", "redevplugin-runtime",
-          }
           expected_paths = {
-              ("npm", "@floegence/redevplugin-contracts"): f"npm/floegence-redevplugin-contracts-{version}.tgz",
-              ("npm", "@floegence/redevplugin-ui"): f"npm/floegence-redevplugin-ui-{version}.tgz",
+              **{("npm", name): f"npm/{name.removeprefix('@').replace('/', '-')}-{version}.tgz" for name in expected_npm},
               **{("rust", name): f"rust/{name}-{version}.crate" for name in expected_rust},
           }
           seen = set()
@@ -488,7 +486,7 @@ jobs:
           exact_keys(metadata, ["schema_version", "source_commit", "packages"], "Rust publication metadata")
           if metadata["schema_version"] != "redevplugin.rust_publish_metadata.v1" or metadata["source_commit"] != source_commit:
               raise SystemExit("Rust publication metadata identity mismatch")
-          package_order = ["redevplugin-contracts", "redevplugin-ipc", "redevplugin-wasm-abi", "redevplugin-target-classifier", "redevplugin-worker-sdk", "redevplugin-runtime"]
+          package_order = [item["name"] for item in package_set["rust_crates"]]
           if not isinstance(metadata["packages"], list) or [item.get("name") for item in metadata["packages"]] != package_order:
               raise SystemExit("Rust publication metadata package set mismatch")
           package_fields = ["name", "vers", "deps", "features", "authors", "description", "documentation", "homepage", "readme", "readme_file", "keywords", "categories", "license", "license_file", "repository", "badges", "links", "rust_version"]
@@ -548,12 +546,14 @@ jobs:
           token = os.environ["CARGO_REGISTRY_TOKEN"]
           manifest = json.loads((root / "platform-package-build-v1.json").read_text())
           metadata = json.loads((root / "rust" / "rust-publish-metadata-v1.json").read_text())
+          package_set = json.loads(pathlib.Path("spec/plugin/platform-package-set-v2.json").read_text())
           if metadata.get("schema_version") != "redevplugin.rust_publish_metadata.v1" or metadata.get("source_commit") != os.environ["GITHUB_SHA"]:
               raise SystemExit("unsupported Rust publication metadata")
           packages = {item["name"]: item for item in metadata["packages"]}
           manifest_packages = {item["name"]: item for item in manifest["artifacts"] if item["kind"] == "rust"}
-          order = ["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-target-classifier", "redevplugin-runtime"]
-          if set(packages) != set(order) or set(manifest_packages) != set(order):
+          package_names = {item["name"] for item in package_set["rust_crates"]}
+          order = ["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-runtime"]
+          if set(order) != package_names or set(packages) != package_names or set(manifest_packages) != package_names:
               raise SystemExit("Rust publication package set mismatch")
 
           def get_remote(name):

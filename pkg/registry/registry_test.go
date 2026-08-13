@@ -2,6 +2,7 @@ package registry
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -219,24 +220,10 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 				ReleaseTrustBinding:   testReleaseTrustBinding("source.original", "1.0.0"),
 				LocalImportProvenance: &LocalImportProvenance{ImportID: "import_original", Distribution: "local_import"},
 				CapabilityContracts: []capabilitycontract.Pin{{
-					PublisherID:              "example.publisher",
-					ContractID:               "example.documents.v1",
-					ContractVersion:          "1.0.0",
-					ArtifactRef:              "capabilities/documents/schema.json",
-					ArtifactSHA256:           strings.Repeat("1", 64),
-					ManifestRef:              "capabilities/documents/manifest.json",
-					ManifestSHA256:           strings.Repeat("2", 64),
-					SignatureRef:             "capabilities/documents/manifest.sig",
-					SignatureSHA256:          strings.Repeat("3", 64),
-					SignatureKeyID:           "documents-key",
-					SignaturePolicyEpoch:     "1",
-					SignatureRevocationEpoch: "1",
-					CompatibilityRef:         "capabilities/documents/compatibility.json",
-					CompatibilitySHA256:      strings.Repeat("4", 64),
-					GeneratedClientRef:       "capabilities/documents/client.ts",
-					GeneratedClientSHA256:    strings.Repeat("5", 64),
-					NoticesRef:               "capabilities/documents/notices.json",
-					NoticesSHA256:            strings.Repeat("6", 64),
+					PublisherID:     "example.publisher",
+					ContractID:      "example.documents.v1",
+					ContractVersion: "1.0.0",
+					ArtifactSHA256:  strings.Repeat("1", 64),
 				}},
 				EnableState: EnableDisabled,
 				Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
@@ -260,19 +247,6 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 				}},
 				Metadata: map[string]string{"record": "original"},
 			}
-			if err := SealReleaseActivationEvidence(&record); err != nil {
-				t.Fatal(err)
-			}
-			historyRecord := PluginRecord{
-				PluginInstanceID: record.PluginInstanceID, PublisherID: record.PublisherID, PluginID: record.PluginID,
-				Version: record.VersionHistory[0].Version, ActiveFingerprint: record.VersionHistory[0].ActiveFingerprint,
-				PackageHash: record.VersionHistory[0].PackageHash, ManifestHash: record.VersionHistory[0].ManifestHash,
-				EntriesHash: record.VersionHistory[0].EntriesHash, ReleaseTrustBinding: record.VersionHistory[0].ReleaseTrustBinding,
-			}
-			if err := SealReleaseActivationEvidence(&historyRecord); err != nil {
-				t.Fatal(err)
-			}
-			record.VersionHistory[0].ReleaseTrustBinding = historyRecord.ReleaseTrustBinding
 			stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -316,7 +290,7 @@ func testReleaseTrustBinding(sourceID string, version string) *ReleaseTrustBindi
 	return &ReleaseTrustBinding{
 		SourceID: sourceID, Channel: "stable", ReleaseMetadataRef: "plugins/example/release.json",
 		ReleaseMetadataSHA256: strings.Repeat("1", 64), PublisherID: "example.publisher",
-		PluginID: "com.example.clone", Version: version, VerifiedStateSHA256: strings.Repeat("2", 64),
+		PluginID: "com.example.clone", Version: version,
 		RootEpoch: "1", PolicyEpoch: "1", RevocationEpoch: "1",
 	}
 }
@@ -519,7 +493,7 @@ func TestSQLiteStoreMigratesRuntimeRequirementColumn(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreMigratesReleaseActivationEvidenceV4ToV5(t *testing.T) {
+func TestSQLiteStoreMigratesReleaseBindingV5ToV6WithoutLosingPluginData(t *testing.T) {
 	ctx := registryTestContext()
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	legacy, err := NewSQLiteStore(ctx, path)
@@ -543,45 +517,21 @@ func TestSQLiteStoreMigratesReleaseActivationEvidenceV4ToV5(t *testing.T) {
 				Publisher: manifest.Publisher{PublisherID: "example.publisher"},
 				Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "0.9.0"}},
 		}},
+		Metadata: map[string]string{"preserved": "yes"},
 	}
-	if err := SealReleaseActivationEvidence(&record); err != nil {
-		t.Fatal(err)
-	}
-	historyCarrier := PluginRecord{
-		PluginInstanceID: record.PluginInstanceID, PublisherID: record.PublisherID, PluginID: record.PluginID,
-		Version: record.VersionHistory[0].Version, ActiveFingerprint: record.VersionHistory[0].ActiveFingerprint,
-		PackageHash: record.VersionHistory[0].PackageHash, ManifestHash: record.VersionHistory[0].ManifestHash,
-		EntriesHash: record.VersionHistory[0].EntriesHash, ReleaseTrustBinding: record.VersionHistory[0].ReleaseTrustBinding,
-	}
-	if err := SealReleaseActivationEvidence(&historyCarrier); err != nil {
-		t.Fatal(err)
-	}
-	record.VersionHistory[0].ReleaseTrustBinding = historyCarrier.ReleaseTrustBinding
 	stored, err := legacy.PutPlugin(ctx, record, PutOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := *stored.ReleaseTrustBinding
-	binding.ActivationEvidenceSchemaVersion = ""
-	binding.ActivationEvidenceSHA256 = ""
-	history := stored.VersionHistory
-	history[0].ReleaseTrustBinding.ActivationEvidenceSchemaVersion = ""
-	history[0].ReleaseTrustBinding.ActivationEvidenceSHA256 = ""
-	bindingJSON, err := encodeRegistryJSON(&binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	historyJSON, err := encodeRegistryJSON(history)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bindingJSON := addLegacyReleaseProof(t, stored.ReleaseTrustBinding, strings.Repeat("2", 64), strings.Repeat("3", 64))
+	historyJSON := addLegacyHistoryReleaseProof(t, stored.VersionHistory, strings.Repeat("4", 64), strings.Repeat("5", 64))
 	if _, err := legacy.db.ExecContext(ctx, `
 UPDATE plugin_records
-SET source_policy_snapshot_json = ?, version_history_json = ?
-WHERE owner_env_hash = ? AND plugin_instance_id = ?`, bindingJSON, historyJSON, stored.OwnerEnvHash, stored.PluginInstanceID); err != nil {
+SET source_policy_snapshot_hash = ?, source_policy_snapshot_json = ?, version_history_json = ?
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`, "legacy-proof", bindingJSON, historyJSON, stored.OwnerEnvHash, stored.PluginInstanceID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
+	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.Close(); err != nil {
@@ -597,20 +547,21 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`, bindingJSON, historyJSON, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateReleaseActivationEvidence(got); err != nil {
-		t.Fatalf("migrated current activation evidence error = %v", err)
-	}
-	historyCheck := PluginRecord{
-		PluginInstanceID: got.PluginInstanceID, PublisherID: got.PublisherID, PluginID: got.PluginID,
-		Version: got.VersionHistory[0].Version, ActiveFingerprint: got.VersionHistory[0].ActiveFingerprint,
-		PackageHash: got.VersionHistory[0].PackageHash, ManifestHash: got.VersionHistory[0].ManifestHash,
-		EntriesHash: got.VersionHistory[0].EntriesHash, ReleaseTrustBinding: got.VersionHistory[0].ReleaseTrustBinding,
-	}
-	if err := ValidateReleaseActivationEvidence(historyCheck); err != nil {
-		t.Fatalf("migrated history activation evidence error = %v", err)
-	}
-	if got.ActiveFingerprint != record.ActiveFingerprint || got.PackageHash != record.PackageHash || got.EnableState != record.EnableState {
+	if got.ActiveFingerprint != record.ActiveFingerprint || got.PackageHash != record.PackageHash || got.EnableState != record.EnableState ||
+		got.Metadata["preserved"] != "yes" || got.ReleaseTrustBinding.SourceID != "source.current" ||
+		len(got.VersionHistory) != 1 || got.VersionHistory[0].ReleaseTrustBinding.SourceID != "source.history" {
 		t.Fatalf("migration changed plugin state: %#v", got)
+	}
+	var migratedBindingJSON, migratedHistoryJSON string
+	if err := migrated.db.QueryRowContext(ctx, `SELECT source_policy_snapshot_json, version_history_json FROM plugin_records WHERE owner_env_hash = ? AND plugin_instance_id = ?`, stored.OwnerEnvHash, stored.PluginInstanceID).Scan(&migratedBindingJSON, &migratedHistoryJSON); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{migratedBindingJSON, migratedHistoryJSON} {
+		for _, removed := range []string{"verified_state_sha256", "activation_evidence_schema_version", "activation_evidence_sha256"} {
+			if strings.Contains(raw, removed) {
+				t.Fatalf("migrated release binding retained %q: %s", removed, raw)
+			}
+		}
 	}
 	var version int
 	if err := migrated.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
@@ -621,7 +572,7 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`, bindingJSON, historyJSON, 
 	}
 }
 
-func TestSQLiteStoreReleaseActivationEvidenceMigrationRollsBackOnDrift(t *testing.T) {
+func TestSQLiteStoreReleaseBindingMigrationRollsBackOnDrift(t *testing.T) {
 	ctx := registryTestContext()
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	legacy, err := NewSQLiteStore(ctx, path)
@@ -638,26 +589,27 @@ func TestSQLiteStoreReleaseActivationEvidenceMigrationRollsBackOnDrift(t *testin
 			Publisher: manifest.Publisher{PublisherID: "example.publisher"},
 			Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "1.0.0"}},
 	}
-	if err := SealReleaseActivationEvidence(&record); err != nil {
-		t.Fatal(err)
-	}
 	stored, err := legacy.PutPlugin(ctx, record, PutOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	drifted := *stored.ReleaseTrustBinding
-	drifted.ActivationEvidenceSchemaVersion = "redevplugin.release_activation_evidence.v999"
-	drifted.ActivationEvidenceSHA256 = strings.Repeat("f", 64)
-	driftedJSON, err := encodeRegistryJSON(&drifted)
+	driftedJSON := addLegacyReleaseProof(t, stored.ReleaseTrustBinding, strings.Repeat("2", 64), strings.Repeat("f", 64))
+	var drifted map[string]any
+	if err := json.Unmarshal([]byte(driftedJSON), &drifted); err != nil {
+		t.Fatal(err)
+	}
+	drifted["activation_evidence_schema_version"] = "redevplugin.release_activation_evidence.v999"
+	raw, err := json.Marshal(drifted)
 	if err != nil {
 		t.Fatal(err)
 	}
+	driftedJSON = string(raw)
 	if _, err := legacy.db.ExecContext(ctx, `
 UPDATE plugin_records SET source_policy_snapshot_json = ?
 WHERE owner_env_hash = ? AND plugin_instance_id = ?`, driftedJSON, stored.OwnerEnvHash, stored.PluginInstanceID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
+	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.Close(); err != nil {
@@ -665,7 +617,7 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`, driftedJSON, stored.OwnerE
 	}
 	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
 		_ = reopened.Close()
-		t.Fatal("NewSQLiteStore() accepted drifted v4 activation evidence")
+		t.Fatal("NewSQLiteStore() accepted drifted v5 activation evidence")
 	}
 	dsn, err := registrySQLiteDSN(path)
 	if err != nil {
@@ -680,7 +632,7 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`, driftedJSON, stored.OwnerE
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
+	if version != 5 {
 		t.Fatalf("failed migration changed schema version to %d", version)
 	}
 	var afterJSON string
@@ -692,6 +644,52 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`, stored.OwnerEnvHash, store
 	if afterJSON != driftedJSON {
 		t.Fatal("failed migration mutated drifted activation evidence")
 	}
+}
+
+func addLegacyReleaseProof(t *testing.T, binding *ReleaseTrustBinding, stateDigest, evidenceDigest string) string {
+	t.Helper()
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	value["verified_state_sha256"] = stateDigest
+	value["activation_evidence_schema_version"] = ReleaseActivationEvidenceSchemaVersionV1
+	value["activation_evidence_sha256"] = evidenceDigest
+	raw, err = json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func addLegacyHistoryReleaseProof(t *testing.T, history []PluginVersion, stateDigest, evidenceDigest string) string {
+	t.Helper()
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values []map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	for index := range values {
+		binding, ok := values[index]["release_trust_binding"].(map[string]any)
+		if !ok {
+			continue
+		}
+		binding["verified_state_sha256"] = stateDigest
+		binding["activation_evidence_schema_version"] = ReleaseActivationEvidenceSchemaVersionV1
+		binding["activation_evidence_sha256"] = evidenceDigest
+	}
+	raw, err = json.Marshal(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func TestSQLiteStoreRejectsUnknownPersistedRuntimeTargets(t *testing.T) {

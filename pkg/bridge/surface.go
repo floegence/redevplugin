@@ -27,7 +27,6 @@ const (
 	DefaultSurfaceClosureTTL                = 15 * time.Minute
 	DefaultConfirmationTTL                  = 2 * time.Minute
 	MaxConfirmationTTL                      = 5 * time.Minute
-	MaxStreamTicketTTL                      = 5 * time.Minute
 	DefaultRuntimeLeaseTTL                  = 30 * time.Second
 	MaxRuntimeLeaseTTL                      = 5 * time.Minute
 	DefaultHandleGrantTTL                   = 30 * time.Second
@@ -321,8 +320,7 @@ type MintRuntimeExecutionLeaseRequest struct {
 	Method                 string                      `json:"method"`
 	Effect                 string                      `json:"effect,omitempty"`
 	Execution              string                      `json:"execution,omitempty"`
-	OperationID            string                      `json:"operation_id,omitempty"`
-	StreamID               string                      `json:"stream_id,omitempty"`
+	ExecutionID            string                      `json:"execution_id,omitempty"`
 	AuditCorrelationID     string                      `json:"audit_correlation_id"`
 	TargetDescriptorHashes []string                    `json:"target_descriptor_hashes,omitempty"`
 	Limits                 RuntimeExecutionLeaseLimits `json:"limits,omitempty"`
@@ -360,8 +358,7 @@ type RuntimeExecutionLeaseResult struct {
 	Method                 string                      `json:"method"`
 	Effect                 string                      `json:"effect,omitempty"`
 	Execution              string                      `json:"execution,omitempty"`
-	OperationID            string                      `json:"operation_id,omitempty"`
-	StreamID               string                      `json:"stream_id,omitempty"`
+	ExecutionID            string                      `json:"execution_id,omitempty"`
 	AuditCorrelationID     string                      `json:"audit_correlation_id"`
 	TargetDescriptorHashes []string                    `json:"target_descriptor_hashes,omitempty"`
 	Limits                 RuntimeExecutionLeaseLimits `json:"limits,omitempty"`
@@ -409,71 +406,6 @@ type ValidateHandleGrantRequest struct {
 	Audience         Audience        `json:"-"`
 	Revision         RevisionBinding `json:"revision"`
 	Now              time.Time       `json:"-"`
-}
-
-type MintStreamTicketRequest struct {
-	PluginID             string          `json:"plugin_id,omitempty"`
-	PluginInstanceID     string          `json:"plugin_instance_id"`
-	PluginVersion        string          `json:"plugin_version,omitempty"`
-	ActiveFingerprint    string          `json:"active_fingerprint"`
-	SurfaceID            string          `json:"surface_id,omitempty"`
-	SurfaceInstanceID    string          `json:"surface_instance_id"`
-	EntryPath            string          `json:"entry_path,omitempty"`
-	EntrySHA256          string          `json:"entry_sha256,omitempty"`
-	AssetSessionNonce    string          `json:"asset_session_nonce,omitempty"`
-	RouteRole            string          `json:"route_role,omitempty"`
-	OwnerSessionHash     string          `json:"-"`
-	OwnerUserHash        string          `json:"-"`
-	OwnerEnvHash         string          `json:"-"`
-	SessionChannelIDHash string          `json:"-"`
-	BridgeChannelID      string          `json:"bridge_channel_id"`
-	RuntimeGenerationID  string          `json:"runtime_generation_id,omitempty"`
-	StreamID             string          `json:"stream_id"`
-	OperationID          string          `json:"operation_id"`
-	StreamDirection      string          `json:"stream_direction"`
-	Method               string          `json:"method"`
-	Revision             RevisionBinding `json:"revision"`
-	Now                  time.Time       `json:"-"`
-	ExpiresAt            time.Time       `json:"expires_at,omitempty"`
-}
-
-type StreamTicketResult struct {
-	StreamTicket   string    `json:"stream_ticket"`
-	StreamTicketID string    `json:"stream_ticket_id"`
-	StreamID       string    `json:"stream_id"`
-	OperationID    string    `json:"operation_id"`
-	Direction      string    `json:"stream_direction"`
-	IssuedAt       time.Time `json:"issued_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-}
-
-type ValidateStreamTicketRequest struct {
-	StreamTicket string          `json:"stream_ticket"`
-	Audience     Audience        `json:"-"`
-	Revision     RevisionBinding `json:"revision"`
-	Now          time.Time       `json:"-"`
-}
-
-type ValidateBoundStreamTicketRequest struct {
-	StreamTicket         string          `json:"stream_ticket"`
-	PluginID             string          `json:"plugin_id"`
-	PluginInstanceID     string          `json:"plugin_instance_id"`
-	PluginVersion        string          `json:"plugin_version"`
-	ActiveFingerprint    string          `json:"active_fingerprint"`
-	SurfaceID            string          `json:"surface_id,omitempty"`
-	SurfaceInstanceID    string          `json:"surface_instance_id,omitempty"`
-	EntryPath            string          `json:"entry_path,omitempty"`
-	OwnerSessionHash     string          `json:"-"`
-	OwnerUserHash        string          `json:"-"`
-	OwnerEnvHash         string          `json:"-"`
-	SessionChannelIDHash string          `json:"-"`
-	BridgeChannelID      string          `json:"bridge_channel_id,omitempty"`
-	StreamID             string          `json:"stream_id"`
-	OperationID          string          `json:"operation_id"`
-	StreamDirection      string          `json:"stream_direction"`
-	Method               string          `json:"method"`
-	Revision             RevisionBinding `json:"revision"`
-	Now                  time.Time       `json:"-"`
 }
 
 type surfaceState struct {
@@ -1248,15 +1180,11 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 	}
 	switch strings.TrimSpace(req.Execution) {
 	case "sync":
-		if strings.TrimSpace(req.OperationID) != "" || strings.TrimSpace(req.StreamID) != "" {
+		if strings.TrimSpace(req.ExecutionID) != "" {
 			return RuntimeExecutionLeaseResult{}, ErrTokenAudience
 		}
-	case "operation":
-		if strings.TrimSpace(req.OperationID) == "" || strings.TrimSpace(req.StreamID) != "" {
-			return RuntimeExecutionLeaseResult{}, ErrMissingTokenAudience
-		}
-	case "subscription":
-		if strings.TrimSpace(req.OperationID) == "" || strings.TrimSpace(req.StreamID) == "" {
+	case "operation", "subscription":
+		if strings.TrimSpace(req.ExecutionID) == "" {
 			return RuntimeExecutionLeaseResult{}, ErrMissingTokenAudience
 		}
 	default:
@@ -1307,8 +1235,7 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 		Method:                 strings.TrimSpace(req.Method),
 		Effect:                 strings.TrimSpace(req.Effect),
 		Execution:              strings.TrimSpace(req.Execution),
-		OperationID:            strings.TrimSpace(req.OperationID),
-		StreamID:               strings.TrimSpace(req.StreamID),
+		ExecutionID:            strings.TrimSpace(req.ExecutionID),
 		AuditCorrelationID:     strings.TrimSpace(req.AuditCorrelationID),
 		TargetDescriptorHashes: normalizeStringSlice(req.TargetDescriptorHashes),
 		Limits:                 req.Limits,
@@ -1455,229 +1382,6 @@ func unixMillis(value time.Time) int64 {
 	}
 	utc := value.UTC()
 	return utc.Unix()*1000 + int64(utc.Nanosecond()/int(time.Millisecond))
-}
-
-func (s *SurfaceTokenService) MintStreamTicket(req MintStreamTicketRequest) (StreamTicketResult, error) {
-	if s == nil {
-		return StreamTicketResult{}, errors.New("surface token service is nil")
-	}
-	if strings.TrimSpace(req.PluginInstanceID) == "" ||
-		strings.TrimSpace(req.ActiveFingerprint) == "" ||
-		strings.TrimSpace(req.PluginID) == "" ||
-		strings.TrimSpace(req.PluginVersion) == "" ||
-		strings.TrimSpace(req.RouteRole) == "" ||
-		strings.TrimSpace(req.OwnerSessionHash) == "" ||
-		strings.TrimSpace(req.OwnerUserHash) == "" ||
-		strings.TrimSpace(req.OwnerEnvHash) == "" ||
-		strings.TrimSpace(req.SessionChannelIDHash) == "" ||
-		strings.TrimSpace(req.StreamID) == "" ||
-		strings.TrimSpace(req.OperationID) == "" ||
-		!validStreamDirection(req.StreamDirection) ||
-		strings.TrimSpace(req.Method) == "" {
-		return StreamTicketResult{}, ErrMissingTokenAudience
-	}
-	if req.RouteRole == RouteRoleTrustedParent && (strings.TrimSpace(req.SurfaceInstanceID) == "" ||
-		strings.TrimSpace(req.SurfaceID) == "" || strings.TrimSpace(req.EntryPath) == "" ||
-		strings.TrimSpace(req.EntrySHA256) == "" || strings.TrimSpace(req.AssetSessionNonce) == "" ||
-		strings.TrimSpace(req.BridgeChannelID) == "") {
-		return StreamTicketResult{}, ErrMissingTokenAudience
-	}
-	if req.RouteRole != RouteRoleTrustedParent && req.RouteRole != RouteRoleTrustedIntent {
-		return StreamTicketResult{}, ErrTokenAudience
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	expiresAt := req.ExpiresAt
-	if expiresAt.IsZero() {
-		expiresAt = now.Add(DefaultConfirmationTTL)
-	}
-	if expiresAt.After(now.Add(MaxStreamTicketTTL)) {
-		expiresAt = now.Add(MaxStreamTicketTTL)
-	}
-	minted, err := s.tokens.Mint(MintRequest{
-		Kind: TokenKindStreamTicket,
-		Audience: Audience{
-			PluginID:             req.PluginID,
-			PluginInstanceID:     req.PluginInstanceID,
-			PluginVersion:        req.PluginVersion,
-			ActiveFingerprint:    req.ActiveFingerprint,
-			SurfaceID:            req.SurfaceID,
-			SurfaceInstanceID:    req.SurfaceInstanceID,
-			EntryPath:            req.EntryPath,
-			EntrySHA256:          req.EntrySHA256,
-			AssetSessionNonce:    req.AssetSessionNonce,
-			RouteRole:            req.RouteRole,
-			OwnerSessionHash:     req.OwnerSessionHash,
-			OwnerUserHash:        req.OwnerUserHash,
-			OwnerEnvHash:         req.OwnerEnvHash,
-			SessionChannelIDHash: req.SessionChannelIDHash,
-			BridgeChannelID:      req.BridgeChannelID,
-			RuntimeGenerationID:  req.RuntimeGenerationID,
-			StreamID:             req.StreamID,
-			OperationID:          req.OperationID,
-			StreamDirection:      req.StreamDirection,
-			Method:               req.Method,
-		},
-		Revision:  req.Revision,
-		ExpiresAt: expiresAt,
-		Now:       now,
-	})
-	if err != nil {
-		return StreamTicketResult{}, err
-	}
-	return StreamTicketResult{
-		StreamTicket:   minted.Token,
-		StreamTicketID: minted.TokenID,
-		StreamID:       req.StreamID,
-		OperationID:    req.OperationID,
-		Direction:      req.StreamDirection,
-		IssuedAt:       minted.IssuedAt,
-		ExpiresAt:      minted.ExpiresAt,
-	}, nil
-}
-
-func (s *SurfaceTokenService) ValidateStreamTicket(req ValidateStreamTicketRequest) (TokenRecord, error) {
-	if s == nil {
-		return TokenRecord{}, errors.New("surface token service is nil")
-	}
-	if strings.TrimSpace(req.Audience.PluginInstanceID) == "" ||
-		strings.TrimSpace(req.Audience.ActiveFingerprint) == "" ||
-		strings.TrimSpace(req.Audience.SurfaceInstanceID) == "" ||
-		strings.TrimSpace(req.Audience.BridgeChannelID) == "" ||
-		strings.TrimSpace(req.Audience.StreamID) == "" ||
-		strings.TrimSpace(req.Audience.OperationID) == "" ||
-		!validStreamDirection(req.Audience.StreamDirection) ||
-		strings.TrimSpace(req.Audience.Method) == "" {
-		return TokenRecord{}, ErrMissingTokenAudience
-	}
-	return s.tokens.Validate(ValidateRequest{
-		Kind:     TokenKindStreamTicket,
-		Token:    req.StreamTicket,
-		Audience: req.Audience,
-		Revision: req.Revision,
-		Now:      req.Now,
-		Consume:  false,
-	})
-}
-
-func (s *SurfaceTokenService) ValidateBoundStreamTicket(req ValidateBoundStreamTicketRequest) (TokenRecord, error) {
-	if s == nil {
-		return TokenRecord{}, errors.New("surface token service is nil")
-	}
-	if err := validateBoundStreamTicketRequest(req); err != nil {
-		return TokenRecord{}, ErrMissingTokenAudience
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	req.Now = now
-	record, err := s.InspectBoundStreamTicket(req)
-	if err != nil {
-		return TokenRecord{}, err
-	}
-	return s.tokens.Validate(ValidateRequest{
-		Kind:     TokenKindStreamTicket,
-		Token:    req.StreamTicket,
-		Audience: record.Audience,
-		Revision: req.Revision,
-		Now:      now,
-		Consume:  false,
-	})
-}
-
-func (s *SurfaceTokenService) InspectBoundStreamTicket(req ValidateBoundStreamTicketRequest) (TokenRecord, error) {
-	if s == nil {
-		return TokenRecord{}, errors.New("surface token service is nil")
-	}
-	if err := validateBoundStreamTicketRequest(req); err != nil {
-		return TokenRecord{}, err
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	req.Now = now
-	record, err := s.tokens.Inspect(InspectRequest{Kind: TokenKindStreamTicket, Token: req.StreamTicket, Now: now})
-	if err != nil {
-		return TokenRecord{}, err
-	}
-	if err := validateBoundStreamTicketRecord(req, record); err != nil {
-		return TokenRecord{}, err
-	}
-	if req.SurfaceInstanceID == "" {
-		return record, nil
-	}
-	state, err := s.getState(req.SurfaceInstanceID, now)
-	if err != nil {
-		if errors.Is(err, ErrSurfaceSessionNotFound) || errors.Is(err, ErrSurfaceSessionExpired) {
-			return TokenRecord{}, ErrTokenRevoked
-		}
-		return TokenRecord{}, err
-	}
-	if !streamTicketSurfaceStateMatches(state, record, req) {
-		return TokenRecord{}, ErrTokenRevoked
-	}
-	return record, nil
-}
-
-func validateBoundStreamTicketRequest(req ValidateBoundStreamTicketRequest) error {
-	if strings.TrimSpace(req.StreamTicket) == "" ||
-		strings.TrimSpace(req.PluginID) == "" ||
-		strings.TrimSpace(req.PluginInstanceID) == "" ||
-		strings.TrimSpace(req.PluginVersion) == "" ||
-		strings.TrimSpace(req.ActiveFingerprint) == "" ||
-		strings.TrimSpace(req.StreamID) == "" ||
-		strings.TrimSpace(req.OperationID) == "" ||
-		!validStreamDirection(req.StreamDirection) ||
-		strings.TrimSpace(req.Method) == "" {
-		return ErrMissingTokenAudience
-	}
-	return nil
-}
-
-func validateBoundStreamTicketRecord(req ValidateBoundStreamTicketRequest, record TokenRecord) error {
-	if record.Revision != req.Revision {
-		return ErrTokenRevoked
-	}
-	if record.Audience.PluginID != req.PluginID ||
-		record.Audience.PluginInstanceID != req.PluginInstanceID ||
-		record.Audience.PluginVersion != req.PluginVersion ||
-		record.Audience.ActiveFingerprint != req.ActiveFingerprint ||
-		record.Audience.SurfaceInstanceID != req.SurfaceInstanceID ||
-		record.Audience.OwnerSessionHash != req.OwnerSessionHash ||
-		record.Audience.OwnerUserHash != req.OwnerUserHash ||
-		record.Audience.OwnerEnvHash != req.OwnerEnvHash ||
-		record.Audience.SessionChannelIDHash != req.SessionChannelIDHash ||
-		record.Audience.BridgeChannelID != req.BridgeChannelID ||
-		record.Audience.StreamID != req.StreamID ||
-		record.Audience.OperationID != req.OperationID ||
-		record.Audience.StreamDirection != req.StreamDirection ||
-		record.Audience.Method != req.Method {
-		return ErrTokenAudience
-	}
-	return nil
-}
-
-func streamTicketSurfaceStateMatches(state surfaceState, record TokenRecord, req ValidateBoundStreamTicketRequest) bool {
-	expected := record.Audience
-	expected.StreamID = ""
-	expected.OperationID = ""
-	expected.StreamDirection = ""
-	expected.Method = ""
-	return state.session.audience(req.BridgeChannelID) == expected && state.session.revision() == req.Revision
-}
-
-func (s *SurfaceTokenService) RevokeStreamTicketID(tokenID string, now time.Time) bool {
-	if s == nil || strings.TrimSpace(tokenID) == "" {
-		return false
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	return s.tokens.RevokeTokenID(TokenKindStreamTicket, tokenID, now)
 }
 
 func (s *SurfaceTokenService) DisposeSurface(surfaceInstanceID string, now time.Time) bool {
@@ -2044,13 +1748,4 @@ func (s SurfaceSession) validateHandshake(handshake Handshake) error {
 		return ErrHandshakeMismatch
 	}
 	return nil
-}
-
-func validStreamDirection(direction string) bool {
-	switch strings.TrimSpace(direction) {
-	case "read", "write", "duplex":
-		return true
-	default:
-		return false
-	}
 }

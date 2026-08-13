@@ -1,18 +1,5 @@
 package releasecontract
 
-func DecodeSigningLedgerEvidence(raw []byte) (SigningLedgerEvidenceV1, error) {
-	if len(raw) > 64<<10 {
-		return SigningLedgerEvidenceV1{}, invalid("signing ledger evidence size")
-	}
-	var evidence SigningLedgerEvidenceV1
-	if err := decodeCanonicalDocument(raw, &evidence, func() error {
-		return validateSigningLedgerEvidence(evidence)
-	}); err != nil {
-		return SigningLedgerEvidenceV1{}, err
-	}
-	return evidence, nil
-}
-
 func DecodeRootDelegation(raw []byte) (RootDelegationV1, error) {
 	var document RootDelegationV1
 	if err := decodeCanonicalDocument(raw, &document, func() error {
@@ -51,28 +38,25 @@ func DecodeSourcePolicy(raw []byte) (SourcePolicyV2, error) {
 		return SourcePolicyV2{}, err
 	}
 	return sourcePolicyFromInput(SourcePolicyInput{
-		SchemaVersion:             document.SchemaVersion,
-		SourceID:                  document.SourceID,
-		Channel:                   document.Channel,
-		Epoch:                     document.Epoch,
-		PreviousEpoch:             document.PreviousEpoch,
-		PreviousDocumentSHA256:    document.PreviousDocumentSHA256,
-		RootEpoch:                 document.RootEpoch,
-		SourceType:                document.SourceType,
-		SourceClass:               document.SourceClass,
-		AllowedPublishers:         document.AllowedPublishers,
-		AllowedArtifactHosts:      document.AllowedArtifactHosts,
-		ActiveKeys:                document.ActiveKeys,
-		CapabilityPublisherScopes: document.CapabilityPublisherScopes,
-		RequireSignature:          document.RequireSignature,
-		InstallPolicy:             document.InstallPolicy,
-		UnsignedPolicy:            document.UnsignedPolicy,
-		DowngradePolicy:           document.DowngradePolicy,
-		MinimumRevocationEpoch:    document.MinimumRevocationEpoch,
-		Limits:                    document.Limits,
-		GeneratedAt:               document.GeneratedAt,
-		ExpiresAt:                 document.ExpiresAt,
-		KeyID:                     document.KeyID,
+		SchemaVersion:          document.SchemaVersion,
+		SourceID:               document.SourceID,
+		Channel:                document.Channel,
+		Epoch:                  document.Epoch,
+		RootEpoch:              document.RootEpoch,
+		SourceType:             document.SourceType,
+		SourceClass:            document.SourceClass,
+		AllowedPublishers:      document.AllowedPublishers,
+		AllowedArtifactHosts:   document.AllowedArtifactHosts,
+		ActiveKeys:             document.ActiveKeys,
+		RequireSignature:       document.RequireSignature,
+		InstallPolicy:          document.InstallPolicy,
+		UnsignedPolicy:         document.UnsignedPolicy,
+		DowngradePolicy:        document.DowngradePolicy,
+		MinimumRevocationEpoch: document.MinimumRevocationEpoch,
+		Limits:                 document.Limits,
+		GeneratedAt:            document.GeneratedAt,
+		ExpiresAt:              document.ExpiresAt,
+		KeyID:                  document.KeyID,
 	}, document.Signature), nil
 }
 
@@ -94,18 +78,16 @@ func DecodeRevocation(raw []byte) (RevocationV2, error) {
 		return RevocationV2{}, err
 	}
 	return revocationFromInput(RevocationInput{
-		SchemaVersion:          document.SchemaVersion,
-		SourceID:               document.SourceID,
-		Channel:                document.Channel,
-		Epoch:                  document.Epoch,
-		PreviousEpoch:          document.PreviousEpoch,
-		PreviousDocumentSHA256: document.PreviousDocumentSHA256,
-		RootEpoch:              document.RootEpoch,
-		GeneratedAt:            document.GeneratedAt,
-		ExpiresAt:              document.ExpiresAt,
-		RevokedKeyIDs:          document.RevokedKeyIDs,
-		RevokedReleases:        document.RevokedReleases,
-		KeyID:                  document.KeyID,
+		SchemaVersion:   document.SchemaVersion,
+		SourceID:        document.SourceID,
+		Channel:         document.Channel,
+		Epoch:           document.Epoch,
+		RootEpoch:       document.RootEpoch,
+		GeneratedAt:     document.GeneratedAt,
+		ExpiresAt:       document.ExpiresAt,
+		RevokedKeyIDs:   document.RevokedKeyIDs,
+		RevokedReleases: document.RevokedReleases,
+		KeyID:           document.KeyID,
 	}, document.Signature), nil
 }
 

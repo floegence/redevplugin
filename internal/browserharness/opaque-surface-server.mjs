@@ -51,8 +51,8 @@ export function createBrowserHarnessServer(options = {}) {
     asset_started_at: 0,
     asset_completed_at: 0,
     dispose_completed_at: 0,
-    stream_response_loss_recovered: false,
-    operation_snapshot_cancel_recovered: false,
+    execution_event_response_loss_recovered: false,
+    execution_snapshot_cancel_recovered: false,
   };
   let sequence = 0;
 
@@ -79,13 +79,9 @@ export function createBrowserHarnessServer(options = {}) {
           gatewayToken: "",
           gatewayTokenID: "",
           leaseVersion: 0,
-          streamTicket: `parent_stream_ticket_${sequence}`,
-          streamReadCount: 0,
-          pendingStreamDelivery: null,
-          droppedStreamReadID: "",
-          lastAcknowledgedStreamDeliveryID: "",
+          executionEventReadCount: 0,
           confirmationID: `confirmation_${sequence}`,
-          operationSnapshotQueryCount: 0,
+          executionSnapshotQueryCount: 0,
           disposed: false,
         };
         surfaces.set(surfaceID, surface);
@@ -95,13 +91,13 @@ export function createBrowserHarnessServer(options = {}) {
         diagnostics.asset_started_at = 0;
         diagnostics.asset_completed_at = 0;
         diagnostics.dispose_completed_at = 0;
-        diagnostics.stream_response_loss_recovered = false;
-        diagnostics.operation_snapshot_cancel_recovered = false;
+        diagnostics.execution_event_response_loss_recovered = false;
+        diagnostics.execution_snapshot_cancel_recovered = false;
         writeEnvelope(response, {
           plugin_id: "dev.redevplugin.opaque-browser",
           plugin_instance_id: "plugin_browser_harness_1",
           plugin_version: "0.2.0",
-          ui_protocol_version: "plugin-ui-v6",
+          ui_protocol_version: "plugin-ui-v7",
           surface_id: "dev.redevplugin.opaque-browser.view",
           surface_instance_id: surfaceID,
           active_fingerprint: digest(`active-${sequence}`),
@@ -206,95 +202,6 @@ export function createBrowserHarnessServer(options = {}) {
           });
           return;
         }
-        if (surfaceRoute.action === "streams/read" && request.method === "POST") {
-          if (body.stream_id !== "stream_harness_logs" || body.stream_ticket !== surface.streamTicket || !/^read_[A-Za-z0-9_-]{8,128}$/.test(body.read_id ?? "")) {
-            writeError(response, 403, "PLUGIN_STREAM_TICKET_INVALID", "stream credential is invalid");
-            return;
-          }
-          if (surface.pendingStreamDelivery) {
-            if (surface.droppedStreamReadID) {
-              if (body.read_id !== surface.droppedStreamReadID) {
-                writeError(response, 409, "PLUGIN_CONTRACT_MISMATCH", "stream retry changed read_id");
-                return;
-              }
-              diagnostics.stream_response_loss_recovered = true;
-              surface.droppedStreamReadID = "";
-            }
-            writeEnvelope(response, surface.pendingStreamDelivery);
-            return;
-          }
-          if (surface.streamReadCount === 0) {
-            surface.streamReadCount = 1;
-            surface.pendingStreamDelivery = {
-              delivery_id: `delivery_browser_${sequence}_1`,
-              read_id: body.read_id,
-              events: [
-                { stream_id: "stream_harness_logs", sequence: 1, kind: "data", data: Buffer.from("opaque log line 1\n").toString("base64"), at: "2026-07-12T00:00:01Z" },
-              ],
-              done: false,
-            };
-            surface.droppedStreamReadID = body.read_id;
-            response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-            response.flushHeaders();
-            response.socket?.destroy();
-            return;
-          }
-          surface.streamReadCount = 2;
-          surface.pendingStreamDelivery = {
-            delivery_id: `delivery_browser_${sequence}_2`,
-            read_id: body.read_id,
-            events: [
-              { stream_id: "stream_harness_logs", sequence: 2, kind: "data", data: Buffer.from("opaque log line 2\n").toString("base64"), at: "2026-07-12T00:00:02Z" },
-              { stream_id: "stream_harness_logs", sequence: 3, kind: "end", at: "2026-07-12T00:00:03Z" },
-            ],
-            done: true,
-            terminal_status: "closed",
-          };
-          writeEnvelope(response, surface.pendingStreamDelivery);
-          return;
-        }
-        if (surfaceRoute.action === "streams/ack" && request.method === "POST") {
-          if (body.stream_id !== "stream_harness_logs" || body.stream_ticket !== surface.streamTicket) {
-            writeMutationError(response, 403, "PLUGIN_STREAM_TICKET_INVALID", "stream credential is invalid");
-            return;
-          }
-          if (surface.lastAcknowledgedStreamDeliveryID === body.delivery_id) {
-            writeEnvelope(response, { acknowledged: true });
-            return;
-          }
-          if (!surface.pendingStreamDelivery || surface.pendingStreamDelivery.delivery_id !== body.delivery_id) {
-            writeMutationError(response, 409, "PLUGIN_STREAM_DELIVERY_INVALID", "stream delivery is invalid");
-            return;
-          }
-          surface.lastAcknowledgedStreamDeliveryID = body.delivery_id;
-          surface.pendingStreamDelivery = null;
-          writeEnvelope(response, { acknowledged: true });
-          return;
-        }
-        if (surfaceRoute.action === "operations/query" && request.method === "POST") {
-          if (typeof body.bridge_channel_id !== "string" || body.bridge_channel_id.length === 0 || body.operation_id !== "operation_harness_1") {
-            writeError(response, 404, "PLUGIN_OPERATION_NOT_FOUND", "operation was not found");
-            return;
-          }
-          surface.operationSnapshotQueryCount += 1;
-          if (surface.operationSnapshotQueryCount === 1) {
-            response.on("close", () => {
-              if (!response.writableEnded) diagnostics.operation_snapshot_cancel_recovered = true;
-            });
-            await delay(250);
-            if (response.destroyed) return;
-          }
-          writeEnvelope(response, {
-            operation_id: "operation_harness_1",
-            status: "completed",
-            cancelable: true,
-            created_at: "2026-07-26T00:00:00Z",
-            updated_at: "2026-07-26T00:00:01Z",
-            retry_after_ms: 500,
-            terminal_at: "2026-07-26T00:00:01Z",
-          });
-          return;
-        }
         if (surfaceRoute.action === "dispose" && request.method === "POST") {
           if (body.bridge_nonce !== surface.bridgeNonce) {
             writeError(response, 403, "PLUGIN_GATEWAY_TOKEN_INVALID", "surface generation is invalid");
@@ -324,15 +231,10 @@ export function createBrowserHarnessServer(options = {}) {
           return;
         }
         if (body.method === "harness.logs") {
-          surface.streamReadCount = 0;
-          surface.streamTicket = `parent_stream_ticket_${sequence}_1`;
+          surface.executionEventReadCount = 0;
           writeEnvelope(response, {
             data: { started: true },
-            operation_id: "operation_harness_logs",
-            stream_id: "stream_harness_logs",
-            stream_ticket: surface.streamTicket,
-            stream_ticket_id: "stream_ticket_id_parent_only",
-            stream_expires_at: new Date(Date.now() + 60_000).toISOString(),
+            execution_id: "execution_harness_logs",
           });
           return;
         }
@@ -341,10 +243,74 @@ export function createBrowserHarnessServer(options = {}) {
             writeMutationError(response, 409, "PLUGIN_CONFIRMATION_REQUIRED", "confirmation is required");
             return;
           }
-          writeEnvelope(response, { data: { confirmed: true, target: body.params?.target ?? "" }, operation_id: "operation_harness_1" });
+          writeEnvelope(response, { data: { confirmed: true, target: body.params?.target ?? "" }, execution_id: "execution_harness_1" });
           return;
         }
         writeMutationError(response, 404, "PLUGIN_INVALID_REQUEST", "unknown harness method");
+        return;
+      }
+
+      const executionEventsMatch = requestURL.pathname.match(/^\/_redevplugin\/api\/plugins\/executions\/(execution_harness_logs)\/events\/query$/);
+      if (executionEventsMatch && request.method === "POST") {
+        const body = await readJSONBody(request);
+        const surface = surfaces.get(diagnostics.latest_surface_id);
+        if (!surface || surface.disposed || (body.after_cursor !== 0 && body.after_cursor !== 1)) {
+          writeError(response, 404, "PLUGIN_EXECUTION_NOT_FOUND", "execution was not found");
+          return;
+        }
+        surface.executionEventReadCount += 1;
+        if (surface.executionEventReadCount === 1 && body.after_cursor === 0) {
+          response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+          response.flushHeaders();
+          response.socket?.destroy();
+          return;
+        }
+        if (surface.executionEventReadCount === 2 && body.after_cursor === 0) {
+          diagnostics.execution_event_response_loss_recovered = true;
+          writeEnvelope(response, {
+            execution_id: executionEventsMatch[1],
+            events: [{ execution_id: executionEventsMatch[1], sequence: 1, kind: "data", payload: { data_base64: Buffer.from("opaque log line 1\n").toString("base64") } }],
+            cursor: 1,
+          });
+          return;
+        }
+        writeEnvelope(response, {
+          execution_id: executionEventsMatch[1],
+          events: [
+            { execution_id: executionEventsMatch[1], sequence: 2, kind: "data", payload: { data_base64: Buffer.from("opaque log line 2\n").toString("base64") } },
+            { execution_id: executionEventsMatch[1], sequence: 3, kind: "terminal", payload: { status: "completed" } },
+          ],
+          cursor: 3,
+        });
+        return;
+      }
+
+      if (requestURL.pathname === "/_redevplugin/api/plugins/executions/execution_harness_1/query" && request.method === "POST") {
+        await readJSONBody(request);
+        const surface = surfaces.get(diagnostics.latest_surface_id);
+        if (!surface || surface.disposed) {
+          writeError(response, 404, "PLUGIN_EXECUTION_NOT_FOUND", "execution was not found");
+          return;
+        }
+        surface.executionSnapshotQueryCount += 1;
+        if (surface.executionSnapshotQueryCount === 1) {
+          response.on("close", () => {
+            if (!response.writableEnded) diagnostics.execution_snapshot_cancel_recovered = true;
+          });
+          await delay(250);
+          if (response.destroyed) return;
+        }
+        writeEnvelope(response, {
+          execution_id: "execution_harness_1",
+          plugin_instance_id: "plugin_browser_harness_1",
+          kind: "operation",
+          status: "completed",
+          cursor: 1,
+          cancelable: true,
+          created_at: "2026-07-26T00:00:00Z",
+          updated_at: "2026-07-26T00:00:01Z",
+          terminal_at: "2026-07-26T00:00:01Z",
+        });
         return;
       }
 
@@ -396,7 +362,7 @@ export function createBrowserHarnessServer(options = {}) {
 }
 
 function matchSurfaceRoute(pathname) {
-  const match = pathname.match(/^\/_redevplugin\/api\/plugins\/surfaces\/([^/]+)\/(prepare|bridge-token|assets\/read|streams\/read|streams\/ack|operations\/query|dispose)$/);
+  const match = pathname.match(/^\/_redevplugin\/api\/plugins\/surfaces\/([^/]+)\/(prepare|bridge-token|assets\/read|dispose)$/);
   return match ? { surfaceID: decodeURIComponent(match[1]), action: match[2] } : null;
 }
 

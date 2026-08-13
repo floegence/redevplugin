@@ -1,16 +1,12 @@
 package registry
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/floegence/redevplugin/pkg/mutation"
 )
 
 type SignatureAssessmentStatus string
@@ -122,206 +118,82 @@ type SecurityCapabilitySummary struct {
 	SHA256        string   `json:"sha256,omitempty"`
 }
 
-type ExternalPackageCommitIntent string
+type ExternalPackageInstallIntent string
 
 const (
-	ExternalPackageInstall ExternalPackageCommitIntent = "install"
-	ExternalPackageUpdate  ExternalPackageCommitIntent = "update"
+	ExternalPackageInstall ExternalPackageInstallIntent = "install"
+	ExternalPackageUpdate  ExternalPackageInstallIntent = "update"
 )
 
-type ExternalPackageCommitStatus string
-
-const (
-	ExternalPackageCommitting ExternalPackageCommitStatus = "committing"
-	ExternalPackageCommitted  ExternalPackageCommitStatus = "committed"
-	ExternalPackageFailed     ExternalPackageCommitStatus = "failed"
-)
-
-const ExternalPackageFailureHostRestarted = "host_restarted_before_commit"
-
-type CommitExternalPackageRequest struct {
-	InspectionID               string                      `json:"inspection_id"`
-	CommitID                   string                      `json:"commit_id"`
-	Intent                     ExternalPackageCommitIntent `json:"intent"`
-	ConfirmationDigest         string                      `json:"confirmation_digest"`
-	ExpectedManagementRevision uint64                      `json:"expected_management_revision"`
-	IntendedFingerprint        string                      `json:"intended_fingerprint"`
-	IntendedPackageSHA256      string                      `json:"intended_package_sha256"`
-	Record                     PluginRecord                `json:"record"`
-	Now                        time.Time                   `json:"-"`
+type InstallExternalPackageRequest struct {
+	Intent                     ExternalPackageInstallIntent `json:"intent"`
+	ExpectedManagementRevision uint64                       `json:"expected_management_revision"`
+	Record                     PluginRecord                 `json:"record"`
+	Now                        time.Time                    `json:"-"`
 }
 
-type QueryExternalPackageCommitRequest struct {
-	InspectionID string `json:"inspection_id"`
-	CommitID     string `json:"commit_id,omitempty"`
-}
+var ErrInvalidExternalPackageInstall = errors.New("invalid external package install")
 
-type ExternalPackageCommitResult struct {
-	InspectionID               string                      `json:"inspection_id"`
-	CommitID                   string                      `json:"commit_id"`
-	Intent                     ExternalPackageCommitIntent `json:"intent"`
-	PluginInstanceID           string                      `json:"plugin_instance_id"`
-	ExpectedManagementRevision uint64                      `json:"expected_management_revision,omitempty"`
-	IntendedFingerprint        string                      `json:"intended_fingerprint"`
-	IntendedPackageSHA256      string                      `json:"intended_package_sha256"`
-	Status                     ExternalPackageCommitStatus `json:"status"`
-	MutationOutcome            mutation.Outcome            `json:"mutation_outcome"`
-	RecordSnapshot             *PluginRecord               `json:"record_snapshot,omitempty"`
-	FailureCode                string                      `json:"failure_code,omitempty"`
-	CreatedAt                  time.Time                   `json:"created_at"`
-	UpdatedAt                  time.Time                   `json:"updated_at"`
-}
-
-type ExternalPackageStore interface {
-	CommitExternalPackage(context.Context, CommitExternalPackageRequest) (ExternalPackageCommitResult, error)
-	QueryExternalPackageCommit(context.Context, QueryExternalPackageCommitRequest) (ExternalPackageCommitResult, error)
-}
-
-var (
-	ErrExternalPackageCommitNotFound = errors.New("external package commit not found")
-	ErrExternalPackageCommitConflict = errors.New("external package commit identity conflict")
-	ErrInvalidExternalPackageCommit  = errors.New("invalid external package commit")
-)
-
-type externalPackageCommitReceipt struct {
-	OwnerEnvHash  string
-	RequestSHA256 string
-	Request       CommitExternalPackageRequest
-	Result        ExternalPackageCommitResult
-}
-
-func (s *MemoryStore) CommitExternalPackage(ctx context.Context, req CommitExternalPackageRequest) (ExternalPackageCommitResult, error) {
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return ExternalPackageCommitResult{}, err
+// PrepareExternalPackageInstall applies the canonical external-package
+// validation, owner binding, revision transition, and security normalization
+// without persisting state. Persistent authorities use this function inside
+// their own atomic transaction so Host has one installation state machine.
+func PrepareExternalPackageInstall(ownerEnvHash string, req InstallExternalPackageRequest, existing *PluginRecord) (PluginRecord, error) {
+	if err := validateExternalPackageInstall(ownerEnvHash, req); err != nil {
+		return PluginRecord{}, err
 	}
-	if err := validateExternalPackageCommit(ownerEnvHash, req); err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	requestSHA256, err := externalPackageRequestSHA256(req)
-	if err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := externalPackageCommitKey(ownerEnvHash, req.InspectionID)
-	if receipt, ok := s.externalPackageCommits[key]; ok {
-		if receipt.RequestSHA256 != requestSHA256 {
-			return ExternalPackageCommitResult{}, ErrExternalPackageCommitConflict
-		}
-		return cloneExternalPackageCommitResult(receipt.Result)
-	}
-	for _, receipt := range s.externalPackageCommits {
-		if receipt.OwnerEnvHash == ownerEnvHash && receipt.Request.CommitID == req.CommitID {
-			return ExternalPackageCommitResult{}, ErrExternalPackageCommitConflict
-		}
-	}
-
 	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	result := ExternalPackageCommitResult{
-		InspectionID: req.InspectionID, CommitID: req.CommitID, Intent: req.Intent,
-		PluginInstanceID: req.Record.PluginInstanceID, ExpectedManagementRevision: req.ExpectedManagementRevision,
-		IntendedFingerprint: req.IntendedFingerprint, IntendedPackageSHA256: req.IntendedPackageSHA256,
-		Status: ExternalPackageCommitting, MutationOutcome: mutation.OutcomeUnknown,
-		CreatedAt: now, UpdatedAt: now,
+	var current PluginRecord
+	exists := existing != nil
+	if exists {
+		current = *existing
 	}
-	s.externalPackageCommits[key] = externalPackageCommitReceipt{OwnerEnvHash: ownerEnvHash, RequestSHA256: requestSHA256, Request: req, Result: result}
-
-	recordKey := environmentRecordKey(ownerEnvHash, req.Record.PluginInstanceID)
-	existing, exists := s.records[recordKey]
-	record, err := prepareExternalPackageRecord(ownerEnvHash, req, existing, exists, now)
-	if err != nil {
-		delete(s.externalPackageCommits, key)
-		return ExternalPackageCommitResult{}, err
-	}
-	s.records[recordKey] = record
-	snapshot, err := clonePluginRecord(record)
-	if err != nil {
-		delete(s.records, recordKey)
-		delete(s.externalPackageCommits, key)
-		return ExternalPackageCommitResult{}, err
-	}
-	result.Status = ExternalPackageCommitted
-	result.MutationOutcome = mutation.OutcomeCommitted
-	result.RecordSnapshot = &snapshot
-	result.UpdatedAt = now
-	s.externalPackageCommits[key] = externalPackageCommitReceipt{OwnerEnvHash: ownerEnvHash, RequestSHA256: requestSHA256, Request: req, Result: result}
-	return cloneExternalPackageCommitResult(result)
+	return prepareExternalPackageRecord(ownerEnvHash, req, current, exists, now)
 }
 
-func (s *MemoryStore) QueryExternalPackageCommit(ctx context.Context, req QueryExternalPackageCommitRequest) (ExternalPackageCommitResult, error) {
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	if strings.TrimSpace(req.InspectionID) == "" {
-		return ExternalPackageCommitResult{}, fmt.Errorf("%w: inspection_id is required", ErrInvalidExternalPackageCommit)
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	receipt, ok := s.externalPackageCommits[externalPackageCommitKey(ownerEnvHash, req.InspectionID)]
-	if !ok {
-		return ExternalPackageCommitResult{}, ErrExternalPackageCommitNotFound
-	}
-	if req.CommitID != "" && req.CommitID != receipt.Request.CommitID {
-		return ExternalPackageCommitResult{}, ErrExternalPackageCommitNotFound
-	}
-	return cloneExternalPackageCommitResult(receipt.Result)
-}
-
-func validateExternalPackageCommit(ownerEnvHash string, req CommitExternalPackageRequest) error {
+func validateExternalPackageInstall(ownerEnvHash string, req InstallExternalPackageRequest) error {
 	for name, value := range map[string]string{
-		"inspection_id":           req.InspectionID,
-		"commit_id":               req.CommitID,
-		"confirmation_digest":     req.ConfirmationDigest,
-		"intended_fingerprint":    req.IntendedFingerprint,
-		"intended_package_sha256": req.IntendedPackageSHA256,
-		"plugin_instance_id":      req.Record.PluginInstanceID,
+		"active_fingerprint": req.Record.ActiveFingerprint,
+		"package_sha256":     req.Record.PackageHash,
+		"plugin_instance_id": req.Record.PluginInstanceID,
 	} {
 		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%w: %s is required", ErrInvalidExternalPackageCommit, name)
+			return fmt.Errorf("%w: %s is required", ErrInvalidExternalPackageInstall, name)
 		}
 	}
 	if req.Intent != ExternalPackageInstall && req.Intent != ExternalPackageUpdate {
-		return fmt.Errorf("%w: unsupported intent %q", ErrInvalidExternalPackageCommit, req.Intent)
+		return fmt.Errorf("%w: unsupported intent %q", ErrInvalidExternalPackageInstall, req.Intent)
 	}
 	if req.Intent == ExternalPackageInstall && req.ExpectedManagementRevision != 0 {
-		return fmt.Errorf("%w: install expected_management_revision must be zero", ErrInvalidExternalPackageCommit)
+		return fmt.Errorf("%w: install expected_management_revision must be zero", ErrInvalidExternalPackageInstall)
 	}
 	if req.Intent == ExternalPackageUpdate && req.ExpectedManagementRevision == 0 {
-		return fmt.Errorf("%w: update expected_management_revision is required", ErrInvalidExternalPackageCommit)
+		return fmt.Errorf("%w: update expected_management_revision is required", ErrInvalidExternalPackageInstall)
 	}
 	if req.Record.OwnerEnvHash != "" && req.Record.OwnerEnvHash != ownerEnvHash {
 		return ErrOwnerScopeMismatch
 	}
-	if req.Record.ActiveFingerprint != req.IntendedFingerprint || req.Record.PackageHash != req.IntendedPackageSHA256 {
-		return fmt.Errorf("%w: intended package identity does not match record", ErrInvalidExternalPackageCommit)
-	}
 	if req.Record.ManifestHash == "" || req.Record.EntriesHash == "" {
-		return fmt.Errorf("%w: intended manifest and entries hashes are required", ErrInvalidExternalPackageCommit)
-	}
-	if !validExternalPackageConfirmationDigest(req.ConfirmationDigest) {
-		return fmt.Errorf("%w: confirmation_digest must be a canonical sha256 digest", ErrInvalidExternalPackageCommit)
+		return fmt.Errorf("%w: intended manifest and entries hashes are required", ErrInvalidExternalPackageInstall)
 	}
 	approval := req.Record.ExecutionApproval
-	if !validExecutionApprovalStatus(approval.Status) || approval.OwnerEnvHash != ownerEnvHash || approval.PackageSHA256 != req.IntendedPackageSHA256 {
-		return fmt.Errorf("%w: execution approval must bind owner_env_hash and intended package hash", ErrInvalidExternalPackageCommit)
+	if !validExecutionApprovalStatus(approval.Status) || approval.OwnerEnvHash != ownerEnvHash || approval.PackageSHA256 != req.Record.PackageHash {
+		return fmt.Errorf("%w: execution approval must bind owner_env_hash and intended package hash", ErrInvalidExternalPackageInstall)
 	}
 	if approval.Status != ExecutionApprovalUserApproved && approval.Status != ExecutionApprovalPolicyApproved {
-		return fmt.Errorf("%w: a committed package requires an approved execution decision", ErrInvalidExternalPackageCommit)
+		return fmt.Errorf("%w: an installed package requires an approved execution decision", ErrInvalidExternalPackageInstall)
 	}
 	if !validSignatureAssessmentStatus(req.Record.SignatureAssessment.Status) || !validPackageSourceProvenance(req.Record.PackageSourceProvenance) || !validUpdateEligibility(req.Record.UpdateEligibility) {
-		return fmt.Errorf("%w: package security facts are incomplete", ErrInvalidExternalPackageCommit)
+		return fmt.Errorf("%w: package security facts are incomplete", ErrInvalidExternalPackageInstall)
 	}
 	if req.Record.SignatureAssessment.Status == SignatureInvalid || req.Record.SignatureAssessment.Status == SignatureRevoked {
-		return fmt.Errorf("%w: invalid or revoked signatures cannot be committed", ErrInvalidExternalPackageCommit)
+		return fmt.Errorf("%w: invalid or revoked signatures cannot be installed", ErrInvalidExternalPackageInstall)
 	}
 	if req.Record.SignatureAssessment.Status == SignatureVerified && (strings.TrimSpace(req.Record.SignatureAssessment.Algorithm) == "" || strings.TrimSpace(req.Record.SignatureAssessment.KeyID) == "") {
-		return fmt.Errorf("%w: verified signatures require algorithm and key identity", ErrInvalidExternalPackageCommit)
+		return fmt.Errorf("%w: verified signatures require algorithm and key identity", ErrInvalidExternalPackageInstall)
 	}
 	for name, actual := range map[string]string{
 		"signature package": req.Record.SignatureAssessment.PackageSHA256,
@@ -329,7 +201,7 @@ func validateExternalPackageCommit(ownerEnvHash string, req CommitExternalPackag
 		"source package":    req.Record.PackageSourceProvenance.PackageSHA256,
 	} {
 		if actual != req.Record.PackageHash {
-			return fmt.Errorf("%w: %s hash does not match intended package", ErrInvalidExternalPackageCommit, name)
+			return fmt.Errorf("%w: %s hash does not match intended package", ErrInvalidExternalPackageInstall, name)
 		}
 	}
 	for name, actual := range map[string]string{
@@ -337,7 +209,7 @@ func validateExternalPackageCommit(ownerEnvHash string, req CommitExternalPackag
 		"assessed manifest":  req.Record.SignatureAssessment.AssessedHashes.ManifestSHA256,
 	} {
 		if actual != req.Record.ManifestHash {
-			return fmt.Errorf("%w: %s hash does not match intended manifest", ErrInvalidExternalPackageCommit, name)
+			return fmt.Errorf("%w: %s hash does not match intended manifest", ErrInvalidExternalPackageInstall, name)
 		}
 	}
 	for name, actual := range map[string]string{
@@ -345,11 +217,11 @@ func validateExternalPackageCommit(ownerEnvHash string, req CommitExternalPackag
 		"assessed entries":  req.Record.SignatureAssessment.AssessedHashes.EntriesSHA256,
 	} {
 		if actual != req.Record.EntriesHash {
-			return fmt.Errorf("%w: %s hash does not match intended entries", ErrInvalidExternalPackageCommit, name)
+			return fmt.Errorf("%w: %s hash does not match intended entries", ErrInvalidExternalPackageInstall, name)
 		}
 	}
 	if req.Record.SignatureAssessment.Status != SignatureVerified && req.Record.UpdateEligibility != UpdateManualOnly {
-		return fmt.Errorf("%w: unverified packages must use manual_only updates", ErrInvalidExternalPackageCommit)
+		return fmt.Errorf("%w: unverified packages must use manual_only updates", ErrInvalidExternalPackageInstall)
 	}
 	return nil
 }
@@ -418,9 +290,6 @@ func validExternalPackageConfirmationDigest(value string) bool {
 }
 
 func validatePersistedPluginSecurityFacts(record PluginRecord) error {
-	if err := ValidateReleaseActivationEvidence(record); err != nil {
-		return fmt.Errorf("plugin %q has invalid release activation evidence: %w", record.PluginInstanceID, err)
-	}
 	if !validSignatureAssessmentStatus(record.SignatureAssessment.Status) {
 		return fmt.Errorf("plugin %q has invalid signature assessment status %q", record.PluginInstanceID, record.SignatureAssessment.Status)
 	}
@@ -482,81 +351,7 @@ func validatePersistedPluginSecurityFactsWithoutHistory(record PluginRecord) err
 	return err
 }
 
-func validatePersistedExternalPackageReceipt(receipt externalPackageCommitReceipt) error {
-	req := receipt.Request
-	result := receipt.Result
-	for name, value := range map[string]string{
-		"owner_env_hash": receipt.OwnerEnvHash, "inspection_id": req.InspectionID,
-		"commit_id": req.CommitID, "confirmation_digest": req.ConfirmationDigest,
-		"intended_fingerprint": req.IntendedFingerprint, "intended_package_sha256": req.IntendedPackageSHA256,
-		"plugin_instance_id": req.Record.PluginInstanceID,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("external package receipt has an empty %s", name)
-		}
-	}
-	requestDigest, err := hex.DecodeString(receipt.RequestSHA256)
-	if err != nil || len(requestDigest) != sha256.Size || strings.ToLower(receipt.RequestSHA256) != receipt.RequestSHA256 {
-		return fmt.Errorf("external package receipt %q has an invalid request digest", req.InspectionID)
-	}
-	if !validExternalPackageConfirmationDigest(req.ConfirmationDigest) {
-		return fmt.Errorf("external package receipt %q has an invalid confirmation digest", req.InspectionID)
-	}
-	if req.Intent != ExternalPackageInstall && req.Intent != ExternalPackageUpdate {
-		return fmt.Errorf("external package receipt %q has invalid intent %q", req.InspectionID, req.Intent)
-	}
-	if (req.Intent == ExternalPackageInstall && req.ExpectedManagementRevision != 0) ||
-		(req.Intent == ExternalPackageUpdate && req.ExpectedManagementRevision == 0) {
-		return fmt.Errorf("external package receipt %q has an invalid expected management revision", req.InspectionID)
-	}
-	if result.InspectionID != req.InspectionID || result.CommitID != req.CommitID || result.Intent != req.Intent ||
-		result.PluginInstanceID != req.Record.PluginInstanceID || result.ExpectedManagementRevision != req.ExpectedManagementRevision ||
-		result.IntendedFingerprint != req.IntendedFingerprint || result.IntendedPackageSHA256 != req.IntendedPackageSHA256 {
-		return fmt.Errorf("external package receipt %q result identity does not match its request", req.InspectionID)
-	}
-	if result.CreatedAt.UnixNano() <= 0 || result.UpdatedAt.Before(result.CreatedAt) {
-		return fmt.Errorf("external package receipt %q has invalid lifecycle metadata", req.InspectionID)
-	}
-	switch result.Status {
-	case ExternalPackageCommitting:
-		if result.MutationOutcome != mutation.OutcomeUnknown || result.RecordSnapshot != nil || result.FailureCode != "" {
-			return fmt.Errorf("external package receipt %q has inconsistent committing state", req.InspectionID)
-		}
-	case ExternalPackageCommitted:
-		if result.MutationOutcome != mutation.OutcomeCommitted || result.RecordSnapshot == nil || result.FailureCode != "" {
-			return fmt.Errorf("external package receipt %q has inconsistent committed state", req.InspectionID)
-		}
-		snapshot := *result.RecordSnapshot
-		if !snapshot.UpdatedAt.Equal(result.UpdatedAt) {
-			return fmt.Errorf("external package receipt %q snapshot update time does not match the receipt", req.InspectionID)
-		}
-		if snapshot.OwnerEnvHash != receipt.OwnerEnvHash || snapshot.PluginInstanceID != req.Record.PluginInstanceID ||
-			snapshot.ActiveFingerprint != req.IntendedFingerprint || snapshot.PackageHash != req.IntendedPackageSHA256 {
-			return fmt.Errorf("external package receipt %q snapshot identity does not match its request", req.InspectionID)
-		}
-		if req.Intent == ExternalPackageInstall && snapshot.ManagementRevision != 1 {
-			return fmt.Errorf("external package receipt %q install snapshot has an invalid management revision", req.InspectionID)
-		}
-		if req.Intent == ExternalPackageUpdate && snapshot.ManagementRevision != req.ExpectedManagementRevision+1 {
-			return fmt.Errorf("external package receipt %q update snapshot has an invalid management revision", req.InspectionID)
-		}
-		if snapshot.ExecutionApproval.Status != ExecutionApprovalUserApproved && snapshot.ExecutionApproval.Status != ExecutionApprovalPolicyApproved {
-			return fmt.Errorf("external package receipt %q snapshot is not execution approved", req.InspectionID)
-		}
-		if err := validatePersistedPluginSecurityFacts(snapshot); err != nil {
-			return fmt.Errorf("external package receipt %q snapshot: %w", req.InspectionID, err)
-		}
-	case ExternalPackageFailed:
-		if result.MutationOutcome != mutation.OutcomeNotCommitted || result.RecordSnapshot != nil || result.FailureCode != ExternalPackageFailureHostRestarted {
-			return fmt.Errorf("external package receipt %q has inconsistent failed state", req.InspectionID)
-		}
-	default:
-		return fmt.Errorf("external package receipt %q has invalid status %q", req.InspectionID, result.Status)
-	}
-	return nil
-}
-
-func prepareExternalPackageRecord(ownerEnvHash string, req CommitExternalPackageRequest, existing PluginRecord, exists bool, now time.Time) (PluginRecord, error) {
+func prepareExternalPackageRecord(ownerEnvHash string, req InstallExternalPackageRequest, existing PluginRecord, exists bool, now time.Time) (PluginRecord, error) {
 	record := req.Record
 	record.OwnerEnvHash = ownerEnvHash
 	if req.Intent == ExternalPackageInstall {
@@ -586,33 +381,6 @@ func prepareExternalPackageRecord(ownerEnvHash string, req CommitExternalPackage
 		return PluginRecord{}, err
 	}
 	return clonePluginRecord(record)
-}
-
-func externalPackageRequestSHA256(req CommitExternalPackageRequest) (string, error) {
-	req.Now = time.Time{}
-	req.Record.OwnerEnvHash = ""
-	raw, err := json.Marshal(req)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256(raw)
-	return hex.EncodeToString(digest[:]), nil
-}
-
-func cloneExternalPackageCommitResult(result ExternalPackageCommitResult) (ExternalPackageCommitResult, error) {
-	if result.RecordSnapshot == nil {
-		return result, nil
-	}
-	snapshot, err := clonePluginRecord(*result.RecordSnapshot)
-	if err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	result.RecordSnapshot = &snapshot
-	return result, nil
-}
-
-func externalPackageCommitKey(ownerEnvHash, inspectionID string) string {
-	return strings.TrimSpace(ownerEnvHash) + "\x00" + strings.TrimSpace(inspectionID)
 }
 
 func normalizePluginSecurityFacts(record PluginRecord) PluginRecord {

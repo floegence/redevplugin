@@ -27,7 +27,7 @@
     },
     "teardown_phase": {
       "type": "string",
-      "enum": ["bridge", "confirmation", "execution", "operation", "stream", "runtime"]
+      "enum": ["bridge", "confirmation", "execution", "runtime"]
     },
     "revoke_counts": {
       "type": "object",
@@ -38,12 +38,9 @@
         "asset_sessions",
         "plugin_gateway_tokens",
         "confirmation_tokens",
-        "stream_tickets",
         "handle_grants",
         "confirmations",
-        "operations",
-        "streams",
-        "runtime_executions",
+        "executions",
         "active_network_requests",
         "sockets",
         "network_streams",
@@ -55,12 +52,9 @@
         "asset_sessions": { "$ref": "#/$defs/count" },
         "plugin_gateway_tokens": { "$ref": "#/$defs/count" },
         "confirmation_tokens": { "$ref": "#/$defs/count" },
-        "stream_tickets": { "$ref": "#/$defs/count" },
         "handle_grants": { "$ref": "#/$defs/count" },
         "confirmations": { "$ref": "#/$defs/count" },
-        "operations": { "$ref": "#/$defs/count" },
-        "streams": { "$ref": "#/$defs/count" },
-        "runtime_executions": { "$ref": "#/$defs/count" },
+        "executions": { "$ref": "#/$defs/count" },
         "active_network_requests": { "$ref": "#/$defs/count" },
         "sockets": { "$ref": "#/$defs/count" },
         "network_streams": { "$ref": "#/$defs/count" },

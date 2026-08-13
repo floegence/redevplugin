@@ -45,7 +45,7 @@ export async function buildPlatformPackages({
 } = {}) {
   validateBuildInputs({ outDir, version, sourceCommit });
   const platformPackageSet = parseStrictJSON(
-    readFileSync(join(root, "spec/plugin/platform-package-set-v1.json")),
+    readFileSync(join(root, "spec/plugin/platform-package-set-v2.json")),
     "platform package set",
   );
   if (platformPackageSet.platform_version !== version) {
@@ -179,7 +179,6 @@ export function verifyRustPublishMetadata(path, { version, sourceCommit }) {
   }
   const internalDependencies = new Map([
     ["redevplugin-ipc", new Map([["redevplugin-contracts", "dev"]])],
-    ["redevplugin-target-classifier", new Map([["redevplugin-contracts", "dev"]])],
     ["redevplugin-runtime", new Map([
       ["redevplugin-ipc", "normal"],
       ["redevplugin-wasm-abi", "normal"],
@@ -290,15 +289,15 @@ export function verifyPlatformPackageBuild(manifestPath, { verifyArchives = true
   assertSHA256(manifest.contract_set_sha256, "platform package build contract digest");
 
   const packageSet = parseStrictJSON(
-    readFileSync(join(root, "spec/plugin/platform-package-set-v1.json")),
+    readFileSync(join(root, "spec/plugin/platform-package-set-v2.json")),
     "platform package set",
   );
   if (manifest.platform_version !== packageSet.platform_version
       || manifest.contract_set_sha256 !== packageSet.contract_set_sha256) {
     throw new Error("platform package build does not match the active package set");
   }
-  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== 8) {
-    throw new Error("platform package build must contain exactly eight package artifacts");
+  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== 7) {
+    throw new Error("platform package build must contain exactly seven package artifacts");
   }
 
   const expected = new Map([

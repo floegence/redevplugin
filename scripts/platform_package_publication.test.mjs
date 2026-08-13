@@ -11,7 +11,7 @@ import {
   verifyPlatformReleaseDirectory,
 } from "./platform_package_publication.mjs";
 
-const version = "0.7.27";
+const version = "1.0.0";
 const sourceCommit = "1".repeat(40);
 const h1 = `h1:${Buffer.alloc(32, 1).toString("base64")}`;
 const npmNames = ["@floegence/redevplugin-contracts", "@floegence/redevplugin-ui"];
@@ -19,7 +19,6 @@ const rustNames = [
   "redevplugin-contracts",
   "redevplugin-ipc",
   "redevplugin-wasm-abi",
-  "redevplugin-target-classifier",
   "redevplugin-worker-sdk",
   "redevplugin-runtime",
 ];
@@ -60,7 +59,7 @@ test("GitHub Release readback permits exactly one publication asset", () => {
 
 test("publication creation rejects substituted registry source commits", () => {
   const inputs = validReadbacks();
-  inputs.rustReadback[3].source_commit = "f".repeat(40);
+  inputs.rustReadback[2].source_commit = "f".repeat(40);
   assert.throws(() => createPlatformPackagePublication(inputs), /source commit mismatch/);
 });
 

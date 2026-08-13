@@ -28,13 +28,11 @@ var (
 // ExternalSignerRequestV1 contains only public signing inputs. It deliberately
 // carries no signer invocation, credential, storage, account, or lookup data.
 type ExternalSignerRequestV1 struct {
-	SchemaVersion         string                           `json:"schema_version"`
-	RequestID             string                           `json:"request_id"`
-	Usage                 releasecontract.SigningUsage     `json:"usage"`
-	KeyID                 string                           `json:"key_id"`
-	Subject               releasecontract.SigningSubjectV1 `json:"subject"`
-	SubjectIdentitySHA256 string                           `json:"subject_identity_sha256"`
-	SigningPreimageSHA256 string                           `json:"signing_preimage_sha256"`
+	SchemaVersion         string                       `json:"schema_version"`
+	RequestID             string                       `json:"request_id"`
+	Usage                 releasecontract.SigningUsage `json:"usage"`
+	KeyID                 string                       `json:"key_id"`
+	SigningPreimageSHA256 string                       `json:"signing_preimage_sha256"`
 }
 
 // ExternalSignerResponseV1 is the minimal public result accepted from an
@@ -44,41 +42,31 @@ type ExternalSignerResponseV1 struct {
 	RequestID             string                       `json:"request_id"`
 	Usage                 releasecontract.SigningUsage `json:"usage"`
 	KeyID                 string                       `json:"key_id"`
-	SubjectIdentitySHA256 string                       `json:"subject_identity_sha256"`
 	SigningPreimageSHA256 string                       `json:"signing_preimage_sha256"`
 	Algorithm             string                       `json:"algorithm"`
 	Signature             string                       `json:"signature"`
 }
 
 type signerRequestIdentity struct {
-	SchemaVersion         string                           `json:"schema_version"`
-	Usage                 releasecontract.SigningUsage     `json:"usage"`
-	KeyID                 string                           `json:"key_id"`
-	Subject               releasecontract.SigningSubjectV1 `json:"subject"`
-	SubjectIdentitySHA256 string                           `json:"subject_identity_sha256"`
-	SigningPreimageSHA256 string                           `json:"signing_preimage_sha256"`
+	SchemaVersion         string                       `json:"schema_version"`
+	Usage                 releasecontract.SigningUsage `json:"usage"`
+	KeyID                 string                       `json:"key_id"`
+	SigningPreimageSHA256 string                       `json:"signing_preimage_sha256"`
 }
 
 func NewExternalSignerRequest(
 	usage releasecontract.SigningUsage,
 	keyID string,
-	subject releasecontract.SigningSubjectV1,
 	signingPreimage []byte,
 ) (ExternalSignerRequestV1, error) {
-	if !usageMatchesSubject(usage, subject.Usage) || keyID == "" || len(signingPreimage) == 0 {
+	if !validSigningUsage(usage) || keyID == "" || len(signingPreimage) == 0 {
 		return ExternalSignerRequestV1{}, ErrInvalidSignerRequest
-	}
-	subjectIdentity, err := releasecontract.SigningSubjectIdentitySHA256(subject)
-	if err != nil {
-		return ExternalSignerRequestV1{}, fmt.Errorf("%w: %v", ErrInvalidSignerRequest, err)
 	}
 	preimageDigest := sha256.Sum256(signingPreimage)
 	identity := signerRequestIdentity{
 		SchemaVersion:         ExternalSignerRequestSchemaVersion,
 		Usage:                 usage,
 		KeyID:                 keyID,
-		Subject:               subject,
-		SubjectIdentitySHA256: subjectIdentity,
 		SigningPreimageSHA256: hex.EncodeToString(preimageDigest[:]),
 	}
 	identityBytes, err := json.Marshal(identity)
@@ -91,8 +79,6 @@ func NewExternalSignerRequest(
 		RequestID:             hex.EncodeToString(requestDigest[:]),
 		Usage:                 identity.Usage,
 		KeyID:                 identity.KeyID,
-		Subject:               identity.Subject,
-		SubjectIdentitySHA256: identity.SubjectIdentitySHA256,
 		SigningPreimageSHA256: identity.SigningPreimageSHA256,
 	}
 	if err := validateExternalSignerRequest(request); err != nil {
@@ -149,7 +135,7 @@ func VerifyExternalSignerResponse(
 		return nil, err
 	}
 	if response.RequestID != request.RequestID || response.Usage != request.Usage || response.KeyID != request.KeyID ||
-		response.SubjectIdentitySHA256 != request.SubjectIdentitySHA256 || response.SigningPreimageSHA256 != request.SigningPreimageSHA256 ||
+		response.SigningPreimageSHA256 != request.SigningPreimageSHA256 ||
 		len(publicKey) != ed25519.PublicKeySize {
 		return nil, ErrInvalidSignerResponse
 	}
@@ -165,17 +151,13 @@ func VerifyExternalSignerResponse(
 }
 
 func validateExternalSignerRequest(request ExternalSignerRequestV1) error {
-	if request.SchemaVersion != ExternalSignerRequestSchemaVersion || !isSHA256(request.RequestID) || !isSHA256(request.SubjectIdentitySHA256) ||
-		!isSHA256(request.SigningPreimageSHA256) || request.KeyID == "" || !usageMatchesSubject(request.Usage, request.Subject.Usage) {
-		return ErrInvalidSignerRequest
-	}
-	subjectIdentity, err := releasecontract.SigningSubjectIdentitySHA256(request.Subject)
-	if err != nil || subjectIdentity != request.SubjectIdentitySHA256 {
+	if request.SchemaVersion != ExternalSignerRequestSchemaVersion || !isSHA256(request.RequestID) ||
+		!isSHA256(request.SigningPreimageSHA256) || request.KeyID == "" || !validSigningUsage(request.Usage) {
 		return ErrInvalidSignerRequest
 	}
 	identityBytes, err := json.Marshal(signerRequestIdentity{
-		SchemaVersion: request.SchemaVersion, Usage: request.Usage, KeyID: request.KeyID, Subject: request.Subject,
-		SubjectIdentitySHA256: request.SubjectIdentitySHA256, SigningPreimageSHA256: request.SigningPreimageSHA256,
+		SchemaVersion: request.SchemaVersion, Usage: request.Usage, KeyID: request.KeyID,
+		SigningPreimageSHA256: request.SigningPreimageSHA256,
 	})
 	if err != nil {
 		return ErrInvalidSignerRequest
@@ -189,32 +171,11 @@ func validateExternalSignerRequest(request ExternalSignerRequestV1) error {
 
 func validateExternalSignerResponseShape(response ExternalSignerResponseV1) error {
 	if response.SchemaVersion != ExternalSignerResponseSchemaVersion || !isSHA256(response.RequestID) ||
-		!isSHA256(response.SubjectIdentitySHA256) || !isSHA256(response.SigningPreimageSHA256) ||
+		!isSHA256(response.SigningPreimageSHA256) ||
 		response.KeyID == "" || response.Algorithm != releasecontract.SignatureAlgorithmEd25519 || !validSigningUsage(response.Usage) {
 		return ErrInvalidSignerResponse
 	}
 	return nil
-}
-
-func usageForSubject(usage releasecontract.SigningSubjectUsage) releasecontract.SigningUsage {
-	switch usage {
-	case releasecontract.SigningSubjectUsageRootDelegation:
-		return releasecontract.SigningUsageRootDelegation
-	case releasecontract.SigningSubjectUsagePackage:
-		return releasecontract.SigningUsagePackage
-	case releasecontract.SigningSubjectUsageReleaseMetadata:
-		return releasecontract.SigningUsageReleaseMetadata
-	case releasecontract.SigningSubjectUsageSourcePolicy:
-		return releasecontract.SigningUsageSourcePolicy
-	case releasecontract.SigningSubjectUsageSourcePolicyPointer:
-		return releasecontract.SigningUsageSourcePolicyPointer
-	case releasecontract.SigningSubjectUsageRevocation:
-		return releasecontract.SigningUsageRevocation
-	case releasecontract.SigningSubjectUsageRevocationPointer:
-		return releasecontract.SigningUsageRevocationPointer
-	default:
-		return ""
-	}
 }
 
 func validSigningUsage(usage releasecontract.SigningUsage) bool {
@@ -222,19 +183,11 @@ func validSigningUsage(usage releasecontract.SigningUsage) bool {
 	case releasecontract.SigningUsageRootDelegation, releasecontract.SigningUsagePackage,
 		releasecontract.SigningUsageReleaseMetadata, releasecontract.SigningUsageSourcePolicy,
 		releasecontract.SigningUsageSourcePolicyPointer, releasecontract.SigningUsageRevocation,
-		releasecontract.SigningUsageRevocationPointer, releasecontract.SigningUsageLedgerCheckpoint,
-		releasecontract.SigningUsageLedgerReceipt:
+		releasecontract.SigningUsageRevocationPointer:
 		return true
 	default:
 		return false
 	}
-}
-
-func usageMatchesSubject(usage releasecontract.SigningUsage, subjectUsage releasecontract.SigningSubjectUsage) bool {
-	if usage == releasecontract.SigningUsageLedgerCheckpoint || usage == releasecontract.SigningUsageLedgerReceipt {
-		return usageForSubject(subjectUsage) != ""
-	}
-	return usageForSubject(subjectUsage) == usage
 }
 
 func isSHA256(value string) bool {

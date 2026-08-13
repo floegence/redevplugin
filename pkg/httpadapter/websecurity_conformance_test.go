@@ -111,15 +111,15 @@ func TestHandlerWebSecurityConformanceCoversEveryRoute(t *testing.T) {
 	}
 
 	sawAssetRead := false
-	sawStreamRead := false
+	sawExecutionEvents := false
 	for _, route := range routes {
 		route := route
 		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
 			if route.action == websecurity.RouteActionReadSurfaceAsset {
 				sawAssetRead = true
 			}
-			if route.action == websecurity.RouteActionReadSurfaceStream {
-				sawStreamRead = true
+			if route.action == websecurity.RouteActionListExecutionEvents {
+				sawExecutionEvents = true
 			}
 			for _, testCase := range testCases {
 				testCase := testCase
@@ -148,8 +148,8 @@ func TestHandlerWebSecurityConformanceCoversEveryRoute(t *testing.T) {
 			}
 		})
 	}
-	if !sawAssetRead || !sawStreamRead {
-		t.Fatalf("route matrix missing unsafe read routes: asset=%t stream=%t", sawAssetRead, sawStreamRead)
+	if !sawAssetRead || !sawExecutionEvents {
+		t.Fatalf("route matrix missing unsafe read routes: asset=%t execution_events=%t", sawAssetRead, sawExecutionEvents)
 	}
 }
 

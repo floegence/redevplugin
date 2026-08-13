@@ -137,7 +137,6 @@ type assetFetchFlight struct {
 
 var (
 	_ releasetrust.ReleaseDocumentTransport = (*AssetSet)(nil)
-	_ releasetrust.SigningLedgerTransport   = (*AssetSet)(nil)
 	_ host.ReleaseArtifactResolver          = (*AssetSet)(nil)
 )
 
@@ -186,17 +185,6 @@ func (set *AssetSet) FetchReleaseDocument(ctx context.Context, request releasetr
 		return releasetrust.ReleaseDocumentResult{}, err
 	}
 	return releasetrust.NewReleaseDocumentResult(request, digest, value)
-}
-
-func (set *AssetSet) FetchSigningLedgerArtifact(ctx context.Context, request releasetrust.SigningLedgerRequest) (releasetrust.SigningLedgerResult, error) {
-	if !set.matches(request.SourceID(), request.Channel()) {
-		return releasetrust.SigningLedgerResult{}, ErrAssetMissing
-	}
-	value, _, err := set.fetch(ctx, request.Locator().String(), "signing_ledger", request.MaxBytes(), set.allowedHosts, "", nil)
-	if err != nil {
-		return releasetrust.SigningLedgerResult{}, err
-	}
-	return releasetrust.NewSigningLedgerResult(request, value)
 }
 
 func (set *AssetSet) ResolveReleaseArtifact(ctx context.Context, request host.ReleaseArtifactResolveRequest) (host.ResolvedPackageArtifact, error) {

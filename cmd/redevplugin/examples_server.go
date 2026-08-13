@@ -15,22 +15,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/httpadapter"
-	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/operation"
-	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
-	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/sessionscope"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
@@ -205,19 +198,23 @@ type examplesServerOptions struct {
 	OnReady           func(*host.Host)
 }
 
-func examplesServer(ctx context.Context, stateRoot string, runtimePath string) error {
-	return examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{RuntimeShardCount: 1})
+func examplesServer(ctx context.Context, stateRoot string, runtimePath string, descriptorPath string) error {
+	return examplesServerWithOptions(ctx, stateRoot, runtimePath, descriptorPath, examplesServerOptions{RuntimeShardCount: 1})
 }
 
-func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePath string, options examplesServerOptions) error {
+func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePath string, descriptorPath string, options examplesServerOptions) error {
 	ctx = examplesContext(ctx)
 	stateRoot = strings.TrimSpace(stateRoot)
 	runtimePath = strings.TrimSpace(runtimePath)
+	descriptorPath = strings.TrimSpace(descriptorPath)
 	if stateRoot == "" {
 		return errors.New("state_root is required")
 	}
 	if runtimePath == "" {
 		return errors.New("runtime_path is required")
+	}
+	if descriptorPath == "" {
+		return errors.New("runtime_descriptor_path is required")
 	}
 	repositoryRoot := strings.TrimSpace(options.RepositoryRoot)
 	if repositoryRoot == "" {
@@ -235,24 +232,12 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		return err
 	}
 
-	registryStore, err := registry.NewSQLiteStore(ctx, filepath.Join(stateRoot, "registry.sqlite"))
-	if err != nil {
-		return err
-	}
 	assetStore, err := pluginpkg.NewFileAssetStore(filepath.Join(stateRoot, "assets"))
 	if err != nil {
-		_ = registryStore.Close()
-		return err
-	}
-	pluginData, err := plugindata.Open(ctx, filepath.Join(stateRoot, "plugin-data"), registryStore)
-	if err != nil {
-		_ = registryStore.Close()
 		return err
 	}
 	secretStore, err := secrets.NewSQLiteStore(ctx, filepath.Join(stateRoot, "secrets.sqlite"))
 	if err != nil {
-		_ = pluginData.Close()
-		_ = registryStore.Close()
 		return err
 	}
 	networkExecutor := options.NetworkExecutor
@@ -263,38 +248,12 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	if events == nil {
 		events = observability.NewMemoryStore()
 	}
-	surfaceTokens := bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
 	connectivityBroker := connectivity.NewMemoryBroker()
-	operationStore := operation.NewMemoryStore()
-	confirmationIntentStore := security.NewMemoryConfirmationIntentStore()
-	streamStore := stream.NewMemoryStore()
-	sessionScopeStore, err := sessionscope.NewSQLiteStore(ctx, filepath.Join(stateRoot, "session-scopes.sqlite"), sessionscope.StoreOptions{})
-	if err != nil {
-		_ = secretStore.Close()
-		_ = pluginData.Close()
-		_ = registryStore.Close()
-		return err
-	}
-	defer sessionScopeStore.Close()
-	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
-	if err != nil {
-		_ = secretStore.Close()
-		_ = pluginData.Close()
-		_ = registryStore.Close()
-		return err
-	}
-	sessionLifecycle, err := newCLISessionLifecycleAdapter(filepath.Join(stateRoot, "closed-sessions.json"))
-	if err != nil {
-		_ = secretStore.Close()
-		_ = pluginData.Close()
-		_ = registryStore.Close()
-		return err
-	}
 	runtimeTarget, err := runtimetarget.Current()
 	if err != nil {
 		return err
 	}
-	runtimeDescriptor, err := describeCommandRuntime(runtimePath, runtimeTarget)
+	runtimeDescriptor, err := loadCommandRuntimeDescriptor(descriptorPath, runtimeTarget)
 	if err != nil {
 		return err
 	}
@@ -303,23 +262,15 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		return err
 	}
 	pluginHost, err := host.Open(ctx, host.Config{
+		StateRoot: stateRoot,
 		Core: host.CoreAdapters{
 			Policy:               staticPolicyAdapter{},
 			Authorization:        staticAuthorizationAdapter{},
 			PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
-			Registry:             registryStore,
 			Audit:                events,
 			SecurityAudit:        events,
 			Diagnostics:          events,
-			SurfaceTokens:        surfaceTokens,
-			PluginData:           pluginData,
 			Assets:               assetStore,
-			InstallStages:        installstage.NewMemoryStore(),
-			Operations:           operationStore,
-			ConfirmationIntents:  confirmationIntentStore,
-			Streams:              streamStore,
-			SessionLifecycle:     sessionLifecycle,
-			SessionScopes:        sessionScopes,
 		},
 		Runtime: runtimeModule,
 		Connectivity: &host.ConnectivityModule{
@@ -331,14 +282,11 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	if err != nil {
 		_, _ = runtimeModule.Close(context.Background())
 		_ = secretStore.Close()
-		_ = pluginData.Close()
-		_ = registryStore.Close()
 		return err
 	}
 	defer func() {
 		_ = pluginHost.Close()
 		_ = secretStore.Close()
-		_ = registryStore.Close()
 	}()
 	health, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{Target: runtimeTarget})
 	if err != nil {
@@ -358,13 +306,13 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		}
 		installed[spec.Slug] = exampleInstalledPlugin{Spec: spec, Record: record}
 	}
-	refreshResults, err := pluginHost.RefreshEnabledPlugins(ctx)
+	recovery, err := pluginHost.RecoverEnabled(ctx)
 	if err != nil {
 		return fmt.Errorf("restore enabled example plugin runtime state: %w", err)
 	}
-	for _, result := range refreshResults {
-		if result.Status == host.RefreshEnabledPluginStatusFailed {
-			return fmt.Errorf("restore enabled example plugin %s runtime state: %s: %s", result.PluginInstanceID, result.Error.Code, result.Error.Message)
+	for _, result := range recovery.Results {
+		if result.Status == host.PluginRecoveryFailed {
+			return fmt.Errorf("restore enabled example plugin %s runtime state: %s; action=%s", result.PluginInstanceID, result.Reason, result.Action)
 		}
 	}
 	if options.OnReady != nil {

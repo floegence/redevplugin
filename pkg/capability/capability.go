@@ -146,8 +146,7 @@ const (
 type ExecutionBinding struct {
 	InvocationID            string                  `json:"invocation_id"`
 	AuditCorrelationID      string                  `json:"audit_correlation_id"`
-	OperationID             string                  `json:"operation_id,omitempty"`
-	StreamID                string                  `json:"stream_id,omitempty"`
+	ExecutionID             string                  `json:"execution_id,omitempty"`
 	PublisherID             string                  `json:"publisher_id"`
 	PluginID                string                  `json:"plugin_id"`
 	PluginInstanceID        string                  `json:"plugin_instance_id"`
@@ -234,8 +233,7 @@ func (b ExecutionBinding) Surface() SurfaceScope {
 
 type ExecutionContext struct {
 	ExecutionBinding
-	Operation OperationSink `json:"-"`
-	Stream    StreamSink    `json:"-"`
+	Events ExecutionSink `json:"-"`
 }
 
 type Invocation struct {
@@ -247,10 +245,12 @@ type Result struct {
 	Data any `json:"data,omitempty"`
 }
 
-type OperationSink interface {
+type ExecutionSink interface {
 	ID() string
 	ReportProgress(ctx context.Context, progress OperationProgress) error
+	Append(ctx context.Context, event any) error
 	Complete(ctx context.Context) error
+	Close(ctx context.Context) error
 	Cancel(ctx context.Context, reason string) error
 	Fail(ctx context.Context, code ExecutionFailureCode, cause error) error
 	CancelRequested() <-chan struct{}
@@ -265,13 +265,6 @@ type OperationProgress struct {
 	CompletedUnits *uint64 `json:"completed_units,omitempty"`
 	TotalUnits     *uint64 `json:"total_units,omitempty"`
 	Unit           string  `json:"unit,omitempty"`
-}
-
-type StreamSink interface {
-	ID() string
-	Append(ctx context.Context, event any) error
-	Close(ctx context.Context) error
-	Fail(ctx context.Context, code ExecutionFailureCode, cause error) error
 }
 
 type StreamContract struct {
@@ -291,9 +284,9 @@ type TargetResolutionRequest struct {
 	TargetInput       map[string]any         `json:"target_input"`
 }
 
-type OperationCancellation struct {
+type ExecutionCancellation struct {
 	Execution   ExecutionContext `json:"execution"`
-	OperationID string           `json:"operation_id"`
+	ExecutionID string           `json:"execution_id"`
 	Reason      string           `json:"reason,omitempty"`
 	RequestedAt time.Time        `json:"requested_at"`
 }
@@ -306,12 +299,12 @@ type TargetProjector interface {
 	ProjectTarget(ctx context.Context, req TargetResolutionRequest) (TargetDescriptor, error)
 }
 
-type OperationCanceler interface {
-	CancelOperation(ctx context.Context, req OperationCancellation) error
+type ExecutionCanceler interface {
+	CancelExecution(ctx context.Context, req ExecutionCancellation) error
 }
 
 type Registration struct {
-	Contract        capabilitycontract.VerifiedContract
+	Contract        capabilitycontract.KnownContract
 	TargetProjector TargetProjector
 	Adapter         Adapter
 }
@@ -364,20 +357,20 @@ func (r *Registry) Register(registration Registration) error {
 	return nil
 }
 
-func (r *Registry) AddContract(contract capabilitycontract.VerifiedContract) error {
+func (r *Registry) AddContract(contract capabilitycontract.KnownContract) error {
 	if r == nil || r.contracts == nil {
 		return fmt.Errorf("%w: registry is nil", ErrInvalidRegistration)
 	}
 	return r.contracts.Add(contract)
 }
 
-func (r *Registry) RequireContract(pin capabilitycontract.Pin) (capabilitycontract.VerifiedContract, error) {
+func (r *Registry) RequireContract(pin capabilitycontract.Pin) (capabilitycontract.KnownContract, error) {
 	if r == nil || r.contracts == nil {
-		return capabilitycontract.VerifiedContract{}, ErrRegistrationMissing
+		return capabilitycontract.KnownContract{}, ErrRegistrationMissing
 	}
 	contract, err := r.contracts.Require(pin)
 	if err != nil {
-		return capabilitycontract.VerifiedContract{}, fmt.Errorf("%w: %v", ErrRegistrationMissing, err)
+		return capabilitycontract.KnownContract{}, fmt.Errorf("%w: %v", ErrRegistrationMissing, err)
 	}
 	return contract, nil
 }
@@ -525,7 +518,7 @@ func safeNonnegativeInt64(value int64) bool {
 
 func validateExecutionBindingStrings(binding ExecutionBinding) error {
 	if !validUTF8Strings(
-		binding.InvocationID, binding.AuditCorrelationID, binding.OperationID, binding.StreamID,
+		binding.InvocationID, binding.AuditCorrelationID, binding.ExecutionID,
 		binding.PublisherID, binding.PluginID, binding.PluginInstanceID, binding.PluginVersion,
 		binding.ActiveFingerprint, binding.SurfaceInstanceID, binding.OwnerSessionHash,
 		binding.OwnerUserHash, binding.OwnerEnvHash, binding.SessionChannelIDHash,
@@ -539,13 +532,7 @@ func validateExecutionBindingStrings(binding ExecutionBinding) error {
 	}
 	if binding.Contract != nil {
 		pin := binding.Contract
-		if !validUTF8Strings(
-			pin.PublisherID, pin.ContractID, pin.ContractVersion, pin.ArtifactRef, pin.ArtifactSHA256,
-			pin.ManifestRef, pin.ManifestSHA256, pin.SignatureRef, pin.SignatureSHA256,
-			pin.SignatureKeyID, pin.SignaturePolicyEpoch, pin.SignatureRevocationEpoch,
-			pin.CompatibilityRef, pin.CompatibilitySHA256, pin.GeneratedClientRef,
-			pin.GeneratedClientSHA256, pin.NoticesRef, pin.NoticesSHA256,
-		) {
+		if !validUTF8Strings(pin.PublisherID, pin.ContractID, pin.ContractVersion, pin.ArtifactSHA256) {
 			return fmt.Errorf("%w: contract string field is not valid UTF-8", ErrInvalidExecutionBinding)
 		}
 	}

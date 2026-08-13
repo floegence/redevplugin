@@ -15,23 +15,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/releasepublisher"
 	"github.com/floegence/redevplugin/pkg/secrets"
-	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/version"
 )
@@ -204,8 +198,6 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return verifyCompatibility(args[1], args[2])
-	case "host-capability":
-		return runHostCapability(ctx, args[1:])
 	case "release":
 		return runRelease(ctx, args[1:])
 	case "inspect-data":
@@ -228,14 +220,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return installVerifiedHarness(ctx, args[1], args[2])
 	case "dev-install":
-		if len(args) < 3 {
+		if len(args) != 3 {
 			return usage()
 		}
-		capabilities, err := parseDevCapabilityArgs(args[3:])
-		if err != nil {
-			return err
-		}
-		return devInstall(ctx, args[1], args[2], capabilities)
+		return devInstall(ctx, args[1], args[2])
 	case "dev-enable":
 		if len(args) != 2 {
 			return usage()
@@ -318,10 +306,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return devStatus(args[1])
 	case "examples-server":
-		if len(args) != 3 {
+		if len(args) != 4 {
 			return usage()
 		}
-		return examplesServer(ctx, args[1], args[2])
+		return examplesServer(ctx, args[1], args[2], args[3])
 	case "enable":
 		if len(args) != 2 {
 			return usage()
@@ -367,111 +355,32 @@ func inspectData(ctx context.Context, root string, pluginInstanceID string) erro
 		return err
 	}
 	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	registryStore, err := registry.NewSQLiteStore(ctx, filepath.Join(root, devRegistryFile))
+	harness, err := newDevHarness(ctx, root, pluginpkg.NewMemoryAssetStore())
 	if err != nil {
 		return err
 	}
-	pluginDataRoot := filepath.Join(root, devPluginDataDir)
-	pluginData, err := plugindata.Open(ctx, pluginDataRoot, registryStore)
+	defer harness.Close()
+	inspection, err := harness.host.InspectPluginData(ctx, host.InspectPluginDataRequest{PluginInstanceID: pluginInstanceID})
 	if err != nil {
-		_ = registryStore.Close()
 		return err
 	}
-	defer func() {
-		_ = pluginData.Close()
-		_ = registryStore.Close()
-	}()
-	bindings := []plugindata.Binding{}
-	for cursor := ""; ; {
-		page, next, err := registryStore.ListBindings(ctx, cursor, 256)
-		if err != nil {
-			return err
-		}
-		bindings = append(bindings, page...)
-		if next == "" {
-			break
-		}
-		cursor = next
-	}
-	if pluginInstanceID != "" {
-		filtered := bindings[:0]
-		for _, binding := range bindings {
-			if binding.PluginInstanceID == pluginInstanceID {
-				filtered = append(filtered, binding)
-			}
-		}
-		bindings = filtered
-	}
-	objects := []plugindata.Object{}
-	if pluginInstanceID == "" {
-		for cursor := ""; ; {
-			page, next, err := registryStore.ListAllObjectsForMaintenance(ctx, cursor, 256)
-			if err != nil {
-				return err
-			}
-			for _, item := range page {
-				objects = append(objects, item.Object)
-			}
-			if next == "" {
-				break
-			}
-			cursor = next
-		}
-	} else {
-		for cursor := ""; ; {
-			page, next, err := registryStore.ListObjects(ctx, sessionctx.ScopeUser, pluginInstanceID, cursor, 256)
-			if err != nil {
-				return err
-			}
-			objects = append(objects, page...)
-			if next == "" {
-				break
-			}
-			cursor = next
-		}
-	}
-	records := []storage.NamespaceRecord{}
-	if pluginInstanceID != "" {
-		records, err = pluginData.ListNamespaces(ctx, pluginInstanceID)
-		if err != nil {
-			return err
-		}
-	} else {
-		for _, binding := range bindings {
-			pluginRecords, err := pluginData.ListNamespaces(ctx, binding.PluginInstanceID)
-			if err != nil {
-				return err
-			}
-			records = append(records, pluginRecords...)
-		}
-	}
-	totalUsage := int64(0)
-	totalUsageFiles := int64(0)
-	for i := range records {
-		usage, err := pluginData.Usage(ctx, records[i].PluginInstanceID, records[i].StoreID)
-		if err != nil {
-			return err
-		}
-		records[i].UsageBytes = usage.UsageBytes
-		records[i].QuotaBytes = usage.QuotaBytes
-		records[i].UsageFiles = usage.UsageFiles
-		records[i].QuotaFiles = usage.QuotaFiles
-		totalUsage += usage.UsageBytes
-		totalUsageFiles += usage.UsageFiles
+	objects := make([]plugindata.Object, len(inspection.Objects))
+	for index := range inspection.Objects {
+		objects[index] = inspection.Objects[index].Object
 	}
 	return writeJSON(dataInspectSummary{
 		OK:               true,
 		StateRoot:        root,
-		PluginDataRoot:   pluginDataRoot,
+		PluginDataRoot:   filepath.Join(root, devPluginDataDir),
 		PluginInstanceID: pluginInstanceID,
-		BindingCount:     len(bindings),
+		BindingCount:     len(inspection.Bindings),
 		ObjectCount:      len(objects),
-		NamespaceCount:   len(records),
-		TotalUsageBytes:  totalUsage,
-		TotalUsageFiles:  totalUsageFiles,
-		Bindings:         bindings,
+		NamespaceCount:   len(inspection.Namespaces),
+		TotalUsageBytes:  inspection.TotalUsageBytes,
+		TotalUsageFiles:  inspection.TotalUsageFiles,
+		Bindings:         inspection.Bindings,
 		Objects:          objects,
-		Namespaces:       records,
+		Namespaces:       inspection.Namespaces,
 		VersionMatrix:    version.CurrentMatrix(),
 	})
 }
@@ -984,7 +893,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> [--previous <verified-output>] | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> | redevplugin release verify <out-dir> | redevplugin release extract-presentation-icon <out-dir> <out-file> | redevplugin host-capability prepare <config.json> <workspace> | redevplugin host-capability apply-signature <workspace> <response.json> | redevplugin host-capability finalize <workspace> <out-dir> | redevplugin host-capability build <config.json> <out-dir> | redevplugin host-capability verify <artifact-root> <pin.json> <public.json> | redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> [--capability <artifact-root> <pin.json> <public.json>]... | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> | redevplugin release verify <out-dir> | redevplugin release extract-presentation-icon <out-dir> <out-file> | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> <runtime-descriptor.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -997,20 +906,12 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 		return err
 	}
 	defer os.RemoveAll(root)
-	registryStore := registry.NewMemoryStore()
-	pluginData, err := plugindata.Open(ctx, filepath.Join(root, "plugin-data"), registryStore)
+	config, err := newEphemeralCLIAdapters(root)
 	if err != nil {
 		return err
 	}
-	config, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, root, registryStore, pluginData)
-	if err != nil {
-		_ = pluginData.Close()
-		return err
-	}
-	defer sessionScopeStore.Close()
 	h, err := host.Open(ctx, config)
 	if err != nil {
-		_ = pluginData.Close()
 		return err
 	}
 	defer h.Close()
@@ -1055,17 +956,10 @@ func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFi
 		return err
 	}
 	defer os.RemoveAll(root)
-	registryStore := registry.NewMemoryStore()
-	pluginData, err := plugindata.Open(ctx, filepath.Join(root, "plugin-data"), registryStore)
+	adapters, err := newEphemeralCLIAdapters(root)
 	if err != nil {
 		return err
 	}
-	adapters, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, root, registryStore, pluginData)
-	if err != nil {
-		_ = pluginData.Close()
-		return err
-	}
-	defer sessionScopeStore.Close()
 	verifier := trust.Ed25519Verifier{
 		Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
 			Algorithm:   publicDoc.Algorithm,
@@ -1078,7 +972,6 @@ func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFi
 	adapters.Core.PackageTrustVerifier = verifier
 	h, err := host.Open(ctx, adapters)
 	if err != nil {
-		_ = pluginData.Close()
 		return err
 	}
 	defer h.Close()
@@ -1289,48 +1182,26 @@ func cliContext(ctx context.Context) context.Context {
 	})
 }
 
-func newEphemeralCLIAdapters(ctx context.Context, stateRoot string, registryStore registry.Store, pluginData host.PluginData) (host.Config, *sessionscope.SQLiteStore, error) {
+func newEphemeralCLIAdapters(stateRoot string) (host.Config, error) {
 	events := observability.NewMemoryStore()
 	connectivityBroker := connectivity.NewMemoryBroker()
-	sessionScopeStore, err := sessionscope.NewSQLiteStore(ctx, filepath.Join(stateRoot, "session-scopes.sqlite"), sessionscope.StoreOptions{})
-	if err != nil {
-		return host.Config{}, nil, err
-	}
-	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
-	if err != nil {
-		_ = sessionScopeStore.Close()
-		return host.Config{}, nil, err
-	}
-	sessionLifecycle, err := newCLISessionLifecycleAdapter(filepath.Join(stateRoot, "closed-sessions.json"))
-	if err != nil {
-		_ = sessionScopeStore.Close()
-		return host.Config{}, nil, err
-	}
 	return host.Config{
+		StateRoot: stateRoot,
 		Core: host.CoreAdapters{
 			Policy:               staticPolicyAdapter{},
 			Authorization:        staticAuthorizationAdapter{},
 			PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
-			Registry:             registryStore,
 			Audit:                events,
 			SecurityAudit:        events,
 			Diagnostics:          events,
-			SurfaceTokens:        bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-			PluginData:           pluginData,
 			Assets:               pluginpkg.NewMemoryAssetStore(),
-			InstallStages:        installstage.NewMemoryStore(),
-			Operations:           operation.NewMemoryStore(),
-			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
-			Streams:              stream.NewMemoryStore(),
-			SessionLifecycle:     sessionLifecycle,
-			SessionScopes:        sessionScopes,
 		},
 		Connectivity: &host.ConnectivityModule{
 			Broker:          connectivityBroker,
 			NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{}),
 		},
 		Secrets: &host.SecretsModule{Store: secrets.NewMemoryStore()},
-	}, sessionScopeStore, nil
+	}, nil
 }
 
 type staticPolicyAdapter struct{}

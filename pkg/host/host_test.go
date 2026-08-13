@@ -3,13 +3,10 @@ package host
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -27,11 +24,10 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
-	"github.com/floegence/redevplugin/pkg/installstage"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -43,7 +39,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -113,7 +108,7 @@ func mustManagementRevision(t testing.TB, h *Host, pluginInstanceID string) uint
 
 func mustAuthorizationRevisions(t testing.TB, h *Host, pluginInstanceID string) registry.AuthorizationRevisions {
 	t.Helper()
-	record, err := h.adapters.Registry.GetPlugin(hostTestContext(), pluginInstanceID)
+	record, err := h.getPluginRecord(hostTestContext(), pluginInstanceID)
 	if err != nil {
 		t.Fatalf("GetPlugin() for authorization revisions: %v", err)
 	}
@@ -136,32 +131,15 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 	base := func(t *testing.T) Config {
 		t.Helper()
 		observabilityStore := observability.NewMemoryStore()
-		registryStore := registry.NewMemoryStore()
-		pluginData, err := plugindata.Open(hostTestContext(), t.TempDir(), registryStore)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := pluginData.Close(); err != nil {
-				t.Errorf("PluginData.Close() error = %v", err)
-			}
-		})
-		return Config{Core: CoreAdapters{
+		return Config{StateRoot: filepath.Join(t.TempDir(), "control-state"), Core: CoreAdapters{
 			Policy:               policyAdapter{decision: PolicyAllow},
 			Authorization:        allowAuthorizationAdapter{},
 			PackageTrustVerifier: &recordingPackageTrustVerifier{},
-			Registry:             registryStore,
 			Audit:                observabilityStore,
 			SecurityAudit:        observabilityStore,
 			Diagnostics:          observabilityStore,
 			SurfaceCatalog:       &surfaceSink{},
 			Assets:               pluginpkg.NewMemoryAssetStore(),
-			InstallStages:        installstage.NewMemoryStore(),
-			SurfaceTokens:        bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-			PluginData:           pluginData,
-			Operations:           operation.NewMemoryStore(),
-			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
-			Streams:              stream.NewMemoryStore(),
 		}}
 	}
 
@@ -172,17 +150,10 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 		{name: "policy", clear: func(a *CoreAdapters) { a.Policy = nil }},
 		{name: "authorization", clear: func(a *CoreAdapters) { a.Authorization = nil }},
 		{name: "package trust verifier", clear: func(a *CoreAdapters) { a.PackageTrustVerifier = nil }},
-		{name: "registry", clear: func(a *CoreAdapters) { a.Registry = nil }},
 		{name: "audit", clear: func(a *CoreAdapters) { a.Audit = nil }},
 		{name: "security audit", clear: func(a *CoreAdapters) { a.SecurityAudit = nil }},
 		{name: "diagnostics", clear: func(a *CoreAdapters) { a.Diagnostics = nil }},
 		{name: "assets", clear: func(a *CoreAdapters) { a.Assets = nil }},
-		{name: "install stages", clear: func(a *CoreAdapters) { a.InstallStages = nil }},
-		{name: "surface tokens", clear: func(a *CoreAdapters) { a.SurfaceTokens = nil }},
-		{name: "plugin data", clear: func(a *CoreAdapters) { a.PluginData = nil }},
-		{name: "operations", clear: func(a *CoreAdapters) { a.Operations = nil }},
-		{name: "confirmation intents", clear: func(a *CoreAdapters) { a.ConfirmationIntents = nil }},
-		{name: "streams", clear: func(a *CoreAdapters) { a.Streams = nil }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -241,7 +212,7 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
-	if _, err := host.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID); err != registry.ErrNotFound {
+	if _, err := host.getPluginRecord(hostTestContext(), installed.PluginInstanceID); err != registry.ErrNotFound {
 		t.Fatalf("GetPlugin after uninstall error = %v", err)
 	}
 	for _, eventType := range []string{"plugin.installed", "plugin.enabled", "plugin.disabled", "plugin.uninstalled"} {
@@ -294,7 +265,7 @@ func TestReinstallWithRetainedDataReactivatesSamePluginInstance(t *testing.T) {
 	if reenabled.EnableState != registry.EnableEnabled {
 		t.Fatalf("enable state = %q, want %q", reenabled.EnableState, registry.EnableEnabled)
 	}
-	binding, found, err := h.adapters.Registry.GetBinding(ctx, pluginInstanceID)
+	binding, found, err := h.controlStore.GetBinding(ctx, pluginInstanceID)
 	if err != nil || !found {
 		t.Fatalf("GetBinding() = %#v, %v, found=%v", binding, err, found)
 	}
@@ -316,11 +287,9 @@ func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
 		{name: "local generated plugins disabled", developerMode: true, localGenerated: false},
 	} {
 		t.Run("install "+tc.name, func(t *testing.T) {
-			stages := installstage.NewMemoryStore()
 			h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
 				developerMode:  tc.developerMode,
 				localGenerated: tc.localGenerated,
-				installStages:  stages,
 			})
 			reader := &readAtProbe{reader: bytes.NewReader(packageBytes)}
 			if _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
@@ -337,27 +306,17 @@ func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			stageRecords, err := stages.List(ctx, installstage.ListRequest{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(records) != 0 || len(stageRecords) != 0 || len(surfaces.snapshots) != 0 || len(audits.events) != 0 {
-				t.Fatalf("policy-denied import produced side effects: records=%#v stages=%#v surfaces=%#v audits=%#v", records, stageRecords, surfaces.snapshots, audits.events)
+			if len(records) != 0 || len(surfaces.snapshots) != 0 || len(audits.events) != 0 {
+				t.Fatalf("policy-denied import produced side effects: records=%#v surfaces=%#v audits=%#v", records, surfaces.snapshots, audits.events)
 			}
 		})
 	}
 
-	stages := installstage.NewMemoryStore()
 	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
-		installStages:  stages,
 	})
 	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), packageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stageRecordsBefore, err := stages.List(ctx, installstage.ListRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,17 +336,13 @@ func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
 	if reader.calls != 0 {
 		t.Fatalf("policy-denied update read package %d times", reader.calls)
 	}
-	stored, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stageRecordsAfter, err := stages.List(ctx, installstage.ListRequest{})
+	stored, err := h.getPluginRecord(ctx, installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stored.Version != installed.Version || stored.PackageHash != installed.PackageHash || stored.ManagementRevision != installed.ManagementRevision ||
-		len(stageRecordsAfter) != len(stageRecordsBefore) || len(audits.events) != auditCountBefore || len(surfaces.snapshots) != surfaceCountBefore {
-		t.Fatalf("policy-denied update produced side effects: stored=%#v stages=%#v audits=%#v surfaces=%#v", stored, stageRecordsAfter, audits.events, surfaces.snapshots)
+		len(audits.events) != auditCountBefore || len(surfaces.snapshots) != surfaceCountBefore {
+		t.Fatalf("policy-denied update produced side effects: stored=%#v audits=%#v surfaces=%#v", stored, audits.events, surfaces.snapshots)
 	}
 }
 
@@ -477,7 +432,7 @@ func TestEnableReportsUnknownOutcomeAfterRegistryCommit(t *testing.T) {
 	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
 		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
 	}
-	record, getErr := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	record, getErr := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
@@ -645,7 +600,7 @@ func TestUpdateRejectsPluginDataContractChanges(t *testing.T) {
 func TestEnableRejectsUntrusted(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	pkg := readTestPackage(t, buildFixturePackage(t))
-	installed, err := host.adapters.Registry.PutPlugin(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, nextTestPluginInstanceID(t), nil, nil), registry.PutOptions{})
+	installed, err := host.putPluginRecord(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, nextTestPluginInstanceID(t), nil, nil), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,14 +612,14 @@ func TestEnableRejectsUntrusted(t *testing.T) {
 func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
 	host, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: false, localGenerated: true})
 	pkg := readTestPackage(t, buildFixturePackage(t))
-	installed, err := host.adapters.Registry.PutPlugin(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUnsignedLocal}, nextTestPluginInstanceID(t), nil, nil), registry.PutOptions{})
+	installed, err := host.putPluginRecord(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUnsignedLocal}, nextTestPluginInstanceID(t), nil, nil), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)}); err == nil {
 		t.Fatal("EnablePlugin() expected policy error")
 	}
-	record, err := host.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	record, err := host.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,62 +661,6 @@ func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
 	}
 	if len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Metadata["trust.key_id"] != "old" {
 		t.Fatalf("version history metadata mismatch: %#v", updated.VersionHistory)
-	}
-}
-
-func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
-	ctx := hostTestContext()
-	stages := installstage.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		installStages:  stages,
-	})
-	v1 := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
-	v2 := buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")
-	now := time.Date(2026, 7, 2, 20, 0, 0, 0, time.UTC)
-
-	installed, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PluginInstanceID: nextTestPluginInstanceID(t),
-		PackageReader:    bytes.NewReader(v1),
-		PackageSize:      int64(len(v1)),
-		Now:              now,
-	})
-	if err != nil {
-		t.Fatalf("ImportLocalPackage() error = %v", err)
-	}
-	stageRecords, err := stages.List(ctx, installstage.ListRequest{PluginInstanceID: installed.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(stageRecords) != 1 ||
-		stageRecords[0].Action != installstage.ActionInstall ||
-		stageRecords[0].Status != installstage.StatusCommitted ||
-		stageRecords[0].ResolvedTrust != string(registry.TrustUnsignedLocal) ||
-		stageRecords[0].PackageHash != installed.PackageHash {
-		t.Fatalf("install stage mismatch: %#v", stageRecords)
-	}
-
-	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PackageReader:    bytes.NewReader(v2),
-		PackageSize:      int64(len(v2)),
-		Now:              now.Add(time.Minute), ExpectedManagementRevision: mustManagementRevision(t, h,
-			installed.PluginInstanceID),
-	})
-	if err != nil {
-		t.Fatalf("UpdateLocalPackage() error = %v", err)
-	}
-	stageRecords, err = stages.List(ctx, installstage.ListRequest{PluginInstanceID: installed.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(stageRecords) != 2 ||
-		stageRecords[1].Action != installstage.ActionUpdate ||
-		stageRecords[1].Status != installstage.StatusCommitted ||
-		stageRecords[1].ResolvedTrust != string(registry.TrustUnsignedLocal) ||
-		stageRecords[1].PackageHash != updated.PackageHash {
-		t.Fatalf("update stage mismatch: %#v", stageRecords)
 	}
 }
 
@@ -824,7 +723,7 @@ func TestLocalInstallUsesTheManifestExactCapabilityContractPin(t *testing.T) {
 	newerContract.ContractVersion = "1.4.0"
 	newerContract.CapabilityVersion = "1.4.0"
 	newer := verifyFixtureCapabilityContract(t, newerContract)
-	for _, verified := range []capabilitycontract.VerifiedContract{base, newer} {
+	for _, verified := range []capabilitycontract.KnownContract{base, newer} {
 		if err := capabilities.Register(capability.Registration{Contract: verified, TargetProjector: adapter, Adapter: adapter}); err != nil {
 			t.Fatal(err)
 		}
@@ -938,7 +837,7 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	}); err == nil || !strings.Contains(err.Error(), "unsigned local plugins require developer mode") {
 		t.Fatalf("MintStorageHandleGrant() after unsigned local policy failure error = %v, want policy failure", err)
 	}
-	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
+	current, err := h.getPluginRecord(ctx, enabled.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -978,34 +877,23 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	}
 }
 
-func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
+func TestInstallTrustFailureDoesNotCommitPlugin(t *testing.T) {
 	ctx := hostTestContext()
-	stages := installstage.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
-		installStages:  stages,
 		trustVerifier:  &recordingPackageTrustVerifier{err: errors.New("signature revoked")},
 	})
 	packageBytes := buildFixturePackage(t)
+	pluginInstanceID := nextTestPluginInstanceID(t)
 	if _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PluginInstanceID: nextTestPluginInstanceID(t),
+		PluginInstanceID: pluginInstanceID,
 		PackageReader:    bytes.NewReader(packageBytes),
 		PackageSize:      int64(len(packageBytes)),
 	}); err == nil {
 		t.Fatal("ImportLocalPackage() expected trust failure")
 	}
-	stageRecords, err := stages.List(ctx, installstage.ListRequest{Status: installstage.StatusFailed})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(stageRecords) != 1 || stageRecords[0].ErrorCode != "trust_failed" || stageRecords[0].ErrorMessage != "plugin package lifecycle stage failed" {
-		t.Fatalf("failed stage mismatch: %#v", stageRecords)
-	}
-	if strings.Contains(stageRecords[0].ErrorMessage, "signature revoked") {
-		t.Fatalf("failed stage retained trust adapter cause: %#v", stageRecords[0])
-	}
-	if _, err := h.adapters.Registry.GetPlugin(ctx, stageRecords[0].PluginInstanceID); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := h.getPluginRecord(ctx, pluginInstanceID); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("GetPlugin() after failed install error = %v, want ErrNotFound", err)
 	}
 }
@@ -1833,7 +1721,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 		t.Fatalf("missing permission rejection diagnostic: %#v", diagnostics.events)
 	}
 
-	beforeGrant, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	beforeGrant, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1846,7 +1734,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("GrantPermission() error = %v", err)
 	}
-	afterGrant, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	afterGrant, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1865,7 +1753,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
 	}
 
-	beforeRevoke, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	beforeRevoke, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1879,7 +1767,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RevokePermission() error = %v", err)
 	}
-	afterRevoke, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	afterRevoke, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1931,7 +1819,7 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RevokePermission() error = %v", err)
 	}
-	updated, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	updated, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1965,710 +1853,6 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 	assertAuditDetail(t, event, "closed_storage_handle_count", 5)
 }
 
-func TestCallPluginMethodRegistersOperation(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "documents.archive",
-		Params:          map[string]any{"document_id": "doc-1"},
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
-	}
-	if result.OperationID == "" || capabilityAdapter.last.Execution.Operation == nil || result.OperationID != capabilityAdapter.last.Execution.Operation.ID() {
-		t.Fatalf("operation id mismatch: %#v", result)
-	}
-	registered, err := h.GetOperation(hostTestContext(), result.OperationID)
-	if err != nil {
-		t.Fatalf("GetOperation() error = %v", err)
-	}
-	if registered.PluginInstanceID != installed.PluginInstanceID ||
-		registered.Method != "documents.archive" ||
-		registered.Effect != "execute" ||
-		registered.Execution != string(manifest.MethodExecutionOperation) ||
-		registered.DisableBehavior != operation.DisableBehaviorCancel ||
-		registered.UninstallBehavior != operation.UninstallBehaviorCancelThenBlockDelete {
-		t.Fatalf("registered operation mismatch: %#v", registered)
-	}
-	if !audits.hasEvent("plugin.operation.started") {
-		t.Fatalf("missing operation audit event: %#v", audits.events)
-	}
-}
-
-func TestCapabilityAdapterCannotMutateHostOwnedExecutionBinding(t *testing.T) {
-	adapter := &recordingCapabilityAdapter{
-		result: capability.Result{Data: map[string]any{}},
-		mutateExecution: func(binding *capability.ExecutionBinding) {
-			binding.Permissions.Required[0] = "tampered.permission"
-			binding.Permissions.Granted[0] = "tampered.permission"
-			binding.Target.Fields["document_id"] = "tampered-document"
-		},
-	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if adapter.last.Execution.Permissions.Required[0] != "tampered.permission" || adapter.last.Execution.Target.Fields["document_id"] != "tampered-document" {
-		t.Fatalf("adapter mutation was not exercised: %#v", adapter.last.Execution.ExecutionBinding)
-	}
-	record, err := h.GetOperation(hostTestContext(), started.OperationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Permissions.Required[0] != "execute" || record.Target.Fields["document_id"] != "doc-1" {
-		t.Fatalf("durable execution binding was mutated by the adapter: %#v", record.ExecutionBinding)
-	}
-	if err := adapter.last.Execution.Operation.Complete(hostTestContext()); err != nil {
-		t.Fatalf("Operation.Complete() error = %v", err)
-	}
-}
-
-func TestCallPluginMethodRegistersStream(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "logs.tail",
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
-	}
-	if result.StreamID == "" || capabilityAdapter.last.Execution.Stream == nil || result.StreamID != capabilityAdapter.last.Execution.Stream.ID() || result.StreamTicket == "" || result.StreamTicketID == "" || result.StreamExpiresAt == nil || result.StreamExpiresAt.IsZero() {
-		t.Fatalf("CallPluginMethod() stream result mismatch: %#v", result)
-	}
-	if capabilityAdapter.last.Execution.StreamEventTypeName != "LogEvent" || len(capabilityAdapter.last.Execution.StreamEventSchemaSHA256) != 64 {
-		t.Fatalf("signed stream contract binding mismatch: %#v", capabilityAdapter.last.Execution.ExecutionBinding)
-	}
-	if err := capabilityAdapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"unexpected": true}); err == nil || !strings.Contains(err.Error(), "signed contract") {
-		t.Fatalf("Stream.Append(invalid event) error = %v, want signed event schema rejection", err)
-	}
-	if err := capabilityAdapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"line": "line 1"}); err != nil {
-		t.Fatalf("Stream.Append() error = %v", err)
-	}
-	if _, err := h.ReadStream(hostTestContext(), ReadStreamRequest{StreamID: result.StreamID}); !errors.Is(err, ErrStreamTicketRequired) {
-		t.Fatalf("ReadStream() without ticket error = %v, want %v", err, ErrStreamTicketRequired)
-	}
-	streamResult, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
-	if err != nil {
-		t.Fatalf("ReadStream() error = %v", err)
-	}
-	if streamResult.Record.Method != "logs.tail" || len(streamResult.Events) != 1 || string(streamResult.Events[0].Data) != `{"line":"line 1"}` {
-		t.Fatalf("stream read mismatch: %#v", streamResult)
-	}
-	if streamResult.Done || streamResult.DeliveryID == "" || streamResult.ReadID == "" {
-		t.Fatalf("open stream did not return an acknowledgeable delivery: %#v", streamResult)
-	}
-	acknowledgeStreamResult(t, h, result.StreamID, result.StreamTicket, streamResult)
-	if _, err := h.adapters.Streams.Append(hostTestContext(), stream.AppendRequest{StreamID: result.StreamID, Data: []byte(`{"line":"line 2"}`)}); err != nil {
-		t.Fatalf("Stream.Append() after first acknowledgement error = %v", err)
-	}
-	secondRequest := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
-	secondRequest.ReadID = "read_host_test_2"
-	second, err := h.ReadStream(hostTestContext(), secondRequest)
-	if err != nil {
-		t.Fatalf("ReadStream() renewed read error = %v", err)
-	}
-	if second.Done || len(second.Events) != 1 || string(second.Events[0].Data) != `{"line":"line 2"}` || second.DeliveryID == "" {
-		t.Fatalf("second stream delivery mismatch: %#v", second)
-	}
-	acknowledgeStreamResult(t, h, result.StreamID, result.StreamTicket, second)
-	if err := capabilityAdapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
-		t.Fatalf("Stream.Close() error = %v", err)
-	}
-	finalRequest := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
-	finalRequest.ReadID = "read_host_test_3"
-	final, err := h.ReadStream(hostTestContext(), finalRequest)
-	if err != nil {
-		t.Fatalf("ReadStream() terminal read error = %v", err)
-	}
-	if !final.Done || final.TerminalStatus != stream.StatusClosed || final.DeliveryID == "" {
-		t.Fatalf("terminal stream delivery mismatch: %#v", final)
-	}
-	acknowledgeStreamResult(t, h, result.StreamID, result.StreamTicket, final)
-	if _, err := h.AcknowledgeStream(hostTestContext(), AcknowledgeStreamRequest{
-		StreamID: result.StreamID, StreamTicket: result.StreamTicket,
-		DeliveryID: final.DeliveryID, SurfaceInstanceID: "surface_rpc",
-	}); err != nil {
-		t.Fatalf("AcknowledgeStream(retry) error = %v", err)
-	}
-	if !audits.hasEvent("plugin.stream.started") {
-		t.Fatalf("missing stream audit event: %#v", audits.events)
-	}
-	if !audits.hasEvent("plugin.stream.closed") {
-		t.Fatalf("missing closed stream audit event: %#v", audits.events)
-	}
-}
-
-func TestReadStreamFailureKeepsCurrentTicketAndEvents(t *testing.T) {
-	readFailure := errors.New("injected stream read failure")
-	streams := &failFirstStreamDeliverStore{Store: stream.NewMemoryStore(), err: readFailure}
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter, streams: streams,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := adapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"line": "preserved"}); err != nil {
-		t.Fatal(err)
-	}
-	request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
-	if _, err := h.ReadStream(hostTestContext(), request); !errors.Is(err, readFailure) {
-		t.Fatalf("ReadStream(first) error = %v, want %v", err, readFailure)
-	}
-	retried, err := h.ReadStream(hostTestContext(), request)
-	if err != nil {
-		t.Fatalf("ReadStream(retry) error = %v", err)
-	}
-	if len(retried.Events) != 1 || string(retried.Events[0].Data) != `{"line":"preserved"}` || retried.DeliveryID == "" {
-		t.Fatalf("retry did not preserve the event delivery: %#v", retried)
-	}
-}
-
-func TestReadStreamReplaysConcurrentDelivery(t *testing.T) {
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := adapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"line": "once"}); err != nil {
-		t.Fatal(err)
-	}
-	type readOutcome struct {
-		result ReadStreamResult
-		err    error
-	}
-	start := make(chan struct{})
-	outcomes := make(chan readOutcome, 2)
-	for range 2 {
-		go func() {
-			<-start
-			read, readErr := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
-			outcomes <- readOutcome{result: read, err: readErr}
-		}()
-	}
-	close(start)
-	first := <-outcomes
-	second := <-outcomes
-	results := []readOutcome{first, second}
-	deliveryID := ""
-	for _, outcome := range results {
-		if outcome.err != nil {
-			t.Fatalf("concurrent ReadStream() error = %v", outcome.err)
-		}
-		if len(outcome.result.Events) != 1 || outcome.result.DeliveryID == "" {
-			t.Fatalf("concurrent delivery = %#v", outcome.result)
-		}
-		if deliveryID == "" {
-			deliveryID = outcome.result.DeliveryID
-		} else if outcome.result.DeliveryID != deliveryID {
-			t.Fatalf("concurrent deliveries differ: %#v", results)
-		}
-	}
-}
-
-func TestReadStreamLongPollRevalidatesPluginRevision(t *testing.T) {
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	readDone := make(chan error, 1)
-	go func() {
-		request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
-		request.WaitTimeout = time.Second
-		_, readErr := h.ReadStream(hostTestContext(), request)
-		readDone <- readErr
-	}()
-	time.Sleep(50 * time.Millisecond)
-	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{
-		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID), Reason: "policy",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-readDone:
-		if !errors.Is(err, bridge.ErrTokenRevoked) {
-			t.Fatalf("ReadStream() after revision change error = %v, want %v", err, bridge.ErrTokenRevoked)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("long-poll stream read did not finish after plugin revision changed")
-	}
-}
-
-func TestRuntimeStreamCloseCannotCompleteCanceledOperation(t *testing.T) {
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.adapters.Operations.RequestCancel(hostTestContext(), operation.CancelRequest{OperationID: result.OperationID}); err != nil {
-		t.Fatal(err)
-	}
-	sink, err := h.executions.streamSink(result.StreamID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sink.lease.requestCancel(errors.New("operation cancellation requested"))
-	if err := (hostRuntimeStreamSink{executions: h.executions}).CloseRuntimeStream(hostTestContext(), result.StreamID); !errors.Is(err, capability.ErrExecutionRevoked) {
-		t.Fatalf("CloseRuntimeStream() error = %v, want %v", err, capability.ErrExecutionRevoked)
-	}
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCancelRequested)
-}
-
-func TestWorkerOperationCompletesWhenSynchronousRuntimeInvocationReturns(t *testing.T) {
-	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
-	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerOperationFixturePackage(t), "worker.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "worker.echo", Params: map[string]any{"message": "hello"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.OperationID == "" {
-		t.Fatalf("worker operation result = %#v", result)
-	}
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
-	h.executions.mu.Lock()
-	activeLeases := len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 0 {
-		t.Fatalf("worker operation retained %d execution leases after runtime return", activeLeases)
-	}
-}
-
-func TestMutatingWorkerMarksRuntimeDispatchFailureOutcomeUnknown(t *testing.T) {
-	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
-	runtime.err = errors.New("runtime response was lost")
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
-	installed, gateway := installEnableAndMintGateway(t, h, buildMutatingWorkerFixturePackage(t), "worker.view")
-
-	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID:   "bridge_rpc",
-		GatewayToken:      gateway.GatewayToken,
-		Method:            "worker.echo",
-		Params:            map[string]any{"message": "hello"},
-	})
-	if err == nil {
-		t.Fatal("CallPluginMethod() expected runtime failure")
-	}
-	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
-		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
-	}
-	if runtime.calls != 1 {
-		t.Fatalf("runtime calls = %d, want 1", runtime.calls)
-	}
-}
-
-func TestWorkerSubscriptionCompletesWhenSynchronousRuntimeInvocationReturns(t *testing.T) {
-	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
-	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerSubscriptionFixturePackage(t), "worker.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "worker.echo", Params: map[string]any{"message": "hello"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.OperationID == "" || result.StreamID == "" || result.StreamTicket == "" {
-		t.Fatalf("worker subscription result = %#v", result)
-	}
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
-	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
-	terminal, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !terminal.Done || terminal.TerminalStatus != stream.StatusClosed || len(terminal.Events) != 0 || terminal.DeliveryID == "" {
-		t.Fatalf("worker subscription terminal read = %#v", terminal)
-	}
-	h.executions.mu.Lock()
-	activeLeases := len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 0 {
-		t.Fatalf("worker subscription retained %d execution leases after runtime return", activeLeases)
-	}
-}
-
-func TestReadStreamReportsFailedTerminalStatus(t *testing.T) {
-	const sensitiveCause = "runtime token secret at /Users/private/runtime.sock"
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	diagnostics := &diagnosticSink{}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := capabilityAdapter.last.Execution.Stream.Fail(hostTestContext(), "internal", errors.New(sensitiveCause)); !errors.Is(err, capability.ErrInvalidExecutionFailure) {
-		t.Fatalf("Stream.Fail(unknown code) error = %v", err)
-	}
-	if err := capabilityAdapter.last.Execution.Stream.Fail(hostTestContext(), capability.ExecutionFailureRuntimeFailed, nil); !errors.Is(err, capability.ErrInvalidExecutionFailure) {
-		t.Fatalf("Stream.Fail(nil cause) error = %v", err)
-	}
-	if err := capabilityAdapter.last.Execution.Stream.Fail(hostTestContext(), capability.ExecutionFailureRuntimeFailed, errors.New(sensitiveCause)); err != nil {
-		t.Fatal(err)
-	}
-	operationRecord, err := h.GetOperation(hostTestContext(), result.OperationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	streamRecord, err := h.adapters.Streams.Get(hostTestContext(), result.StreamID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, failure := range []struct {
-		name   string
-		code   capability.ExecutionFailureCode
-		reason string
-	}{
-		{name: "operation", code: operationRecord.FailureCode, reason: operationRecord.Reason},
-		{name: "stream", code: streamRecord.FailureCode, reason: streamRecord.Reason},
-	} {
-		if failure.code != capability.ExecutionFailureRuntimeFailed || failure.reason != capability.ExecutionFailureMessage {
-			t.Fatalf("%s failure = %q/%q", failure.name, failure.code, failure.reason)
-		}
-	}
-	encoded, err := json.Marshal(operationRecord)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), sensitiveCause) {
-		t.Fatalf("public operation leaked failure cause: %s", encoded)
-	}
-	var failureDiagnostic *observability.DiagnosticEvent
-	for index := range diagnostics.events {
-		if diagnostics.events[index].Type == "plugin.execution.failed" {
-			failureDiagnostic = &diagnostics.events[index]
-			break
-		}
-	}
-	if failureDiagnostic == nil || failureDiagnostic.Details.FailureCode != string(capability.ExecutionFailureRuntimeFailed) {
-		t.Fatalf("execution failure diagnostic = %#v", failureDiagnostic)
-	}
-	failure := failureDiagnostic.Failure
-	if failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentExecution || failure.Operation != "execution.fail" || strings.Contains(fmt.Sprint(failureDiagnostic), sensitiveCause) {
-		t.Fatalf("execution failure diagnostic cause was not redacted: %#v", failureDiagnostic)
-	}
-	terminal, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !terminal.Done || terminal.TerminalStatus != stream.StatusFailed || len(terminal.Events) != 0 {
-		t.Fatalf("failed terminal read mismatch: %#v", terminal)
-	}
-}
-
-func TestReadTerminalStreamDoesNotRequireNextTicketCapacity(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	manager := bridge.NewTokenManager(bridge.TokenManagerOptions{
-		MaxRecords:          4,
-		MaxRecordsPerPlugin: 4,
-	})
-	tokens := bridge.NewSurfaceTokenService(manager, bridge.SurfaceTokenOptions{})
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-		surfaceTokens:     tokens,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := capabilityAdapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
-		t.Fatal(err)
-	}
-
-	terminal, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
-	if err != nil {
-		t.Fatalf("ReadStream() terminal read error = %v", err)
-	}
-	if !terminal.Done || terminal.TerminalStatus != stream.StatusClosed || terminal.DeliveryID == "" {
-		t.Fatalf("terminal stream read = %#v", terminal)
-	}
-}
-
-func TestReadTerminalStreamKeepsTicketUntilZeroPayloadEventsAreDrained(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, kind := range []string{"marker.first", "marker.second"} {
-		if _, err := h.adapters.Streams.Append(hostTestContext(), stream.AppendRequest{StreamID: result.StreamID, Kind: kind}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := h.adapters.Streams.Close(hostTestContext(), stream.CloseRequest{StreamID: result.StreamID}); err != nil {
-		t.Fatal(err)
-	}
-
-	request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
-	request.MaxEvents = 1
-	first, err := h.ReadStream(hostTestContext(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Done || len(first.Events) != 1 || first.DeliveryID == "" {
-		t.Fatalf("first terminal stream page = %#v", first)
-	}
-	acknowledgeStreamResult(t, h, result.StreamID, result.StreamTicket, first)
-	request.ReadID = "read_host_test_2"
-	second, err := h.ReadStream(hostTestContext(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !second.Done || len(second.Events) != 1 || second.DeliveryID == "" {
-		t.Fatalf("second terminal stream page = %#v", second)
-	}
-}
-
-func TestCallPluginMethodClosesStreamWhenTicketMintFails(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	manager := bridge.NewTokenManager(bridge.TokenManagerOptions{
-		MaxRecords:          4,
-		MaxRecordsPerPlugin: 4,
-	})
-	tokens := bridge.NewSurfaceTokenService(manager, bridge.SurfaceTokenOptions{})
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-		surfaceTokens:     tokens,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	now := time.Now().UTC()
-	if _, err := manager.Mint(bridge.MintRequest{
-		Kind: bridge.TokenKindHandleGrant,
-		Audience: bridge.Audience{
-			PluginInstanceID:     installed.PluginInstanceID,
-			ActiveFingerprint:    installed.ActiveFingerprint,
-			RuntimeGenerationID:  "runtime_filler",
-			OwnerSessionHash:     "session_hash",
-			OwnerUserHash:        "user_hash",
-			OwnerEnvHash:         "env_hash",
-			SessionChannelIDHash: "channel_hash",
-			HandleID:             "handle_filler",
-			Method:               "filler.reserve",
-			ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		},
-		Revision: bridge.RevisionBinding{
-			PolicyRevision:     installed.PolicyRevision,
-			ManagementRevision: installed.ManagementRevision,
-			RevokeEpoch:        installed.RevokeEpoch,
-		},
-		Now:       now,
-		ExpiresAt: now.Add(time.Minute),
-	}); err != nil {
-		t.Fatalf("Mint(filler) error = %v", err)
-	}
-
-	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "logs.tail",
-	}); !errors.Is(err, bridge.ErrTokenCapacity) {
-		t.Fatalf("CallPluginMethod() error = %v, want ErrTokenCapacity", err)
-	}
-	if capabilityAdapter.calls != 0 {
-		t.Fatalf("capability adapter ran before the initial stream ticket was available: calls=%d", capabilityAdapter.calls)
-	}
-	page, err := h.adapters.Operations.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	operations := page.Records
-	if len(operations) != 1 || operations[0].Status != operation.StatusFailed || operations[0].StreamID == "" {
-		t.Fatalf("ticket failure did not persist the failed operation: %#v", operations)
-	}
-	assertHostStreamStatus(t, h, operations[0].StreamID, stream.StatusFailed)
-}
-
-func TestInitialStreamTicketFailurePersistsPartialCleanupForRestartReconciliation(t *testing.T) {
-	ticketErr := bridge.ErrTokenCapacity
-	finishErr := errors.New("operation terminal store unavailable")
-	operationStore := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr}
-	streamStore := stream.NewMemoryStore()
-	manager := bridge.NewTokenManager(bridge.TokenManagerOptions{MaxRecords: 4, MaxRecordsPerPlugin: 4})
-	tokens := bridge.NewSurfaceTokenService(manager, bridge.SurfaceTokenOptions{})
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-		operations: operationStore, streams: streamStore, surfaceTokens: tokens,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	mintHostTokenCapacityFiller(t, manager, installed)
-	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if !errors.Is(err, ticketErr) || errors.Is(err, finishErr) {
-		t.Fatalf("CallPluginMethod() error = %v, want stable ticket failure without raw cleanup error", err)
-	}
-	if adapter.calls != 0 {
-		t.Fatalf("adapter ran before ticket issuance: calls=%d", adapter.calls)
-	}
-	page, err := operationStore.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	records := page.Records
-	if len(records) != 1 || records[0].Status != operation.StatusRunning {
-		t.Fatalf("partial cleanup operation state = %#v", records)
-	}
-	streamRecord, err := streamStore.Get(hostTestContext(), records[0].StreamID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if streamRecord.Status != stream.StatusFailed || streamRecord.Reason != executionFailedReason {
-		t.Fatalf("partial cleanup stream state = %#v", streamRecord)
-	}
-	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, operations: operationStore, streams: streamStore,
-	})
-	assertHostOperationStatus(t, restarted, records[0].OperationID, operation.StatusFailed)
-}
-
-func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "logs.tail",
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
-	}
-	streamSink := capabilityAdapter.last.Execution.Stream
-	if streamSink == nil || streamSink.ID() != result.StreamID {
-		t.Fatalf("stream sink mismatch: result=%#v invocation=%#v", result, capabilityAdapter.last)
-	}
-	if err := streamSink.Append(hostTestContext(), map[string]any{"line": "line before disable"}); err != nil {
-		t.Fatalf("Stream.Append() before disable error = %v", err)
-	}
-
-	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("DisablePlugin() error = %v", err)
-	}
-
-	assertHostStreamStatus(t, h, result.StreamID, stream.StatusOrphanedDisabled)
-	if err := streamSink.Append(hostTestContext(), map[string]any{"line": "line after disable"}); !errors.Is(err, capability.ErrExecutionRevoked) {
-		t.Fatalf("Stream.Append() after disable error = %v, want %v", err, capability.ErrExecutionRevoked)
-	}
-	if _, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket)); !errors.Is(err, bridge.ErrTokenRevoked) {
-		t.Fatalf("ReadStream() after disable error = %v, want %v", err, bridge.ErrTokenRevoked)
-	}
-	if !audits.hasEvent("plugin.streams.disabled_transitioned") {
-		t.Fatalf("missing disabled stream transition audit event: %#v", audits.events)
-	}
-}
-
 func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
@@ -2695,7 +1879,7 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	if result.Data == nil || runtime.calls != 1 {
 		t.Fatalf("worker result/calls mismatch: result=%#v calls=%d", result, runtime.calls)
 	}
-	current, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	current, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatalf("GetPlugin() after worker call error = %v", err)
 	}
@@ -3182,1422 +2366,6 @@ func assertDangerousRouteConfirmation(t *testing.T, h *Host, call *CallMethodReq
 	}
 }
 
-func TestCallPluginMethodOwnsExecutionHandles(t *testing.T) {
-	cases := []struct {
-		name          string
-		packageBytes  []byte
-		method        string
-		wantOperation bool
-		wantStream    bool
-	}{
-		{
-			name:          "operation receives operation sink",
-			packageBytes:  buildOperationRPCFixturePackage(t),
-			method:        "documents.archive",
-			wantOperation: true,
-		},
-		{
-			name:         "sync receives no asynchronous sink",
-			packageBytes: buildRPCFixturePackage(t),
-			method:       "echo.ping",
-		},
-		{
-			name:          "subscription receives operation and stream sinks",
-			packageBytes:  buildSubscriptionRPCFixturePackage(t),
-			method:        "logs.tail",
-			wantOperation: true,
-			wantStream:    true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode:     true,
-				localGenerated:    true,
-				capabilityID:      "example.capability.echo",
-				capabilityAdapter: capabilityAdapter,
-			})
-			installed, gateway := installEnableAndMintGateway(t, h, tc.packageBytes, surfaceIDForMethod(tc.method))
-			result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-				PluginInstanceID:  installed.PluginInstanceID,
-				SurfaceInstanceID: "surface_rpc",
-
-				BridgeChannelID: "bridge_rpc",
-				GatewayToken:    gateway.GatewayToken,
-				Method:          tc.method,
-			})
-			if err != nil {
-				t.Fatalf("CallPluginMethod() error = %v", err)
-			}
-			if got := capabilityAdapter.last.Execution.Operation != nil; got != tc.wantOperation {
-				t.Fatalf("operation sink present = %v, want %v", got, tc.wantOperation)
-			}
-			if got := capabilityAdapter.last.Execution.Stream != nil; got != tc.wantStream {
-				t.Fatalf("stream sink present = %v, want %v", got, tc.wantStream)
-			}
-			if (result.OperationID != "") != tc.wantOperation || (result.StreamID != "") != tc.wantStream {
-				t.Fatalf("host-owned handle result mismatch: %#v", result)
-			}
-		})
-	}
-}
-
-func TestSubscriptionStreamCompletionCompletesOperation(t *testing.T) {
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.OperationID == "" || result.StreamID == "" {
-		t.Fatalf("subscription handles = %#v", result)
-	}
-	if err := adapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
-		t.Fatalf("Stream.Close() error = %v", err)
-	}
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
-	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
-}
-
-func TestSubscriptionRegistrationBindingsAreIsolatedBetweenStores(t *testing.T) {
-	operations := &mutatingOperationRegisterStore{Store: operation.NewMemoryStore()}
-	streams := &recordingStreamRegisterStore{Store: stream.NewMemoryStore()}
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-		operations: operations, streams: streams,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, mutated := streams.binding.Target.Fields["operation_store_mutation"]; mutated ||
-		len(streams.binding.Permissions.Required) == 0 || streams.binding.Permissions.Required[0] == "operation.store.mutated" {
-		t.Fatalf("stream store received operation-store mutation: %#v", streams.binding)
-	}
-	operations.retained.Target.Fields["late_operation_store_mutation"] = true
-	if _, mutated := streams.binding.Target.Fields["late_operation_store_mutation"]; mutated {
-		t.Fatalf("operation and stream stores retained aliased bindings: %#v", streams.binding)
-	}
-	storedStream, err := streams.Store.Get(hostTestContext(), result.StreamID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, mutated := storedStream.Target.Fields["late_operation_store_mutation"]; mutated {
-		t.Fatalf("stored stream retained operation-store binding state: %#v", storedStream.ExecutionBinding)
-	}
-	if _, mutated := adapter.last.Execution.Target.Fields["late_operation_store_mutation"]; mutated {
-		t.Fatalf("capability adapter retained operation-store binding state: %#v", adapter.last.Execution.ExecutionBinding)
-	}
-	if err := adapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSubscriptionStreamRegistrationFailureRollsBackOperationAndLease(t *testing.T) {
-	operations := operation.NewMemoryStore()
-	streams := &failingStreamRegisterStore{
-		Store: stream.NewMemoryStore(),
-		err:   errors.New("stream registry unavailable"),
-	}
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-		operations: operations, streams: streams,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	}); err == nil {
-		t.Fatal("CallPluginMethod() succeeded after stream registration failed")
-	}
-	page, err := operations.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	records := page.Records
-	if len(records) != 1 || records[0].Status != operation.StatusFailed {
-		t.Fatalf("operation rollback mismatch: %#v", records)
-	}
-	h.executions.mu.Lock()
-	activeLeases := len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 0 {
-		t.Fatalf("active execution leases = %d, want 0", activeLeases)
-	}
-}
-
-func TestSubscriptionSetupRetainsLeaseUntilFailedOperationRollbackConverges(t *testing.T) {
-	rollbackErr := errors.New("operation rollback unavailable")
-	operations := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: rollbackErr}
-	streams := &failingStreamRegisterStore{Store: stream.NewMemoryStore(), err: errors.New("stream registry unavailable")}
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-		operations: operations, streams: streams,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	}); err == nil || errors.Is(err, rollbackErr) {
-		t.Fatalf("CallPluginMethod() error = %v, want opaque rollback failure", err)
-	}
-	h.executions.mu.Lock()
-	activeLeases := len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 1 {
-		t.Fatalf("active execution leases = %d, want 1 until rollback repair", activeLeases)
-	}
-	if err := h.reconcilePendingExecutionSetups(hostTestContext(), installed.PluginInstanceID); err != nil {
-		t.Fatalf("reconcilePendingExecutionSetups() error = %v", err)
-	}
-	page, err := operations.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	records := page.Records
-	if len(records) != 1 || records[0].Status != operation.StatusFailed {
-		t.Fatalf("reconciled operation state = %#v", records)
-	}
-	h.executions.mu.Lock()
-	activeLeases = len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 0 {
-		t.Fatalf("active execution leases after repair = %d, want 0", activeLeases)
-	}
-}
-
-func TestPendingExecutionSetupReconciliationDoesNotScanDurableHistory(t *testing.T) {
-	operations := &countingOperationListStore{Store: operation.NewMemoryStore()}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations})
-	operations.listCalls = 0
-
-	if err := h.reconcilePendingExecutionSetups(hostTestContext(), "plugini_no_pending_12345678"); err != nil {
-		t.Fatalf("reconcilePendingExecutionSetups() error = %v", err)
-	}
-	if operations.listCalls != 0 {
-		t.Fatalf("durable operation list calls = %d, want 0", operations.listCalls)
-	}
-}
-
-func TestHostStartupReconcilesDurablePartialOperationAndStreamStates(t *testing.T) {
-	for _, tc := range []struct {
-		name            string
-		operationStatus operation.Status
-		streamStatus    stream.Status
-		wantOperation   operation.Status
-		wantStream      stream.Status
-	}{
-		{name: "operation terminal", operationStatus: operation.StatusFailed, streamStatus: stream.StatusOpen, wantOperation: operation.StatusFailed, wantStream: stream.StatusFailed},
-		{name: "stream terminal", operationStatus: operation.StatusRunning, streamStatus: stream.StatusFailed, wantOperation: operation.StatusFailed, wantStream: stream.StatusFailed},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := hostTestContext()
-			operationPath := filepath.Join(t.TempDir(), "operations.sqlite")
-			streamPath := filepath.Join(t.TempDir(), "streams.sqlite")
-			operations, err := operation.NewSQLiteStore(ctx, operationPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			streams, err := stream.NewSQLiteStore(ctx, streamPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			binding := capability.ExecutionBinding{
-				InvocationID: "invoke_reconcile", AuditCorrelationID: "audit_reconcile",
-				OperationID: "operation_reconcile", StreamID: "stream_reconcile",
-				PluginID: "com.example.reconcile", PluginInstanceID: "plugini_reconcile",
-				Method: "logs.tail", Execution: "subscription",
-				OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
-			}
-			if _, err := operations.Register(ctx, operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := streams.Register(ctx, stream.RegisterRequest{StreamID: binding.StreamID, ExecutionBinding: binding}); err != nil {
-				t.Fatal(err)
-			}
-			if tc.operationStatus != operation.StatusRunning {
-				if _, err := operations.Finish(ctx, operation.FinishRequest{
-					OperationID: binding.OperationID, Status: tc.operationStatus, FailureCode: capability.ExecutionFailurePlatformFailed,
-				}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tc.streamStatus != stream.StatusOpen {
-				if _, err := streams.Close(ctx, stream.CloseRequest{
-					StreamID: binding.StreamID, Status: tc.streamStatus, FailureCode: capability.ExecutionFailurePlatformFailed,
-				}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := operations.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if err := streams.CloseDatabase(); err != nil {
-				t.Fatal(err)
-			}
-			operations, err = operation.NewSQLiteStore(ctx, operationPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer operations.Close()
-			streams, err = stream.NewSQLiteStore(ctx, streamPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			reopenedStreams := streams
-			t.Cleanup(func() {
-				if err := reopenedStreams.CloseDatabase(); err != nil {
-					t.Errorf("close reopened stream store: %v", err)
-				}
-			})
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations, streams: streams})
-			assertHostOperationStatus(t, h, binding.OperationID, tc.wantOperation)
-			assertHostStreamStatus(t, h, binding.StreamID, tc.wantStream)
-			streamRecord, err := streams.Get(ctx, binding.StreamID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if streamRecord.Reason != capability.ExecutionFailureMessage || streamRecord.FailureCode != capability.ExecutionFailurePlatformFailed {
-				t.Fatalf("reconciled stream failure = %q/%q", streamRecord.FailureCode, streamRecord.Reason)
-			}
-		})
-	}
-}
-
-func TestHostStartupTerminatesDurableOperationsWithoutLiveOwners(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		requestCancel bool
-		want          operation.Status
-	}{
-		{name: "running", want: operation.StatusFailed},
-		{name: "cancel requested", requestCancel: true, want: operation.StatusCanceled},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := hostTestContext()
-			operationPath := filepath.Join(t.TempDir(), "operations.sqlite")
-			operations, err := operation.NewSQLiteStore(ctx, operationPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cancelable := true
-			binding := capability.ExecutionBinding{
-				InvocationID: "invoke_restart", AuditCorrelationID: "audit_restart", OperationID: "operation_restart",
-				PluginID: "com.example.restart", PluginInstanceID: "plugini_restart", Method: "documents.archive", Execution: "operation",
-				OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
-			}
-			if _, err := operations.Register(ctx, operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding, Cancelable: &cancelable}); err != nil {
-				t.Fatal(err)
-			}
-			if tc.requestCancel {
-				if _, err := operations.RequestCancel(ctx, operation.CancelRequest{OperationID: binding.OperationID, Reason: "user"}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := operations.Close(); err != nil {
-				t.Fatal(err)
-			}
-			operations, err = operation.NewSQLiteStore(ctx, operationPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer operations.Close()
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations})
-			assertHostOperationStatus(t, h, binding.OperationID, tc.want)
-		})
-	}
-}
-
-func TestHostStartupTriggersBoundedTerminalRetentionPrune(t *testing.T) {
-	operations := &countingOperationPruneStore{Store: operation.NewMemoryStore()}
-	streams := &countingStreamPruneStore{Store: stream.NewMemoryStore()}
-	startedAt := time.Now().UTC()
-	newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
-	operationCalls, operationLast := operations.snapshot()
-	streamCalls, streamLast := streams.snapshot()
-	if operationCalls != 1 || streamCalls != 1 {
-		t.Fatalf("startup prune calls = operations:%d streams:%d", operationCalls, streamCalls)
-	}
-	if operationLast.Limit != operation.DefaultPruneLimit || streamLast.Limit != stream.DefaultPruneLimit {
-		t.Fatalf("startup prune limits = operations:%d streams:%d", operationLast.Limit, streamLast.Limit)
-	}
-	if operationLast.MaxTerminalRecordsPerPlugin != operation.DefaultMaxTerminalRecordsPerPlugin ||
-		streamLast.MaxTerminalRecordsPerPlugin != stream.DefaultMaxTerminalRecordsPerPlugin {
-		t.Fatalf("startup terminal caps = operations:%d streams:%d", operationLast.MaxTerminalRecordsPerPlugin, streamLast.MaxTerminalRecordsPerPlugin)
-	}
-	operationCutoff := startedAt.Add(-operation.DefaultTerminalRetention)
-	streamCutoff := startedAt.Add(-stream.DefaultTerminalRetention)
-	if operationLast.Before.Before(operationCutoff) || streamLast.Before.Before(streamCutoff) {
-		t.Fatalf("startup prune cutoffs are older than the retention policy: operation=%s stream=%s", operationLast.Before, streamLast.Before)
-	}
-}
-
-func TestTerminalMaintenanceCoalescesConcurrentCompletionsAndRunsAfterInterval(t *testing.T) {
-	operations := &countingOperationPruneStore{Store: operation.NewMemoryStore()}
-	streams := &countingStreamPruneStore{Store: stream.NewMemoryStore()}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
-	operations.reset()
-	streams.reset()
-
-	h.executions.mu.Lock()
-	now := h.executions.terminalMaintenanceNext
-	h.executions.mu.Unlock()
-	if now.IsZero() {
-		t.Fatal("startup terminal maintenance did not publish its next deadline")
-	}
-	entered := make(chan struct{}, 1)
-	release := make(chan struct{})
-	operations.configure(nil, entered, release)
-	h.maintainTerminalExecutionRecords(hostTestContext(), now)
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("first terminal maintenance did not enter the operation store")
-	}
-
-	const concurrentCompletions = 64
-	var wg sync.WaitGroup
-	for range concurrentCompletions {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(2*terminalExecutionMaintenanceInterval))
-		}()
-	}
-	wg.Wait()
-	if calls, _ := operations.snapshot(); calls != 1 {
-		t.Fatalf("concurrent operation prune calls = %d, want 1", calls)
-	}
-	if calls, _ := streams.snapshot(); calls != 0 {
-		t.Fatalf("stream prune entered before the single operation prune completed: calls=%d", calls)
-	}
-	close(release)
-	h.lifecycleWG.Wait()
-	operations.configure(nil, nil, nil)
-
-	for range 100 {
-		h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(terminalExecutionMaintenanceInterval-time.Nanosecond))
-	}
-	if calls, _ := operations.snapshot(); calls != 1 {
-		t.Fatalf("high-frequency operation prune calls within interval = %d, want 1", calls)
-	}
-	if calls, _ := streams.snapshot(); calls != 1 {
-		t.Fatalf("high-frequency stream prune calls within interval = %d, want 1", calls)
-	}
-
-	h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(terminalExecutionMaintenanceInterval))
-	h.lifecycleWG.Wait()
-	if calls, _ := operations.snapshot(); calls != 2 {
-		t.Fatalf("operation prune calls after interval = %d, want 2", calls)
-	}
-	if calls, _ := streams.snapshot(); calls != 2 {
-		t.Fatalf("stream prune calls after interval = %d, want 2", calls)
-	}
-}
-
-func TestTerminalMaintenanceFailureStillRespectsInterval(t *testing.T) {
-	operations := &countingOperationPruneStore{Store: operation.NewMemoryStore()}
-	streams := &countingStreamPruneStore{Store: stream.NewMemoryStore()}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
-	operations.reset()
-	streams.reset()
-	h.executions.mu.Lock()
-	now := h.executions.terminalMaintenanceNext
-	h.executions.mu.Unlock()
-	if now.IsZero() {
-		t.Fatal("startup terminal maintenance did not publish its next deadline")
-	}
-	operations.configure(errors.New("operation prune unavailable"), nil, nil)
-
-	h.maintainTerminalExecutionRecords(hostTestContext(), now)
-	h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(terminalExecutionMaintenanceInterval/2))
-	h.lifecycleWG.Wait()
-	if calls, _ := operations.snapshot(); calls != 1 {
-		t.Fatalf("failed operation prune calls within interval = %d, want 1", calls)
-	}
-	if calls, _ := streams.snapshot(); calls != 1 {
-		t.Fatalf("stream prune calls during failed maintenance interval = %d, want 1", calls)
-	}
-
-	operations.configure(nil, nil, nil)
-	h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(terminalExecutionMaintenanceInterval))
-	h.lifecycleWG.Wait()
-	if calls, _ := operations.snapshot(); calls != 2 {
-		t.Fatalf("operation prune calls after failed interval = %d, want 2", calls)
-	}
-	if calls, _ := streams.snapshot(); calls != 2 {
-		t.Fatalf("stream prune calls after failed interval = %d, want 2", calls)
-	}
-}
-
-func TestTerminalMaintenanceDoesNotBlockCompletionAndCloseCancelsIt(t *testing.T) {
-	operations := &countingOperationPruneStore{Store: operation.NewMemoryStore()}
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-		operations: operations,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	operations.reset()
-	h.executions.mu.Lock()
-	h.executions.terminalMaintenanceNext = time.Time{}
-	h.executions.mu.Unlock()
-	entered := make(chan struct{}, 1)
-	operations.configure(nil, entered, make(chan struct{}))
-	completed := make(chan error, 1)
-	go func() { completed <- adapter.last.Execution.Operation.Complete(hostTestContext()) }()
-	select {
-	case err := <-completed:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("operation completion was blocked by terminal retention pruning")
-	}
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("terminal retention pruning did not start")
-	}
-
-	closed := make(chan error, 1)
-	go func() { closed <- h.Close() }()
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Host.Close() did not cancel and wait for terminal retention pruning")
-	}
-	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCompleted)
-}
-
-func TestHostCloseWaitsForDurableExecutionSetup(t *testing.T) {
-	tests := []struct {
-		name          string
-		packageBytes  func(*testing.T) []byte
-		surfaceID     string
-		method        string
-		params        map[string]any
-		blockStream   bool
-		wantOperation operation.Status
-		wantStream    stream.Status
-	}{
-		{
-			name: "operation register", packageBytes: buildOperationRPCFixturePackage,
-			surfaceID: "operation.view", method: "documents.archive", params: map[string]any{"document_id": "doc-1"},
-			wantOperation: operation.StatusFailed,
-		},
-		{
-			name: "stream register", packageBytes: buildSubscriptionRPCFixturePackage,
-			surfaceID: "subscription.view", method: "logs.tail", blockStream: true,
-			wantOperation: operation.StatusFailed, wantStream: stream.StatusFailed,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			operationStore := operation.NewMemoryStore()
-			streamStore := stream.NewMemoryStore()
-			registerEntered := make(chan struct{}, 1)
-			registerRelease := make(chan struct{})
-			var operations operation.Store = operationStore
-			var streams stream.Store = streamStore
-			if tc.blockStream {
-				streams = &blockingStreamRegisterStore{Store: streamStore, entered: registerEntered, release: registerRelease}
-			} else {
-				operations = &blockingOperationRegisterStore{Store: operationStore, entered: registerEntered, release: registerRelease}
-			}
-			invokeEntered := make(chan struct{}, 1)
-			invokeRelease := make(chan struct{})
-			adapter := &recordingCapabilityAdapter{
-				result: capability.Result{Data: map[string]any{}}, invokeEntered: invokeEntered, invokeRelease: invokeRelease,
-			}
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-				operations: operations, streams: streams,
-			})
-			installed, gateway := installEnableAndMintGateway(t, h, tc.packageBytes(t), tc.surfaceID)
-			callResult := make(chan error, 1)
-			go func() {
-				_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-					PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-					BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: tc.method,
-					Params: tc.params,
-				})
-				callResult <- err
-			}()
-			select {
-			case <-registerEntered:
-			case <-time.After(time.Second):
-				t.Fatal("execution setup did not reach the blocked durable register")
-			}
-
-			closed := make(chan error, 1)
-			go func() { closed <- h.Close() }()
-			select {
-			case err := <-closed:
-				t.Fatalf("Host.Close() overtook durable execution setup: %v", err)
-			case <-time.After(50 * time.Millisecond):
-			}
-			close(registerRelease)
-			select {
-			case <-invokeEntered:
-			case <-time.After(time.Second):
-				t.Fatal("capability dispatch did not start after durable setup completed")
-			}
-			deadline := time.Now().Add(time.Second)
-			for {
-				h.lifecycleMu.RLock()
-				closedState := h.closed
-				h.lifecycleMu.RUnlock()
-				if closedState {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("Host.Close() did not publish the closed lifecycle state")
-				}
-				time.Sleep(time.Millisecond)
-			}
-			close(invokeRelease)
-			select {
-			case err := <-callResult:
-				if err == nil {
-					t.Fatal("execution succeeded after Host.Close() revoked its lease")
-				}
-			case <-time.After(time.Second):
-				t.Fatal("execution did not return after Host.Close()")
-			}
-			select {
-			case err := <-closed:
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("Host.Close() did not finish")
-			}
-
-			page, err := operationStore.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
-			if err != nil || len(page.Records) != 1 || page.Records[0].Status != tc.wantOperation {
-				t.Fatalf("durable operation state = %#v, %v", page.Records, err)
-			}
-			if tc.wantStream != "" {
-				records, err := streamStore.List(hostTestContext(), stream.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
-				if err != nil || len(records) != 1 || records[0].Status != tc.wantStream {
-					t.Fatalf("durable stream state = %#v, %v", records, err)
-				}
-			}
-			assertNoActiveExecutionState(t, h, "host close execution setup")
-		})
-	}
-}
-
-func TestDurableReconciliationRejectsConflictingTerminalPairs(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	binding := capability.ExecutionBinding{
-		InvocationID: "invoke_conflict", AuditCorrelationID: "audit_conflict", OperationID: "operation_conflict", StreamID: "stream_conflict",
-		PluginID: "com.example.conflict", PluginInstanceID: "plugini_conflict", Method: "logs.tail", Execution: "subscription",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
-	}
-	if _, err := h.adapters.Operations.Register(hostTestContext(), operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.adapters.Streams.Register(hostTestContext(), stream.RegisterRequest{StreamID: binding.StreamID, ExecutionBinding: binding}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.adapters.Operations.Finish(hostTestContext(), operation.FinishRequest{OperationID: binding.OperationID, Status: operation.StatusCompleted}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.adapters.Streams.Close(hostTestContext(), stream.CloseRequest{
-		StreamID: binding.StreamID, Status: stream.StatusFailed, FailureCode: capability.ExecutionFailurePlatformFailed,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.reconcileDurableExecutionStates(hostTestContext()); !errors.Is(err, errExecutionTerminalConflict) {
-		t.Fatalf("reconcileDurableExecutionStates() error = %v, want terminal conflict", err)
-	}
-	assertHostOperationStatus(t, h, binding.OperationID, operation.StatusCompleted)
-	assertHostStreamStatus(t, h, binding.StreamID, stream.StatusFailed)
-}
-
-func TestSubscriptionTerminalWriteFailureRetainsLeaseUntilRetryConverges(t *testing.T) {
-	finishErr := errors.New("operation terminal store unavailable")
-	operations := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr}
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-		operations: operations,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := adapter.last.Execution.Stream.Close(hostTestContext()); !errors.Is(err, finishErr) {
-		t.Fatalf("Stream.Close() error = %v, want %v", err, finishErr)
-	}
-	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusRunning)
-	h.executions.mu.Lock()
-	activeLeases := len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 1 {
-		t.Fatalf("active execution leases after partial terminal write = %d, want 1", activeLeases)
-	}
-	if err := adapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
-		t.Fatalf("Stream.Close() retry error = %v", err)
-	}
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
-	h.executions.mu.Lock()
-	activeLeases = len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 0 {
-		t.Fatalf("active execution leases after terminal retry = %d, want 0", activeLeases)
-	}
-}
-
-func TestSubscriptionLatchesOneTerminalIntentAcrossConcurrentCallers(t *testing.T) {
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	go func() {
-		<-start
-		errs <- adapter.last.Execution.Stream.Close(hostTestContext())
-	}()
-	go func() {
-		<-start
-		errs <- adapter.last.Execution.Stream.Fail(hostTestContext(), capability.ExecutionFailureAdapterFailed, errors.New("adapter failed"))
-	}()
-	close(start)
-	firstErr, secondErr := <-errs, <-errs
-	conflicts := 0
-	for _, terminalErr := range []error{firstErr, secondErr} {
-		if errors.Is(terminalErr, errExecutionTerminalConflict) {
-			conflicts++
-		} else if terminalErr != nil {
-			t.Fatalf("unexpected terminal error: %v", terminalErr)
-		}
-	}
-	if conflicts != 1 {
-		t.Fatalf("terminal conflict count = %d, errors = [%v, %v]", conflicts, firstErr, secondErr)
-	}
-	operationRecord, err := h.adapters.Operations.Get(hostTestContext(), result.OperationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	streamRecord, err := h.adapters.Streams.Get(hostTestContext(), result.StreamID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantOperation, ok := operationStatusForStreamStatus(streamRecord.Status)
-	if !ok || operationRecord.Status != wantOperation {
-		t.Fatalf("terminal records diverged: operation=%#v stream=%#v", operationRecord, streamRecord)
-	}
-}
-
-func TestRuntimeStreamCompletionReleasesExecutionLease(t *testing.T) {
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := (hostRuntimeStreamSink{executions: h.executions}).CloseRuntimeStream(hostTestContext(), result.StreamID); err != nil {
-		t.Fatalf("CloseRuntimeStream() error = %v", err)
-	}
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
-	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
-	h.executions.mu.Lock()
-	activeLeases := len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 0 {
-		t.Fatalf("active execution leases = %d, want 0", activeLeases)
-	}
-}
-
-func TestStreamAppendFailureReleasesReservedQuota(t *testing.T) {
-	streams := &failFirstStreamAppendStore{Store: stream.NewMemoryStore(), err: errors.New("stream write unavailable")}
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-		streams: streams,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	sink := adapter.last.Execution.Stream.(*hostStreamSink)
-	sink.maxBytes = 20
-	if err := sink.Append(hostTestContext(), map[string]any{"line": "a"}); !errors.Is(err, streams.err) {
-		t.Fatalf("first Append() error = %v, want %v", err, streams.err)
-	}
-	if err := sink.Append(hostTestContext(), map[string]any{"line": "abc"}); err != nil {
-		t.Fatalf("second Append() error = %v", err)
-	}
-}
-
-func TestCancelOperationRequestsCancel(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "documents.archive",
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
-	}
-
-	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	canceled, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user", Now: now})
-	if err != nil {
-		t.Fatalf("CancelOperation() error = %v", err)
-	}
-	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
-		t.Fatalf("cancel operation mismatch: %#v", canceled)
-	}
-	if capabilityAdapter.cancelCalls != 1 {
-		t.Fatalf("operation canceler calls = %d, want 1", capabilityAdapter.cancelCalls)
-	}
-	if capabilityAdapter.lastCancellation.OperationID != started.OperationID ||
-		capabilityAdapter.lastCancellation.Execution.PluginInstanceID != installed.PluginInstanceID ||
-		capabilityAdapter.lastCancellation.Execution.Method != "documents.archive" ||
-		capabilityAdapter.lastCancellation.Execution.SurfaceInstanceID != "surface_rpc" ||
-		capabilityAdapter.lastCancellation.Execution.SessionChannelIDHash != "channel_hash" ||
-		capabilityAdapter.lastCancellation.Execution.BridgeChannelID != "bridge_rpc" ||
-		capabilityAdapter.lastCancellation.Reason != "user" ||
-		!capabilityAdapter.lastCancellation.RequestedAt.Equal(now) {
-		t.Fatalf("operation canceler request mismatch: %#v", capabilityAdapter.lastCancellation)
-	}
-	if !audits.hasEvent("plugin.operation.cancel_requested") {
-		t.Fatalf("missing cancel audit event: %#v", audits.events)
-	}
-}
-
-func TestCancelOperationDoesNotForwardStoreOwnedBindingToAdapter(t *testing.T) {
-	operations := &retainingCancelOperationStore{Store: operation.NewMemoryStore()}
-	capabilityAdapter := &recordingCapabilityAdapter{
-		result: capability.Result{Data: map[string]any{}},
-		mutateCancellation: func(binding *capability.ExecutionBinding) {
-			binding.Target.Fields["cancel_adapter_mutation"] = true
-			binding.Permissions.Required[0] = "cancel.adapter.mutated"
-		},
-	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo",
-		capabilityAdapter: capabilityAdapter, operations: operations,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "documents.archive",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := operations.retained.Target.Fields["cancel_adapter_mutation"]; ok || operations.retained.Permissions.Required[0] == "cancel.adapter.mutated" {
-		t.Fatalf("cancellation adapter mutated store-owned binding: %#v", operations.retained)
-	}
-}
-
-func TestOperationManagementRequiresExactOwnerScope(t *testing.T) {
-	operations := operation.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations})
-	owner := operationOwnerScope(sessionctx.Context{OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash"})
-	other := operation.OwnerScope{OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other"}
-	register := func(operationID string, scope operation.OwnerScope) {
-		t.Helper()
-		if _, err := operations.Register(context.Background(), operation.RegisterRequest{
-			OperationID: operationID,
-			ExecutionBinding: capability.ExecutionBinding{
-				InvocationID: "invoke_" + operationID, PluginID: "com.example.plugin", PluginInstanceID: "plugini_scope",
-				Method: "documents.archive", Execution: string(manifest.MethodExecutionOperation),
-				OwnerSessionHash: scope.OwnerSessionHash, OwnerUserHash: scope.OwnerUserHash,
-				OwnerEnvHash: scope.OwnerEnvHash, SessionChannelIDHash: scope.SessionChannelIDHash,
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	register("op_owned", owner)
-	register("op_other", other)
-
-	listed, err := h.ListOperations(hostTestContext(), ListOperationsRequest{PluginInstanceID: "plugini_scope"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(listed.Operations) != 1 || listed.Operations[0].OperationID != "op_owned" {
-		t.Fatalf("owner-scoped operations = %#v", listed.Operations)
-	}
-	if _, err := h.GetOperation(hostTestContext(), "op_other"); !errors.Is(err, operation.ErrNotFound) {
-		t.Fatalf("cross-owner GetOperation() error = %v, want ErrNotFound", err)
-	}
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: "op_other", Reason: "cross-owner"}); !errors.Is(err, operation.ErrNotFound) {
-		t.Fatalf("cross-owner CancelOperation() error = %v, want ErrNotFound", err)
-	}
-	otherRecord, err := operations.Get(context.Background(), "op_other")
-	if err != nil || otherRecord.Status != operation.StatusRunning {
-		t.Fatalf("cross-owner operation changed: %#v, %v", otherRecord, err)
-	}
-	owned, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: "op_owned", Reason: "owner"})
-	if err != nil || owned.Status != operation.StatusCancelRequested {
-		t.Fatalf("owner CancelOperation() = %#v, %v", owned, err)
-	}
-}
-
-func TestCancelOperationCanBeAcknowledgedThroughHostOwnedSink(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "documents.archive",
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
-	}
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
-		t.Fatalf("CancelOperation() error = %v", err)
-	}
-	select {
-	case <-capabilityAdapter.invokeContext.Done():
-	case <-time.After(time.Second):
-		t.Fatal("capability adapter context was not canceled")
-	}
-	select {
-	case <-capabilityAdapter.last.Execution.Operation.CancelRequested():
-	case <-time.After(time.Second):
-		t.Fatal("operation sink did not publish the cancel request")
-	}
-	if err := capabilityAdapter.last.Execution.Operation.Cancel(hostTestContext(), "adapter acknowledged cancellation"); err != nil {
-		t.Fatalf("Operation.Cancel() error = %v", err)
-	}
-	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
-	if err := capabilityAdapter.last.Execution.Operation.Cancel(hostTestContext(), "duplicate"); !errors.Is(err, capability.ErrExecutionRevoked) {
-		t.Fatalf("duplicate Operation.Cancel() error = %v, want %v", err, capability.ErrExecutionRevoked)
-	}
-}
-
-func TestCancelOperationAckTimeoutForcesTerminalState(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		record, err := h.GetOperation(hostTestContext(), started.OperationID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if record.Status == operation.StatusCanceled {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("operation remained %s after ack timeout", record.Status)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-func TestCancelOperationAckTimeoutReleasesExecutionAfterPersistentStoreFailureAndAllowsRetry(t *testing.T) {
-	finishErr := errors.New("operation terminal store unavailable")
-	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr, failing: true}
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
-		operations: operations,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
-		t.Fatal(err)
-	}
-	waitForOperationFinishCalls(t, operations, 1)
-	h.lifecycleWG.Wait()
-	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCancelRequested)
-	h.executions.mu.Lock()
-	activeLeases := len(h.executions.leases)
-	activePlugins := len(h.executions.leasesByPlugin)
-	activeOperations := len(h.executions.operations)
-	activeStreams := len(h.executions.streams)
-	activeQuotas := len(h.executions.activeByQuotaKey)
-	h.executions.mu.Unlock()
-	if activeLeases != 0 || activePlugins != 0 || activeOperations != 0 || activeStreams != 0 || activeQuotas != 0 {
-		t.Fatalf("ack timeout retained execution state: leases=%d plugins=%d operations=%d streams=%d quotas=%d", activeLeases, activePlugins, activeOperations, activeStreams, activeQuotas)
-	}
-
-	operations.setFailing(false)
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "retry"}); err != nil {
-		t.Fatal(err)
-	}
-	waitForHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
-	h.lifecycleWG.Wait()
-	if calls := operations.finishCalls(); calls != 2 {
-		t.Fatalf("operation terminal writes = %d, want 2", calls)
-	}
-}
-
-func TestDetachedCancelAckTimeoutStopsAfterFailureAndAllowsRetry(t *testing.T) {
-	finishErr := errors.New("operation terminal store unavailable")
-	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr, failing: true}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations})
-	cancelable := true
-	operationID := "operation_detached_12345678"
-	_, err := operations.Register(hostTestContext(), operation.RegisterRequest{
-		OperationID: operationID,
-		ExecutionBinding: capability.ExecutionBinding{
-			InvocationID: "invoke_detached_12345678", OperationID: operationID,
-			PluginID: "com.example.detached", PluginInstanceID: "plugini_detached_12345678", Method: "tasks.run",
-			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
-		},
-		Cancelable: &cancelable, CancelAckTimeoutMS: 20,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: operationID, Reason: "user"}); err != nil {
-		t.Fatal(err)
-	}
-	waitForOperationFinishCalls(t, operations, 1)
-	h.lifecycleWG.Wait()
-	assertHostOperationStatus(t, h, operationID, operation.StatusCancelRequested)
-	if _, loaded := h.detachedCancelJobs.Load(operationID); loaded {
-		t.Fatal("detached cancellation job remained after terminal store failure")
-	}
-
-	operations.setFailing(false)
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: operationID, Reason: "retry"}); err != nil {
-		t.Fatal(err)
-	}
-	waitForHostOperationStatus(t, h, operationID, operation.StatusCanceled)
-	h.lifecycleWG.Wait()
-}
-
-func TestHostCloseStopsDetachedCancelAckTimeout(t *testing.T) {
-	operations := operation.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations})
-	cancelable := true
-	operationID := "operation_detached_close_12345678"
-	if _, err := operations.Register(hostTestContext(), operation.RegisterRequest{
-		OperationID: operationID,
-		ExecutionBinding: capability.ExecutionBinding{
-			InvocationID: "invoke_detached_close_12345678", OperationID: operationID,
-			PluginID: "com.example.detached", PluginInstanceID: "plugini_detached_close_12345678", Method: "tasks.run",
-			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
-		},
-		Cancelable: &cancelable, CancelAckTimeoutMS: 60_000,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: operationID, Reason: "user"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, loaded := h.detachedCancelJobs.Load(operationID); !loaded {
-		t.Fatal("detached cancellation job was not registered")
-	}
-	closed := make(chan error, 1)
-	go func() { closed <- h.Close() }()
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Host.Close() did not stop the detached cancellation job")
-	}
-	if _, loaded := h.detachedCancelJobs.Load(operationID); loaded {
-		t.Fatal("Host.Close() retained the detached cancellation job")
-	}
-}
-
-func TestCancelOperationRejectsNonCancelableMethod(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
-	for index := range contract.Methods {
-		if contract.Methods[index].Name == "documents.archive" {
-			cancelPolicy := *contract.Methods[index].CancelPolicy
-			cancelPolicy.Cancelable = false
-			cancelPolicy.AckTimeoutMS = 0
-			contract.Methods[index].CancelPolicy = &cancelPolicy
-		}
-	}
-	verified := verifyFixtureCapabilityContract(t, contract)
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
-		t,
-		operationRPCFixtureManifestJSON(),
-		"Operation",
-		"echo",
-		verified.Pin,
-	), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID}); !errors.Is(err, operation.ErrNotCancelable) {
-		t.Fatalf("CancelOperation() error = %v, want %v", err, operation.ErrNotCancelable)
-	}
-	if capabilityAdapter.cancelCalls != 0 {
-		t.Fatalf("non-cancelable adapter cancel calls = %d, want 0", capabilityAdapter.cancelCalls)
-	}
-	assertHostOperationStatus(t, h, started.OperationID, operation.StatusRunning)
-	if err := capabilityAdapter.last.Execution.Operation.Complete(hostTestContext()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestCancelSurfaceOperationRejectsScopeMismatch(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := CancelSurfaceOperationRequest{
-		OperationID: started.OperationID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", Reason: "user",
-	}
-	tests := []struct {
-		name    string
-		context func() context.Context
-		mutate  func(*CancelSurfaceOperationRequest)
-	}{
-		{name: "surface", mutate: func(req *CancelSurfaceOperationRequest) { req.SurfaceInstanceID = "surface_other" }},
-		{name: "owner session", context: func() context.Context {
-			return hostTestContextWith("session_other", "user_hash", "env_hash", "channel_hash")
-		}},
-		{name: "owner user", context: func() context.Context {
-			return hostTestContextWith("session_hash", "user_other", "env_hash", "channel_hash")
-		}},
-		{name: "session channel", context: func() context.Context {
-			return hostTestContextWith("session_hash", "user_hash", "env_hash", "channel_other")
-		}},
-		{name: "bridge channel", mutate: func(req *CancelSurfaceOperationRequest) { req.BridgeChannelID = "bridge_other" }},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			req := base
-			if tc.mutate != nil {
-				tc.mutate(&req)
-			}
-			ctx := hostTestContext()
-			if tc.context != nil {
-				ctx = tc.context()
-			}
-			if _, err := h.CancelSurfaceOperation(ctx, req); !errors.Is(err, bridge.ErrTokenAudience) {
-				t.Fatalf("CancelSurfaceOperation() error = %v, want %v", err, bridge.ErrTokenAudience)
-			}
-		})
-	}
-	if capabilityAdapter.cancelCalls != 0 {
-		t.Fatalf("mismatched surface cancellation reached adapter %d times", capabilityAdapter.cancelCalls)
-	}
-	assertHostOperationStatus(t, h, started.OperationID, operation.StatusRunning)
-	if _, err := h.CancelSurfaceOperation(hostTestContext(), base); err != nil {
-		t.Fatalf("CancelSurfaceOperation() valid scope error = %v", err)
-	}
-	if capabilityAdapter.cancelCalls != 1 {
-		t.Fatalf("valid surface cancellation reached adapter %d times, want 1", capabilityAdapter.cancelCalls)
-	}
-}
-
-func TestAsyncExecutionOutlivesSuccessfulRequestContext(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	requestContext, cancelRequest := context.WithCancel(hostTestContext())
-	started, err := h.CallPluginMethod(requestContext, CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "documents.archive",
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
-	}
-	cancelRequest()
-	if err := capabilityAdapter.last.Execution.Operation.Complete(hostTestContext()); err != nil {
-		t.Fatalf("Operation.Complete() after request cancellation error = %v", err)
-	}
-	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCompleted)
-}
-
-func TestDisableCancelsHostOwnedOperationWithoutRewritingItAsFailed(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "documents.archive",
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
-	}
-	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{
-		PluginInstanceID:           installed.PluginInstanceID,
-		ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID),
-		Reason:                     "disabled by owner",
-	}); err != nil {
-		t.Fatalf("DisablePlugin() error = %v", err)
-	}
-	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
-	if err := capabilityAdapter.last.Execution.Operation.Cancel(hostTestContext(), "late adapter acknowledgement"); !errors.Is(err, capability.ErrExecutionRevoked) {
-		t.Fatalf("Operation.Cancel() after revoke error = %v, want %v", err, capability.ErrExecutionRevoked)
-	}
-}
-
-func TestCancelOperationUsesRouteLocalExecutionRegistration(t *testing.T) {
-	t.Run("core action", func(t *testing.T) {
-		coreAdapter := &recordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
-		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, coreActions: coreAdapter})
-		installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionOperationFixturePackage(t), "core.view")
-		started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-			Method: "core.open", Params: map[string]any{"target": "settings"},
-		})
-		if err != nil {
-			t.Fatalf("CallPluginMethod() error = %v", err)
-		}
-		coreRecord, err := h.GetOperation(hostTestContext(), started.OperationID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if coreRecord.RouteKind != capability.RouteCoreAction || coreRecord.Contract != nil || coreRecord.Permissions.Required == nil || coreRecord.Permissions.Granted == nil {
-			t.Fatalf("core action execution binding mismatch: %#v", coreRecord.ExecutionBinding)
-		}
-		if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
-			t.Fatalf("CancelOperation() error = %v", err)
-		}
-		if coreAdapter.cancelCalls != 1 || coreAdapter.lastCancellation.OperationID != started.OperationID {
-			t.Fatalf("core action cancellation mismatch: calls=%d request=%#v", coreAdapter.cancelCalls, coreAdapter.lastCancellation)
-		}
-		if err := coreAdapter.last.Execution.Operation.Cancel(hostTestContext(), "acknowledged"); err != nil {
-			t.Fatalf("Operation.Cancel() error = %v", err)
-		}
-	})
-
-	t.Run("worker", func(t *testing.T) {
-		runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
-		runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
-		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
-		installed, gateway := installEnableAndMintGateway(t, h, buildWorkerOperationFixturePackage(t), "worker.view")
-		started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-			Method: "worker.echo", Params: map[string]any{"message": "hello"},
-		})
-		if err != nil {
-			t.Fatalf("CallPluginMethod() error = %v", err)
-		}
-		workerRecord, err := h.GetOperation(hostTestContext(), started.OperationID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if workerRecord.RouteKind != capability.RouteWorker || workerRecord.Contract != nil || workerRecord.Permissions.Required == nil || workerRecord.Permissions.Granted == nil {
-			t.Fatalf("worker execution binding mismatch: %#v", workerRecord.ExecutionBinding)
-		}
-		if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
-			t.Fatalf("CancelOperation() error = %v", err)
-		}
-		select {
-		case <-runtime.invokeContext.Done():
-		case <-time.After(time.Second):
-			t.Fatal("worker execution context was not canceled")
-		}
-	})
-}
-
-func TestOperationFailurePathsCloseHostOwnedHandle(t *testing.T) {
-	const sensitiveAdapterFailure = "adapter token secret at /Users/private/runtime.sock"
-	cases := []struct {
-		name          string
-		adapter       *recordingCapabilityAdapter
-		internalCause string
-	}{
-		{name: "adapter error", adapter: &recordingCapabilityAdapter{err: errors.New(sensitiveAdapterFailure)}, internalCause: sensitiveAdapterFailure},
-		{name: "response schema failure", adapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unexpected": true}}}},
-		{name: "adapter panic", adapter: &recordingCapabilityAdapter{panicValue: "adapter panic"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			diagnostics := &diagnosticSink{}
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: tc.adapter, diagnostics: diagnostics,
-			})
-			installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-			if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-				BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-				Method: "documents.archive",
-			}); err == nil {
-				t.Fatal("CallPluginMethod() expected failure")
-			}
-			if tc.adapter.last.Execution.Operation == nil {
-				t.Fatal("adapter did not receive a Host-owned operation sink")
-			}
-			operationID := tc.adapter.last.Execution.Operation.ID()
-			assertHostOperationStatus(t, h, operationID, operation.StatusFailed)
-			record, err := h.GetOperation(hostTestContext(), operationID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if record.Reason != executionFailedReason {
-				t.Fatalf("durable failure reason = %q, want %q", record.Reason, executionFailedReason)
-			}
-			encoded, err := json.Marshal(record)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.internalCause != "" && strings.Contains(string(encoded), tc.internalCause) {
-				t.Fatalf("durable operation leaked internal cause: %s", encoded)
-			}
-			var failureDiagnostic *observability.DiagnosticEvent
-			for index := range diagnostics.events {
-				if diagnostics.events[index].Type == "plugin.execution.failed" {
-					failureDiagnostic = &diagnostics.events[index]
-					break
-				}
-			}
-			if failureDiagnostic == nil || failureDiagnostic.Message != executionFailedReason {
-				t.Fatalf("execution failure diagnostic mismatch: %#v", diagnostics.events)
-			}
-			if tc.internalCause != "" {
-				failure := failureDiagnostic.Failure
-				if failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentExecution || failure.Operation != "execution.fail" || strings.Contains(fmt.Sprint(failureDiagnostic), errRPCUnavailable.Error()) {
-					t.Fatalf("execution failure retained adapter-controlled cause: %#v", failureDiagnostic)
-				}
-			}
-			if err := tc.adapter.last.Execution.Operation.Complete(hostTestContext()); !errors.Is(err, capability.ErrExecutionRevoked) {
-				t.Fatalf("Operation.Complete() after failure error = %v, want %v", err, capability.ErrExecutionRevoked)
-			}
-		})
-	}
-}
-
 func TestCallPluginMethodRecordsNegativeAuditAndDiagnostic(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -4814,46 +2582,6 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 	}
 }
 
-func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}, cancellationError: errors.New("runtime unavailable")}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceInstanceID: "surface_rpc",
-
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken,
-		Method:          "documents.archive",
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
-	}
-
-	canceled, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"})
-	if !errors.Is(err, ErrOperationCancelDispatchFailed) {
-		t.Fatalf("CancelOperation() error = %v, want %v", err, ErrOperationCancelDispatchFailed)
-	}
-	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
-		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
-	}
-	if canceled.Status != operation.StatusCancelRequested {
-		t.Fatalf("returned operation status = %s, want %s: %#v", canceled.Status, operation.StatusCancelRequested, canceled)
-	}
-	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCancelRequested)
-	if capabilityAdapter.cancelCalls != 1 {
-		t.Fatalf("operation canceler calls = %d, want 1", capabilityAdapter.cancelCalls)
-	}
-	if !audits.hasEvent("plugin.operation.cancel_requested") {
-		t.Fatalf("missing cancel audit event: %#v", audits.events)
-	}
-}
-
 func TestCallPluginMethodRejectsInvalidGatewayToken(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
 	diagnostics := &diagnosticSink{}
@@ -4921,13 +2649,13 @@ func TestCallPluginMethodAuditsTrustUnavailable(t *testing.T) {
 		capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	record, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	record, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record.TrustState = registry.TrustUnavailable
 	record.TrustAssessment.TrustState = registry.TrustUnavailable
-	if _, err := h.adapters.Registry.PutPlugin(hostTestContext(), record, registry.PutOptions{}); err != nil {
+	if _, err := h.putPluginRecord(hostTestContext(), record, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -4991,7 +2719,7 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 		capabilityAdapter: capabilityAdapter,
 	})
 	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	beforePolicy, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	beforePolicy, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5009,7 +2737,7 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 	if len(policy.Policy.DeniedMethods) != 1 || policy.Policy.DeniedMethods[0] != "echo.ping" {
 		t.Fatalf("policy mismatch: %#v", policy)
 	}
-	afterPolicy, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	afterPolicy, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5306,7 +3034,7 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
 	}
-	if capabilityAdapter.calls != 3 || capabilityAdapter.last.Execution.TargetMethod != "tasks.start" || confirmed.OperationID == "" {
+	if capabilityAdapter.calls != 3 || capabilityAdapter.last.Execution.TargetMethod != "tasks.start" || confirmed.ExecutionID == "" {
 		t.Fatalf("confirmed invocation mismatch: calls=%d last=%#v", capabilityAdapter.calls, capabilityAdapter.last)
 	}
 	if confirmed.Data == nil {
@@ -5364,7 +3092,7 @@ func TestPrepareMethodConfirmationAcceptsContractValidatedDomainPlan(t *testing.
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with domain-plan confirmation error = %v", err)
 	}
-	if confirmed.OperationID == "" || capabilityAdapter.last.Execution.TargetMethod != "tasks.start" {
+	if confirmed.ExecutionID == "" || capabilityAdapter.last.Execution.TargetMethod != "tasks.start" {
 		t.Fatalf("confirmed invocation mismatch: result=%#v last=%#v", confirmed, capabilityAdapter.last)
 	}
 }
@@ -5643,8 +3371,11 @@ func TestCapabilityExecutionEnforcesConcurrentAndDurationQuota(t *testing.T) {
 		t.Fatalf("missing quota rejection audit: %#v", audits.events)
 	}
 	time.Sleep(750 * time.Millisecond)
-	assertHostOperationStatus(t, h, first.OperationID, operation.StatusFailed)
-	if err := capabilityAdapter.last.Execution.Operation.Complete(hostTestContext()); !errors.Is(err, capability.ErrExecutionRevoked) {
+	failed, err := h.GetExecution(hostTestContext(), first.ExecutionID)
+	if err != nil || failed.Status != execution.StatusFailed {
+		t.Fatalf("duration-limited execution = %#v, err=%v", failed, err)
+	}
+	if err := capabilityAdapter.last.Execution.Events.Complete(hostTestContext()); !errors.Is(err, capability.ErrExecutionRevoked) {
 		t.Fatalf("Operation.Complete() after quota expiry error = %v, want %v", err, capability.ErrExecutionRevoked)
 	}
 }
@@ -5673,204 +3404,6 @@ func TestCapabilityExecutionRejectsSuccessReturnedAfterDurationQuota(t *testing.
 	})
 	if !errors.Is(err, capability.ErrQuotaExceeded) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrQuotaExceeded", err)
-	}
-}
-
-func TestDurationQuotaTerminalFailureReleasesOperationExecutionAndAllowsRetry(t *testing.T) {
-	finishErr := errors.New("operation terminal store unavailable")
-	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr, failing: true}
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
-	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
-		"documents.archive": {MaxConcurrent: 1, MaxDurationMS: 50},
-	})
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, operations: operations,
-		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
-		t, operationRPCFixtureManifestJSON(), "Operation", "echo", verified.Pin,
-	), "operation.view")
-	call := CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	}
-	first, err := h.CallPluginMethod(hostTestContext(), call)
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitForOperationFinishCalls(t, operations, 1)
-	h.lifecycleWG.Wait()
-	assertHostOperationStatus(t, h, first.OperationID, operation.StatusRunning)
-	assertNoActiveExecutionState(t, h, "duration terminal failure")
-
-	operations.setFailing(false)
-	second, err := h.CallPluginMethod(hostTestContext(), call)
-	if err != nil {
-		t.Fatalf("CallPluginMethod() after quota release error = %v", err)
-	}
-	if err := capabilityAdapter.last.Execution.Operation.Complete(hostTestContext()); err != nil {
-		t.Fatalf("second Operation.Complete() error = %v", err)
-	}
-	assertHostOperationStatus(t, h, second.OperationID, operation.StatusCompleted)
-	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: first.OperationID, Reason: "retry terminal write"}); err != nil {
-		t.Fatal(err)
-	}
-	waitForHostOperationStatus(t, h, first.OperationID, operation.StatusCanceled)
-}
-
-func TestDurationQuotaSubscriptionOperationFailureReleasesExecutionAndReconciles(t *testing.T) {
-	finishErr := errors.New("operation terminal store unavailable")
-	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr, failing: true}
-	streams := stream.NewMemoryStore()
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
-	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
-		"logs.tail": {MaxConcurrent: 1, MaxDurationMS: 25},
-	})
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, operations: operations, streams: streams,
-		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
-		t, subscriptionRPCFixtureManifestJSON(), "Subscription", "echo", verified.Pin,
-	), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitForOperationFinishCalls(t, operations, 1)
-	h.lifecycleWG.Wait()
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusRunning)
-	assertHostStreamStatus(t, h, result.StreamID, stream.StatusFailed)
-	assertNoActiveExecutionState(t, h, "subscription operation terminal failure")
-
-	if err := h.Close(); err != nil {
-		t.Fatal(err)
-	}
-	operations.setFailing(false)
-	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
-	assertHostOperationStatus(t, restarted, result.OperationID, operation.StatusFailed)
-	assertHostStreamStatus(t, restarted, result.StreamID, stream.StatusFailed)
-}
-
-func TestDurationQuotaSubscriptionStreamFailureReleasesExecutionAndReconciles(t *testing.T) {
-	closeErr := errors.New("stream terminal store unavailable")
-	operations := operation.NewMemoryStore()
-	streams := &controlledStreamCloseStore{Store: stream.NewMemoryStore(), err: closeErr, failing: true}
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
-	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
-		"logs.tail": {MaxConcurrent: 1, MaxDurationMS: 25},
-	})
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, operations: operations, streams: streams,
-		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
-		t, subscriptionRPCFixtureManifestJSON(), "Subscription", "echo", verified.Pin,
-	), "subscription.view")
-	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "logs.tail",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitForStreamCloseCalls(t, streams, 1)
-	h.lifecycleWG.Wait()
-	assertHostOperationStatus(t, h, result.OperationID, operation.StatusFailed)
-	assertHostStreamStatus(t, h, result.StreamID, stream.StatusOpen)
-	assertNoActiveExecutionState(t, h, "subscription stream terminal failure")
-
-	if err := h.Close(); err != nil {
-		t.Fatal(err)
-	}
-	streams.setFailing(false)
-	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
-	assertHostOperationStatus(t, restarted, result.OperationID, operation.StatusFailed)
-	assertHostStreamStatus(t, restarted, result.StreamID, stream.StatusFailed)
-}
-
-func TestDurationQuotaRejectsLateSubscriptionSuccessWithoutDuplicateTerminalWrite(t *testing.T) {
-	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore()}
-	streams := stream.NewMemoryStore()
-	capabilityAdapter := &recordingCapabilityAdapter{
-		result: capability.Result{Data: map[string]any{"started": true}}, invokeDelay: 80 * time.Millisecond,
-	}
-	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
-		"logs.tail": {MaxConcurrent: 1, MaxDurationMS: 20},
-	})
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, operations: operations, streams: streams,
-		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
-		t, subscriptionRPCFixtureManifestJSON(), "Subscription", "echo", verified.Pin,
-	), "subscription.view")
-	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "logs.tail",
-	})
-	if !errors.Is(err, capability.ErrQuotaExceeded) {
-		t.Fatalf("CallPluginMethod() error = %v, want %v", err, capability.ErrQuotaExceeded)
-	}
-	h.lifecycleWG.Wait()
-	if calls := operations.finishCalls(); calls != 1 {
-		t.Fatalf("operation terminal writes = %d, want 1", calls)
-	}
-	assertNoActiveExecutionState(t, h, "late subscription result")
-}
-
-func TestHostCloseCancelsDurationQuotaJobsBeforeExpiry(t *testing.T) {
-	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore()}
-	streams := &controlledStreamCloseStore{Store: stream.NewMemoryStore()}
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
-	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
-		"documents.archive": {MaxConcurrent: 1, MaxDurationMS: 500},
-		"logs.tail":         {MaxConcurrent: 1, MaxDurationMS: 500},
-	})
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, operations: operations, streams: streams,
-		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
-	})
-	operationPlugin, operationGateway := installEnableAndMintGatewayForAudience(t, h, buildCapabilityPinnedFixturePackage(
-		t, operationRPCFixtureManifestJSON(), "Operation", "echo", verified.Pin,
-	), "operation.view", "surface_operation", "bridge_operation")
-	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: operationPlugin.PluginInstanceID, SurfaceInstanceID: "surface_operation",
-		BridgeChannelID: "bridge_operation", GatewayToken: operationGateway.GatewayToken,
-		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	subscriptionPlugin, subscriptionGateway := installEnableAndMintGatewayForAudience(t, h, buildCapabilityPinnedFixturePackage(
-		t, subscriptionRPCFixtureManifestJSON(), "Subscription", "echo", verified.Pin,
-	), "subscription.view", "surface_subscription", "bridge_subscription")
-	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: subscriptionPlugin.PluginInstanceID, SurfaceInstanceID: "surface_subscription",
-		BridgeChannelID: "bridge_subscription", GatewayToken: subscriptionGateway.GatewayToken, Method: "logs.tail",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	closed := make(chan error, 1)
-	go func() { closed <- h.Close() }()
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Host.Close() did not stop duration quota lifecycle jobs")
-	}
-	assertNoActiveExecutionState(t, h, "host close")
-	operationCalls := operations.finishCalls()
-	streamCalls := streams.closeCalls()
-	time.Sleep(650 * time.Millisecond)
-	if operations.finishCalls() != operationCalls || streams.closeCalls() != streamCalls {
-		t.Fatal("duration quota terminal writes continued after Host.Close()")
 	}
 }
 
@@ -5984,7 +3517,7 @@ func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
 		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
 	}
-	disabled, getErr := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
+	disabled, getErr := h.getPluginRecord(ctx, enabled.PluginInstanceID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
@@ -6431,7 +3964,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("GrantPermission(network.audit) error = %v", err)
 	}
-	afterGrant, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	afterGrant, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6472,7 +4005,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RevokePermission(network.audit) error = %v", err)
 	}
-	afterRevoke, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	afterRevoke, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6566,34 +4099,6 @@ func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing
 	if err != nil {
 		t.Fatalf("EnablePlugin(env B) error = %v", err)
 	}
-	registerExecution := func(suffix, ownerSessionHash, ownerUserHash, ownerEnvHash, sessionChannelIDHash string) {
-		t.Helper()
-		binding := capability.ExecutionBinding{
-			PluginID:             enabledA.PluginID,
-			PluginInstanceID:     enabledA.PluginInstanceID,
-			Method:               "network.watch",
-			Execution:            string(manifest.MethodExecutionSubscription),
-			OwnerSessionHash:     ownerSessionHash,
-			OwnerUserHash:        ownerUserHash,
-			OwnerEnvHash:         ownerEnvHash,
-			SessionChannelIDHash: sessionChannelIDHash,
-		}
-		if _, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
-			OperationID:      "operation_" + suffix,
-			ExecutionBinding: binding,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := h.adapters.Streams.Register(context.Background(), stream.RegisterRequest{
-			StreamID:         "stream_" + suffix,
-			ExecutionBinding: binding,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	registerExecution("env_a", "session_a", "user_a", "env_a", "channel_a")
-	registerExecution("env_b", "session_b", "user_b", "env_b", "channel_b")
-
 	mintRequest := MintConnectionGrantRequest{
 		PluginInstanceID:    installedA.PluginInstanceID,
 		ConnectorID:         "mysql",
@@ -6614,28 +4119,6 @@ func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing
 		ExpectedManagementRevision: enabledA.ManagementRevision,
 	}); err != nil {
 		t.Fatalf("DisablePlugin(env A) error = %v", err)
-	}
-	operationA, err := h.adapters.Operations.Get(ctxA, "operation_env_a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	operationB, err := h.adapters.Operations.Get(ctxB, "operation_env_b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if operationA.Status != operation.StatusCancelRequested || operationB.Status != operation.StatusRunning {
-		t.Fatalf("cross-environment operation statuses = %s, %s", operationA.Status, operationB.Status)
-	}
-	streamA, err := h.adapters.Streams.Get(ctxA, "stream_env_a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	streamB, err := h.adapters.Streams.Get(ctxB, "stream_env_b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if streamA.Status != stream.StatusOrphanedDisabled || streamB.Status != stream.StatusOpen {
-		t.Fatalf("cross-environment stream statuses = %s, %s", streamA.Status, streamB.Status)
 	}
 	if _, err := connectivityBroker.MintConnectionGrant(ctxA, connectivity.GrantRequest{
 		PluginInstanceID:   enabledA.PluginInstanceID,
@@ -6665,23 +4148,23 @@ func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing
 	}
 }
 
-func TestRefreshEnabledPluginResultIsClosed(t *testing.T) {
-	for _, result := range []RefreshEnabledPluginResult{
+func TestInternalRefreshEnabledPluginResultIsClosed(t *testing.T) {
+	for _, result := range []refreshEnabledPluginResult{
 		refreshedPluginResult("plugini_refreshed"),
 		failedPluginRefreshResult("plugini_failed"),
 	} {
-		if _, err := json.Marshal(result); err != nil {
-			t.Fatalf("json.Marshal(%#v) error = %v", result, err)
+		if err := result.validate(); err != nil {
+			t.Fatalf("validate(%#v) error = %v", result, err)
 		}
 	}
-	for _, result := range []RefreshEnabledPluginResult{
+	for _, result := range []refreshEnabledPluginResult{
 		{},
-		{PluginInstanceID: "plugini_invalid", Status: RefreshEnabledPluginStatusRefreshed, Error: &RefreshEnabledPluginPublicError{Code: security.ErrRuntimeUnavailable, Message: refreshEnabledPluginFailureMessage}},
-		{PluginInstanceID: "plugini_invalid", Status: RefreshEnabledPluginStatusFailed},
+		{PluginInstanceID: "plugini_invalid", Status: refreshEnabledPluginStatusRefreshed, Error: &refreshEnabledPluginError{Code: security.ErrRuntimeUnavailable, Message: refreshEnabledPluginFailureMessage}},
+		{PluginInstanceID: "plugini_invalid", Status: refreshEnabledPluginStatusFailed},
 		{PluginInstanceID: "plugini_invalid", Status: "unknown"},
 	} {
-		if _, err := json.Marshal(result); err == nil {
-			t.Fatalf("json.Marshal(%#v) succeeded, want closed-union validation error", result)
+		if err := result.validate(); err == nil {
+			t.Fatalf("validate(%#v) succeeded, want closed-union validation error", result)
 		}
 	}
 }
@@ -6690,14 +4173,11 @@ func TestRefreshEnabledPluginFailurePublishesStableRecoveryReason(t *testing.T) 
 	tests := []struct {
 		name   string
 		cause  error
-		reason RefreshEnabledPluginFailureReason
-		action RefreshEnabledPluginFailureAction
+		reason refreshEnabledPluginFailureReason
+		action refreshEnabledPluginFailureAction
 	}{
-		{name: "advanced trust state", cause: releasetrust.NewActivationRecoveryRejection(releasetrust.ActivationRecoveryReasonStateAdvancementFailed, "trust state advancement revalidation failed"), reason: RefreshFailureReasonTrustStateAdvanced, action: RefreshFailureActionRetry},
-		{name: "revoked", cause: releasetrust.NewActivationRecoveryRejection(releasetrust.ActivationRecoveryReasonReleaseRevoked, "release is revoked"), reason: RefreshFailureReasonTrustRevoked, action: RefreshFailureActionReinstall},
-		{name: "fenced", cause: releasetrust.NewActivationRecoveryRejection(releasetrust.ActivationRecoveryReasonTrustFenced, "source trust is fenced"), reason: RefreshFailureReasonTrustFenced, action: RefreshFailureActionContactAdmin},
-		{name: "canceled", cause: context.Canceled, reason: RefreshFailureReasonRecoveryCanceled, action: RefreshFailureActionRetry},
-		{name: "deadline", cause: context.DeadlineExceeded, reason: RefreshFailureReasonRecoveryTimeout, action: RefreshFailureActionRetry},
+		{name: "canceled", cause: context.Canceled, reason: refreshFailureReasonRecoveryCanceled, action: refreshFailureActionRetry},
+		{name: "deadline", cause: context.DeadlineExceeded, reason: refreshFailureReasonRecoveryTimeout, action: refreshFailureActionRetry},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -6705,8 +4185,8 @@ func TestRefreshEnabledPluginFailurePublishesStableRecoveryReason(t *testing.T) 
 			if result.Error == nil || result.Error.Reason != tt.reason || result.Error.Action != tt.action || result.Error.Message == refreshEnabledPluginFailureMessage {
 				t.Fatalf("failure result = %#v, want reason=%q action=%q", result, tt.reason, tt.action)
 			}
-			if _, err := json.Marshal(result); err != nil {
-				t.Fatalf("json.Marshal() error = %v", err)
+			if err := result.validate(); err != nil {
+				t.Fatalf("validate() error = %v", err)
 			}
 		})
 	}
@@ -6714,13 +4194,10 @@ func TestRefreshEnabledPluginFailurePublishesStableRecoveryReason(t *testing.T) 
 
 func TestRefreshFailureDiagnosticDetailsPreserveTypedReasonAndAction(t *testing.T) {
 	const sensitive = "secret trust transport detail"
-	cause := fmt.Errorf("%w: %s", releasetrust.NewActivationRecoveryRejection(
-		releasetrust.ActivationRecoveryReasonStateAdvancementFailed,
-		"trust state advancement revalidation failed",
-	), sensitive)
+	cause := fmt.Errorf("%w: %s", context.DeadlineExceeded, sensitive)
 	details := refreshFailureDiagnosticDetails(cause)
-	if details.Reason != string(RefreshFailureReasonTrustStateAdvanced) ||
-		details.Operation != string(RefreshFailureActionRetry) ||
+	if details.Reason != string(refreshFailureReasonRecoveryTimeout) ||
+		details.Operation != string(refreshFailureActionRetry) ||
 		details.Code != string(security.ErrRuntimeUnavailable) {
 		t.Fatalf("refresh failure details = %#v", details)
 	}
@@ -6733,12 +4210,14 @@ func TestRefreshFailureDiagnosticDetailsPreserveTypedReasonAndAction(t *testing.
 	}
 }
 
-func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
+func TestRecoverEnabledRestoresRuntimeState(t *testing.T) {
 	ctx := hostTestContext()
+	stateRoot := filepath.Join(t.TempDir(), "control-state")
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
 		connectivityBroker: connectivity.NewMemoryBroker(),
+		stateRoot:          stateRoot,
 	})
 	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
 	if err != nil {
@@ -6751,6 +4230,9 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	if len(surfaces.snapshots) == 0 {
 		t.Fatal("EnablePlugin() did not publish surfaces")
 	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close() before cold recovery error = %v", err)
+	}
 
 	restartedBroker := connectivity.NewMemoryBroker()
 	restartedSurfaces := &surfaceSink{}
@@ -6758,6 +4240,7 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	restartedDiagnostics := &diagnosticSink{}
 	restartedAuditJournal := observability.NewMemorySecurityAuditJournal()
 	restarted, err := Open(hostTestContext(), Config{
+		StateRoot: stateRoot,
 		Core: CoreAdapters{
 			Policy: policyAdapter{
 				developerMode:  true,
@@ -6766,20 +4249,11 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 			},
 			Authorization:        allowAuthorizationAdapter{},
 			PackageTrustVerifier: h.adapters.PackageTrustVerifier,
-			Registry:             h.adapters.Registry,
 			Audit:                restartedAudits,
 			SecurityAudit:        restartedAuditJournal,
 			Diagnostics:          restartedDiagnostics,
 			SurfaceCatalog:       restartedSurfaces,
-			PluginData:           h.adapters.PluginData,
 			Assets:               h.adapters.Assets,
-			InstallStages:        h.adapters.InstallStages,
-			SurfaceTokens:        bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-			Operations:           operation.NewMemoryStore(),
-			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
-			Streams:              stream.NewMemoryStore(),
-			SessionLifecycle:     h.adapters.SessionLifecycle,
-			SessionScopes:        h.adapters.SessionScopes,
 		},
 		Runtime:      &RuntimeModule{manager: newRecordingRuntimeManager()},
 		Capability:   &CapabilityModule{Registry: capability.NewRegistry()},
@@ -6807,12 +4281,12 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 		t.Fatalf("MintConnectionGrant(before refresh) error = %v, want ErrConnectorDenied", err)
 	}
 
-	refreshed, err := restarted.RefreshEnabledPlugins(ctx)
+	recovered, err := restarted.RecoverEnabled(ctx)
 	if err != nil {
-		t.Fatalf("RefreshEnabledPlugins() error = %v", err)
+		t.Fatalf("RecoverEnabled() error = %v", err)
 	}
-	if len(refreshed) != 1 || refreshed[0].PluginInstanceID != enabled.PluginInstanceID || refreshed[0].Status != RefreshEnabledPluginStatusRefreshed || refreshed[0].Error != nil {
-		t.Fatalf("refreshed plugins mismatch: %#v", refreshed)
+	if !recovered.Complete || len(recovered.Results) != 1 || recovered.Results[0].PluginInstanceID != enabled.PluginInstanceID || recovered.Results[0].Status != PluginRecoveryReady {
+		t.Fatalf("recovered plugins mismatch: %#v", recovered)
 	}
 	if len(restartedSurfaces.snapshots) != 1 || restartedSurfaces.snapshots[0].PluginInstanceID != enabled.PluginInstanceID || len(restartedSurfaces.snapshots[0].Surfaces) == 0 {
 		t.Fatalf("surface refresh mismatch: %#v", restartedSurfaces.snapshots)
@@ -6880,247 +4354,6 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 	assertAuditDetail(t, event, "closed_socket_count", 8)
 	assertAuditDetail(t, event, "closed_stream_count", 9)
 	assertAuditDetail(t, event, "closed_storage_handle_count", 10)
-}
-
-func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.T) {
-	ctx := hostTestContext()
-	connectivityBroker := connectivity.NewMemoryBroker()
-	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
-		connectivityBroker: connectivityBroker,
-	})
-	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
-	if err != nil {
-		t.Fatalf("EnablePlugin() error = %v", err)
-	}
-	if len(surfaces.snapshots) != 1 || len(surfaces.snapshots[0].Surfaces) != 1 {
-		t.Fatalf("enable surface publish mismatch: %#v", surfaces.snapshots)
-	}
-	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
-		PluginInstanceID:   enabled.PluginInstanceID,
-		ActiveFingerprint:  enabled.ActiveFingerprint,
-		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		PolicyRevision:     enabled.PolicyRevision,
-		ManagementRevision: enabled.ManagementRevision,
-		RevokeEpoch:        enabled.RevokeEpoch,
-		ConnectorID:        "api",
-		Transport:          connectivity.TransportHTTP,
-		Destination:        "https://api.example.com",
-	}); err != nil {
-		t.Fatalf("MintConnectionGrant() before uninstall error = %v", err)
-	}
-	if _, err := h.adapters.Streams.Register(ctx, stream.RegisterRequest{
-		StreamID: "stream_uninstall_1",
-		ExecutionBinding: capability.ExecutionBinding{
-			PluginID:             enabled.PluginID,
-			PluginInstanceID:     enabled.PluginInstanceID,
-			Method:               "network.watch",
-			Execution:            string(manifest.MethodExecutionSubscription),
-			SurfaceInstanceID:    "surface_network",
-			OwnerSessionHash:     "session_hash",
-			OwnerUserHash:        "user_hash",
-			OwnerEnvHash:         "env_hash",
-			SessionChannelIDHash: "channel_hash",
-			BridgeChannelID:      "bridge_network",
-		},
-	}); err != nil {
-		t.Fatalf("Streams.Register() error = %v", err)
-	}
-
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: enabled.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, enabled.PluginInstanceID)}); err != nil {
-		t.Fatalf("UninstallPlugin() error = %v", err)
-	}
-
-	if len(surfaces.snapshots) != 2 || len(surfaces.snapshots[1].Surfaces) != 0 {
-		t.Fatalf("uninstall did not clear surfaces: %#v", surfaces.snapshots)
-	}
-	assertHostStreamStatus(t, h, "stream_uninstall_1", stream.StatusOrphanedRemoved)
-	if _, err := h.adapters.Streams.Append(ctx, stream.AppendRequest{
-		StreamID: "stream_uninstall_1",
-		Data:     []byte("line after uninstall"),
-	}); !errors.Is(err, stream.ErrStreamClosed) {
-		t.Fatalf("Streams.Append() after uninstall error = %v, want %v", err, stream.ErrStreamClosed)
-	}
-	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
-		PluginInstanceID:   enabled.PluginInstanceID,
-		ActiveFingerprint:  enabled.ActiveFingerprint,
-		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		PolicyRevision:     enabled.PolicyRevision,
-		ManagementRevision: enabled.ManagementRevision,
-		RevokeEpoch:        enabled.RevokeEpoch,
-		ConnectorID:        "api",
-		Transport:          connectivity.TransportHTTP,
-		Destination:        "https://api.example.com",
-	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
-		t.Fatalf("MintConnectionGrant() after uninstall error = %v, want %v", err, connectivity.ErrConnectorDenied)
-	}
-	if !audits.hasEvent("plugin.streams.uninstalled_transitioned") {
-		t.Fatalf("missing uninstalled stream transition audit event: %#v", audits.events)
-	}
-}
-
-func TestDisableTransitionsOperations(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cancelOp, err := h.adapters.Operations.Register(hostTestContext(), operation.RegisterRequest{
-		OperationID:      "op_disable_cancel",
-		ExecutionBinding: testExecutionBinding(installed, "documents.archive", manifest.MethodExecutionOperation),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitOp, err := h.adapters.Operations.Register(hostTestContext(), operation.RegisterRequest{
-		OperationID:      "op_disable_wait",
-		ExecutionBinding: testExecutionBinding(installed, "sync.wait", manifest.MethodExecutionOperation),
-		DisableBehavior:  operation.DisableBehaviorWait,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("DisablePlugin() error = %v", err)
-	}
-	assertHostOperationStatus(t, h, cancelOp.OperationID, operation.StatusCancelRequested)
-	assertHostOperationStatus(t, h, waitOp.OperationID, operation.StatusRunning)
-}
-
-func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
-	ctx := hostTestContext()
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-	})
-	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
-		OperationID:      "op_blocks_delete",
-		ExecutionBinding: testExecutionBinding(installed, "documents.archive", manifest.MethodExecutionOperation),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
-		t.Fatalf("UninstallPlugin() error = %v, want ErrDeleteBlocked", err)
-	}
-	assertHostOperationStatus(t, h, "op_blocks_delete", operation.StatusCancelRequested)
-	namespaces, err := h.adapters.PluginData.ListNamespaces(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(namespaces) == 0 {
-		t.Fatal("storage namespaces were deleted despite blocked operation")
-	}
-	if !audits.hasEvent("plugin.operations.delete_blocked") {
-		t.Fatalf("missing blocked audit event: %#v", audits.events)
-	}
-}
-
-func TestUninstallDeleteDataDispatchesCancellationToLiveAdapterBeforeBlocking(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.UninstallPlugin(hostTestContext(), UninstallRequest{
-		PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID),
-	}); !errors.Is(err, operation.ErrDeleteBlocked) {
-		t.Fatalf("UninstallPlugin() error = %v, want ErrDeleteBlocked", err)
-	}
-	if capabilityAdapter.cancelCalls != 1 || capabilityAdapter.lastCancellation.OperationID != started.OperationID {
-		t.Fatalf("live adapter cancellation mismatch: calls=%d request=%#v", capabilityAdapter.cancelCalls, capabilityAdapter.lastCancellation)
-	}
-}
-
-func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
-	ctx := hostTestContext()
-	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
-		OperationID:      "op_cancel_then_delete",
-		ExecutionBinding: testExecutionBinding(installed, "documents.archive", manifest.MethodExecutionOperation),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
-		t.Fatalf("UninstallPlugin() first error = %v, want ErrDeleteBlocked", err)
-	}
-	if _, err := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
-		OperationID: "op_cancel_then_delete",
-		Status:      operation.StatusCanceled,
-		Reason:      "runtime ack",
-	}); err != nil {
-		t.Fatalf("Operations.Finish() error = %v", err)
-	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("UninstallPlugin() retry error = %v", err)
-	}
-	namespaces, err := h.adapters.PluginData.ListNamespaces(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(namespaces) != 0 {
-		t.Fatalf("storage namespaces still present: %#v", namespaces)
-	}
-}
-
-func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
-	ctx := hostTestContext()
-	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
-		OperationID:       "op_force_cleanup",
-		ExecutionBinding:  testExecutionBinding(installed, "cleanup.force", manifest.MethodExecutionOperation),
-		UninstallBehavior: operation.UninstallBehaviorForceCleanupAllowed,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("UninstallPlugin() error = %v", err)
-	}
-	assertHostOperationStatus(t, h, "op_force_cleanup", operation.StatusOrphanedAfterUninstall)
-	namespaces, err := h.adapters.PluginData.ListNamespaces(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(namespaces) != 0 {
-		t.Fatalf("storage namespaces still present: %#v", namespaces)
-	}
 }
 
 func TestSecretLifecycleUsesAdapter(t *testing.T) {
@@ -7388,9 +4621,9 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 
 func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 	internal := observability.DiagnosticDetails{
-		OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
+		ExecutionsDeleted: 1, InvocationID: "invocation_1", Method: "method.read",
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
-		OperationID: "operation_1", StreamID: "stream_1",
+		ExecutionID:       "execution_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
 		RustIPCVersion: "rust-ipc-v6", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
 		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
@@ -7400,9 +4633,9 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 		Reason: "unavailable", SurfaceInstanceID: "surface_1",
 	}
 	want := DiagnosticDetails{
-		OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
+		ExecutionsDeleted: 1, InvocationID: "invocation_1", Method: "method.read",
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
-		OperationID: "operation_1", StreamID: "stream_1",
+		ExecutionID:       "execution_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
 		RustIPCVersion: "rust-ipc-v6", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
 		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
@@ -7524,6 +4757,7 @@ func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, 
 }
 
 type testHostOptions struct {
+	stateRoot               string
 	developerMode           bool
 	localGenerated          bool
 	policyDecision          PolicyDecision
@@ -7531,20 +4765,12 @@ type testHostOptions struct {
 	trustVerifier           PackageTrustVerifier
 	releaseTrust            *releasetrust.ServiceSet
 	releaseArtifactResolver ReleaseArtifactResolver
-	capabilityArtifacts     CapabilityContractArtifactResolver
-	registry                registry.Store
-	pluginData              PluginData
-	pluginDataRoot          string
 	connectivityBroker      connectivity.Broker
 	networkExecutor         connectivity.NetworkExecutor
-	installStages           installstage.Store
 	confirmationIntents     security.ConfirmationIntentStore
-	operations              operation.Store
-	streams                 stream.Store
 	runtimeManager          runtimeclient.Manager
 	runtimeManagerFactory   func(testRuntimeManagerDependencies) (runtimeclient.Manager, error)
 	withoutRuntimeManager   bool
-	sessionLifecycle        SessionLifecycleAdapter
 	sessionScopePath        string
 	sessionScopeMaxScopes   int
 	secrets                 SecretStoreAdapter
@@ -7553,7 +4779,7 @@ type testHostOptions struct {
 	hostRequirements        HostRequirementPolicy
 	capabilities            *capability.Registry
 	capabilityID            string
-	capabilityContract      *capabilitycontract.VerifiedContract
+	capabilityContract      *capabilitycontract.KnownContract
 	capabilityAdapter       interface {
 		capability.Adapter
 		capability.TargetProjector
@@ -7572,6 +4798,12 @@ type testRuntimeManagerDependencies struct {
 	Connectivity    connectivity.Broker
 	NetworkExecutor connectivity.NetworkExecutor
 }
+
+// lateBindingPluginData lets process-manager tests construct their manager
+// before Host.Open finishes creating the Host-owned plugin-data store.
+type lateBindingPluginData struct{ PluginData }
+
+func (p *lateBindingPluginData) bind(store PluginData) { p.PluginData = store }
 
 type fixedHostRequirementPolicy struct {
 	hostID string
@@ -7627,10 +4859,6 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if hostRequirements == nil {
 		hostRequirements = &fixedHostRequirementPolicy{hostID: "test-host"}
 	}
-	capabilityArtifacts := opts.capabilityArtifacts
-	if capabilityArtifacts == nil {
-		capabilityArtifacts = &recordingCapabilityContractArtifactResolver{}
-	}
 	diagnostics := opts.diagnostics
 	if diagnostics == nil {
 		diagnostics = observability.NewMemoryStore()
@@ -7647,37 +4875,9 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if networkExecutor == nil {
 		networkExecutor = connectivity.NewExecutor(connectivity.ExecutorOptions{})
 	}
-	installStageStore := opts.installStages
-	if installStageStore == nil {
-		installStageStore = installstage.NewMemoryStore()
-	}
 	confirmationIntentStore := opts.confirmationIntents
 	if confirmationIntentStore == nil {
 		confirmationIntentStore = security.NewMemoryConfirmationIntentStore()
-	}
-	operationStore := opts.operations
-	if operationStore == nil {
-		operationStore = operation.NewMemoryStore()
-	}
-	streamStore := opts.streams
-	if streamStore == nil {
-		streamStore = stream.NewMemoryStore()
-	}
-	registryStore := opts.registry
-	if registryStore == nil {
-		registryStore = registry.NewMemoryStore()
-	}
-	pluginData := opts.pluginData
-	if pluginData == nil {
-		root := opts.pluginDataRoot
-		if root == "" {
-			root = t.TempDir()
-		}
-		var err error
-		pluginData, err = plugindata.Open(hostTestContext(), root, registryStore)
-		if err != nil {
-			t.Fatal(err)
-		}
 	}
 	secretStore := opts.secrets
 	if secretStore == nil {
@@ -7697,16 +4897,18 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		surfaceCatalog = surfaces
 	}
 	runtimeManager := opts.runtimeManager
+	var runtimePluginData *lateBindingPluginData
 	if opts.runtimeManagerFactory != nil {
 		if runtimeManager != nil {
 			t.Fatal("runtime manager and runtime manager factory are mutually exclusive")
 		}
 		var err error
+		runtimePluginData = &lateBindingPluginData{}
 		runtimeManager, err = opts.runtimeManagerFactory(testRuntimeManagerDependencies{
 			Diagnostics:     diagnostics,
 			Assets:          assetStore,
 			SurfaceTokens:   surfaceTokens,
-			PluginData:      pluginData,
+			PluginData:      runtimePluginData,
 			Connectivity:    connectivityBroker,
 			NetworkExecutor: networkExecutor,
 		})
@@ -7739,20 +4941,20 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionLifecycle := opts.sessionLifecycle
-	if sessionLifecycle == nil {
-		sessionLifecycle = &testSessionLifecycleAdapter{}
-	}
 	var releaseModule *ReleaseModule
 	if opts.releaseTrust != nil || releaseArtifactResolver != nil {
 		releaseModule = &ReleaseModule{
-			Trust:                       opts.releaseTrust,
-			ReleaseArtifactResolver:     releaseArtifactResolver,
-			HostRequirements:            hostRequirements,
-			CapabilityContractArtifacts: capabilityArtifacts,
+			Trust:                   opts.releaseTrust,
+			ReleaseArtifactResolver: releaseArtifactResolver,
+			HostRequirements:        hostRequirements,
 		}
 	}
+	stateRoot := opts.stateRoot
+	if stateRoot == "" {
+		stateRoot = filepath.Join(t.TempDir(), "control-state")
+	}
 	host, err := Open(hostTestContext(), Config{
+		StateRoot: stateRoot,
 		Core: CoreAdapters{
 			Policy: policyAdapter{
 				developerMode:  opts.developerMode,
@@ -7761,20 +4963,16 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			},
 			Authorization:        authorization,
 			PackageTrustVerifier: trustVerifier,
-			Registry:             registryStore,
 			SurfaceCatalog:       surfaceCatalog,
 			Audit:                audit,
 			SecurityAudit:        securityJournal,
 			Diagnostics:          diagnostics,
 			Assets:               assetStore,
-			PluginData:           pluginData,
-			InstallStages:        installStageStore,
-			ConfirmationIntents:  confirmationIntentStore,
-			Operations:           operationStore,
-			Streams:              streamStore,
-			SurfaceTokens:        surfaceTokens,
-			SessionLifecycle:     sessionLifecycle,
-			SessionScopes:        sessionScopes,
+			internalStateOwners: &internalStateOwnerOverrides{
+				surfaceTokens:       surfaceTokens,
+				confirmationIntents: confirmationIntentStore,
+				sessionScopes:       sessionScopes,
+			},
 		},
 		Release:      releaseModule,
 		Runtime:      runtimeModule,
@@ -7786,6 +4984,9 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if err != nil {
 		t.Fatal(err)
 	}
+	if runtimePluginData != nil {
+		runtimePluginData.bind(host.adapters.PluginData)
+	}
 	t.Cleanup(func() {
 		if err := host.Close(); err != nil && !opts.expectCloseErr {
 			t.Errorf("Host.Close() error = %v", err)
@@ -7796,7 +4997,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	return host, surfaces, audits
 }
 
-func fixtureVerifiedCapabilityContract(t *testing.T, capabilityID string) capabilitycontract.VerifiedContract {
+func fixtureVerifiedCapabilityContract(t *testing.T, capabilityID string) capabilitycontract.KnownContract {
 	t.Helper()
 	contract, err := fixtureCapabilityContract(capabilityID)
 	if err != nil {
@@ -7805,7 +5006,8 @@ func fixtureVerifiedCapabilityContract(t *testing.T, capabilityID string) capabi
 	return verifyFixtureCapabilityContract(t, contract)
 }
 
-func fixtureVerifiedCapabilityContractWithQuotas(t *testing.T, capabilityID string, quotas map[string]capabilitycontract.Quota) capabilitycontract.VerifiedContract {
+//nolint:unused // retained as a shared fixture for optional capability-contract tests.
+func fixtureVerifiedCapabilityContractWithQuotas(t *testing.T, capabilityID string, quotas map[string]capabilitycontract.Quota) capabilitycontract.KnownContract {
 	t.Helper()
 	contract, err := fixtureCapabilityContract(capabilityID)
 	if err != nil {
@@ -7961,52 +5163,13 @@ func fixtureClosedObject(properties map[string]any, required []string) map[strin
 	return schema
 }
 
-func verifyFixtureCapabilityContract(t *testing.T, contract capabilitycontract.Contract) capabilitycontract.VerifiedContract {
+func verifyFixtureCapabilityContract(t *testing.T, contract capabilitycontract.Contract) capabilitycontract.KnownContract {
 	t.Helper()
-	bundle, publicKey, err := buildFixtureCapabilityBundle(contract)
-	if err != nil {
-		t.Fatal(err)
-	}
-	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
-		Bundle:      bundle,
-		ExpectedPin: bundle.Pin,
-		TrustedKey: capabilitycontract.TrustedKey{
-			PublisherID:     contract.PublisherID,
-			KeyID:           "fixture-key",
-			PublicKey:       publicKey,
-			PolicyEpoch:     "1",
-			RevocationEpoch: "1",
-		},
-		CurrentReDevPluginVersion: "0.3.0",
-	})
+	verified, err := capabilitycontract.NewKnownContract(contract)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return verified
-}
-
-func buildFixtureCapabilityBundle(contract capabilitycontract.Contract) (capabilitycontract.Bundle, ed25519.PublicKey, error) {
-	contractBytes, err := json.Marshal(contract)
-	if err != nil {
-		return capabilitycontract.Bundle{}, nil, err
-	}
-	seed := sha256.Sum256(contractBytes)
-	privateKey := ed25519.NewKeyFromSeed(seed[:])
-	publicKey := privateKey.Public().(ed25519.PublicKey)
-	baseRef := "capabilities/fixtures/" + strings.ReplaceAll(contract.CapabilityID, ".", "-") + "/" + contract.ContractVersion
-	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
-		Contract:                 contract,
-		PublisherID:              contract.PublisherID,
-		ArtifactBaseRef:          baseRef,
-		GeneratedAt:              time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC),
-		SourceCommit:             strings.Repeat("f", 40),
-		MinReDevPluginVersion:    "0.3.0",
-		SignatureKeyID:           "fixture-key",
-		SignaturePolicyEpoch:     "1",
-		SignatureRevocationEpoch: "1",
-		PrivateKey:               privateKey,
-	})
-	return bundle, publicKey, err
 }
 
 func fixtureCapabilityPinJSON(capabilityID string) string {
@@ -8014,11 +5177,11 @@ func fixtureCapabilityPinJSON(capabilityID string) string {
 	if err != nil {
 		panic(err)
 	}
-	bundle, _, err := buildFixtureCapabilityBundle(contract)
+	known, err := capabilitycontract.NewKnownContract(contract)
 	if err != nil {
 		panic(err)
 	}
-	raw, err := json.Marshal(bundle.Pin)
+	raw, err := json.Marshal(known.Pin)
 	if err != nil {
 		panic(err)
 	}
@@ -8216,11 +5379,11 @@ func methodContractFixtureManifestJSONWithContract(t *testing.T, contract capabi
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatal(err)
 	}
-	bundle, _, err := buildFixtureCapabilityBundle(contract)
+	known, err := capabilitycontract.NewKnownContract(contract)
 	if err != nil {
 		t.Fatal(err)
 	}
-	document["capability_bindings"] = []any{map[string]any{"binding_id": "task_runner", "contract": bundle.Pin}}
+	document["capability_bindings"] = []any{map[string]any{"binding_id": "task_runner", "contract": known.Pin}}
 	methods, _ := document["methods"].([]any)
 	for index, rawMethod := range methods {
 		method, _ := rawMethod.(map[string]any)
@@ -8305,6 +5468,7 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+//nolint:unused // retained for external operation fixture compatibility tests.
 func buildOperationObservationRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -8354,6 +5518,7 @@ func buildDangerousCoreActionFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+//nolint:unused // retained for external operation fixture compatibility tests.
 func buildCoreActionOperationFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -8410,6 +5575,7 @@ func buildDangerousWorkerFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+//nolint:unused // retained for external operation fixture compatibility tests.
 func buildWorkerOperationFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -8425,6 +5591,7 @@ func buildWorkerOperationFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+//nolint:unused // retained for external operation fixture compatibility tests.
 func buildMutatingWorkerFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -8439,6 +5606,7 @@ func buildMutatingWorkerFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+//nolint:unused // retained for external operation fixture compatibility tests.
 func buildWorkerSubscriptionFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -9734,7 +6902,7 @@ func openSurfaceAndMintGatewayForAudience(t *testing.T, h *Host, pluginInstanceI
 	t.Helper()
 	ctx := hostTestContext()
 	now := stableRecentTestNow()
-	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
+	record, err := h.getPluginRecord(ctx, pluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -9792,25 +6960,7 @@ func exchangeAssetTicketRequestForBootstrap(bootstrap bridge.SurfaceBootstrap, n
 	}
 }
 
-func scopedReadStreamRequest(streamID string, streamTicket string) ReadStreamRequest {
-	return ReadStreamRequest{
-		StreamID:          streamID,
-		StreamTicket:      streamTicket,
-		ReadID:            "read_host_test_1",
-		SurfaceInstanceID: "surface_rpc",
-	}
-}
-
-func acknowledgeStreamResult(t *testing.T, h *Host, streamID string, streamTicket string, result ReadStreamResult) {
-	t.Helper()
-	if _, err := h.AcknowledgeStream(hostTestContext(), AcknowledgeStreamRequest{
-		StreamID: streamID, StreamTicket: streamTicket,
-		DeliveryID: result.DeliveryID, SurfaceInstanceID: "surface_rpc",
-	}); err != nil {
-		t.Fatalf("AcknowledgeStream() error = %v", err)
-	}
-}
-
+//nolint:unused // retained for optional token-capacity boundary tests.
 func mintHostTokenCapacityFiller(t *testing.T, manager *bridge.TokenManager, installed registry.PluginRecord) {
 	t.Helper()
 	now := time.Now().UTC()
@@ -9948,68 +7098,6 @@ type recordingReleaseArtifactResolver struct {
 	err      error
 	last     ReleaseArtifactResolveRequest
 	calls    int
-}
-
-type recordingCapabilityContractArtifactResolver struct {
-	result ResolvedCapabilityContractArtifact
-	err    error
-	last   CapabilityContractResolveRequest
-	calls  int
-}
-
-type memoryCapabilityContractArtifactSet struct {
-	bundle         capabilitycontract.Bundle
-	origin         CapabilityArtifactOrigin
-	fetchChain     []CapabilityArtifactFetchHop
-	omitFetchChain bool
-	mediaType      string
-	declaredSize   *int64
-	contentByRef   map[string][]byte
-}
-
-func (s *memoryCapabilityContractArtifactSet) OpenCapabilityContractArtifact(_ context.Context, ref string) (ResolvedCapabilityContractFile, error) {
-	content, ok := s.bundle.Files[ref]
-	if override, exists := s.contentByRef[ref]; exists {
-		content, ok = override, true
-	}
-	if !ok {
-		return ResolvedCapabilityContractFile{}, os.ErrNotExist
-	}
-	mediaType := s.mediaType
-	if mediaType == "" {
-		var err error
-		mediaType, err = capabilityArtifactMediaType(s.bundle.Pin, ref)
-		if err != nil {
-			return ResolvedCapabilityContractFile{}, err
-		}
-	}
-	chain := append([]CapabilityArtifactFetchHop(nil), s.fetchChain...)
-	if len(chain) == 0 && !s.omitFetchChain {
-		chain = []CapabilityArtifactFetchHop{{
-			URL: "https://artifacts.example.com/" + ref, ResolvedIP: "93.184.216.34",
-		}}
-	}
-	size := int64(len(content))
-	if s.declaredSize != nil {
-		size = *s.declaredSize
-	}
-	origin := s.origin
-	if origin == "" {
-		origin = CapabilityArtifactOriginRegistry
-	}
-	return ResolvedCapabilityContractFile{
-		Reader: io.NopCloser(bytes.NewReader(content)), Size: size, MediaType: mediaType,
-		Origin: origin, FetchChain: chain,
-	}, nil
-}
-
-func (r *recordingCapabilityContractArtifactResolver) ResolveCapabilityContract(_ context.Context, req CapabilityContractResolveRequest) (ResolvedCapabilityContractArtifact, error) {
-	r.calls++
-	r.last = req
-	if r.err != nil {
-		return ResolvedCapabilityContractArtifact{}, r.err
-	}
-	return r.result, nil
 }
 
 func (r *recordingReleaseArtifactResolver) ResolveReleaseArtifact(_ context.Context, req ReleaseArtifactResolveRequest) (ResolvedPackageArtifact, error) {
@@ -10172,7 +7260,7 @@ type recordingCapabilityAdapter struct {
 	resultsByTarget    map[string]capability.Result
 	err                error
 	cancelCalls        int
-	lastCancellation   capability.OperationCancellation
+	lastCancellation   capability.ExecutionCancellation
 	cancellationError  error
 	invokeContext      context.Context
 	panicValue         any
@@ -10185,298 +7273,13 @@ type recordingCapabilityAdapter struct {
 	mutateCancellation func(*capability.ExecutionBinding)
 }
 
-type blockingOperationRegisterStore struct {
-	operation.Store
-	entered chan<- struct{}
-	release <-chan struct{}
-}
-
-type mutatingOperationRegisterStore struct {
-	operation.Store
-	retained capability.ExecutionBinding
-}
-
-type retainingCancelOperationStore struct {
-	operation.Store
-	retained capability.ExecutionBinding
-}
-
-func (s *retainingCancelOperationStore) RequestCancel(ctx context.Context, req operation.CancelRequest) (operation.Record, error) {
-	record, err := s.Store.RequestCancel(ctx, req)
-	if err != nil {
-		return operation.Record{}, err
-	}
-	s.retained = record.ExecutionBinding
-	return record, nil
-}
-
-func (s *mutatingOperationRegisterStore) Register(ctx context.Context, req operation.RegisterRequest) (operation.Record, error) {
-	s.retained = req.ExecutionBinding
-	req.ExecutionBinding.Target.Fields["operation_store_mutation"] = true
-	req.ExecutionBinding.Permissions.Required[0] = "operation.store.mutated"
-	return s.Store.Register(ctx, req)
-}
-
-type recordingStreamRegisterStore struct {
-	stream.Store
-	binding capability.ExecutionBinding
-}
-
-func (s *recordingStreamRegisterStore) Register(ctx context.Context, req stream.RegisterRequest) (stream.Record, error) {
-	s.binding = req.ExecutionBinding
-	return s.Store.Register(ctx, req)
-}
-
-func (s *blockingOperationRegisterStore) Register(ctx context.Context, req operation.RegisterRequest) (operation.Record, error) {
-	select {
-	case s.entered <- struct{}{}:
-	default:
-	}
-	select {
-	case <-ctx.Done():
-		return operation.Record{}, ctx.Err()
-	case <-s.release:
-	}
-	return s.Store.Register(ctx, req)
-}
-
-type blockingStreamRegisterStore struct {
-	stream.Store
-	entered chan<- struct{}
-	release <-chan struct{}
-}
-
-func (s *blockingStreamRegisterStore) Register(ctx context.Context, req stream.RegisterRequest) (stream.Record, error) {
-	select {
-	case s.entered <- struct{}{}:
-	default:
-	}
-	select {
-	case <-ctx.Done():
-		return stream.Record{}, ctx.Err()
-	case <-s.release:
-	}
-	return s.Store.Register(ctx, req)
-}
-
-type failingStreamRegisterStore struct {
-	stream.Store
-	err error
-}
-
-func (s *failingStreamRegisterStore) Register(context.Context, stream.RegisterRequest) (stream.Record, error) {
-	return stream.Record{}, s.err
-}
-
-type failFirstOperationFinishStore struct {
-	operation.Store
-	err       error
-	failedOne bool
-}
-
-type controlledOperationFinishStore struct {
-	operation.Store
-	mu      sync.Mutex
-	err     error
-	failing bool
-	calls   int
-}
-
-type controlledStreamCloseStore struct {
-	stream.Store
-	mu      sync.Mutex
-	err     error
-	failing bool
-	calls   int
-}
-
-type countingOperationListStore struct {
-	operation.Store
-	listCalls int
-}
-
-type countingOperationPruneStore struct {
-	operation.Store
-	mu         sync.Mutex
-	pruneCalls int
-	last       operation.PruneRequest
-	err        error
-	entered    chan<- struct{}
-	release    <-chan struct{}
-}
-
-func (s *countingOperationPruneStore) Prune(ctx context.Context, req operation.PruneRequest) (operation.PruneResult, error) {
-	s.mu.Lock()
-	s.pruneCalls++
-	s.last = req
-	err := s.err
-	entered := s.entered
-	release := s.release
-	s.mu.Unlock()
-	if entered != nil {
-		select {
-		case entered <- struct{}{}:
-		default:
-		}
-	}
-	if release != nil {
-		select {
-		case <-ctx.Done():
-			return operation.PruneResult{}, ctx.Err()
-		case <-release:
-		}
-	}
-	if err != nil {
-		return operation.PruneResult{}, err
-	}
-	return s.Store.Prune(ctx, req)
-}
-
-func (s *countingOperationPruneStore) snapshot() (int, operation.PruneRequest) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pruneCalls, s.last
-}
-
-func (s *countingOperationPruneStore) reset() {
-	s.mu.Lock()
-	s.pruneCalls = 0
-	s.last = operation.PruneRequest{}
-	s.mu.Unlock()
-}
-
-func (s *countingOperationPruneStore) configure(err error, entered chan<- struct{}, release <-chan struct{}) {
-	s.mu.Lock()
-	s.err = err
-	s.entered = entered
-	s.release = release
-	s.mu.Unlock()
-}
-
-type countingStreamPruneStore struct {
-	stream.Store
-	mu         sync.Mutex
-	pruneCalls int
-	last       stream.PruneRequest
-}
-
-func (s *countingStreamPruneStore) Prune(ctx context.Context, req stream.PruneRequest) (stream.PruneResult, error) {
-	s.mu.Lock()
-	s.pruneCalls++
-	s.last = req
-	s.mu.Unlock()
-	return s.Store.Prune(ctx, req)
-}
-
-func (s *countingStreamPruneStore) snapshot() (int, stream.PruneRequest) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pruneCalls, s.last
-}
-
-func (s *countingStreamPruneStore) reset() {
-	s.mu.Lock()
-	s.pruneCalls = 0
-	s.last = stream.PruneRequest{}
-	s.mu.Unlock()
-}
-
-func (s *countingOperationListStore) List(ctx context.Context, req operation.ListRequest) (operation.Page, error) {
-	s.listCalls++
-	return s.Store.List(ctx, req)
-}
-
-func (s *failFirstOperationFinishStore) Finish(ctx context.Context, req operation.FinishRequest) (operation.Record, error) {
-	if !s.failedOne {
-		s.failedOne = true
-		return operation.Record{}, s.err
-	}
-	return s.Store.Finish(ctx, req)
-}
-
-func (s *controlledOperationFinishStore) Finish(ctx context.Context, req operation.FinishRequest) (operation.Record, error) {
-	s.mu.Lock()
-	s.calls++
-	failing := s.failing
-	err := s.err
-	s.mu.Unlock()
-	if failing {
-		return operation.Record{}, err
-	}
-	return s.Store.Finish(ctx, req)
-}
-
-func (s *controlledOperationFinishStore) setFailing(failing bool) {
-	s.mu.Lock()
-	s.failing = failing
-	s.mu.Unlock()
-}
-
-func (s *controlledOperationFinishStore) finishCalls() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.calls
-}
-
-func (s *controlledStreamCloseStore) Close(ctx context.Context, req stream.CloseRequest) (stream.Record, error) {
-	s.mu.Lock()
-	s.calls++
-	failing := s.failing
-	err := s.err
-	s.mu.Unlock()
-	if failing {
-		return stream.Record{}, err
-	}
-	return s.Store.Close(ctx, req)
-}
-
-func (s *controlledStreamCloseStore) setFailing(failing bool) {
-	s.mu.Lock()
-	s.failing = failing
-	s.mu.Unlock()
-}
-
-func (s *controlledStreamCloseStore) closeCalls() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.calls
-}
-
-type failFirstStreamAppendStore struct {
-	stream.Store
-	err       error
-	failedOne bool
-}
-
-type failFirstStreamDeliverStore struct {
-	stream.Store
-	err       error
-	failedOne bool
-}
-
-func (s *failFirstStreamDeliverStore) Deliver(ctx context.Context, req stream.DeliverRequest) (stream.Record, stream.Delivery, error) {
-	if !s.failedOne {
-		s.failedOne = true
-		return stream.Record{}, stream.Delivery{}, s.err
-	}
-	return s.Store.Deliver(ctx, req)
-}
-
-func (s *failFirstStreamAppendStore) Append(ctx context.Context, req stream.AppendRequest) (stream.Event, error) {
-	if !s.failedOne {
-		s.failedOne = true
-		return stream.Event{}, s.err
-	}
-	return s.Store.Append(ctx, req)
-}
-
 type recordingCoreActionAdapter struct {
 	calls             int
 	last              capability.Invocation
 	result            capability.Result
 	err               error
 	cancelCalls       int
-	lastCancellation  capability.OperationCancellation
+	lastCancellation  capability.ExecutionCancellation
 	cancellationError error
 	mutateTargetInput func(map[string]any)
 }
@@ -10583,6 +7386,7 @@ func hostTestRuntimeDescriptor() runtimeclient.RuntimeDescriptor {
 	return descriptor
 }
 
+//nolint:unused // retained for optional method-surface fixture tests.
 func surfaceIDForMethod(method string) string {
 	if method == "documents.archive" {
 		return "operation.view"
@@ -10593,73 +7397,18 @@ func surfaceIDForMethod(method string) string {
 	return "rpc.view"
 }
 
-func assertHostOperationStatus(t *testing.T, h *Host, operationID string, want operation.Status) {
-	t.Helper()
-	record, err := h.GetOperation(hostTestContext(), operationID)
-	if err != nil {
-		t.Fatalf("GetOperation(%s) error = %v", operationID, err)
-	}
-	if record.Status != want {
-		t.Fatalf("operation %s status = %s, want %s: %#v", operationID, record.Status, want, record)
-	}
-}
-
-func waitForHostOperationStatus(t *testing.T, h *Host, operationID string, want operation.Status) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for {
-		record, err := h.GetOperation(hostTestContext(), operationID)
-		if err != nil {
-			t.Fatalf("GetOperation(%s) error = %v", operationID, err)
-		}
-		if record.Status == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("operation %s remained %s, want %s", operationID, record.Status, want)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-func waitForOperationFinishCalls(t *testing.T, store *controlledOperationFinishStore, want int) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for {
-		if store.finishCalls() >= want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("operation terminal writes = %d, want at least %d", store.finishCalls(), want)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
-func waitForStreamCloseCalls(t *testing.T, store *controlledStreamCloseStore, want int) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for {
-		if store.closeCalls() >= want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("stream terminal writes = %d, want at least %d", store.closeCalls(), want)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
+//nolint:unused // retained for optional execution cleanup assertions.
 func assertNoActiveExecutionState(t *testing.T, h *Host, label string) {
 	t.Helper()
 	h.executions.mu.Lock()
 	defer h.executions.mu.Unlock()
-	if len(h.executions.leases) != 0 || len(h.executions.leasesByPlugin) != 0 || len(h.executions.operations) != 0 ||
-		len(h.executions.streams) != 0 || len(h.executions.activeByQuotaKey) != 0 || len(h.executions.setupRollbacks) != 0 {
+	if len(h.executions.leases) != 0 || len(h.executions.leasesByPlugin) != 0 || len(h.executions.executions) != 0 ||
+		len(h.executions.activeByQuotaKey) != 0 || len(h.executions.setupRollbacks) != 0 {
 		t.Fatalf("%s retained execution state: %#v", label, h.executions)
 	}
 }
 
+//nolint:unused // retained for optional execution binding fixture tests.
 func testExecutionBinding(record registry.PluginRecord, method string, execution manifest.MethodExecutionMode) capability.ExecutionBinding {
 	return capability.ExecutionBinding{
 		PluginID:             record.PluginID,
@@ -10672,17 +7421,6 @@ func testExecutionBinding(record registry.PluginRecord, method string, execution
 		OwnerUserHash:        "user_hash",
 		OwnerEnvHash:         "env_hash",
 		SessionChannelIDHash: "channel_hash",
-	}
-}
-
-func assertHostStreamStatus(t *testing.T, h *Host, streamID string, want stream.Status) {
-	t.Helper()
-	record, err := h.adapters.Streams.Get(hostTestContext(), streamID)
-	if err != nil {
-		t.Fatalf("Streams.Get(%s) error = %v", streamID, err)
-	}
-	if record.Status != want {
-		t.Fatalf("stream %s status = %s, want %s: %#v", streamID, record.Status, want, record)
 	}
 }
 
@@ -10730,7 +7468,7 @@ func (a *recordingCapabilityAdapter) Invoke(ctx context.Context, req capability.
 	return a.result, nil
 }
 
-func (a *recordingCapabilityAdapter) CancelOperation(_ context.Context, req capability.OperationCancellation) error {
+func (a *recordingCapabilityAdapter) CancelExecution(_ context.Context, req capability.ExecutionCancellation) error {
 	a.cancelCalls++
 	if a.mutateCancellation != nil {
 		a.mutateCancellation(&req.Execution.ExecutionBinding)
@@ -10755,7 +7493,7 @@ func (a *recordingCoreActionAdapter) ResolveCoreActionTarget(_ context.Context, 
 	return capability.TargetDescriptor{Kind: "core_action", Fields: cloneParams(req.TargetInput)}, nil
 }
 
-func (a *recordingCoreActionAdapter) CancelOperation(_ context.Context, req capability.OperationCancellation) error {
+func (a *recordingCoreActionAdapter) CancelExecution(_ context.Context, req capability.ExecutionCancellation) error {
 	a.cancelCalls++
 	a.lastCancellation = req
 	return a.cancellationError

@@ -104,20 +104,19 @@ the same command shape.
 - compatibility manifest schema and emitted compatibility manifest shape;
 - manifest, package signature, token/ticket, bridge, error-code, release
   manifest, performance evidence, IPC, WASM ABI, worker invocation, network
-  grant, all six host-capability artifact schemas, and target classifier
+  grant, the capability contract/pin schemas, and target classifier
   contract snippets;
 - shared Go/TypeScript restricted-schema conformance fixtures, typed capability
-  business-error identity, paired operation/stream subscription handles, and
+  business-error identity, unified Execution/Event identity and cursor, and
   atomic surface-scoped confirmation rejection;
 - executable Go/Rust runtime IPC golden fixtures for handshake/version
   mismatch, replay, unknown-frame, missing-field, and runtime-generation
   mismatch cases;
 - mandatory ephemeral runtime lease signing, non-empty Rust startup keyrings,
   Rust-side expiry and invocation-binding validation, and pre-artifact rejection;
-- event-driven stream observation and revision-aware waiting, bounded event and
-  byte backpressure, transactional ticket commit/rotate, terminal reads at token
-  capacity, failure retry, and durable operation/stream terminal reconciliation
-  across SQLite reopen;
+- event-driven observation and cursor-aware waiting, bounded event and byte
+  backpressure, failure retry, and atomic Execution/Event terminal state across
+  SQLite reopen;
 - package-set/publication verifier behavior, including exact registry package
   closure, safe `.crate` structure, immutable tag documentation, and rejection
   of extra or mismatched packages;
@@ -163,15 +162,15 @@ architecture-matched, immutable Go image with a read-only source and module
 cache mount and no container network access.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
-counters for stream backpressure and scoped terminal-close checks,
-operation cancel ownership and inactive-operation non-redispatch, connectivity
+counters for event backpressure, execution cancellation and inactive-execution
+non-redispatch, connectivity
 classifier/grant denials, runtime revoke ACK p95 latency, KV and SQLite storage
 quota pressure, and SQLite sidecar/sparse bypass checks. The exact-main
 pre-push gate writes and validates the release-mode summary locally before the
 tag can be created. The publication manifest remains limited to immutable
 registry and package identities and does not embed transient stress evidence.
 
-Host-owned stream terminal audit behavior is verified at the scoped adapter
+Host-owned execution terminal audit behavior is verified at the scoped adapter
 sink boundary.
 
 ## Performance Gates
@@ -184,9 +183,9 @@ sink boundary.
 - `--full` runs the real Go Host and Rust runtime, 32-way invocation and cache
   scenarios, blocking-hostcall isolation, queued and running cancellation, a
   bounded 10,000-frame IPC burst, indexed scheduler and module-cache stress,
-  paired namespace/package/HTTP/authorization measurements, real operation and
-  stream `MemoryStore` snapshots, the fixed-capacity UDP limiter, 500 stream
-  waiters, SQLite batch reads, Node reconciliation measurements, and a real
+  paired namespace/package/HTTP/authorization measurements, real
+  Execution/Event snapshots, the fixed-capacity UDP limiter, 500 event waiters,
+  SQLite batch reads, Node reconciliation measurements, and a real
   Chromium opaque-surface renderer measurement.
 - `--smoke` executes every scenario and records actual measurements without
   enforcing absolute latency thresholds. It is used only by non-publishing
@@ -306,7 +305,7 @@ The package verifier imports every packed entrypoint, requires this
 exact export set, checks the plugin runtime namespace, and scans the generated
 declarations for trusted-parent and bearer-token leakage. It also installs the
 packed contracts and UI tarballs into a standalone temporary consumer and runs
-`tsc --noEmit` on the released host-capability sample without source aliases.
+`tsc --noEmit` without source aliases.
 The UI package uses one exact contracts dependency, while its root,
 `trusted-parent`, and `plugin` bundles are verified not to load contract bodies.
 
@@ -336,7 +335,7 @@ ambient npm version.
 
 ## Package Publication And Compatibility
 
-`platform-package-set-v1` is the canonical coordinate set for Go, npm, and Rust
+`platform-package-set-v2` is the canonical coordinate set for Go, npm, and Rust
 packages. It does not contain registry checksums or the source commit, avoiding
 self-reference; those identities are verified from the registries and recorded
 in `platform-package-publication-v1` only after readback succeeds.
@@ -345,9 +344,9 @@ The compatibility manifest includes contract artifact IDs, versions, paths, and
 hashes for released OpenAPI, plugin schemas, release metadata, source policy,
 source revocations, performance evidence, IPC/WASM contracts, package-set and
 publication schemas, error codes,
-network grants, the host-capability contract/pin/manifest/compatibility/
-signature/notices schemas, worker invocation payloads, and target classifier
-fixtures.
+network grants, the capability contract and exact-pin schemas, worker
+invocation payloads, and target classifier fixtures. The classifier fixture is
+executed by the Go connectivity owner and is not a separately published crate.
 
 Any change to the release-reference install/update request schema, route set,
 trust-state enum, token/ticket schema, or bridge contract must update the

@@ -28,24 +28,24 @@ const externalPackageInspectionTTL = 15 * time.Minute
 var (
 	ErrExternalPackageInspectionNotFound = errors.New("external package inspection not found")
 	ErrExternalPackageInspectionExpired  = errors.New("external package inspection expired")
-	ErrExternalPackageConfirmation       = errors.New("external package confirmation does not match inspection")
-	ErrExternalPackageCommitBlocked      = errors.New("external package commit is blocked by integrity assessment")
-	ErrExternalPackageCommitInProgress   = errors.New("external package commit is in progress")
+	ErrExternalPackageConfirmation       = errors.New("external package hash does not match inspection")
+	ErrExternalPackageInstallBlocked     = errors.New("external package install is blocked by integrity assessment")
+	ErrExternalPackageInstallInProgress  = errors.New("external package install is in progress")
 	ErrExternalPackageInspectionStale    = errors.New("external package signature assessment changed after inspection")
 	ErrExternalPackageRequestInvalid     = errors.New("external package request is invalid")
 )
 
-type ExternalPackageStageStore interface {
+type externalPackageStageStore interface {
 	StageUpload(context.Context, string, io.Reader, int64) (externalsource.StagedArtifact, error)
 	VerifyPackage(context.Context, externalsource.StagedArtifact, pluginpkg.ReadLimits) (pluginpkg.Package, error)
 	Remove(externalsource.StagedArtifact) error
 }
 
-type ExternalPackageFetcher interface {
+type externalPackageFetcher interface {
 	FetchPackage(context.Context, externalsource.FetchRequest) (externalsource.FetchResult, error)
 }
 
-type ExternalPackageGitHubResolver interface {
+type externalPackageGitHubResolver interface {
 	ResolvePackage(context.Context, externalsource.GitHubRepositorySource) (externalsource.ResolvedGitHubAsset, error)
 }
 
@@ -96,15 +96,10 @@ type InspectUploadedExternalPackageRequest struct {
 	Now          time.Time             `json:"-"`
 }
 
-type CommitExternalPackageRequest struct {
-	InspectionID       string    `json:"inspection_id"`
-	ConfirmationDigest string    `json:"confirmation_digest"`
-	Now                time.Time `json:"-"`
-}
-
-type QueryExternalPackageCommitRequest struct {
-	InspectionID string `json:"inspection_id"`
-	CommitID     string `json:"commit_id,omitempty"`
+type InstallInspectedPackageRequest struct {
+	InspectionID          string    `json:"inspection_id"`
+	ExpectedPackageSHA256 string    `json:"expected_package_sha256"`
+	Now                   time.Time `json:"-"`
 }
 
 type externalPackageInspectionState string
@@ -112,8 +107,7 @@ type externalPackageInspectionState string
 const (
 	externalPackagePending    externalPackageInspectionState = "pending"
 	externalPackageCleaning   externalPackageInspectionState = "cleaning"
-	externalPackageCommitting externalPackageInspectionState = "committing"
-	externalPackageCommitted  externalPackageInspectionState = "committed"
+	externalPackageCommitting externalPackageInspectionState = "installing"
 	externalPackageFailed     externalPackageInspectionState = "failed"
 )
 
@@ -123,7 +117,6 @@ type externalPackagePendingInspection struct {
 	Inspection ExternalPackageInspection
 	Record     registry.PluginRecord
 	State      externalPackageInspectionState
-	CommitID   string
 }
 
 type externalPackageInspectionStore struct {
@@ -151,21 +144,18 @@ func (s *externalPackageInspectionStore) get(id string, scope sessionctx.Session
 	return record, nil
 }
 
-func (s *externalPackageInspectionStore) begin(id string, scope sessionctx.SessionScope, digest, commitID string, now time.Time) (externalPackagePendingInspection, error) {
+func (s *externalPackageInspectionStore) begin(id string, scope sessionctx.SessionScope, expectedPackageSHA256 string, now time.Time) (externalPackagePendingInspection, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record, ok := s.records[id]
 	if !ok || !record.Scope.Matches(scope) {
 		return externalPackagePendingInspection{}, ErrExternalPackageInspectionNotFound
 	}
-	if record.Inspection.ConfirmationDigest != digest {
+	if record.Inspection.InspectedHashes.PackageSHA256 != expectedPackageSHA256 {
 		return externalPackagePendingInspection{}, ErrExternalPackageConfirmation
 	}
 	if record.State == externalPackageCommitting {
-		return record, ErrExternalPackageCommitInProgress
-	}
-	if record.State == externalPackageCommitted {
-		return record, nil
+		return record, ErrExternalPackageInstallInProgress
 	}
 	if record.State != externalPackagePending {
 		return externalPackagePendingInspection{}, ErrExternalPackageInspectionNotFound
@@ -174,7 +164,6 @@ func (s *externalPackageInspectionStore) begin(id string, scope sessionctx.Sessi
 		return record, ErrExternalPackageInspectionExpired
 	}
 	record.State = externalPackageCommitting
-	record.CommitID = commitID
 	s.records[id] = record
 	return record, nil
 }
@@ -253,16 +242,6 @@ func (s *externalPackageInspectionStore) finish(id string, state externalPackage
 	if ok {
 		record.State = state
 		s.records[id] = record
-	}
-	s.mu.Unlock()
-}
-
-func (s *externalPackageInspectionStore) updateRecord(id string, record registry.PluginRecord) {
-	s.mu.Lock()
-	pending, ok := s.records[id]
-	if ok {
-		pending.Record = record
-		s.records[id] = pending
 	}
 	s.mu.Unlock()
 }
@@ -472,10 +451,6 @@ func (h *Host) inspectStagedExternalPackage(
 		UpdateEligibility:   publicExternalUpdateEligibility(record.UpdateEligibility, signature, now),
 		SecuritySummary:     securitySummary,
 	}
-	inspection.ConfirmationDigest, err = externalPackageConfirmationDigest(inspection)
-	if err != nil {
-		return ExternalPackageInspection{}, err
-	}
 	h.externalInspections.put(externalPackagePendingInspection{
 		Scope: scope, Artifact: artifact, Inspection: inspection, Record: record, State: externalPackagePending,
 	})
@@ -483,247 +458,137 @@ func (h *Host) inspectStagedExternalPackage(
 	return inspection, nil
 }
 
-func (h *Host) CommitExternalPackage(ctx context.Context, req CommitExternalPackageRequest) (result ExternalPackageCommitResult, retErr error) {
+func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspectedPackageRequest) (result InstalledExternalPackage, retErr error) {
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
 	defer releaseOpen()
 	if err := h.requireFeature(FeatureExternalPackage); err != nil {
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
 	session, err := requireUserSession(ctx)
 	if err != nil {
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
 	scope, err := session.SessionScope()
 	if err != nil {
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
 	inspectionID := strings.TrimSpace(req.InspectionID)
 	preview, err := h.externalInspections.get(inspectionID, scope)
 	if err != nil {
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
-	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionCommitExternalPackage,
-		scopedAuthorizationTarget(ResourcePlugin, preview.Record.PluginInstanceID, sessionctx.ScopeEnvironment),
-	)
+	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallInspectedPackage,
+		scopedAuthorizationTarget(ResourcePlugin, preview.Record.PluginInstanceID, sessionctx.ScopeEnvironment))
 	if err != nil {
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
 	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
 	if err != nil {
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
 	defer releaseReservation()
 	now := req.Now.UTC()
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	commitID, err := newExternalPackageID("commit")
-	if err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	pending, err := h.externalInspections.begin(inspectionID, scope, strings.TrimSpace(req.ConfirmationDigest), commitID, now)
-	if errors.Is(err, ErrExternalPackageCommitInProgress) {
-		reconciled, found, queryErr := h.queryExternalPackageCommitAfterError(ctx, pending)
-		if queryErr != nil {
-			return ExternalPackageCommitResult{}, queryErr
-		}
-		if found && reconciled.Status == registry.ExternalPackageCommitted {
-			queried, projectionErr := publicExternalPackageCommitResult(reconciled)
-			if projectionErr != nil {
-				return ExternalPackageCommitResult{}, projectionErr
-			}
-			if cleanupErr := h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, false); cleanupErr != nil {
-				return queried, mutation.Committed(cleanupErr)
-			}
-			return queried, nil
-		}
-		if found && reconciled.Status == registry.ExternalPackageFailed {
-			queried, projectionErr := publicExternalPackageCommitResult(reconciled)
-			if projectionErr != nil {
-				return ExternalPackageCommitResult{}, projectionErr
-			}
-			return h.finishFailedExternalPackageCommit(pending, queried)
-		}
-		err = nil
-	}
-	if err == nil && pending.State == externalPackageCommitted {
-		reconciled, found, queryErr := h.queryExternalPackageCommitAfterError(ctx, pending)
-		if queryErr != nil {
-			return ExternalPackageCommitResult{}, queryErr
-		}
-		if !found || reconciled.Status != registry.ExternalPackageCommitted {
-			return ExternalPackageCommitResult{}, fmt.Errorf("%w: committed external package replay is not durable", ErrAdapterFailure)
-		}
-		queried, projectionErr := publicExternalPackageCommitResult(reconciled)
-		if projectionErr != nil {
-			return ExternalPackageCommitResult{}, projectionErr
-		}
-		if cleanupErr := h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, false); cleanupErr != nil {
-			return queried, mutation.Committed(cleanupErr)
-		}
-		return queried, nil
-	}
+	pending, err := h.externalInspections.begin(inspectionID, scope, strings.TrimSpace(req.ExpectedPackageSHA256), now)
 	if err != nil {
 		if errors.Is(err, ErrExternalPackageInspectionExpired) {
-			return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, err)
+			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
 		}
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
 	if pending.Record.SignatureAssessment.Status == registry.SignatureInvalid || pending.Record.SignatureAssessment.Status == registry.SignatureRevoked {
-		return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, ErrExternalPackageCommitBlocked)
+		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, ErrExternalPackageInstallBlocked)
 	}
 	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, pending.Record.PluginInstanceID)
 	if err != nil {
 		h.externalInspections.finish(pending.Inspection.InspectionID, externalPackagePending)
-		return ExternalPackageCommitResult{}, err
+		return InstalledExternalPackage{}, err
 	}
 	defer unlockLifecycle()
-
 	var previous *registry.PluginRecord
 	if pending.Inspection.Intent.Action == string(registry.ExternalPackageUpdate) {
-		current, err := h.adapters.Registry.GetPlugin(ctx, pending.Record.PluginInstanceID)
+		current, err := h.controlStore.Registry().GetPlugin(ctx, scope.OwnerEnvHash, pending.Record.PluginInstanceID)
 		if err != nil {
-			return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, err)
+			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
 		}
 		if err := requireManagementRevision(current, pending.Inspection.Intent.ExpectedManagementRevision); err != nil {
-			return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, err)
+			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
 		}
 		previous = &current
 	}
+	// Reopen and parse the staged artifact immediately before install.
 	pkg, err := h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, pending.Artifact, pluginpkg.DefaultReadLimits())
 	if err != nil {
-		return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, err)
+		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
 	}
 	if pkg.PackageHash != pending.Record.PackageHash || pkg.ManifestHash != pending.Record.ManifestHash || pkg.EntriesHash != pending.Record.EntriesHash {
-		return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, errors.New("external package changed after inspection"))
+		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, errors.New("external package changed after inspection"))
 	}
 	reassessedSignature := h.assessExternalPackageSignature(ctx, pkg, now)
 	if reassessedSignature.Status == registry.SignatureInvalid || reassessedSignature.Status == registry.SignatureRevoked {
-		return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, ErrExternalPackageCommitBlocked)
+		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, ErrExternalPackageInstallBlocked)
 	}
 	if !sameExternalPackageSignatureFreshness(pending.Record.SignatureAssessment, reassessedSignature) {
-		return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, ErrExternalPackageInspectionStale)
+		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, ErrExternalPackageInspectionStale)
 	}
-
 	record := pending.Record
-	if record.ExecutionApproval.Status != registry.ExecutionApprovalUserApproved {
-		record.ExecutionApproval.Status = registry.ExecutionApprovalUserApproved
-		record.ExecutionApproval.ReasonCodes = []string{"explicit_user_confirmation"}
-		record.ExecutionApproval.ApprovedAt = now
-		record.ExecutionApproval.AssessedAt = now
-	}
-	if pending.Inspection.Intent.Action == string(registry.ExternalPackageInstall) {
+	record.ExecutionApproval.Status = registry.ExecutionApprovalUserApproved
+	record.ExecutionApproval.ReasonCodes = []string{"explicit_user_confirmation"}
+	record.ExecutionApproval.ApprovedAt = now
+	record.ExecutionApproval.AssessedAt = now
+	if record.SignatureAssessment.Status != registry.SignatureVerified {
 		record.EnableState = registry.EnableDisabled
-		record.DisabledReason = "installed from an external source; explicit permission review and enable are required"
+		record.DisabledReason = "external package signature is not verified; explicit permission review and enable are required"
 		record.EnabledAt = nil
 	}
 	if record.EnableState == registry.EnableEnabled {
 		if err := h.validateEnabledRuntimeState(ctx, record); err != nil {
-			return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, err)
+			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
 		}
 	}
-	h.externalInspections.updateRecord(pending.Inspection.InspectionID, record)
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{
-		Type: "plugin.external_package.committed", PluginID: record.PluginID,
-		PluginInstanceID: record.PluginInstanceID, RequestID: pending.CommitID,
+		Type: "plugin.external_package.installed", PluginID: record.PluginID,
+		PluginInstanceID: record.PluginInstanceID, RequestID: pending.Inspection.InspectionID,
 	})
 	if err != nil {
-		return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, err)
+		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
 	}
-	auditDetails := map[string]any{"status": "committing"}
-	defer func() {
-		retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails)
-	}()
+	auditDetails := map[string]any{"status": "installing"}
+	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
 	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
-		return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, err)
+		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
 	}
-	registryIntent := registry.ExternalPackageCommitIntent(pending.Inspection.Intent.Action)
-	stored, err := h.adapters.Registry.CommitExternalPackage(ctx, registry.CommitExternalPackageRequest{
-		InspectionID: pending.Inspection.InspectionID, CommitID: pending.CommitID, Intent: registryIntent,
-		ConfirmationDigest:         pending.Inspection.ConfirmationDigest,
+	stored, err := h.installExternalPackageRecord(ctx, scope.OwnerEnvHash, registry.InstallExternalPackageRequest{
+		Intent:                     registry.ExternalPackageInstallIntent(pending.Inspection.Intent.Action),
 		ExpectedManagementRevision: pending.Inspection.Intent.ExpectedManagementRevision,
-		IntendedFingerprint:        record.ActiveFingerprint, IntendedPackageSHA256: record.PackageHash, Record: record, Now: now,
+		Record:                     record, Now: now,
 	})
 	if err != nil {
-		reconciled, found, queryErr := h.queryExternalPackageCommitAfterError(ctx, pending)
-		if found && reconciled.Status == registry.ExternalPackageCommitted {
-			stored = reconciled
-		} else if found && reconciled.Status == registry.ExternalPackageFailed {
-			auditDetails["status"] = "failed"
-			projected, projectionErr := publicExternalPackageCommitResult(reconciled)
-			if projectionErr != nil {
-				h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
-				auditDetails["status"] = "committing"
-				return ExternalPackageCommitResult{}, mutation.Unknown(errors.Join(err, projectionErr))
-			}
-			return h.finishFailedExternalPackageCommit(pending, projected)
-		} else if found {
-			h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
-			auditDetails["status"] = "committing"
-			projected, projectionErr := publicExternalPackageCommitResult(reconciled)
-			return projected, mutation.Unknown(errors.Join(err, queryErr, projectionErr))
-		} else if queryErr != nil {
-			h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
-			auditDetails["status"] = "committing"
-			return ExternalPackageCommitResult{}, mutation.Unknown(errors.Join(err, queryErr))
-		} else {
-			// Package assets are content-addressed and may already be referenced by
-			// another installation. Without an asset-store claim token, deleting
-			// here could corrupt that installation or a commit with unknown outcome.
-			return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, managementMutationError(record, errors.Join(err, queryErr)))
-		}
-	}
-	if validationErr := validateRegistryExternalPackageCommitResult(stored, externalPackageCommitResultIdentity{
-		InspectionID: pending.Inspection.InspectionID, CommitID: pending.CommitID,
-		Intent:                     registry.ExternalPackageCommitIntent(pending.Inspection.Intent.Action),
-		PluginInstanceID:           pending.Record.PluginInstanceID,
-		ExpectedManagementRevision: pending.Inspection.Intent.ExpectedManagementRevision,
-		IntendedFingerprint:        pending.Record.ActiveFingerprint,
-		IntendedPackageSHA256:      pending.Record.PackageHash,
-	}); validationErr != nil {
-		h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
-		auditDetails["status"] = "committing"
-		return ExternalPackageCommitResult{}, mutation.Unknown(validationErr)
-	}
-	if stored.Status == registry.ExternalPackageFailed {
 		auditDetails["status"] = "failed"
-		projected, projectionErr := publicExternalPackageCommitResult(stored)
-		if projectionErr != nil {
-			return ExternalPackageCommitResult{}, mutation.Unknown(projectionErr)
-		}
-		return h.finishFailedExternalPackageCommit(pending, projected)
+		assetRollbackErr := h.adapters.Assets.DeletePackage(context.WithoutCancel(ctx), record.PackageHash)
+		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, errors.Join(managementMutationError(record, err), assetRollbackErr))
 	}
-	if stored.Status != registry.ExternalPackageCommitted || stored.RecordSnapshot == nil {
-		h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
-		auditDetails["status"] = "committing"
-		projected, projectionErr := publicExternalPackageCommitResult(stored)
-		if projectionErr != nil {
-			return ExternalPackageCommitResult{}, mutation.Unknown(projectionErr)
-		}
-		return projected, nil
-	}
-	h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitted)
 	auditDetails["status"] = "committed"
-	result, err = publicExternalPackageCommitResult(stored)
-	if err != nil {
-		return ExternalPackageCommitResult{}, mutation.Unknown(err)
-	}
+	result = installedExternalPackage(stored, now)
 	var postCommitErr error
-	if previous != nil && stored.RecordSnapshot != nil {
-		revokeRecord := *stored.RecordSnapshot
+	if previous != nil {
+		revokeRecord := stored
 		if pluginHasWorkers(previous.Manifest) {
 			revokeRecord.Manifest = previous.Manifest
 		}
 		if err := h.revokePluginRuntimeCapabilities(ctx, revokeRecord, now); err != nil {
 			postCommitErr = errors.Join(postCommitErr, err)
-		} else if err := h.refreshEnabledRuntimeState(ctx, *stored.RecordSnapshot); err != nil {
+		} else if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
 			postCommitErr = errors.Join(postCommitErr, err)
 		}
 	}
-	if err := h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, false); err != nil {
+	if err := h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, true); err != nil {
+		h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageFailed)
 		postCommitErr = errors.Join(postCommitErr, err)
 	}
 	if postCommitErr != nil {
@@ -732,28 +597,28 @@ func (h *Host) CommitExternalPackage(ctx context.Context, req CommitExternalPack
 	return result, nil
 }
 
-func (h *Host) queryExternalPackageCommitAfterError(ctx context.Context, pending externalPackagePendingInspection) (registry.ExternalPackageCommitResult, bool, error) {
-	result, err := h.adapters.Registry.QueryExternalPackageCommit(ctx, registry.QueryExternalPackageCommitRequest{
-		InspectionID: pending.Inspection.InspectionID,
-		CommitID:     pending.CommitID,
-	})
-	if errors.Is(err, registry.ErrExternalPackageCommitNotFound) {
-		return registry.ExternalPackageCommitResult{}, false, nil
+func (h *Host) installExternalPackageRecord(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
+	if h.controlStore == nil {
+		return registry.PluginRecord{}, ErrControlStoreRequired
 	}
-	if err != nil {
-		return registry.ExternalPackageCommitResult{}, false, err
+	return h.controlStore.Registry().InstallExternalPackage(ctx, ownerEnvHash, req)
+}
+
+func installedExternalPackage(record registry.PluginRecord, now time.Time) InstalledExternalPackage {
+	result := InstalledExternalPackage{Plugin: &record}
+	signature := publicExternalSignatureAssessment(record.SignatureAssessment)
+	provenance := publicExternalSourceProvenance(record.PackageSourceProvenance)
+	approval := publicExternalExecutionApproval(record.ExecutionApproval)
+	update := publicExternalUpdateEligibility(record.UpdateEligibility, record.SignatureAssessment, now)
+	result.SignatureAssessment, result.SourceProvenance = &signature, &provenance
+	result.ExecutionApproval, result.UpdateEligibility = &approval, &update
+	if record.SecurityCapabilitySummary.CanonicalJSON != "" {
+		var summary ExternalPackageSecuritySummary
+		if json.Unmarshal([]byte(record.SecurityCapabilitySummary.CanonicalJSON), &summary) == nil {
+			result.SecuritySummary = &summary
+		}
 	}
-	if err := validateRegistryExternalPackageCommitResult(result, externalPackageCommitResultIdentity{
-		InspectionID: pending.Inspection.InspectionID, CommitID: pending.CommitID,
-		Intent:                     registry.ExternalPackageCommitIntent(pending.Inspection.Intent.Action),
-		PluginInstanceID:           pending.Record.PluginInstanceID,
-		ExpectedManagementRevision: pending.Inspection.Intent.ExpectedManagementRevision,
-		IntendedFingerprint:        pending.Record.ActiveFingerprint,
-		IntendedPackageSHA256:      pending.Record.PackageHash,
-	}); err != nil {
-		return registry.ExternalPackageCommitResult{}, false, err
-	}
-	return result, true, nil
+	return result
 }
 
 func (h *Host) removeExternalPackageInspectionArtifact(inspectionID string, removeInspection bool) error {
@@ -778,14 +643,6 @@ func (h *Host) removeExternalPackageInspectionArtifact(inspectionID string, remo
 func (h *Host) failExternalPackageInspection(pending externalPackagePendingInspection, cause error) error {
 	h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageFailed)
 	return errors.Join(cause, h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, true))
-}
-
-func (h *Host) finishFailedExternalPackageCommit(pending externalPackagePendingInspection, result ExternalPackageCommitResult) (ExternalPackageCommitResult, error) {
-	h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageFailed)
-	if err := h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, true); err != nil {
-		return result, err
-	}
-	return result, nil
 }
 
 func (h *Host) cleanupExternalPackageInspectionArtifacts(scope *sessionctx.SessionScope, expiredAt *time.Time) error {
@@ -815,33 +672,6 @@ func (h *Host) cleanupExternalPackageInspectionArtifactsForScope(scope sessionct
 
 func (h *Host) removeExpiredExternalPackageInspectionArtifacts(now time.Time) error {
 	return h.cleanupExternalPackageInspectionArtifacts(nil, &now)
-}
-
-func (h *Host) QueryExternalPackageCommit(ctx context.Context, req QueryExternalPackageCommitRequest) (ExternalPackageCommitResult, error) {
-	if err := h.requireFeature(FeatureExternalPackage); err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	session, err := requireUserSession(ctx)
-	if err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionQueryExternalPackageCommit,
-		scopedAuthorizationTarget(ResourcePlugin, strings.TrimSpace(req.InspectionID), sessionctx.ScopeEnvironment),
-	); err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	result, err := h.adapters.Registry.QueryExternalPackageCommit(ctx, registry.QueryExternalPackageCommitRequest{
-		InspectionID: strings.TrimSpace(req.InspectionID), CommitID: strings.TrimSpace(req.CommitID),
-	})
-	if err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	if err := validateRegistryExternalPackageCommitResult(result, externalPackageCommitResultIdentity{
-		InspectionID: strings.TrimSpace(req.InspectionID), CommitID: strings.TrimSpace(req.CommitID),
-	}); err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	return publicExternalPackageCommitResult(result)
 }
 
 func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageSource, quotaKey string, now time.Time) (externalsource.FetchResult, registry.PackageSourceProvenance, error) {
@@ -878,7 +708,7 @@ func (h *Host) resolveExternalPackageIntent(ctx context.Context, intent External
 		instanceID, err := newExternalPackageID("plugin")
 		return nil, instanceID, err
 	}
-	current, err := h.adapters.Registry.GetPlugin(ctx, intent.PluginInstanceID)
+	current, err := h.getPluginRecord(ctx, intent.PluginInstanceID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -991,7 +821,7 @@ func externalPackageSource(kind registry.PackageSourceKind) bool {
 func normalizeExternalPackageIntent(intent ExternalPackageIntent) (ExternalPackageIntent, error) {
 	intent.Action = strings.TrimSpace(intent.Action)
 	intent.PluginInstanceID = strings.TrimSpace(intent.PluginInstanceID)
-	switch registry.ExternalPackageCommitIntent(intent.Action) {
+	switch registry.ExternalPackageInstallIntent(intent.Action) {
 	case registry.ExternalPackageInstall:
 		if intent.PluginInstanceID != "" || intent.ExpectedManagementRevision != 0 {
 			return ExternalPackageIntent{}, fmt.Errorf("%w: external package install intent cannot select an instance or revision", ErrExternalPackageRequestInvalid)
@@ -1062,16 +892,6 @@ func githubDisplayIdentity(repositoryURL string) (string, string) {
 	return parts[0], parts[1]
 }
 
-func externalPackageConfirmationDigest(inspection ExternalPackageInspection) (string, error) {
-	inspection.ConfirmationDigest = ""
-	raw, err := json.Marshal(inspection)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256(raw)
-	return "sha256:" + hex.EncodeToString(digest[:]), nil
-}
-
 func newExternalPackageID(prefix string) (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
@@ -1118,146 +938,3 @@ func publicExternalUpdateEligibility(value registry.UpdateEligibility, signature
 	}
 	return ExternalPackageUpdateEligibility{State: string(value), ReasonCodes: reasons, AssessedAt: now}
 }
-
-type externalPackageCommitResultIdentity struct {
-	InspectionID               string
-	CommitID                   string
-	Intent                     registry.ExternalPackageCommitIntent
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	IntendedFingerprint        string
-	IntendedPackageSHA256      string
-}
-
-func validateRegistryExternalPackageCommitResult(value registry.ExternalPackageCommitResult, expected externalPackageCommitResultIdentity) error {
-	invalid := func(reason string) error {
-		return fmt.Errorf("%w: registry external package commit result %s", ErrAdapterFailure, reason)
-	}
-	if strings.TrimSpace(value.InspectionID) == "" || strings.TrimSpace(value.CommitID) == "" ||
-		strings.TrimSpace(value.PluginInstanceID) == "" || strings.TrimSpace(value.IntendedFingerprint) == "" ||
-		strings.TrimSpace(value.IntendedPackageSHA256) == "" {
-		return invalid("has incomplete identity")
-	}
-	if value.PluginInstanceID != strings.TrimSpace(value.PluginInstanceID) ||
-		strings.HasPrefix(value.PluginInstanceID, ".") || strings.Contains(value.PluginInstanceID, "/") {
-		return invalid("has a non-canonical plugin instance ID")
-	}
-	switch value.Intent {
-	case registry.ExternalPackageInstall:
-		if value.ExpectedManagementRevision != 0 {
-			return invalid("has an install revision")
-		}
-	case registry.ExternalPackageUpdate:
-		if value.ExpectedManagementRevision == 0 || value.ExpectedManagementRevision == ^uint64(0) {
-			return invalid("is missing an update revision")
-		}
-	default:
-		return invalid("has an unknown intent")
-	}
-	if expected.InspectionID != "" && value.InspectionID != expected.InspectionID {
-		return invalid("does not match the requested inspection")
-	}
-	if expected.CommitID != "" && value.CommitID != expected.CommitID {
-		return invalid("does not match the requested commit")
-	}
-	if expected.Intent != "" && value.Intent != expected.Intent {
-		return invalid("does not match the inspected intent")
-	}
-	if expected.PluginInstanceID != "" && value.PluginInstanceID != expected.PluginInstanceID {
-		return invalid("does not match the inspected plugin")
-	}
-	if expected.Intent != "" && value.ExpectedManagementRevision != expected.ExpectedManagementRevision {
-		return invalid("does not match the inspected revision")
-	}
-	if expected.IntendedFingerprint != "" && value.IntendedFingerprint != expected.IntendedFingerprint {
-		return invalid("does not match the inspected fingerprint")
-	}
-	if expected.IntendedPackageSHA256 != "" && value.IntendedPackageSHA256 != expected.IntendedPackageSHA256 {
-		return invalid("does not match the inspected package")
-	}
-	if value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) {
-		return invalid("has invalid lifecycle timestamps")
-	}
-	switch value.Status {
-	case registry.ExternalPackageCommitting:
-		if value.MutationOutcome != mutation.OutcomeUnknown || value.RecordSnapshot != nil || value.FailureCode != "" {
-			return invalid("has an inconsistent committing state")
-		}
-	case registry.ExternalPackageFailed:
-		if value.MutationOutcome != mutation.OutcomeNotCommitted || value.RecordSnapshot != nil ||
-			value.FailureCode != registry.ExternalPackageFailureHostRestarted {
-			return invalid("has an inconsistent failed state")
-		}
-	case registry.ExternalPackageCommitted:
-		if value.MutationOutcome != mutation.OutcomeCommitted || value.RecordSnapshot == nil || value.FailureCode != "" {
-			return invalid("has an inconsistent committed state")
-		}
-		snapshot := value.RecordSnapshot
-		if snapshot.PluginInstanceID != value.PluginInstanceID {
-			return invalid("snapshot does not match the plugin identity")
-		}
-		if snapshot.ActiveFingerprint != value.IntendedFingerprint || snapshot.PackageHash != value.IntendedPackageSHA256 {
-			return invalid("snapshot does not match the committed package")
-		}
-		if !snapshot.UpdatedAt.Equal(value.UpdatedAt) {
-			return invalid("snapshot does not match the commit lifecycle")
-		}
-		if value.Intent == registry.ExternalPackageInstall && snapshot.ManagementRevision != 1 {
-			return invalid("install snapshot has an invalid management revision")
-		}
-		if value.Intent == registry.ExternalPackageUpdate && snapshot.ManagementRevision != value.ExpectedManagementRevision+1 {
-			return invalid("update snapshot has an invalid management revision")
-		}
-	default:
-		return invalid("has an unknown status")
-	}
-	return nil
-}
-
-func publicExternalPackageCommitResult(value registry.ExternalPackageCommitResult) (ExternalPackageCommitResult, error) {
-	if err := validateRegistryExternalPackageCommitResult(value, externalPackageCommitResultIdentity{}); err != nil {
-		return ExternalPackageCommitResult{}, err
-	}
-	result := ExternalPackageCommitResult{
-		Status: "in_progress", InspectionID: value.InspectionID,
-		Intent: ExternalPackageIntent{
-			Action: string(value.Intent), PluginInstanceID: value.PluginInstanceID,
-			ExpectedManagementRevision: value.ExpectedManagementRevision,
-		},
-		RetryAfterMS: 250,
-	}
-	if value.Status == registry.ExternalPackageFailed {
-		result.Status = "failed"
-		result.FailureCode = value.FailureCode
-		result.RetryAfterMS = 0
-		return result, nil
-	}
-	if value.Status != registry.ExternalPackageCommitted || value.RecordSnapshot == nil {
-		return result, nil
-	}
-	result.Status = "committed"
-	record := value.RecordSnapshot
-	result.Receipt = &ExternalPackageCommitReceipt{
-		CommitID: value.CommitID, InspectionID: value.InspectionID, PackageSHA256: record.PackageHash,
-		ManagementRevision: record.ManagementRevision, CommittedAt: value.UpdatedAt,
-	}
-	result.Plugin = record
-	signature := publicExternalSignatureAssessment(record.SignatureAssessment)
-	provenance := publicExternalSourceProvenance(record.PackageSourceProvenance)
-	approval := publicExternalExecutionApproval(record.ExecutionApproval)
-	update := publicExternalUpdateEligibility(record.UpdateEligibility, record.SignatureAssessment, value.UpdatedAt)
-	result.SignatureAssessment = &signature
-	result.SourceProvenance = &provenance
-	result.ExecutionApproval = &approval
-	result.UpdateEligibility = &update
-	if record.SecurityCapabilitySummary.CanonicalJSON != "" {
-		var summary ExternalPackageSecuritySummary
-		if json.Unmarshal([]byte(record.SecurityCapabilitySummary.CanonicalJSON), &summary) == nil {
-			result.SecuritySummary = &summary
-		}
-	}
-	result.RetryAfterMS = 0
-	return result, nil
-}
-
-var _ = mutation.OutcomeCommitted

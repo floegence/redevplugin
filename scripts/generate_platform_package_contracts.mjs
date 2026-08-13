@@ -13,7 +13,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const contractSourcePath = join(root, "internal/contracts/active-contracts.json");
 const platformVersionPath = join(root, "spec/plugin/platform-version.json");
 const registryOutputPath = join(root, "spec/plugin/contract-registry-v2.json");
-const packageSetOutputPath = join(root, "spec/plugin/platform-package-set-v1.json");
+const packageSetOutputPath = join(root, "spec/plugin/platform-package-set-v2.json");
 const goContractsOutputPath = join(root, "pkg/contracts/contracts_gen.go");
 const goDigestOutputPath = join(root, "pkg/version/contract_set_gen.go");
 const typeScriptContractsOutputPath = join(root, "packages/redevplugin-contracts/src/contracts.gen.ts");
@@ -29,7 +29,7 @@ const MAX_TOTAL_CONTRACT_BYTES = 32 * 1024 * 1024;
 const MAX_FORMATTER_BYTES = MAX_TOTAL_CONTRACT_BYTES * 8 + 8 * 1024 * 1024;
 const FORBIDDEN_ARTIFACT_PATHS = new Set([
   "spec/plugin/contract-registry-v2.json",
-  "spec/plugin/platform-package-set-v1.json",
+  "spec/plugin/platform-package-set-v2.json",
 ]);
 const GO_INITIALISMS = new Map([
   ["api", "API"],
@@ -54,7 +54,6 @@ const rustCrates = [
   ["redevplugin-contracts", "contracts"],
   ["redevplugin-ipc", "ipc"],
   ["redevplugin-wasm-abi", "wasm_abi"],
-  ["redevplugin-target-classifier", "target_classifier"],
   ["redevplugin-worker-sdk", "worker_sdk"],
   ["redevplugin-runtime", "runtime"],
 ];
@@ -123,7 +122,7 @@ export async function generatePlatformPackageContracts() {
   const contractSetSHA256 = computeContractSetSHA256(registryBytes, artifacts);
   const version = platformVersionSource.platform_version;
   const packageSet = {
-    schema_version: "redevplugin.platform_package_set.v1",
+    schema_version: "redevplugin.platform_package_set.v2",
     platform_version: version,
     go_module: {
       module: "github.com/floegence/redevplugin",
@@ -526,7 +525,7 @@ function validatePlatformPackageSet(value, expectedContractSetSHA256) {
     "contract_registry_version",
     "contract_set_sha256",
   ], "platform package set");
-  if (value.schema_version !== "redevplugin.platform_package_set.v1") {
+  if (value.schema_version !== "redevplugin.platform_package_set.v2") {
     throw new Error("unsupported platform package set schema version");
   }
   assertStableVersion(value.platform_version, "platform package set version");

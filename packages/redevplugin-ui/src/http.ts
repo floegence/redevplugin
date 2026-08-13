@@ -286,7 +286,7 @@ function isPlatformErrorDetails(code: PluginPlatformErrorCode, value: unknown): 
 
 const sessionScopeCountKeys = [
   "surfaces", "asset_tickets", "asset_sessions", "plugin_gateway_tokens", "confirmation_tokens",
-  "stream_tickets", "handle_grants", "confirmations", "operations", "streams", "runtime_executions",
+  "handle_grants", "confirmations", "executions",
   "active_network_requests", "sockets", "network_streams", "storage_hostcalls",
 ] as const;
 

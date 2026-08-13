@@ -2,19 +2,11 @@ export const rootDelegationSchemaVersion = "redevplugin.release_root_delegation.
 export const packageSignatureSchemaVersion = "redevplugin.package_signature.v1" as const;
 export const releaseMetadataSchemaVersionV8 = "redevplugin.release_metadata.v8" as const;
 export const releaseMetadataSchemaVersion = releaseMetadataSchemaVersionV8;
-export const sourcePolicySchemaVersion = "redevplugin.release_source_policy.v2" as const;
+export const sourcePolicySchemaVersion = "redevplugin.release_source_policy.v3" as const;
 export const sourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v1" as const;
 export const revocationSchemaVersion = "redevplugin.release_revocation.v2" as const;
 export const revocationPointerSchemaVersion = "redevplugin.release_revocation_pointer.v1" as const;
-export const releaseSigningLedgerEvidenceSchemaVersion = "redevplugin.release_signing_ledger_evidence.v1" as const;
-export const signingSubjectSchemaVersion = "redevplugin.release_signing_subject.v1" as const;
-export const signatureEnvelopeSchemaVersion = "redevplugin.release_signature_envelope.v1" as const;
-export const signingLedgerSchemaVersion = "redevplugin.release_signing_ledger.v1" as const;
-export const signingLedgerEntrySchemaVersion = "redevplugin.release_signing_ledger_entry.v1" as const;
-export const signingLedgerLogLeafSchemaVersion = "redevplugin.release_signing_ledger_log_leaf.v1" as const;
-export const signingLedgerReceiptSchemaVersion = "redevplugin.release_signing_ledger_receipt.v1" as const;
 export const signatureAlgorithmEd25519 = "ed25519" as const;
-export const genesisPreviousEpoch = "0" as const;
 export const genesisPreviousDocumentSHA256 = "0".repeat(64);
 
 export const signingUsages = {
@@ -31,13 +23,10 @@ export type SigningUsage = (typeof signingUsages)[keyof typeof signingUsages];
 export type DelegatedKeyUsage =
   | "package"
   | "release_metadata"
-  | "host_capability_contract"
   | "source_policy_document"
   | "source_policy_pointer"
   | "revocation_document"
-  | "revocation_pointer"
-  | "signing_ledger"
-  | "trusted_time";
+  | "revocation_pointer";
 
 export type RootDelegatedKey = Readonly<{
   algorithm: typeof signatureAlgorithmEd25519;
@@ -53,8 +42,6 @@ export type RootDelegationV1 = Readonly<{
   schema_version: typeof rootDelegationSchemaVersion;
   source_id: string;
   root_epoch: string;
-  previous_root_epoch: string;
-  previous_delegation_sha256: string;
   generated_at: string;
   expires_at: string;
   delegated_keys: readonly RootDelegatedKey[];
@@ -127,7 +114,7 @@ export type PackageReleaseSignatureRef = Readonly<{
 export type ReleaseCompatibility = Readonly<{
   min_redevplugin_version: string;
   min_runtime_version: string;
-  ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6" | "plugin-ui-v7";
+  ui_protocol_version: "plugin-ui-v7";
   supported_targets?: readonly ("darwin/amd64" | "darwin/arm64" | "linux/amd64" | "linux/arm64")[];
 }>;
 
@@ -135,21 +122,7 @@ export type HostCapabilityContractRef = Readonly<{
   publisher_id: string;
   contract_id: string;
   contract_version: string;
-  artifact_ref: string;
   artifact_sha256: string;
-  manifest_ref: string;
-  manifest_sha256: string;
-  signature_ref: string;
-  signature_sha256: string;
-  signature_key_id: string;
-  signature_policy_epoch: string;
-  signature_revocation_epoch: string;
-  compatibility_ref: string;
-  compatibility_sha256: string;
-  generated_client_ref: string;
-  generated_client_sha256: string;
-  notices_ref: string;
-  notices_sha256: string;
 }>;
 
 export type HostCapabilityRequirementRef = Readonly<{
@@ -188,17 +161,15 @@ export type ReleaseMetadataV8 = Readonly<{
 }>;
 
 export type SourcePolicyLimits = Readonly<{
-  document_max_lifetime_seconds: 86400;
+  document_max_lifetime_seconds: 7776000;
   future_skew_seconds: 300;
-  activation_lease_max_seconds: 300;
   refresh_interval_max_seconds: 60;
   failure_teardown_deadline_seconds: 30;
 }>;
 
 export const defaultSourcePolicyLimits: SourcePolicyLimits = Object.freeze({
-  document_max_lifetime_seconds: 86400,
+  document_max_lifetime_seconds: 7776000,
   future_skew_seconds: 300,
-  activation_lease_max_seconds: 300,
   refresh_interval_max_seconds: 60,
   failure_teardown_deadline_seconds: 30,
 });
@@ -206,15 +177,9 @@ export const defaultSourcePolicyLimits: SourcePolicyLimits = Object.freeze({
 export type SourcePolicyActiveKeys = Readonly<{
   package: readonly string[];
   release_metadata: readonly string[];
-  host_capability_contract: readonly string[];
   source_policy_pointer: readonly string[];
   revocation_document: readonly string[];
   revocation_pointer: readonly string[];
-}>;
-
-export type SourcePolicyCapabilityPublisherScope = Readonly<{
-  key_id: string;
-  allowed_publishers: readonly string[];
 }>;
 
 export type SourcePolicyV2 = Readonly<{
@@ -222,15 +187,12 @@ export type SourcePolicyV2 = Readonly<{
   source_id: string;
   channel: string;
   epoch: string;
-  previous_epoch: string;
-  previous_document_sha256: string;
   root_epoch: string;
   source_type: "registry" | "host_artifact";
   source_class: "official" | "curated" | "community" | "private";
   allowed_publishers: readonly string[];
   allowed_artifact_hosts: readonly string[];
   active_keys: SourcePolicyActiveKeys;
-  capability_publisher_scopes: readonly SourcePolicyCapabilityPublisherScope[];
   require_signature: boolean;
   install_policy: "allow" | "review_required" | "block";
   unsigned_policy: "dev_only" | "review_required" | "block";
@@ -249,8 +211,6 @@ export type ReleasePointerInput = Readonly<{
   source_id: string;
   channel: string;
   epoch: string;
-  previous_epoch: string;
-  previous_document_sha256: string;
   ref: string;
   document_sha256: string;
   generated_at: string;
@@ -276,8 +236,6 @@ export type RevocationV2 = Readonly<{
   source_id: string;
   channel: string;
   epoch: string;
-  previous_epoch: string;
-  previous_document_sha256: string;
   root_epoch: string;
   generated_at: string;
   expires_at: string;
@@ -292,147 +250,6 @@ export type RevocationInput = Omit<RevocationV2, "schema_version" | "signature">
 export type RevocationPointerV1 = Readonly<ReleasePointerInput & {
   schema_version: typeof revocationPointerSchemaVersion;
   signature: string;
-}>;
-
-export type SigningLedgerEvidenceV1 = Readonly<{
-  schema_version: typeof releaseSigningLedgerEvidenceSchemaVersion;
-  source_id: string;
-  channel?: string;
-  subject_identity_sha256: string;
-  signing_preimage_sha256: string;
-  signature_envelope_sha256: string;
-  receipt_ref: string;
-  receipt_sha256: string;
-  checkpoint_ref: string;
-  checkpoint_sha256: string;
-  inclusion_proof_ref: string;
-  inclusion_proof_sha256: string;
-  latest_proof_ref: string;
-  latest_proof_sha256: string;
-  consistency_proof_ref?: string;
-  consistency_proof_sha256?: string;
-}>;
-
-export type SigningSubjectUsage =
-  | "root_delegation"
-  | "package"
-  | "release_metadata"
-  | "source_policy_document"
-  | "source_policy_pointer"
-  | "revocation_document"
-  | "revocation_pointer";
-
-export type SigningSubjectV1 = Readonly<{
-  schema_version: typeof signingSubjectSchemaVersion;
-  usage: SigningSubjectUsage;
-  source_id: string;
-  channel?: string;
-  root_epoch?: string;
-  publisher_id?: string;
-  plugin_id?: string;
-  version?: string;
-  artifact_or_metadata_identity_sha256?: string;
-  epoch?: string;
-}>;
-
-export type SignatureEnvelopeV1 = Readonly<{
-  schema_version: typeof signatureEnvelopeSchemaVersion;
-  subject_identity_sha256: string;
-  signing_preimage_sha256: string;
-  algorithm: typeof signatureAlgorithmEd25519;
-  key_id: string;
-  signature: string;
-}>;
-
-export type SigningLedgerEntryState = "reserved" | "finalized" | "terminal_failed";
-export type SigningLedgerFailureCode = "signer_rejected" | "subject_conflict" | "ledger_rejected";
-
-export type SigningLedgerEntryV1 = Readonly<{
-  schema_version: typeof signingLedgerEntrySchemaVersion;
-  state: SigningLedgerEntryState;
-  subject: SigningSubjectV1;
-  subject_identity_sha256: string;
-  signing_preimage_sha256: string;
-  algorithm: typeof signatureAlgorithmEd25519;
-  key_id: string;
-  revision: number;
-  reserved_at: string;
-  signature_envelope?: SignatureEnvelopeV1;
-  signature_envelope_sha256?: string;
-  finalized_at?: string;
-  failure_code?: SigningLedgerFailureCode;
-  failed_at?: string;
-}>;
-
-export type SigningLedgerLogLeafV1 = Readonly<{
-  schema_version: typeof signingLedgerLogLeafSchemaVersion;
-  source_id: string;
-  channel?: string;
-  subject_identity_sha256: string;
-  signing_preimage_sha256: string;
-  signature_envelope_sha256: string;
-  sequence: number;
-}>;
-
-export type SigningLedgerCheckpointV1 = Readonly<{
-  schema_version: typeof signingLedgerSchemaVersion;
-  kind: "checkpoint";
-  log_id: string;
-  tree_size: number;
-  log_root_hash: string;
-  latest_map_root_hash: string;
-  checkpoint_time: string;
-  key_id: string;
-  signature: string;
-}>;
-
-export type SigningLedgerReceiptV1 = Readonly<{
-  schema_version: typeof signingLedgerReceiptSchemaVersion;
-  log_id: string;
-  source_id: string;
-  channel?: string;
-  subject_identity_sha256: string;
-  signing_preimage_sha256: string;
-  signature_envelope_sha256: string;
-  sequence: number;
-  leaf_index: number;
-  tree_size: number;
-  log_root_hash: string;
-  latest_map_root_hash: string;
-  checkpoint_sha256: string;
-  checkpoint_time: string;
-  key_id: string;
-  signature: string;
-}>;
-
-export type SigningLedgerInclusionProofV1 = Readonly<{
-  schema_version: typeof signingLedgerSchemaVersion;
-  kind: "inclusion_proof";
-  log_id: string;
-  leaf_index: number;
-  tree_size: number;
-  nodes: readonly string[];
-}>;
-
-export type SigningLedgerLatestProofV1 = Readonly<{
-  schema_version: typeof signingLedgerSchemaVersion;
-  kind: "latest_proof";
-  log_id: string;
-  subject_identity_sha256: string;
-  present: boolean;
-  sequence?: number;
-  signing_preimage_sha256?: string;
-  signature_envelope_sha256?: string;
-  siblings: readonly string[];
-}>;
-
-export type SigningLedgerConsistencyProofV1 = Readonly<{
-  schema_version: typeof signingLedgerSchemaVersion;
-  kind: "consistency_proof";
-  log_id: string;
-  old_tree_size: number;
-  new_tree_size: number;
-  nodes: readonly string[];
 }>;
 
 export type SignatureVerificationRequest = Readonly<{
@@ -481,13 +298,10 @@ const signaturePattern = /^[A-Za-z0-9+/]{86}==$/;
 const delegatedUsageOrder: readonly DelegatedKeyUsage[] = [
   "package",
   "release_metadata",
-  "host_capability_contract",
   "revocation_document",
   "revocation_pointer",
   "source_policy_document",
   "source_policy_pointer",
-  "signing_ledger",
-  "trusted_time",
 ];
 
 function invalidDocument(): never {
@@ -686,18 +500,6 @@ function validateTimeRange(generatedAt: string, expiresAt: string, maximumMillis
   }
 }
 
-function validateEpochChain(epoch: string, previousEpoch: string, previousDigest: string): void {
-  if (!matchesPattern(positiveEpochPattern, epoch) || !matchesPattern(epochPattern, previousEpoch) || !matchesPattern(sha256Pattern, previousDigest)) {
-    invalidDocument();
-  }
-  if (BigInt(previousEpoch) + 1n !== BigInt(epoch)) invalidDocument();
-  if (previousEpoch === genesisPreviousEpoch) {
-    if (previousDigest !== genesisPreviousDocumentSHA256) invalidDocument();
-  } else if (previousDigest === genesisPreviousDocumentSHA256) {
-    invalidDocument();
-  }
-}
-
 function validateSortedIDs(values: unknown, minimum: number, maximum: number, lower = true): void {
   if (!Array.isArray(values) || values.length < minimum || values.length > maximum) invalidDocument();
   let previous = "";
@@ -719,7 +521,7 @@ function validateRootDelegation(value: RootDelegationV1, requireSignature: boole
   assertRecord(value);
   closeRootDelegation(value);
   if (value.schema_version !== rootDelegationSchemaVersion || !matchesPattern(newIDPattern, value.source_id) || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
-  validateEpochChain(value.root_epoch, value.previous_root_epoch, value.previous_delegation_sha256);
+  if (!matchesPattern(positiveEpochPattern, value.root_epoch)) invalidDocument();
   validateTimeRange(value.generated_at, value.expires_at);
   if (!Array.isArray(value.delegated_keys) || value.delegated_keys.length < 1 || value.delegated_keys.length > 32) invalidDocument();
   let previous = "";
@@ -733,10 +535,7 @@ function validateRootDelegation(value: RootDelegationV1, requireSignature: boole
       if (rank < 0 || rank <= previousUsage) invalidDocument();
       previousUsage = rank;
     }
-    const sourceWide = key.usages.every((usage: DelegatedKeyUsage) => usage === "signing_ledger" || usage === "trusted_time");
-    const hasSourceWide = key.usages.some((usage: DelegatedKeyUsage) => usage === "signing_ledger" || usage === "trusted_time");
-    if (hasSourceWide !== sourceWide) invalidDocument();
-    validateSortedIDs(key.channels, sourceWide ? 0 : 1, sourceWide ? 0 : 16);
+    validateSortedIDs(key.channels, 1, 16);
     validateTimeRange(key.valid_from, key.valid_until);
     if (parseCanonicalTime(key.valid_until) > parseCanonicalTime(value.expires_at)) invalidDocument();
     previous = key.key_id;
@@ -835,17 +634,15 @@ function validReleaseMetadataUIProtocolPair(schemaVersion: string, uiProtocolVer
 }
 
 function validateCapabilityContractRef(value: HostCapabilityContractRef): void {
-  if (![value.publisher_id, value.contract_id, value.signature_key_id].every((item) => matchesPattern(legacyIDPattern, item)) || !matchesPattern(semverPattern, value.contract_version)) invalidDocument();
-  if (!matchesPattern(epochPattern, value.signature_policy_epoch) || !matchesPattern(epochPattern, value.signature_revocation_epoch)) invalidDocument();
-  if (![value.artifact_ref, value.manifest_ref, value.signature_ref, value.compatibility_ref, value.generated_client_ref, value.notices_ref].every(validArtifactRef)) invalidDocument();
-  if (![value.artifact_sha256, value.manifest_sha256, value.signature_sha256, value.compatibility_sha256, value.generated_client_sha256, value.notices_sha256].every((item) => sha256Pattern.test(item))) invalidDocument();
+  if (![value.publisher_id, value.contract_id].every((item) => matchesPattern(legacyIDPattern, item)) ||
+      !matchesPattern(semverPattern, value.contract_version) || !sha256Pattern.test(value.artifact_sha256)) invalidDocument();
 }
 
 function validateSourcePolicy(value: SourcePolicyV2, requireSignature: boolean): void {
   assertRecord(value);
   closeSourcePolicy(value);
   if (value.schema_version !== sourcePolicySchemaVersion || !matchesPattern(newIDPattern, value.source_id) || !matchesPattern(newIDPattern, value.channel) || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
-  validateEpochChain(value.epoch, value.previous_epoch, value.previous_document_sha256);
+  if (!matchesPattern(positiveEpochPattern, value.epoch)) invalidDocument();
   if (!matchesPattern(positiveEpochPattern, value.root_epoch) || !matchesPattern(epochPattern, value.minimum_revocation_epoch)) invalidDocument();
   if (value.source_type !== "registry" && value.source_type !== "host_artifact") invalidDocument();
   if (!new Set(["official", "curated", "community", "private"]).has(value.source_class)) invalidDocument();
@@ -863,20 +660,11 @@ function validateSourcePolicy(value: SourcePolicyV2, requireSignature: boolean):
     value.active_keys.revocation_document,
     value.active_keys.revocation_pointer,
   ]) validateSortedIDs(keys, 1, 16);
-  validateSortedIDs(value.active_keys.host_capability_contract, 0, 16);
-  if (!Array.isArray(value.capability_publisher_scopes) || value.capability_publisher_scopes.length !== value.active_keys.host_capability_contract.length) invalidDocument();
-  for (let index = 0; index < value.capability_publisher_scopes.length; index += 1) {
-    const scope = value.capability_publisher_scopes[index];
-    assertRecord(scope);
-    exactKeys(scope, ["key_id", "allowed_publishers"]);
-    if (scope.key_id !== value.active_keys.host_capability_contract[index]) invalidDocument();
-    validateSortedIDs(scope.allowed_publishers, 1, 1024, false);
-  }
   if (!new Set(["allow", "review_required", "block"]).has(value.install_policy)) invalidDocument();
   if (!new Set(["dev_only", "review_required", "block"]).has(value.unsigned_policy)) invalidDocument();
   if (!new Set(["review_required", "block"]).has(value.downgrade_policy)) invalidDocument();
   if (canonicalJSONString(value.limits) !== canonicalJSONString(defaultSourcePolicyLimits)) invalidDocument();
-  validateTimeRange(value.generated_at, value.expires_at, 24 * 60 * 60 * 1000);
+  validateTimeRange(value.generated_at, value.expires_at, 90 * 24 * 60 * 60 * 1000);
   if (requireSignature) decodeBase64(value.signature, 64);
   else if (value.signature !== "") invalidDocument();
 }
@@ -889,7 +677,7 @@ function validatePointer(
   assertRecord(value);
   closePointer(value);
   if (value.schema_version !== expectedSchemaVersion || !matchesPattern(newIDPattern, value.source_id) || !matchesPattern(newIDPattern, value.channel) || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
-  validateEpochChain(value.epoch, value.previous_epoch, value.previous_document_sha256);
+  if (!matchesPattern(positiveEpochPattern, value.epoch)) invalidDocument();
   if (!validArtifactRef(value.ref) || !sha256Pattern.test(value.document_sha256) || value.document_sha256 === genesisPreviousDocumentSHA256) invalidDocument();
   validateTimeRange(value.generated_at, value.expires_at, 24 * 60 * 60 * 1000);
   if (requireSignature) decodeBase64(value.signature, 64);
@@ -900,7 +688,7 @@ function validateRevocation(value: RevocationV2, requireSignature: boolean): voi
   assertRecord(value);
   closeRevocation(value);
   if (value.schema_version !== revocationSchemaVersion || !matchesPattern(newIDPattern, value.source_id) || !matchesPattern(newIDPattern, value.channel) || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
-  validateEpochChain(value.epoch, value.previous_epoch, value.previous_document_sha256);
+  if (!matchesPattern(positiveEpochPattern, value.epoch)) invalidDocument();
   if (!matchesPattern(positiveEpochPattern, value.root_epoch)) invalidDocument();
   validateTimeRange(value.generated_at, value.expires_at, 24 * 60 * 60 * 1000);
   validateSortedIDs(value.revoked_key_ids, 0, 4096);
@@ -915,167 +703,6 @@ function validateRevocation(value: RevocationV2, requireSignature: boolean): voi
   }
   if (requireSignature) decodeBase64(value.signature, 64);
   else if (value.signature !== "") invalidDocument();
-}
-
-function validateSigningLedgerEvidence(value: SigningLedgerEvidenceV1): void {
-  assertRecord(value);
-  closeSigningLedgerEvidence(value);
-  if (value.schema_version !== releaseSigningLedgerEvidenceSchemaVersion || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
-  if (value.channel !== undefined && !matchesPattern(newIDPattern, value.channel)) invalidDocument();
-  for (const digest of [
-    value.subject_identity_sha256,
-    value.signing_preimage_sha256,
-    value.signature_envelope_sha256,
-    value.receipt_sha256,
-    value.checkpoint_sha256,
-    value.inclusion_proof_sha256,
-    value.latest_proof_sha256,
-  ]) {
-    if (!sha256Pattern.test(digest)) invalidDocument();
-  }
-  for (const reference of [
-    value.receipt_ref,
-    value.checkpoint_ref,
-    value.inclusion_proof_ref,
-    value.latest_proof_ref,
-  ]) {
-    if (!validArtifactRef(reference)) invalidDocument();
-  }
-  if ((value.consistency_proof_ref === undefined) !== (value.consistency_proof_sha256 === undefined)) invalidDocument();
-  if (value.consistency_proof_ref !== undefined && (!validArtifactRef(value.consistency_proof_ref) || !sha256Pattern.test(value.consistency_proof_sha256!))) invalidDocument();
-}
-
-function validateSigningSubject(value: SigningSubjectV1): void {
-  assertRecord(value);
-  closeSigningSubject(value);
-  if (value.schema_version !== signingSubjectSchemaVersion || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
-  if (value.usage === "root_delegation") {
-    if (!matchesPattern(positiveEpochPattern, value.root_epoch)) invalidDocument();
-    return;
-  }
-  if (value.usage === "package" || value.usage === "release_metadata") {
-    if (!matchesPattern(newIDPattern, value.channel) || !matchesPattern(legacyIDPattern, value.publisher_id) ||
-      !matchesPattern(legacyIDPattern, value.plugin_id) || !matchesPattern(semverPattern, value.version) ||
-      !matchesPattern(sha256Pattern, value.artifact_or_metadata_identity_sha256)) invalidDocument();
-    return;
-  }
-  if (["source_policy_document", "source_policy_pointer", "revocation_document", "revocation_pointer"].includes(value.usage)) {
-    if (!matchesPattern(newIDPattern, value.channel) || !matchesPattern(positiveEpochPattern, value.epoch)) invalidDocument();
-    return;
-  }
-  invalidDocument();
-}
-
-function validateSignatureEnvelope(value: SignatureEnvelopeV1): void {
-  assertRecord(value);
-  closeSignatureEnvelope(value);
-  if (value.schema_version !== signatureEnvelopeSchemaVersion || !matchesPattern(sha256Pattern, value.subject_identity_sha256) ||
-    !matchesPattern(sha256Pattern, value.signing_preimage_sha256) || value.algorithm !== signatureAlgorithmEd25519 ||
-    !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
-  decodeBase64(value.signature, 64);
-}
-
-function validateSigningLedgerEntry(value: SigningLedgerEntryV1): void {
-  assertRecord(value);
-  closeSigningLedgerEntry(value);
-  if (value.schema_version !== signingLedgerEntrySchemaVersion || !matchesPattern(sha256Pattern, value.subject_identity_sha256) ||
-    !matchesPattern(sha256Pattern, value.signing_preimage_sha256) || value.algorithm !== signatureAlgorithmEd25519 ||
-    !matchesPattern(newIDPattern, value.key_id) || !Number.isSafeInteger(value.revision) || value.revision < 1) invalidDocument();
-  validateSigningSubject(value.subject);
-  const reservedAt = parseCanonicalTime(value.reserved_at);
-  if (value.state === "reserved") {
-    if (value.signature_envelope !== undefined || value.signature_envelope_sha256 !== undefined || value.finalized_at !== undefined ||
-      value.failure_code !== undefined || value.failed_at !== undefined) invalidDocument();
-    return;
-  }
-  if (value.state === "finalized") {
-    if (value.signature_envelope === undefined || !matchesPattern(sha256Pattern, value.signature_envelope_sha256) ||
-      value.finalized_at === undefined || value.failure_code !== undefined || value.failed_at !== undefined) invalidDocument();
-    validateSignatureEnvelope(value.signature_envelope);
-    if (value.signature_envelope.subject_identity_sha256 !== value.subject_identity_sha256 ||
-      value.signature_envelope.signing_preimage_sha256 !== value.signing_preimage_sha256 ||
-      value.signature_envelope.algorithm !== value.algorithm || value.signature_envelope.key_id !== value.key_id ||
-      parseCanonicalTime(value.finalized_at) < reservedAt) invalidDocument();
-    return;
-  }
-  if (value.state === "terminal_failed") {
-    if (value.signature_envelope !== undefined || value.signature_envelope_sha256 !== undefined || value.finalized_at !== undefined ||
-      value.failure_code === undefined || !["signer_rejected", "subject_conflict", "ledger_rejected"].includes(value.failure_code) ||
-      value.failed_at === undefined || parseCanonicalTime(value.failed_at) < reservedAt) invalidDocument();
-    return;
-  }
-  invalidDocument();
-}
-
-function validateSigningLedgerLogLeaf(value: SigningLedgerLogLeafV1): void {
-  assertRecord(value);
-  closeSigningLedgerLogLeaf(value);
-  if (value.schema_version !== signingLedgerLogLeafSchemaVersion || !matchesPattern(newIDPattern, value.source_id) ||
-    (value.channel !== undefined && !matchesPattern(newIDPattern, value.channel)) ||
-    !matchesPattern(sha256Pattern, value.subject_identity_sha256) || !matchesPattern(sha256Pattern, value.signing_preimage_sha256) ||
-    !matchesPattern(sha256Pattern, value.signature_envelope_sha256) || !Number.isSafeInteger(value.sequence) || value.sequence < 1) invalidDocument();
-}
-
-function validateSigningLedgerCheckpoint(value: SigningLedgerCheckpointV1): void {
-  assertRecord(value);
-  closeSigningLedgerCheckpoint(value);
-  if (value.schema_version !== signingLedgerSchemaVersion || value.kind !== "checkpoint" || !matchesPattern(newIDPattern, value.log_id) ||
-    !Number.isSafeInteger(value.tree_size) || value.tree_size < 1 || !matchesPattern(sha256Pattern, value.log_root_hash) ||
-    !matchesPattern(sha256Pattern, value.latest_map_root_hash) || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
-  parseCanonicalTime(value.checkpoint_time);
-  decodeBase64(value.signature, 64);
-}
-
-function validateSigningLedgerReceipt(value: SigningLedgerReceiptV1): void {
-  assertRecord(value);
-  closeSigningLedgerReceipt(value);
-  if (value.schema_version !== signingLedgerReceiptSchemaVersion || !matchesPattern(newIDPattern, value.log_id) ||
-    !matchesPattern(newIDPattern, value.source_id) || (value.channel !== undefined && !matchesPattern(newIDPattern, value.channel)) ||
-    !matchesPattern(sha256Pattern, value.subject_identity_sha256) || !matchesPattern(sha256Pattern, value.signing_preimage_sha256) ||
-    !matchesPattern(sha256Pattern, value.signature_envelope_sha256) || !Number.isSafeInteger(value.sequence) || value.sequence < 1 ||
-    !Number.isSafeInteger(value.leaf_index) || value.leaf_index !== value.sequence - 1 || !Number.isSafeInteger(value.tree_size) ||
-    value.tree_size < value.sequence || !matchesPattern(sha256Pattern, value.log_root_hash) ||
-    !matchesPattern(sha256Pattern, value.latest_map_root_hash) || !matchesPattern(sha256Pattern, value.checkpoint_sha256) ||
-    !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
-  parseCanonicalTime(value.checkpoint_time);
-  decodeBase64(value.signature, 64);
-}
-
-function validateLedgerNodes(value: readonly string[], exact?: number): void {
-  if (!Array.isArray(value) || (exact === undefined ? value.length > 64 : value.length !== exact) ||
-    value.some((node) => !matchesPattern(sha256Pattern, node))) invalidDocument();
-}
-
-function validateSigningLedgerInclusionProof(value: SigningLedgerInclusionProofV1): void {
-  assertRecord(value);
-  closeSigningLedgerInclusionProof(value);
-  if (value.schema_version !== signingLedgerSchemaVersion || value.kind !== "inclusion_proof" || !matchesPattern(newIDPattern, value.log_id) ||
-    !Number.isSafeInteger(value.leaf_index) || value.leaf_index < 0 || !Number.isSafeInteger(value.tree_size) ||
-    value.tree_size < 1 || value.leaf_index >= value.tree_size) invalidDocument();
-  validateLedgerNodes(value.nodes);
-}
-
-function validateSigningLedgerLatestProof(value: SigningLedgerLatestProofV1): void {
-  assertRecord(value);
-  closeSigningLedgerLatestProof(value);
-  if (value.schema_version !== signingLedgerSchemaVersion || value.kind !== "latest_proof" || !matchesPattern(newIDPattern, value.log_id) ||
-    !matchesPattern(sha256Pattern, value.subject_identity_sha256) || typeof value.present !== "boolean") invalidDocument();
-  validateLedgerNodes(value.siblings, 256);
-  if (value.present) {
-    if (!Number.isSafeInteger(value.sequence) || value.sequence! < 1 || !matchesPattern(sha256Pattern, value.signing_preimage_sha256) ||
-      !matchesPattern(sha256Pattern, value.signature_envelope_sha256)) invalidDocument();
-  } else if (value.sequence !== undefined || value.signing_preimage_sha256 !== undefined || value.signature_envelope_sha256 !== undefined) {
-    invalidDocument();
-  }
-}
-
-function validateSigningLedgerConsistencyProof(value: SigningLedgerConsistencyProofV1): void {
-  assertRecord(value);
-  closeSigningLedgerConsistencyProof(value);
-  if (value.schema_version !== signingLedgerSchemaVersion || value.kind !== "consistency_proof" || !matchesPattern(newIDPattern, value.log_id) ||
-    !Number.isSafeInteger(value.old_tree_size) || value.old_tree_size < 1 || !Number.isSafeInteger(value.new_tree_size) ||
-    value.new_tree_size < value.old_tree_size) invalidDocument();
-  validateLedgerNodes(value.nodes);
 }
 
 function decodeCanonicalDocument<T>(
@@ -1105,7 +732,7 @@ function decodeCanonicalDocument<T>(
 }
 
 function closeRootDelegation(value: Record<string, unknown>): void {
-  exactKeys(value, ["schema_version", "source_id", "root_epoch", "previous_root_epoch", "previous_delegation_sha256", "generated_at", "expires_at", "delegated_keys", "key_id", "signature"]);
+  exactKeys(value, ["schema_version", "source_id", "root_epoch", "generated_at", "expires_at", "delegated_keys", "key_id", "signature"]);
   if (!Array.isArray(value.delegated_keys)) invalidDocument();
   for (const item of value.delegated_keys) {
     assertRecord(item);
@@ -1141,7 +768,7 @@ function closeReleaseMetadata(value: Record<string, unknown>): void {
           assertRecord(requirement);
           exactKeys(requirement, ["capability_id", "capability_version", "contract"]);
           assertRecord(requirement.contract);
-          exactKeys(requirement.contract, ["publisher_id", "contract_id", "contract_version", "artifact_ref", "artifact_sha256", "manifest_ref", "manifest_sha256", "signature_ref", "signature_sha256", "signature_key_id", "signature_policy_epoch", "signature_revocation_epoch", "compatibility_ref", "compatibility_sha256", "generated_client_ref", "generated_client_sha256", "notices_ref", "notices_sha256"]);
+          exactKeys(requirement.contract, ["publisher_id", "contract_id", "contract_version", "artifact_sha256"]);
         }
       }
     }
@@ -1154,107 +781,24 @@ function closeReleaseMetadata(value: Record<string, unknown>): void {
 }
 
 function closeSourcePolicy(value: Record<string, unknown>): void {
-  exactKeys(value, ["schema_version", "source_id", "channel", "epoch", "previous_epoch", "previous_document_sha256", "root_epoch", "source_type", "source_class", "allowed_publishers", "allowed_artifact_hosts", "active_keys", "capability_publisher_scopes", "require_signature", "install_policy", "unsigned_policy", "downgrade_policy", "minimum_revocation_epoch", "limits", "generated_at", "expires_at", "key_id", "signature"]);
+  exactKeys(value, ["schema_version", "source_id", "channel", "epoch", "root_epoch", "source_type", "source_class", "allowed_publishers", "allowed_artifact_hosts", "active_keys", "require_signature", "install_policy", "unsigned_policy", "downgrade_policy", "minimum_revocation_epoch", "limits", "generated_at", "expires_at", "key_id", "signature"]);
   assertRecord(value.active_keys);
-  exactKeys(value.active_keys, ["package", "release_metadata", "host_capability_contract", "source_policy_pointer", "revocation_document", "revocation_pointer"]);
+  exactKeys(value.active_keys, ["package", "release_metadata", "source_policy_pointer", "revocation_document", "revocation_pointer"]);
   assertRecord(value.limits);
-  exactKeys(value.limits, ["document_max_lifetime_seconds", "future_skew_seconds", "activation_lease_max_seconds", "refresh_interval_max_seconds", "failure_teardown_deadline_seconds"]);
+  exactKeys(value.limits, ["document_max_lifetime_seconds", "future_skew_seconds", "refresh_interval_max_seconds", "failure_teardown_deadline_seconds"]);
 }
 
 function closePointer(value: Record<string, unknown>): void {
-  exactKeys(value, ["schema_version", "source_id", "channel", "epoch", "previous_epoch", "previous_document_sha256", "ref", "document_sha256", "generated_at", "expires_at", "key_id", "signature"]);
+  exactKeys(value, ["schema_version", "source_id", "channel", "epoch", "ref", "document_sha256", "generated_at", "expires_at", "key_id", "signature"]);
 }
 
 function closeRevocation(value: Record<string, unknown>): void {
-  exactKeys(value, ["schema_version", "source_id", "channel", "epoch", "previous_epoch", "previous_document_sha256", "root_epoch", "generated_at", "expires_at", "revoked_key_ids", "revoked_releases", "key_id", "signature"]);
+  exactKeys(value, ["schema_version", "source_id", "channel", "epoch", "root_epoch", "generated_at", "expires_at", "revoked_key_ids", "revoked_releases", "key_id", "signature"]);
   if (!Array.isArray(value.revoked_releases)) invalidDocument();
   for (const item of value.revoked_releases) {
     assertRecord(item);
     exactKeys(item, ["publisher_id", "plugin_id", "version", "release_metadata_sha256", "revoked_at"]);
   }
-}
-
-function closeSigningLedgerEvidence(value: Record<string, unknown>): void {
-  exactOptionalKeys(
-    value,
-    [
-      "schema_version",
-      "source_id",
-      "subject_identity_sha256",
-      "signing_preimage_sha256",
-      "signature_envelope_sha256",
-      "receipt_ref",
-      "receipt_sha256",
-      "checkpoint_ref",
-      "checkpoint_sha256",
-      "inclusion_proof_ref",
-      "inclusion_proof_sha256",
-      "latest_proof_ref",
-      "latest_proof_sha256",
-    ],
-    ["channel", "consistency_proof_ref", "consistency_proof_sha256"],
-  );
-}
-
-function closeSigningSubject(value: Record<string, unknown>): void {
-  if (value.usage === "root_delegation") {
-    exactKeys(value, ["schema_version", "usage", "source_id", "root_epoch"]);
-  } else if (value.usage === "package" || value.usage === "release_metadata") {
-    exactKeys(value, ["schema_version", "usage", "source_id", "channel", "publisher_id", "plugin_id", "version", "artifact_or_metadata_identity_sha256"]);
-  } else {
-    exactKeys(value, ["schema_version", "usage", "source_id", "channel", "epoch"]);
-  }
-}
-
-function closeSignatureEnvelope(value: Record<string, unknown>): void {
-  exactKeys(value, ["schema_version", "subject_identity_sha256", "signing_preimage_sha256", "algorithm", "key_id", "signature"]);
-}
-
-function closeSigningLedgerEntry(value: Record<string, unknown>): void {
-  exactOptionalKeys(value, [
-    "schema_version", "state", "subject", "subject_identity_sha256", "signing_preimage_sha256",
-    "algorithm", "key_id", "revision", "reserved_at",
-  ], ["signature_envelope", "signature_envelope_sha256", "finalized_at", "failure_code", "failed_at"]);
-  assertRecord(value.subject);
-  closeSigningSubject(value.subject);
-  if (value.signature_envelope !== undefined) {
-    assertRecord(value.signature_envelope);
-    closeSignatureEnvelope(value.signature_envelope);
-  }
-}
-
-function closeSigningLedgerLogLeaf(value: Record<string, unknown>): void {
-  exactOptionalKeys(value, [
-    "schema_version", "source_id", "subject_identity_sha256", "signing_preimage_sha256", "signature_envelope_sha256", "sequence",
-  ], ["channel"]);
-}
-
-function closeSigningLedgerCheckpoint(value: Record<string, unknown>): void {
-  exactKeys(value, [
-    "schema_version", "kind", "log_id", "tree_size", "log_root_hash", "latest_map_root_hash", "checkpoint_time", "key_id", "signature",
-  ]);
-}
-
-function closeSigningLedgerReceipt(value: Record<string, unknown>): void {
-  exactOptionalKeys(value, [
-    "schema_version", "log_id", "source_id", "subject_identity_sha256", "signing_preimage_sha256",
-    "signature_envelope_sha256", "sequence", "leaf_index", "tree_size", "log_root_hash", "latest_map_root_hash",
-    "checkpoint_sha256", "checkpoint_time", "key_id", "signature",
-  ], ["channel"]);
-}
-
-function closeSigningLedgerInclusionProof(value: Record<string, unknown>): void {
-  exactKeys(value, ["schema_version", "kind", "log_id", "leaf_index", "tree_size", "nodes"]);
-}
-
-function closeSigningLedgerLatestProof(value: Record<string, unknown>): void {
-  exactOptionalKeys(value, ["schema_version", "kind", "log_id", "subject_identity_sha256", "present", "siblings"], [
-    "sequence", "signing_preimage_sha256", "signature_envelope_sha256",
-  ]);
-}
-
-function closeSigningLedgerConsistencyProof(value: Record<string, unknown>): void {
-  exactKeys(value, ["schema_version", "kind", "log_id", "old_tree_size", "new_tree_size", "nodes"]);
 }
 
 export function buildRootDelegation(input: RootDelegationInput, signature: Uint8Array): RootDelegationV1 {
@@ -1497,72 +1041,6 @@ export function decodeRevocationPointer(raw: Uint8Array | string): RevocationPoi
   return decodeCanonicalDocument(raw, closePointer, (value) => validatePointer(value, revocationPointerSchemaVersion, true));
 }
 
-export function decodeSigningLedgerEvidence(raw: Uint8Array | string): SigningLedgerEvidenceV1 {
-  const bytes = typeof raw === "string" ? textEncoder.encode(raw) : raw;
-  if (!(bytes instanceof Uint8Array) || bytes.length > 64 * 1024) invalidDocument();
-  return decodeCanonicalDocument(bytes, closeSigningLedgerEvidence, validateSigningLedgerEvidence);
-}
-
-export function canonicalSigningSubject(value: SigningSubjectV1): Uint8Array {
-  validateSigningSubject(value);
-  return canonicalJSON(value);
-}
-
-export function decodeSigningSubject(raw: Uint8Array | string): SigningSubjectV1 {
-  return decodeCanonicalDocument(raw, closeSigningSubject, validateSigningSubject);
-}
-
-export function canonicalSignatureEnvelope(value: SignatureEnvelopeV1): Uint8Array {
-  validateSignatureEnvelope(value);
-  return canonicalJSON(value);
-}
-
-export function decodeSignatureEnvelope(raw: Uint8Array | string): SignatureEnvelopeV1 {
-  return decodeCanonicalDocument(raw, closeSignatureEnvelope, validateSignatureEnvelope);
-}
-
-export function canonicalSigningLedgerEntry(value: SigningLedgerEntryV1): Uint8Array {
-  validateSigningLedgerEntry(value);
-  return canonicalJSON(value);
-}
-
-export function decodeSigningLedgerEntry(raw: Uint8Array | string): SigningLedgerEntryV1 {
-  return decodeCanonicalDocument(raw, closeSigningLedgerEntry, validateSigningLedgerEntry);
-}
-
-export async function verifySigningLedgerEntryBindings(value: SigningLedgerEntryV1): Promise<void> {
-  validateSigningLedgerEntry(value);
-  if (await sha256Hex(canonicalSigningSubject(value.subject)) !== value.subject_identity_sha256) invalidDocument();
-  if (value.state === "finalized") {
-    if (value.signature_envelope === undefined || value.signature_envelope_sha256 === undefined ||
-      await sha256Hex(canonicalSignatureEnvelope(value.signature_envelope)) !== value.signature_envelope_sha256) invalidDocument();
-  }
-}
-
-export function decodeSigningLedgerLogLeaf(raw: Uint8Array | string): SigningLedgerLogLeafV1 {
-  return decodeCanonicalDocument(raw, closeSigningLedgerLogLeaf, validateSigningLedgerLogLeaf);
-}
-
-export function decodeSigningLedgerCheckpoint(raw: Uint8Array | string): SigningLedgerCheckpointV1 {
-  return decodeCanonicalDocument(raw, closeSigningLedgerCheckpoint, validateSigningLedgerCheckpoint);
-}
-
-export function decodeSigningLedgerReceipt(raw: Uint8Array | string): SigningLedgerReceiptV1 {
-  return decodeCanonicalDocument(raw, closeSigningLedgerReceipt, validateSigningLedgerReceipt);
-}
-
-export function decodeSigningLedgerInclusionProof(raw: Uint8Array | string): SigningLedgerInclusionProofV1 {
-  return decodeCanonicalDocument(raw, closeSigningLedgerInclusionProof, validateSigningLedgerInclusionProof);
-}
-
-export function decodeSigningLedgerLatestProof(raw: Uint8Array | string): SigningLedgerLatestProofV1 {
-  return decodeCanonicalDocument(raw, closeSigningLedgerLatestProof, validateSigningLedgerLatestProof);
-}
-
-export function decodeSigningLedgerConsistencyProof(raw: Uint8Array | string): SigningLedgerConsistencyProofV1 {
-  return decodeCanonicalDocument(raw, closeSigningLedgerConsistencyProof, validateSigningLedgerConsistencyProof);
-}
-
 export function createEd25519Verifier(
   publicKeys: Readonly<Record<string, Uint8Array>>,
   subtle?: SubtleCrypto,
@@ -1622,13 +1100,6 @@ async function verifyRaw(
 
 function toArrayBuffer(value: Uint8Array): ArrayBuffer {
   return Uint8Array.from(value).buffer;
-}
-
-async function sha256Hex(value: Uint8Array): Promise<string> {
-  const subtle = globalThis.crypto?.subtle;
-  if (subtle === undefined) invalidDocument();
-  const digest = new Uint8Array(await subtle.digest("SHA-256", toArrayBuffer(value)));
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function unsignedDocument<T>(value: Readonly<{ schema_version: string; signature: string }>): T {

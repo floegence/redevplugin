@@ -1,35 +1,23 @@
 package releasetrust
 
 import (
-	"errors"
 	"slices"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
 
-var (
-	ErrReleaseTrustVerification = errors.New("release trust verification failed")
-	ErrReleaseTrustExpired      = errors.New("release trust document is expired")
-	ErrReleaseTrustRollback     = errors.New("release trust state rolled back or forked")
-	ErrReleaseTrustRevoked      = errors.New("release trust subject is revoked")
-)
-
 type VerifiedSourceSnapshot struct {
-	key               SourceTrustKey
-	root              releasecontract.RootDelegationV1
-	policy            releasecontract.SourcePolicyV2
-	revocation        releasecontract.RevocationV2
-	trustedFloor      time.Time
-	stateSHA256       string
-	processInstanceID string
-	refreshedElapsed  time.Duration
+	key        SourceTrustKey
+	root       releasecontract.RootDelegationV1
+	policy     releasecontract.SourcePolicyV2
+	revocation releasecontract.RevocationV2
+	verifiedAt time.Time
+	service    *ReleaseTrustService
 }
 
 func (snapshot VerifiedSourceSnapshot) SourceTrustKey() SourceTrustKey { return snapshot.key }
-func (snapshot VerifiedSourceSnapshot) TrustedFloor() time.Time        { return snapshot.trustedFloor }
-func (snapshot VerifiedSourceSnapshot) StateSHA256() string            { return snapshot.stateSHA256 }
-func (snapshot VerifiedSourceSnapshot) ProcessInstanceID() string      { return snapshot.processInstanceID }
+func (snapshot VerifiedSourceSnapshot) VerifiedAt() time.Time          { return snapshot.verifiedAt }
 
 func (snapshot VerifiedSourceSnapshot) RootDelegation() releasecontract.RootDelegationV1 {
 	value := snapshot.root

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 340e9a481344d2d88cab49d258ad86f4376b9078a72141b72cb5a656b37f1ce3 # shrinks to lease_id = "a", token_id = "a", nonce = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], method = "worker.a"

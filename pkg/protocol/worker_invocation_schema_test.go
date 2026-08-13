@@ -86,7 +86,7 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	}
 }
 
-func TestWorkerInvocationSchemaBindsOperationAndStreamHandlesByExecution(t *testing.T) {
+func TestWorkerInvocationSchemaBindsOneExecutionIdentityForAsyncWork(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v3.schema.json"))
 	if err != nil {
@@ -98,8 +98,8 @@ func TestWorkerInvocationSchemaBindsOperationAndStreamHandlesByExecution(t *test
 	}
 	conditions := requireObjectArray(t, schema["allOf"], "worker invocation allOf")
 	wantRequired := map[string][]string{
-		"operation":    {"operation_id"},
-		"subscription": {"operation_id", "stream_id"},
+		"operation":    {"execution_id"},
+		"subscription": {"execution_id"},
 	}
 	for execution, want := range wantRequired {
 		var matched map[string]any
@@ -114,6 +114,12 @@ func TestWorkerInvocationSchemaBindsOperationAndStreamHandlesByExecution(t *test
 		}
 		then := requireNestedObject(t, matched, "then")
 		assertStringSet(t, requireStringSlice(t, then["required"], execution+" required"), want, execution+" required")
+	}
+	properties := requireNestedObject(t, schema, "properties")
+	for _, retired := range []string{"operation_id", "stream_id"} {
+		if _, ok := properties[retired]; ok {
+			t.Fatalf("worker invocation schema still exposes retired %q", retired)
+		}
 	}
 }
 

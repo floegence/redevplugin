@@ -4,24 +4,23 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/secrets"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/sessionscope"
 )
 
-func TestConfigExposesOnlyCoreAndOptionalModules(t *testing.T) {
+func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {
 	configType := reflect.TypeOf(Config{})
 	want := []string{
+		"StateRoot",
 		"Core",
 		"Release",
 		"Runtime",
@@ -32,12 +31,74 @@ func TestConfigExposesOnlyCoreAndOptionalModules(t *testing.T) {
 		"ExternalPackage",
 	}
 	if configType.NumField() != len(want) {
-		t.Fatalf("Config has %d fields, want %d module fields", configType.NumField(), len(want))
+		t.Fatalf("Config has %d fields, want %d state and module fields", configType.NumField(), len(want))
 	}
 	for index, name := range want {
 		if field := configType.Field(index); field.Name != name {
 			t.Fatalf("Config field %d = %q, want %q", index, field.Name, name)
 		}
+	}
+}
+
+func TestCoreAdaptersDoNotExposePersistenceStores(t *testing.T) {
+	typeOfCore := reflect.TypeOf(CoreAdapters{})
+	for _, forbidden := range []string{
+		"Registry",
+		"InstallStages",
+		"SurfaceTokens",
+		"Operations",
+		"ConfirmationIntents",
+		"Streams",
+		"SessionScopes",
+	} {
+		if _, ok := typeOfCore.FieldByName(forbidden); ok {
+			t.Fatalf("CoreAdapters still exposes %s", forbidden)
+		}
+	}
+}
+
+func TestExternalPackageModuleKeepsInspectionStoragePrivateToHost(t *testing.T) {
+	typeOfModule := reflect.TypeOf(ExternalPackageModule{})
+	for _, forbidden := range []string{"StageStore", "PackageFetcher", "GitHubResolver"} {
+		if _, ok := typeOfModule.FieldByName(forbidden); ok {
+			t.Fatalf("ExternalPackageModule still exposes %s", forbidden)
+		}
+	}
+}
+
+func TestOpenOwnsInternalPlatformState(t *testing.T) {
+	stateRoot := filepath.Join(t.TempDir(), "control-state")
+	base := modularTestConfig(t)
+	base.StateRoot = stateRoot
+	base.Core = CoreAdapters{
+		Policy:               base.Core.Policy,
+		Authorization:        base.Core.Authorization,
+		PackageTrustVerifier: base.Core.PackageTrustVerifier,
+		Audit:                base.Core.Audit,
+		SecurityAudit:        base.Core.SecurityAudit,
+		Diagnostics:          base.Core.Diagnostics,
+		SurfaceCatalog:       base.Core.SurfaceCatalog,
+		Assets:               pluginpkg.NewMemoryAssetStore(),
+	}
+
+	h, err := Open(context.Background(), base)
+	if err != nil {
+		t.Fatalf("Open() without injected platform state owners: %v", err)
+	}
+	if h.surfaceTokens == nil || h.adapters.ConfirmationIntents == nil || h.sessionScopes == nil {
+		t.Fatal("Open() did not construct every internal platform state owner")
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	base.Core.Assets = pluginpkg.NewMemoryAssetStore()
+	reopened, err := Open(context.Background(), base)
+	if err != nil {
+		t.Fatalf("Open() after Host-owned stores were closed: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("reopened Close() error = %v", err)
 	}
 }
 
@@ -101,146 +162,6 @@ func TestOpenConfigRejectsTypedNilAdapters(t *testing.T) {
 		}
 	})
 
-	t.Run("session lifecycle", func(t *testing.T) {
-		config := modularTestConfig(t)
-		var lifecycle *testSessionLifecycleAdapter
-		config.Core.SessionLifecycle = lifecycle
-
-		_, err := Open(context.Background(), config)
-		var configErr *HostConfigError
-		if !errors.As(err, &configErr) || !errors.Is(err, ErrHostConfig) {
-			t.Fatalf("Open() error = %v, want HostConfigError", err)
-		}
-		if configErr.Module != "core" || configErr.Adapter != "session lifecycle adapter" {
-			t.Fatalf("HostConfigError = %#v", configErr)
-		}
-	})
-
-	t.Run("session coordinator", func(t *testing.T) {
-		config := modularTestConfig(t)
-		var coordinator *sessionscope.Coordinator
-		config.Core.SessionScopes = coordinator
-
-		_, err := Open(context.Background(), config)
-		var configErr *HostConfigError
-		if !errors.As(err, &configErr) || !errors.Is(err, ErrHostConfig) {
-			t.Fatalf("Open() error = %v, want HostConfigError", err)
-		}
-		if configErr.Module != "core" || configErr.Adapter != "session scope coordinator" {
-			t.Fatalf("HostConfigError = %#v", configErr)
-		}
-	})
-}
-
-func TestOpenConfigRequiresDurableFenceForDurableResources(t *testing.T) {
-	config := modularTestConfig(t)
-	memoryStore, err := sessionscope.NewMemoryStore(sessionscope.StoreOptions{})
-	if err != nil {
-		t.Fatalf("NewMemoryStore() error = %v", err)
-	}
-	config.Core.SessionScopes, err = sessionscope.NewCoordinator(memoryStore)
-	if err != nil {
-		t.Fatalf("NewCoordinator() error = %v", err)
-	}
-	_, err = Open(context.Background(), config)
-	var configErr *HostConfigError
-	if !errors.As(err, &configErr) || !errors.Is(err, ErrDurableSessionScopeRequired) {
-		t.Fatalf("Open() error = %v, want durable HostConfigError", err)
-	}
-	if configErr.Module != "core" || configErr.Adapter != "session scope coordinator" {
-		t.Fatalf("HostConfigError = %#v", configErr)
-	}
-}
-
-func TestOpenReconcilesRetainedSessionScopesBeforeServing(t *testing.T) {
-	config := modularTestConfig(t)
-	session := sessionctx.Context{
-		OwnerSessionHash: "startup_session", OwnerUserHash: "startup_user",
-		OwnerEnvHash: "startup_env", SessionChannelIDHash: "startup_channel",
-	}
-	scope, err := session.SessionScope()
-	if err != nil {
-		t.Fatal(err)
-	}
-	proof, err := sessionscope.GenerateClosedSessionProof()
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := sessionscope.NewTeardownIdentity("startup_reconcile", proof)
-	if err != nil {
-		t.Fatal(err)
-	}
-	teardown, _, err := config.Core.SessionScopes.BeginTeardown(context.Background(), scope, identity, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := teardown.MarkIncomplete(context.Background(), time.Now().UTC()); err != nil {
-		t.Fatal(err)
-	}
-	teardown.Release()
-	lifecycle := &recordingSessionLifecycleAdapter{identity: identity}
-	config.Core.SessionLifecycle = lifecycle
-
-	h, err := Open(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = h.Close() })
-	if len(lifecycle.reconciled) != 1 || lifecycle.reconciled[0].SessionScope != scope || lifecycle.reconciled[0].Snapshot.State != sessionscope.StateIncomplete {
-		t.Fatalf("reconciled retained session scopes = %#v", lifecycle.reconciled)
-	}
-}
-
-func TestOpenRejectsRetainedSessionScopeReconciliationFailure(t *testing.T) {
-	config := modularTestConfig(t)
-	adapter := &recordingSessionLifecycleAdapter{reconcileErr: errors.New("retained identity unavailable")}
-	config.Core.SessionLifecycle = adapter
-	if _, err := Open(context.Background(), config); !errors.Is(err, ErrAdapterFailure) {
-		t.Fatalf("Open() error = %v, want ErrAdapterFailure", err)
-	}
-	if adapter.reconcileCalls != 1 {
-		t.Fatal("Open() did not invoke startup session reconciliation")
-	}
-}
-
-type testSessionLifecycleAdapter struct{}
-
-func (*testSessionLifecycleAdapter) ReconcileRetainedSessionScopes(_ context.Context, req ReconcileRetainedSessionScopesRequest) error {
-	for _, retained := range req.Scopes {
-		if !retained.SessionScope.Valid() || !retained.Snapshot.Fenced {
-			return errors.New("retained session scope is invalid")
-		}
-	}
-	return nil
-}
-
-func (*testSessionLifecycleAdapter) PrepareSessionScopeClose(_ context.Context, req PrepareSessionScopeCloseRequest) (sessionscope.TeardownIdentity, error) {
-	if !req.Session.Valid() {
-		return sessionscope.TeardownIdentity{}, sessionctx.ErrSessionRequired
-	}
-	proof, err := sessionscope.GenerateClosedSessionProof()
-	if err != nil {
-		return sessionscope.TeardownIdentity{}, err
-	}
-	identity, err := sessionscope.NewTeardownIdentity("teardown_test", proof)
-	if err != nil {
-		return sessionscope.TeardownIdentity{}, err
-	}
-	return identity, nil
-}
-
-func (*testSessionLifecycleAdapter) CommitSessionScopeClose(_ context.Context, req CommitSessionScopeCloseRequest) error {
-	if !req.Session.Valid() || !req.Identity.Valid() {
-		return sessionctx.ErrSessionRequired
-	}
-	return nil
-}
-
-func (*testSessionLifecycleAdapter) ValidateClosedSessionScope(_ context.Context, req ValidateClosedSessionScopeRequest) error {
-	if !req.Session.Valid() || !req.Identity.Valid() {
-		return sessionctx.ErrSessionRequired
-	}
-	return nil
 }
 
 func TestOpenConfigRejectsIncompleteDeclaredModules(t *testing.T) {
@@ -277,7 +198,7 @@ func TestFeaturesReturnsClosedConfiguredSet(t *testing.T) {
 }
 
 func TestInstallPreflightReportsEveryMissingManifestFeatureBeforeSideEffects(t *testing.T) {
-	h, registryStore, stages, assets := newModulePreflightTestHost(t)
+	h, assets := newModulePreflightTestHost(t)
 	pkg := readTestPackage(t, buildWorkerNetworkFixturePackage(t))
 	pkg.Manifest.CapabilityBindings = []manifest.CapabilityBinding{{Contract: capabilitycontract.Pin{ContractID: "test"}}}
 	pkg.Manifest.Methods = append(pkg.Manifest.Methods, manifest.MethodSpec{Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteCoreAction}})
@@ -286,26 +207,24 @@ func TestInstallPreflightReportsEveryMissingManifestFeatureBeforeSideEffects(t *
 
 	_, err := h.installResolvedPackage(hostTestContext(), pkg, "plugini_module_preflight", packageTrustInput{LocalImport: true}, time.Time{}, nil)
 	assertMissingFeatures(t, err, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction)
-	assertModulePreflightHasNoWrites(t, registryStore, stages, assets, 0)
+	assertModulePreflightHasNoWrites(t, h, assets, 0)
 }
 
 func TestLocalInstallPreflightRejectsMissingConnectivityBeforeSideEffects(t *testing.T) {
-	h, registryStore, stages, assets := newModulePreflightTestHost(t)
+	h, assets := newModulePreflightTestHost(t)
 	disableModuleFeatures(h, FeatureConnectivity)
 
 	_, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
 	assertMissingFeatures(t, err, FeatureConnectivity)
-	assertModulePreflightHasNoWrites(t, registryStore, stages, assets, 0)
+	assertModulePreflightHasNoWrites(t, h, assets, 0)
 }
 
 func TestUpdatePreflightRejectsMissingConnectivityBeforeSideEffects(t *testing.T) {
-	h, registryStore, stages, assets := newModulePreflightTestHost(t)
+	h, assets := newModulePreflightTestHost(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	stageCount := modulePreflightStageCount(t, stages)
-	registryStore.resetWrites()
 	assets.resetWrites()
 	disableModuleFeatures(h, FeatureConnectivity)
 	data := buildNetworkFixturePackage(t)
@@ -317,11 +236,11 @@ func TestUpdatePreflightRejectsMissingConnectivityBeforeSideEffects(t *testing.T
 		PackageSize:                int64(len(data)),
 	})
 	assertMissingFeatures(t, err, FeatureConnectivity)
-	assertModulePreflightHasNoWrites(t, registryStore, stages, assets, stageCount)
+	assertModulePreflightHasNoWrites(t, h, assets, 1)
 }
 
 func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *testing.T) {
-	h, registryStore, stages, assets := newModulePreflightTestHost(t)
+	h, assets := newModulePreflightTestHost(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -341,12 +260,10 @@ func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *t
 	historic.UpdateEligibility = ""
 	historic.SecurityCapabilitySummary = registry.SecurityCapabilitySummary{}
 	installed.VersionHistory = []registry.PluginVersion{versionSnapshot(historic, time.Now().UTC())}
-	installed, err = registryStore.PutPlugin(hostTestContext(), installed, registry.PutOptions{})
+	installed, err = h.putPluginRecord(hostTestContext(), installed, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stageCount := modulePreflightStageCount(t, stages)
-	registryStore.resetWrites()
 	assets.resetWrites()
 	disableModuleFeatures(h, FeatureConnectivity)
 
@@ -357,7 +274,7 @@ func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *t
 		PackageHash:                historic.PackageHash,
 	})
 	assertMissingFeatures(t, err, FeatureConnectivity)
-	assertModulePreflightHasNoWrites(t, registryStore, stages, assets, stageCount)
+	assertModulePreflightHasNoWrites(t, h, assets, 1)
 }
 
 func TestReleaseInstallPreflightRejectsMissingRuntimeBeforeRegistryMutation(t *testing.T) {
@@ -380,13 +297,9 @@ func TestReleaseInstallPreflightRejectsMissingRuntimeBeforeRegistryMutation(t *t
 			EntriesSHA256:  fixture.Package.EntriesHash,
 		},
 	}
-	registryStore := &modulePreflightRegistry{Store: registry.NewMemoryStore()}
-	stages := installstage.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
-		registry:       registryStore,
-		installStages:  stages,
 		releaseTrust:   fixture.ServiceSet,
 		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: ResolvedPackageArtifact{
 			ReleaseMetadataBytes:     fixture.MetadataBytes,
@@ -398,28 +311,12 @@ func TestReleaseInstallPreflightRejectsMissingRuntimeBeforeRegistryMutation(t *t
 	})
 	assets := &modulePreflightAssetStore{AssetStore: h.adapters.Assets}
 	h.adapters.Assets = assets
-	stageCount := modulePreflightStageCount(t, stages)
-	registryStore.resetWrites()
 	assets.resetWrites()
 	disableModuleFeatures(h, FeatureRuntime)
 
 	_, err = h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref})
 	assertMissingFeatures(t, err, FeatureRuntime)
-	assertModulePreflightHasNoWrites(t, registryStore, stages, assets, stageCount)
-}
-
-type modulePreflightRegistry struct {
-	registry.Store
-	putPluginCalls int
-}
-
-func (s *modulePreflightRegistry) PutPlugin(ctx context.Context, record registry.PluginRecord, opts registry.PutOptions) (registry.PluginRecord, error) {
-	s.putPluginCalls++
-	return s.Store.PutPlugin(ctx, record, opts)
-}
-
-func (s *modulePreflightRegistry) resetWrites() {
-	s.putPluginCalls = 0
+	assertModulePreflightHasNoWrites(t, h, assets, 0)
 }
 
 type modulePreflightAssetStore struct {
@@ -436,14 +333,12 @@ func (s *modulePreflightAssetStore) resetWrites() {
 	s.putPackageCalls = 0
 }
 
-func newModulePreflightTestHost(t *testing.T) (*Host, *modulePreflightRegistry, *installstage.MemoryStore, *modulePreflightAssetStore) {
+func newModulePreflightTestHost(t *testing.T) (*Host, *modulePreflightAssetStore) {
 	t.Helper()
-	registryStore := &modulePreflightRegistry{Store: registry.NewMemoryStore()}
-	stages := installstage.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{registry: registryStore, installStages: stages, developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	assets := &modulePreflightAssetStore{AssetStore: h.adapters.Assets}
 	h.adapters.Assets = assets
-	return h, registryStore, stages, assets
+	return h, assets
 }
 
 func disableModuleFeatures(h *Host, features ...Feature) {
@@ -454,7 +349,6 @@ func disableModuleFeatures(h *Host, features ...Feature) {
 			h.adapters.ReleaseTrust = nil
 			h.adapters.ReleaseArtifactResolver = nil
 			h.adapters.HostRequirements = nil
-			h.adapters.CapabilityContractArtifacts = nil
 		case FeatureRuntime:
 			h.adapters.RuntimeManager = nil
 		case FeatureCapability:
@@ -481,45 +375,33 @@ func assertMissingFeatures(t *testing.T, err error, want ...Feature) {
 	}
 }
 
-func assertModulePreflightHasNoWrites(t *testing.T, registryStore *modulePreflightRegistry, stages *installstage.MemoryStore, assets *modulePreflightAssetStore, wantStages int) {
+func assertModulePreflightHasNoWrites(t *testing.T, h *Host, assets *modulePreflightAssetStore, wantRecords int) {
 	t.Helper()
-	if registryStore.putPluginCalls != 0 || assets.putPackageCalls != 0 {
-		t.Fatalf("module preflight produced writes: registry=%d assets=%d", registryStore.putPluginCalls, assets.putPackageCalls)
-	}
-	if got := modulePreflightStageCount(t, stages); got != wantStages {
-		t.Fatalf("install stage count = %d, want %d", got, wantStages)
-	}
-}
-
-func modulePreflightStageCount(t *testing.T, stages *installstage.MemoryStore) int {
-	t.Helper()
-	records, err := stages.List(hostTestContext(), installstage.ListRequest{})
+	records, err := h.ListPlugins(hostTestContext())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return len(records)
+	if len(records) != wantRecords || assets.putPackageCalls != 0 {
+		t.Fatalf("module preflight produced writes: records=%d assets=%d", len(records), assets.putPackageCalls)
+	}
 }
 
 func modularTestConfig(t *testing.T) Config {
 	legacy, _, _ := newTestHost(t, true, true)
 	adapters := legacy.adapters
-	return Config{Core: CoreAdapters{
+	return Config{StateRoot: filepath.Join(t.TempDir(), "control-state"), Core: CoreAdapters{
 		Policy:               adapters.Policy,
 		Authorization:        adapters.Authorization,
 		PackageTrustVerifier: adapters.PackageTrustVerifier,
-		Registry:             adapters.Registry,
 		Audit:                adapters.Audit,
 		SecurityAudit:        adapters.SecurityAudit,
 		Diagnostics:          adapters.Diagnostics,
 		SurfaceCatalog:       adapters.SurfaceCatalog,
-		SurfaceTokens:        adapters.SurfaceTokens,
-		PluginData:           adapters.PluginData,
 		Assets:               adapters.Assets,
-		InstallStages:        adapters.InstallStages,
-		Operations:           adapters.Operations,
-		ConfirmationIntents:  adapters.ConfirmationIntents,
-		Streams:              adapters.Streams,
-		SessionLifecycle:     adapters.SessionLifecycle,
-		SessionScopes:        adapters.SessionScopes,
+		internalStateOwners: &internalStateOwnerOverrides{
+			surfaceTokens:       adapters.SurfaceTokens,
+			confirmationIntents: adapters.ConfirmationIntents,
+			sessionScopes:       adapters.SessionScopes,
+		},
 	}}
 }

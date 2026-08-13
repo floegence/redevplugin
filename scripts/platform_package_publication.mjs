@@ -106,7 +106,7 @@ export function verifyPlatformReleaseDirectory(directory, options = {}) {
 }
 
 function readPackageSet() {
-  return decodePlatformPackageSet(readFileSync(join(root, "spec/plugin/platform-package-set-v1.json")));
+  return decodePlatformPackageSet(readFileSync(join(root, "spec/plugin/platform-package-set-v2.json")));
 }
 
 function assertReadbackArray(values, coordinates, sourceCommit, label, keys) {

@@ -228,8 +228,7 @@ type runtimeLeaseSignaturePayload struct {
 	Method                 string      `json:"method"`
 	Effect                 string      `json:"effect"`
 	Execution              string      `json:"execution"`
-	OperationID            string      `json:"operation_id,omitempty"`
-	StreamID               string      `json:"stream_id,omitempty"`
+	ExecutionID            string      `json:"execution_id,omitempty"`
 	AuditCorrelationID     string      `json:"audit_correlation_id"`
 	SurfaceInstanceID      string      `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash       string      `json:"owner_session_hash,omitempty"`
@@ -273,8 +272,7 @@ func CanonicalRuntimeLeaseSignaturePayload(lease Lease, method string) ([]byte, 
 		Method:                 resolvedMethod,
 		Effect:                 strings.TrimSpace(lease.Effect),
 		Execution:              strings.TrimSpace(lease.Execution),
-		OperationID:            strings.TrimSpace(lease.OperationID),
-		StreamID:               strings.TrimSpace(lease.StreamID),
+		ExecutionID:            strings.TrimSpace(lease.ExecutionID),
 		AuditCorrelationID:     strings.TrimSpace(lease.AuditCorrelationID),
 		SurfaceInstanceID:      strings.TrimSpace(lease.SurfaceInstanceID),
 		OwnerSessionHash:       strings.TrimSpace(lease.OwnerSessionHash),
@@ -348,15 +346,11 @@ func validateRuntimeLeaseCanonicalFields(lease Lease, resolvedMethod string) err
 	}
 	switch strings.TrimSpace(lease.Execution) {
 	case "sync":
-		if strings.TrimSpace(lease.OperationID) != "" || strings.TrimSpace(lease.StreamID) != "" {
+		if strings.TrimSpace(lease.ExecutionID) != "" {
 			return ErrRuntimeLeaseInvalid
 		}
-	case "operation":
-		if strings.TrimSpace(lease.OperationID) == "" || strings.TrimSpace(lease.StreamID) != "" {
-			return ErrRuntimeLeaseInvalid
-		}
-	case "subscription":
-		if strings.TrimSpace(lease.OperationID) == "" || strings.TrimSpace(lease.StreamID) == "" {
+	case "operation", "subscription":
+		if strings.TrimSpace(lease.ExecutionID) == "" {
 			return ErrRuntimeLeaseInvalid
 		}
 	default:

@@ -3755,10 +3755,12 @@ fn network_execute_request_parsed(
         },
     };
     let stream_id = if request.operation == "http_stream" {
-        if context.stream_id.is_empty() {
-            return Err("http_stream invocation is missing the host-owned stream_id".to_string());
+        if context.execution_id.is_empty() {
+            return Err(
+                "http_stream invocation is missing the host-owned execution_id".to_string(),
+            );
         }
-        context.stream_id.clone()
+        context.execution_id.clone()
     } else {
         String::new()
     };
@@ -5885,7 +5887,7 @@ mod tests {
             frame.contains(r#""frame_type":"network_execute""#),
             "{frame}"
         );
-        assert!(frame.contains(r#""stream_id":"stream_1""#), "{frame}");
+        assert!(frame.contains(r#""stream_id":"execution_1""#), "{frame}");
     }
 
     #[test]
@@ -6423,7 +6425,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_inherits_stream_audience_from_invocation() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["POST"]}]},"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["POST"]}]},"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","query":{"format":["json"],"timezone":["auto"]},"max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -6433,7 +6435,7 @@ mod tests {
         assert_eq!(got.plugin_id, "com.example.worker");
         assert_eq!(got.runtime_shard_id, "runtime_shard_signed");
         assert_eq!(got.operation, "http_stream");
-        assert_eq!(got.stream_id, "stream_host_1");
+        assert_eq!(got.stream_id, "execution_host_1");
         assert_eq!(got.stream_method, "worker.echo");
         assert_eq!(got.stream_effect, "read");
         assert_eq!(got.stream_execution, "subscription");
@@ -6468,7 +6470,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_owned_audience_overrides() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
         for field in [
@@ -6496,7 +6498,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_selected_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","stream_id":"stream_plugin_selected"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -6530,15 +6532,15 @@ mod tests {
     }
 
     #[test]
-    fn network_execute_request_rejects_missing_host_owned_stream_id() {
+    fn network_execute_request_rejects_missing_host_owned_execution_id() {
         let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["GET"]}]},"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
         let err = network_execute_request_parsed(&invocation, "g1", request)
-            .expect_err("missing Host stream id must fail closed");
+            .expect_err("missing Host execution id must fail closed");
 
-        assert!(err.contains("host-owned stream_id"), "{err}");
+        assert!(err.contains("host-owned execution_id"), "{err}");
     }
 
     #[test]
@@ -6624,7 +6626,7 @@ mod tests {
 
     fn broker_invocation_frame(plugin_instance_id: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":1,"revoke_epoch":1}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","scope":"user","operations":["read","write","delete","list"]}},{{"store_id":"notes","scope":"user","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","scope":"user","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed","execution_id":"execution_1","policy_revision":1,"management_revision":1,"revoke_epoch":1}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","scope":"user","operations":["read","write","delete","list"]}},{{"store_id":"notes","scope":"user","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","scope":"user","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","execution_id":"execution_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
         )
     }
 

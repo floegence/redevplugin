@@ -91,6 +91,14 @@ func (configuration SourceConfiguration) valid() bool {
 	return true
 }
 
+func sourceConfigurationContainsKey(configuration SourceConfiguration, key SourceTrustKey) bool {
+	if !configuration.valid() || !key.valid() || key.sourceID != configuration.sourceID {
+		return false
+	}
+	_, found := slices.BinarySearch(configuration.allowedChannels, key.channel)
+	return found
+}
+
 // TrustAnchor is an owned public verification key.
 type TrustAnchor struct {
 	algorithm string
@@ -131,112 +139,6 @@ func allZero(value []byte) bool {
 	return true
 }
 
-type TransparencyRootMode string
-
-const (
-	TransparencyRootPinned        TransparencyRootMode = "pinned"
-	TransparencyRootRootDelegated TransparencyRootMode = "root_delegated"
-)
-
-// TransparencyRoot is a closed choice between a pinned transparency key and
-// a trusted-time key selected from a verified release-root delegation.
-type TransparencyRoot struct {
-	mode           TransparencyRootMode
-	logID          string
-	pinnedAnchor   TrustAnchor
-	delegatedKeyID string
-}
-
-func NewTransparencyRoot(logID string, anchor TrustAnchor) (TransparencyRoot, error) {
-	if !contractIDPattern.MatchString(logID) || !anchor.valid() {
-		return TransparencyRoot{}, ErrInvalidTrustAnchor
-	}
-	return TransparencyRoot{mode: TransparencyRootPinned, logID: logID, pinnedAnchor: cloneTrustAnchor(anchor)}, nil
-}
-
-func NewDelegatedTransparencyRoot(logID, delegatedKeyID string) (TransparencyRoot, error) {
-	if !contractIDPattern.MatchString(logID) || !contractIDPattern.MatchString(delegatedKeyID) {
-		return TransparencyRoot{}, ErrInvalidTrustAnchor
-	}
-	return TransparencyRoot{mode: TransparencyRootRootDelegated, logID: logID, delegatedKeyID: delegatedKeyID}, nil
-}
-
-func (root TransparencyRoot) Mode() TransparencyRootMode { return root.mode }
-func (root TransparencyRoot) LogID() string              { return root.logID }
-func (root TransparencyRoot) Anchor() TrustAnchor        { return cloneTrustAnchor(root.pinnedAnchor) }
-func (root TransparencyRoot) DelegatedKeyID() string     { return root.delegatedKeyID }
-
-func (root TransparencyRoot) valid() bool {
-	switch root.mode {
-	case TransparencyRootPinned:
-		return contractIDPattern.MatchString(root.logID) && root.pinnedAnchor.valid() && root.delegatedKeyID == ""
-	case TransparencyRootRootDelegated:
-		return contractIDPattern.MatchString(root.logID) && contractIDPattern.MatchString(root.delegatedKeyID) && !root.pinnedAnchor.valid()
-	default:
-		return false
-	}
-}
-
-type SigningLedgerRootMode string
-
-const (
-	SigningLedgerRootPinned        SigningLedgerRootMode = "pinned"
-	SigningLedgerRootRootDelegated SigningLedgerRootMode = "root_delegated"
-)
-
-// SigningLedgerRoot is a closed choice between an independently pinned log
-// root and a key selected from a verified release-root delegation.
-type SigningLedgerRoot struct {
-	mode           SigningLedgerRootMode
-	logID          string
-	pinnedAnchor   TrustAnchor
-	delegatedKeyID string
-}
-
-func NewPinnedSigningLedgerRoot(logID string, anchor TrustAnchor) (SigningLedgerRoot, error) {
-	if !contractIDPattern.MatchString(logID) || !anchor.valid() {
-		return SigningLedgerRoot{}, ErrInvalidTrustAnchor
-	}
-	return SigningLedgerRoot{
-		mode:         SigningLedgerRootPinned,
-		logID:        logID,
-		pinnedAnchor: cloneTrustAnchor(anchor),
-	}, nil
-}
-
-func NewDelegatedSigningLedgerRoot(logID, delegatedKeyID string) (SigningLedgerRoot, error) {
-	if !contractIDPattern.MatchString(logID) || !contractIDPattern.MatchString(delegatedKeyID) {
-		return SigningLedgerRoot{}, ErrInvalidTrustAnchor
-	}
-	return SigningLedgerRoot{
-		mode:           SigningLedgerRootRootDelegated,
-		logID:          logID,
-		delegatedKeyID: delegatedKeyID,
-	}, nil
-}
-
-func (root SigningLedgerRoot) Mode() SigningLedgerRootMode { return root.mode }
-func (root SigningLedgerRoot) LogID() string               { return root.logID }
-func (root SigningLedgerRoot) DelegatedKeyID() string      { return root.delegatedKeyID }
-
-func (root SigningLedgerRoot) PinnedAnchor() (TrustAnchor, bool) {
-	if root.mode != SigningLedgerRootPinned {
-		return TrustAnchor{}, false
-	}
-	return cloneTrustAnchor(root.pinnedAnchor), true
-}
-
-func (root SigningLedgerRoot) valid() bool {
-	switch root.mode {
-	case SigningLedgerRootPinned:
-		return contractIDPattern.MatchString(root.logID) && root.pinnedAnchor.valid() && root.delegatedKeyID == ""
-	case SigningLedgerRootRootDelegated:
-		return contractIDPattern.MatchString(root.logID) && contractIDPattern.MatchString(root.delegatedKeyID) && !root.pinnedAnchor.valid()
-	default:
-		return false
-	}
-}
-
 type LocatorPolicy uint8
 
 const SourceRelativeLocatorPolicyV1 LocatorPolicy = 1
@@ -246,47 +148,20 @@ const SourceRelativeLocatorPolicyV1 LocatorPolicy = 1
 type ReleaseTrustOptions struct {
 	sourceConfiguration SourceConfiguration
 	rootAnchor          TrustAnchor
-	transparencyRoots   []TransparencyRoot
-	signingLedgerRoot   SigningLedgerRoot
 	locatorPolicy       LocatorPolicy
 }
 
 func NewReleaseTrustOptions(
 	sourceConfiguration SourceConfiguration,
 	rootAnchor TrustAnchor,
-	transparencyRoots []TransparencyRoot,
-	signingLedgerRoot SigningLedgerRoot,
 	locatorPolicy LocatorPolicy,
 ) (ReleaseTrustOptions, error) {
-	if !sourceConfiguration.valid() || !rootAnchor.valid() || len(transparencyRoots) == 0 || len(transparencyRoots) > 16 || !signingLedgerRoot.valid() || locatorPolicy != SourceRelativeLocatorPolicyV1 {
+	if !sourceConfiguration.valid() || !rootAnchor.valid() || locatorPolicy != SourceRelativeLocatorPolicyV1 {
 		return ReleaseTrustOptions{}, ErrInvalidReleaseTrustOptions
 	}
-	roots := make([]TransparencyRoot, len(transparencyRoots))
-	seen := make(map[string]struct{}, len(transparencyRoots))
-	for index, root := range transparencyRoots {
-		if !root.valid() {
-			return ReleaseTrustOptions{}, ErrInvalidReleaseTrustOptions
-		}
-		if _, exists := seen[root.logID]; exists {
-			return ReleaseTrustOptions{}, ErrInvalidReleaseTrustOptions
-		}
-		seen[root.logID] = struct{}{}
-		roots[index] = cloneTransparencyRoot(root)
-	}
-	slices.SortFunc(roots, func(left, right TransparencyRoot) int {
-		if left.logID < right.logID {
-			return -1
-		}
-		if left.logID > right.logID {
-			return 1
-		}
-		return 0
-	})
 	return ReleaseTrustOptions{
 		sourceConfiguration: SourceConfiguration{sourceID: sourceConfiguration.sourceID, allowedChannels: slices.Clone(sourceConfiguration.allowedChannels)},
 		rootAnchor:          cloneTrustAnchor(rootAnchor),
-		transparencyRoots:   roots,
-		signingLedgerRoot:   cloneSigningLedgerRoot(signingLedgerRoot),
 		locatorPolicy:       locatorPolicy,
 	}, nil
 }
@@ -299,39 +174,8 @@ func (options ReleaseTrustOptions) RootAnchor() TrustAnchor {
 	return cloneTrustAnchor(options.rootAnchor)
 }
 
-func (options ReleaseTrustOptions) TransparencyRoots() []TransparencyRoot {
-	roots := make([]TransparencyRoot, len(options.transparencyRoots))
-	for index, root := range options.transparencyRoots {
-		roots[index] = cloneTransparencyRoot(root)
-	}
-	return roots
-}
-
-func (options ReleaseTrustOptions) SigningLedgerRoot() SigningLedgerRoot {
-	return cloneSigningLedgerRoot(options.signingLedgerRoot)
-}
-
 func (options ReleaseTrustOptions) LocatorPolicy() LocatorPolicy { return options.locatorPolicy }
 
-func cloneSigningLedgerRoot(root SigningLedgerRoot) SigningLedgerRoot {
-	root.pinnedAnchor = cloneTrustAnchor(root.pinnedAnchor)
-	return root
-}
-
-func cloneTransparencyRoot(root TransparencyRoot) TransparencyRoot {
-	root.pinnedAnchor = cloneTrustAnchor(root.pinnedAnchor)
-	return root
-}
-
 func (options ReleaseTrustOptions) valid() bool {
-	if !options.sourceConfiguration.valid() || !options.rootAnchor.valid() || len(options.transparencyRoots) == 0 || len(options.transparencyRoots) > 16 ||
-		!options.signingLedgerRoot.valid() || options.locatorPolicy != SourceRelativeLocatorPolicyV1 {
-		return false
-	}
-	for index, root := range options.transparencyRoots {
-		if !root.valid() || (index > 0 && options.transparencyRoots[index-1].logID >= root.logID) {
-			return false
-		}
-	}
-	return true
+	return options.sourceConfiguration.valid() && options.rootAnchor.valid() && options.locatorPolicy == SourceRelativeLocatorPolicyV1
 }

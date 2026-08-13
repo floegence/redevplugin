@@ -202,14 +202,12 @@ func (f Failure) Error() string {
 }
 
 type DiagnosticDetails struct {
-	OperationsDeleted         int64                     `json:"operations_deleted,omitempty"`
-	StreamsDeleted            int64                     `json:"streams_deleted,omitempty"`
+	ExecutionsDeleted         int64                     `json:"executions_deleted,omitempty"`
 	InvocationID              string                    `json:"invocation_id,omitempty"`
 	Method                    string                    `json:"method,omitempty"`
 	FailureCode               string                    `json:"failure_code,omitempty"`
 	RuntimeProcessFailureCode RuntimeProcessFailureCode `json:"runtime_process_failure_code,omitempty"`
-	OperationID               string                    `json:"operation_id,omitempty"`
-	StreamID                  string                    `json:"stream_id,omitempty"`
+	ExecutionID               string                    `json:"execution_id,omitempty"`
 	RuntimeInstanceID         string                    `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID       string                    `json:"runtime_generation_id,omitempty"`
 	RuntimeVersion            string                    `json:"runtime_version,omitempty"`
@@ -238,13 +236,12 @@ type DiagnosticDetails struct {
 }
 
 func (details DiagnosticDetails) Valid() bool {
-	if details.OperationsDeleted < 0 || uint64(details.OperationsDeleted) > maxSafeInteger ||
-		details.StreamsDeleted < 0 || uint64(details.StreamsDeleted) > maxSafeInteger ||
+	if details.ExecutionsDeleted < 0 || uint64(details.ExecutionsDeleted) > maxSafeInteger ||
 		details.RevokeEpoch > maxSafeInteger {
 		return false
 	}
 	for _, value := range []string{
-		details.InvocationID, details.Method, details.FailureCode, details.OperationID, details.StreamID,
+		details.InvocationID, details.Method, details.FailureCode, details.ExecutionID,
 		details.RuntimeInstanceID, details.RuntimeGenerationID, details.RuntimeVersion, details.RustIPCVersion,
 		details.WASMABIVersion, details.ContractSetSHA256, details.RuntimeTargetOS, details.RuntimeTargetArch, details.RuntimeBinarySHA256,
 		details.OS, details.Arch, details.Stream, details.PackageHash, details.PluginInstanceID, details.StoreID,
@@ -623,8 +620,8 @@ func ValidateAuditEvent(event AuditEvent) error {
 func validAuditDetails(details map[string]any) bool {
 	for key, value := range details {
 		switch key {
-		case "audit_correlation_id", "effect", "execution", "intent_id",
-			"invocation_id", "method", "operation_id", "plan_hash", "preflight_method", "route_kind",
+		case "audit_correlation_id", "effect", "execution", "execution_id", "intent_id",
+			"invocation_id", "method", "plan_hash", "preflight_method", "route_kind",
 			"runtime_generation_id", "runtime_instance_id", "source_plugin_instance_id", "status", "stream_id",
 			"target_descriptor_sha256":
 			text, ok := auditString(value)

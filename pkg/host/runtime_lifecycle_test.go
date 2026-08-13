@@ -165,9 +165,9 @@ func TestHostRuntimeLifecycleRejectsCallsAfterClose(t *testing.T) {
 			},
 		},
 		{
-			name: "refresh enabled plugins",
+			name: "recover enabled plugins",
 			run: func(h *Host) error {
-				_, err := h.RefreshEnabledPlugins(hostTestContext())
+				_, err := h.RecoverEnabled(hostTestContext())
 				return err
 			},
 		},

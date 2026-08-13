@@ -990,7 +990,7 @@ func invalidDiagnosticEvents() []DiagnosticEvent {
 	withUnsafeCorrelation := base
 	withUnsafeCorrelation.CorrelationID = "https://example.com/?token=secret"
 	withUnsafeCount := base
-	withUnsafeCount.Details.OperationsDeleted = int64(maxSafeInteger) + 1
+	withUnsafeCount.Details.ExecutionsDeleted = int64(maxSafeInteger) + 1
 	withUnknownRuntimeProcessFailure := base
 	withUnknownRuntimeProcessFailure.Details.RuntimeProcessFailureCode = "RUNTIME_PROCESS_UNKNOWN"
 	return []DiagnosticEvent{

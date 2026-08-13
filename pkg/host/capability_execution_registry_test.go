@@ -9,7 +9,6 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/stream"
 )
 
 func TestExecutionLeaseRegistryValidatesDifferentPluginsConcurrently(t *testing.T) {
@@ -116,26 +115,18 @@ func TestExecutionLeaseRegistryMaintainsQuotaAndIdentityIndexes(t *testing.T) {
 		t.Fatalf("second start error = %v, want ErrQuotaExceeded", err)
 	}
 
-	operationSink := &hostOperationSink{lease: lease, operationID: "operation-indexed"}
-	streamSink := &hostStreamSink{lease: lease, streamID: "stream-indexed"}
-	lease.setOperation(operationSink, nil)
-	lease.setStream(streamSink)
-	if !registry.hasOperation(operationSink.operationID) {
-		t.Fatal("operation index does not contain the live lease")
-	}
-	gotStream, err := registry.streamSink(streamSink.streamID)
-	if err != nil || gotStream != streamSink {
-		t.Fatalf("stream index result = (%p, %v), want (%p, nil)", gotStream, err, streamSink)
+	sink := &hostExecutionSink{lease: lease, executionID: "execution-indexed"}
+	lease.setExecution(sink, nil)
+	gotExecution, err := registry.executionSink(sink.executionID)
+	if err != nil || gotExecution != sink {
+		t.Fatalf("execution index result = (%p, %v), want (%p, nil)", gotExecution, err, sink)
 	}
 
 	if !lease.finish() {
 		t.Fatal("first lease did not finish")
 	}
-	if registry.hasOperation(operationSink.operationID) {
-		t.Fatal("operation index retained a finished lease")
-	}
-	if _, err := registry.streamSink(streamSink.streamID); !errors.Is(err, stream.ErrNotFound) {
-		t.Fatalf("finished stream lookup error = %v, want ErrNotFound", err)
+	if _, err := registry.executionSink(sink.executionID); !errors.Is(err, capability.ErrExecutionRevoked) {
+		t.Fatalf("finished execution lookup error = %v, want ErrExecutionRevoked", err)
 	}
 
 	replacement := binding
@@ -148,8 +139,8 @@ func TestExecutionLeaseRegistryMaintainsQuotaAndIdentityIndexes(t *testing.T) {
 
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	if len(registry.leases) != 0 || len(registry.leasesByPlugin) != 0 || len(registry.leasesBySession) != 0 || len(registry.operations) != 0 ||
-		len(registry.streams) != 0 || len(registry.activeByQuotaKey) != 0 || len(registry.setupRollbacks) != 0 || len(registry.pluginGates) != 0 {
+	if len(registry.leases) != 0 || len(registry.leasesByPlugin) != 0 || len(registry.leasesBySession) != 0 || len(registry.executions) != 0 ||
+		len(registry.activeByQuotaKey) != 0 || len(registry.setupRollbacks) != 0 || len(registry.pluginGates) != 0 {
 		t.Fatalf("finished registry retained indexes: %#v", registry)
 	}
 }
@@ -204,7 +195,7 @@ func TestExecutionLeaseRegistryCancelsExactSessionWithoutScanningUnrelatedLeases
 	}
 }
 
-func BenchmarkExecutionLeaseRegistryIndexedStreamLookup(b *testing.B) {
+func BenchmarkExecutionLeaseRegistryIndexedExecutionLookup(b *testing.B) {
 	registry := newExecutionLeaseRegistry()
 	leases := make([]*executionLease, 0, 10_000)
 	for index := 0; index < cap(leases); index++ {
@@ -216,13 +207,13 @@ func BenchmarkExecutionLeaseRegistryIndexedStreamLookup(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		lease.setStream(&hostStreamSink{lease: lease, streamID: fmt.Sprintf("stream-%d", index)})
+		lease.setExecution(&hostExecutionSink{lease: lease, executionID: fmt.Sprintf("execution-%d", index)}, nil)
 		leases = append(leases, lease)
 	}
-	target := "stream-9999"
+	target := "execution-9999"
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
-		if _, err := registry.streamSink(target); err != nil {
+		if _, err := registry.executionSink(target); err != nil {
 			b.Fatal(err)
 		}
 	}

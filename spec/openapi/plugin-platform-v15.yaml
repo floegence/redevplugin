@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
   version: plugin-platform-v15
-  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package inspection flows derive package identity and trust facts server-side before reusing the shared commit/query lifecycle; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
+  description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
   require_closed_json_bodies: true
@@ -58,7 +58,7 @@ paths:
     post:
       operationId: inspectUploadedExternalPackageInstall
       x-redevplugin-route-effect: mutation
-      description: Uploads and inspects a package for installation without committing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The returned inspection is committed and reconciled through the shared external-package commit/query routes.
+      description: Uploads and inspects a package for installation. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The process-local inspection expires and must be explicitly installed with its exact package digest.
       requestBody:
         required: true
         content:
@@ -71,7 +71,7 @@ paths:
     put:
       operationId: inspectUploadedExternalPackageUpdate
       x-redevplugin-route-effect: mutation
-      description: Uploads and inspects a package for an optimistic-concurrency-controlled update without committing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The returned inspection is committed and reconciled through the shared external-package commit/query routes.
+      description: Uploads and inspects a package for an optimistic-concurrency-controlled update. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The process-local inspection expires and must be explicitly installed with its exact package digest.
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
         - name: X-ReDevPlugin-Expected-Management-Revision
@@ -87,26 +87,16 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ExternalPackageInspectionResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/external-packages/commit:
+  /_redevplugin/api/plugins/external-packages/install:
     post:
-      operationId: commitExternalPackage
+      operationId: installInspectedPackage
       x-redevplugin-route-effect: mutation
-      description: Commits one unexpired inspection after the user confirms its exact server-computed digest. An absent signature does not make a package ineligible for installation; signature assessment affects trust classification and automatic-update eligibility only.
+      description: Reopens and installs one unexpired process-local inspection after the user confirms its exact package digest. The inspection is bound to the exact authenticated session. Invalid or revoked signatures fail closed; absent or unknown signatures install disabled, with no grants and manual updates only.
       requestBody:
-        $ref: "#/components/requestBodies/CommitExternalPackageRequest"
+        $ref: "#/components/requestBodies/InstallInspectedPackageRequest"
       responses:
-        "200": { $ref: "#/components/responses/ExternalPackageCommitResponse" }
+        "200": { $ref: "#/components/responses/InstalledExternalPackageResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/external-packages/commit/query:
-    post:
-      operationId: queryExternalPackageCommit
-      x-redevplugin-route-effect: query
-      description: Reconciles the commit result for one inspection without repeating the mutation.
-      requestBody:
-        $ref: "#/components/requestBodies/QueryExternalPackageCommitRequest"
-      responses:
-        "200": { $ref: "#/components/responses/ExternalPackageCommitResponse" }
-        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/install-release-ref:
     post:
       operationId: installReleaseRef
@@ -116,41 +106,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/release-install-operations:
-    post:
-      operationId: startReleaseInstallOperation
-      x-redevplugin-route-effect: mutation
-      description: Starts or recovers one owner-scoped durable release installation. Disconnecting the observer does not cancel the installation.
-      requestBody:
-        $ref: "#/components/requestBodies/StartReleaseInstallOperationRequest"
-      responses:
-        "200": { $ref: "#/components/responses/ReleaseInstallOperationResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-    get:
-      operationId: listReleaseInstallOperations
-      x-redevplugin-route-effect: query
-      description: Lists owner-scoped release installation operations. Trusted Origin and authenticated session remain required; GET queries do not require CSRF.
-      responses:
-        "200": { $ref: "#/components/responses/ReleaseInstallOperationListResponse" }
-        default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/release-install-operations/{operation_id}:
-    get:
-      operationId: getReleaseInstallOperation
-      x-redevplugin-route-effect: query
-      parameters:
-        - $ref: "#/components/parameters/OperationID"
-      responses:
-        "200": { $ref: "#/components/responses/ReleaseInstallOperationResponse" }
-        default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/release-install-operations/by-request/{request_id}:
-    get:
-      operationId: getReleaseInstallOperationByRequest
-      x-redevplugin-route-effect: query
-      parameters:
-        - $ref: "#/components/parameters/RequestID"
-      responses:
-        "200": { $ref: "#/components/responses/ReleaseInstallOperationResponse" }
-        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/enable:
     post:
       operationId: enablePlugin
@@ -296,52 +251,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/SurfaceAssetResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read:
-    post:
-      operationId: readPreparedSurfaceStream
-      x-redevplugin-route-effect: query
-      parameters:
-        - $ref: "#/components/parameters/SurfaceInstanceID"
-      requestBody:
-        $ref: "#/components/requestBodies/ReadSurfaceStreamRequest"
-      responses:
-        "200": { $ref: "#/components/responses/SurfaceStreamResponse" }
-        default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack:
-    post:
-      operationId: acknowledgePreparedSurfaceStream
-      x-redevplugin-route-effect: mutation
-      parameters:
-        - $ref: "#/components/parameters/SurfaceInstanceID"
-      requestBody:
-        $ref: "#/components/requestBodies/AcknowledgeSurfaceStreamRequest"
-      responses:
-        "200": { $ref: "#/components/responses/SurfaceStreamAcknowledgementResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel:
-    post:
-      operationId: cancelSurfacePluginOperation
-      x-redevplugin-route-effect: mutation
-      description: Cancels an operation only when it belongs to the authenticated surface, session, and private bridge channel.
-      parameters:
-        - $ref: "#/components/parameters/SurfaceInstanceID"
-      requestBody:
-        $ref: "#/components/requestBodies/CancelSurfaceOperationRequest"
-      responses:
-        "200": { $ref: "#/components/responses/OperationRecordResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/query:
-    post:
-      operationId: getSurfacePluginOperationSnapshot
-      x-redevplugin-route-effect: query
-      description: Returns only the sandbox-safe status projection for an operation bound to the authenticated surface, session, and private bridge channel.
-      parameters:
-        - $ref: "#/components/parameters/SurfaceInstanceID"
-      requestBody:
-        $ref: "#/components/requestBodies/GetSurfaceOperationRequest"
-      responses:
-        "200": { $ref: "#/components/responses/PluginOperationSnapshotResponse" }
-        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject:
     post:
       operationId: rejectSurfacePluginConfirmation
@@ -404,37 +313,59 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/RPCResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/operations/query:
+  /_redevplugin/api/plugins/executions/query:
     post:
-      operationId: listPluginOperations
+      operationId: listPluginExecutions
       x-redevplugin-route-effect: query
       requestBody:
-        $ref: "#/components/requestBodies/ListOperationsQueryRequest"
+        $ref: "#/components/requestBodies/ListExecutionsRequest"
       responses:
-        "200": { $ref: "#/components/responses/OperationListResponse" }
+        "200": { $ref: "#/components/responses/ExecutionListResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/operations/{operation_id}/query:
+  /_redevplugin/api/plugins/executions/release-installs:
     post:
-      operationId: getPluginOperation
+      operationId: startReleaseInstallExecution
+      x-redevplugin-route-effect: mutation
+      description: Starts or idempotently recovers an owner-bound release installation and returns only its unified Execution identity.
+      requestBody:
+        $ref: "#/components/requestBodies/StartReleaseInstallExecutionRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ExecutionResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/executions/{execution_id}/query:
+    post:
+      operationId: getPluginExecution
       x-redevplugin-route-effect: query
       parameters:
-        - $ref: "#/components/parameters/OperationID"
+        - $ref: "#/components/parameters/ExecutionID"
       requestBody:
         $ref: "#/components/requestBodies/EmptyQueryRequest"
       responses:
-        "200": { $ref: "#/components/responses/OperationRecordResponse" }
+        "200": { $ref: "#/components/responses/ExecutionResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/operations/{operation_id}/cancel:
+  /_redevplugin/api/plugins/executions/{execution_id}/cancel:
     post:
-      operationId: cancelPluginOperation
+      operationId: cancelPluginExecution
       x-redevplugin-route-effect: mutation
       parameters:
-        - $ref: "#/components/parameters/OperationID"
+        - $ref: "#/components/parameters/ExecutionID"
       requestBody:
-        $ref: "#/components/requestBodies/CancelOperationRequest"
+        $ref: "#/components/requestBodies/CancelExecutionRequest"
       responses:
-        "200": { $ref: "#/components/responses/OperationRecordResponse" }
+        "200": { $ref: "#/components/responses/ExecutionResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/executions/{execution_id}/events/query:
+    post:
+      operationId: listPluginExecutionEvents
+      x-redevplugin-route-effect: query
+      description: Returns the single ordered event envelope after the caller's last observed execution cursor. Session and surface authorization remain Host-owned transport concerns.
+      parameters:
+        - $ref: "#/components/parameters/ExecutionID"
+      requestBody:
+        $ref: "#/components/requestBodies/ListExecutionEventsRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ExecutionEventListResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/runtime/start:
     post:
       operationId: startPluginRuntime
@@ -453,15 +384,25 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/RuntimeStopResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/runtime/refresh-enabled:
+  /_redevplugin/api/plugins/runtime/recover-enabled:
     post:
-      operationId: refreshEnabledPluginRuntimeState
+      operationId: recoverEnabledPlugins
       x-redevplugin-route-effect: mutation
-      description: 'Replays runtime-derived state for enabled plugins after the embedding host process restarts or reattaches adapters. The response data is `{ "results": [...] }`.'
+      description: Returns the Host-owned idempotent recovery snapshot for this startup revision. Repeated calls do not schedule a second recovery pass.
       requestBody:
         $ref: "#/components/requestBodies/EmptyRequest"
       responses:
-        "200": { $ref: "#/components/responses/RuntimeRefreshResponse" }
+        "200": { $ref: "#/components/responses/RecoverySnapshotResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/runtime/recover/retry:
+    post:
+      operationId: retryPluginRecovery
+      x-redevplugin-route-effect: mutation
+      description: Retries recovery for one plugin after an explicit user action and updates the Host-owned snapshot.
+      requestBody:
+        $ref: "#/components/requestBodies/RetryPluginRecoveryRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecoveryResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/runtime/health/query:
     post:
@@ -684,8 +625,8 @@ paths:
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
 components:
   parameters:
-    OperationID:
-      name: operation_id
+    ExecutionID:
+      name: execution_id
       in: path
       required: true
       schema: { type: string }
@@ -726,7 +667,7 @@ components:
           schema:
             $ref: "#/components/schemas/MutationPlatformErrorResponse"
     RPCResponse:
-      description: Typed plugin method result. Subscriptions always bind one operation and one stream.
+      description: Typed plugin method result. Every asynchronous invocation returns one execution identity.
       content:
         application/json:
           schema:
@@ -755,24 +696,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/SurfaceAssetSuccessResponse"
-    SurfaceStreamResponse:
-      description: Trusted-parent stream redemption response. Stream tickets remain outside the plugin worker.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/SurfaceStreamSuccessResponse"
-    SurfaceStreamAcknowledgementResponse:
-      description: Confirms one exact stream delivery so the platform may release its events.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/SurfaceStreamAcknowledgementSuccessResponse"
-    PluginOperationSnapshotResponse:
-      description: Closed sandbox-safe operation status projection.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/PluginOperationSnapshotSuccessResponse"
     SurfaceDisposeResponse:
       description: Surface revocation response.
       content:
@@ -791,30 +714,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/PluginRecordSuccessResponse"
-    ReleaseInstallOperationResponse:
-      description: Durable release installation status and authoritative terminal result.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ReleaseInstallOperationSuccessResponse"
-    ReleaseInstallOperationListResponse:
-      description: Owner-scoped durable release installation operations.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ReleaseInstallOperationListSuccessResponse"
     ExternalPackageInspectionResponse:
       description: Immutable server-computed package inspection and confirmation boundary.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ExternalPackageInspectionSuccessResponse"
-    ExternalPackageCommitResponse:
-      description: External package commit reconciliation result with explicit trust, approval, provenance, and update facts.
+    InstalledExternalPackageResponse:
+      description: Installed external package with explicit trust, approval, provenance, and update facts.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ExternalPackageCommitSuccessResponse"
+            $ref: "#/components/schemas/InstalledExternalPackageSuccessResponse"
     PluginCatalogResponse:
       description: Installed plugin catalog response with typed registry records.
       content:
@@ -869,18 +780,24 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/RetainedDataCleanupSuccessResponse"
-    OperationRecordResponse:
-      description: Host-owned operation record with its immutable execution binding.
+    ExecutionResponse:
+      description: Host-owned execution state.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/OperationRecordSuccessResponse"
-    OperationListResponse:
-      description: Host-owned operation records with immutable execution bindings.
+            $ref: "#/components/schemas/ExecutionSuccessResponse"
+    ExecutionListResponse:
+      description: Host-owned execution records.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/OperationListSuccessResponse"
+            $ref: "#/components/schemas/ExecutionListSuccessResponse"
+    ExecutionEventListResponse:
+      description: Ordered events from the requested execution cursor.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ExecutionEventListSuccessResponse"
     RuntimeHealthResponse:
       description: Runtime manager and shard health.
       content:
@@ -893,12 +810,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/RuntimeStopSuccessResponse"
-    RuntimeRefreshResponse:
-      description: Enabled plugin runtime refresh result.
+    RecoverySnapshotResponse:
+      description: Idempotent Host-owned enabled-plugin recovery snapshot.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/RuntimeRefreshSuccessResponse"
+            $ref: "#/components/schemas/RecoverySnapshotSuccessResponse"
+    PluginRecoveryResponse:
+      description: Recovery result for one explicitly retried plugin.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PluginRecoverySuccessResponse"
     DataExportResponse:
       description: Plugin data export result.
       content:
@@ -996,30 +919,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/InspectExternalPackageRequest"
-    CommitExternalPackageRequest:
+    InstallInspectedPackageRequest:
       required: true
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/CommitExternalPackageRequest"
-    QueryExternalPackageCommitRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/QueryExternalPackageCommitRequest"
+            $ref: "#/components/schemas/InstallInspectedPackageRequest"
     InstallReleaseRefRequest:
       required: true
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/InstallReleaseRefRequest"
-    StartReleaseInstallOperationRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/StartReleaseInstallOperationRequest"
     UpdateReleaseRefRequest:
       required: true
       content:
@@ -1068,6 +979,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/EmptyRequest"
+    RetryPluginRecoveryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RetryPluginRecoveryRequest"
     EmptyQueryRequest:
       required: true
       content:
@@ -1080,12 +997,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ListIntentsQueryRequest"
-    ListOperationsQueryRequest:
+    ListExecutionsRequest:
       required: true
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ListOperationsQueryRequest"
+            $ref: "#/components/schemas/ListExecutionsRequest"
+    StartReleaseInstallExecutionRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StartReleaseInstallExecutionRequest"
     ListRetainedDataQueryRequest:
       required: true
       content:
@@ -1134,30 +1057,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ReadSurfaceAssetRequest"
-    ReadSurfaceStreamRequest:
+    ListExecutionEventsRequest:
       required: true
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ReadSurfaceStreamRequest"
-    AcknowledgeSurfaceStreamRequest:
+            $ref: "#/components/schemas/ListExecutionEventsRequest"
+    CancelExecutionRequest:
       required: true
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/AcknowledgeSurfaceStreamRequest"
-    CancelSurfaceOperationRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/CancelSurfaceOperationRequest"
-    GetSurfaceOperationRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/GetSurfaceOperationRequest"
+            $ref: "#/components/schemas/CancelExecutionRequest"
     RejectSurfaceConfirmationRequest:
       required: true
       content:
@@ -1188,12 +1099,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/InvokeIntentRequest"
-    CancelOperationRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/CancelOperationRequest"
     StartRuntimeRequest:
       required: true
       content:
@@ -1324,27 +1229,6 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/SurfaceAssetResult" }
-    SurfaceStreamSuccessResponse:
-      type: object
-      required: [ok, data]
-      additionalProperties: false
-      properties:
-        ok: { const: true }
-        data: { $ref: "#/components/schemas/SurfaceStreamResult" }
-    SurfaceStreamAcknowledgementSuccessResponse:
-      type: object
-      required: [ok, data]
-      additionalProperties: false
-      properties:
-        ok: { const: true }
-        data: { $ref: "#/components/schemas/SurfaceStreamAcknowledgementResult" }
-    PluginOperationSnapshotSuccessResponse:
-      type: object
-      required: [ok, data]
-      additionalProperties: false
-      properties:
-        ok: { const: true }
-        data: { $ref: "#/components/schemas/PluginOperationSnapshot" }
     SurfaceDisposeSuccessResponse:
       type: object
       required: [ok, data]
@@ -1366,20 +1250,6 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/PluginRecord" }
-    ReleaseInstallOperationSuccessResponse:
-      type: object
-      required: [ok, data]
-      additionalProperties: false
-      properties:
-        ok: { const: true }
-        data: { $ref: "#/components/schemas/ReleaseInstallOperation" }
-    ReleaseInstallOperationListSuccessResponse:
-      type: object
-      required: [ok, data]
-      additionalProperties: false
-      properties:
-        ok: { const: true }
-        data: { $ref: "#/components/schemas/ReleaseInstallOperationList" }
     ExternalPackageInspectionSuccessResponse:
       type: object
       required: [ok, data]
@@ -1387,13 +1257,13 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/ExternalPackageInspection" }
-    ExternalPackageCommitSuccessResponse:
+    InstalledExternalPackageSuccessResponse:
       type: object
       required: [ok, data]
       additionalProperties: false
       properties:
         ok: { const: true }
-        data: { $ref: "#/components/schemas/ExternalPackageCommitResult" }
+        data: { $ref: "#/components/schemas/InstalledExternalPackage" }
     PluginCatalogSuccessResponse:
       type: object
       required: [ok, data]
@@ -1462,20 +1332,27 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/RetainedDataCleanupResult" }
-    OperationRecordSuccessResponse:
+    ExecutionSuccessResponse:
       type: object
       required: [ok, data]
       additionalProperties: false
       properties:
         ok: { const: true }
-        data: { $ref: "#/components/schemas/OperationRecord" }
-    OperationListSuccessResponse:
+        data: { $ref: "#/components/schemas/Execution" }
+    ExecutionListSuccessResponse:
       type: object
       required: [ok, data]
       additionalProperties: false
       properties:
         ok: { const: true }
-        data: { $ref: "#/components/schemas/PluginOperationList" }
+        data: { $ref: "#/components/schemas/ExecutionList" }
+    ExecutionEventListSuccessResponse:
+      type: object
+      required: [ok, data]
+      additionalProperties: false
+      properties:
+        ok: { const: true }
+        data: { $ref: "#/components/schemas/ExecutionEventList" }
     RuntimeHealthSuccessResponse:
       type: object
       required: [ok, data]
@@ -1490,13 +1367,20 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/PluginRuntimeStopResult" }
-    RuntimeRefreshSuccessResponse:
+    RecoverySnapshotSuccessResponse:
       type: object
       required: [ok, data]
       additionalProperties: false
       properties:
         ok: { const: true }
-        data: { $ref: "#/components/schemas/PluginRuntimeRefreshResult" }
+        data: { $ref: "#/components/schemas/RecoverySnapshot" }
+    PluginRecoverySuccessResponse:
+      type: object
+      required: [ok, data]
+      additionalProperties: false
+      properties:
+        ok: { const: true }
+        data: { $ref: "#/components/schemas/PluginRecoveryResult" }
     DataExportSuccessResponse:
       type: object
       required: [ok, data]
@@ -1598,7 +1482,6 @@ components:
     PlatformError:
       oneOf:
         - $ref: "#/components/schemas/GenericPlatformError"
-        - $ref: "#/components/schemas/OperationRateLimitPlatformError"
         - $ref: "#/components/schemas/JSONLimitPlatformError"
         - $ref: "#/components/schemas/PackageValidationPlatformError"
         - $ref: "#/components/schemas/ManagementRevisionPlatformError"
@@ -1629,14 +1512,6 @@ components:
         message: { $ref: "#/components/schemas/PlatformErrorMessage" }
         details:
           $ref: "#/components/schemas/EmptyErrorDetails"
-    OperationRateLimitPlatformError:
-      type: object
-      required: [code, message, details]
-      additionalProperties: false
-      properties:
-        code: { const: PLUGIN_OPERATION_RATE_LIMITED }
-        message: { $ref: "#/components/schemas/PlatformErrorMessage" }
-        details: { $ref: "#/components/schemas/OperationRateLimitErrorDetails" }
     JSONLimitPlatformError:
       type: object
       required: [code, message, details]
@@ -1801,12 +1676,6 @@ components:
     EmptyErrorDetails:
       type: object
       additionalProperties: false
-    OperationRateLimitErrorDetails:
-      type: object
-      additionalProperties: false
-      required: [retry_after_ms]
-      properties:
-        retry_after_ms: { type: integer, minimum: 500, maximum: 10000 }
     JSONLimitErrorDetails:
       type: object
       required: [reason]
@@ -1965,9 +1834,9 @@ components:
         - PLUGIN_LEASE_REPLAYED
         - PLUGIN_GRANT_INVALID
         - PLUGIN_STORAGE_QUOTA_EXCEEDED
-        - PLUGIN_OPERATION_BLOCKED
-        - PLUGIN_OPERATION_NOT_FOUND
-        - PLUGIN_OPERATION_NOT_CANCELABLE
+        - PLUGIN_EXECUTION_BLOCKED
+        - PLUGIN_EXECUTION_NOT_FOUND
+        - PLUGIN_EXECUTION_NOT_CANCELABLE
         - PLUGIN_NETWORK_TARGET_DENIED
         - PLUGIN_NETWORK_RATE_LIMITED
         - PLUGIN_RUNTIME_UNAVAILABLE
@@ -2007,15 +1876,25 @@ components:
           items: { $ref: "#/components/schemas/PluginRecord" }
     PluginCompatibilityManifest:
       $ref: "../plugin/compatibility-manifest-v17.schema.json"
-    PluginOperationList:
+    ExecutionList:
       type: object
-      required: [operations]
+      required: [executions]
       additionalProperties: false
       properties:
-        operations:
+        executions:
           type: array
-          items: { $ref: "#/components/schemas/OperationRecord" }
-        next_cursor: { type: string, maxLength: 1024 }
+          items: { $ref: "#/components/schemas/Execution" }
+        next_cursor: { type: integer, minimum: 1, maximum: 9007199254740991 }
+    ExecutionEventList:
+      type: object
+      required: [execution_id, events, cursor]
+      additionalProperties: false
+      properties:
+        execution_id: { type: string, minLength: 1 }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/Event" }
+        cursor: { type: integer, minimum: 0, maximum: 9007199254740991 }
     PluginIntentRecord:
       type: object
       required: [plugin_id, plugin_instance_id, publisher_id, display_name, version, active_fingerprint, intent_id, method, effect, execution]
@@ -2160,15 +2039,13 @@ components:
       type: object
       additionalProperties: false
       properties:
-        operations_deleted: { type: integer, minimum: 0, maximum: 9007199254740991 }
-        streams_deleted: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        executions_deleted: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        execution_id: { type: string }
         invocation_id: { type: string }
         method: { type: string }
         failure_code: { type: string }
         runtime_process_failure_code:
           $ref: "../plugin/error-codes-v8.schema.json#/$defs/runtime_process_failure_code"
-        operation_id: { type: string }
-        stream_id: { type: string }
         runtime_instance_id: { type: string }
         runtime_generation_id: { type: string }
         runtime_version: { type: string }
@@ -2318,48 +2195,37 @@ components:
       additionalProperties: false
       properties:
         stopped: { const: true }
-    PluginRuntimeRefreshResult:
+    RecoverySnapshot:
       type: object
-      required: [results]
+      required: [revision, complete, results]
       additionalProperties: false
       properties:
+        revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        complete: { type: boolean }
         results:
           type: array
-          items: { $ref: "#/components/schemas/PluginRuntimeRefreshEntry" }
-    PluginRuntimeRefreshEntry:
-      oneOf:
-        - $ref: "#/components/schemas/PluginRuntimeRefreshSuccess"
-        - $ref: "#/components/schemas/PluginRuntimeRefreshFailure"
-    PluginRuntimeRefreshSuccess:
+          items: { $ref: "#/components/schemas/PluginRecoveryResult" }
+    PluginRecoveryResult:
       type: object
       required: [plugin_instance_id, status]
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
-        status: { const: refreshed }
-    PluginRuntimeRefreshFailure:
-      type: object
-      required: [plugin_instance_id, status, error]
-      additionalProperties: false
-      properties:
-        plugin_instance_id: { type: string, minLength: 1 }
-        status: { const: failed }
-        error: { $ref: "#/components/schemas/PluginRuntimeRefreshPublicError" }
-    PluginRuntimeRefreshPublicError:
-      type: object
-      required: [code, message, reason, action]
-      additionalProperties: false
-      properties:
-        code:
+        status:
           type: string
-          enum: [PLUGIN_RUNTIME_UNAVAILABLE]
-        message: { type: string, minLength: 1 }
+          enum: [ready, failed]
         reason:
           type: string
-          enum: [unknown, trust_state_advanced, trust_revoked, trust_fenced, trust_epoch_mismatch, activation_evidence_invalid, activation_lease_expired, recovery_canceled, recovery_timeout]
+          enum: [unknown, trust_state_advanced, trust_revoked, recovery_canceled, recovery_timeout]
         action:
           type: string
           enum: [retry, reinstall, contact_admin]
+    RetryPluginRecoveryRequest:
+      type: object
+      required: [plugin_instance_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
     PluginDataExportResult:
       type: object
       required: [bundle_ref]
@@ -2508,21 +2374,14 @@ components:
       properties:
         intent: { $ref: "#/components/schemas/ExternalPackageIntentRequest" }
         source: { $ref: "#/components/schemas/ExternalPackageSource" }
-    CommitExternalPackageRequest:
+    InstallInspectedPackageRequest:
       type: object
-      description: Confirms the exact immutable inspection. The digest cannot override any inspected fact.
-      required: [inspection_id, confirmation_digest]
+      description: Confirms an unexpired process-local inspection by its exact package digest. The digest cannot override any inspected fact.
+      required: [inspection_id, expected_package_sha256]
       additionalProperties: false
       properties:
         inspection_id: { type: string, minLength: 1 }
-        confirmation_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
-    QueryExternalPackageCommitRequest:
-      type: object
-      required: [inspection_id]
-      additionalProperties: false
-      properties:
-        inspection_id: { type: string, minLength: 1 }
-        commit_id: { type: string, minLength: 1 }
+        expected_package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
     ExternalPackageSignatureAssessment:
       type: object
       description: Cryptographic signature fact computed over the inspected artifact. The absent state is installable and affects trust classification and automatic-update eligibility only.
@@ -2925,7 +2784,7 @@ components:
     ExternalPackageInspection:
       type: object
       description: Immutable inspection projection. Package identity and all four trust/security facts are server-derived.
-      required: [inspection_id, expires_at, intent, publisher_id, plugin_id, version, presentation, presentation_sha256, inspected_hashes, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary, confirmation_digest]
+      required: [inspection_id, expires_at, intent, publisher_id, plugin_id, version, presentation, presentation_sha256, inspected_hashes, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
       additionalProperties: false
       properties:
         inspection_id: { type: string, minLength: 1 }
@@ -2942,51 +2801,17 @@ components:
         execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
         update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
         security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
-        confirmation_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
-    ExternalPackageCommitReceipt:
+    InstalledExternalPackage:
       type: object
-      description: Immutable successful commit evidence.
-      required: [commit_id, inspection_id, package_sha256, management_revision, committed_at]
+      required: [plugin, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
       additionalProperties: false
       properties:
-        commit_id: { type: string, minLength: 1 }
-        inspection_id: { type: string, minLength: 1 }
-        package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
-        committed_at: { type: string, format: date-time }
-    ExternalPackageCommitResult:
-      description: Closed commit reconciliation union. A committed result repeats all four facts so clients never infer them from legacy trust_state alone. A failed result is terminal evidence that a durable commit did not occur and requires a fresh inspection before retrying.
-      oneOf:
-        - type: object
-          required: [status, inspection_id, intent, receipt, plugin, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
-          additionalProperties: false
-          properties:
-            status: { const: committed }
-            inspection_id: { type: string, minLength: 1 }
-            intent: { $ref: "#/components/schemas/ExternalPackageIntent" }
-            receipt: { $ref: "#/components/schemas/ExternalPackageCommitReceipt" }
-            plugin: { $ref: "#/components/schemas/PluginRecord" }
-            signature_assessment: { $ref: "#/components/schemas/ExternalPackageSignatureAssessment" }
-            source_provenance: { $ref: "#/components/schemas/ExternalPackageSourceProvenance" }
-            execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
-            update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
-            security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
-        - type: object
-          required: [status, inspection_id, intent, retry_after_ms]
-          additionalProperties: false
-          properties:
-            status: { const: in_progress }
-            inspection_id: { type: string, minLength: 1 }
-            intent: { $ref: "#/components/schemas/ExternalPackageIntent" }
-            retry_after_ms: { type: integer, minimum: 1, maximum: 60000 }
-        - type: object
-          required: [status, inspection_id, intent, failure_code]
-          additionalProperties: false
-          properties:
-            status: { const: failed }
-            inspection_id: { type: string, minLength: 1 }
-            intent: { $ref: "#/components/schemas/ExternalPackageIntent" }
-            failure_code: { const: host_restarted_before_commit }
+        plugin: { $ref: "#/components/schemas/PluginRecord" }
+        signature_assessment: { $ref: "#/components/schemas/ExternalPackageSignatureAssessment" }
+        source_provenance: { $ref: "#/components/schemas/ExternalPackageSourceProvenance" }
+        execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
+        update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
+        security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
     TrustState:
       type: string
       enum: [verified, unsigned_local, untrusted, needs_review, trust_unavailable, blocked_security]
@@ -3195,147 +3020,6 @@ components:
         release_ref:
           $ref: "#/components/schemas/PluginReleaseRef"
         plugin_instance_id: { type: string, minLength: 1 }
-    StartReleaseInstallOperationRequest:
-      type: object
-      required: [request_id, plugin_instance_id, release_ref]
-      additionalProperties: false
-      properties:
-        request_id: { type: string, minLength: 1, maxLength: 256 }
-        plugin_instance_id: { type: string, minLength: 1 }
-        activate_after_install:
-          type: boolean
-          description: When omitted, verified official sources activate automatically; false keeps the installed plugin disabled.
-        approved_permission_ids:
-          type: array
-          maxItems: 256
-          uniqueItems: true
-          items: { type: string, minLength: 1, maxLength: 256 }
-        release_ref:
-          $ref: "#/components/schemas/PluginReleaseRef"
-      if:
-        required: [activate_after_install]
-        properties:
-          activate_after_install: { const: false }
-      then:
-        not:
-          required: [approved_permission_ids]
-    ReleaseInstallProgress:
-      oneOf:
-        - type: object
-          required: [kind]
-          additionalProperties: false
-          properties:
-            kind: { const: indeterminate }
-        - type: object
-          required: [kind, completed, total]
-          additionalProperties: false
-          properties:
-            kind: { type: string, enum: [items, bytes] }
-            completed: { type: integer, minimum: 0, maximum: 9007199254740991 }
-            total: { type: integer, minimum: 1, maximum: 9007199254740991 }
-    ReleaseInstallFailure:
-      type: object
-      required: [code, retryable]
-      additionalProperties: false
-      properties:
-        code:
-          type: string
-          enum: [PLUGIN_RELEASE_REF_VERIFICATION_FAILED, PLUGIN_RELEASE_REF_POLICY_DENIED, PLUGIN_RELEASE_NETWORK, PLUGIN_RELEASE_TIMEOUT, PLUGIN_RELEASE_ASSET_MISSING, PLUGIN_RELEASE_ASSET_INTEGRITY, PLUGIN_INSTALL_INTERRUPTED, PLUGIN_INSTALL_STATE_CONFLICT, PLUGIN_INTERNAL_FAILURE]
-        retryable: { type: boolean }
-    ReleaseInstallActivation:
-      type: object
-      required: [status]
-      additionalProperties: false
-      properties:
-        status: { type: string, enum: [pending, enabled, needs_attention, not_requested] }
-        missing_permission_ids:
-          type: array
-          uniqueItems: true
-          items: { type: string, minLength: 1, maxLength: 256 }
-        next_action: { type: string, enum: [approve_permissions, retry_activation] }
-      oneOf:
-        - required: [status]
-          properties:
-            status: { type: string, enum: [pending, enabled, not_requested] }
-          not:
-            anyOf:
-              - required: [missing_permission_ids]
-              - required: [next_action]
-        - required: [status, next_action]
-          properties:
-            status: { const: needs_attention }
-    ReleaseInstallPhaseDiagnostic:
-      type: object
-      required: [phase, attempt, progress, cache_hit, started_at]
-      additionalProperties: false
-      properties:
-        phase:
-          type: string
-          enum: [queued, fetch_trust_evidence, fetch_release_evidence, download_package, verify_hashes, verify_signatures_ledger, fetch_capability_evidence, commit, enable, complete, failed, reconciling]
-        artifact_role: { type: string, minLength: 1, maxLength: 256 }
-        attempt: { type: integer, minimum: 1, maximum: 3 }
-        progress: { $ref: "#/components/schemas/ReleaseInstallProgress" }
-        cache_hit: { type: boolean }
-        started_at: { type: string, format: date-time }
-        completed_at: { type: string, format: date-time }
-        duration_ms: { type: integer, minimum: 0, maximum: 300000 }
-    ReleaseInstallOperation:
-      type: object
-      required: [request_id, operation_id, plugin_instance_id, request_sha256, status, phase, progress, attempt, retry_after_ms, mutation_outcome, activation, phase_diagnostics, created_at, updated_at]
-      additionalProperties: false
-      properties:
-        request_id: { type: string, minLength: 1, maxLength: 256 }
-        operation_id: { type: string, minLength: 1 }
-        plugin_instance_id: { type: string, minLength: 1 }
-        request_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
-        status: { type: string, enum: [queued, running, reconciling, succeeded, failed] }
-        phase: { type: string, minLength: 1, maxLength: 256 }
-        progress: { $ref: "#/components/schemas/ReleaseInstallProgress" }
-        attempt: { type: integer, minimum: 1, maximum: 3 }
-        retry_after_ms: { type: integer, minimum: 0, maximum: 10000 }
-        mutation_outcome: { $ref: "#/components/schemas/MutationOutcome" }
-        failure: { $ref: "#/components/schemas/ReleaseInstallFailure" }
-        plugin_record: { $ref: "#/components/schemas/PluginRecord" }
-        activation: { $ref: "#/components/schemas/ReleaseInstallActivation" }
-        phase_diagnostics:
-          type: array
-          maxItems: 64
-          items: { $ref: "#/components/schemas/ReleaseInstallPhaseDiagnostic" }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-        terminal_at: { type: string, format: date-time }
-      oneOf:
-        - properties:
-            status: { type: string, enum: [queued, running, reconciling] }
-          not:
-            anyOf:
-              - required: [terminal_at]
-              - required: [failure]
-              - required: [plugin_record]
-        - required: [status, terminal_at, plugin_record]
-          properties:
-            status: { const: succeeded }
-            mutation_outcome: { const: committed }
-            activation:
-              allOf:
-                - $ref: "#/components/schemas/ReleaseInstallActivation"
-                - properties:
-                    status: { type: string, enum: [enabled, needs_attention, not_requested] }
-          not:
-            required: [failure]
-        - required: [status, terminal_at, failure]
-          properties:
-            status: { const: failed }
-          not:
-            required: [plugin_record]
-    ReleaseInstallOperationList:
-      type: object
-      required: [operations]
-      additionalProperties: false
-      properties:
-        operations:
-          type: array
-          items: { $ref: "#/components/schemas/ReleaseInstallOperation" }
     UpdateReleaseRefRequest:
       type: object
       required: [plugin_instance_id, release_ref, expected_management_revision]
@@ -3404,13 +3088,35 @@ components:
       properties:
         intent_id: { type: string, minLength: 1 }
         plugin_instance_id: { type: string, minLength: 1 }
-    ListOperationsQueryRequest:
+    ListExecutionsRequest:
       type: object
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
-        cursor: { type: string, minLength: 1, maxLength: 1024 }
+        cursor: { type: integer, minimum: 0, maximum: 9007199254740991 }
         limit: { type: integer, minimum: 1, maximum: 500 }
+    StartReleaseInstallExecutionRequest:
+      type: object
+      required: [request_id, plugin_instance_id, release_ref]
+      additionalProperties: false
+      properties:
+        request_id: { type: string, minLength: 1, maxLength: 256 }
+        plugin_instance_id: { type: string, minLength: 1 }
+        activate_after_install: { type: boolean }
+        approved_permission_ids:
+          type: array
+          maxItems: 256
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
+        release_ref:
+          $ref: "#/components/schemas/PluginReleaseRef"
+      if:
+        required: [activate_after_install]
+        properties:
+          activate_after_install: { const: false }
+      then:
+        not:
+          required: [approved_permission_ids]
     ListRetainedDataQueryRequest:
       type: object
       additionalProperties: false
@@ -3575,131 +3281,13 @@ components:
         sha256: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
         content_type: { type: string, minLength: 1 }
         content_base64: { type: string, contentEncoding: base64 }
-    ReadSurfaceStreamRequest:
+    ListExecutionEventsRequest:
       type: object
       additionalProperties: false
-      required: [stream_id, stream_ticket, read_id]
+      required: [after_cursor]
       properties:
-        stream_id: { type: string, minLength: 1 }
-        stream_ticket: { type: string, minLength: 1 }
-        read_id: { type: string, pattern: '^read_[A-Za-z0-9_-]{8,128}$' }
-    AcknowledgeSurfaceStreamRequest:
-      type: object
-      additionalProperties: false
-      required: [stream_id, stream_ticket, delivery_id]
-      properties:
-        stream_id: { type: string, minLength: 1 }
-        stream_ticket: { type: string, minLength: 1 }
-        delivery_id: { type: string, pattern: '^delivery_[A-Za-z0-9_-]{8,128}$' }
-    SurfaceStreamResult:
-      type: object
-      additionalProperties: false
-      required: [read_id, events, done]
-      properties:
-        delivery_id: { type: string, pattern: '^delivery_[A-Za-z0-9_-]{8,128}$' }
-        read_id: { type: string, pattern: '^read_[A-Za-z0-9_-]{8,128}$' }
-        events:
-          type: array
-          items:
-            $ref: "#/components/schemas/StreamEvent"
-        done: { type: boolean }
-        terminal_status:
-          enum: [closed, canceled, failed, orphaned_after_disable, orphaned_after_uninstall]
-      allOf:
-        - if:
-            properties: { events: { minItems: 1 } }
-            required: [events]
-          then:
-            required: [delivery_id]
-        - if:
-            properties: { done: { const: false } }
-            required: [done]
-          then:
-            not:
-              required: [terminal_status]
-        - if:
-            properties: { done: { const: true } }
-            required: [done]
-          then:
-            required: [delivery_id, terminal_status]
-    SurfaceStreamAcknowledgementResult:
-      type: object
-      required: [acknowledged]
-      additionalProperties: false
-      properties:
-        acknowledged: { const: true }
-    CancelSurfaceOperationRequest:
-      type: object
-      additionalProperties: false
-      required: [operation_id, bridge_channel_id]
-      properties:
-        operation_id: { type: string, pattern: '^operation_[A-Za-z0-9_-]{8,150}$' }
-        bridge_channel_id: { type: string, minLength: 1, maxLength: 256 }
-        reason: { type: string, maxLength: 256 }
-    GetSurfaceOperationRequest:
-      type: object
-      additionalProperties: false
-      required: [operation_id, bridge_channel_id]
-      properties:
-        operation_id: { type: string, pattern: '^operation_[A-Za-z0-9_-]{8,150}$' }
-        bridge_channel_id: { type: string, minLength: 1, maxLength: 256 }
-    PluginOperationSnapshot:
-      oneOf:
-        - type: object
-          additionalProperties: false
-          required: [operation_id, status, cancelable, created_at, updated_at, retry_after_ms]
-          properties:
-            operation_id: { type: string, pattern: '^operation_[A-Za-z0-9_-]{8,150}$' }
-            status: { type: string, enum: [running, cancel_requested] }
-            cancelable: { type: boolean }
-            created_at: { type: string, format: date-time }
-            updated_at: { type: string, format: date-time }
-            retry_after_ms: { type: integer, minimum: 500, maximum: 10000 }
-            progress: { $ref: "#/components/schemas/OperationProgress" }
-        - type: object
-          additionalProperties: false
-          required: [operation_id, status, cancelable, created_at, updated_at, retry_after_ms, terminal_at]
-          properties:
-            operation_id: { type: string, pattern: '^operation_[A-Za-z0-9_-]{8,150}$' }
-            status: { type: string, enum: [completed, canceled, orphaned_after_disable, orphaned_after_uninstall] }
-            cancelable: { type: boolean }
-            created_at: { type: string, format: date-time }
-            updated_at: { type: string, format: date-time }
-            retry_after_ms: { type: integer, minimum: 500, maximum: 10000 }
-            terminal_at: { type: string, format: date-time }
-            progress: { $ref: "#/components/schemas/OperationProgress" }
-        - type: object
-          additionalProperties: false
-          required: [operation_id, status, cancelable, created_at, updated_at, retry_after_ms, terminal_at, failure_code]
-          properties:
-            operation_id: { type: string, pattern: '^operation_[A-Za-z0-9_-]{8,150}$' }
-            status: { const: failed }
-            cancelable: { type: boolean }
-            created_at: { type: string, format: date-time }
-            updated_at: { type: string, format: date-time }
-            retry_after_ms: { type: integer, minimum: 500, maximum: 10000 }
-            terminal_at: { type: string, format: date-time }
-            failure_code: { type: string, enum: [adapter_failed, contract_invalid, platform_failed, quota_exceeded, runtime_failed] }
-            progress: { $ref: "#/components/schemas/OperationProgress" }
-    OperationProgress:
-      type: object
-      additionalProperties: false
-      required: [revision, phase]
-      properties:
-        revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
-        phase: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
-        completed_units: { type: integer, minimum: 0, maximum: 9007199254740991 }
-        total_units: { type: integer, minimum: 0, maximum: 9007199254740991 }
-        unit: { type: string, pattern: '^[A-Za-z0-9._:-]{1,64}$' }
-      allOf:
-        - if:
-            required: [completed_units]
-          then:
-            required: [total_units]
-        - if:
-            required: [total_units]
-          then:
-            required: [completed_units]
+        after_cursor: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        limit: { type: integer, minimum: 1, maximum: 1000 }
     RejectSurfaceConfirmationRequest:
       type: object
       additionalProperties: false
@@ -3715,17 +3303,6 @@ components:
       required: [rejected]
       properties:
         rejected: { const: true }
-    StreamEvent:
-      type: object
-      additionalProperties: false
-      required: [stream_id, sequence, kind, at]
-      properties:
-        stream_id: { type: string, minLength: 1 }
-        sequence: { type: integer, minimum: 0 }
-        kind: { type: string, minLength: 1 }
-        data: { type: string, contentEncoding: base64 }
-        error: { type: string }
-        at: { type: string, format: date-time }
     DisposeSurfaceRequest:
       type: object
       additionalProperties: false
@@ -3767,25 +3344,14 @@ components:
             data: true
           not:
             anyOf:
-              - required: [operation_id]
-              - required: [stream_id]
+              - required: [execution_id]
               - required: [confirmation_required]
         - type: object
           additionalProperties: false
-          required: [operation_id]
+          required: [execution_id]
           properties:
             data: true
-            operation_id: { type: string, minLength: 1 }
-        - type: object
-          additionalProperties: false
-          required: [operation_id, stream_id, stream_ticket, stream_ticket_id, stream_expires_at]
-          properties:
-            data: true
-            operation_id: { type: string, minLength: 1 }
-            stream_id: { type: string, minLength: 1 }
-            stream_ticket: { type: string, minLength: 1 }
-            stream_ticket_id: { type: string, minLength: 1 }
-            stream_expires_at: { type: string, format: date-time }
+            execution_id: { type: string, minLength: 1 }
         - type: object
           additionalProperties: false
           required: [confirmation_required, confirmation_token_id, request_hash, plan_hash]
@@ -3879,158 +3445,48 @@ components:
         params:
           type: object
           additionalProperties: true
-    CancelOperationRequest:
+    CancelExecutionRequest:
       type: object
       additionalProperties: false
       properties:
         reason: { type: string }
     CapabilityContractPin:
       $ref: "../plugin/host-capability-pin-v1.schema.json"
-    PublicOperationBinding:
+    Execution:
       type: object
-      description: Public immutable execution evidence embedded into operation responses. Session and bridge channel ownership fields are excluded.
-      required:
-        - invocation_id
-        - audit_correlation_id
-        - publisher_id
-        - plugin_id
-        - plugin_instance_id
-        - plugin_version
-        - active_fingerprint
-        - route_kind
-        - capability_id
-        - capability_version
-        - binding_id
-        - method
-        - target_method
-        - effect
-        - execution
-        - permissions
-        - confirmation
-        - revision
-        - quota
-        - target
-        - target_descriptor_sha256
+      additionalProperties: false
+      required: [execution_id, plugin_instance_id, kind, status, cursor, cancelable, created_at, updated_at]
       properties:
-        invocation_id: { type: string, minLength: 1 }
-        audit_correlation_id: { type: string, minLength: 1 }
-        operation_id: { type: string, minLength: 1 }
-        stream_id: { type: string, minLength: 1 }
-        publisher_id: { type: string, minLength: 1 }
-        plugin_id: { type: string, minLength: 1 }
+        execution_id: { type: string, minLength: 1 }
         plugin_instance_id: { type: string, minLength: 1 }
-        plugin_version: { $ref: "#/components/schemas/StrictSemVer" }
-        active_fingerprint: { type: string, minLength: 1 }
-        surface_instance_id: { type: string }
-        route_kind: { type: string, enum: [capability, worker, core_action] }
-        capability_id: { type: string, minLength: 1 }
-        capability_version: { $ref: "#/components/schemas/StrictSemVer" }
-        binding_id: { type: string, minLength: 1 }
-        contract:
-          $ref: "#/components/schemas/CapabilityContractPin"
-        method: { type: string, minLength: 1 }
-        target_method: { type: string, minLength: 1 }
-        effect: { type: string, enum: [read, write, execute, delete, admin] }
-        execution: { type: string, enum: [sync, operation, subscription] }
-        permissions:
+        kind: { type: string, enum: [sync, operation, subscription] }
+        status: { type: string, enum: [running, cancel_requested, completed, canceled, failed, orphaned] }
+        cursor: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        failure_code: { type: string, minLength: 1 }
+        cancelable: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        cancel_requested_at: { type: string, format: date-time }
+        terminal_at: { type: string, format: date-time }
+    Event:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, kind]
+      properties:
+        execution_id: { type: string, minLength: 1 }
+        sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        kind: { type: string, enum: [progress, data, diagnostic, terminal] }
+        payload:
           type: object
-          additionalProperties: false
-          required: [required, granted]
-          properties:
-            required: { type: array, items: { type: string } }
-            granted: { type: array, items: { type: string } }
-        confirmation:
-          type: object
-          additionalProperties: false
-          required: [required, confirmed]
-          properties:
-            required: { type: boolean }
-            confirmed: { type: boolean }
-            confirmation_id: { type: string }
-            request_sha256: { type: string }
-            plan_sha256: { type: string }
-            target_sha256: { type: string }
-        revision:
-          type: object
-          additionalProperties: false
-          required: [policy_revision, management_revision, revoke_epoch]
-          properties:
-            policy_revision: { type: integer, minimum: 0, maximum: 9007199254740991 }
-            management_revision: { type: integer, minimum: 0, maximum: 9007199254740991 }
-            revoke_epoch: { type: integer, minimum: 0, maximum: 9007199254740991 }
-        quota:
-          type: object
-          additionalProperties: false
-          properties:
-            max_concurrent: { type: integer, minimum: 0, maximum: 9007199254740991 }
-            max_duration_ms: { type: integer, minimum: 0, maximum: 9007199254740991 }
-            max_stream_bytes: { type: integer, minimum: 0, maximum: 9007199254740991 }
-            expires_at: { type: string, format: date-time }
-        target:
-          type: object
-          additionalProperties: false
-          required: [kind, fields]
-          properties:
-            kind: { type: string, minLength: 1 }
-            fields: { type: object, additionalProperties: true }
-        target_descriptor_sha256: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
-        stream_event_type_name: { type: string, minLength: 1 }
-        stream_event_schema_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-      oneOf:
-        - required: [route_kind, contract]
-          properties:
-            route_kind: { const: capability }
-        - required: [route_kind]
-          properties:
-            route_kind: { const: worker }
-          not:
-            required: [contract]
-        - required: [route_kind]
-          properties:
-            route_kind: { const: core_action }
-          not:
-            required: [contract]
-    OperationRecord:
-      allOf:
-        - $ref: "#/components/schemas/PublicOperationBinding"
-        - type: object
-          required:
-            - operation_id
-            - cancelable
-            - created_at
-            - updated_at
-          properties:
-            operation_id: { type: string, minLength: 1 }
-            execution: { type: string, enum: [operation, subscription] }
-            cancelable: { type: boolean }
-            cancel_ack_timeout_ms: { type: integer, minimum: 0 }
-            disable_behavior: { type: string, enum: [cancel, orphan, wait] }
-            uninstall_behavior: { type: string, enum: [cancel_then_block_delete, force_cleanup_allowed] }
-            created_at: { type: string, format: date-time }
-            updated_at: { type: string, format: date-time }
-            cancel_requested_at: { type: string, format: date-time }
-            orphaned_at: { type: string, format: date-time }
-            terminal_at: { type: string, format: date-time }
-            progress: { $ref: "#/components/schemas/OperationProgress" }
-          oneOf:
-            - type: object
-              required: [status, failure_code, reason]
-              properties:
-                status: { const: failed }
-                failure_code: { $ref: "#/components/schemas/ExecutionFailureCode" }
-                reason: { const: "execution failed" }
-            - type: object
-              required: [status]
-              properties:
-                status:
-                  enum: [running, cancel_requested, canceled, completed, orphaned_after_disable, orphaned_after_uninstall]
-                reason: { type: string }
-              not:
-                required: [failure_code]
-      unevaluatedProperties: false
-    ExecutionFailureCode:
-      type: string
-      enum: [adapter_failed, contract_invalid, platform_failed, quota_exceeded, runtime_failed]
+          additionalProperties: true
+        error: { $ref: "#/components/schemas/PublicError" }
+    PublicError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string, minLength: 1 }
+        message: { type: string, minLength: 1 }
     StartRuntimeRequest:
       type: object
       required: [target]

@@ -11,11 +11,9 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/security"
-	"github.com/floegence/redevplugin/pkg/stream"
 )
 
 const maxRPCErrorGraphNodes = 256
@@ -469,8 +467,8 @@ func validateWorkerExecutionError(value *runtimeclient.WorkerExecutionError) (ru
 func stableRPCSentinel(err error) error {
 	for _, sentinel := range []error{
 		context.Canceled, context.DeadlineExceeded,
-		ErrStreamTicketRequired, ErrPluginDataNotDeclared, ErrPluginStorageNotDeclared, ErrPluginSettingsNotDeclared,
-		ErrPluginDataContractChanged, ErrOperationCancelDispatchFailed, ErrMethodRequestContract, ErrMethodResponseContract,
+		ErrPluginDataNotDeclared, ErrPluginStorageNotDeclared, ErrPluginSettingsNotDeclared,
+		ErrPluginDataContractChanged, ErrExecutionCancelDispatchFailed, ErrMethodRequestContract, ErrMethodResponseContract,
 		ErrMethodAdapterPanic, ErrManagementRevisionMismatch, ErrPluginAlreadyInstalled, ErrPluginUIProtocolUnsupported,
 		ErrPluginRuntimeNotConfigured, ErrPluginRuntimeIncompatible, ErrActionDenied,
 		ErrConfirmationRequired, ErrConfirmationInvalid, ErrConfirmationRejected, ErrSecurityEventPersistence,
@@ -494,10 +492,6 @@ func stableRPCSentinel(err error) error {
 		runtimeclient.ErrRuntimeShardCount, runtimeclient.ErrRuntimeBindingInvalid,
 		runtimeclient.ErrManagerLifecycleOutcomeUnknown, runtimeclient.ErrRuntimeHostServicesInvalid,
 		runtimeclient.ErrRuntimeHostServicesRequired, runtimeclient.ErrRuntimeHostServicesBound,
-		operation.ErrNotFound, operation.ErrInvalidOperation, operation.ErrAlreadyExists, operation.ErrDeleteBlocked,
-		operation.ErrNotCancelable,
-		stream.ErrNotFound, stream.ErrInvalidStream, stream.ErrAlreadyExists, stream.ErrStreamClosed,
-		stream.ErrStoreClosed, stream.ErrStreamInvariant, stream.ErrBackpressure, stream.ErrDeliveryInvalid,
 	} {
 		if err == sentinel {
 			return sentinel

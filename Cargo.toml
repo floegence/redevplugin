@@ -6,7 +6,6 @@ members = [
   "crates/redevplugin-ipc",
   "crates/redevplugin-worker-sdk",
   "crates/redevplugin-wasm-abi",
-  "crates/redevplugin-target-classifier",
   "internal/scaffoldworker",
   "examples/workers/memos",
   "examples/workers/weather",
@@ -14,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.27"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/floegence/redevplugin"

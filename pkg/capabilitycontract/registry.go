@@ -1,79 +1,156 @@
 package capabilitycontract
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
+
+	platformversion "github.com/floegence/redevplugin/pkg/version"
 )
+
+var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type Registry struct {
 	mu      sync.RWMutex
-	records map[string]VerifiedContract
+	records map[string]KnownContract
 }
 
 func NewRegistry() *Registry {
-	return &Registry{records: map[string]VerifiedContract{}}
+	return &Registry{records: map[string]KnownContract{}}
 }
 
-func (r *Registry) Add(contract VerifiedContract) error {
+// NewKnownContract validates a Host-owned contract and binds its local
+// registry identity to the canonical contract bytes shipped with the Host.
+func NewKnownContract(contract Contract) (KnownContract, error) {
+	if err := Validate(contract); err != nil {
+		return KnownContract{}, err
+	}
+	digest, err := contractSHA256(contract)
+	if err != nil {
+		return KnownContract{}, fmt.Errorf("%w: hash contract: %v", ErrInvalidContract, err)
+	}
+	known := KnownContract{
+		Contract: cloneContract(contract),
+		Pin: Pin{
+			PublisherID:     contract.PublisherID,
+			ContractID:      contract.ContractID,
+			ContractVersion: contract.ContractVersion,
+			ArtifactSHA256:  digest,
+		},
+	}
+	known.seal = digest
+	return known, nil
+}
+
+func (r *Registry) Add(contract KnownContract) error {
 	if r == nil {
-		return fmt.Errorf("%w: registry is nil", ErrInvalidBundle)
+		return fmt.Errorf("%w: registry is nil", ErrInvalidContract)
 	}
-	if err := validatePin(contract.Pin); err != nil {
+	if err := validateKnownContract(contract); err != nil {
 		return err
-	}
-	if err := Validate(contract.Contract); err != nil {
-		return err
-	}
-	if !contract.authentic() {
-		return fmt.Errorf("%w: contract was not produced by artifact verification", ErrSignature)
-	}
-	if contract.Contract.PublisherID != contract.Pin.PublisherID || contract.Contract.ContractID != contract.Pin.ContractID ||
-		contract.Contract.ContractVersion != contract.Pin.ContractVersion {
-		return fmt.Errorf("%w: verified contract identity mismatch", ErrPinMismatch)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := pinKey(contract.Pin)
 	if existing, ok := r.records[key]; ok && existing.Pin != contract.Pin {
-		return fmt.Errorf("%w: contract identity is already registered with another pin", ErrPinMismatch)
+		return fmt.Errorf("%w: contract identity is already registered with another hash", ErrIdentityMismatch)
 	}
-	r.records[key] = cloneVerifiedContract(contract)
+	r.records[key] = cloneKnownContract(contract)
 	return nil
 }
 
-func (r *Registry) Require(pin Pin) (VerifiedContract, error) {
+func (r *Registry) Require(pin Pin) (KnownContract, error) {
 	if r == nil {
-		return VerifiedContract{}, fmt.Errorf("%w: registry is nil", ErrInvalidBundle)
+		return KnownContract{}, fmt.Errorf("%w: registry is nil", ErrInvalidContract)
 	}
-	if err := validatePin(pin); err != nil {
-		return VerifiedContract{}, err
+	if err := ValidatePin(pin); err != nil {
+		return KnownContract{}, err
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	record, ok := r.records[pinKey(pin)]
 	if !ok || record.Pin != pin {
-		return VerifiedContract{}, fmt.Errorf("%w: verified contract is not registered", ErrPinMismatch)
+		return KnownContract{}, fmt.Errorf("%w: known contract is not registered", ErrIdentityMismatch)
 	}
-	return cloneVerifiedContract(record), nil
+	if err := validateKnownContract(record); err != nil {
+		return KnownContract{}, err
+	}
+	return cloneKnownContract(record), nil
+}
+
+func ValidatePin(pin Pin) error {
+	for name, value := range map[string]string{
+		"publisher_id": pin.PublisherID,
+		"contract_id":  pin.ContractID,
+	} {
+		if !idPattern.MatchString(value) || strings.TrimSpace(value) != value {
+			return fmt.Errorf("%w: %s is invalid", ErrIdentityMismatch, name)
+		}
+	}
+	if _, err := platformversion.ParseSemVer(pin.ContractVersion); err != nil {
+		return fmt.Errorf("%w: contract_version is invalid", ErrIdentityMismatch)
+	}
+	if !sha256HexPattern.MatchString(pin.ArtifactSHA256) {
+		return fmt.Errorf("%w: artifact_sha256 is invalid", ErrIdentityMismatch)
+	}
+	return nil
+}
+
+func validateKnownContract(known KnownContract) error {
+	if err := ValidatePin(known.Pin); err != nil {
+		return err
+	}
+	if err := Validate(known.Contract); err != nil {
+		return err
+	}
+	digest, err := contractSHA256(known.Contract)
+	if err != nil {
+		return fmt.Errorf("%w: hash contract: %v", ErrInvalidContract, err)
+	}
+	if known.Contract.PublisherID != known.Pin.PublisherID ||
+		known.Contract.ContractID != known.Pin.ContractID ||
+		known.Contract.ContractVersion != known.Pin.ContractVersion ||
+		known.Pin.ArtifactSHA256 != digest || known.seal != digest {
+		return ErrIdentityMismatch
+	}
+	return nil
+}
+
+func contractSHA256(contract Contract) (string, error) {
+	raw, err := json.Marshal(contract)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func pinKey(pin Pin) string {
 	return pin.PublisherID + "\x00" + pin.ContractID + "\x00" + pin.ContractVersion
 }
 
-func cloneVerifiedContract(contract VerifiedContract) VerifiedContract {
-	methods := make([]Method, len(contract.Contract.Methods))
-	for index, method := range contract.Contract.Methods {
+func cloneKnownContract(contract KnownContract) KnownContract {
+	contract.Contract = cloneContract(contract.Contract)
+	return contract
+}
+
+func cloneContract(contract Contract) Contract {
+	methods := make([]Method, len(contract.Methods))
+	for index, method := range contract.Methods {
 		methods[index] = method
-		methods[index].RequiredPermissions = append([]string(nil), method.RequiredPermissions...)
-		methods[index].TargetFields = append([]string(nil), method.TargetFields...)
+		methods[index].RequiredPermissions = cloneStrings(method.RequiredPermissions)
+		methods[index].TargetFields = cloneStrings(method.TargetFields)
 		methods[index].TargetSchema = cloneJSONMap(method.TargetSchema)
 		methods[index].RequestSchema = cloneJSONMap(method.RequestSchema)
 		methods[index].ResponseSchema = cloneJSONMap(method.ResponseSchema)
 		methods[index].EventSchema = cloneJSONMap(method.EventSchema)
 		if method.Confirmation != nil {
 			confirmation := *method.Confirmation
-			confirmation.RequestHashFields = append([]string(nil), method.Confirmation.RequestHashFields...)
+			confirmation.RequestHashFields = cloneStrings(method.Confirmation.RequestHashFields)
 			methods[index].Confirmation = &confirmation
 		}
 		if method.CancelPolicy != nil {
@@ -81,59 +158,21 @@ func cloneVerifiedContract(contract VerifiedContract) VerifiedContract {
 			methods[index].CancelPolicy = &cancelPolicy
 		}
 	}
-	contract.Contract.Methods = methods
-	errors := make([]BusinessError, len(contract.Contract.Errors))
-	for index, businessError := range contract.Contract.Errors {
+	contract.Methods = methods
+	errors := make([]BusinessError, len(contract.Errors))
+	for index, businessError := range contract.Errors {
 		errors[index] = businessError
 		errors[index].DetailsSchema = cloneJSONMap(businessError.DetailsSchema)
 	}
-	contract.Contract.Errors = errors
-	contract.Manifest.Entries = append([]ManifestEntry(nil), contract.Manifest.Entries...)
-	contract.GeneratedClient = append([]byte(nil), contract.GeneratedClient...)
-	contract.Notices = append([]Notice(nil), contract.Notices...)
+	contract.Errors = errors
 	return contract
 }
 
-func (v *VerifiedContract) seal() error {
-	digest, err := verifiedContractDigest(*v)
-	if err != nil {
-		return err
+func cloneStrings(value []string) []string {
+	if value == nil {
+		return nil
 	}
-	v.verificationSeal = digest
-	return nil
-}
-
-func (v VerifiedContract) authentic() bool {
-	if v.verificationSeal == "" || v.publicKeySHA256 == "" {
-		return false
-	}
-	digest, err := verifiedContractDigest(v)
-	return err == nil && digest == v.verificationSeal
-}
-
-func verifiedContractDigest(contract VerifiedContract) (string, error) {
-	payload := struct {
-		Contract        Contract      `json:"contract"`
-		Pin             Pin           `json:"pin"`
-		Manifest        Manifest      `json:"manifest"`
-		Compatibility   Compatibility `json:"compatibility"`
-		GeneratedClient []byte        `json:"generated_client"`
-		Notices         []Notice      `json:"notices"`
-		PublicKeySHA256 string        `json:"public_key_sha256"`
-	}{
-		Contract:        contract.Contract,
-		Pin:             contract.Pin,
-		Manifest:        contract.Manifest,
-		Compatibility:   contract.Compatibility,
-		GeneratedClient: contract.GeneratedClient,
-		Notices:         contract.Notices,
-		PublicKeySHA256: contract.publicKeySHA256,
-	}
-	raw, err := canonicalJSON(payload)
-	if err != nil {
-		return "", err
-	}
-	return sha256Hex(raw), nil
+	return append([]string{}, value...)
 }
 
 func cloneJSONMap(value map[string]any) map[string]any {

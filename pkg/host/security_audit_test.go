@@ -25,7 +25,7 @@ func TestEnablePluginDoesNotMutateWhenSecurityAuditBeginFails(t *testing.T) {
 	if !errors.Is(err, ErrSecurityEventPersistence) {
 		t.Fatalf("EnablePlugin() error = %v, want ErrSecurityEventPersistence", err)
 	}
-	record, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	record, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestEnablePluginReturnsUnknownWhenSecurityAuditCompletionFails(t *testing.T
 	if outcome := mutation.ForError(err); outcome != mutation.OutcomeUnknown {
 		t.Fatalf("EnablePlugin() outcome = %q, want %q: %v", outcome, mutation.OutcomeUnknown, err)
 	}
-	record, getErr := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	record, getErr := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}

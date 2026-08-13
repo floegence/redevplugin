@@ -24,7 +24,6 @@ func TestReleasePublisherSchemasMatchGoWireDTOs(t *testing.T) {
 			topLevel: reflect.TypeOf(releasepublisher.ConfigV1{}),
 			nestedDefs: map[string]reflect.Type{
 				"public_key":             reflect.TypeOf(releasepublisher.PublicKeyV1{}),
-				"signing_ledger":         reflect.TypeOf(releasepublisher.SigningLedgerConfigV1{}),
 				"host_requirement":       reflect.TypeOf(releasecontract.ReleaseHostRequirement{}),
 				"capability_requirement": reflect.TypeOf(releasecontract.HostCapabilityRequirementRef{}),
 			},
@@ -35,7 +34,6 @@ func TestReleasePublisherSchemasMatchGoWireDTOs(t *testing.T) {
 			nestedDefs: map[string]reflect.Type{
 				"release_ref":    reflect.TypeOf(releasepublisher.PluginReleaseRefV1{}),
 				"public_key":     reflect.TypeOf(releasepublisher.PublicKeyV1{}),
-				"signing_ledger": reflect.TypeOf(releasepublisher.SigningLedgerConfigV1{}),
 				"hash_set":       reflect.TypeOf(releasepublisher.PackageHashSetV1{}),
 				"published_file": reflect.TypeOf(releasepublisher.PublishedFileV1{}),
 			},
@@ -99,7 +97,6 @@ func TestReleasePublisherSchemasValidateRepresentativeDocuments(t *testing.T) {
 		GeneratedAt: "2026-08-01T00:00:00Z", ExpiresAt: "2026-10-30T00:00:00Z",
 		Root:                 key,
 		Signing:              releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_signing", PublicKey: publicKey},
-		SigningLedger:        releasepublisher.SigningLedgerConfigV1{LogID: "example_signing_log", PublicKeyV1: releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_ledger", PublicKey: publicKey}},
 		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.6.23", Distribution: "registry_ref",
 		HostRequirements: []releasecontract.ReleaseHostRequirement{},
 	}
@@ -110,9 +107,8 @@ func TestReleasePublisherSchemasValidateRepresentativeDocuments(t *testing.T) {
 			ReleaseMetadataSHA256: strings.Repeat("1", 64), PublisherID: "example.publisher", PluginID: "example.publisher.weather", Version: "1.2.3",
 			ExpectedHashes: releasepublisher.PackageHashSetV1{PackageSHA256: "sha256:" + strings.Repeat("2", 64), ManifestSHA256: "sha256:" + strings.Repeat("3", 64), EntriesSHA256: "sha256:" + strings.Repeat("4", 64)},
 		},
-		Root:          key,
-		SigningLedger: releasepublisher.SigningLedgerConfigV1{LogID: "example_signing_log", PublicKeyV1: releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_ledger", PublicKey: publicKey}},
-		Files:         []releasepublisher.PublishedFileV1{{Locator: "anchors/root.public.json", AssetName: "root.public.json", SHA256: strings.Repeat("5", 64), Size: 32}},
+		Root:  key,
+		Files: []releasepublisher.PublishedFileV1{{Locator: "anchors/root.public.json", AssetName: "root.public.json", SHA256: strings.Repeat("5", 64), Size: 32}},
 	}
 	iconEvidence := releasepublisher.PresentationIconEvidenceV1{
 		SchemaVersion: releasepublisher.PresentationIconEvidenceSchemaVersion,

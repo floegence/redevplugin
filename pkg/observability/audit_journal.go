@@ -412,7 +412,7 @@ func cloneAuditDetails(values map[string]any) (map[string]any, error) {
 
 func cloneAuditDetail(key string, value any) (any, error) {
 	switch key {
-	case "audit_correlation_id", "effect", "execution", "intent_id", "invocation_id", "method", "operation_id",
+	case "audit_correlation_id", "effect", "execution", "execution_id", "intent_id", "invocation_id", "method",
 		"plan_hash", "preflight_method", "route_kind", "runtime_generation_id", "runtime_instance_id",
 		"source_plugin_instance_id", "status", "stream_id", "target_descriptor_sha256", "capability_contract_artifact",
 		"reason", "mutation_outcome", "session_scope_state":

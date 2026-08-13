@@ -1,14 +1,13 @@
 import { PluginBridgeError } from "./errors.js";
 import { callPluginBridgeCapability } from "./bridge-capability.js";
-import { decodePluginStreamText } from "./surface.js";
+import { decodePluginEventText } from "./surface.js";
 import type {
   PluginBridgeClient,
   PluginBridgeRequestOptions,
   PluginJSONObject,
-  PluginStreamEvent as PluginRawStreamEvent,
-  PluginStreamReadResult as PluginRawStreamReadResult,
-  PluginStreamTerminalStatus,
-  PluginOperationSnapshot,
+  PluginExecutionEvent as PluginRawExecutionEvent,
+  PluginExecutionEventList as PluginRawExecutionEventList,
+  PluginExecutionSnapshot,
 } from "./surface.js";
 
 export type PluginCapabilitySchema = Readonly<Record<string, unknown>>;
@@ -41,43 +40,42 @@ export type PluginCapabilityBusinessErrorSpec = {
   schema: PluginCapabilitySchema | null;
 };
 
-export type PluginOperationWaitOptions = {
+export type PluginExecutionWaitOptions = {
   signal?: AbortSignal;
   timeoutMs?: number;
   pollIntervalMs?: number;
 };
 
-export type PluginOperationTerminalStatus = {
-  [Status in Extract<PluginOperationSnapshot["status"], "completed" | "failed" | "canceled" | "orphaned_after_disable" | "orphaned_after_uninstall">]: {
+export type PluginExecutionTerminalStatus = {
+  [Status in Extract<PluginExecutionSnapshot["status"], "completed" | "failed" | "canceled" | "orphaned">]: {
     status: Status;
-    snapshot: Extract<PluginOperationSnapshot, { status: Status }>;
+    snapshot: Extract<PluginExecutionSnapshot, { status: Status }>;
   }
-}[Extract<PluginOperationSnapshot["status"], "completed" | "failed" | "canceled" | "orphaned_after_disable" | "orphaned_after_uninstall">];
+}[Extract<PluginExecutionSnapshot["status"], "completed" | "failed" | "canceled" | "orphaned">];
 
-type PluginOperationObservation = {
-  snapshot(options?: PluginBridgeRequestOptions): Promise<PluginOperationSnapshot>;
-  wait(options?: PluginOperationWaitOptions): Promise<PluginOperationTerminalStatus>;
+type PluginExecutionObservation = {
+  snapshot(options?: PluginBridgeRequestOptions): Promise<PluginExecutionSnapshot>;
+  wait(options?: PluginExecutionWaitOptions): Promise<PluginExecutionTerminalStatus>;
 };
 
-export type PluginOperation<T, Cancelable extends boolean = true> = PluginOperationObservation & {
+export type PluginExecution<T, Cancelable extends boolean = true> = PluginExecutionObservation & {
   data: T;
-  operation_id: string;
+  execution_id: string;
 } & (Cancelable extends true ? {
   cancel(reason?: string, options?: PluginBridgeRequestOptions): Promise<void>;
 } : Record<never, never>);
 
-export type PluginCapabilityStreamEvent<Event> = Omit<PluginRawStreamEvent, "data" | "error"> & {
+export type PluginCapabilityStreamEvent<Event> = Omit<PluginRawExecutionEvent, "payload" | "error"> & {
   data: Event;
 };
 
 export type PluginCapabilityStreamReadResult<Event> =
-  | { events: PluginCapabilityStreamEvent<Event>[]; done: false; retry_after_ms: number }
-  | { events: PluginCapabilityStreamEvent<Event>[]; done: true; terminal_status: PluginStreamTerminalStatus; retry_after_ms: 0 };
+  | { events: PluginCapabilityStreamEvent<Event>[]; done: false; cursor: number }
+  | { events: PluginCapabilityStreamEvent<Event>[]; done: true; cursor: number };
 
-export type PluginStream<Initial, Event> = PluginOperationObservation & {
+export type PluginStream<Initial, Event> = PluginExecutionObservation & {
   data: Initial;
-  operation_id: string;
-  stream_handle: string;
+  execution_id: string;
   read(options?: PluginBridgeRequestOptions): Promise<PluginCapabilityStreamReadResult<Event>>;
   cancel(reason?: string, options?: PluginBridgeRequestOptions): Promise<void>;
   [Symbol.asyncIterator](): AsyncIterableIterator<PluginCapabilityStreamEvent<Event>>;
@@ -102,7 +100,7 @@ export async function callCapabilityOperation<Request extends object, Response, 
   contract: PluginCapabilityOperationContract<Cancelable>,
   request: Request,
   options: PluginBridgeRequestOptions = {},
-): Promise<PluginOperation<Response, Cancelable>> {
+): Promise<PluginExecution<Response, Cancelable>> {
   const params = validateRequest(request, contract.requestSchema);
   const result = parseOperationResult(
     contract.method,
@@ -112,19 +110,19 @@ export async function callCapabilityOperation<Request extends object, Response, 
   try {
     data = validateResponse(contract.method, result.data, contract.responseSchema);
   } catch (error) {
-    if (contract.cancelable) await cancelAfterResponseMismatch(bridge, result.operation_id, error);
+    if (contract.cancelable) await cancelAfterResponseMismatch(bridge, result.execution_id, error);
     throw error;
   }
-  const observation = operationObservation(bridge, result.operation_id);
+  const observation = executionObservation(bridge, result.execution_id);
   return Object.freeze({
     data: data!,
-    operation_id: result.operation_id,
+    execution_id: result.execution_id,
     ...observation,
     ...(contract.cancelable ? {
       cancel: (reason?: string, cancelOptions?: PluginBridgeRequestOptions) =>
-        bridge.cancelOperation(result.operation_id, reason, cancelOptions),
+        bridge.cancelExecution(result.execution_id, reason, cancelOptions),
     } : {}),
-  }) as PluginOperation<Response, Cancelable>;
+  }) as PluginExecution<Response, Cancelable>;
 }
 
 export async function callCapabilityStream<Request extends object, Response, Event>(
@@ -142,37 +140,42 @@ export async function callCapabilityStream<Request extends object, Response, Eve
   try {
     data = validateResponse(contract.method, result.data, contract.responseSchema);
   } catch (error) {
-    await cancelAfterResponseMismatch(bridge, result.operation_id, error);
+    return cancelAfterResponseMismatch(bridge, result.execution_id, error);
   }
   let settled = false;
+  let cursor = 0;
   const read = async (options: PluginBridgeRequestOptions = {}) => {
     try {
       const batch = decodeCapabilityStreamBatch<Event>(
         contract.method,
-        await bridge.readStream(result.stream_handle, options),
+        await bridge.executionEvents(result.execution_id, cursor, options),
         contract.eventTypeName,
         contract.eventSchema,
       );
+      cursor = batch.cursor;
       if (batch.done) settled = true;
       return batch;
     } catch (error) {
       if (options.signal?.aborted && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_STREAM_CANCELLED") {
         throw error;
       }
+      if (error instanceof PluginBridgeError && error.errorCode === "PLUGIN_STREAM_FAILED") {
+        settled = true;
+        throw error;
+      }
       settled = true;
-      return cancelAfterStreamMismatch(bridge, result.operation_id, error);
+      return cancelAfterStreamMismatch(bridge, result.execution_id, error);
     }
   };
   const cancel = async (reason?: string, cancelOptions: PluginBridgeRequestOptions = {}) => {
     if (settled) return;
-    await bridge.cancelOperation(result.operation_id, reason, cancelOptions);
+    await bridge.cancelExecution(result.execution_id, reason, cancelOptions);
     settled = true;
   };
-  const observation = operationObservation(bridge, result.operation_id);
+  const observation = executionObservation(bridge, result.execution_id);
   return Object.freeze({
     data: data!,
-    operation_id: result.operation_id,
-    stream_handle: result.stream_handle,
+    execution_id: result.execution_id,
     ...observation,
     read,
     cancel,
@@ -181,13 +184,8 @@ export async function callCapabilityStream<Request extends object, Response, Eve
         while (true) {
           const batch = await read();
           for (const event of batch.events) yield event;
-          if (batch.done) {
-            if (batch.terminal_status === "closed") return;
-            throw pluginStreamTerminalError(batch.terminal_status);
-          }
-          if (batch.events.length === 0 && batch.retry_after_ms > 0) {
-            await new Promise((resolve) => setTimeout(resolve, batch.retry_after_ms));
-          }
+          if (batch.done) return;
+          if (batch.events.length === 0) await new Promise((resolve) => setTimeout(resolve, 250));
         }
       } finally {
         if (!settled) await cancel("stream_iterator_closed");
@@ -196,9 +194,9 @@ export async function callCapabilityStream<Request extends object, Response, Eve
   });
 }
 
-function operationObservation(bridge: PluginBridgeClient, operationID: string): PluginOperationObservation {
-  const snapshot = (options: PluginBridgeRequestOptions = {}) => bridge.operationSnapshot(operationID, options);
-  const wait = async (options: PluginOperationWaitOptions = {}): Promise<PluginOperationTerminalStatus> => {
+function executionObservation(bridge: PluginBridgeClient, executionID: string): PluginExecutionObservation {
+  const snapshot = (options: PluginBridgeRequestOptions = {}) => bridge.executionSnapshot(executionID, options);
+  const wait = async (options: PluginExecutionWaitOptions = {}): Promise<PluginExecutionTerminalStatus> => {
     const timeoutMs = options.timeoutMs ?? 120_000;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 600_000) {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation wait timeout must be between 1 second and 10 minutes");
@@ -211,26 +209,21 @@ function operationObservation(bridge: PluginBridgeClient, operationID: string): 
     pollIntervalMs = Math.max(500, Math.min(10_000, pollIntervalMs));
     const deadline = Date.now() + timeoutMs;
     while (true) {
-      let current: PluginOperationSnapshot;
+      let current: PluginExecutionSnapshot;
       try {
         current = await operationSnapshotUntilDeadline(snapshot, deadline, options.signal);
       } catch (error) {
         if (options.signal?.aborted) throw operationWaitAborted();
-        if (!(error instanceof PluginBridgeError) || error.errorCode !== "PLUGIN_OPERATION_RATE_LIMITED") throw error;
-        const retryAfterMS = operationRetryAfterMS(error.details);
-        await operationWaitDelay(Math.max(pollIntervalMs, retryAfterMS), deadline, options.signal);
-        pollIntervalMs = Math.min(10_000, Math.ceil(pollIntervalMs * 1.5));
-        continue;
+        throw error;
       }
       switch (current.status) {
       case "completed":
       case "failed":
       case "canceled":
-      case "orphaned_after_disable":
-      case "orphaned_after_uninstall":
-        return { status: current.status, snapshot: current } as PluginOperationTerminalStatus;
+      case "orphaned":
+        return { status: current.status, snapshot: current } as PluginExecutionTerminalStatus;
       default:
-        await operationWaitDelay(Math.max(pollIntervalMs, current.retry_after_ms), deadline, options.signal);
+        await operationWaitDelay(pollIntervalMs, deadline, options.signal);
         pollIntervalMs = Math.min(10_000, Math.ceil(pollIntervalMs * 1.5));
       }
     }
@@ -239,10 +232,10 @@ function operationObservation(bridge: PluginBridgeClient, operationID: string): 
 }
 
 async function operationSnapshotUntilDeadline(
-  snapshot: (options?: PluginBridgeRequestOptions) => Promise<PluginOperationSnapshot>,
+  snapshot: (options?: PluginBridgeRequestOptions) => Promise<PluginExecutionSnapshot>,
   deadline: number,
   signal?: AbortSignal,
-): Promise<PluginOperationSnapshot> {
+): Promise<PluginExecutionSnapshot> {
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", "Plugin operation observation timed out");
   const controller = new AbortController();
@@ -264,14 +257,6 @@ async function operationSnapshotUntilDeadline(
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
   }
-}
-
-function operationRetryAfterMS(details: unknown): number {
-  if (details && typeof details === "object" && !Array.isArray(details)) {
-    const retryAfterMS = (details as Record<string, unknown>).retry_after_ms;
-    if (Number.isInteger(retryAfterMS) && Number(retryAfterMS) >= 500 && Number(retryAfterMS) <= 10_000) return Number(retryAfterMS);
-  }
-  return 500;
 }
 
 function operationWaitAborted(): PluginBridgeError {
@@ -302,29 +287,45 @@ function operationWaitDelay(delayMs: number, deadline: number, signal?: AbortSig
 
 function decodeCapabilityStreamBatch<Event>(
   method: string,
-  batch: PluginRawStreamReadResult,
+  batch: PluginRawExecutionEventList,
   eventTypeName: string,
   eventSchema: PluginCapabilitySchema,
 ): PluginCapabilityStreamReadResult<Event> {
-  const events = batch.events.map((event) => decodeCapabilityStreamEvent<Event>(method, event, eventTypeName, eventSchema));
-  if (batch.done) {
-    return { events, done: true, terminal_status: batch.terminal_status, retry_after_ms: 0 };
+  const events: PluginCapabilityStreamEvent<Event>[] = [];
+  let done = false;
+  for (const event of batch.events) {
+    if (event.kind === "terminal") {
+      const status = event.payload?.status;
+      if (status !== "completed" && status !== "canceled" && status !== "failed" && status !== "orphaned") {
+        throw contractMismatch(method, "stream terminal event has an invalid status");
+      }
+      done = true;
+      if (status === "failed" || status === "orphaned") {
+        throw new PluginBridgeError("PLUGIN_STREAM_FAILED", `Plugin stream terminated with status ${status}`, undefined, {
+          execution_id: event.execution_id,
+          status,
+          failure_code: event.error?.code,
+        });
+      }
+      continue;
+    }
+    events.push(decodeCapabilityStreamEvent<Event>(method, event, eventTypeName, eventSchema));
   }
-  return { events, done: false, retry_after_ms: batch.retry_after_ms };
+  return { events, done, cursor: batch.cursor };
 }
 
 function decodeCapabilityStreamEvent<Event>(
   method: string,
-  event: PluginRawStreamEvent,
+  event: PluginRawExecutionEvent,
   eventTypeName: string,
   eventSchema: PluginCapabilitySchema,
 ): PluginCapabilityStreamEvent<Event> {
-  if (event.kind !== eventTypeName || event.error !== undefined || event.data === undefined) {
+  if (event.kind !== "data" || event.error !== undefined || event.payload?.event_type !== eventTypeName || typeof event.payload.data !== "string") {
     throw contractMismatch(method, "stream event envelope does not match its published contract");
   }
   let value: unknown;
   try {
-    value = JSON.parse(decodePluginStreamText(event));
+    value = JSON.parse(decodePluginEventText(event));
   } catch {
     throw contractMismatch(method, "stream event is not canonical JSON");
   }
@@ -333,9 +334,9 @@ function decodeCapabilityStreamEvent<Event>(
   }
   return Object.freeze({
     sequence: event.sequence,
+    execution_id: event.execution_id,
     kind: event.kind,
     data: value as Event,
-    at: event.at,
   });
 }
 
@@ -344,39 +345,38 @@ function parseSyncResult(method: string, value: unknown): { data: unknown } {
   return value;
 }
 
-function parseOperationResult(method: string, value: unknown): { data: unknown; operation_id: string } {
-  if (!hasExactKeys(value, ["data", "operation_id"]) || !validOpaqueIdentifier(value.operation_id, "operation")) {
+function parseOperationResult(method: string, value: unknown): { data: unknown; execution_id: string } {
+  if (!hasExactKeys(value, ["data", "execution_id"]) || !validOpaqueIdentifier(value.execution_id, "execution")) {
     throw contractMismatch(method, "returned an invalid operation result envelope");
   }
-  return { data: value.data, operation_id: value.operation_id };
+  return { data: value.data, execution_id: value.execution_id };
 }
 
-function parseStreamResult(method: string, value: unknown): { data: unknown; operation_id: string; stream_handle: string } {
-  if (!hasExactKeys(value, ["data", "operation_id", "stream_handle"]) ||
-      !validOpaqueIdentifier(value.operation_id, "operation") || !validOpaqueIdentifier(value.stream_handle, "stream")) {
+function parseStreamResult(method: string, value: unknown): { data: unknown; execution_id: string } {
+  if (!hasExactKeys(value, ["data", "execution_id"]) || !validOpaqueIdentifier(value.execution_id, "execution")) {
     throw contractMismatch(method, "returned an invalid subscription result envelope");
   }
-  return { data: value.data, operation_id: value.operation_id, stream_handle: value.stream_handle };
+  return { data: value.data, execution_id: value.execution_id };
 }
 
-async function cancelAfterResponseMismatch(bridge: PluginBridgeClient, operationID: string, mismatch: unknown): Promise<never> {
+async function cancelAfterResponseMismatch(bridge: PluginBridgeClient, executionID: string, mismatch: unknown): Promise<never> {
   try {
-    await bridge.cancelOperation(operationID, "response_contract_mismatch");
+    await bridge.cancelExecution(executionID, "response_contract_mismatch");
   } catch (cleanupError) {
     throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Capability response failed validation and its live operation could not be cancelled", undefined, {
-      operation_id: operationID,
+      execution_id: executionID,
       cleanup_error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
     });
   }
   throw mismatch;
 }
 
-async function cancelAfterStreamMismatch(bridge: PluginBridgeClient, operationID: string, mismatch: unknown): Promise<never> {
+async function cancelAfterStreamMismatch(bridge: PluginBridgeClient, executionID: string, mismatch: unknown): Promise<never> {
   try {
-    await bridge.cancelOperation(operationID, "stream_contract_mismatch");
+    await bridge.cancelExecution(executionID, "stream_contract_mismatch");
   } catch (cleanupError) {
     throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Capability stream failed validation and its live operation could not be cancelled", undefined, {
-      operation_id: operationID,
+      execution_id: executionID,
       cleanup_error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
     });
   }
@@ -691,13 +691,8 @@ function hasExactKeys<T extends string>(value: unknown, keys: readonly T[]): val
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-function validOpaqueIdentifier(value: unknown, prefix: "operation" | "stream"): value is string {
+function validOpaqueIdentifier(value: unknown, prefix: "execution"): value is string {
   return typeof value === "string" && value.startsWith(`${prefix}_`) && value.length >= 8 && value.length <= 160 && /^[-A-Za-z0-9_]+$/.test(value);
-}
-
-function pluginStreamTerminalError(status: PluginStreamTerminalStatus): PluginBridgeError {
-  if (status === "failed") return new PluginBridgeError("PLUGIN_STREAM_FAILED", "Plugin stream execution failed");
-  return new PluginBridgeError("PLUGIN_STREAM_CANCELLED", `Plugin stream ended with status ${status}`);
 }
 
 const prototypeSensitivePropertyNames = new Set(["__proto__", "constructor", "prototype"]);

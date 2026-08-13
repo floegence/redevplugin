@@ -373,7 +373,6 @@ func TestMintUsesKindSpecificTokenIDNamespaces(t *testing.T) {
 		{kind: TokenKindPluginGatewayToken, prefix: "pgt_", use: TokenUseReusable},
 		{kind: TokenKindConfirmationToken, prefix: "ct_", use: TokenUseSingleUse},
 		{kind: TokenKindHandleGrant, prefix: "hg_", use: TokenUseReusable},
-		{kind: TokenKindStreamTicket, prefix: "st_", use: TokenUseReusable},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.kind), func(t *testing.T) {
@@ -443,7 +442,6 @@ func TestNonHandleTokenAudienceRejectsResourceScope(t *testing.T) {
 		TokenKindAssetSession,
 		TokenKindPluginGatewayToken,
 		TokenKindConfirmationToken,
-		TokenKindStreamTicket,
 	} {
 		t.Run(string(kind), func(t *testing.T) {
 			for _, scopeCase := range []struct {
@@ -629,8 +627,8 @@ func TestSnapshotDoesNotExposeCleartextToken(t *testing.T) {
 	manager := NewTokenManager()
 	now := testNow()
 	minted, err := manager.Mint(MintRequest{
-		Kind:      TokenKindStreamTicket,
-		Audience:  testAudienceForTokenKind(TokenKindStreamTicket),
+		Kind:      TokenKindHandleGrant,
+		Audience:  testAudienceForTokenKind(TokenKindHandleGrant),
 		Revision:  testRevision(1),
 		ExpiresAt: now.Add(time.Minute),
 		Now:       now,
@@ -697,11 +695,6 @@ func testAudienceForTokenKind(kind TokenKind) Audience {
 		audience.HandleID = "handle_test"
 		audience.Method = "handle.read"
 		audience.ResourceScope = sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
-	case TokenKindStreamTicket:
-		audience.BridgeChannelID = "bridge_test"
-		audience.StreamID = "stream_test"
-		audience.StreamDirection = "duplex"
-		audience.Method = "stream.open"
 	}
 	return audience
 }

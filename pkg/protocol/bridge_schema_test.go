@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
@@ -20,7 +18,9 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 
 	requireConst(t, defs, "call", "type", "redevplugin.bridge.call")
 	requireConst(t, defs, "cancel", "type", "redevplugin.bridge.cancel")
-	requireConst(t, defs, "operation_cancel", "type", "redevplugin.bridge.operation.cancel")
+	requireConst(t, defs, "execution_cancel", "type", "redevplugin.bridge.execution.cancel")
+	requireConst(t, defs, "execution_query", "type", "redevplugin.bridge.execution.query")
+	requireConst(t, defs, "execution_events", "type", "redevplugin.bridge.execution.events")
 	requireConst(t, defs, "canvas_open", "type", "redevplugin.ui.canvas.open")
 	requireConst(t, defs, "canvas_accessibility", "type", "redevplugin.ui.canvas.accessibility")
 	requireConst(t, defs, "canvas_ready", "type", "redevplugin.ui.canvas.ready")
@@ -40,18 +40,22 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatalf("call params type = %#v, want object", params["type"])
 	}
 	requestID := requireDef(t, defs, "request_id")
-	if got := requestID["pattern"]; got != "^(rpc|stream|stream_ack|render|operation|canvas|asset)_[1-9][0-9]{0,15}$" {
+	if got := requestID["pattern"]; got != "^(rpc|execution|render|canvas|asset)_[1-9][0-9]{0,15}$" {
 		t.Fatalf("request id pattern = %#v", got)
 	}
 	cancel := requireDef(t, defs, "cancel")
 	if got := requireNestedObject(t, cancel, "properties", "id")["$ref"]; got != "#/$defs/request_id" {
 		t.Fatalf("cancel request id ref = %#v", got)
 	}
-	operationCancel := requireDef(t, defs, "operation_cancel")
-	assertStringSet(t, requireStringSlice(t, operationCancel["required"], "operation cancel required"), []string{"type", "id", "operation_id"}, "operation cancel required")
-	if got := requireNestedObject(t, operationCancel, "properties", "operation_id")["$ref"]; got != "#/$defs/opaque_handle" {
-		t.Fatalf("operation cancel handle ref = %#v", got)
+	executionCancel := requireDef(t, defs, "execution_cancel")
+	assertStringSet(t, requireStringSlice(t, executionCancel["required"], "execution cancel required"), []string{"type", "id", "execution_id"}, "execution cancel required")
+	if got := requireNestedObject(t, executionCancel, "properties", "execution_id")["$ref"]; got != "#/$defs/opaque_handle" {
+		t.Fatalf("execution cancel handle ref = %#v", got)
 	}
+	executionQuery := requireDef(t, defs, "execution_query")
+	assertStringSet(t, requireStringSlice(t, executionQuery["required"], "execution query required"), []string{"type", "id", "execution_id"}, "execution query required")
+	executionEvents := requireDef(t, defs, "execution_events")
+	assertStringSet(t, requireStringSlice(t, executionEvents["required"], "execution events required"), []string{"type", "id", "execution_id", "after_cursor"}, "execution events required")
 	canvasAccessibility := requireDef(t, defs, "canvas_accessibility")
 	assertStringSet(t, requireStringSlice(t, canvasAccessibility["required"], "canvas accessibility required"), []string{"type", "id", "canvas_id", "label", "description"}, "canvas accessibility required")
 
@@ -289,40 +293,11 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 	}
 }
 
-func TestBridgeV5RejectsUnkeyedTextFixture(t *testing.T) {
-	root := repoRoot(t)
-	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v5.schema.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixtureRaw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "ui", "plugin-ui-v5-invalid-unkeyed-text.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	compiler := jsonschema.NewCompiler()
-	compiler.Draft = jsonschema.Draft2020
-	compiler.AssertFormat = true
-	if err := compiler.AddResource("urn:redevplugin:bridge-v5", bytes.NewReader(schemaRaw)); err != nil {
-		t.Fatal(err)
-	}
-	compiled, err := compiler.Compile("urn:redevplugin:bridge-v5")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fixture any
-	if err := json.Unmarshal(fixtureRaw, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	if err := compiled.Validate(fixture); err == nil {
-		t.Fatal("plugin UI v5 unkeyed-text fixture unexpectedly passed bridge-v5 validation")
-	}
-}
-
-func TestBridgeV5ClosesMessageAndPatchBudgets(t *testing.T) {
+func TestBridgeClosesMessageAndPatchBudgets(t *testing.T) {
 	schema := readBridgeSchema(t)
 	policy, ok := schema["x-redevplugin-render-policy"].(map[string]any)
 	if !ok {
-		t.Fatal("bridge v5 render policy must be an object")
+		t.Fatal("bridge render policy must be an object")
 	}
 	if got := policy["max_message_bytes"]; got != float64(512*1024) {
 		t.Fatalf("max_message_bytes = %v, want %d", got, 512*1024)
@@ -332,7 +307,7 @@ func TestBridgeV5ClosesMessageAndPatchBudgets(t *testing.T) {
 	}
 	defs, ok := schema["$defs"].(map[string]any)
 	if !ok {
-		t.Fatal("bridge v5 $defs must be an object")
+		t.Fatal("bridge $defs must be an object")
 	}
 	patch := requireDef(t, defs, "patch")
 	properties, ok := patch["properties"].(map[string]any)
@@ -348,7 +323,7 @@ func TestBridgeV5ClosesMessageAndPatchBudgets(t *testing.T) {
 	}
 }
 
-func TestPluginUIV5RepositoryUsesCallerOwnedStableTextKeys(t *testing.T) {
+func TestPluginUIRepositoryUsesCallerOwnedStableTextKeys(t *testing.T) {
 	root := repoRoot(t)
 	legacyFixture := filepath.Join(root, "testdata", "contracts", "ui", "plugin-ui-v4-mount.json")
 	if _, err := os.Stat(legacyFixture); !os.IsNotExist(err) {

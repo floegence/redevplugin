@@ -46,7 +46,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Uploads and inspects a package for installation without committing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The returned inspection is committed and reconciled through the shared external-package commit/query routes. */
+        /** @description Uploads and inspects a package for installation. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The process-local inspection expires and must be explicitly installed with its exact package digest. */
         post: operations["inspectUploadedExternalPackageInstall"];
         delete?: never;
         options?: never;
@@ -62,7 +62,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** @description Uploads and inspects a package for an optimistic-concurrency-controlled update without committing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The returned inspection is committed and reconciled through the shared external-package commit/query routes. */
+        /** @description Uploads and inspects a package for an optimistic-concurrency-controlled update. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The process-local inspection expires and must be explicitly installed with its exact package digest. */
         put: operations["inspectUploadedExternalPackageUpdate"];
         post?: never;
         delete?: never;
@@ -71,7 +71,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/external-packages/commit": {
+    "/_redevplugin/api/plugins/external-packages/install": {
         parameters: {
             query?: never;
             header?: never;
@@ -80,25 +80,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Commits one unexpired inspection after the user confirms its exact server-computed digest. An absent signature does not make a package ineligible for installation; signature assessment affects trust classification and automatic-update eligibility only. */
-        post: operations["commitExternalPackage"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/_redevplugin/api/plugins/external-packages/commit/query": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Reconciles the commit result for one inspection without repeating the mutation. */
-        post: operations["queryExternalPackageCommit"];
+        /** @description Reopens and installs one unexpired process-local inspection after the user confirms its exact package digest. The inspection is bound to the exact authenticated session. Invalid or revoked signatures fail closed; absent or unknown signatures install disabled, with no grants and manual updates only. */
+        post: operations["installInspectedPackage"];
         delete?: never;
         options?: never;
         head?: never;
@@ -115,56 +98,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["installReleaseRef"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/_redevplugin/api/plugins/release-install-operations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Lists owner-scoped release installation operations. Trusted Origin and authenticated session remain required; GET queries do not require CSRF. */
-        get: operations["listReleaseInstallOperations"];
-        put?: never;
-        /** @description Starts or recovers one owner-scoped durable release installation. Disconnecting the observer does not cancel the installation. */
-        post: operations["startReleaseInstallOperation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/_redevplugin/api/plugins/release-install-operations/{operation_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getReleaseInstallOperation"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/_redevplugin/api/plugins/release-install-operations/by-request/{request_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getReleaseInstallOperationByRequest"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -398,72 +331,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["readPreparedSurfaceStream"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["acknowledgePreparedSurfaceStream"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Cancels an operation only when it belongs to the authenticated surface, session, and private bridge channel. */
-        post: operations["cancelSurfacePluginOperation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/query": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Returns only the sandbox-safe status projection for an operation bound to the authenticated surface, session, and private bridge channel. */
-        post: operations["getSurfacePluginOperationSnapshot"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject": {
         parameters: {
             query?: never;
@@ -564,7 +431,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/operations/query": {
+    "/_redevplugin/api/plugins/executions/query": {
         parameters: {
             query?: never;
             header?: never;
@@ -573,14 +440,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["listPluginOperations"];
+        post: operations["listPluginExecutions"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/operations/{operation_id}/query": {
+    "/_redevplugin/api/plugins/executions/release-installs": {
         parameters: {
             query?: never;
             header?: never;
@@ -589,14 +456,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["getPluginOperation"];
+        /** @description Starts or idempotently recovers an owner-bound release installation and returns only its unified Execution identity. */
+        post: operations["startReleaseInstallExecution"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/operations/{operation_id}/cancel": {
+    "/_redevplugin/api/plugins/executions/{execution_id}/query": {
         parameters: {
             query?: never;
             header?: never;
@@ -605,7 +473,40 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["cancelPluginOperation"];
+        post: operations["getPluginExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/executions/{execution_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelPluginExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/executions/{execution_id}/events/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Returns the single ordered event envelope after the caller's last observed execution cursor. Session and surface authorization remain Host-owned transport concerns. */
+        post: operations["listPluginExecutionEvents"];
         delete?: never;
         options?: never;
         head?: never;
@@ -644,7 +545,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/runtime/refresh-enabled": {
+    "/_redevplugin/api/plugins/runtime/recover-enabled": {
         parameters: {
             query?: never;
             header?: never;
@@ -653,8 +554,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Replays runtime-derived state for enabled plugins after the embedding host process restarts or reattaches adapters. The response data is `{ "results": [...] }`. */
-        post: operations["refreshEnabledPluginRuntimeState"];
+        /** @description Returns the Host-owned idempotent recovery snapshot for this startup revision. Repeated calls do not schedule a second recovery pass. */
+        post: operations["recoverEnabledPlugins"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/runtime/recover/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Retries recovery for one plugin after an explicit user action and updates the Host-owned snapshot. */
+        post: operations["retryPluginRecovery"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1053,21 +971,6 @@ export interface components {
             ok: true;
             data: components["schemas"]["SurfaceAssetResult"];
         };
-        SurfaceStreamSuccessResponse: {
-            /** @constant */
-            ok: true;
-            data: components["schemas"]["SurfaceStreamResult"];
-        };
-        SurfaceStreamAcknowledgementSuccessResponse: {
-            /** @constant */
-            ok: true;
-            data: components["schemas"]["SurfaceStreamAcknowledgementResult"];
-        };
-        PluginOperationSnapshotSuccessResponse: {
-            /** @constant */
-            ok: true;
-            data: components["schemas"]["PluginOperationSnapshot"];
-        };
         SurfaceDisposeSuccessResponse: {
             /** @constant */
             ok: true;
@@ -1083,25 +986,15 @@ export interface components {
             ok: true;
             data: components["schemas"]["PluginRecord"];
         };
-        ReleaseInstallOperationSuccessResponse: {
-            /** @constant */
-            ok: true;
-            data: components["schemas"]["ReleaseInstallOperation"];
-        };
-        ReleaseInstallOperationListSuccessResponse: {
-            /** @constant */
-            ok: true;
-            data: components["schemas"]["ReleaseInstallOperationList"];
-        };
         ExternalPackageInspectionSuccessResponse: {
             /** @constant */
             ok: true;
             data: components["schemas"]["ExternalPackageInspection"];
         };
-        ExternalPackageCommitSuccessResponse: {
+        InstalledExternalPackageSuccessResponse: {
             /** @constant */
             ok: true;
-            data: components["schemas"]["ExternalPackageCommitResult"];
+            data: components["schemas"]["InstalledExternalPackage"];
         };
         PluginCatalogSuccessResponse: {
             /** @constant */
@@ -1148,15 +1041,20 @@ export interface components {
             ok: true;
             data: components["schemas"]["RetainedDataCleanupResult"];
         };
-        OperationRecordSuccessResponse: {
+        ExecutionSuccessResponse: {
             /** @constant */
             ok: true;
-            data: components["schemas"]["OperationRecord"];
+            data: components["schemas"]["Execution"];
         };
-        OperationListSuccessResponse: {
+        ExecutionListSuccessResponse: {
             /** @constant */
             ok: true;
-            data: components["schemas"]["PluginOperationList"];
+            data: components["schemas"]["ExecutionList"];
+        };
+        ExecutionEventListSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["ExecutionEventList"];
         };
         RuntimeHealthSuccessResponse: {
             /** @constant */
@@ -1168,10 +1066,15 @@ export interface components {
             ok: true;
             data: components["schemas"]["PluginRuntimeStopResult"];
         };
-        RuntimeRefreshSuccessResponse: {
+        RecoverySnapshotSuccessResponse: {
             /** @constant */
             ok: true;
-            data: components["schemas"]["PluginRuntimeRefreshResult"];
+            data: components["schemas"]["RecoverySnapshot"];
+        };
+        PluginRecoverySuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["PluginRecoveryResult"];
         };
         DataExportSuccessResponse: {
             /** @constant */
@@ -1243,18 +1146,12 @@ export interface components {
             ok: true;
             data: components["schemas"]["PluginSettingsSnapshot"];
         };
-        PlatformError: components["schemas"]["GenericPlatformError"] | components["schemas"]["OperationRateLimitPlatformError"] | components["schemas"]["JSONLimitPlatformError"] | components["schemas"]["PackageValidationPlatformError"] | components["schemas"]["ManagementRevisionPlatformError"] | components["schemas"]["AuthorizationRevisionPlatformError"] | components["schemas"]["BindingRevisionPlatformError"] | components["schemas"]["ValuesRevisionPlatformError"] | components["schemas"]["CapabilityPlatformError"] | components["schemas"]["WorkerPlatformError"];
+        PlatformError: components["schemas"]["GenericPlatformError"] | components["schemas"]["JSONLimitPlatformError"] | components["schemas"]["PackageValidationPlatformError"] | components["schemas"]["ManagementRevisionPlatformError"] | components["schemas"]["AuthorizationRevisionPlatformError"] | components["schemas"]["BindingRevisionPlatformError"] | components["schemas"]["ValuesRevisionPlatformError"] | components["schemas"]["CapabilityPlatformError"] | components["schemas"]["WorkerPlatformError"];
         MutationPlatformError: components["schemas"]["MutationGenericPlatformError"] | components["schemas"]["MutationJSONLimitPlatformError"] | components["schemas"]["MutationPackageValidationPlatformError"] | components["schemas"]["MutationManagementRevisionPlatformError"] | components["schemas"]["MutationAuthorizationRevisionPlatformError"] | components["schemas"]["MutationBindingRevisionPlatformError"] | components["schemas"]["MutationValuesRevisionPlatformError"] | components["schemas"]["MutationCapabilityPlatformError"] | components["schemas"]["MutationWorkerPlatformError"] | components["schemas"]["MutationSessionTeardownPlatformError"];
         GenericPlatformError: {
             code: components["schemas"]["GenericPlatformErrorCode"];
             message: components["schemas"]["PlatformErrorMessage"];
             details: components["schemas"]["EmptyErrorDetails"];
-        };
-        OperationRateLimitPlatformError: {
-            /** @constant */
-            code: "PLUGIN_OPERATION_RATE_LIMITED";
-            message: components["schemas"]["PlatformErrorMessage"];
-            details: components["schemas"]["OperationRateLimitErrorDetails"];
         };
         JSONLimitPlatformError: {
             /** @constant */
@@ -1377,9 +1274,6 @@ export interface components {
         /** @enum {string} */
         MutationOutcome: "committed" | "not_committed" | "unknown";
         EmptyErrorDetails: Record<string, never>;
-        OperationRateLimitErrorDetails: {
-            retry_after_ms: number;
-        };
         JSONLimitErrorDetails: {
             /** @enum {string} */
             reason: "payload_bytes" | "json_depth" | "prototype_key" | "number_precision";
@@ -1437,7 +1331,7 @@ export interface components {
         ErrorCode: components["schemas"]["ErrorCodesV8PlatformErrorCode"];
         PlatformErrorMessage: string;
         /** @enum {string} */
-        GenericPlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
+        GenericPlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
         SurfaceDisposeResult: {
             /** @constant */
             disposed: true;
@@ -1455,9 +1349,14 @@ export interface components {
             plugins: components["schemas"]["PluginRecord"][];
         };
         PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV17"];
-        PluginOperationList: {
-            operations: components["schemas"]["OperationRecord"][];
-            next_cursor?: string;
+        ExecutionList: {
+            executions: components["schemas"]["Execution"][];
+            next_cursor?: number;
+        };
+        ExecutionEventList: {
+            execution_id: string;
+            events: components["schemas"]["Event"][];
+            cursor: number;
         };
         PluginIntentRecord: {
             plugin_id: string;
@@ -1549,14 +1448,12 @@ export interface components {
         /** @enum {string} */
         DiagnosticMutationOutcome: "committed" | "not_committed" | "unknown";
         PluginDiagnosticDetails: {
-            operations_deleted?: number;
-            streams_deleted?: number;
+            executions_deleted?: number;
+            execution_id?: string;
             invocation_id?: string;
             method?: string;
             failure_code?: string;
             runtime_process_failure_code?: components["schemas"]["ErrorCodesV8RuntimeProcessFailureCode"];
-            operation_id?: string;
-            stream_id?: string;
             runtime_instance_id?: string;
             runtime_generation_id?: string;
             runtime_version?: string;
@@ -1682,29 +1579,22 @@ export interface components {
             /** @constant */
             stopped: true;
         };
-        PluginRuntimeRefreshResult: {
-            results: components["schemas"]["PluginRuntimeRefreshEntry"][];
+        RecoverySnapshot: {
+            revision: number;
+            complete: boolean;
+            results: components["schemas"]["PluginRecoveryResult"][];
         };
-        PluginRuntimeRefreshEntry: components["schemas"]["PluginRuntimeRefreshSuccess"] | components["schemas"]["PluginRuntimeRefreshFailure"];
-        PluginRuntimeRefreshSuccess: {
+        PluginRecoveryResult: {
             plugin_instance_id: string;
-            /** @constant */
-            status: "refreshed";
+            /** @enum {string} */
+            status: "ready" | "failed";
+            /** @enum {string} */
+            reason?: "unknown" | "trust_state_advanced" | "trust_revoked" | "recovery_canceled" | "recovery_timeout";
+            /** @enum {string} */
+            action?: "retry" | "reinstall" | "contact_admin";
         };
-        PluginRuntimeRefreshFailure: {
+        RetryPluginRecoveryRequest: {
             plugin_instance_id: string;
-            /** @constant */
-            status: "failed";
-            error: components["schemas"]["PluginRuntimeRefreshPublicError"];
-        };
-        PluginRuntimeRefreshPublicError: {
-            /** @enum {string} */
-            code: "PLUGIN_RUNTIME_UNAVAILABLE";
-            message: string;
-            /** @enum {string} */
-            reason: "unknown" | "trust_state_advanced" | "trust_revoked" | "trust_fenced" | "trust_epoch_mismatch" | "activation_evidence_invalid" | "activation_lease_expired" | "recovery_canceled" | "recovery_timeout";
-            /** @enum {string} */
-            action: "retry" | "reinstall" | "contact_admin";
         };
         PluginDataExportResult: {
             bundle_ref: string;
@@ -1810,14 +1700,10 @@ export interface components {
             intent: components["schemas"]["ExternalPackageIntentRequest"];
             source: components["schemas"]["ExternalPackageSource"];
         };
-        /** @description Confirms the exact immutable inspection. The digest cannot override any inspected fact. */
-        CommitExternalPackageRequest: {
+        /** @description Confirms an unexpired process-local inspection by its exact package digest. The digest cannot override any inspected fact. */
+        InstallInspectedPackageRequest: {
             inspection_id: string;
-            confirmation_digest: string;
-        };
-        QueryExternalPackageCommitRequest: {
-            inspection_id: string;
-            commit_id?: string;
+            expected_package_sha256: string;
         };
         /** @description Cryptographic signature fact computed over the inspected artifact. The absent state is installable and affects trust classification and automatic-update eligibility only. */
         ExternalPackageSignatureAssessment: {
@@ -2075,43 +1961,14 @@ export interface components {
             execution_approval: components["schemas"]["ExternalPackageExecutionApproval"];
             update_eligibility: components["schemas"]["ExternalPackageUpdateEligibility"];
             security_summary: components["schemas"]["ExternalPackageSecuritySummary"];
-            confirmation_digest: string;
         };
-        /** @description Immutable successful commit evidence. */
-        ExternalPackageCommitReceipt: {
-            commit_id: string;
-            inspection_id: string;
-            package_sha256: string;
-            management_revision: number;
-            /** Format: date-time */
-            committed_at: string;
-        };
-        /** @description Closed commit reconciliation union. A committed result repeats all four facts so clients never infer them from legacy trust_state alone. A failed result is terminal evidence that a durable commit did not occur and requires a fresh inspection before retrying. */
-        ExternalPackageCommitResult: {
-            /** @constant */
-            status: "committed";
-            inspection_id: string;
-            intent: components["schemas"]["ExternalPackageIntent"];
-            receipt: components["schemas"]["ExternalPackageCommitReceipt"];
+        InstalledExternalPackage: {
             plugin: components["schemas"]["PluginRecord"];
             signature_assessment: components["schemas"]["ExternalPackageSignatureAssessment"];
             source_provenance: components["schemas"]["ExternalPackageSourceProvenance"];
             execution_approval: components["schemas"]["ExternalPackageExecutionApproval"];
             update_eligibility: components["schemas"]["ExternalPackageUpdateEligibility"];
             security_summary: components["schemas"]["ExternalPackageSecuritySummary"];
-        } | {
-            /** @constant */
-            status: "in_progress";
-            inspection_id: string;
-            intent: components["schemas"]["ExternalPackageIntent"];
-            retry_after_ms: number;
-        } | {
-            /** @constant */
-            status: "failed";
-            inspection_id: string;
-            intent: components["schemas"]["ExternalPackageIntent"];
-            /** @constant */
-            failure_code: "host_restarted_before_commit";
         };
         /** @enum {string} */
         TrustState: "verified" | "unsigned_local" | "untrusted" | "needs_review" | "trust_unavailable" | "blocked_security";
@@ -2253,95 +2110,6 @@ export interface components {
             release_ref: components["schemas"]["PluginReleaseRef"];
             plugin_instance_id: string;
         };
-        StartReleaseInstallOperationRequest: {
-            request_id: string;
-            plugin_instance_id: string;
-            /** @description When omitted, verified official sources activate automatically; false keeps the installed plugin disabled. */
-            activate_after_install?: boolean;
-            approved_permission_ids?: string[];
-            release_ref: components["schemas"]["PluginReleaseRef"];
-        };
-        ReleaseInstallProgress: {
-            /** @constant */
-            kind: "indeterminate";
-        } | {
-            /** @enum {string} */
-            kind: "items" | "bytes";
-            completed: number;
-            total: number;
-        };
-        ReleaseInstallFailure: {
-            /** @enum {string} */
-            code: "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE";
-            retryable: boolean;
-        };
-        ReleaseInstallActivation: {
-            /** @enum {string} */
-            status: "pending" | "enabled" | "needs_attention" | "not_requested";
-            missing_permission_ids?: string[];
-            /** @enum {string} */
-            next_action?: "approve_permissions" | "retry_activation";
-        } & ({
-            /** @enum {string} */
-            status: "pending" | "enabled" | "not_requested";
-        } | {
-            /** @constant */
-            status: "needs_attention";
-        });
-        ReleaseInstallPhaseDiagnostic: {
-            /** @enum {string} */
-            phase: "queued" | "fetch_trust_evidence" | "fetch_release_evidence" | "download_package" | "verify_hashes" | "verify_signatures_ledger" | "fetch_capability_evidence" | "commit" | "enable" | "complete" | "failed" | "reconciling";
-            artifact_role?: string;
-            attempt: number;
-            progress: components["schemas"]["ReleaseInstallProgress"];
-            cache_hit: boolean;
-            /** Format: date-time */
-            started_at: string;
-            /** Format: date-time */
-            completed_at?: string;
-            duration_ms?: number;
-        };
-        ReleaseInstallOperation: {
-            request_id: string;
-            operation_id: string;
-            plugin_instance_id: string;
-            request_sha256: string;
-            /** @enum {string} */
-            status: "queued" | "running" | "reconciling" | "succeeded" | "failed";
-            phase: string;
-            progress: components["schemas"]["ReleaseInstallProgress"];
-            attempt: number;
-            retry_after_ms: number;
-            mutation_outcome: components["schemas"]["MutationOutcome"];
-            failure?: components["schemas"]["ReleaseInstallFailure"];
-            plugin_record?: components["schemas"]["PluginRecord"];
-            activation: components["schemas"]["ReleaseInstallActivation"];
-            phase_diagnostics: components["schemas"]["ReleaseInstallPhaseDiagnostic"][];
-            /** Format: date-time */
-            created_at: string;
-            /** Format: date-time */
-            updated_at: string;
-            /** Format: date-time */
-            terminal_at?: string;
-        } & ({
-            /** @enum {string} */
-            status?: "queued" | "running" | "reconciling";
-        } | {
-            /** @constant */
-            status: "succeeded";
-            /** @constant */
-            mutation_outcome?: "committed";
-            activation?: components["schemas"]["ReleaseInstallActivation"] & {
-                /** @enum {string} */
-                status?: "enabled" | "needs_attention" | "not_requested";
-            };
-        } | {
-            /** @constant */
-            status: "failed";
-        });
-        ReleaseInstallOperationList: {
-            operations: components["schemas"]["ReleaseInstallOperation"][];
-        };
         UpdateReleaseRefRequest: {
             plugin_instance_id: string;
             release_ref: components["schemas"]["PluginReleaseRef"];
@@ -2380,10 +2148,17 @@ export interface components {
             intent_id?: string;
             plugin_instance_id?: string;
         };
-        ListOperationsQueryRequest: {
+        ListExecutionsRequest: {
             plugin_instance_id?: string;
-            cursor?: string;
+            cursor?: number;
             limit?: number;
+        };
+        StartReleaseInstallExecutionRequest: {
+            request_id: string;
+            plugin_instance_id: string;
+            activate_after_install?: boolean;
+            approved_permission_ids?: string[];
+            release_ref: components["schemas"]["PluginReleaseRef"];
         };
         ListRetainedDataQueryRequest: {
             plugin_instance_id?: string;
@@ -2489,84 +2264,10 @@ export interface components {
             content_type: string;
             content_base64: string;
         };
-        ReadSurfaceStreamRequest: {
-            stream_id: string;
-            stream_ticket: string;
-            read_id: string;
+        ListExecutionEventsRequest: {
+            after_cursor: number;
+            limit?: number;
         };
-        AcknowledgeSurfaceStreamRequest: {
-            stream_id: string;
-            stream_ticket: string;
-            delivery_id: string;
-        };
-        SurfaceStreamResult: {
-            delivery_id?: string;
-            read_id: string;
-            events: components["schemas"]["StreamEvent"][];
-            done: boolean;
-            /** @enum {unknown} */
-            terminal_status?: "closed" | "canceled" | "failed" | "orphaned_after_disable" | "orphaned_after_uninstall";
-        } & (unknown & unknown & unknown);
-        SurfaceStreamAcknowledgementResult: {
-            /** @constant */
-            acknowledged: true;
-        };
-        CancelSurfaceOperationRequest: {
-            operation_id: string;
-            bridge_channel_id: string;
-            reason?: string;
-        };
-        GetSurfaceOperationRequest: {
-            operation_id: string;
-            bridge_channel_id: string;
-        };
-        PluginOperationSnapshot: {
-            operation_id: string;
-            /** @enum {string} */
-            status: "running" | "cancel_requested";
-            cancelable: boolean;
-            /** Format: date-time */
-            created_at: string;
-            /** Format: date-time */
-            updated_at: string;
-            retry_after_ms: number;
-            progress?: components["schemas"]["OperationProgress"];
-        } | {
-            operation_id: string;
-            /** @enum {string} */
-            status: "completed" | "canceled" | "orphaned_after_disable" | "orphaned_after_uninstall";
-            cancelable: boolean;
-            /** Format: date-time */
-            created_at: string;
-            /** Format: date-time */
-            updated_at: string;
-            retry_after_ms: number;
-            /** Format: date-time */
-            terminal_at: string;
-            progress?: components["schemas"]["OperationProgress"];
-        } | {
-            operation_id: string;
-            /** @constant */
-            status: "failed";
-            cancelable: boolean;
-            /** Format: date-time */
-            created_at: string;
-            /** Format: date-time */
-            updated_at: string;
-            retry_after_ms: number;
-            /** Format: date-time */
-            terminal_at: string;
-            /** @enum {string} */
-            failure_code: "adapter_failed" | "contract_invalid" | "platform_failed" | "quota_exceeded" | "runtime_failed";
-            progress?: components["schemas"]["OperationProgress"];
-        };
-        OperationProgress: {
-            revision: number;
-            phase: string;
-            completed_units?: number;
-            total_units?: number;
-            unit?: string;
-        } & (unknown & unknown);
         RejectSurfaceConfirmationRequest: {
             plugin_instance_id: string;
             bridge_channel_id: string;
@@ -2576,15 +2277,6 @@ export interface components {
         ConfirmationRejectionResult: {
             /** @constant */
             rejected: true;
-        };
-        StreamEvent: {
-            stream_id: string;
-            sequence: number;
-            kind: string;
-            data?: string;
-            error?: string;
-            /** Format: date-time */
-            at: string;
         };
         DisposeSurfaceRequest: {
             bridge_nonce: string;
@@ -2614,15 +2306,7 @@ export interface components {
             data?: unknown;
         } | {
             data?: unknown;
-            operation_id: string;
-        } | {
-            data?: unknown;
-            operation_id: string;
-            stream_id: string;
-            stream_ticket: string;
-            stream_ticket_id: string;
-            /** Format: date-time */
-            stream_expires_at: string;
+            execution_id: string;
         } | {
             /** @constant */
             confirmation_required: true;
@@ -2687,87 +2371,20 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        CancelOperationRequest: {
+        CancelExecutionRequest: {
             reason?: string;
         };
         CapabilityContractPin: components["schemas"]["HostCapabilityPinV1"];
-        /** @description Public immutable execution evidence embedded into operation responses. Session and bridge channel ownership fields are excluded. */
-        PublicOperationBinding: {
-            invocation_id: string;
-            audit_correlation_id: string;
-            operation_id?: string;
-            stream_id?: string;
-            publisher_id: string;
-            plugin_id: string;
+        Execution: {
+            execution_id: string;
             plugin_instance_id: string;
-            plugin_version: components["schemas"]["StrictSemVer"];
-            active_fingerprint: string;
-            surface_instance_id?: string;
             /** @enum {string} */
-            route_kind: "capability" | "worker" | "core_action";
-            capability_id: string;
-            capability_version: components["schemas"]["StrictSemVer"];
-            binding_id: string;
-            contract?: components["schemas"]["CapabilityContractPin"];
-            method: string;
-            target_method: string;
+            kind: "sync" | "operation" | "subscription";
             /** @enum {string} */
-            effect: "read" | "write" | "execute" | "delete" | "admin";
-            /** @enum {string} */
-            execution: "sync" | "operation" | "subscription";
-            permissions: {
-                required: string[];
-                granted: string[];
-            };
-            confirmation: {
-                required: boolean;
-                confirmed: boolean;
-                confirmation_id?: string;
-                request_sha256?: string;
-                plan_sha256?: string;
-                target_sha256?: string;
-            };
-            revision: {
-                policy_revision: number;
-                management_revision: number;
-                revoke_epoch: number;
-            };
-            quota: {
-                max_concurrent?: number;
-                max_duration_ms?: number;
-                max_stream_bytes?: number;
-                /** Format: date-time */
-                expires_at?: string;
-            };
-            target: {
-                kind: string;
-                fields: {
-                    [key: string]: unknown;
-                };
-            };
-            target_descriptor_sha256: string;
-            stream_event_type_name?: string;
-            stream_event_schema_sha256?: string;
-        } & ({
-            /** @constant */
-            route_kind: "capability";
-        } | {
-            /** @constant */
-            route_kind: "worker";
-        } | {
-            /** @constant */
-            route_kind: "core_action";
-        });
-        OperationRecord: components["schemas"]["PublicOperationBinding"] & ({
-            operation_id: string;
-            /** @enum {string} */
-            execution?: "operation" | "subscription";
+            status: "running" | "cancel_requested" | "completed" | "canceled" | "failed" | "orphaned";
+            cursor: number;
+            failure_code?: string;
             cancelable: boolean;
-            cancel_ack_timeout_ms?: number;
-            /** @enum {string} */
-            disable_behavior?: "cancel" | "orphan" | "wait";
-            /** @enum {string} */
-            uninstall_behavior?: "cancel_then_block_delete" | "force_cleanup_allowed";
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -2775,23 +2392,22 @@ export interface components {
             /** Format: date-time */
             cancel_requested_at?: string;
             /** Format: date-time */
-            orphaned_at?: string;
-            /** Format: date-time */
             terminal_at?: string;
-            progress?: components["schemas"]["OperationProgress"];
-        } & ({
-            /** @constant */
-            status: "failed";
-            failure_code: components["schemas"]["ExecutionFailureCode"];
-            /** @constant */
-            reason: "execution failed";
-        } | {
-            /** @enum {unknown} */
-            status: "running" | "cancel_requested" | "canceled" | "completed" | "orphaned_after_disable" | "orphaned_after_uninstall";
-            reason?: string;
-        }));
-        /** @enum {string} */
-        ExecutionFailureCode: "adapter_failed" | "contract_invalid" | "platform_failed" | "quota_exceeded" | "runtime_failed";
+        };
+        Event: {
+            execution_id: string;
+            sequence: number;
+            /** @enum {string} */
+            kind: "progress" | "data" | "diagnostic" | "terminal";
+            payload?: {
+                [key: string]: unknown;
+            };
+            error?: components["schemas"]["PublicError"];
+        };
+        PublicError: {
+            code: string;
+            message: string;
+        };
         StartRuntimeRequest: {
             target: components["schemas"]["RuntimeTarget"];
         };
@@ -2883,11 +2499,11 @@ export interface components {
         };
         ErrorCodesV8: Record<string, never>;
         /** @enum {string} */
-        ErrorCodesV8PlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
+        ErrorCodesV8PlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
         /** @enum {string} */
-        ErrorCodesV8BridgeErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED";
+        ErrorCodesV8BridgeErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED";
         /** @enum {string} */
-        ErrorCodesV8TypescriptClientErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED" | "PLUGIN_PLATFORM_REQUEST_FAILED" | "PLUGIN_STREAM_FAILED";
+        ErrorCodesV8TypescriptClientErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED" | "PLUGIN_PLATFORM_REQUEST_FAILED" | "PLUGIN_STREAM_FAILED";
         /** @enum {string} */
         ErrorCodesV8RustIpcErrorCode: "ARTIFACT_HANDLE_FAILED" | "HANDLE_GRANT_VALIDATION_FAILED" | "STORAGE_FILE_FAILED" | "STORAGE_KV_FAILED" | "STORAGE_SQLITE_FAILED" | "NETWORK_GRANT_FAILED" | "NETWORK_EXECUTE_FAILED" | "NETWORK_STREAM_STORE_UNAVAILABLE" | "NETWORK_STREAM_FAILED" | "NETWORK_STREAM_BACKPRESSURE" | "NETWORK_STREAM_INVALID" | "NETWORK_STREAM_NOT_FOUND" | "NETWORK_STREAM_CLOSED" | "WORKER_INVOCATION_INVALID" | "RUNTIME_CAPABILITY_REVOKED" | "RUNTIME_CONTROL_CHANNEL_STALE" | "RUNTIME_LEASE_INVALID" | "RUNTIME_LEASE_SIGNATURE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "WASM_WORKER_INVALID" | "WASM_WORKER_FAILED" | "WASM_HOSTCALL_FAILED" | "RUNTIME_CAPACITY_EXCEEDED" | "RUNTIME_INVOCATION_CANCELED" | "PLUGIN_SESSION_REVOKED" | "SESSION_REVOKE_SEQUENCE_STALE" | "SESSION_REVOKE_DRAIN_TIMEOUT" | "UNSUPPORTED_FRAME";
         /** @enum {string} */
@@ -2947,19 +2563,16 @@ export interface components {
             session_channel_id_hash: components["schemas"]["SessionScopeV1OwnerHash"];
         };
         /** @enum {string} */
-        SessionScopeV1TeardownPhase: "bridge" | "confirmation" | "execution" | "operation" | "stream" | "runtime";
+        SessionScopeV1TeardownPhase: "bridge" | "confirmation" | "execution" | "runtime";
         SessionScopeV1RevokeCounts: {
             surfaces: components["schemas"]["SessionScopeV1Count"];
             asset_tickets: components["schemas"]["SessionScopeV1Count"];
             asset_sessions: components["schemas"]["SessionScopeV1Count"];
             plugin_gateway_tokens: components["schemas"]["SessionScopeV1Count"];
             confirmation_tokens: components["schemas"]["SessionScopeV1Count"];
-            stream_tickets: components["schemas"]["SessionScopeV1Count"];
             handle_grants: components["schemas"]["SessionScopeV1Count"];
             confirmations: components["schemas"]["SessionScopeV1Count"];
-            operations: components["schemas"]["SessionScopeV1Count"];
-            streams: components["schemas"]["SessionScopeV1Count"];
-            runtime_executions: components["schemas"]["SessionScopeV1Count"];
+            executions: components["schemas"]["SessionScopeV1Count"];
             active_network_requests: components["schemas"]["SessionScopeV1Count"];
             sockets: components["schemas"]["SessionScopeV1Count"];
             network_streams: components["schemas"]["SessionScopeV1Count"];
@@ -2988,7 +2601,7 @@ export interface components {
         CompatibilityManifestV17: {
             /** @constant */
             schema_version: "redevplugin.compatibility.v17";
-            package_set: components["schemas"]["PlatformPackageSetV1"];
+            package_set: components["schemas"]["PlatformPackageSetV2"];
             matrix: {
                 /** @constant */
                 plugin_ui_protocol_version: "plugin-ui-v7";
@@ -3027,22 +2640,6 @@ export interface components {
                 /** @constant */
                 release_revocation_pointer_schema_version: "release-revocation-pointer-v2";
                 /** @constant */
-                release_trust_state_schema_version: "release-trust-state-v1";
-                /** @constant */
-                trusted_time_evidence_schema_version: "trusted-time-evidence-v1";
-                /** @constant */
-                trusted_time_leaf_schema_version: "trusted-time-leaf-v1";
-                /** @constant */
-                release_signing_ledger_schema_version: "release-signing-ledger-v1";
-                /** @constant */
-                release_signing_subject_schema_version: "release-signing-subject-v1";
-                /** @constant */
-                release_signature_envelope_schema_version: "release-signature-envelope-v1";
-                /** @constant */
-                release_signing_ledger_receipt_schema_version: "release-signing-ledger-receipt-v1";
-                /** @constant */
-                release_signing_ledger_evidence_schema_version: "release-signing-ledger-evidence-v1";
-                /** @constant */
                 token_ticket_schema_version: "token-ticket-v4";
                 /** @constant */
                 bridge_schema_version: "bridge-v7";
@@ -3059,8 +2656,6 @@ export interface components {
                 /** @constant */
                 session_scope_schema_version: "session-scope-v1";
                 /** @constant */
-                session_scope_maintenance_schema_version: "session-scope-maintenance-v1";
-                /** @constant */
                 plugin_platform_openapi_version: "plugin-platform-v15";
                 /** @constant */
                 compatibility_schema_version: "compatibility-manifest-v17";
@@ -3071,14 +2666,6 @@ export interface components {
                 /** @constant */
                 host_capability_pin_schema_version: "host-capability-pin-v1";
                 /** @constant */
-                host_capability_manifest_schema_version: "host-capability-manifest-v1";
-                /** @constant */
-                host_capability_compatibility_schema_version: "host-capability-compatibility-v1";
-                /** @constant */
-                host_capability_signature_schema_version: "host-capability-signature-v1";
-                /** @constant */
-                host_capability_notices_schema_version: "host-capability-notices-v1";
-                /** @constant */
                 error_codes_schema_version: "error-codes-v8";
                 /** @constant */
                 performance_contract_version: "performance-contract-v4";
@@ -3087,7 +2674,7 @@ export interface components {
                 /** @constant */
                 contract_registry_version: "contract-registry-v2";
                 /** @constant */
-                platform_package_set_schema_version: "platform-package-set-v1";
+                platform_package_set_schema_version: "platform-package-set-v2";
                 /** @constant */
                 platform_package_publication_schema_version: "platform-package-publication-v1";
                 /** @constant */
@@ -3118,83 +2705,76 @@ export interface components {
             version: string;
             sha256: string;
         };
-        PlatformPackageSetV1: {
+        PlatformPackageSetV2: {
             /** @constant */
-            schema_version: "redevplugin.platform_package_set.v1";
-            platform_version: components["schemas"]["PlatformPackageSetV1Version"];
-            go_module: components["schemas"]["PlatformPackageSetV1GoModule"];
+            schema_version: "redevplugin.platform_package_set.v2";
+            platform_version: components["schemas"]["PlatformPackageSetV2Version"];
+            go_module: components["schemas"]["PlatformPackageSetV2GoModule"];
             npm_packages: [
-                components["schemas"]["PlatformPackageSetV1NpmContracts"],
-                components["schemas"]["PlatformPackageSetV1NpmUi"]
+                components["schemas"]["PlatformPackageSetV2NpmContracts"],
+                components["schemas"]["PlatformPackageSetV2NpmUi"]
             ];
             rust_crates: [
-                components["schemas"]["PlatformPackageSetV1RustContracts"],
-                components["schemas"]["PlatformPackageSetV1RustIpc"],
-                components["schemas"]["PlatformPackageSetV1RustWasmAbi"],
-                components["schemas"]["PlatformPackageSetV1RustTargetClassifier"],
-                components["schemas"]["PlatformPackageSetV1RustWorkerSdk"],
-                components["schemas"]["PlatformPackageSetV1RustRuntime"]
+                components["schemas"]["PlatformPackageSetV2RustContracts"],
+                components["schemas"]["PlatformPackageSetV2RustIpc"],
+                components["schemas"]["PlatformPackageSetV2RustWasmAbi"],
+                components["schemas"]["PlatformPackageSetV2RustWorkerSdk"],
+                components["schemas"]["PlatformPackageSetV2RustRuntime"]
             ];
             /** @constant */
             contract_registry_version: "contract-registry-v2";
-            contract_set_sha256: components["schemas"]["PlatformPackageSetV1Sha256"];
+            contract_set_sha256: components["schemas"]["PlatformPackageSetV2Sha256"];
         };
-        PlatformPackageSetV1Version: string;
-        PlatformPackageSetV1Sha256: string;
-        PlatformPackageSetV1GoModule: {
+        PlatformPackageSetV2Version: string;
+        PlatformPackageSetV2Sha256: string;
+        PlatformPackageSetV2GoModule: {
             /** @constant */
             module: "github.com/floegence/redevplugin";
             version: string;
         };
-        PlatformPackageSetV1NpmPackage: {
+        PlatformPackageSetV2NpmPackage: {
             name: string;
-            version: components["schemas"]["PlatformPackageSetV1Version"];
+            version: components["schemas"]["PlatformPackageSetV2Version"];
         };
-        PlatformPackageSetV1NpmContracts: components["schemas"]["PlatformPackageSetV1NpmPackage"] & {
+        PlatformPackageSetV2NpmContracts: components["schemas"]["PlatformPackageSetV2NpmPackage"] & {
             /** @constant */
             name?: "@floegence/redevplugin-contracts";
         };
-        PlatformPackageSetV1NpmUi: components["schemas"]["PlatformPackageSetV1NpmPackage"] & {
+        PlatformPackageSetV2NpmUi: components["schemas"]["PlatformPackageSetV2NpmPackage"] & {
             /** @constant */
             name?: "@floegence/redevplugin-ui";
         };
-        PlatformPackageSetV1RustCrate: {
+        PlatformPackageSetV2RustCrate: {
             name: string;
-            version: components["schemas"]["PlatformPackageSetV1Version"];
+            version: components["schemas"]["PlatformPackageSetV2Version"];
             /** @enum {unknown} */
-            role: "contracts" | "ipc" | "wasm_abi" | "target_classifier" | "worker_sdk" | "runtime";
+            role: "contracts" | "ipc" | "wasm_abi" | "worker_sdk" | "runtime";
         };
-        PlatformPackageSetV1RustContracts: components["schemas"]["PlatformPackageSetV1RustCrate"] & {
+        PlatformPackageSetV2RustContracts: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
             /** @constant */
             name?: "redevplugin-contracts";
             /** @constant */
             role?: "contracts";
         };
-        PlatformPackageSetV1RustIpc: components["schemas"]["PlatformPackageSetV1RustCrate"] & {
+        PlatformPackageSetV2RustIpc: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
             /** @constant */
             name?: "redevplugin-ipc";
             /** @constant */
             role?: "ipc";
         };
-        PlatformPackageSetV1RustWasmAbi: components["schemas"]["PlatformPackageSetV1RustCrate"] & {
+        PlatformPackageSetV2RustWasmAbi: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
             /** @constant */
             name?: "redevplugin-wasm-abi";
             /** @constant */
             role?: "wasm_abi";
         };
-        PlatformPackageSetV1RustTargetClassifier: components["schemas"]["PlatformPackageSetV1RustCrate"] & {
-            /** @constant */
-            name?: "redevplugin-target-classifier";
-            /** @constant */
-            role?: "target_classifier";
-        };
-        PlatformPackageSetV1RustWorkerSdk: components["schemas"]["PlatformPackageSetV1RustCrate"] & {
+        PlatformPackageSetV2RustWorkerSdk: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
             /** @constant */
             name?: "redevplugin-worker-sdk";
             /** @constant */
             role?: "worker_sdk";
         };
-        PlatformPackageSetV1RustRuntime: components["schemas"]["PlatformPackageSetV1RustCrate"] & {
+        PlatformPackageSetV2RustRuntime: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
             /** @constant */
             name?: "redevplugin-runtime";
             /** @constant */
@@ -3431,27 +3011,11 @@ export interface components {
             publisher_id: components["schemas"]["HostCapabilityPinV1Id"];
             contract_id: components["schemas"]["HostCapabilityPinV1Id"];
             contract_version: components["schemas"]["HostCapabilityPinV1Semver"];
-            artifact_ref: components["schemas"]["HostCapabilityPinV1ArtifactRef"];
             artifact_sha256: components["schemas"]["HostCapabilityPinV1Sha256"];
-            manifest_ref: components["schemas"]["HostCapabilityPinV1ArtifactRef"];
-            manifest_sha256: components["schemas"]["HostCapabilityPinV1Sha256"];
-            signature_ref: components["schemas"]["HostCapabilityPinV1ArtifactRef"];
-            signature_sha256: components["schemas"]["HostCapabilityPinV1Sha256"];
-            signature_key_id: components["schemas"]["HostCapabilityPinV1Id"];
-            signature_policy_epoch: components["schemas"]["HostCapabilityPinV1DecimalEpoch"];
-            signature_revocation_epoch: components["schemas"]["HostCapabilityPinV1DecimalEpoch"];
-            compatibility_ref: components["schemas"]["HostCapabilityPinV1ArtifactRef"];
-            compatibility_sha256: components["schemas"]["HostCapabilityPinV1Sha256"];
-            generated_client_ref: components["schemas"]["HostCapabilityPinV1ArtifactRef"];
-            generated_client_sha256: components["schemas"]["HostCapabilityPinV1Sha256"];
-            notices_ref: components["schemas"]["HostCapabilityPinV1ArtifactRef"];
-            notices_sha256: components["schemas"]["HostCapabilityPinV1Sha256"];
         };
         HostCapabilityPinV1Id: string;
         HostCapabilityPinV1Semver: string;
-        HostCapabilityPinV1ArtifactRef: string;
         HostCapabilityPinV1Sha256: string;
-        HostCapabilityPinV1DecimalEpoch: string;
         OpaqueSurfaceDocumentV3: {
             /** @constant */
             schema_version: "redevplugin.opaque_surface_document.v3";
@@ -3508,7 +3072,7 @@ export interface components {
                 "application/json": components["schemas"]["MutationPlatformErrorResponse"];
             };
         };
-        /** @description Typed plugin method result. Subscriptions always bind one operation and one stream. */
+        /** @description Typed plugin method result. Every asynchronous invocation returns one execution identity. */
         RPCResponse: {
             headers: {
                 [name: string]: unknown;
@@ -3553,33 +3117,6 @@ export interface components {
                 "application/json": components["schemas"]["SurfaceAssetSuccessResponse"];
             };
         };
-        /** @description Trusted-parent stream redemption response. Stream tickets remain outside the plugin worker. */
-        SurfaceStreamResponse: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["SurfaceStreamSuccessResponse"];
-            };
-        };
-        /** @description Confirms one exact stream delivery so the platform may release its events. */
-        SurfaceStreamAcknowledgementResponse: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["SurfaceStreamAcknowledgementSuccessResponse"];
-            };
-        };
-        /** @description Closed sandbox-safe operation status projection. */
-        PluginOperationSnapshotResponse: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["PluginOperationSnapshotSuccessResponse"];
-            };
-        };
         /** @description Surface revocation response. */
         SurfaceDisposeResponse: {
             headers: {
@@ -3607,24 +3144,6 @@ export interface components {
                 "application/json": components["schemas"]["PluginRecordSuccessResponse"];
             };
         };
-        /** @description Durable release installation status and authoritative terminal result. */
-        ReleaseInstallOperationResponse: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["ReleaseInstallOperationSuccessResponse"];
-            };
-        };
-        /** @description Owner-scoped durable release installation operations. */
-        ReleaseInstallOperationListResponse: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["ReleaseInstallOperationListSuccessResponse"];
-            };
-        };
         /** @description Immutable server-computed package inspection and confirmation boundary. */
         ExternalPackageInspectionResponse: {
             headers: {
@@ -3634,13 +3153,13 @@ export interface components {
                 "application/json": components["schemas"]["ExternalPackageInspectionSuccessResponse"];
             };
         };
-        /** @description External package commit reconciliation result with explicit trust, approval, provenance, and update facts. */
-        ExternalPackageCommitResponse: {
+        /** @description Installed external package with explicit trust, approval, provenance, and update facts. */
+        InstalledExternalPackageResponse: {
             headers: {
                 [name: string]: unknown;
             };
             content: {
-                "application/json": components["schemas"]["ExternalPackageCommitSuccessResponse"];
+                "application/json": components["schemas"]["InstalledExternalPackageSuccessResponse"];
             };
         };
         /** @description Installed plugin catalog response with typed registry records. */
@@ -3724,22 +3243,31 @@ export interface components {
                 "application/json": components["schemas"]["RetainedDataCleanupSuccessResponse"];
             };
         };
-        /** @description Host-owned operation record with its immutable execution binding. */
-        OperationRecordResponse: {
+        /** @description Host-owned execution state. */
+        ExecutionResponse: {
             headers: {
                 [name: string]: unknown;
             };
             content: {
-                "application/json": components["schemas"]["OperationRecordSuccessResponse"];
+                "application/json": components["schemas"]["ExecutionSuccessResponse"];
             };
         };
-        /** @description Host-owned operation records with immutable execution bindings. */
-        OperationListResponse: {
+        /** @description Host-owned execution records. */
+        ExecutionListResponse: {
             headers: {
                 [name: string]: unknown;
             };
             content: {
-                "application/json": components["schemas"]["OperationListSuccessResponse"];
+                "application/json": components["schemas"]["ExecutionListSuccessResponse"];
+            };
+        };
+        /** @description Ordered events from the requested execution cursor. */
+        ExecutionEventListResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ExecutionEventListSuccessResponse"];
             };
         };
         /** @description Runtime manager and shard health. */
@@ -3760,13 +3288,22 @@ export interface components {
                 "application/json": components["schemas"]["RuntimeStopSuccessResponse"];
             };
         };
-        /** @description Enabled plugin runtime refresh result. */
-        RuntimeRefreshResponse: {
+        /** @description Idempotent Host-owned enabled-plugin recovery snapshot. */
+        RecoverySnapshotResponse: {
             headers: {
                 [name: string]: unknown;
             };
             content: {
-                "application/json": components["schemas"]["RuntimeRefreshSuccessResponse"];
+                "application/json": components["schemas"]["RecoverySnapshotSuccessResponse"];
+            };
+        };
+        /** @description Recovery result for one explicitly retried plugin. */
+        PluginRecoveryResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["PluginRecoverySuccessResponse"];
             };
         };
         /** @description Plugin data export result. */
@@ -3906,7 +3443,7 @@ export interface components {
         };
     };
     parameters: {
-        OperationID: string;
+        ExecutionID: string;
         PluginInstanceID: string;
         SHA256Digest: string;
         RequestID: string;
@@ -3918,24 +3455,14 @@ export interface components {
                 "application/json": components["schemas"]["InspectExternalPackageRequest"];
             };
         };
-        CommitExternalPackageRequest: {
+        InstallInspectedPackageRequest: {
             content: {
-                "application/json": components["schemas"]["CommitExternalPackageRequest"];
-            };
-        };
-        QueryExternalPackageCommitRequest: {
-            content: {
-                "application/json": components["schemas"]["QueryExternalPackageCommitRequest"];
+                "application/json": components["schemas"]["InstallInspectedPackageRequest"];
             };
         };
         InstallReleaseRefRequest: {
             content: {
                 "application/json": components["schemas"]["InstallReleaseRefRequest"];
-            };
-        };
-        StartReleaseInstallOperationRequest: {
-            content: {
-                "application/json": components["schemas"]["StartReleaseInstallOperationRequest"];
             };
         };
         UpdateReleaseRefRequest: {
@@ -3978,6 +3505,11 @@ export interface components {
                 "application/json": components["schemas"]["EmptyRequest"];
             };
         };
+        RetryPluginRecoveryRequest: {
+            content: {
+                "application/json": components["schemas"]["RetryPluginRecoveryRequest"];
+            };
+        };
         EmptyQueryRequest: {
             content: {
                 "application/json": components["schemas"]["EmptyQueryRequest"];
@@ -3988,9 +3520,14 @@ export interface components {
                 "application/json": components["schemas"]["ListIntentsQueryRequest"];
             };
         };
-        ListOperationsQueryRequest: {
+        ListExecutionsRequest: {
             content: {
-                "application/json": components["schemas"]["ListOperationsQueryRequest"];
+                "application/json": components["schemas"]["ListExecutionsRequest"];
+            };
+        };
+        StartReleaseInstallExecutionRequest: {
+            content: {
+                "application/json": components["schemas"]["StartReleaseInstallExecutionRequest"];
             };
         };
         ListRetainedDataQueryRequest: {
@@ -4033,24 +3570,14 @@ export interface components {
                 "application/json": components["schemas"]["ReadSurfaceAssetRequest"];
             };
         };
-        ReadSurfaceStreamRequest: {
+        ListExecutionEventsRequest: {
             content: {
-                "application/json": components["schemas"]["ReadSurfaceStreamRequest"];
+                "application/json": components["schemas"]["ListExecutionEventsRequest"];
             };
         };
-        AcknowledgeSurfaceStreamRequest: {
+        CancelExecutionRequest: {
             content: {
-                "application/json": components["schemas"]["AcknowledgeSurfaceStreamRequest"];
-            };
-        };
-        CancelSurfaceOperationRequest: {
-            content: {
-                "application/json": components["schemas"]["CancelSurfaceOperationRequest"];
-            };
-        };
-        GetSurfaceOperationRequest: {
-            content: {
-                "application/json": components["schemas"]["GetSurfaceOperationRequest"];
+                "application/json": components["schemas"]["CancelExecutionRequest"];
             };
         };
         RejectSurfaceConfirmationRequest: {
@@ -4076,11 +3603,6 @@ export interface components {
         InvokeIntentRequest: {
             content: {
                 "application/json": components["schemas"]["InvokeIntentRequest"];
-            };
-        };
-        CancelOperationRequest: {
-            content: {
-                "application/json": components["schemas"]["CancelOperationRequest"];
             };
         };
         StartRuntimeRequest: {
@@ -4247,30 +3769,17 @@ export interface operations {
             default: components["responses"]["MutationPlatformErrorResponse"];
         };
     };
-    commitExternalPackage: {
+    installInspectedPackage: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: components["requestBodies"]["CommitExternalPackageRequest"];
+        requestBody: components["requestBodies"]["InstallInspectedPackageRequest"];
         responses: {
-            200: components["responses"]["ExternalPackageCommitResponse"];
+            200: components["responses"]["InstalledExternalPackageResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
-        };
-    };
-    queryExternalPackageCommit: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: components["requestBodies"]["QueryExternalPackageCommitRequest"];
-        responses: {
-            200: components["responses"]["ExternalPackageCommitResponse"];
-            default: components["responses"]["PlatformErrorResponse"];
         };
     };
     installReleaseRef: {
@@ -4284,62 +3793,6 @@ export interface operations {
         responses: {
             200: components["responses"]["PluginRecordResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
-        };
-    };
-    listReleaseInstallOperations: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: components["responses"]["ReleaseInstallOperationListResponse"];
-            default: components["responses"]["PlatformErrorResponse"];
-        };
-    };
-    startReleaseInstallOperation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: components["requestBodies"]["StartReleaseInstallOperationRequest"];
-        responses: {
-            200: components["responses"]["ReleaseInstallOperationResponse"];
-            default: components["responses"]["MutationPlatformErrorResponse"];
-        };
-    };
-    getReleaseInstallOperation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                operation_id: components["parameters"]["OperationID"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: components["responses"]["ReleaseInstallOperationResponse"];
-            default: components["responses"]["PlatformErrorResponse"];
-        };
-    };
-    getReleaseInstallOperationByRequest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                request_id: components["parameters"]["RequestID"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: components["responses"]["ReleaseInstallOperationResponse"];
-            default: components["responses"]["PlatformErrorResponse"];
         };
     };
     enablePlugin: {
@@ -4552,66 +4005,6 @@ export interface operations {
             default: components["responses"]["PlatformErrorResponse"];
         };
     };
-    readPreparedSurfaceStream: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                surface_instance_id: components["parameters"]["SurfaceInstanceID"];
-            };
-            cookie?: never;
-        };
-        requestBody: components["requestBodies"]["ReadSurfaceStreamRequest"];
-        responses: {
-            200: components["responses"]["SurfaceStreamResponse"];
-            default: components["responses"]["PlatformErrorResponse"];
-        };
-    };
-    acknowledgePreparedSurfaceStream: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                surface_instance_id: components["parameters"]["SurfaceInstanceID"];
-            };
-            cookie?: never;
-        };
-        requestBody: components["requestBodies"]["AcknowledgeSurfaceStreamRequest"];
-        responses: {
-            200: components["responses"]["SurfaceStreamAcknowledgementResponse"];
-            default: components["responses"]["MutationPlatformErrorResponse"];
-        };
-    };
-    cancelSurfacePluginOperation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                surface_instance_id: components["parameters"]["SurfaceInstanceID"];
-            };
-            cookie?: never;
-        };
-        requestBody: components["requestBodies"]["CancelSurfaceOperationRequest"];
-        responses: {
-            200: components["responses"]["OperationRecordResponse"];
-            default: components["responses"]["MutationPlatformErrorResponse"];
-        };
-    };
-    getSurfacePluginOperationSnapshot: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                surface_instance_id: components["parameters"]["SurfaceInstanceID"];
-            };
-            cookie?: never;
-        };
-        requestBody: components["requestBodies"]["GetSurfaceOperationRequest"];
-        responses: {
-            200: components["responses"]["PluginOperationSnapshotResponse"];
-            default: components["responses"]["PlatformErrorResponse"];
-        };
-    };
     rejectSurfacePluginConfirmation: {
         parameters: {
             query?: never;
@@ -4694,47 +4087,75 @@ export interface operations {
             default: components["responses"]["MutationPlatformErrorResponse"];
         };
     };
-    listPluginOperations: {
+    listPluginExecutions: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: components["requestBodies"]["ListOperationsQueryRequest"];
+        requestBody: components["requestBodies"]["ListExecutionsRequest"];
         responses: {
-            200: components["responses"]["OperationListResponse"];
+            200: components["responses"]["ExecutionListResponse"];
             default: components["responses"]["PlatformErrorResponse"];
         };
     };
-    getPluginOperation: {
+    startReleaseInstallExecution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["StartReleaseInstallExecutionRequest"];
+        responses: {
+            200: components["responses"]["ExecutionResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    getPluginExecution: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                operation_id: components["parameters"]["OperationID"];
+                execution_id: components["parameters"]["ExecutionID"];
             };
             cookie?: never;
         };
         requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
-            200: components["responses"]["OperationRecordResponse"];
+            200: components["responses"]["ExecutionResponse"];
             default: components["responses"]["PlatformErrorResponse"];
         };
     };
-    cancelPluginOperation: {
+    cancelPluginExecution: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                operation_id: components["parameters"]["OperationID"];
+                execution_id: components["parameters"]["ExecutionID"];
             };
             cookie?: never;
         };
-        requestBody: components["requestBodies"]["CancelOperationRequest"];
+        requestBody: components["requestBodies"]["CancelExecutionRequest"];
         responses: {
-            200: components["responses"]["OperationRecordResponse"];
+            200: components["responses"]["ExecutionResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    listPluginExecutionEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                execution_id: components["parameters"]["ExecutionID"];
+            };
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["ListExecutionEventsRequest"];
+        responses: {
+            200: components["responses"]["ExecutionEventListResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
         };
     };
     startPluginRuntime: {
@@ -4763,7 +4184,7 @@ export interface operations {
             default: components["responses"]["MutationPlatformErrorResponse"];
         };
     };
-    refreshEnabledPluginRuntimeState: {
+    recoverEnabledPlugins: {
         parameters: {
             query?: never;
             header?: never;
@@ -4772,7 +4193,20 @@ export interface operations {
         };
         requestBody: components["requestBodies"]["EmptyRequest"];
         responses: {
-            200: components["responses"]["RuntimeRefreshResponse"];
+            200: components["responses"]["RecoverySnapshotResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    retryPluginRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["RetryPluginRecoveryRequest"];
+        responses: {
+            200: components["responses"]["PluginRecoveryResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
         };
     };

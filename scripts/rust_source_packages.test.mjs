@@ -71,7 +71,6 @@ test("Rust source package metadata matches the closed platform topology", () => 
     { name: "redevplugin-contracts", role: "contracts" },
     { name: "redevplugin-ipc", role: "ipc" },
     { name: "redevplugin-wasm-abi", role: "wasm_abi" },
-    { name: "redevplugin-target-classifier", role: "target_classifier" },
     { name: "redevplugin-worker-sdk", role: "worker_sdk" },
     { name: "redevplugin-runtime", role: "runtime" },
   ]);
@@ -81,7 +80,6 @@ test("Rust source package metadata matches the closed platform topology", () => 
 test("crate-local fixtures remain exact copies of their canonical repository inputs", () => {
   for (const [canonical, local] of [
     ["testdata/contracts/release-signing-v1.json", "crates/redevplugin-contracts/tests/fixtures/release-signing-v1.json"],
-    ["testdata/contracts/release-signing-ledger-evidence-v1.json", "crates/redevplugin-contracts/tests/fixtures/release-signing-ledger-evidence-v1.json"],
     ["testdata/contracts/runtime-lease-signature-v1.json", "crates/redevplugin-ipc/testdata/runtime-lease-signature-v1.json"],
     ["testdata/contracts/runtime-lease-signature-v1-invocation.json", "crates/redevplugin-ipc/testdata/runtime-lease-signature-v1-invocation.json"],
     ["testdata/contracts/ipc/missing_required.json", "crates/redevplugin-ipc/testdata/ipc/missing_required.json"],
@@ -198,7 +196,7 @@ test("all Rust source crates package deterministically and test from an isolated
       validDigest: /^[0-9a-f]{64}$/.test(sha256),
     })), rustSourcePackages.map(({ name }) => ({
       name,
-      version: "0.7.27",
+      version: "1.0.0",
       validSize: true,
       validDigest: true,
     })));

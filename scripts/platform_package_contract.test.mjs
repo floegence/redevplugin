@@ -126,20 +126,20 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
 
   assert.equal(registryBytes.toString("utf8"), `${JSON.stringify(registry, null, 2)}\n`);
   assert.deepEqual(registry.artifacts.map(({ id }) => id), expectedIDs);
-  assert.equal(registry.artifacts.length, 60);
+  assert.equal(registry.artifacts.length, 44);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-metadata-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "source-policy-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "source-revocations-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-root-delegation-schema"), true);
-  assert.equal(registry.artifacts.some(({ id }) => id === "release-signing-ledger-evidence-schema"), true);
+  assert.equal(registry.artifacts.some(({ id }) => id === "release-signing-ledger-evidence-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-source-policy-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-source-policy-pointer-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-revocation-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-revocation-pointer-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "contract-registry"), false);
   assert.equal(registry.artifacts.some(({ path }) => path === "spec/plugin/contract-registry-v2.json"), false);
-  assert.equal(registry.artifacts.some(({ path }) => path === "spec/plugin/platform-package-set-v1.json"), false);
+  assert.equal(registry.artifacts.some(({ path }) => path === "spec/plugin/platform-package-set-v2.json"), false);
   assert.match(read("pkg/host/host.go").toString("utf8"), /type ReleaseArtifactResolver interface/);
 
   const paths = new Set();
@@ -158,7 +158,7 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
     assert.equal(sha256(read(artifact.path)), artifact.sha256);
   }
 
-  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v1.json"));
+  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v2.json"));
   const independentDigest = independentContractSetSHA256(registryBytes, registry.artifacts);
   assert.equal(packageSet.contract_set_sha256, independentDigest);
   assert.equal(computeContractSetSHA256(registryBytes, registry.artifacts), independentDigest);
@@ -192,7 +192,7 @@ test("contract registry v2 rejects malformed, ambiguous, and cyclic inputs", () 
   for (const forbiddenPath of [
     "spec/plugin/../../../../etc/passwd",
     "spec/plugin/contract-registry-v2.json",
-    "spec/plugin/platform-package-set-v1.json",
+    "spec/plugin/platform-package-set-v2.json",
   ]) {
     const invalidPath = clone(registry);
     invalidPath.artifacts[0].path = forbiddenPath;
@@ -229,29 +229,28 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = decodeContractRegistry(registryBytes);
   const digest = independentContractSetSHA256(registryBytes, registry.artifacts);
-  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v1.json"), digest);
+  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v2.json"), digest);
   const platformVersion = readJSON("spec/plugin/platform-version.json");
 
   assert.deepEqual(platformVersion, {
     schema_version: "redevplugin.platform_version.v1",
-    platform_version: "0.7.27",
+    platform_version: "1.0.0",
   });
   assert.equal(packageSet.platform_version, platformVersion.platform_version);
   assert.deepEqual(packageSet.go_module, {
     module: "github.com/floegence/redevplugin",
-    version: "v0.7.27",
+    version: "v1.0.0",
   });
   assert.deepEqual(packageSet.npm_packages, [
-    { name: "@floegence/redevplugin-contracts", version: "0.7.27" },
-    { name: "@floegence/redevplugin-ui", version: "0.7.27" },
+    { name: "@floegence/redevplugin-contracts", version: "1.0.0" },
+    { name: "@floegence/redevplugin-ui", version: "1.0.0" },
   ]);
   assert.deepEqual(packageSet.rust_crates, [
-    { name: "redevplugin-contracts", version: "0.7.27", role: "contracts" },
-    { name: "redevplugin-ipc", version: "0.7.27", role: "ipc" },
-    { name: "redevplugin-wasm-abi", version: "0.7.27", role: "wasm_abi" },
-    { name: "redevplugin-target-classifier", version: "0.7.27", role: "target_classifier" },
-    { name: "redevplugin-worker-sdk", version: "0.7.27", role: "worker_sdk" },
-    { name: "redevplugin-runtime", version: "0.7.27", role: "runtime" },
+    { name: "redevplugin-contracts", version: "1.0.0", role: "contracts" },
+    { name: "redevplugin-ipc", version: "1.0.0", role: "ipc" },
+    { name: "redevplugin-wasm-abi", version: "1.0.0", role: "wasm_abi" },
+    { name: "redevplugin-worker-sdk", version: "1.0.0", role: "worker_sdk" },
+    { name: "redevplugin-runtime", version: "1.0.0", role: "runtime" },
   ]);
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
@@ -294,7 +293,7 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = decodeContractRegistry(registryBytes);
   const digest = independentContractSetSHA256(registryBytes, registry.artifacts);
-  const raw = read("spec/plugin/platform-package-set-v1.json");
+  const raw = read("spec/plugin/platform-package-set-v2.json");
   const packageSet = decodePlatformPackageSet(raw, digest);
   const invalid = [];
 
@@ -307,7 +306,7 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   invalid.push(wrongRole);
 
   const wrongVersion = clone(packageSet);
-  wrongVersion.rust_crates[5].version = "0.6.0";
+  wrongVersion.rust_crates[4].version = "0.6.0";
   invalid.push(wrongVersion);
 
   const wrongDigest = clone(packageSet);
@@ -330,8 +329,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   }
   assert.throws(() => decodePlatformPackageSet(Buffer.from(`${raw.toString("utf8")} null`, "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
-    '"platform_version": "0.7.27",',
-    '"platform_version": "0.7.27",\n  "platform_version": "0.7.27",',
+    '"platform_version": "1.0.0",',
+    '"platform_version": "1.0.0",\n  "platform_version": "1.0.0",',
   ), "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
     '"name": "@floegence/redevplugin-contracts",',
@@ -339,12 +338,19 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   ), "utf8"), digest));
 });
 
+test("release workflow derives the publication closure from package-set v2", () => {
+  const workflow = read(".github/workflows/release.yml").toString("utf8");
+  assert.match(workflow, /spec\/plugin\/platform-package-set-v2\.json/);
+  assert.doesNotMatch(workflow, /redevplugin-target-classifier/);
+  assert.doesNotMatch(workflow, /len\(manifest\["artifacts"\]\) != 8/);
+});
+
 test("platform publication schema and decoder cannot describe product artifacts", () => {
   const schema = readJSON("spec/plugin/platform-package-publication-v1.schema.json");
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = decodeContractRegistry(registryBytes);
   const digest = independentContractSetSHA256(registryBytes, registry.artifacts);
-  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v1.json"), digest);
+  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v2.json"), digest);
   const publication = validPublication(packageSet);
 
   assert.deepEqual(Object.keys(schema.properties).sort(compareASCII), [
@@ -360,7 +366,7 @@ test("platform publication schema and decoder cannot describe product artifacts"
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.properties.schema_version.const, "redevplugin.platform_package_publication.v1");
   assert.equal(schema.properties.npm_packages.prefixItems.length, 2);
-  assert.equal(schema.properties.rust_crates.prefixItems.length, 6);
+  assert.equal(schema.properties.rust_crates.prefixItems.length, 5);
   assert.equal(schema.properties.npm_packages.items, false);
   assert.equal(schema.properties.rust_crates.items, false);
   assert.deepEqual(decodePlatformPackagePublication(encode(publication), digest), publication);

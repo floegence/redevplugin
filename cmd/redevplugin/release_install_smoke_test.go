@@ -8,14 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/remoterelease"
 )
@@ -50,12 +51,6 @@ type unusedHostRequirementPolicy struct{}
 
 func (unusedHostRequirementPolicy) SelectHostRequirement(context.Context, host.HostRequirementSelectionRequest) (host.HostRequirementSelection, error) {
 	return host.HostRequirementSelection{}, errors.New("unexpected host requirement selection")
-}
-
-type unusedCapabilityArtifactResolver struct{}
-
-func (unusedCapabilityArtifactResolver) ResolveCapabilityContract(context.Context, host.CapabilityContractResolveRequest) (host.ResolvedCapabilityContractArtifact, error) {
-	return host.ResolvedCapabilityContractArtifact{}, errors.New("unexpected capability artifact resolution")
 }
 
 func TestReleaseInstallOperationsReuseAssetCacheAndRecoverDiagnostics(t *testing.T) {
@@ -102,114 +97,73 @@ func TestReleaseInstallOperationsReuseAssetCacheAndRecoverDiagnostics(t *testing
 		t.Fatal(err)
 	}
 
-	registryPath := filepath.Join(root, "registry.sqlite")
-	pluginDataRoot := filepath.Join(root, "plugin-data")
-	firstSessionRoot := filepath.Join(root, "first-host")
-	if err := os.Mkdir(firstSessionRoot, 0o700); err != nil {
+	stateRoot := filepath.Join(root, "host-state")
+	if err := os.Mkdir(stateRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := registry.NewSQLiteStore(ctx, registryPath)
+	config, err := newEphemeralCLIAdapters(stateRoot)
 	if err != nil {
-		t.Fatal(err)
-	}
-	pluginDataStore, err := plugindata.Open(ctx, pluginDataRoot, store)
-	if err != nil {
-		_ = store.Close()
-		t.Fatal(err)
-	}
-	config, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, firstSessionRoot, store, pluginDataStore)
-	if err != nil {
-		_ = pluginDataStore.Close()
-		_ = store.Close()
 		t.Fatal(err)
 	}
 	config.Release = &host.ReleaseModule{
 		Trust: fixture.ServiceSet, ReleaseArtifactResolver: assetSet,
-		HostRequirements: unusedHostRequirementPolicy{}, CapabilityContractArtifacts: unusedCapabilityArtifactResolver{},
+		HostRequirements: unusedHostRequirementPolicy{},
 	}
 	installedHost, err := host.Open(ctx, config)
 	if err != nil {
-		_ = sessionScopeStore.Close()
-		_ = pluginDataStore.Close()
-		_ = store.Close()
 		t.Fatal(err)
 	}
 
 	ref := smokeReleaseRef(fixture)
-	first := runReleaseInstallSmokeOperation(t, installedHost, ctx, "request_install_smoke_first", "plugini_install_smoke_first", ref)
+	first := runReleaseInstallSmokeExecution(t, installedHost, ctx, "request_install_smoke_first", "plugini_install_smoke_first", ref)
 	if got := fetcher.requestCount(); got != 3 {
 		t.Fatalf("first install network fetches = %d, want 3", got)
 	}
-	assertReleaseInstallSmokeEvidence(t, first, false, int64(len(fixture.PackageBytes)))
+	assertReleaseInstallSmokeEvidence(t, installedHost, ctx, first, int64(len(fixture.PackageBytes)))
 
-	second := runReleaseInstallSmokeOperation(t, installedHost, ctx, "request_install_smoke_second", "plugini_install_smoke_second", ref)
+	second := runReleaseInstallSmokeExecution(t, installedHost, ctx, "request_install_smoke_second", "plugini_install_smoke_second", ref)
 	if got := fetcher.requestCount(); got != 3 {
 		t.Fatalf("second install network fetches = %d, want cache reuse with 3 total", got)
 	}
-	assertReleaseInstallSmokeEvidence(t, second, true, int64(len(fixture.PackageBytes)))
+	assertReleaseInstallSmokeEvidence(t, installedHost, ctx, second, int64(len(fixture.PackageBytes)))
 
 	if err := installedHost.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionScopeStore.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopenedStore, err := registry.NewSQLiteStore(ctx, registryPath)
+	reopenedConfig, err := newEphemeralCLIAdapters(stateRoot)
 	if err != nil {
-		t.Fatal(err)
-	}
-	reopenedPluginData, err := plugindata.Open(ctx, pluginDataRoot, reopenedStore)
-	if err != nil {
-		_ = reopenedStore.Close()
-		t.Fatal(err)
-	}
-	secondSessionRoot := filepath.Join(root, "second-host")
-	if err := os.Mkdir(secondSessionRoot, 0o700); err != nil {
-		_ = reopenedPluginData.Close()
-		_ = reopenedStore.Close()
-		t.Fatal(err)
-	}
-	reopenedConfig, reopenedSessionScopes, err := newEphemeralCLIAdapters(ctx, secondSessionRoot, reopenedStore, reopenedPluginData)
-	if err != nil {
-		_ = reopenedPluginData.Close()
-		_ = reopenedStore.Close()
 		t.Fatal(err)
 	}
 	reopenedHost, err := host.Open(ctx, reopenedConfig)
 	if err != nil {
-		_ = reopenedSessionScopes.Close()
-		_ = reopenedPluginData.Close()
-		_ = reopenedStore.Close()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = reopenedHost.Close()
-		_ = reopenedSessionScopes.Close()
-		_ = reopenedStore.Close()
 	})
 
-	for _, before := range []registry.ReleaseInstallOperation{first, second} {
-		after, err := reopenedHost.GetReleaseInstallOperation(ctx, before.OperationID)
+	for _, before := range []execution.Execution{first, second} {
+		after, err := reopenedHost.GetExecution(ctx, before.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if after.Status != registry.ReleaseInstallSucceeded || after.Activation.Status != registry.ReleaseInstallActivationEnabled ||
-			after.PluginRecord == nil || after.PluginRecord.EnableState != registry.EnableEnabled {
-			t.Fatalf("reopened operation = %#v", after)
+		if after.Status != execution.StatusCompleted || after.Cursor != before.Cursor || after.TerminalAt == nil {
+			t.Fatalf("reopened execution = %#v", after)
 		}
-		if !reflect.DeepEqual(after.PhaseDiagnostics, before.PhaseDiagnostics) {
-			t.Fatalf("reopened diagnostics changed:\nbefore=%#v\nafter=%#v", before.PhaseDiagnostics, after.PhaseDiagnostics)
+		beforeEvents, err := installedExecutionEvents(ctx, reopenedHost, before.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if uint64(len(beforeEvents)) != after.Cursor {
+			t.Fatalf("reopened event count = %d, cursor = %d", len(beforeEvents), after.Cursor)
 		}
 	}
+	assertInstalledPluginsEnabled(t, reopenedHost, ctx, first.PluginInstanceID, second.PluginInstanceID)
 }
 
-func runReleaseInstallSmokeOperation(t *testing.T, pluginHost *host.Host, ctx context.Context, requestID, pluginInstanceID string, ref host.PluginReleaseRef) registry.ReleaseInstallOperation {
+func runReleaseInstallSmokeExecution(t *testing.T, pluginHost *host.Host, ctx context.Context, requestID, pluginInstanceID string, ref host.PluginReleaseRef) execution.Execution {
 	t.Helper()
-	started, err := pluginHost.StartReleaseInstallOperation(ctx, host.StartReleaseInstallOperationRequest{
+	started, err := pluginHost.StartReleaseInstallExecution(ctx, host.StartReleaseInstallExecutionRequest{
 		RequestID: requestID, PluginInstanceID: pluginInstanceID, ReleaseRef: ref, Now: time.Now().UTC(),
 	})
 	if err != nil {
@@ -217,58 +171,74 @@ func runReleaseInstallSmokeOperation(t *testing.T, pluginHost *host.Host, ctx co
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		operation, err := pluginHost.GetReleaseInstallOperation(ctx, started.OperationID)
+		current, err := pluginHost.GetExecution(ctx, started.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if operation.Status == registry.ReleaseInstallSucceeded || operation.Status == registry.ReleaseInstallFailed {
-			return operation
+		if current.Status == execution.StatusCompleted || current.Status == execution.StatusFailed {
+			return current
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("release install operation %q did not terminate", started.OperationID)
-	return registry.ReleaseInstallOperation{}
+	t.Fatalf("release install execution %q did not terminate", started.ID)
+	return execution.Execution{}
 }
 
-func assertReleaseInstallSmokeEvidence(t *testing.T, operation registry.ReleaseInstallOperation, wantCacheHit bool, packageSize int64) {
+func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx context.Context, current execution.Execution, packageSize int64) {
 	t.Helper()
-	if operation.Status != registry.ReleaseInstallSucceeded || operation.Activation.Status != registry.ReleaseInstallActivationEnabled ||
-		operation.PluginRecord == nil || operation.PluginRecord.EnableState != registry.EnableEnabled {
-		t.Fatalf("terminal operation = %#v", operation)
+	if current.Status != execution.StatusCompleted || current.TerminalAt == nil || current.FailureCode != "" {
+		t.Fatalf("terminal execution = %#v", current)
+	}
+	events, err := installedExecutionEvents(ctx, pluginHost, current.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
 	wantPhases := []string{
-		"queued", "fetch_trust_evidence", "fetch_release_evidence", "download_package", "verify_hashes",
-		"verify_signatures_ledger", "fetch_capability_evidence", "commit", "enable", "complete",
+		"fetch_trust_evidence", "fetch_release_evidence", "download_package", "verify_hashes",
+		"verify_signatures", "fetch_capability_evidence", "commit", "enable", "complete",
 	}
-	gotPhases := make([]string, 0, len(operation.PhaseDiagnostics))
-	var releaseEvidenceCacheHit bool
-	var packageDownload *registry.ReleaseInstallPhaseDiagnostic
-	for index := range operation.PhaseDiagnostics {
-		diagnostic := &operation.PhaseDiagnostics[index]
-		gotPhases = append(gotPhases, diagnostic.Phase)
-		if diagnostic.CompletedAt == nil || diagnostic.DurationMS < 0 {
-			t.Fatalf("incomplete phase diagnostic = %#v", diagnostic)
+	gotPhases := make([]string, 0, len(events))
+	var packageProgress map[string]any
+	for _, event := range events {
+		phase, _ := event.Payload["phase"].(string)
+		if phase == "download_package" {
+			progress, _ := event.Payload["progress"].(map[string]any)
+			if progress["completed"] == float64(packageSize) {
+				packageProgress = progress
+			}
 		}
-		if diagnostic.Phase == "fetch_release_evidence" {
-			releaseEvidenceCacheHit = diagnostic.CacheHit
+		if phase == "" || (len(gotPhases) > 0 && gotPhases[len(gotPhases)-1] == phase) {
+			continue
 		}
-		if diagnostic.Phase == "download_package" {
-			packageDownload = diagnostic
-		}
-		if (diagnostic.Phase == "verify_hashes" || diagnostic.Phase == "verify_signatures_ledger") && diagnostic.DurationMS >= 1000 {
-			t.Fatalf("local verification exceeded one-second budget: %#v", diagnostic)
-		}
+		gotPhases = append(gotPhases, phase)
 	}
 	if !reflect.DeepEqual(gotPhases, wantPhases) {
 		t.Fatalf("phase history = %#v, want %#v", gotPhases, wantPhases)
 	}
-	if releaseEvidenceCacheHit != wantCacheHit {
-		t.Fatalf("release evidence cache hit = %t, want %t", releaseEvidenceCacheHit, wantCacheHit)
+	if packageProgress == nil || packageProgress["kind"] != string(registry.ReleaseInstallProgressBytes) ||
+		packageProgress["completed"] != float64(packageSize) || packageProgress["total"] != float64(packageSize) {
+		t.Fatalf("package download progress = %#v, want bytes=%d", packageProgress, packageSize)
 	}
-	if packageDownload == nil || packageDownload.CacheHit != wantCacheHit ||
-		packageDownload.Progress.Kind != registry.ReleaseInstallProgressBytes ||
-		packageDownload.Progress.Completed != packageSize || packageDownload.Progress.Total != packageSize {
-		t.Fatalf("package download diagnostic = %#v, want bytes=%d cache_hit=%t", packageDownload, packageSize, wantCacheHit)
+	assertInstalledPluginsEnabled(t, pluginHost, ctx, current.PluginInstanceID)
+}
+
+func installedExecutionEvents(ctx context.Context, pluginHost *host.Host, executionID string) ([]execution.Event, error) {
+	return pluginHost.EventsAfter(ctx, executionID, 0, 1000)
+}
+
+func assertInstalledPluginsEnabled(t *testing.T, pluginHost *host.Host, ctx context.Context, pluginInstanceIDs ...string) {
+	t.Helper()
+	inventory, err := pluginHost.ListPluginInventory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pluginInstanceID := range pluginInstanceIDs {
+		index := slices.IndexFunc(inventory, func(item host.PluginInventoryRecord) bool {
+			return item.Plugin.PluginInstanceID == pluginInstanceID
+		})
+		if index < 0 || inventory[index].Plugin.EnableState != registry.EnableEnabled || !inventory[index].ActionState.CanOpen {
+			t.Fatalf("installed plugin %q inventory = %#v", pluginInstanceID, inventory)
+		}
 	}
 }
 

@@ -17,25 +17,15 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/secrets"
-	"github.com/floegence/redevplugin/pkg/sessionscope"
 )
 
 const (
-	devPackageFile       = "installed.redevplugin"
-	devRegistryFile      = "registry.sqlite"
-	devPluginDataDir     = "plugin-data"
-	devSecretsFile       = "secrets.sqlite"
-	devCapabilitiesDir   = "capability-artifacts"
-	devCapabilityKeyFile = "host-capability.public.json"
+	devPackageFile   = "installed.redevplugin"
+	devPluginDataDir = "plugin-data"
+	devSecretsFile   = "secrets.sqlite"
 )
 
 var errDevStateNotInstalled = errors.New("dev plugin is not installed")
-
-type devCapabilitySpec struct {
-	ArtifactRoot  string
-	PinFile       string
-	PublicKeyFile string
-}
 
 type devLifecycleSummary struct {
 	lifecycleSummary
@@ -98,28 +88,7 @@ type devDataSummary struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
-func parseDevCapabilityArgs(args []string) ([]devCapabilitySpec, error) {
-	if len(args) == 0 {
-		return nil, nil
-	}
-	if len(args)%4 != 0 {
-		return nil, errors.New("each --capability requires artifact-root, pin.json, and public.json")
-	}
-	specs := make([]devCapabilitySpec, 0, len(args)/4)
-	for index := 0; index < len(args); index += 4 {
-		if args[index] != "--capability" {
-			return nil, fmt.Errorf("unknown dev-install argument %q", args[index])
-		}
-		specs = append(specs, devCapabilitySpec{
-			ArtifactRoot:  args[index+1],
-			PinFile:       args[index+2],
-			PublicKeyFile: args[index+3],
-		})
-	}
-	return specs, nil
-}
-
-func devInstall(ctx context.Context, stateRoot string, packageFile string, capabilitySpecs []devCapabilitySpec) error {
+func devInstall(ctx context.Context, stateRoot string, packageFile string) error {
 	stateRoot, err := normalizeDevStateRoot(stateRoot)
 	if err != nil {
 		return err
@@ -148,10 +117,6 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string, capab
 	if err != nil {
 		return err
 	}
-	loadedCapabilities, err := loadDevCapabilitySpecs(capabilitySpecs)
-	if err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Dir(stateRoot), 0o700); err != nil {
 		return err
 	}
@@ -169,7 +134,7 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string, capab
 			_ = os.RemoveAll(stagingRoot)
 		}
 	}()
-	harness, err := newDevHarness(ctx, stagingRoot, loadedCapabilities, pluginpkg.NewMemoryAssetStore())
+	harness, err := newDevHarness(ctx, stagingRoot, pluginpkg.NewMemoryAssetStore())
 	if err != nil {
 		return err
 	}
@@ -196,9 +161,6 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string, capab
 	}
 	packagePath := filepath.Join(stagingRoot, devPackageFile)
 	if err := writeBytesFile(packagePath, data, 0o600); err != nil {
-		return err
-	}
-	if err := persistDevCapabilities(stagingRoot, loadedCapabilities); err != nil {
 		return err
 	}
 	if err := harness.Close(); err != nil {
@@ -385,7 +347,7 @@ func devPermissionGrant(ctx context.Context, stateRoot string, permissionID stri
 	if err != nil {
 		return err
 	}
-	plugin, err = harness.registryStore.GetPlugin(ctx, plugin.PluginInstanceID)
+	plugin, err = devPluginRecord(ctx, harness.host, plugin.PluginInstanceID)
 	if err != nil {
 		return err
 	}
@@ -412,7 +374,7 @@ func devPermissionRevoke(ctx context.Context, stateRoot string, permissionID str
 	if err != nil {
 		return err
 	}
-	plugin, err = harness.registryStore.GetPlugin(ctx, plugin.PluginInstanceID)
+	plugin, err = devPluginRecord(ctx, harness.host, plugin.PluginInstanceID)
 	if err != nil {
 		return err
 	}
@@ -578,19 +540,16 @@ func writeDevSecret(action string, stateRoot string, plugin registry.PluginRecor
 }
 
 type devHarness struct {
-	stateRoot     string
-	host          *host.Host
-	registryStore *registry.SQLiteStore
-	pluginData    *plugindata.FileStore
-	secretStore   *secrets.SQLiteStore
-	sessionScopes *sessionscope.SQLiteStore
+	stateRoot   string
+	host        *host.Host
+	secretStore *secrets.SQLiteStore
 }
 
 func (h devHarness) Close() error {
 	if h.host == nil {
 		return nil
 	}
-	return errors.Join(h.host.Close(), h.secretStore.Close(), h.sessionScopes.Close(), h.registryStore.Close())
+	return errors.Join(h.host.Close(), h.secretStore.Close())
 }
 
 func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, registry.PluginRecord, error) {
@@ -610,15 +569,11 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, registry
 	if err := assets.PutOwnedPackage(ctx, &pkg); err != nil {
 		return devHarness{}, registry.PluginRecord{}, err
 	}
-	loadedCapabilities, err := loadPersistedDevCapabilities(stateRoot)
+	harness, err := newDevHarness(ctx, stateRoot, assets)
 	if err != nil {
 		return devHarness{}, registry.PluginRecord{}, err
 	}
-	harness, err := newDevHarness(ctx, stateRoot, loadedCapabilities, assets)
-	if err != nil {
-		return devHarness{}, registry.PluginRecord{}, err
-	}
-	records, err := harness.registryStore.ListPlugins(ctx)
+	records, err := harness.host.ListPlugins(ctx)
 	if err != nil {
 		_ = harness.Close()
 		return devHarness{}, registry.PluginRecord{}, err
@@ -630,179 +585,43 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, registry
 	return harness, records[0], nil
 }
 
-func newDevHarness(ctx context.Context, stateRoot string, loadedCapabilities []loadedHostCapabilityArtifact, assets pluginpkg.AssetStore) (devHarness, error) {
-	registryStore, err := registry.NewSQLiteStore(ctx, filepath.Join(stateRoot, devRegistryFile))
-	if err != nil {
-		return devHarness{}, err
-	}
-	pluginData, err := plugindata.Open(ctx, filepath.Join(stateRoot, devPluginDataDir), registryStore)
-	if err != nil {
-		_ = registryStore.Close()
-		return devHarness{}, err
-	}
+func newDevHarness(ctx context.Context, stateRoot string, assets pluginpkg.AssetStore) (devHarness, error) {
 	secretStore, err := secrets.NewSQLiteStore(ctx, filepath.Join(stateRoot, devSecretsFile))
 	if err != nil {
-		_ = pluginData.Close()
-		_ = registryStore.Close()
 		return devHarness{}, err
 	}
-	capabilities, err := devCapabilityRegistry(loadedCapabilities)
+	capabilities := capability.NewRegistry()
+	adapters, err := newEphemeralCLIAdapters(stateRoot)
 	if err != nil {
 		_ = secretStore.Close()
-		_ = pluginData.Close()
-		_ = registryStore.Close()
 		return devHarness{}, err
 	}
-	adapters, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, stateRoot, registryStore, pluginData)
-	if err != nil {
-		_ = secretStore.Close()
-		_ = pluginData.Close()
-		_ = registryStore.Close()
-		return devHarness{}, err
-	}
-	adapters.Core.Registry = registryStore
 	adapters.Core.Assets = assets
 	adapters.Secrets = &host.SecretsModule{Store: secretStore}
 	adapters.Capability = &host.CapabilityModule{Registry: capabilities}
 	h, err := host.Open(cliContext(ctx), adapters)
 	if err != nil {
-		_ = sessionScopeStore.Close()
 		_ = secretStore.Close()
-		_ = pluginData.Close()
-		_ = registryStore.Close()
 		return devHarness{}, err
 	}
 	return devHarness{
-		stateRoot:     stateRoot,
-		host:          h,
-		registryStore: registryStore,
-		pluginData:    pluginData,
-		secretStore:   secretStore,
-		sessionScopes: sessionScopeStore,
+		stateRoot:   stateRoot,
+		host:        h,
+		secretStore: secretStore,
 	}, nil
 }
 
-type devCapabilityAdapter struct{}
-
-func (devCapabilityAdapter) ProjectTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
-	return capability.TargetDescriptor{Kind: "dev_reference_host", Fields: req.TargetInput}, nil
-}
-
-func (devCapabilityAdapter) Invoke(context.Context, capability.Invocation) (capability.Result, error) {
-	return capability.Result{}, errors.New("dev reference host does not implement this capability")
-}
-
-func loadDevCapabilitySpecs(specs []devCapabilitySpec) ([]loadedHostCapabilityArtifact, error) {
-	loaded := make([]loadedHostCapabilityArtifact, 0, len(specs))
-	for _, spec := range specs {
-		artifact, err := loadVerifiedHostCapability(spec.ArtifactRoot, spec.PinFile, spec.PublicKeyFile)
-		if err != nil {
-			return nil, err
-		}
-		loaded = append(loaded, artifact)
-	}
-	return loaded, nil
-}
-
-func devCapabilityRegistry(loaded []loadedHostCapabilityArtifact) (*capability.Registry, error) {
-	capabilities := capability.NewRegistry()
-	for _, artifact := range loaded {
-		adapter := devCapabilityAdapter{}
-		if err := capabilities.Register(capability.Registration{Contract: artifact.Verified, TargetProjector: adapter, Adapter: adapter}); err != nil {
-			return nil, err
-		}
-	}
-	return capabilities, nil
-}
-
-func persistDevCapabilities(stateRoot string, loaded []loadedHostCapabilityArtifact) error {
-	for _, artifact := range loaded {
-		contract := artifact.Verified.Contract
-		rootRel := filepath.ToSlash(filepath.Join(devCapabilitiesDir, contract.ContractID, contract.ContractVersion))
-		root, err := resolveDevCapabilityStatePath(stateRoot, rootRel)
-		if err != nil {
-			return err
-		}
-		if err := createEmptyDirectory(root); err != nil {
-			return err
-		}
-		for ref, content := range artifact.Bundle.Files {
-			if err := writeArtifactFile(root, ref, content); err != nil {
-				return err
-			}
-		}
-		pinRel := filepath.ToSlash(filepath.Join(rootRel, hostCapabilityPinFile))
-		pinFile, err := resolveDevCapabilityStatePath(stateRoot, pinRel)
-		if err != nil {
-			return err
-		}
-		if err := writeJSONFile(pinFile, artifact.Bundle.Pin, 0o600); err != nil {
-			return err
-		}
-		publicRel := filepath.ToSlash(filepath.Join(rootRel, devCapabilityKeyFile))
-		publicFile, err := resolveDevCapabilityStatePath(stateRoot, publicRel)
-		if err != nil {
-			return err
-		}
-		if err := writeJSONFile(publicFile, artifact.PublicDoc, 0o600); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func loadPersistedDevCapabilities(stateRoot string) ([]loadedHostCapabilityArtifact, error) {
-	capabilitiesRoot := filepath.Join(stateRoot, devCapabilitiesDir)
-	contracts, err := os.ReadDir(capabilitiesRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+func devPluginRecord(ctx context.Context, pluginHost *host.Host, pluginInstanceID string) (registry.PluginRecord, error) {
+	records, err := pluginHost.ListPlugins(ctx)
 	if err != nil {
-		return nil, err
+		return registry.PluginRecord{}, err
 	}
-	loaded := []loadedHostCapabilityArtifact{}
-	for _, contract := range contracts {
-		if !contract.IsDir() {
-			return nil, fmt.Errorf("unexpected capability artifact entry %q", contract.Name())
-		}
-		versionsRoot := filepath.Join(capabilitiesRoot, contract.Name())
-		versions, err := os.ReadDir(versionsRoot)
-		if err != nil {
-			return nil, err
-		}
-		for _, versionEntry := range versions {
-			if !versionEntry.IsDir() {
-				return nil, fmt.Errorf("unexpected capability version entry %q", versionEntry.Name())
-			}
-			artifactRoot := filepath.Join(versionsRoot, versionEntry.Name())
-			artifact, err := loadVerifiedHostCapability(
-				artifactRoot,
-				filepath.Join(artifactRoot, hostCapabilityPinFile),
-				filepath.Join(artifactRoot, devCapabilityKeyFile),
-			)
-			if err != nil {
-				return nil, err
-			}
-			loaded = append(loaded, artifact)
+	for _, record := range records {
+		if record.PluginInstanceID == pluginInstanceID {
+			return record, nil
 		}
 	}
-	return loaded, nil
-}
-
-func resolveDevCapabilityStatePath(stateRoot, relative string) (string, error) {
-	relative = filepath.Clean(filepath.FromSlash(strings.TrimSpace(relative)))
-	if relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", errors.New("dev capability path must stay inside the state root")
-	}
-	rootAbs, err := filepath.Abs(stateRoot)
-	if err != nil {
-		return "", err
-	}
-	resolved := filepath.Join(rootAbs, relative)
-	if !strings.HasPrefix(filepath.Clean(resolved), rootAbs+string(filepath.Separator)) {
-		return "", errors.New("dev capability path escaped the state root")
-	}
-	return resolved, nil
+	return registry.PluginRecord{}, registry.ErrNotFound
 }
 
 func normalizeDevStateRoot(stateRoot string) (string, error) {

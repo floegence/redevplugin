@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn inventory_includes_one_separate_synthetic_registry_contract() {
-    assert_eq!(artifacts().len(), 60);
-    assert_eq!(all().len(), 61);
+    assert_eq!(artifacts().len(), 44);
+    assert_eq!(all().len(), 45);
     assert!(
         artifacts()
             .iter()
@@ -29,13 +29,13 @@ fn inventory_includes_one_separate_synthetic_registry_contract() {
 #[test]
 fn package_set_and_contract_metadata_are_static_and_complete() {
     let package_set = package_set();
-    assert_eq!(package_set.platform_version, "0.7.27");
+    assert_eq!(package_set.platform_version, "1.0.0");
     assert_eq!(
         package_set.go_module.module,
         "github.com/floegence/redevplugin"
     );
     assert_eq!(package_set.npm_packages.len(), 2);
-    assert_eq!(package_set.rust_crates.len(), 6);
+    assert_eq!(package_set.rust_crates.len(), 5);
     assert_eq!(package_set.contract_set_sha256.len(), 64);
     for contract in all() {
         assert!(!contract.id().as_str().is_empty());

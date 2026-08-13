@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
@@ -17,103 +18,65 @@ var (
 	ErrCSRFPolicyInvalid   = errors.New("csrf policy is invalid")
 )
 
-// RouteAction identifies one host-authorized HTTP operation. The values form a
-// closed contract so host products can implement an exhaustive authorization
-// policy without matching raw paths.
-type RouteAction string
+// RouteAction is the HTTP-facing name for the Host's single closed action set.
+type RouteAction = host.ManagementAction
 
 const (
-	RouteActionImportLocalPackage         RouteAction = "plugin.import_local_package"
-	RouteActionInstallReleaseRef          RouteAction = "plugin.install_release_ref"
-	RouteActionStartReleaseInstall        RouteAction = "plugin.release_install_operation.start"
-	RouteActionGetReleaseInstall          RouteAction = "plugin.release_install_operation.get"
-	RouteActionListReleaseInstalls        RouteAction = "plugin.release_install_operation.list"
-	RouteActionInspectExternalPackage     RouteAction = "plugin.inspect_external_package"
-	RouteActionCommitExternalPackage      RouteAction = "plugin.commit_external_package"
-	RouteActionQueryExternalPackageCommit RouteAction = "plugin.query_external_package_commit"
-	RouteActionEnablePlugin               RouteAction = "plugin.enable"
-	RouteActionDisablePlugin              RouteAction = "plugin.disable"
-	RouteActionUninstallPlugin            RouteAction = "plugin.uninstall"
-	RouteActionUpdateLocalPackage         RouteAction = "plugin.update_local_package"
-	RouteActionUpdateReleaseRef           RouteAction = "plugin.update_release_ref"
-	RouteActionDowngradePlugin            RouteAction = "plugin.downgrade"
-	RouteActionListPlugins                RouteAction = "plugin.list"
-	RouteActionListFeatures               RouteAction = "platform.list_features"
-	RouteActionGetCompatibility           RouteAction = "platform.get_compatibility"
-	RouteActionOpenSurface                RouteAction = "surface.open"
-	RouteActionRevokeSessionScope         RouteAction = "session.revoke_scope"
-	RouteActionPrepareSurface             RouteAction = "surface.prepare"
-	RouteActionMintBridgeToken            RouteAction = "surface.mint_bridge_token"
-	RouteActionReadSurfaceAsset           RouteAction = "surface.read_asset"
-	RouteActionReadSurfaceStream          RouteAction = "surface.read_stream"
-	RouteActionAcknowledgeSurfaceStream   RouteAction = "surface.acknowledge_stream"
-	RouteActionGetSurfaceOperation        RouteAction = "surface.get_operation"
-	RouteActionCancelSurfaceOperation     RouteAction = "surface.cancel_operation"
-	RouteActionRejectSurfaceConfirmation  RouteAction = "surface.reject_confirmation"
-	RouteActionDisposeSurface             RouteAction = "surface.dispose"
-	RouteActionCallPluginMethod           RouteAction = "plugin.call_method"
-	RouteActionPrepareMethodConfirmation  RouteAction = "plugin.prepare_method_confirmation"
-	RouteActionListIntents                RouteAction = "intent.list"
-	RouteActionInvokeIntent               RouteAction = "intent.invoke"
-	RouteActionListOperations             RouteAction = "operation.list"
-	RouteActionGetOperation               RouteAction = "operation.get"
-	RouteActionCancelOperation            RouteAction = "operation.cancel"
-	RouteActionStartRuntime               RouteAction = "runtime.start"
-	RouteActionStopRuntime                RouteAction = "runtime.stop"
-	RouteActionRefreshEnabledRuntimeState RouteAction = "runtime.refresh_enabled"
-	RouteActionGetRuntimeHealth           RouteAction = "runtime.get_health"
-	RouteActionExportData                 RouteAction = "data.export"
-	RouteActionDeleteDataExport           RouteAction = "data.delete_export"
-	RouteActionImportData                 RouteAction = "data.import"
-	RouteActionListRetainedData           RouteAction = "retained_data.list"
-	RouteActionDeleteRetainedData         RouteAction = "retained_data.delete"
-	RouteActionBindRetainedData           RouteAction = "retained_data.bind"
-	RouteActionCleanupExpiredRetainedData RouteAction = "retained_data.cleanup_expired"
-	RouteActionListPermissions            RouteAction = "permission.list"
-	RouteActionGetPermissionRequirements  RouteAction = "permission.requirements.get"
-	RouteActionGrantPermission            RouteAction = "permission.grant"
-	RouteActionRevokePermission           RouteAction = "permission.revoke"
-	RouteActionListSecurityPolicies       RouteAction = "security_policy.list"
-	RouteActionGetSecurityPolicy          RouteAction = "security_policy.get"
-	RouteActionPutSecurityPolicy          RouteAction = "security_policy.put"
-	RouteActionDeleteSecurityPolicy       RouteAction = "security_policy.delete"
-	RouteActionListDiagnostics            RouteAction = "diagnostic.list"
-	RouteActionBindSecret                 RouteAction = "secret.bind"
-	RouteActionTestSecret                 RouteAction = "secret.test"
-	RouteActionDeleteSecret               RouteAction = "secret.delete"
-	RouteActionGetSettingsSchema          RouteAction = "settings.get_schema"
-	RouteActionGetSettings                RouteAction = "settings.get"
-	RouteActionPatchSettings              RouteAction = "settings.patch"
+	RouteActionImportLocalPackage         = host.ManagementActionImportLocalPackage
+	RouteActionInstallReleaseRef          = host.ManagementActionInstallReleaseRef
+	RouteActionInspectExternalPackage     = host.ManagementActionInspectExternalPackage
+	RouteActionInstallInspectedPackage    = host.ManagementActionInstallInspectedPackage
+	RouteActionEnablePlugin               = host.ManagementActionEnablePlugin
+	RouteActionDisablePlugin              = host.ManagementActionDisablePlugin
+	RouteActionUninstallPlugin            = host.ManagementActionUninstallPlugin
+	RouteActionUpdateLocalPackage         = host.ManagementActionUpdateLocalPackage
+	RouteActionUpdateReleaseRef           = host.ManagementActionUpdateReleaseRef
+	RouteActionDowngradePlugin            = host.ManagementActionDowngradePlugin
+	RouteActionListPlugins                = host.ManagementActionListPlugins
+	RouteActionListFeatures               = host.ManagementActionListFeatures
+	RouteActionGetCompatibility           = host.ManagementActionGetCompatibility
+	RouteActionOpenSurface                = host.ManagementActionOpenSurface
+	RouteActionRevokeSessionScope         = host.ManagementActionRevokeSessionScope
+	RouteActionPrepareSurface             = host.ManagementActionPrepareSurface
+	RouteActionMintBridgeToken            = host.ManagementActionMintBridgeToken
+	RouteActionReadSurfaceAsset           = host.ManagementActionReadSurfaceAsset
+	RouteActionRejectSurfaceConfirmation  = host.ManagementActionRejectSurfaceConfirmation
+	RouteActionDisposeSurface             = host.ManagementActionDisposeSurface
+	RouteActionCallPluginMethod           = host.ManagementActionCallPluginMethod
+	RouteActionPrepareMethodConfirmation  = host.ManagementActionPrepareMethodConfirmation
+	RouteActionListIntents                = host.ManagementActionListIntents
+	RouteActionInvokeIntent               = host.ManagementActionInvokeIntent
+	RouteActionListExecutions             = host.ManagementActionListExecutions
+	RouteActionGetExecution               = host.ManagementActionGetExecution
+	RouteActionCancelExecution            = host.ManagementActionCancelExecution
+	RouteActionListExecutionEvents        = host.ManagementActionListExecutionEvents
+	RouteActionStartRuntime               = host.ManagementActionStartRuntime
+	RouteActionStopRuntime                = host.ManagementActionStopRuntime
+	RouteActionRecoverEnabledPlugins      = host.ManagementActionRecoverEnabledPlugins
+	RouteActionGetRuntimeHealth           = host.ManagementActionGetRuntimeHealth
+	RouteActionExportData                 = host.ManagementActionExportPluginData
+	RouteActionDeleteDataExport           = host.ManagementActionDeleteExportedPluginData
+	RouteActionImportData                 = host.ManagementActionImportPluginData
+	RouteActionListRetainedData           = host.ManagementActionListRetainedData
+	RouteActionDeleteRetainedData         = host.ManagementActionDeleteRetainedData
+	RouteActionBindRetainedData           = host.ManagementActionBindRetainedData
+	RouteActionCleanupExpiredRetainedData = host.ManagementActionCleanupExpiredRetainedData
+	RouteActionListPermissions            = host.ManagementActionListPermissionGrants
+	RouteActionGetPermissionRequirements  = host.ManagementActionGetPermissionRequirements
+	RouteActionGrantPermission            = host.ManagementActionGrantPermission
+	RouteActionRevokePermission           = host.ManagementActionRevokePermission
+	RouteActionListSecurityPolicies       = host.ManagementActionListSecurityPolicies
+	RouteActionGetSecurityPolicy          = host.ManagementActionGetSecurityPolicy
+	RouteActionPutSecurityPolicy          = host.ManagementActionPutSecurityPolicy
+	RouteActionDeleteSecurityPolicy       = host.ManagementActionDeleteSecurityPolicy
+	RouteActionListDiagnostics            = host.ManagementActionListDiagnosticEvents
+	RouteActionBindSecret                 = host.ManagementActionBindSecretRef
+	RouteActionTestSecret                 = host.ManagementActionTestSecretRef
+	RouteActionDeleteSecret               = host.ManagementActionDeleteSecretRef
+	RouteActionGetSettingsSchema          = host.ManagementActionGetSettingsSchema
+	RouteActionGetSettings                = host.ManagementActionGetPluginSettings
+	RouteActionPatchSettings              = host.ManagementActionPatchPluginSettings
 )
-
-func (action RouteAction) Valid() bool {
-	switch action {
-	case RouteActionImportLocalPackage, RouteActionInstallReleaseRef,
-		RouteActionStartReleaseInstall, RouteActionGetReleaseInstall, RouteActionListReleaseInstalls,
-		RouteActionInspectExternalPackage, RouteActionCommitExternalPackage,
-		RouteActionQueryExternalPackageCommit, RouteActionEnablePlugin,
-		RouteActionDisablePlugin, RouteActionUninstallPlugin, RouteActionUpdateLocalPackage,
-		RouteActionUpdateReleaseRef, RouteActionDowngradePlugin, RouteActionListPlugins,
-		RouteActionListFeatures, RouteActionGetCompatibility, RouteActionOpenSurface,
-		RouteActionRevokeSessionScope, RouteActionPrepareSurface, RouteActionMintBridgeToken,
-		RouteActionReadSurfaceAsset, RouteActionReadSurfaceStream, RouteActionAcknowledgeSurfaceStream,
-		RouteActionGetSurfaceOperation, RouteActionCancelSurfaceOperation, RouteActionRejectSurfaceConfirmation, RouteActionDisposeSurface,
-		RouteActionCallPluginMethod, RouteActionPrepareMethodConfirmation, RouteActionListIntents,
-		RouteActionInvokeIntent, RouteActionListOperations, RouteActionGetOperation,
-		RouteActionCancelOperation, RouteActionStartRuntime, RouteActionStopRuntime,
-		RouteActionRefreshEnabledRuntimeState, RouteActionGetRuntimeHealth, RouteActionExportData,
-		RouteActionDeleteDataExport, RouteActionImportData, RouteActionListRetainedData,
-		RouteActionDeleteRetainedData, RouteActionBindRetainedData, RouteActionCleanupExpiredRetainedData,
-		RouteActionListPermissions, RouteActionGetPermissionRequirements, RouteActionGrantPermission, RouteActionRevokePermission,
-		RouteActionListSecurityPolicies, RouteActionGetSecurityPolicy, RouteActionPutSecurityPolicy,
-		RouteActionDeleteSecurityPolicy, RouteActionListDiagnostics, RouteActionBindSecret,
-		RouteActionTestSecret, RouteActionDeleteSecret, RouteActionGetSettingsSchema,
-		RouteActionGetSettings, RouteActionPatchSettings:
-		return true
-	default:
-		return false
-	}
-}
 
 // RouteEffect defines whether cancellation can leave a request outcome
 // unknown. It is trusted route metadata and is never supplied by a caller.

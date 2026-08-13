@@ -50,7 +50,7 @@ const contracts = await import(contractsModuleURL.href);
 test("Go, npm, and Rust projections share one contract inventory and digest", () => {
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = JSON.parse(registryBytes.toString("utf8"));
-  const packageSet = readJSON("spec/plugin/platform-package-set-v1.json");
+  const packageSet = readJSON("spec/plugin/platform-package-set-v2.json");
 
   assert.deepEqual(Object.keys(contracts).sort(), [
     "InvalidReleaseDocumentError",
@@ -68,9 +68,6 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "canonicalRevocation",
     "canonicalRevocationPointer",
     "canonicalRootDelegation",
-	"canonicalSignatureEnvelope",
-	"canonicalSigningLedgerEntry",
-	"canonicalSigningSubject",
     "canonicalSourcePolicy",
     "canonicalSourcePolicyPointer",
     "contractArtifacts",
@@ -82,21 +79,10 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "decodeRevocation",
     "decodeRevocationPointer",
     "decodeRootDelegation",
-	"decodeSignatureEnvelope",
-	"decodeSigningLedgerCheckpoint",
-	"decodeSigningLedgerConsistencyProof",
-	"decodeSigningLedgerEntry",
-    "decodeSigningLedgerEvidence",
-	"decodeSigningLedgerInclusionProof",
-	"decodeSigningLedgerLatestProof",
-	"decodeSigningLedgerLogLeaf",
-	"decodeSigningLedgerReceipt",
-	"decodeSigningSubject",
     "decodeSourcePolicy",
     "decodeSourcePolicyPointer",
     "defaultSourcePolicyLimits",
     "genesisPreviousDocumentSHA256",
-    "genesisPreviousEpoch",
     "getContract",
     "packageSet",
     "packageSignatureSchemaVersion",
@@ -105,7 +91,6 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "releaseMetadataSchemaVersion",
     "releaseMetadataSchemaVersionV8",
     "releaseMetadataSigningPreimage",
-    "releaseSigningLedgerEvidenceSchemaVersion",
     "resolvePresentation",
     "revocationPointerSchemaVersion",
     "revocationPointerSigningPreimage",
@@ -114,12 +99,6 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "rootDelegationSchemaVersion",
     "rootDelegationSigningPreimage",
     "signatureAlgorithmEd25519",
-    "signatureEnvelopeSchemaVersion",
-    "signingLedgerEntrySchemaVersion",
-    "signingLedgerLogLeafSchemaVersion",
-    "signingLedgerReceiptSchemaVersion",
-    "signingLedgerSchemaVersion",
-    "signingSubjectSchemaVersion",
     "signingUsages",
     "sourcePolicyPointerSchemaVersion",
     "sourcePolicyPointerSigningPreimage",
@@ -130,7 +109,6 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "verifyRevocation",
     "verifyRevocationPointer",
     "verifyRootDelegation",
-    "verifySigningLedgerEntryBindings",
     "verifySourcePolicy",
     "verifySourcePolicyPointer",
   ]);
@@ -189,7 +167,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
   try {
     const tarball = run("node", [
       "scripts/build_redevplugin_contracts_package.mjs",
-      "0.7.27",
+      "1.0.0",
       outputDirectory,
     ]).split("\n").at(-1);
     assert.ok(tarball);
@@ -224,7 +202,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
       "version",
     ]);
     assert.equal(manifest.name, "@floegence/redevplugin-contracts");
-    assert.equal(manifest.version, "0.7.27");
+    assert.equal(manifest.version, "1.0.0");
     assert.deepEqual(manifest.files, ["dist"]);
     assert.equal(manifest.sideEffects, false);
     assert.deepEqual(Object.keys(manifest.exports), ["."]);
@@ -299,7 +277,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
     run(process.execPath, ["--input-type=module", "--eval", `
       await import("@floegence/redevplugin-ui");
       const contracts = await import("@floegence/redevplugin-contracts");
-      if (contracts.contractArtifacts.length !== 60) throw new Error("contracts package is incomplete");
+      if (contracts.contractArtifacts.length !== 44) throw new Error("contracts package is incomplete");
     `], { cwd: consumerDirectory });
 
     const browserBundle = await build({
@@ -321,7 +299,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
 
 test("UI entrypoints declare an exact dependency without loading raw contract bodies", async () => {
   const uiPackage = readJSON("packages/redevplugin-ui/package.json");
-  const packageSet = readJSON("spec/plugin/platform-package-set-v1.json");
+  const packageSet = readJSON("spec/plugin/platform-package-set-v2.json");
   assert.deepEqual(uiPackage.dependencies, {
     "@floegence/redevplugin-contracts": packageSet.platform_version,
   });

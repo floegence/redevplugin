@@ -5,13 +5,14 @@ import {
 } from "../../../packages/redevplugin-ui/src/plugin.js";
 import { runWorkerSecurityProbe, type WorkerSecurityProbe } from "./worker-security-probe.js";
 
-type HarnessStreamEvent = {
-  data?: string;
+type HarnessExecutionEvent = {
+  kind: "progress" | "data" | "diagnostic" | "terminal";
+  payload?: { data_base64?: string };
 };
 
-function decodePluginStreamText(event: HarnessStreamEvent): string {
-  if (!event.data) return "";
-  const binary = atob(event.data);
+function decodeExecutionText(event: HarnessExecutionEvent): string {
+  if (!event.payload?.data_base64) return "";
+  const binary = atob(event.payload.data_base64);
   return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
 }
 
@@ -24,9 +25,9 @@ const state = {
 };
 
 bridge.onAction("call-host", () => void callHost());
-bridge.onAction("read-stream", () => void readStream());
+bridge.onAction("read-execution-events", () => void readExecutionEvents());
 bridge.onAction("dangerous-action", () => void runDangerousAction());
-bridge.onAction("observe-operation", () => void observeOperation());
+bridge.onAction("observe-execution", () => void observeExecution());
 bridge.onLifecycle((event) => {
   if (event.type === "visible" || event.type === "hidden") {
     state.status = `Lifecycle: ${event.type}`;
@@ -50,29 +51,36 @@ async function callHost(): Promise<void> {
   });
 }
 
-async function readStream(): Promise<void> {
-  await runAction("Opening parent-owned stream...", "Stream received", async () => {
+async function readExecutionEvents(): Promise<void> {
+  await runAction("Opening Host-owned execution...", "Execution events received", async () => {
     const response = await bridge.call<PluginMethodResult>("harness.logs", { lines: 2 });
-    if (!response.stream_handle) throw new Error("host response omitted stream_handle");
-    const events = await readStreamToEnd(response.stream_handle);
+    if (!response.execution_id) throw new Error("host response omitted execution_id");
+    const events = await readExecutionEventsToTerminal(response.execution_id);
     return {
       method: "harness.logs",
       events,
-      text: events.map((event) => decodePluginStreamText(event)).join(""),
-      parent_stream_credential_visible: JSON.stringify(response).includes(["stream", "ticket"].join("_")),
+      text: events.map((event) => decodeExecutionText(event)).join(""),
+      parent_execution_credential_visible: JSON.stringify(response).includes("ticket"),
     };
   });
 }
 
-async function readStreamToEnd(streamHandle: string): Promise<HarnessStreamEvent[]> {
-  const events: HarnessStreamEvent[] = [];
+async function readExecutionEventsToTerminal(executionID: string): Promise<HarnessExecutionEvent[]> {
+  const events: HarnessExecutionEvent[] = [];
+  let cursor = 0;
+  let recoveredResponseLoss = false;
   while (true) {
-    const batch = await bridge.readStream(streamHandle);
-    events.push(...batch.events);
-    if (batch.done) return events;
-    if (batch.events.length === 0 && batch.retry_after_ms > 0) {
-      await new Promise((resolve) => setTimeout(resolve, batch.retry_after_ms));
+    let batch;
+    try {
+      batch = await bridge.executionEvents(executionID, cursor);
+    } catch (error) {
+      if (recoveredResponseLoss) throw error;
+      recoveredResponseLoss = true;
+      continue;
     }
+    events.push(...batch.events as HarnessExecutionEvent[]);
+    cursor = batch.cursor;
+    if (batch.events.some((event) => event.kind === "terminal")) return events;
   }
 }
 
@@ -83,22 +91,22 @@ async function runDangerousAction(): Promise<void> {
   }));
 }
 
-async function observeOperation(): Promise<void> {
-  await runAction("Testing operation observation cancellation...", "Operation observation recovered", async () => {
+async function observeExecution(): Promise<void> {
+  await runAction("Testing execution observation cancellation...", "Execution observation recovered", async () => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 50);
     let firstErrorCode = "";
     try {
-      await bridge.operationSnapshot("operation_harness_1", { signal: controller.signal });
+      await bridge.executionSnapshot("execution_harness_1", { signal: controller.signal });
     } catch (error) {
       firstErrorCode = (error as { errorCode?: string }).errorCode ?? "";
     } finally {
       clearTimeout(timer);
     }
     if (firstErrorCode !== "PLUGIN_BRIDGE_CANCELLED") {
-      throw new Error(`first operation observation was not cancelled: ${firstErrorCode}`);
+      throw new Error(`first execution observation was not cancelled: ${firstErrorCode}`);
     }
-    const snapshot = await bridge.operationSnapshot("operation_harness_1");
+    const snapshot = await bridge.executionSnapshot("execution_harness_1");
     return { first_cancelled: true, retry_status: snapshot.status };
   });
 }
@@ -156,9 +164,9 @@ function render(): Promise<void> {
         attributes: { class: "button-row" },
         children: [
           button("Call host", "call-host"),
-          button("Read stream", "read-stream"),
+          button("Read execution events", "read-execution-events"),
           button("Dangerous action", "dangerous-action"),
-          button("Observe operation", "observe-operation"),
+          button("Observe execution", "observe-execution"),
         ],
       },
       { type: "element", key: "security-title", tag: "h2", children: [text("security-title-text", "Worker security probe")] },

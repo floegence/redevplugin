@@ -8,84 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/stream"
 )
-
-func TestAcknowledgeStreamSerializesPluginDisableAndUninstall(t *testing.T) {
-	for _, action := range []string{"disable", "uninstall"} {
-		t.Run(action, func(t *testing.T) {
-			streams := &blockingAcknowledgeStreamStore{
-				Store:   stream.NewMemoryStore(),
-				entered: make(chan struct{}),
-				release: make(chan struct{}),
-			}
-			adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode: true, localGenerated: true,
-				capabilityID: "example.capability.echo", capabilityAdapter: adapter,
-				streams: streams,
-			})
-			installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-			call, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-				BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "logs.tail",
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := adapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"line": "one"}); err != nil {
-				t.Fatal(err)
-			}
-			read, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(call.StreamID, call.StreamTicket))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			ackDone := make(chan error, 1)
-			go func() {
-				_, ackErr := h.AcknowledgeStream(hostTestContext(), AcknowledgeStreamRequest{
-					StreamID: call.StreamID, StreamTicket: call.StreamTicket,
-					DeliveryID: read.DeliveryID, SurfaceInstanceID: "surface_rpc",
-				})
-				ackDone <- ackErr
-			}()
-			waitForConcurrencyTestSignal(t, streams.entered, "stream acknowledgement")
-
-			runLifecycle := func(ctx context.Context, revision uint64) error {
-				if action == "disable" {
-					_, lifecycleErr := h.DisablePlugin(ctx, DisableRequest{
-						PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: revision, Reason: "concurrency test",
-					})
-					return lifecycleErr
-				}
-				_, lifecycleErr := h.UninstallPlugin(ctx, UninstallRequest{
-					PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: revision,
-				})
-				return lifecycleErr
-			}
-			revision := mustManagementRevision(t, h, installed.PluginInstanceID)
-			cancelQueuedLifecycleOperation(t, h, []string{installed.PluginInstanceID}, action, func(ctx context.Context) error {
-				return runLifecycle(ctx, revision)
-			})
-			if calls := streams.transitionCalls.Load(); calls != 0 {
-				t.Fatalf("Streams.MarkPluginTransition() calls before acknowledgement release = %d, want 0", calls)
-			}
-			close(streams.release)
-			if err := <-ackDone; err != nil {
-				t.Fatalf("AcknowledgeStream() error = %v", err)
-			}
-			if err := runLifecycle(hostTestContext(), revision); err != nil {
-				t.Fatalf("%s error = %v", action, err)
-			}
-			if calls := streams.transitionCalls.Load(); calls != 1 {
-				t.Fatalf("Streams.MarkPluginTransition() calls after %s = %d, want 1", action, calls)
-			}
-		})
-	}
-}
 
 func TestImportPluginDataSerializesPluginUpdate(t *testing.T) {
 	v1 := buildDataShapeFixturePackage(t, dataShapeFixtureOptions{Version: "1.0.0", SettingsSchema: 1, StorageSchema: 1})
@@ -109,8 +34,6 @@ func TestImportPluginDataSerializesPluginUpdate(t *testing.T) {
 		importEntered: make(chan struct{}), importRelease: make(chan struct{}),
 	}
 	h.adapters.PluginData = pluginData
-	registryCalls := &recordingLifecycleRegistry{Store: h.adapters.Registry}
-	h.adapters.Registry = registryCalls
 
 	importDone := make(chan error, 1)
 	go func() {
@@ -132,9 +55,6 @@ func TestImportPluginDataSerializesPluginUpdate(t *testing.T) {
 		_, updateErr := runUpdate(ctx, disabled.ManagementRevision)
 		return updateErr
 	})
-	if calls := registryCalls.putPluginCalls.Load(); calls != 0 {
-		t.Fatalf("Registry.PutPlugin() calls before import release = %d, want 0", calls)
-	}
 	close(pluginData.importRelease)
 	if err := <-importDone; err != nil {
 		t.Fatalf("ImportPluginData() error = %v", err)
@@ -145,9 +65,6 @@ func TestImportPluginDataSerializesPluginUpdate(t *testing.T) {
 	}
 	if updated.Version != "2.0.0" {
 		t.Fatalf("updated version = %q, want 2.0.0", updated.Version)
-	}
-	if calls := registryCalls.putPluginCalls.Load(); calls != 1 {
-		t.Fatalf("Registry.PutPlugin() calls after update = %d, want 1", calls)
 	}
 }
 
@@ -186,8 +103,6 @@ func TestBindRetainedDataSerializesTargetDisable(t *testing.T) {
 		bindEntered: make(chan struct{}), bindRelease: make(chan struct{}),
 	}
 	h.adapters.PluginData = pluginData
-	registryCalls := &recordingLifecycleRegistry{Store: h.adapters.Registry}
-	h.adapters.Registry = registryCalls
 
 	bindDone := make(chan error, 1)
 	go func() {
@@ -215,9 +130,6 @@ func TestBindRetainedDataSerializesTargetDisable(t *testing.T) {
 		})
 		return deleteErr
 	})
-	if calls := registryCalls.setEnableStateCalls.Load(); calls != 0 {
-		t.Fatalf("Registry.SetEnableState() calls before bind release = %d, want 0", calls)
-	}
 	if calls := pluginData.listRetainedCalls.Load(); calls != 0 {
 		t.Fatalf("PluginData.ListRetained() calls before bind release = %d, want 0", calls)
 	}
@@ -232,8 +144,9 @@ func TestBindRetainedDataSerializesTargetDisable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("DisablePlugin() after bind error = %v", err)
 	}
-	if calls := registryCalls.setEnableStateCalls.Load(); calls != 1 {
-		t.Fatalf("Registry.SetEnableState() calls after disable = %d, want 1", calls)
+	disabled, err := h.getPluginRecord(hostTestContext(), target.PluginInstanceID)
+	if err != nil || disabled.EnableState != registry.EnableDisabled {
+		t.Fatalf("disabled target = %#v, err=%v", disabled, err)
 	}
 	if _, err := h.DeleteRetainedData(hostTestContext(), DeleteRetainedDataRequest{
 		PluginInstanceID: source.PluginInstanceID, ExpectedBindingRevision: retained[0].Revision,
@@ -243,28 +156,6 @@ func TestBindRetainedDataSerializesTargetDisable(t *testing.T) {
 	if calls := pluginData.listRetainedCalls.Load(); calls != 1 {
 		t.Fatalf("PluginData.ListRetained() calls after bind = %d, want 1", calls)
 	}
-}
-
-type blockingAcknowledgeStreamStore struct {
-	stream.Store
-	entered         chan struct{}
-	release         chan struct{}
-	transitionCalls atomic.Int64
-}
-
-func (s *blockingAcknowledgeStreamStore) Acknowledge(ctx context.Context, req stream.AcknowledgeRequest) (stream.Record, error) {
-	close(s.entered)
-	select {
-	case <-ctx.Done():
-		return stream.Record{}, ctx.Err()
-	case <-s.release:
-		return s.Store.Acknowledge(ctx, req)
-	}
-}
-
-func (s *blockingAcknowledgeStreamStore) MarkPluginTransition(ctx context.Context, req stream.PluginTransitionRequest) (stream.PluginTransitionResult, error) {
-	s.transitionCalls.Add(1)
-	return s.Store.MarkPluginTransition(ctx, req)
 }
 
 type blockingPluginData struct {
@@ -299,22 +190,6 @@ func (s *blockingPluginData) BindRetained(ctx context.Context, req plugindata.Bi
 func (s *blockingPluginData) ListRetained(ctx context.Context, filter plugindata.RetainedFilter) ([]plugindata.Binding, error) {
 	s.listRetainedCalls.Add(1)
 	return s.PluginData.ListRetained(ctx, filter)
-}
-
-type recordingLifecycleRegistry struct {
-	registry.Store
-	putPluginCalls      atomic.Int64
-	setEnableStateCalls atomic.Int64
-}
-
-func (s *recordingLifecycleRegistry) PutPlugin(ctx context.Context, record registry.PluginRecord, opts registry.PutOptions) (registry.PluginRecord, error) {
-	s.putPluginCalls.Add(1)
-	return s.Store.PutPlugin(ctx, record, opts)
-}
-
-func (s *recordingLifecycleRegistry) SetEnableState(ctx context.Context, pluginInstanceID string, state registry.EnableState, reason string, now time.Time) (registry.PluginRecord, error) {
-	s.setEnableStateCalls.Add(1)
-	return s.Store.SetEnableState(ctx, pluginInstanceID, state, reason, now)
 }
 
 func waitForConcurrencyTestSignal(t *testing.T, signal <-chan struct{}, operation string) {

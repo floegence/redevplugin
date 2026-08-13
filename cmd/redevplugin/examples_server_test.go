@@ -129,7 +129,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	serverResult := make(chan error, 1)
 	hostReady := make(chan *host.Host, 1)
 	go func() {
-		serverResult <- examplesServerWithOptions(ctx, privateExamplesStateRoot(t), runtimePath, examplesServerOptions{
+		serverResult <- examplesServerWithOptions(ctx, privateExamplesStateRoot(t), runtimePath, writeTestRuntimeDescriptor(t, runtimePath), examplesServerOptions{
 			Listener:          listener,
 			Output:            io.Discard,
 			RepositoryRoot:    repositoryRoot,
@@ -201,7 +201,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v5",
+		UIProtocolVersion:  version.PluginUIProtocolVersion,
 	}
 	bridgeChannelID := "bridge_examples_weather_live_test"
 	gateway, err := pluginHost.MintBridgeToken(context.Background(), host.MintBridgeTokenRequest{
@@ -294,7 +294,7 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	hostReady := make(chan *host.Host, 1)
 	events := newExamplesRecordingEvents()
 	go func() {
-		serverResult <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
+		serverResult <- examplesServerWithOptions(ctx, stateRoot, runtimePath, writeTestRuntimeDescriptor(t, runtimePath), examplesServerOptions{
 			Listener:          listener,
 			NetworkExecutor:   examplesFixtureNetworkExecutor{},
 			Events:            events,
@@ -360,7 +360,7 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 	result := make(chan error, 1)
 	ready := make(chan struct{}, 1)
 	go func() {
-		result <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
+		result <- examplesServerWithOptions(ctx, stateRoot, runtimePath, writeTestRuntimeDescriptor(t, runtimePath), examplesServerOptions{
 			Listener:          listener,
 			NetworkExecutor:   examplesFixtureNetworkExecutor{},
 			Output:            io.Discard,

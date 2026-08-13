@@ -14,7 +14,7 @@ import (
 func TestBridgeCapabilityBusinessErrorDetailsAreClosedAndMatchFixture(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
-	schema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "bridge-v6.schema.json"))
+	schema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "bridge-v7.schema.json"))
 	detailsSchema := requireNestedObject(t, schema, "$defs", "capability_business_error_details")
 	if detailsSchema["additionalProperties"] != false {
 		t.Fatalf("capability business error details must be closed: %#v", detailsSchema)
@@ -84,8 +84,14 @@ func TestOpenAPICapabilityErrorsAndSubscriptionResultsMatchBridgeContract(t *tes
 		}
 	}
 	rpcResult := openAPISchemaBlock(t, text, "RPCResult")
-	if !strings.Contains(rpcResult, "required: [operation_id, stream_id, stream_ticket, stream_ticket_id, stream_expires_at]") {
-		t.Fatalf("RPCResult subscription variant must bind operation and stream handles:\n%s", rpcResult)
+	if !strings.Contains(rpcResult, "required: [execution_id]") ||
+		!strings.Contains(rpcResult, "execution_id: { type: string, minLength: 1 }") {
+		t.Fatalf("RPCResult asynchronous variant must bind the current execution identity:\n%s", rpcResult)
+	}
+	for _, retired := range []string{"operation_id", "stream_id", "stream_ticket", "stream_ticket_id", "stream_expires_at"} {
+		if strings.Contains(rpcResult, retired) {
+			t.Fatalf("RPCResult retains retired async field %q:\n%s", retired, rpcResult)
+		}
 	}
 	if !strings.Contains(text, `"200": { $ref: "#/components/responses/RPCResponse" }`) {
 		t.Fatal("plugin RPC route does not use the typed RPCResponse")

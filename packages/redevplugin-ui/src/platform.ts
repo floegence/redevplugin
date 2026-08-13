@@ -26,7 +26,7 @@ import {
   type PluginSurfaceInteractionEvent,
   type PluginSurfaceReloadLimiter,
   type PluginSurfaceSlot,
-  type PluginTrustedMethodResult,
+  type PluginMethodResult,
   type ReDevPluginSurfaceTransport,
 } from "./surface.js";
 import {
@@ -67,19 +67,12 @@ export type PluginEnableState = PluginRecord["enable_state"];
 export type PluginPackageHashSet = PlatformSchemas["PackageHashSet"];
 export type PluginReleaseRef = PlatformSchemas["PluginReleaseRef"];
 export type PluginInstallReleaseRefRequest = PlatformSchemas["InstallReleaseRefRequest"];
-export type PluginStartReleaseInstallOperationRequest = PlatformSchemas["StartReleaseInstallOperationRequest"];
-export type PluginReleaseInstallOperation = PlatformSchemas["ReleaseInstallOperation"];
-export type PluginReleaseInstallOperationList = PlatformSchemas["ReleaseInstallOperationList"];
-export type PluginWatchReleaseInstallOperationOptions = PluginRequestOptions & {
-  onUpdate?: (operation: PluginReleaseInstallOperation) => void;
-};
 export type PluginUpdateReleaseRefRequest = PlatformSchemas["UpdateReleaseRefRequest"];
 export type PluginInspectExternalPackageRequest = PlatformSchemas["InspectExternalPackageRequest"];
 export type PluginUploadedExternalPackageIntent = PlatformSchemas["ExternalPackageIntentRequest"];
 export type PluginExternalPackageInspection = PlatformSchemas["ExternalPackageInspection"];
-export type PluginCommitExternalPackageRequest = PlatformSchemas["CommitExternalPackageRequest"];
-export type PluginQueryExternalPackageCommitRequest = PlatformSchemas["QueryExternalPackageCommitRequest"];
-export type PluginExternalPackageCommitResult = PlatformSchemas["ExternalPackageCommitResult"];
+export type PluginInstallInspectedPackageRequest = PlatformSchemas["InstallInspectedPackageRequest"];
+export type PluginInstalledExternalPackage = PlatformSchemas["InstalledExternalPackage"];
 export type PluginDowngradeRequest = PlatformSchemas["DowngradeRequest"];
 export type PluginEnableRequest = PlatformSchemas["EnableRequest"];
 export type PluginDisableRequest = PlatformSchemas["DisableRequest"];
@@ -131,7 +124,8 @@ export type PluginRuntimeLimits = Readonly<PlatformSchemas["RuntimeLimits"]>;
 export type PluginRuntimeHealth = PlatformSchemas["PluginRuntimeHealth"];
 export type PluginRuntimeShardHealth = PlatformSchemas["PluginRuntimeShardHealth"];
 export type PluginRuntimeStopResult = PlatformSchemas["PluginRuntimeStopResult"];
-export type PluginRuntimeRefreshResult = PlatformSchemas["PluginRuntimeRefreshResult"];
+export type PluginRecoverySnapshot = PlatformSchemas["RecoverySnapshot"];
+export type PluginRecoveryResult = PlatformSchemas["PluginRecoveryResult"];
 
 export type PluginSettingsField = PlatformSchemas["PluginSettingsField"];
 export type PluginSettingsSchema = PlatformSchemas["PluginSettingsSchema"];
@@ -144,10 +138,13 @@ export type PluginSettingsPatchRequest = PluginSettingsPatchBase & (
 );
 
 export type PluginCapabilityContractPin = PlatformSchemas["HostCapabilityPinV1"];
-export type PluginPublicOperationBinding = PlatformSchemas["PublicOperationBinding"];
-export type PluginOperationRecord = PlatformSchemas["OperationRecord"];
-export type PluginOperationList = PlatformSchemas["PluginOperationList"];
-export type PluginOperationListOptions = PlatformSchemas["ListOperationsQueryRequest"];
+export type PluginExecution = PlatformSchemas["Execution"];
+export type PluginEvent = PlatformSchemas["Event"];
+export type PluginStartReleaseInstallExecutionRequest = PlatformSchemas["StartReleaseInstallExecutionRequest"];
+export type PluginExecutionList = PlatformSchemas["ExecutionList"];
+export type PluginExecutionEventList = PlatformSchemas["ExecutionEventList"];
+export type PluginExecutionListOptions = PlatformSchemas["ListExecutionsRequest"];
+export type PluginExecutionEventListOptions = PlatformSchemas["ListExecutionEventsRequest"];
 
 export type PluginIntentRecord = PlatformSchemas["PluginIntentRecord"];
 export type PluginIntentList = PlatformSchemas["PluginIntentList"];
@@ -215,52 +212,6 @@ export class PluginPlatformClient {
   installReleaseRef(request: PluginInstallReleaseRefRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request, options);
   }
-  async startReleaseInstallOperation(
-    request: PluginStartReleaseInstallOperationRequest,
-    options: PluginRequestOptions = {},
-  ): Promise<PluginReleaseInstallOperation> {
-    try {
-      return await this.#requestMutation(
-        "POST",
-        "/_redevplugin/api/plugins/release-install-operations",
-        request,
-        options,
-      );
-    } catch (error) {
-      if (!(error instanceof PluginTransportError) || error.mutationOutcome !== "unknown" || options.signal?.aborted) {
-        throw error;
-      }
-      return this.getReleaseInstallOperationByRequest(request.request_id, options);
-    }
-  }
-  listReleaseInstallOperations(options: PluginRequestOptions = {}): Promise<PluginReleaseInstallOperationList> {
-    return this.#requestGet("/_redevplugin/api/plugins/release-install-operations", options);
-  }
-  getReleaseInstallOperation(operationId: string, options: PluginRequestOptions = {}): Promise<PluginReleaseInstallOperation> {
-    return this.#requestGet(
-      `/_redevplugin/api/plugins/release-install-operations/${encodeURIComponent(operationId)}`,
-      options,
-    );
-  }
-  getReleaseInstallOperationByRequest(requestId: string, options: PluginRequestOptions = {}): Promise<PluginReleaseInstallOperation> {
-    return this.#requestGet(
-      `/_redevplugin/api/plugins/release-install-operations/by-request/${encodeURIComponent(requestId)}`,
-      options,
-    );
-  }
-  async watchReleaseInstallOperation(
-    operationId: string,
-    options: PluginWatchReleaseInstallOperationOptions = {},
-  ): Promise<PluginReleaseInstallOperation> {
-    for (;;) {
-      const operation = await this.getReleaseInstallOperation(operationId, options);
-      options.onUpdate?.(operation);
-      if (operation.status === "succeeded" || operation.status === "failed") {
-        return operation;
-      }
-      await waitForReleaseInstallPoll(operation.retry_after_ms, options.signal);
-    }
-  }
   async inspectExternalPackage(request: PluginInspectExternalPackageRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageInspection> {
     const inspection = await this.#requestMutation<PluginExternalPackageInspection>(
       "POST", "/_redevplugin/api/plugins/external-packages/inspect", request, options,
@@ -296,35 +247,19 @@ export class PluginPlatformClient {
     );
     return inspection;
   }
-  async commitExternalPackage(request: PluginCommitExternalPackageRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageCommitResult> {
+  async installInspectedPackage(request: PluginInstallInspectedPackageRequest, options: PluginRequestOptions = {}): Promise<PluginInstalledExternalPackage> {
     const target = this.#externalInspectionTargets.get(request.inspection_id);
-    let result: PluginExternalPackageCommitResult;
+    let result: PluginInstalledExternalPackage;
     try {
       result = await this.#requestMutation(
-        "POST", "/_redevplugin/api/plugins/external-packages/commit", request, options,
+        "POST", "/_redevplugin/api/plugins/external-packages/install", request, options,
       );
     } catch (error) {
-      await this.#handleMutationFailure(error, target || undefined, "External package commit and local surface teardown failed");
+      await this.#handleMutationFailure(error, target || undefined, "External package install and local surface teardown failed");
       throw error;
     }
-    if (result.status === "committed") {
-      await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
-      this.#externalInspectionTargets.delete(request.inspection_id);
-    } else if (result.status === "failed") {
-      this.#externalInspectionTargets.delete(request.inspection_id);
-    }
-    return result;
-  }
-  async queryExternalPackageCommit(request: PluginQueryExternalPackageCommitRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageCommitResult> {
-    const result = await this.#requestQuery<PluginExternalPackageCommitResult>(
-      "/_redevplugin/api/plugins/external-packages/commit/query", request, options,
-    );
-    if (result.status === "committed") {
-      await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
-      this.#externalInspectionTargets.delete(request.inspection_id);
-    } else if (result.status === "failed") {
-      this.#externalInspectionTargets.delete(request.inspection_id);
-    }
+    await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
+    this.#externalInspectionTargets.delete(request.inspection_id);
     return result;
   }
   updateReleaseRef(request: PluginUpdateReleaseRefRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
@@ -417,8 +352,11 @@ export class PluginPlatformClient {
   stopRuntime(options: PluginRequestOptions = {}): Promise<PluginRuntimeStopResult> {
     return this.#requestMutation<PluginRuntimeStopResult>("POST", "/_redevplugin/api/plugins/runtime/stop", {}, options);
   }
-  refreshEnabledRuntimeState(options: PluginRequestOptions = {}): Promise<PluginRuntimeRefreshResult> {
-    return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/refresh-enabled", {}, options);
+  recoverEnabled(options: PluginRequestOptions = {}): Promise<PluginRecoverySnapshot> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/recover-enabled", {}, options);
+  }
+  retryRecovery(pluginInstanceId: string, options: PluginRequestOptions = {}): Promise<PluginRecoveryResult> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/recover/retry", { plugin_instance_id: pluginInstanceId }, options);
   }
   runtimeHealth(options: PluginRequestOptions = {}): Promise<PluginRuntimeHealth> { return this.#requestQuery("/_redevplugin/api/plugins/runtime/health/query", {}, options); }
   getSettingsSchema(pluginInstanceId: string, scope: PluginResourceScopeKind, options: PluginRequestOptions = {}): Promise<PluginSettingsSchema> {
@@ -430,21 +368,27 @@ export class PluginPlatformClient {
   patchSettings(pluginInstanceId: string, request: PluginSettingsPatchRequest, options: PluginRequestOptions = {}): Promise<PluginSettingsSnapshot> {
     return this.#mutatePluginAt("PATCH", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, pluginInstanceId, request, options);
   }
-  listOperations(options: PluginOperationListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginOperationList> {
-    return this.#requestQuery("/_redevplugin/api/plugins/operations/query", options, requestOptions);
+  listExecutions(options: PluginExecutionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginExecutionList> {
+    return this.#requestQuery("/_redevplugin/api/plugins/executions/query", options, requestOptions);
   }
-  getOperation(operationId: string, options: PluginRequestOptions = {}): Promise<PluginOperationRecord> {
-    return this.#requestQuery(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/query`, {}, options);
+  startReleaseInstallExecution(request: PluginStartReleaseInstallExecutionRequest, options: PluginRequestOptions = {}): Promise<PluginExecution> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/executions/release-installs", request, options);
   }
-  cancelOperation(operationId: string, reason?: string, options: PluginRequestOptions = {}): Promise<PluginOperationRecord> {
-    return this.#requestMutation("POST", `/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/cancel`, reason ? { reason } : {}, options);
+  getExecution(executionID: string, options: PluginRequestOptions = {}): Promise<PluginExecution> {
+    return this.#requestQuery(`/_redevplugin/api/plugins/executions/${encodeURIComponent(executionID)}/query`, {}, options);
+  }
+  cancelExecution(executionID: string, reason?: string, options: PluginRequestOptions = {}): Promise<PluginExecution> {
+    return this.#requestMutation("POST", `/_redevplugin/api/plugins/executions/${encodeURIComponent(executionID)}/cancel`, reason ? { reason } : {}, options);
+  }
+  listExecutionEvents(executionID: string, request: PluginExecutionEventListOptions, options: PluginRequestOptions = {}): Promise<PluginExecutionEventList> {
+    return this.#requestQuery(`/_redevplugin/api/plugins/executions/${encodeURIComponent(executionID)}/events/query`, request, options);
   }
 
   listIntents(options: PluginIntentListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginIntentList> {
     return this.#requestQuery("/_redevplugin/api/plugins/intents/query", options, requestOptions);
   }
 
-  invokeIntent<T = unknown>(request: PluginIntentInvokeRequest, options: PluginRequestOptions = {}): Promise<PluginTrustedMethodResult<T>> {
+  invokeIntent<T = unknown>(request: PluginIntentInvokeRequest, options: PluginRequestOptions = {}): Promise<PluginMethodResult<T>> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/intents/invoke", request, options);
   }
 
@@ -600,17 +544,6 @@ export class PluginPlatformClient {
     return readPlatformResponse<T>(response);
   }
 
-  async #requestGet<T>(path: string, options: PluginRequestOptions): Promise<T> {
-    const operation = `GET ${path}`;
-    const response = await dispatchQueryRequest(this.#fetch, this.#apiBaseURL + path, {
-      method: "GET",
-      headers: { "Accept": "application/json" },
-      credentials: "same-origin",
-      signal: options.signal,
-    }, operation);
-    return readPlatformResponse<T>(response);
-  }
-
   async #requestMutation<T>(
     method: "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
@@ -663,32 +596,6 @@ export class PluginPlatformClient {
   }
 }
 
-function waitForReleaseInstallPoll(retryAfterMs: number, signal?: AbortSignal): Promise<void> {
-  const delayMs = Number.isFinite(retryAfterMs)
-    ? Math.min(10_000, Math.max(250, Math.trunc(retryAfterMs)))
-    : 500;
-  if (signal?.aborted) {
-    return Promise.reject(new PluginTransportError(
-      "Plugin release install observation was aborted",
-      signal.reason,
-    ));
-  }
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    const onAbort = () => {
-      clearTimeout(timeout);
-      reject(new PluginTransportError(
-        "Plugin release install observation was aborted",
-        signal?.reason,
-      ));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 function canonicalUploadedExternalPackageIntent(intent: PluginUploadedExternalPackageIntent): PluginUploadedExternalPackageIntent {
   if (typeof intent !== "object" || intent === null || Array.isArray(intent)) {
     throw new TypeError("uploaded external package intent must be a closed install or update object");
@@ -732,12 +639,9 @@ const sessionScopeCountKeys = [
   "asset_sessions",
   "plugin_gateway_tokens",
   "confirmation_tokens",
-  "stream_tickets",
   "handle_grants",
   "confirmations",
-  "operations",
-  "streams",
-  "runtime_executions",
+  "executions",
   "active_network_requests",
   "sockets",
   "network_streams",

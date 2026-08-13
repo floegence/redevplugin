@@ -61,10 +61,6 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"worker-invocation-schema",
 		"host-capability-contract-schema",
 		"host-capability-pin-schema",
-		"host-capability-manifest-schema",
-		"host-capability-compatibility-schema",
-		"host-capability-signature-schema",
-		"host-capability-notices-schema",
 		"error-codes-schema",
 		"rust-ipc-schema",
 		"wasm-worker-schema",
@@ -112,35 +108,14 @@ func TestCompatibilityManifestIncludesResourceScopeSchema(t *testing.T) {
 	t.Fatal("compatibility manifest missing resource-scope-schema")
 }
 
-func TestCompatibilityManifestIncludesSessionScopeMaintenanceContract(t *testing.T) {
-	manifest := CurrentCompatibilityManifest()
-	if manifest.Matrix.SessionScopeMaintenanceVersion != SessionScopeMaintenanceSchemaVersion {
-		t.Fatalf("session scope maintenance matrix version = %q, want %q", manifest.Matrix.SessionScopeMaintenanceVersion, SessionScopeMaintenanceSchemaVersion)
-	}
-	for _, contract := range manifest.Contracts {
-		if contract.ID != "session-scope-maintenance-contract" {
-			continue
-		}
-		if contract.Version != SessionScopeMaintenanceSchemaVersion {
-			t.Fatalf("session maintenance contract version = %q, want %q", contract.Version, SessionScopeMaintenanceSchemaVersion)
-		}
-		return
-	}
-	t.Fatal("compatibility manifest missing session-scope-maintenance-contract")
-}
-
 func TestCompatibilityManifestIncludesHostCapabilityContractSchema(t *testing.T) {
 	manifest := CurrentCompatibilityManifest()
 	if manifest.Matrix.HostCapabilityContractVersion != HostCapabilityContractSchemaVersion {
 		t.Fatalf("host capability contract matrix version = %q, want %q", manifest.Matrix.HostCapabilityContractVersion, HostCapabilityContractSchemaVersion)
 	}
 	want := map[string]string{
-		"host-capability-contract-schema":      HostCapabilityContractSchemaVersion,
-		"host-capability-pin-schema":           HostCapabilityPinSchemaVersion,
-		"host-capability-manifest-schema":      HostCapabilityManifestSchemaVersion,
-		"host-capability-compatibility-schema": HostCapabilityCompatibilitySchemaVersion,
-		"host-capability-signature-schema":     HostCapabilitySignatureSchemaVersion,
-		"host-capability-notices-schema":       HostCapabilityNoticesSchemaVersion,
+		"host-capability-contract-schema": HostCapabilityContractSchemaVersion,
+		"host-capability-pin-schema":      HostCapabilityPinSchemaVersion,
 	}
 	for _, contract := range manifest.Contracts {
 		if version, ok := want[contract.ID]; ok && contract.Version == version {
@@ -258,11 +233,11 @@ func TestCurrentCompatibilityManifestUsesOnePlatformVersion(t *testing.T) {
 func TestCurrentPackageSetFallsBackToBuildInfoVersion(t *testing.T) {
 	restore := replaceReleaseVersions(devVersion, devVersion, devVersion)
 	defer restore()
-	restoreDetector := replaceBuildInfoDetector("0.7.27")
+	restoreDetector := replaceBuildInfoDetector("1.0.0")
 	defer restoreDetector()
 
 	packageSet := CurrentCompatibilityManifest().PackageSet
-	if packageSet.PlatformVersion != "0.7.27" || packageSet.ContractSetSHA256 != ContractSetSHA256 {
+	if packageSet.PlatformVersion != "1.0.0" || packageSet.ContractSetSHA256 != ContractSetSHA256 {
 		t.Fatalf("package set = %#v", packageSet)
 	}
 }

@@ -1,11 +1,18 @@
 # Changelog
 
-## v0.7.27
+## v1.0.0
 
-- Let hosts read a plugin's declared presentation icon from the installed,
-  content-addressed package store without depending on marketplace availability.
-- Revalidate the manifest path, registry entry metadata, requested digest, media
-  type, and stored bytes before returning an installed icon.
+- Make the Go Host the single lifecycle, action-state, recovery, and control
+  database owner, with one public Execution/Event model for asynchronous work.
+- Keep only manifest v8, release metadata v8, plugin-ui-v7, and bridge-v7 as the
+  active contracts, and remove retired forwarding and stream-ticket surfaces.
+- Replace durable external-package staging with process-local inspection and an
+  exact owner/session/bytes revalidation before the atomic Host install.
+- Retain SHA-256, Ed25519, and revocation enforcement while removing local
+  trusted-time, transparency-ledger, publisher-continuity, and independent
+  capability-publication authorities.
+- Publish package-set v2 without the unused Rust target-classifier crate; Go
+  connectivity remains the sole target-classification execution owner.
 
 ## v0.7.26
 

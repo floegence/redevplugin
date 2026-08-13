@@ -71,8 +71,6 @@
       "source_id": "example_source",
       "channel": "stable",
       "epoch": "1",
-      "previous_epoch": "0",
-      "previous_document_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "root_epoch": "1",
       "generated_at": "2026-07-20T00:00:00Z",
       "expires_at": "2026-07-21T00:00:00Z",
@@ -87,28 +85,24 @@
         }
       ],
       "key_id": "test_signing_key",
-      "signature": "3j2AJTJCjuW4kYn2rPIWlVMHEBv6H7RMcRYEATUrl7WUvUm3Ez5nbf6BkviGn4F2zYf0Vq9UXtnB8ZTiHnuCDA=="
+      "signature": "r1rmMCNmfWErx6P9/rxawUZeVBNjUCcc7zheESdP/s74P1Gs45Aqr6XhHdkHvM7XIR9IYK6nlZ069UM6hM3MBA=="
     },
     "revocation_pointer": {
       "schema_version": "redevplugin.release_revocation_pointer.v1",
       "source_id": "example_source",
       "channel": "stable",
       "epoch": "1",
-      "previous_epoch": "0",
-      "previous_document_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "ref": "sources/example_source/stable/revocation/1.json",
-      "document_sha256": "bb09a22331072deb3e73f7a6d826d97eaaf21fd184813d5b46ea8440347ddd1f",
+      "document_sha256": "26ab3494255f1b93a4bfd44cc8e26dfc5924bf400266169fa03e515fa7b01639",
       "generated_at": "2026-07-20T00:00:00Z",
       "expires_at": "2026-07-21T00:00:00Z",
       "key_id": "test_signing_key",
-      "signature": "/ZRBA+cPlhpsgSoWFRUZcQNOpq8nULh/ZuCeyTIJtsIx8MQGLntLSCQAzMPHQK8pztEveih32lldPwr5/AbVCA=="
+      "signature": "xu/oidIiqpWxKZVBIK4OBlzrcW1Khg5tWN5rfktW+cu6YdMvSRQLDQJuvuaVG0fU1KbaijOtmAtiAACzEYrGCA=="
     },
     "root_delegation": {
       "schema_version": "redevplugin.release_root_delegation.v1",
       "source_id": "example_source",
       "root_epoch": "1",
-      "previous_root_epoch": "0",
-      "previous_delegation_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "generated_at": "2026-07-20T00:00:00Z",
       "expires_at": "2027-07-20T00:00:00Z",
       "delegated_keys": [
@@ -119,7 +113,6 @@
           "usages": [
             "package",
             "release_metadata",
-            "host_capability_contract",
             "revocation_document",
             "revocation_pointer",
             "source_policy_document",
@@ -133,15 +126,13 @@
         }
       ],
       "key_id": "test_signing_key",
-      "signature": "YpA0hRbE90VEUGYSSrFIoxtav4ztyfKOlBs+MrL/wLmlH7cCFLJR5aAmv3HIWL9qKqe+vqwI6YViBXr+AUcRDw=="
+      "signature": "l00AUUx9dT2e2lefWf6Y5Rl1uw5vvlWSsK7uFMVa0TQ2dUa73j/gff8vue/jtIDE+fT1v+laQhE47rOYk7hIDQ=="
     },
     "source_policy": {
-      "schema_version": "redevplugin.release_source_policy.v2",
+      "schema_version": "redevplugin.release_source_policy.v3",
       "source_id": "example_source",
       "channel": "stable",
       "epoch": "1",
-      "previous_epoch": "0",
-      "previous_document_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "root_epoch": "1",
       "source_type": "registry",
       "source_class": "official",
@@ -158,9 +149,6 @@
         "release_metadata": [
           "test_signing_key"
         ],
-        "host_capability_contract": [
-          "test_signing_key"
-        ],
         "source_policy_pointer": [
           "test_signing_key"
         ],
@@ -171,44 +159,33 @@
           "test_signing_key"
         ]
       },
-      "capability_publisher_scopes": [
-        {
-          "key_id": "test_signing_key",
-          "allowed_publishers": [
-            "example.capability"
-          ]
-        }
-      ],
       "require_signature": true,
       "install_policy": "allow",
       "unsigned_policy": "block",
       "downgrade_policy": "block",
       "minimum_revocation_epoch": "1",
       "limits": {
-        "document_max_lifetime_seconds": 86400,
+        "document_max_lifetime_seconds": 7776000,
         "future_skew_seconds": 300,
-        "activation_lease_max_seconds": 300,
         "refresh_interval_max_seconds": 60,
         "failure_teardown_deadline_seconds": 30
       },
       "generated_at": "2026-07-20T00:00:00Z",
       "expires_at": "2026-07-21T00:00:00Z",
       "key_id": "test_signing_key",
-      "signature": "A1j7lQ9ubhPMLo0CHi/kPHCHstH5usTpkC81pfBxQAGuW+8YaMnI7qyJu177i4pUiqfJBHrknPrf14wddFv9Dw=="
+      "signature": "Iw3bL8z0EUFGhIZt4tc5NpAgckxgPXJHYpTqyaA8MXMQrsKcGBBTB6gZMXXyZg4KZfxXE4wUA4oueX9s9YE+AQ=="
     },
     "source_policy_pointer": {
       "schema_version": "redevplugin.release_source_policy_pointer.v1",
       "source_id": "example_source",
       "channel": "stable",
       "epoch": "1",
-      "previous_epoch": "0",
-      "previous_document_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "ref": "sources/example_source/stable/policy/1.json",
-      "document_sha256": "33ce79bf6ff8fd6b2b58409342d94bebe5f3b795bfe85aef6e0570417c15c4cd",
+      "document_sha256": "73bec8c769b807fec18aa7eae5d390c8445fff10acf3815f2582ddbc81290f10",
       "generated_at": "2026-07-20T00:00:00Z",
       "expires_at": "2026-07-21T00:00:00Z",
       "key_id": "test_signing_key",
-      "signature": "qNMes2mqOI5UciuME68VKG58opvRkTQe7SNpXI0SxCCfqpy74hLckI/Z4OGwXxDIzODs2spekrf0TjrSU1n3DQ=="
+      "signature": "CDTOrX/je5KD+kdwOjrA7d0MJPjWaVfEhdPvzGCr9F90Vhi1nVrQdIaE8KrWDJhUHmdWu4cCImCD9P+AhQFzDQ=="
     }
   },
   "package_context": {
@@ -219,11 +196,11 @@
   "preimages": {
     "redevplugin.release-signing.package.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcucGFja2FnZS52MQB7ImNoYW5uZWwiOiJzdGFibGUiLCJwYWNrYWdlX3NpZ25hdHVyZSI6eyJhbGdvcml0aG0iOiJlZDI1NTE5IiwiZW50cmllc19oYXNoIjoic2hhMjU2OjMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMiLCJrZXlfaWQiOiJ0ZXN0X3NpZ25pbmdfa2V5IiwibWFuaWZlc3RfaGFzaCI6InNoYTI1NjoyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIiwicGFja2FnZV9oYXNoIjoic2hhMjU2OjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEiLCJwbHVnaW5faWQiOiJleGFtcGxlLnBsdWdpbiIsInB1Ymxpc2hlcl9pZCI6ImV4YW1wbGUucHVibGlzaGVyIiwic2NoZW1hX3ZlcnNpb24iOiJyZWRldnBsdWdpbi5wYWNrYWdlX3NpZ25hdHVyZS52MSIsInNpZ25lZF9hdCI6IjIwMjYtMDctMjBUMDA6MDA6MDBaIn0sInNvdXJjZV9pZCI6ImV4YW1wbGVfc291cmNlIiwidmVyc2lvbiI6IjEuMi4zIn0=",
     "redevplugin.release-signing.release-metadata.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcucmVsZWFzZS1tZXRhZGF0YS52MQB7ImNoYW5uZWwiOiJzdGFibGUiLCJyZWxlYXNlX21ldGFkYXRhIjp7ImNvbXBhdGliaWxpdHkiOnsibWluX3JlZGV2cGx1Z2luX3ZlcnNpb24iOiIwLjcuMCIsIm1pbl9ydW50aW1lX3ZlcnNpb24iOiIwLjcuMCIsInN1cHBvcnRlZF90YXJnZXRzIjpbImxpbnV4L2FtZDY0IiwibGludXgvYXJtNjQiXSwidWlfcHJvdG9jb2xfdmVyc2lvbiI6InBsdWdpbi11aS12NyJ9LCJkaXN0cmlidXRpb25fcmVmIjp7ImFydGlmYWN0X3JlZiI6InBsdWdpbnMvZXhhbXBsZS5wdWJsaXNoZXIvZXhhbXBsZS5wbHVnaW4vMS4yLjMvcGFja2FnZS56aXAiLCJkaXN0cmlidXRpb24iOiJyZWdpc3RyeV9yZWYifSwiaGFzaGVzIjp7ImVudHJpZXNfc2hhMjU2IjoiMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMyIsIm1hbmlmZXN0X3NoYTI1NiI6IjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJwYWNrYWdlX3NoYTI1NiI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifSwibWV0YWRhdGEiOnsiYWxwaGEiOiJmaXJzdCIsImh0bWwiOiI8PiYiLCJsaW5lIjoiZmlyc3RcbnNlY29uZCIsInpldGEiOiJsYXN0In0sInBhY2thZ2Vfc2lnbmF0dXJlIjp7ImFsZ29yaXRobSI6ImVkMjU1MTkiLCJrZXlfaWQiOiJ0ZXN0X3NpZ25pbmdfa2V5IiwicmV2b2NhdGlvbl9lcG9jaCI6IjEiLCJzaWduYXR1cmVfYnVuZGxlX3JlZiI6InBsdWdpbnMvZXhhbXBsZS5wdWJsaXNoZXIvZXhhbXBsZS5wbHVnaW4vMS4yLjMvcGFja2FnZS5zaWciLCJzb3VyY2VfcG9saWN5X2Vwb2NoIjoiMSJ9LCJwbHVnaW5faWQiOiJleGFtcGxlLnBsdWdpbiIsInB1Ymxpc2hlcl9pZCI6ImV4YW1wbGUucHVibGlzaGVyIiwicmVsZWFzZV9ldmlkZW5jZSI6eyJnZW5lcmF0ZWRfYXQiOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsIm5vdGljZXNfc2hhMjU2IjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCIsInByb3ZlbmFuY2Vfc2hhMjU2IjoiNTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NSJ9LCJyZWxlYXNlX21ldGFkYXRhX3JlZiI6InBsdWdpbnMvZXhhbXBsZS5wdWJsaXNoZXIvZXhhbXBsZS5wbHVnaW4vMS4yLjMvcmVsZWFzZS5qc29uIiwicmVsZWFzZV9tZXRhZGF0YV9zaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiZWQyNTUxOSIsImtleV9pZCI6InRlc3Rfc2lnbmluZ19rZXkiLCJyZXZvY2F0aW9uX2Vwb2NoIjoiMSIsInNpZ25hdHVyZV9yZWYiOiJwbHVnaW5zL2V4YW1wbGUucHVibGlzaGVyL2V4YW1wbGUucGx1Z2luLzEuMi4zL3JlbGVhc2UuanNvbi5zaWciLCJzb3VyY2VfcG9saWN5X2Vwb2NoIjoiMSJ9LCJzY2hlbWFfdmVyc2lvbiI6InJlZGV2cGx1Z2luLnJlbGVhc2VfbWV0YWRhdGEudjgiLCJzb3VyY2VfaWQiOiJleGFtcGxlX3NvdXJjZSIsInZlcnNpb24iOiIxLjIuMyJ9fQ==",
-    "redevplugin.release-signing.revocation-document.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcucmV2b2NhdGlvbi1kb2N1bWVudC52MQB7ImNoYW5uZWwiOiJzdGFibGUiLCJlcG9jaCI6IjEiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yMVQwMDowMDowMFoiLCJnZW5lcmF0ZWRfYXQiOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsImtleV9pZCI6InRlc3Rfc2lnbmluZ19rZXkiLCJwcmV2aW91c19kb2N1bWVudF9zaGEyNTYiOiIwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwicHJldmlvdXNfZXBvY2giOiIwIiwicmV2b2tlZF9rZXlfaWRzIjpbXSwicmV2b2tlZF9yZWxlYXNlcyI6W3sicGx1Z2luX2lkIjoiZXhhbXBsZS5wbHVnaW4iLCJwdWJsaXNoZXJfaWQiOiJleGFtcGxlLnB1Ymxpc2hlciIsInJlbGVhc2VfbWV0YWRhdGFfc2hhMjU2IjoiNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NiIsInJldm9rZWRfYXQiOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsInZlcnNpb24iOiIxLjAuMCJ9XSwicm9vdF9lcG9jaCI6IjEiLCJzY2hlbWFfdmVyc2lvbiI6InJlZGV2cGx1Z2luLnJlbGVhc2VfcmV2b2NhdGlvbi52MiIsInNvdXJjZV9pZCI6ImV4YW1wbGVfc291cmNlIn0=",
-    "redevplugin.release-signing.revocation-pointer.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcucmV2b2NhdGlvbi1wb2ludGVyLnYxAHsiY2hhbm5lbCI6InN0YWJsZSIsImRvY3VtZW50X3NoYTI1NiI6ImJiMDlhMjIzMzEwNzJkZWIzZTczZjdhNmQ4MjZkOTdlYWFmMjFmZDE4NDgxM2Q1YjQ2ZWE4NDQwMzQ3ZGRkMWYiLCJlcG9jaCI6IjEiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yMVQwMDowMDowMFoiLCJnZW5lcmF0ZWRfYXQiOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsImtleV9pZCI6InRlc3Rfc2lnbmluZ19rZXkiLCJwcmV2aW91c19kb2N1bWVudF9zaGEyNTYiOiIwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwicHJldmlvdXNfZXBvY2giOiIwIiwicmVmIjoic291cmNlcy9leGFtcGxlX3NvdXJjZS9zdGFibGUvcmV2b2NhdGlvbi8xLmpzb24iLCJzY2hlbWFfdmVyc2lvbiI6InJlZGV2cGx1Z2luLnJlbGVhc2VfcmV2b2NhdGlvbl9wb2ludGVyLnYxIiwic291cmNlX2lkIjoiZXhhbXBsZV9zb3VyY2UifQ==",
-    "redevplugin.release-signing.root-delegation.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcucm9vdC1kZWxlZ2F0aW9uLnYxAHsiZGVsZWdhdGVkX2tleXMiOlt7ImFsZ29yaXRobSI6ImVkMjU1MTkiLCJjaGFubmVscyI6WyJzdGFibGUiXSwia2V5X2lkIjoidGVzdF9zaWduaW5nX2tleSIsInB1YmxpY19rZXkiOiJlYlZXTG8vbVZQbEFlTEVTNkttTHA1QWZoVHJtbGI3WDRPT1JDNjBFbG1RPSIsInVzYWdlcyI6WyJwYWNrYWdlIiwicmVsZWFzZV9tZXRhZGF0YSIsImhvc3RfY2FwYWJpbGl0eV9jb250cmFjdCIsInJldm9jYXRpb25fZG9jdW1lbnQiLCJyZXZvY2F0aW9uX3BvaW50ZXIiLCJzb3VyY2VfcG9saWN5X2RvY3VtZW50Iiwic291cmNlX3BvbGljeV9wb2ludGVyIl0sInZhbGlkX2Zyb20iOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsInZhbGlkX3VudGlsIjoiMjAyNy0wNy0yMFQwMDowMDowMFoifV0sImV4cGlyZXNfYXQiOiIyMDI3LTA3LTIwVDAwOjAwOjAwWiIsImdlbmVyYXRlZF9hdCI6IjIwMjYtMDctMjBUMDA6MDA6MDBaIiwia2V5X2lkIjoidGVzdF9zaWduaW5nX2tleSIsInByZXZpb3VzX2RlbGVnYXRpb25fc2hhMjU2IjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIsInByZXZpb3VzX3Jvb3RfZXBvY2giOiIwIiwicm9vdF9lcG9jaCI6IjEiLCJzY2hlbWFfdmVyc2lvbiI6InJlZGV2cGx1Z2luLnJlbGVhc2Vfcm9vdF9kZWxlZ2F0aW9uLnYxIiwic291cmNlX2lkIjoiZXhhbXBsZV9zb3VyY2UifQ==",
-    "redevplugin.release-signing.source-policy-document.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcuc291cmNlLXBvbGljeS1kb2N1bWVudC52MQB7ImFjdGl2ZV9rZXlzIjp7Imhvc3RfY2FwYWJpbGl0eV9jb250cmFjdCI6WyJ0ZXN0X3NpZ25pbmdfa2V5Il0sInBhY2thZ2UiOlsidGVzdF9zaWduaW5nX2tleSJdLCJyZWxlYXNlX21ldGFkYXRhIjpbInRlc3Rfc2lnbmluZ19rZXkiXSwicmV2b2NhdGlvbl9kb2N1bWVudCI6WyJ0ZXN0X3NpZ25pbmdfa2V5Il0sInJldm9jYXRpb25fcG9pbnRlciI6WyJ0ZXN0X3NpZ25pbmdfa2V5Il0sInNvdXJjZV9wb2xpY3lfcG9pbnRlciI6WyJ0ZXN0X3NpZ25pbmdfa2V5Il19LCJhbGxvd2VkX2FydGlmYWN0X2hvc3RzIjpbInBsdWdpbnMuZXhhbXBsZS50ZXN0Il0sImFsbG93ZWRfcHVibGlzaGVycyI6WyJleGFtcGxlLnB1Ymxpc2hlciJdLCJjYXBhYmlsaXR5X3B1Ymxpc2hlcl9zY29wZXMiOlt7ImFsbG93ZWRfcHVibGlzaGVycyI6WyJleGFtcGxlLmNhcGFiaWxpdHkiXSwia2V5X2lkIjoidGVzdF9zaWduaW5nX2tleSJ9XSwiY2hhbm5lbCI6InN0YWJsZSIsImRvd25ncmFkZV9wb2xpY3kiOiJibG9jayIsImVwb2NoIjoiMSIsImV4cGlyZXNfYXQiOiIyMDI2LTA3LTIxVDAwOjAwOjAwWiIsImdlbmVyYXRlZF9hdCI6IjIwMjYtMDctMjBUMDA6MDA6MDBaIiwiaW5zdGFsbF9wb2xpY3kiOiJhbGxvdyIsImtleV9pZCI6InRlc3Rfc2lnbmluZ19rZXkiLCJsaW1pdHMiOnsiYWN0aXZhdGlvbl9sZWFzZV9tYXhfc2Vjb25kcyI6MzAwLCJkb2N1bWVudF9tYXhfbGlmZXRpbWVfc2Vjb25kcyI6ODY0MDAsImZhaWx1cmVfdGVhcmRvd25fZGVhZGxpbmVfc2Vjb25kcyI6MzAsImZ1dHVyZV9za2V3X3NlY29uZHMiOjMwMCwicmVmcmVzaF9pbnRlcnZhbF9tYXhfc2Vjb25kcyI6NjB9LCJtaW5pbXVtX3Jldm9jYXRpb25fZXBvY2giOiIxIiwicHJldmlvdXNfZG9jdW1lbnRfc2hhMjU2IjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIsInByZXZpb3VzX2Vwb2NoIjoiMCIsInJlcXVpcmVfc2lnbmF0dXJlIjp0cnVlLCJyb290X2Vwb2NoIjoiMSIsInNjaGVtYV92ZXJzaW9uIjoicmVkZXZwbHVnaW4ucmVsZWFzZV9zb3VyY2VfcG9saWN5LnYyIiwic291cmNlX2NsYXNzIjoib2ZmaWNpYWwiLCJzb3VyY2VfaWQiOiJleGFtcGxlX3NvdXJjZSIsInNvdXJjZV90eXBlIjoicmVnaXN0cnkiLCJ1bnNpZ25lZF9wb2xpY3kiOiJibG9jayJ9",
-    "redevplugin.release-signing.source-policy-pointer.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcuc291cmNlLXBvbGljeS1wb2ludGVyLnYxAHsiY2hhbm5lbCI6InN0YWJsZSIsImRvY3VtZW50X3NoYTI1NiI6IjMzY2U3OWJmNmZmOGZkNmIyYjU4NDA5MzQyZDk0YmViZTVmM2I3OTViZmU4NWFlZjZlMDU3MDQxN2MxNWM0Y2QiLCJlcG9jaCI6IjEiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yMVQwMDowMDowMFoiLCJnZW5lcmF0ZWRfYXQiOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsImtleV9pZCI6InRlc3Rfc2lnbmluZ19rZXkiLCJwcmV2aW91c19kb2N1bWVudF9zaGEyNTYiOiIwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwicHJldmlvdXNfZXBvY2giOiIwIiwicmVmIjoic291cmNlcy9leGFtcGxlX3NvdXJjZS9zdGFibGUvcG9saWN5LzEuanNvbiIsInNjaGVtYV92ZXJzaW9uIjoicmVkZXZwbHVnaW4ucmVsZWFzZV9zb3VyY2VfcG9saWN5X3BvaW50ZXIudjEiLCJzb3VyY2VfaWQiOiJleGFtcGxlX3NvdXJjZSJ9"
+    "redevplugin.release-signing.revocation-document.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcucmV2b2NhdGlvbi1kb2N1bWVudC52MQB7ImNoYW5uZWwiOiJzdGFibGUiLCJlcG9jaCI6IjEiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yMVQwMDowMDowMFoiLCJnZW5lcmF0ZWRfYXQiOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsImtleV9pZCI6InRlc3Rfc2lnbmluZ19rZXkiLCJyZXZva2VkX2tleV9pZHMiOltdLCJyZXZva2VkX3JlbGVhc2VzIjpbeyJwbHVnaW5faWQiOiJleGFtcGxlLnBsdWdpbiIsInB1Ymxpc2hlcl9pZCI6ImV4YW1wbGUucHVibGlzaGVyIiwicmVsZWFzZV9tZXRhZGF0YV9zaGEyNTYiOiI2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2IiwicmV2b2tlZF9hdCI6IjIwMjYtMDctMjBUMDA6MDA6MDBaIiwidmVyc2lvbiI6IjEuMC4wIn1dLCJyb290X2Vwb2NoIjoiMSIsInNjaGVtYV92ZXJzaW9uIjoicmVkZXZwbHVnaW4ucmVsZWFzZV9yZXZvY2F0aW9uLnYyIiwic291cmNlX2lkIjoiZXhhbXBsZV9zb3VyY2UifQ==",
+    "redevplugin.release-signing.revocation-pointer.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcucmV2b2NhdGlvbi1wb2ludGVyLnYxAHsiY2hhbm5lbCI6InN0YWJsZSIsImRvY3VtZW50X3NoYTI1NiI6IjI2YWIzNDk0MjU1ZjFiOTNhNGJmZDQ0Y2M4ZTI2ZGZjNTkyNGJmNDAwMjY2MTY5ZmEwM2U1MTVmYTdiMDE2MzkiLCJlcG9jaCI6IjEiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yMVQwMDowMDowMFoiLCJnZW5lcmF0ZWRfYXQiOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsImtleV9pZCI6InRlc3Rfc2lnbmluZ19rZXkiLCJyZWYiOiJzb3VyY2VzL2V4YW1wbGVfc291cmNlL3N0YWJsZS9yZXZvY2F0aW9uLzEuanNvbiIsInNjaGVtYV92ZXJzaW9uIjoicmVkZXZwbHVnaW4ucmVsZWFzZV9yZXZvY2F0aW9uX3BvaW50ZXIudjEiLCJzb3VyY2VfaWQiOiJleGFtcGxlX3NvdXJjZSJ9",
+    "redevplugin.release-signing.root-delegation.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcucm9vdC1kZWxlZ2F0aW9uLnYxAHsiZGVsZWdhdGVkX2tleXMiOlt7ImFsZ29yaXRobSI6ImVkMjU1MTkiLCJjaGFubmVscyI6WyJzdGFibGUiXSwia2V5X2lkIjoidGVzdF9zaWduaW5nX2tleSIsInB1YmxpY19rZXkiOiJlYlZXTG8vbVZQbEFlTEVTNkttTHA1QWZoVHJtbGI3WDRPT1JDNjBFbG1RPSIsInVzYWdlcyI6WyJwYWNrYWdlIiwicmVsZWFzZV9tZXRhZGF0YSIsInJldm9jYXRpb25fZG9jdW1lbnQiLCJyZXZvY2F0aW9uX3BvaW50ZXIiLCJzb3VyY2VfcG9saWN5X2RvY3VtZW50Iiwic291cmNlX3BvbGljeV9wb2ludGVyIl0sInZhbGlkX2Zyb20iOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsInZhbGlkX3VudGlsIjoiMjAyNy0wNy0yMFQwMDowMDowMFoifV0sImV4cGlyZXNfYXQiOiIyMDI3LTA3LTIwVDAwOjAwOjAwWiIsImdlbmVyYXRlZF9hdCI6IjIwMjYtMDctMjBUMDA6MDA6MDBaIiwia2V5X2lkIjoidGVzdF9zaWduaW5nX2tleSIsInJvb3RfZXBvY2giOiIxIiwic2NoZW1hX3ZlcnNpb24iOiJyZWRldnBsdWdpbi5yZWxlYXNlX3Jvb3RfZGVsZWdhdGlvbi52MSIsInNvdXJjZV9pZCI6ImV4YW1wbGVfc291cmNlIn0=",
+    "redevplugin.release-signing.source-policy-document.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcuc291cmNlLXBvbGljeS1kb2N1bWVudC52MQB7ImFjdGl2ZV9rZXlzIjp7InBhY2thZ2UiOlsidGVzdF9zaWduaW5nX2tleSJdLCJyZWxlYXNlX21ldGFkYXRhIjpbInRlc3Rfc2lnbmluZ19rZXkiXSwicmV2b2NhdGlvbl9kb2N1bWVudCI6WyJ0ZXN0X3NpZ25pbmdfa2V5Il0sInJldm9jYXRpb25fcG9pbnRlciI6WyJ0ZXN0X3NpZ25pbmdfa2V5Il0sInNvdXJjZV9wb2xpY3lfcG9pbnRlciI6WyJ0ZXN0X3NpZ25pbmdfa2V5Il19LCJhbGxvd2VkX2FydGlmYWN0X2hvc3RzIjpbInBsdWdpbnMuZXhhbXBsZS50ZXN0Il0sImFsbG93ZWRfcHVibGlzaGVycyI6WyJleGFtcGxlLnB1Ymxpc2hlciJdLCJjaGFubmVsIjoic3RhYmxlIiwiZG93bmdyYWRlX3BvbGljeSI6ImJsb2NrIiwiZXBvY2giOiIxIiwiZXhwaXJlc19hdCI6IjIwMjYtMDctMjFUMDA6MDA6MDBaIiwiZ2VuZXJhdGVkX2F0IjoiMjAyNi0wNy0yMFQwMDowMDowMFoiLCJpbnN0YWxsX3BvbGljeSI6ImFsbG93Iiwia2V5X2lkIjoidGVzdF9zaWduaW5nX2tleSIsImxpbWl0cyI6eyJkb2N1bWVudF9tYXhfbGlmZXRpbWVfc2Vjb25kcyI6Nzc3NjAwMCwiZmFpbHVyZV90ZWFyZG93bl9kZWFkbGluZV9zZWNvbmRzIjozMCwiZnV0dXJlX3NrZXdfc2Vjb25kcyI6MzAwLCJyZWZyZXNoX2ludGVydmFsX21heF9zZWNvbmRzIjo2MH0sIm1pbmltdW1fcmV2b2NhdGlvbl9lcG9jaCI6IjEiLCJyZXF1aXJlX3NpZ25hdHVyZSI6dHJ1ZSwicm9vdF9lcG9jaCI6IjEiLCJzY2hlbWFfdmVyc2lvbiI6InJlZGV2cGx1Z2luLnJlbGVhc2Vfc291cmNlX3BvbGljeS52MyIsInNvdXJjZV9jbGFzcyI6Im9mZmljaWFsIiwic291cmNlX2lkIjoiZXhhbXBsZV9zb3VyY2UiLCJzb3VyY2VfdHlwZSI6InJlZ2lzdHJ5IiwidW5zaWduZWRfcG9saWN5IjoiYmxvY2sifQ==",
+    "redevplugin.release-signing.source-policy-pointer.v1": "UkVERVZQTFVHSU4tU0lHTklORy1WMQByZWRldnBsdWdpbi5yZWxlYXNlLXNpZ25pbmcuc291cmNlLXBvbGljeS1wb2ludGVyLnYxAHsiY2hhbm5lbCI6InN0YWJsZSIsImRvY3VtZW50X3NoYTI1NiI6IjczYmVjOGM3NjliODA3ZmVjMThhYTdlYWU1ZDM5MGM4NDQ1ZmZmMTBhY2YzODE1ZjI1ODJkZGJjODEyOTBmMTAiLCJlcG9jaCI6IjEiLCJleHBpcmVzX2F0IjoiMjAyNi0wNy0yMVQwMDowMDowMFoiLCJnZW5lcmF0ZWRfYXQiOiIyMDI2LTA3LTIwVDAwOjAwOjAwWiIsImtleV9pZCI6InRlc3Rfc2lnbmluZ19rZXkiLCJyZWYiOiJzb3VyY2VzL2V4YW1wbGVfc291cmNlL3N0YWJsZS9wb2xpY3kvMS5qc29uIiwic2NoZW1hX3ZlcnNpb24iOiJyZWRldnBsdWdpbi5yZWxlYXNlX3NvdXJjZV9wb2xpY3lfcG9pbnRlci52MSIsInNvdXJjZV9pZCI6ImV4YW1wbGVfc291cmNlIn0="
   },
   "public_key_base64": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
   "release_metadata_channel": "stable",
@@ -231,10 +208,10 @@
   "signatures": {
     "redevplugin.release-signing.package.v1": "z9Ty0ofrhXoOypgwxA5FHEpwHfIyLuybjOSkjwnYdSK1IN0qB5U5v6Dq09JhPR0k809Dd5T19iyv1I/ocpLzDw==",
     "redevplugin.release-signing.release-metadata.v1": "tUXOGdBfpCrPXVR45BV8gV8fj81UvVyuD09RzRKMv2cxFr9eTYUqNHJhSYKtkJIcKQDr7gqHDrjF7lnjY52mCg==",
-    "redevplugin.release-signing.revocation-document.v1": "3j2AJTJCjuW4kYn2rPIWlVMHEBv6H7RMcRYEATUrl7WUvUm3Ez5nbf6BkviGn4F2zYf0Vq9UXtnB8ZTiHnuCDA==",
-    "redevplugin.release-signing.revocation-pointer.v1": "/ZRBA+cPlhpsgSoWFRUZcQNOpq8nULh/ZuCeyTIJtsIx8MQGLntLSCQAzMPHQK8pztEveih32lldPwr5/AbVCA==",
-    "redevplugin.release-signing.root-delegation.v1": "YpA0hRbE90VEUGYSSrFIoxtav4ztyfKOlBs+MrL/wLmlH7cCFLJR5aAmv3HIWL9qKqe+vqwI6YViBXr+AUcRDw==",
-    "redevplugin.release-signing.source-policy-document.v1": "A1j7lQ9ubhPMLo0CHi/kPHCHstH5usTpkC81pfBxQAGuW+8YaMnI7qyJu177i4pUiqfJBHrknPrf14wddFv9Dw==",
-    "redevplugin.release-signing.source-policy-pointer.v1": "qNMes2mqOI5UciuME68VKG58opvRkTQe7SNpXI0SxCCfqpy74hLckI/Z4OGwXxDIzODs2spekrf0TjrSU1n3DQ=="
+    "redevplugin.release-signing.revocation-document.v1": "r1rmMCNmfWErx6P9/rxawUZeVBNjUCcc7zheESdP/s74P1Gs45Aqr6XhHdkHvM7XIR9IYK6nlZ069UM6hM3MBA==",
+    "redevplugin.release-signing.revocation-pointer.v1": "xu/oidIiqpWxKZVBIK4OBlzrcW1Khg5tWN5rfktW+cu6YdMvSRQLDQJuvuaVG0fU1KbaijOtmAtiAACzEYrGCA==",
+    "redevplugin.release-signing.root-delegation.v1": "l00AUUx9dT2e2lefWf6Y5Rl1uw5vvlWSsK7uFMVa0TQ2dUa73j/gff8vue/jtIDE+fT1v+laQhE47rOYk7hIDQ==",
+    "redevplugin.release-signing.source-policy-document.v1": "Iw3bL8z0EUFGhIZt4tc5NpAgckxgPXJHYpTqyaA8MXMQrsKcGBBTB6gZMXXyZg4KZfxXE4wUA4oueX9s9YE+AQ==",
+    "redevplugin.release-signing.source-policy-pointer.v1": "CDTOrX/je5KD+kdwOjrA7d0MJPjWaVfEhdPvzGCr9F90Vhi1nVrQdIaE8KrWDJhUHmdWu4cCImCD9P+AhQFzDQ=="
   }
 }

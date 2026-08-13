@@ -12,40 +12,21 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/internal/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
-
-func TestPublicRuntimeRefreshPreservesSafeRecoveryReasonAndAction(t *testing.T) {
-	response := publicRuntimeRefresh([]host.RefreshEnabledPluginResult{{
-		PluginInstanceID: "plugini_refresh",
-		Status:           host.RefreshEnabledPluginStatusFailed,
-		Error: &host.RefreshEnabledPluginPublicError{
-			Code: security.ErrRuntimeUnavailable, Message: "Plugin trust state advanced; retry to revalidate",
-			Reason: host.RefreshFailureReasonTrustStateAdvanced, Action: host.RefreshFailureActionRetry,
-		},
-	}})
-	if len(response.Results) != 1 || response.Results[0].Error == nil ||
-		response.Results[0].Error.Reason != string(host.RefreshFailureReasonTrustStateAdvanced) ||
-		response.Results[0].Error.Action != string(host.RefreshFailureActionRetry) {
-		t.Fatalf("runtime refresh response = %#v", response)
-	}
-}
 
 func TestPublicWireProjectionsExcludeInternalIdentity(t *testing.T) {
 	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
@@ -68,18 +49,7 @@ func TestPublicWireProjectionsExcludeInternalIdentity(t *testing.T) {
 		},
 		Revisions: registry.AuthorizationRevisions{PolicyRevision: 2, ManagementRevision: 3, RevokeEpoch: 4},
 	})
-	publicOperation := mustPublicOperationRecord(t, operation.Record{
-		OperationID: "operation_public",
-		ExecutionBinding: capability.ExecutionBinding{
-			InvocationID:         "invocation_public",
-			PluginInstanceID:     "plugin_instance_public",
-			BridgeChannelID:      "bridge_channel_private",
-			OwnerSessionHash:     "owner_session_private",
-			OwnerUserHash:        "owner_user_private",
-			OwnerEnvHash:         "owner_env_operation_private",
-			SessionChannelIDHash: "session_channel_private",
-		},
-	})
+	publicExecution := execution.Execution{ID: "execution_public", PluginInstanceID: "plugin_instance_public", Kind: execution.KindOperation, Status: execution.StatusRunning, CreatedAt: now, UpdatedAt: now}
 	runtimeHealth := publicRuntimeHealth(host.RuntimeHealth{
 		Shards: []host.RuntimeShardHealth{{
 			RuntimeShardID: "runtime_shard_public",
@@ -92,7 +62,7 @@ func TestPublicWireProjectionsExcludeInternalIdentity(t *testing.T) {
 		}},
 	})
 
-	raw, err := json.Marshal([]any{plugin, permission, publicOperation, runtimeHealth})
+	raw, err := json.Marshal([]any{plugin, permission, publicExecution, runtimeHealth})
 	if err != nil {
 		t.Fatalf("Marshal(public wire projections) error = %v", err)
 	}
@@ -249,22 +219,14 @@ func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 		t.Fatalf("public call response shares adapter data: %#v", call.Data)
 	}
 
-	binding := capability.ExecutionBinding{
-		Permissions: capability.PermissionEvidence{Required: []string{"read"}, Granted: []string{"read"}},
-		Target:      capability.TargetDescriptor{Fields: map[string]any{"resource": map[string]any{"id": "original"}}},
+	eventPayload := map[string]any{"resource": map[string]any{"id": "original"}}
+	publicEvents, err := publicExecutionEvents([]execution.Event{{ExecutionID: "exec_1", Sequence: 1, Kind: execution.EventData, Payload: eventPayload}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	publicOperation := mustPublicOperationRecord(t, operation.Record{ExecutionBinding: binding})
-	binding.Permissions.Required[0] = "mutated"
-	binding.Target.Fields["resource"].(map[string]any)["id"] = "mutated"
-	if publicOperation.Permissions.Required[0] != "read" || publicOperation.Target.Fields["resource"].(map[string]any)["id"] != "original" {
-		t.Fatalf("public operation projection shares execution state: %#v", publicOperation)
-	}
-
-	eventData := []byte("original")
-	publicStream := publicSurfaceStream(host.ReadStreamResult{Events: []stream.Event{{Data: eventData}}})
-	eventData[0] = 'X'
-	if string(publicStream.Events[0].Data) != "original" {
-		t.Fatalf("public stream projection shares event bytes: %q", publicStream.Events[0].Data)
+	eventPayload["resource"].(map[string]any)["id"] = "mutated"
+	if publicEvents[0].Payload["resource"].(map[string]any)["id"] != "original" {
+		t.Fatalf("public event projection shares payload: %#v", publicEvents)
 	}
 }
 
@@ -275,13 +237,9 @@ func TestPublicWireClonePreservesCanonicalNumbersAndNulls(t *testing.T) {
 		"array":  []any(nil),
 	}
 	call := mustPublicCallMethod(t, host.CallMethodResult{Data: data})
-	operationRecord := mustPublicOperationRecord(t, operation.Record{ExecutionBinding: capability.ExecutionBinding{
-		Target: capability.TargetDescriptor{Fields: data},
-	}})
 
 	for name, value := range map[string]map[string]any{
-		"rpc":       call.Data.(map[string]any),
-		"operation": operationRecord.Target.Fields,
+		"rpc": call.Data.(map[string]any),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if value["number"] != json.Number("42.5") {
@@ -315,17 +273,15 @@ func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 		pluginRecordResponse{}, permissionResponse{}, authorizationRevisionsResponse{}, permissionMutationResponse{},
 		settingsFieldResponse{}, settingsSchemaResponse{}, settingsSecretMetadataResponse{}, settingsSnapshotResponse{},
 		runtimeDescriptorResponse{}, runtimeLimitsResponse{}, runtimeModuleCacheResponse{},
-		runtimeShardHealthResponse{}, runtimeHealthResponse{}, runtimeRefreshErrorResponse{}, runtimeRefreshEntryResponse{},
-		runtimeRefreshResponse{}, surfacePreparationResponse{}, bridgeTokenResponse{}, callMethodResponse{},
+		runtimeShardHealthResponse{}, runtimeHealthResponse{}, surfacePreparationResponse{}, bridgeTokenResponse{}, callMethodResponse{},
 		confirmationPreparationResponse{}, confirmationRejectionResponse{}, intentResponse{}, intentListResponse{},
 		pluginDataBindingResponse{}, retainedDataListResponse{}, retainedDataCleanupResponse{}, diagnosticEventResponse{},
-		diagnosticDetailsResponse{}, diagnosticListResponse{}, surfaceAssetResponse{}, streamEventResponse{}, surfaceStreamResponse{},
+		diagnosticDetailsResponse{}, diagnosticListResponse{}, surfaceAssetResponse{},
 		pluginCatalogResponse{}, permissionListResponse{}, dataExportResponse{}, acknowledgementResponse{},
 		surfaceDisposeResponse{}, runtimeStopResponse{}, deleteResponse{}, secretBindResponse{}, secretTestResponse{},
 		sessionScopeRevokeCountsResponse{}, sessionScopeRevokeResponse{}, securityPolicyDeleteResponse{}, securityPolicyListResponse{},
 		compatibilityMatrixResponse{}, compatibilityContractResponse{}, compatibilityResponse{}, surfaceBootstrapResponse{},
-		securityPolicyResponse{}, operationPermissionEvidenceResponse{}, operationConfirmationEvidenceResponse{},
-		operationRevisionEvidenceResponse{}, operationQuotaResponse{}, operationTargetResponse{}, operationResponse{}, operationListResponse{},
+		securityPolicyResponse{}, executionListResponse{}, executionEventListResponse{},
 	}
 	validName := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	for _, value := range types {
@@ -355,9 +311,9 @@ func TestPublicDiagnosticsExplicitlyMapClosedDetails(t *testing.T) {
 		RequestID: "request_1", CorrelationID: "correlation_1", MutationOutcome: mutation.OutcomeCommitted,
 		OccurredAt: now,
 		Details: host.DiagnosticDetails{
-			OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
+			ExecutionsDeleted: 1, InvocationID: "invocation_1", Method: "method.read",
 			FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
-			OperationID: "operation_1", StreamID: "stream_1",
+			ExecutionID:       "execution_1",
 			RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
 			RustIPCVersion: "rust-ipc-v6", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
 			RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
@@ -376,9 +332,8 @@ func TestPublicDiagnosticsExplicitlyMapClosedDetails(t *testing.T) {
 		t.Fatalf("diagnostic envelope mismatch: %#v", got)
 	}
 	wantDetails := &diagnosticDetailsResponse{
-		OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
+		ExecutionsDeleted: 1, ExecutionID: "execution_1", InvocationID: "invocation_1", Method: "method.read",
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
-		OperationID: "operation_1", StreamID: "stream_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
 		RustIPCVersion: "rust-ipc-v6", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
 		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
@@ -551,9 +506,6 @@ func TestDomainClockFieldsAreExcludedFromJSON(t *testing.T) {
 	requests := []any{
 		permissions.GrantRequest{}, permissions.RevokeRequest{}, permissions.CheckRequest{},
 		registry.AuthorizeRequest{}, registry.PutOptions{},
-		operation.RegisterRequest{}, operation.CancelRequest{}, operation.FinishRequest{}, operation.PluginTransitionRequest{},
-		stream.RegisterRequest{}, stream.AppendRequest{}, stream.CloseRequest{}, stream.PluginTransitionRequest{},
-		installstage.CreateRequest{}, installstage.MarkPreparedRequest{}, installstage.MarkCommittedRequest{}, installstage.MarkFailedRequest{},
 		security.PutConfirmationIntentRequest{}, security.ConsumeConfirmationIntentRequest{},
 		security.RejectConfirmationIntentRequest{}, security.RevokePluginConfirmationIntentsRequest{}, security.PutPolicyRequest{},
 		connectivity.GrantRequest{}, connectivity.HTTPRequest{}, connectivity.TCPRoundTripRequest{},
@@ -607,15 +559,6 @@ func mustPublicCallMethod(t testing.TB, result host.CallMethodResult) callMethod
 	response, err := publicCallMethod(result)
 	if err != nil {
 		t.Fatalf("publicCallMethod() error = %v", err)
-	}
-	return response
-}
-
-func mustPublicOperationRecord(t testing.TB, record operation.Record) operationResponse {
-	t.Helper()
-	response, err := publicOperationRecord(record)
-	if err != nil {
-		t.Fatalf("publicOperationRecord() error = %v", err)
 	}
 	return response
 }

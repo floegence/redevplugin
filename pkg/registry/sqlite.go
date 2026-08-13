@@ -23,7 +23,7 @@ import (
 )
 
 const maxRegistrySQLiteConnections = 8
-const registrySQLiteSchemaVersion = 5
+const registrySQLiteSchemaVersion = 6
 
 var ErrIncompatiblePersistedManifest = errors.New("persisted plugin manifest is incompatible")
 
@@ -130,65 +130,6 @@ func (s *SQLiteStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 		return PluginRecord{}, err
 	}
 	return record, nil
-}
-
-func (s *SQLiteStore) RefreshReleaseActivationEvidence(ctx context.Context, req RefreshReleaseActivationEvidenceRequest) (PluginRecord, error) {
-	if ctx == nil {
-		return PluginRecord{}, context.Canceled
-	}
-	if err := ctx.Err(); err != nil {
-		return PluginRecord{}, err
-	}
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return PluginRecord{}, err
-	}
-	var refreshed PluginRecord
-	err = s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
-		record, exists, getErr := getSQLitePlugin(ctx, tx, ownerEnvHash, req.PluginInstanceID, false)
-		if getErr != nil {
-			return getErr
-		}
-		if !exists {
-			return ErrNotFound
-		}
-		if record.ManagementRevision != req.ExpectedManagementRevision {
-			return &ManagementRevisionConflictError{PluginInstanceID: req.PluginInstanceID, Expected: req.ExpectedManagementRevision, Actual: record.ManagementRevision}
-		}
-		if record.ReleaseTrustBinding == nil {
-			return ErrManagementRevisionConflict
-		}
-		if err := ValidateReleaseActivationEvidence(record); err != nil {
-			return err
-		}
-		if record.ReleaseTrustBinding.VerifiedStateSHA256 == req.NextStateSHA256 {
-			refreshed = record
-			return nil
-		}
-		if record.ReleaseTrustBinding.VerifiedStateSHA256 != req.ExpectedStateSHA256 {
-			return ErrManagementRevisionConflict
-		}
-		record.ReleaseTrustBinding.VerifiedStateSHA256 = req.NextStateSHA256
-		if err := SealReleaseActivationEvidence(&record); err != nil {
-			return err
-		}
-		if req.Now.IsZero() {
-			req.Now = time.Now().UTC()
-		}
-		record.UpdatedAt = req.Now
-		if err := validatePersistedPluginSecurityFacts(record); err != nil {
-			return err
-		}
-		if err := upsertSQLitePlugin(ctx, tx, record); err != nil {
-			return err
-		}
-		refreshed = record
-		return nil
-	})
-	if err != nil {
-		return PluginRecord{}, err
-	}
-	return clonePluginRecord(refreshed)
 }
 
 func (s *SQLiteStore) GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error) {
@@ -419,12 +360,15 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
+	if err := rejectRetiredExternalPackageTables(ctx, tx); err != nil {
+		return err
+	}
 	if schemaVersion >= 1 {
 		if err := validateCurrentRegistrySQLiteSchema(ctx, tx); err != nil {
 			return err
 		}
-		if schemaVersion < 5 {
-			if err := migrateReleaseActivationEvidenceV4ToV5(ctx, tx); err != nil {
+		if schemaVersion < 6 {
+			if err := migrateReleaseBindingToV6(ctx, tx, schemaVersion); err != nil {
 				return err
 			}
 		}
@@ -432,24 +376,6 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 			return err
 		}
 		if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {
-			return err
-		}
-		if err := reconcileInterruptedExternalPackageCommits(ctx, tx); err != nil {
-			return err
-		}
-		if schemaVersion < 3 {
-			if err := createReleaseInstallOperationSchema(ctx, tx); err != nil {
-				return err
-			}
-		} else if schemaVersion < 4 {
-			if err := migrateReleaseInstallOperationV3ToV4(ctx, tx); err != nil {
-				return err
-			}
-		}
-		if err := validateReleaseInstallOperationSchema(ctx, tx); err != nil {
-			return err
-		}
-		if err := reconcileInterruptedReleaseInstallOperations(ctx, tx); err != nil {
 			return err
 		}
 		if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {
@@ -540,35 +466,6 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_deleted_at ON plugin_records(owner_env_hash, deleted_at)`); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-	CREATE TABLE IF NOT EXISTS external_package_commit_receipts (
-		owner_env_hash TEXT NOT NULL,
-		inspection_id TEXT NOT NULL,
-		commit_id TEXT NOT NULL,
-		intent TEXT NOT NULL,
-		confirmation_digest TEXT NOT NULL,
-		request_sha256 TEXT NOT NULL,
-		expected_management_revision INTEGER NOT NULL,
-		intended_fingerprint TEXT NOT NULL,
-		intended_package_sha256 TEXT NOT NULL,
-		plugin_instance_id TEXT NOT NULL,
-		status TEXT NOT NULL,
-		mutation_outcome TEXT NOT NULL,
-		record_snapshot_json TEXT NOT NULL DEFAULT 'null',
-		failure_code TEXT NOT NULL DEFAULT '',
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL,
-		PRIMARY KEY(owner_env_hash, inspection_id),
-		UNIQUE(owner_env_hash, commit_id)
-	)`); err != nil {
-		return err
-	}
-	if err := validateExternalPackageCommitReceiptSchema(ctx, tx); err != nil {
-		return err
-	}
-	if err := createReleaseInstallOperationSchema(ctx, tx); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -670,9 +567,6 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if err := validateCurrentRegistrySQLiteSchema(ctx, tx); err != nil {
 		return err
 	}
-	if err := validateReleaseInstallOperationSchema(ctx, tx); err != nil {
-		return err
-	}
 	if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {
 		return err
 	}
@@ -682,7 +576,20 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	return tx.Commit()
 }
 
-func migrateReleaseActivationEvidenceV4ToV5(ctx context.Context, tx *sql.Tx) error {
+func rejectRetiredExternalPackageTables(ctx context.Context, tx *sql.Tx) error {
+	for _, table := range []string{"external_package_commit_receipts", "external_package_inspections"} {
+		exists, err := sqliteTableExists(ctx, tx, table)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return fmt.Errorf("registry contains retired durable external package state %q; source is preserved for explicit migration", table)
+		}
+	}
+	return nil
+}
+
+func migrateReleaseBindingToV6(ctx context.Context, tx *sql.Tx, sourceVersion int) error {
 	type migration struct {
 		ownerEnvHash     string
 		pluginInstanceID string
@@ -690,8 +597,7 @@ func migrateReleaseActivationEvidenceV4ToV5(ctx context.Context, tx *sql.Tx) err
 		historyJSON      string
 	}
 	rows, err := tx.QueryContext(ctx, `
-SELECT owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
-       package_hash, manifest_hash, entries_hash, source_policy_snapshot_json, version_history_json
+SELECT owner_env_hash, plugin_instance_id, source_policy_snapshot_json, version_history_json
 FROM plugin_records
 ORDER BY owner_env_hash, plugin_instance_id`)
 	if err != nil {
@@ -700,67 +606,17 @@ ORDER BY owner_env_hash, plugin_instance_id`)
 	defer rows.Close()
 	var migrations []migration
 	for rows.Next() {
-		var ownerEnvHash, pluginInstanceID, publisherID, pluginID, version string
-		var activeFingerprint, packageHash, manifestHash, entriesHash, bindingJSON, historyJSON string
-		if err := rows.Scan(
-			&ownerEnvHash, &pluginInstanceID, &publisherID, &pluginID, &version, &activeFingerprint,
-			&packageHash, &manifestHash, &entriesHash, &bindingJSON, &historyJSON,
-		); err != nil {
+		var ownerEnvHash, pluginInstanceID, bindingJSON, historyJSON string
+		if err := rows.Scan(&ownerEnvHash, &pluginInstanceID, &bindingJSON, &historyJSON); err != nil {
 			return err
 		}
-		var binding *ReleaseTrustBinding
-		if strings.TrimSpace(bindingJSON) != "" && strings.TrimSpace(bindingJSON) != "{}" && strings.TrimSpace(bindingJSON) != "null" {
-			var decoded ReleaseTrustBinding
-			if err := decodeRegistryJSON(bindingJSON, &decoded); err != nil {
-				return fmt.Errorf("migrate release activation evidence for plugin %q: %w", pluginInstanceID, err)
-			}
-			binding = &decoded
-		}
-		var history []PluginVersion
-		if err := decodeRegistryJSON(historyJSON, &history); err != nil {
-			return fmt.Errorf("migrate release activation evidence history for plugin %q: %w", pluginInstanceID, err)
-		}
-		if binding == nil && !historyHasReleaseTrustBinding(history) {
-			continue
-		}
-		if binding != nil {
-			if err := requireUnsealedReleaseActivationEvidence(*binding); err != nil {
-				return fmt.Errorf("migrate release activation evidence for plugin %q: %w", pluginInstanceID, err)
-			}
-			record := PluginRecord{
-				PluginInstanceID: pluginInstanceID, PublisherID: publisherID, PluginID: pluginID, Version: version,
-				ActiveFingerprint: activeFingerprint, PackageHash: packageHash, ManifestHash: manifestHash, EntriesHash: entriesHash,
-				ReleaseTrustBinding: binding,
-			}
-			if err := SealReleaseActivationEvidence(&record); err != nil {
-				return fmt.Errorf("migrate release activation evidence for plugin %q: %w", pluginInstanceID, err)
-			}
-		}
-		for index := range history {
-			if history[index].ReleaseTrustBinding == nil {
-				continue
-			}
-			if err := requireUnsealedReleaseActivationEvidence(*history[index].ReleaseTrustBinding); err != nil {
-				return fmt.Errorf("migrate release activation evidence for plugin %q version[%d]: %w", pluginInstanceID, index, err)
-			}
-			record := PluginRecord{
-				PluginInstanceID: pluginInstanceID,
-				PublisherID:      history[index].Manifest.Publisher.PublisherID, PluginID: history[index].Manifest.PluginID(), Version: history[index].Version,
-				ActiveFingerprint: history[index].ActiveFingerprint,
-				PackageHash:       history[index].PackageHash, ManifestHash: history[index].ManifestHash, EntriesHash: history[index].EntriesHash,
-				ReleaseTrustBinding: history[index].ReleaseTrustBinding,
-			}
-			if err := SealReleaseActivationEvidence(&record); err != nil {
-				return fmt.Errorf("migrate release activation evidence for plugin %q version[%d]: %w", pluginInstanceID, index, err)
-			}
-		}
-		encodedBinding, err := encodeRegistryJSON(binding)
+		encodedBinding, err := stripLegacyReleaseProof(bindingJSON, sourceVersion)
 		if err != nil {
-			return err
+			return fmt.Errorf("migrate release binding for plugin %q: %w", pluginInstanceID, err)
 		}
-		encodedHistory, err := encodeRegistryJSON(history)
+		encodedHistory, err := stripLegacyHistoryReleaseProof(historyJSON, sourceVersion)
 		if err != nil {
-			return err
+			return fmt.Errorf("migrate release history for plugin %q: %w", pluginInstanceID, err)
 		}
 		migrations = append(migrations, migration{
 			ownerEnvHash: ownerEnvHash, pluginInstanceID: pluginInstanceID,
@@ -784,32 +640,58 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`, item.bindingJSON, item.his
 	return nil
 }
 
-func historyHasReleaseTrustBinding(history []PluginVersion) bool {
-	for _, version := range history {
-		if version.ReleaseTrustBinding != nil {
-			return true
+func stripLegacyReleaseProof(raw string, sourceVersion int) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
+		return raw, nil
+	}
+	var binding map[string]any
+	if err := json.Unmarshal([]byte(raw), &binding); err != nil {
+		return "", err
+	}
+	if sourceVersion >= 5 {
+		if binding["activation_evidence_schema_version"] != ReleaseActivationEvidenceSchemaVersionV1 || strings.TrimSpace(fmt.Sprint(binding["activation_evidence_sha256"])) == "" {
+			return "", errors.New("release activation evidence is incomplete")
 		}
+	} else if value := strings.TrimSpace(fmt.Sprint(binding["activation_evidence_schema_version"])); value != "" && value != "<nil>" {
+		return "", errors.New("unexpected pre-v5 release activation evidence")
 	}
-	return false
+	delete(binding, "verified_state_sha256")
+	delete(binding, "activation_evidence_schema_version")
+	delete(binding, "activation_evidence_sha256")
+	encoded, err := json.Marshal(binding)
+	return string(encoded), err
 }
 
-func requireUnsealedReleaseActivationEvidence(binding ReleaseTrustBinding) error {
-	if binding.ActivationEvidenceSchemaVersion != "" || binding.ActivationEvidenceSHA256 != "" {
-		return errors.New("legacy release activation evidence is partially or unexpectedly sealed")
+func stripLegacyHistoryReleaseProof(raw string, sourceVersion int) (string, error) {
+	var history []map[string]any
+	if err := json.Unmarshal([]byte(raw), &history); err != nil {
+		return "", err
 	}
-	return nil
+	for index := range history {
+		binding, ok := history[index]["release_trust_binding"]
+		if !ok || binding == nil {
+			continue
+		}
+		encoded, err := json.Marshal(binding)
+		if err != nil {
+			return "", err
+		}
+		stripped, err := stripLegacyReleaseProof(string(encoded), sourceVersion)
+		if err != nil {
+			return "", fmt.Errorf("version[%d]: %w", index, err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(stripped), &decoded); err != nil {
+			return "", err
+		}
+		history[index]["release_trust_binding"] = decoded
+	}
+	encoded, err := json.Marshal(history)
+	return string(encoded), err
 }
 
-func reconcileInterruptedExternalPackageCommits(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, `
-UPDATE external_package_commit_receipts
-SET status = ?, mutation_outcome = ?, failure_code = ?
-WHERE status = ?`,
-		string(ExternalPackageFailed), string(mutation.OutcomeNotCommitted), ExternalPackageFailureHostRestarted,
-		string(ExternalPackageCommitting),
-	)
-	return err
-}
+const ReleaseActivationEvidenceSchemaVersionV1 = "redevplugin.release_activation_evidence.v1"
 
 type ownerScopedTableSpec struct {
 	name            string
@@ -825,7 +707,6 @@ var ownerScopedTableSpecs = []ownerScopedTableSpec{
 	{name: "plugin_security_policy_denied_methods", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2, "method": 3}, foreignKeyTable: "plugin_security_policies"},
 	{name: "plugin_data_bindings", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, foreignKeyTable: "plugin_records"},
 	{name: "plugin_data_objects", primaryKey: map[string]int{"scope_kind": 1, "owner_env_hash": 2, "owner_user_hash": 3, "plugin_instance_id": 4, "object_id": 5}},
-	{name: "external_package_commit_receipts", primaryKey: map[string]int{"owner_env_hash": 1, "inspection_id": 2}},
 }
 
 func prepareOwnerScopedTables(ctx context.Context, tx *sql.Tx, allowMigration bool) error {
@@ -1083,9 +964,6 @@ func validateCurrentRegistrySQLiteSchema(ctx context.Context, tx *sql.Tx) error 
 			return err
 		}
 	}
-	if err := validateExternalPackageCommitReceiptSchema(ctx, tx); err != nil {
-		return err
-	}
 	return validateCurrentRegistrySQLiteIndexes(ctx, tx)
 }
 
@@ -1125,7 +1003,7 @@ func validateRegistrySQLiteTableColumns(ctx context.Context, tx *sql.Tx, table s
 
 func validateCurrentRegistrySQLiteIndexes(ctx context.Context, tx *sql.Tx) error {
 	tables := []string{
-		"plugin_records", "external_package_commit_receipts", "plugin_permission_grants", "plugin_security_policies",
+		"plugin_records", "plugin_permission_grants", "plugin_security_policies",
 		"plugin_security_policy_allowed_permissions", "plugin_security_policy_denied_methods", "plugin_data_bindings", "plugin_data_objects",
 	}
 	required := map[string][]string{
@@ -1307,96 +1185,6 @@ func ensureExternalPackageFactsColumns(ctx context.Context, tx *sql.Tx, allowMig
 	return added, nil
 }
 
-func validateExternalPackageCommitReceiptSchema(ctx context.Context, tx *sql.Tx) error {
-	type columnSpec struct {
-		typeName     string
-		notNull      int
-		defaultValue string
-		primaryKey   int
-	}
-	expected := map[string]columnSpec{
-		"owner_env_hash": {"TEXT", 1, "", 1}, "inspection_id": {"TEXT", 1, "", 2},
-		"commit_id": {"TEXT", 1, "", 0}, "intent": {"TEXT", 1, "", 0},
-		"confirmation_digest": {"TEXT", 1, "", 0}, "request_sha256": {"TEXT", 1, "", 0},
-		"expected_management_revision": {"INTEGER", 1, "", 0}, "intended_fingerprint": {"TEXT", 1, "", 0},
-		"intended_package_sha256": {"TEXT", 1, "", 0}, "plugin_instance_id": {"TEXT", 1, "", 0},
-		"status": {"TEXT", 1, "", 0}, "mutation_outcome": {"TEXT", 1, "", 0},
-		"record_snapshot_json": {"TEXT", 1, "'null'", 0}, "failure_code": {"TEXT", 1, "''", 0},
-		"created_at": {"INTEGER", 1, "", 0}, "updated_at": {"INTEGER", 1, "", 0},
-	}
-	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(external_package_commit_receipts)`)
-	if err != nil {
-		return err
-	}
-	seen := make(map[string]bool, len(expected))
-	for rows.Next() {
-		var id, notNull, primaryKey int
-		var name, typeName string
-		var defaultExpr sql.NullString
-		if err := rows.Scan(&id, &name, &typeName, &notNull, &defaultExpr, &primaryKey); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		spec, ok := expected[name]
-		if !ok || !strings.EqualFold(typeName, spec.typeName) || notNull != spec.notNull || primaryKey != spec.primaryKey || defaultExpr.String != spec.defaultValue || defaultExpr.Valid != (spec.defaultValue != "") {
-			_ = rows.Close()
-			return fmt.Errorf("external_package_commit_receipts.%s has an incompatible schema", name)
-		}
-		seen[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if len(seen) != len(expected) {
-		return errors.New("external_package_commit_receipts has an incomplete schema")
-	}
-	indexRows, err := tx.QueryContext(ctx, `PRAGMA index_list(external_package_commit_receipts)`)
-	if err != nil {
-		return err
-	}
-	uniqueCommitBinding := false
-	for indexRows.Next() {
-		var sequence, unique, partial int
-		var name, origin string
-		if err := indexRows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
-			_ = indexRows.Close()
-			return err
-		}
-		if origin != "u" {
-			continue
-		}
-		if unique != 1 || partial != 0 {
-			_ = indexRows.Close()
-			return fmt.Errorf("external_package_commit_receipts unique constraint %s is incompatible", name)
-		}
-		columns, err := registrySQLiteIndexColumns(ctx, tx, name)
-		if err != nil {
-			_ = indexRows.Close()
-			return err
-		}
-		if !slices.Equal(columns, []string{"owner_env_hash", "commit_id"}) || uniqueCommitBinding {
-			_ = indexRows.Close()
-			return fmt.Errorf("external_package_commit_receipts has an unexpected unique constraint %s", name)
-		}
-		uniqueCommitBinding = true
-	}
-	if err := indexRows.Err(); err != nil {
-		_ = indexRows.Close()
-		return err
-	}
-	if err := indexRows.Close(); err != nil {
-		return err
-	}
-	if !uniqueCommitBinding {
-		return errors.New("external_package_commit_receipts is missing the owner-and-commit unique constraint")
-	}
-	return nil
-}
-
 func validateSQLitePluginSecurityFacts(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `
 SELECT
@@ -1426,34 +1214,6 @@ FROM plugin_records`)
 		return err
 	}
 
-	receiptRows, err := tx.QueryContext(ctx, `SELECT owner_env_hash, inspection_id FROM external_package_commit_receipts`)
-	if err != nil {
-		return err
-	}
-	type receiptIdentity struct{ ownerEnvHash, inspectionID string }
-	var receipts []receiptIdentity
-	for receiptRows.Next() {
-		var identity receiptIdentity
-		if err := receiptRows.Scan(&identity.ownerEnvHash, &identity.inspectionID); err != nil {
-			_ = receiptRows.Close()
-			return err
-		}
-		receipts = append(receipts, identity)
-	}
-	if err := receiptRows.Err(); err != nil {
-		_ = receiptRows.Close()
-		return err
-	}
-	if err := receiptRows.Close(); err != nil {
-		return err
-	}
-	for _, identity := range receipts {
-		if _, exists, err := getSQLiteExternalPackageCommit(ctx, tx, identity.ownerEnvHash, identity.inspectionID); err != nil {
-			return fmt.Errorf("validate external package receipt %q: %w", identity.inspectionID, err)
-		} else if !exists {
-			return fmt.Errorf("external package receipt %q disappeared during validation", identity.inspectionID)
-		}
-	}
 	return nil
 }
 
@@ -1803,7 +1563,7 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		executionApprovalJSON,
 		string(record.UpdateEligibility),
 		securityCapabilitySummaryJSON,
-		releaseTrustBindingStateSHA256(record.ReleaseTrustBinding),
+		"",
 		releaseTrustBindingJSON,
 		localImportProvenanceJSON,
 		capabilityContractsJSON,
@@ -1842,7 +1602,7 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var executionApprovalJSON string
 	var updateEligibility string
 	var securityCapabilitySummaryJSON string
-	var releaseTrustBindingStateSHA256 string
+	var legacyReleaseTrustStateSHA256 string
 	var releaseTrustBindingJSON string
 	var localImportProvenanceJSON string
 	var capabilityContractsJSON string
@@ -1873,7 +1633,7 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		&executionApprovalJSON,
 		&updateEligibility,
 		&securityCapabilitySummaryJSON,
-		&releaseTrustBindingStateSHA256,
+		&legacyReleaseTrustStateSHA256,
 		&releaseTrustBindingJSON,
 		&localImportProvenanceJSON,
 		&capabilityContractsJSON,
@@ -1954,9 +1714,6 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		if err := decodeRegistryJSON(releaseTrustBindingJSON, &binding); err != nil {
 			return PluginRecord{}, err
 		}
-		if binding.VerifiedStateSHA256 != releaseTrustBindingStateSHA256 {
-			return PluginRecord{}, errors.New("release trust binding state digest mismatch")
-		}
 		record.ReleaseTrustBinding = &binding
 	}
 	if strings.TrimSpace(localImportProvenanceJSON) != "" && strings.TrimSpace(localImportProvenanceJSON) != "{}" && strings.TrimSpace(localImportProvenanceJSON) != "null" {
@@ -1979,13 +1736,6 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		return PluginRecord{}, err
 	}
 	return record, nil
-}
-
-func releaseTrustBindingStateSHA256(binding *ReleaseTrustBinding) string {
-	if binding == nil {
-		return ""
-	}
-	return binding.VerifiedStateSHA256
 }
 
 func encodeRegistryJSON(value any) (string, error) {

@@ -3,7 +3,6 @@ package releasecontract
 import (
 	"encoding/base64"
 	"fmt"
-	"math/big"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,45 +28,6 @@ func invalid(field string) error {
 	return fmt.Errorf("%w: %s", ErrInvalidDocument, field)
 }
 
-func validateSigningLedgerEvidence(value SigningLedgerEvidenceV1) error {
-	if value.SchemaVersion != SigningLedgerEvidenceSchemaVersion || !newContractIDPattern.MatchString(value.SourceID) {
-		return invalid("signing ledger evidence identity")
-	}
-	if value.Channel != "" && !newContractIDPattern.MatchString(value.Channel) {
-		return invalid("signing ledger evidence channel")
-	}
-	for _, digest := range []string{
-		value.SubjectIdentitySHA256,
-		value.SigningPreimageSHA256,
-		value.SignatureEnvelopeSHA256,
-		value.ReceiptSHA256,
-		value.CheckpointSHA256,
-		value.InclusionProofSHA256,
-		value.LatestProofSHA256,
-	} {
-		if !sha256Pattern.MatchString(digest) {
-			return invalid("signing ledger evidence digest")
-		}
-	}
-	for _, ref := range []string{
-		value.ReceiptRef,
-		value.CheckpointRef,
-		value.InclusionProofRef,
-		value.LatestProofRef,
-	} {
-		if !validArtifactRef(ref) {
-			return invalid("signing ledger evidence ref")
-		}
-	}
-	if (value.ConsistencyProofRef == "") != (value.ConsistencyProofSHA256 == "") {
-		return invalid("signing ledger evidence consistency pair")
-	}
-	if value.ConsistencyProofRef != "" && (!validArtifactRef(value.ConsistencyProofRef) || !sha256Pattern.MatchString(value.ConsistencyProofSHA256)) {
-		return invalid("signing ledger evidence consistency proof")
-	}
-	return nil
-}
-
 func validateRootDelegation(value RootDelegationV1, requireSignature bool) error {
 	if value.SchemaVersion != RootDelegationSchemaVersion {
 		return invalid("root delegation schema_version")
@@ -75,8 +35,8 @@ func validateRootDelegation(value RootDelegationV1, requireSignature bool) error
 	if !newContractIDPattern.MatchString(value.SourceID) || !newContractIDPattern.MatchString(value.KeyID) {
 		return invalid("root delegation identity")
 	}
-	if err := validateEpochChain(value.RootEpoch, value.PreviousRootEpoch, value.PreviousDelegationSHA256); err != nil {
-		return err
+	if !positiveEpochPattern.MatchString(value.RootEpoch) {
+		return invalid("root delegation epoch")
 	}
 	generatedAt, expiresAt, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, 0)
 	if err != nil {
@@ -97,12 +57,7 @@ func validateRootDelegation(value RootDelegationV1, requireSignature bool) error
 		if err := validateUsageList(key.Usages); err != nil {
 			return err
 		}
-		minimumChannels := 1
-		if sourceWideDelegatedUsages(key.Usages) {
-			minimumChannels = 0
-		}
-		if err := validateSortedIDs(key.Channels, minimumChannels, 16, true); err != nil ||
-			(minimumChannels == 0 && len(key.Channels) != 0) {
+		if err := validateSortedIDs(key.Channels, 1, 16, true); err != nil {
 			return invalid("root delegation delegated key channels")
 		}
 		validFrom, validUntil, err := validateTimeRange(key.ValidFrom, key.ValidUntil, 0)
@@ -115,32 +70,18 @@ func validateRootDelegation(value RootDelegationV1, requireSignature bool) error
 }
 
 func validateUsageList(usages []DelegatedKeyUsage) error {
-	if len(usages) < 1 || len(usages) > 9 {
+	if len(usages) < 1 || len(usages) > 6 {
 		return invalid("root delegation delegated key usages")
 	}
 	previous := -1
-	sourceWide := false
-	channelScoped := false
 	for _, usage := range usages {
 		rank := delegatedUsageRank(usage)
 		if rank < 0 || rank <= previous {
 			return invalid("root delegation delegated key usage order")
 		}
-		if usage == DelegatedKeyUsageSigningLedger || usage == DelegatedKeyUsageTrustedTime {
-			sourceWide = true
-		} else {
-			channelScoped = true
-		}
 		previous = rank
 	}
-	if sourceWide && channelScoped {
-		return invalid("root delegation delegated key usage scope")
-	}
 	return nil
-}
-
-func sourceWideDelegatedUsages(usages []DelegatedKeyUsage) bool {
-	return len(usages) > 0 && (usages[0] == DelegatedKeyUsageSigningLedger || usages[0] == DelegatedKeyUsageTrustedTime)
 }
 
 func delegatedUsageRank(usage DelegatedKeyUsage) int {
@@ -149,20 +90,14 @@ func delegatedUsageRank(usage DelegatedKeyUsage) int {
 		return 0
 	case DelegatedKeyUsageReleaseMetadata:
 		return 1
-	case DelegatedKeyUsageHostCapabilityContract:
-		return 2
 	case DelegatedKeyUsageRevocation:
-		return 3
+		return 2
 	case DelegatedKeyUsageRevocationPointer:
-		return 4
+		return 3
 	case DelegatedKeyUsageSourcePolicy:
-		return 5
+		return 4
 	case DelegatedKeyUsageSourcePolicyPointer:
-		return 6
-	case DelegatedKeyUsageSigningLedger:
-		return 7
-	case DelegatedKeyUsageTrustedTime:
-		return 8
+		return 5
 	default:
 		return -1
 	}
@@ -322,25 +257,13 @@ func validateHostRequirements(values []ReleaseHostRequirement) error {
 }
 
 func validateCapabilityContractRef(value HostCapabilityContractRef) error {
-	for _, id := range []string{value.PublisherID, value.ContractID, value.SignatureKeyID} {
+	for _, id := range []string{value.PublisherID, value.ContractID} {
 		if !legacyIDPattern.MatchString(id) {
 			return invalid("release metadata capability contract identity")
 		}
 	}
-	if !semverPattern.MatchString(value.ContractVersion) ||
-		!canonicalUnsignedDecimalPattern.MatchString(value.SignaturePolicyEpoch) ||
-		!canonicalUnsignedDecimalPattern.MatchString(value.SignatureRevocationEpoch) {
-		return invalid("release metadata capability contract version or epoch")
-	}
-	for _, ref := range []string{value.ArtifactRef, value.ManifestRef, value.SignatureRef, value.CompatibilityRef, value.GeneratedClientRef, value.NoticesRef} {
-		if !validArtifactRef(ref) {
-			return invalid("release metadata capability contract ref")
-		}
-	}
-	for _, digest := range []string{value.ArtifactSHA256, value.ManifestSHA256, value.SignatureSHA256, value.CompatibilitySHA256, value.GeneratedClientSHA256, value.NoticesSHA256} {
-		if !sha256Pattern.MatchString(digest) {
-			return invalid("release metadata capability contract digest")
-		}
+	if !semverPattern.MatchString(value.ContractVersion) || !sha256Pattern.MatchString(value.ArtifactSHA256) {
+		return invalid("release metadata capability contract version or digest")
 	}
 	return nil
 }
@@ -351,10 +274,7 @@ func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
 		!newContractIDPattern.MatchString(value.Channel) || !newContractIDPattern.MatchString(value.KeyID) {
 		return invalid("source policy schema or identity")
 	}
-	if err := validateEpochChain(value.Epoch, value.PreviousEpoch, value.PreviousDocumentSHA256); err != nil {
-		return err
-	}
-	if !positiveEpochPattern.MatchString(value.RootEpoch) || !canonicalUnsignedDecimalPattern.MatchString(value.MinimumRevocationEpoch) {
+	if !positiveEpochPattern.MatchString(value.Epoch) || !positiveEpochPattern.MatchString(value.RootEpoch) || !canonicalUnsignedDecimalPattern.MatchString(value.MinimumRevocationEpoch) {
 		return invalid("source policy epoch")
 	}
 	if value.SourceType != "registry" && value.SourceType != "host_artifact" {
@@ -387,15 +307,6 @@ func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
 			return invalid("source policy active_keys")
 		}
 	}
-	if value.ActiveKeys.HostCapabilityContract == nil || value.CapabilityPublisherScopes == nil {
-		return invalid("source policy capability publisher scopes")
-	}
-	if err := validateSortedIDs(value.ActiveKeys.HostCapabilityContract, 0, 16, true); err != nil {
-		return invalid("source policy active_keys")
-	}
-	if err := validateCapabilityPublisherScopes(value.ActiveKeys.HostCapabilityContract, value.CapabilityPublisherScopes); err != nil {
-		return err
-	}
 	if value.InstallPolicy != "allow" && value.InstallPolicy != "review_required" && value.InstallPolicy != "block" {
 		return invalid("source policy install_policy")
 	}
@@ -414,31 +325,13 @@ func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
 	return validateSignatureString(value.Signature, requireSignature)
 }
 
-func validateCapabilityPublisherScopes(activeKeys []string, scopes []SourcePolicyCapabilityPublisherScope) error {
-	if len(scopes) != len(activeKeys) {
-		return invalid("source policy capability publisher scopes")
-	}
-	for index, scope := range scopes {
-		if scope.KeyID != activeKeys[index] {
-			return invalid("source policy capability publisher scope order")
-		}
-		if err := validateSortedIDs(scope.AllowedPublishers, 1, 1024, false); err != nil {
-			return invalid("source policy capability publisher scope publishers")
-		}
-	}
-	return nil
-}
-
-func validatePointer(schemaVersion string, expectedSchemaVersion string, sourceID string, channel string, epoch string, previousEpoch string, previousDigest string, ref string, documentDigest string, generatedAt string, expiresAt string, keyID string, signature string, requireSignature bool) error {
+func validatePointer(schemaVersion string, expectedSchemaVersion string, sourceID string, channel string, epoch string, ref string, documentDigest string, generatedAt string, expiresAt string, keyID string, signature string, requireSignature bool) error {
 	maxLifetime, ok := pointerMaxLifetime(schemaVersion, expectedSchemaVersion)
 	if !ok || !newContractIDPattern.MatchString(sourceID) ||
 		!newContractIDPattern.MatchString(channel) || !newContractIDPattern.MatchString(keyID) {
 		return invalid("release pointer schema or identity")
 	}
-	if err := validateEpochChain(epoch, previousEpoch, previousDigest); err != nil {
-		return err
-	}
-	if !validArtifactRef(ref) || !sha256Pattern.MatchString(documentDigest) || documentDigest == GenesisPreviousDocumentSHA256 {
+	if !positiveEpochPattern.MatchString(epoch) || !validArtifactRef(ref) || !sha256Pattern.MatchString(documentDigest) || documentDigest == strings.Repeat("0", 64) {
 		return invalid("release pointer document ref or digest")
 	}
 	if _, _, err := validateTimeRange(generatedAt, expiresAt, maxLifetime); err != nil {
@@ -453,10 +346,7 @@ func validateRevocation(value RevocationV2, requireSignature bool) error {
 		!newContractIDPattern.MatchString(value.Channel) || !newContractIDPattern.MatchString(value.KeyID) {
 		return invalid("revocation schema or identity")
 	}
-	if err := validateEpochChain(value.Epoch, value.PreviousEpoch, value.PreviousDocumentSHA256); err != nil {
-		return err
-	}
-	if !positiveEpochPattern.MatchString(value.RootEpoch) {
+	if !positiveEpochPattern.MatchString(value.Epoch) || !positiveEpochPattern.MatchString(value.RootEpoch) {
 		return invalid("revocation root_epoch")
 	}
 	generatedAt, expiresAt, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, maxLifetime)
@@ -488,8 +378,6 @@ func validateRevocation(value RevocationV2, requireSignature bool) error {
 
 func sourcePolicyProfile(schemaVersion string) (SourcePolicyLimits, time.Duration, bool) {
 	switch schemaVersion {
-	case SourcePolicySchemaVersionV2:
-		return DefaultSourcePolicyLimits(), 24 * time.Hour, true
 	case SourcePolicySchemaVersionV3:
 		return PersonalMaintainerSourcePolicyLimits(), 90 * 24 * time.Hour, true
 	default:
@@ -520,27 +408,6 @@ func revocationMaxLifetime(schemaVersion string) (time.Duration, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func validateEpochChain(epoch string, previousEpoch string, previousDigest string) error {
-	if !positiveEpochPattern.MatchString(epoch) || !canonicalUnsignedDecimalPattern.MatchString(previousEpoch) || !sha256Pattern.MatchString(previousDigest) {
-		return invalid("release epoch chain")
-	}
-	current := new(big.Int)
-	previous := new(big.Int)
-	current.SetString(epoch, 10)
-	previous.SetString(previousEpoch, 10)
-	if current.Cmp(new(big.Int).Add(previous, big.NewInt(1))) != 0 {
-		return invalid("release epoch predecessor")
-	}
-	if previousEpoch == GenesisPreviousEpoch {
-		if previousDigest != GenesisPreviousDocumentSHA256 {
-			return invalid("release genesis digest")
-		}
-	} else if previousDigest == GenesisPreviousDocumentSHA256 {
-		return invalid("release non-genesis digest")
-	}
-	return nil
 }
 
 func validateTimeRange(generated string, expires string, maxLifetime time.Duration) (time.Time, time.Time, error) {

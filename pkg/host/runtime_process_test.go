@@ -20,10 +20,10 @@ import (
 
 	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -324,8 +324,8 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
-	if result.StreamID == "" || result.StreamTicket == "" || result.StreamTicketID == "" {
-		t.Fatalf("stream result missing ticket/id: %#v", result)
+	if result.ExecutionID == "" {
+		t.Fatalf("stream result missing execution id: %#v", result)
 	}
 	data, ok := result.Data.(map[string]any)
 	if !ok {
@@ -337,28 +337,24 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 	}
 	if networkExecute["ok"] != true ||
 		networkExecute["status_code"] != float64(http.StatusAccepted) ||
-		networkExecute["stream_id"] != result.StreamID ||
+		networkExecute["stream_id"] != result.ExecutionID ||
 		networkExecute["bytes_read"] != float64(len("line 1\nline 2\n")) ||
 		networkExecute["chunk_count"] != float64(2) {
 		t.Fatalf("stream network_execute result mismatch: %#v", networkExecute)
 	}
-	streamResult, err := h.ReadStream(ctx, scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	executionRecord, err := h.GetExecution(ctx, result.ExecutionID)
 	if err != nil {
-		t.Fatalf("ReadStream() error = %v", err)
+		t.Fatalf("GetExecution() error = %v", err)
 	}
-	if streamResult.Record.Status != stream.StatusClosed ||
-		streamResult.Record.SurfaceInstanceID != "surface_rpc" ||
-		streamResult.Record.OwnerSessionHash != "session_hash" ||
-		streamResult.Record.OwnerUserHash != "user_hash" ||
-		streamResult.Record.OwnerEnvHash != "env_hash" ||
-		streamResult.Record.SessionChannelIDHash != "channel_hash" ||
-		streamResult.Record.BridgeChannelID != "bridge_rpc" {
-		t.Fatalf("stream record mismatch: %#v", streamResult.Record)
+	if executionRecord.Status != execution.StatusCompleted {
+		t.Fatalf("stream execution mismatch: %#v", executionRecord)
 	}
-	if len(streamResult.Events) != 2 ||
-		string(streamResult.Events[0].Data) != "line 1\n" ||
-		string(streamResult.Events[1].Data) != "line 2\n" {
-		t.Fatalf("stream events mismatch: %#v", streamResult.Events)
+	events, err := h.EventsAfter(ctx, result.ExecutionID, 0, 10)
+	if err != nil {
+		t.Fatalf("EventsAfter() error = %v", err)
+	}
+	if len(events) != 3 || events[0].Payload["data"] != base64.StdEncoding.EncodeToString([]byte("line 1\n")) || events[1].Payload["data"] != base64.StdEncoding.EncodeToString([]byte("line 2\n")) {
+		t.Fatalf("stream events mismatch: %#v", events)
 	}
 	if executor.streamCalls != 1 ||
 		executor.lastStreamHTTP.Grant.PluginInstanceID != installed.PluginInstanceID ||
@@ -440,20 +436,22 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with stream memory hostcall error = %v", err)
 	}
-	if result.StreamID == "" || result.StreamTicket == "" || result.StreamTicketID == "" {
-		t.Fatalf("stream result missing ticket/id: %#v", result)
+	if result.ExecutionID == "" {
+		t.Fatalf("stream result missing execution id: %#v", result)
 	}
-	streamResult, err := h.ReadStream(ctx, scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	executionRecord, err := h.GetExecution(ctx, result.ExecutionID)
 	if err != nil {
-		t.Fatalf("ReadStream() error = %v", err)
+		t.Fatalf("GetExecution() error = %v", err)
 	}
-	if streamResult.Record.Status != stream.StatusClosed {
-		t.Fatalf("stream status = %q, want %q", streamResult.Record.Status, stream.StatusClosed)
+	if executionRecord.Status != execution.StatusCompleted {
+		t.Fatalf("stream execution mismatch: %#v", executionRecord)
 	}
-	if len(streamResult.Events) != 2 ||
-		string(streamResult.Events[0].Data) != "line 1\n" ||
-		string(streamResult.Events[1].Data) != "line 2\n" {
-		t.Fatalf("stream events mismatch: %#v", streamResult.Events)
+	events, err := h.EventsAfter(ctx, result.ExecutionID, 0, 10)
+	if err != nil {
+		t.Fatalf("EventsAfter() error = %v", err)
+	}
+	if len(events) != 3 || events[0].Payload["data"] != base64.StdEncoding.EncodeToString([]byte("line 1\n")) || events[1].Payload["data"] != base64.StdEncoding.EncodeToString([]byte("line 2\n")) {
+		t.Fatalf("stream events mismatch: %#v", events)
 	}
 	if executor.streamCalls != 1 || executor.lastStreamHTTP.Path != "/v1/worker" {
 		t.Fatalf("stream executor call mismatch: calls=%d req=%#v", executor.streamCalls, executor.lastStreamHTTP)
@@ -1438,7 +1436,7 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		TimeoutMillis:        1000,
 	}
 	if operation == "http_stream" {
-		request.StreamID = invoke.Invocation.StreamID
+		request.StreamID = invoke.Invocation.ExecutionID
 		request.MaxChunkBytes = 4
 		request.MaxBufferedBytes = 64 * 1024
 		request.StreamMethod = invoke.Invocation.Method

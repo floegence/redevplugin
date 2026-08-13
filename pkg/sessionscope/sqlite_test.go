@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 func TestSQLiteStorePersistsIncompleteTeardownAndCumulativeCounts(t *testing.T) {
@@ -27,7 +29,7 @@ func TestSQLiteStorePersistsIncompleteTeardownAndCumulativeCounts(t *testing.T) 
 	if err != nil {
 		t.Fatalf("BeginTeardown() error = %v", err)
 	}
-	if _, err := teardown.Accumulate(ctx, Counts{Surfaces: 2, RuntimeExecutions: 3}); err != nil {
+	if _, err := teardown.Accumulate(ctx, Counts{Surfaces: 2, Executions: 3}); err != nil {
 		t.Fatalf("Accumulate() error = %v", err)
 	}
 	if _, err := teardown.MarkIncomplete(ctx, time.Unix(2, 0).UTC()); err != nil {
@@ -57,10 +59,10 @@ func TestSQLiteStorePersistsIncompleteTeardownAndCumulativeCounts(t *testing.T) 
 	if err != nil {
 		t.Fatalf("BeginTeardown(reopened) error = %v", err)
 	}
-	if snapshot.State != StateDraining || snapshot.Counts.Surfaces != 2 || snapshot.Counts.RuntimeExecutions != 3 {
+	if snapshot.State != StateDraining || snapshot.Counts.Surfaces != 2 || snapshot.Counts.Executions != 3 {
 		t.Fatalf("resumed snapshot = %#v", snapshot)
 	}
-	if _, err := continued.Accumulate(ctx, Counts{Streams: 4}); err != nil {
+	if _, err := continued.Accumulate(ctx, Counts{StorageHostcalls: 4}); err != nil {
 		t.Fatalf("Accumulate(resumed) error = %v", err)
 	}
 	complete, err := continued.MarkComplete(ctx, time.Unix(4, 0).UTC())
@@ -68,7 +70,7 @@ func TestSQLiteStorePersistsIncompleteTeardownAndCumulativeCounts(t *testing.T) 
 		t.Fatalf("MarkComplete() error = %v", err)
 	}
 	continued.Release()
-	if complete.Counts.Surfaces != 2 || complete.Counts.RuntimeExecutions != 3 || complete.Counts.Streams != 4 {
+	if complete.Counts.Surfaces != 2 || complete.Counts.Executions != 3 || complete.Counts.StorageHostcalls != 4 {
 		t.Fatalf("complete counts = %#v", complete.Counts)
 	}
 }
@@ -205,8 +207,8 @@ func TestSQLiteStoreAccumulatePhaseIsReplayStableAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delta := Counts{Operations: 4}
-	if _, err := teardown.AccumulatePhase(ctx, PhaseOperation, delta); err != nil {
+	delta := Counts{Executions: 4}
+	if _, err := teardown.AccumulatePhase(ctx, PhaseExecution, delta); err != nil {
 		t.Fatal(err)
 	}
 	teardown.Release()
@@ -228,12 +230,12 @@ func TestSQLiteStoreAccumulatePhaseIsReplayStableAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer continued.Release()
-	snapshot, err := continued.AccumulatePhase(ctx, PhaseOperation, delta)
+	snapshot, err := continued.AccumulatePhase(ctx, PhaseExecution, delta)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Counts.Operations != 4 {
-		t.Fatalf("replayed operation count = %d, want 4", snapshot.Counts.Operations)
+	if snapshot.Counts.Executions != 4 {
+		t.Fatalf("replayed execution count = %d, want 4", snapshot.Counts.Executions)
 	}
 }
 
@@ -296,6 +298,76 @@ func TestSQLiteStoreRejectsUnknownSchemaVersion(t *testing.T) {
 	}
 	if _, err := NewSQLiteStore(context.Background(), path, StoreOptions{}); !errors.Is(err, ErrSchemaVersion) {
 		t.Fatalf("NewSQLiteStore() error = %v, want ErrSchemaVersion", err)
+	}
+}
+
+func TestSQLiteStoreMigratesV1ParallelExecutionCountsAtomically(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "session-scopes.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE plugin_session_scope_fences (
+			owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, owner_env_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL,
+			state TEXT NOT NULL, teardown_operation_id TEXT NOT NULL,
+			surfaces INTEGER NOT NULL, asset_tickets INTEGER NOT NULL, asset_sessions INTEGER NOT NULL,
+			plugin_gateway_tokens INTEGER NOT NULL, confirmation_tokens INTEGER NOT NULL, stream_tickets INTEGER NOT NULL,
+			handle_grants INTEGER NOT NULL, confirmations INTEGER NOT NULL, operations INTEGER NOT NULL, streams INTEGER NOT NULL,
+			runtime_executions INTEGER NOT NULL, active_network_requests INTEGER NOT NULL, sockets INTEGER NOT NULL,
+			network_streams INTEGER NOT NULL, storage_hostcalls INTEGER NOT NULL, proof_sha256 BLOB,
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+			PRIMARY KEY(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash))`,
+		`CREATE TABLE plugin_session_scope_teardown_phases (
+			owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, owner_env_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL,
+			phase TEXT NOT NULL, counts_json BLOB NOT NULL,
+			PRIMARY KEY(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, phase))`,
+		`INSERT INTO plugin_session_scope_fences VALUES ('session','user','env','channel','incomplete','close-1',1,2,3,4,5,6,7,8,3,2,4,9,10,11,12,zeroblob(32),1,2)`,
+		`INSERT INTO plugin_session_scope_teardown_phases VALUES ('session','user','env','channel','execution','{"runtime_executions":4}')`,
+		`INSERT INTO plugin_session_scope_teardown_phases VALUES ('session','user','env','channel','operation','{"operations":3}')`,
+		`INSERT INTO plugin_session_scope_teardown_phases VALUES ('session','user','env','channel','stream','{"streams":2}')`,
+		`PRAGMA user_version = 1`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewSQLiteStore(ctx, path, StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	coordinator, err := NewCoordinator(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := coordinator.Snapshot(ctx, sessionctx.SessionScope{
+		OwnerSessionHash: "session", OwnerUserHash: "user", OwnerEnvHash: "env", SessionChannelIDHash: "channel",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Counts.Executions != 4 || snapshot.Counts.AssetTickets != 2 || snapshot.Counts.StorageHostcalls != 12 {
+		t.Fatalf("migrated counts = %#v", snapshot.Counts)
+	}
+	var version, executionPhases, retiredPhases int
+	if err := store.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_session_scope_teardown_phases WHERE phase='execution'`).Scan(&executionPhases); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_session_scope_teardown_phases WHERE phase IN ('operation','stream')`).Scan(&retiredPhases); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 || executionPhases != 1 || retiredPhases != 0 {
+		t.Fatalf("migration metadata version=%d execution=%d retired=%d", version, executionPhases, retiredPhases)
 	}
 }
 

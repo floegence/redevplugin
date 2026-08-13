@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,8 +16,6 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/pkg/capabilitypublisher"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/permissions"
@@ -321,12 +318,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 
 	ctx := cliContext(context.Background())
-	registryStore := registry.NewMemoryStore()
-	pluginData, err := plugindata.Open(ctx, filepath.Join(dir, "plugin-data"), registryStore)
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapters := newTestEphemeralCLIAdapters(t, ctx, dir, registryStore, pluginData)
+	adapters := newTestEphemeralCLIAdapters(t, ctx, dir)
 	runtimeModule, err := newCommandRuntimeModule(
 		ctx,
 		runtimePath,
@@ -340,7 +332,6 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	adapters.Runtime = runtimeModule
 	h, err := host.Open(ctx, adapters)
 	if err != nil {
-		_ = pluginData.Close()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = h.Close() })
@@ -450,16 +441,20 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 
 }
 
-func TestDescribeCommandRuntimeUsesExactArtifactAndPlatformContract(t *testing.T) {
+func TestLoadCommandRuntimeDescriptorUsesExternalExpectedDigest(t *testing.T) {
 	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
 	content := []byte("runtime artifact\n")
 	if err := os.WriteFile(runtimePath, content, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	target := mustCurrentCommandRuntimeTarget(t)
-	descriptor, err := describeCommandRuntime(runtimePath, target)
+	descriptorPath := writeTestRuntimeDescriptor(t, runtimePath)
+	if err := os.WriteFile(runtimePath, []byte("replaced runtime artifact\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := loadCommandRuntimeDescriptor(descriptorPath, target)
 	if err != nil {
-		t.Fatalf("describeCommandRuntime() error = %v", err)
+		t.Fatalf("loadCommandRuntimeDescriptor() error = %v", err)
 	}
 	sum := sha256.Sum256(content)
 	if descriptor.PlatformVersion().String() != version.CurrentCompatibilityVersion() ||
@@ -472,33 +467,107 @@ func TestDescribeCommandRuntimeUsesExactArtifactAndPlatformContract(t *testing.T
 	}
 }
 
-func TestDescribeCommandRuntimeRejectsNonLinuxAdmissionTargetBeforeOpeningBinary(t *testing.T) {
-	_, err := describeCommandRuntime(filepath.Join(t.TempDir(), "missing-runtime"), runtimetarget.DarwinARM64)
-	if !errors.Is(err, host.ErrRuntimeAdmissionTargetInvalid) {
-		t.Fatalf("describeCommandRuntime() error = %v, want %v", err, host.ErrRuntimeAdmissionTargetInvalid)
+func TestCommandRuntimeModuleRejectsReplacedBinaryAgainstPublishedDescriptor(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("verified runtime executable admission is supported on Linux")
+	}
+	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
+	original, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runtimePath, original, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	descriptorPath := writeTestRuntimeDescriptor(t, runtimePath)
+	descriptor, err := loadCommandRuntimeDescriptor(descriptorPath, mustCurrentCommandRuntimeTarget(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runtimePath, append(original, '\n'), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err = newCommandRuntimeModule(context.Background(), runtimePath, t.TempDir(), descriptor, time.Second)
+	if !errors.Is(err, host.ErrRuntimeDescriptorMismatch) {
+		t.Fatalf("newCommandRuntimeModule(replaced binary) error = %v, want %v", err, host.ErrRuntimeDescriptorMismatch)
 	}
 }
 
-func newTestEphemeralCLIAdapters(t *testing.T, ctx context.Context, stateRoot string, registryStore registry.Store, pluginData host.PluginData) host.Config {
+func TestLoadCommandRuntimeDescriptorRejectsTargetMismatch(t *testing.T) {
+	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
+	if err := os.WriteFile(runtimePath, []byte("runtime artifact\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadCommandRuntimeDescriptor(writeTestRuntimeDescriptor(t, runtimePath), runtimetarget.DarwinARM64)
+	if !errors.Is(err, host.ErrRuntimeDescriptorMismatch) {
+		t.Fatalf("loadCommandRuntimeDescriptor() error = %v, want %v", err, host.ErrRuntimeDescriptorMismatch)
+	}
+}
+
+func newTestEphemeralCLIAdapters(t *testing.T, ctx context.Context, stateRoot string) host.Config {
 	t.Helper()
 	if err := os.Chmod(stateRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, stateRoot, registryStore, pluginData)
+	config, err := newEphemeralCLIAdapters(stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sessionScopeStore.Close() })
 	return config
 }
 
 func mustDescribeCommandRuntime(t *testing.T, path string) host.RuntimeDescriptor {
 	t.Helper()
-	descriptor, err := describeCommandRuntime(path, mustCurrentCommandRuntimeTarget(t))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	runtimeVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := host.ParseRuntimeAdmissionTarget(mustCurrentCommandRuntimeTarget(t).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipc, err := host.ParseRustIPCVersion(version.RustIPCVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wasm, err := host.ParseWASMABIVersion(version.WASMABIVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contracts, err := host.ParseSHA256Digest(version.ContractSetSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := host.ParseSHA256Digest(fmt.Sprintf("%x", sum))
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := host.NewRuntimeDescriptor(host.RuntimeDescriptorOptions{
+		PlatformVersion: runtimeVersion, Target: target, RustIPCVersion: ipc,
+		WASMABIVersion: wasm, ContractSetSHA256: contracts, BinarySHA256: binary,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return descriptor
+}
+
+func writeTestRuntimeDescriptor(t *testing.T, runtimePath string) string {
+	t.Helper()
+	raw, err := host.MarshalRuntimeDescriptorJSON(mustDescribeCommandRuntime(t, runtimePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "runtime-descriptor.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func mustCurrentCommandRuntimeTarget(t *testing.T) runtimetarget.Target {
@@ -536,7 +605,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if installSummary.EnableState != registry.EnableDisabled || installSummary.StateRoot != stateRoot || installSummary.PluginDataRoot != filepath.Join(stateRoot, devPluginDataDir) {
 		t.Fatalf("dev-install summary mismatch: %#v", installSummary)
 	}
-	for _, filename := range []string{devPackageFile, devRegistryFile, devSecretsFile} {
+	for _, filename := range []string{devPackageFile, "control.sqlite", devSecretsFile} {
 		if _, err := os.Stat(filepath.Join(stateRoot, filename)); err != nil {
 			t.Fatalf("dev state artifact %s missing: %v", filename, err)
 		}
@@ -550,35 +619,12 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 			t.Fatalf("dev state root contains a JSON authority mirror: %s", entry.Name())
 		}
 	}
-	registryStore, err := registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := registryStore.GetPlugin(ctx, installSummary.PluginInstanceID)
+	harness, record, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if record.EnableState != registry.EnableDisabled {
-		t.Fatalf("registry record after install = %#v", record)
-	}
-	if err := registryStore.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	harness, _, err := loadDevHarness(ctx, stateRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondRegistry, err := registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if secondStore, err := plugindata.Open(context.Background(), filepath.Join(stateRoot, devPluginDataDir), secondRegistry); err == nil {
-		_ = secondStore.Close()
-		t.Fatal("second plugin data store acquired an already locked root")
-	}
-	if err := secondRegistry.Close(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Host record after install = %#v", record)
 	}
 	if err := harness.Close(); err != nil {
 		t.Fatal(err)
@@ -775,14 +821,13 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := cliContext(context.Background())
-	resourceScope := cliTestResourceScope(t, ctx, sessionctx.ScopeUser)
 	harness, plugin, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
+	if _, err := harness.host.WritePluginDataFile(ctx, host.WritePluginDataFileRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
-		ResourceScope:    resourceScope,
+		Scope:            sessionctx.ScopeUser,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
 		Data:             []byte("original data"),
@@ -836,9 +881,9 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
+	if _, err := harness.host.WritePluginDataFile(ctx, host.WritePluginDataFileRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
-		ResourceScope:    resourceScope,
+		Scope:            sessionctx.ScopeUser,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
 		Data:             []byte("mutated data"),
@@ -878,9 +923,9 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := harness.pluginData.ReadFile(ctx, storage.FileReadRequest{
+	read, err := harness.host.ReadPluginDataFile(ctx, host.ReadPluginDataFileRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
-		ResourceScope:    resourceScope,
+		Scope:            sessionctx.ScopeUser,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
 		MaxBytes:         1024,
@@ -912,22 +957,19 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if _, err := captureCLIOutput(t, "dev-delete-export", stateRoot, exportSummary.BundleRef); err != nil {
 		t.Fatal(err)
 	}
-	registryStore, err := registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
+	harness, _, err = loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects, next, err := registryStore.ListObjects(ctx, sessionctx.ScopeUser, plugin.PluginInstanceID, "", 10)
+	inspection, err := harness.host.InspectPluginData(ctx, host.InspectPluginDataRequest{PluginInstanceID: plugin.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next != "" {
-		t.Fatalf("unexpected object page cursor %q", next)
-	}
-	if err := registryStore.Close(); err != nil {
+	if err := harness.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(objects) != 0 {
-		t.Fatalf("deleted export remains in catalog: %#v", objects)
+	if len(inspection.Objects) != 0 {
+		t.Fatalf("deleted export remains in catalog: %#v", inspection.Objects)
 	}
 	if _, err := captureCLIOutput(t, "dev-import-data", stateRoot); err == nil {
 		t.Fatal("dev-import-data accepted a missing bundle ref")
@@ -946,13 +988,12 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.permissions", "Generated Permissions Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
-	capabilityRoot, capabilityPin, capabilityPublicKey := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
 	}
 
-	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile, "--capability", capabilityRoot, capabilityPin, capabilityPublicKey)
+	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
 	if err != nil {
 		t.Fatalf("dev-install error = %v", err)
 	}
@@ -982,19 +1023,19 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 		grantSummary.Permission.Effect != permissions.EffectGrant {
 		t.Fatalf("dev-permission-grant summary mismatch: %#v", grantSummary)
 	}
-	registryStore, err := registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
+	harness, grantedPlugin, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grantedState, err := registryStore.GetAuthorization(ctx, installSummary.PluginInstanceID)
+	grantedRecords, err := harness.host.ListPermissionGrants(ctx, host.ListPermissionGrantsRequest{PluginInstanceID: installSummary.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registryStore.Close(); err != nil {
+	if err := harness.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(grantedState.Grants) != 1 || grantedState.Grants[0].PermissionID != "demo.execute" || grantedState.Plugin.PolicyRevision <= installSummary.PolicyRevision {
-		t.Fatalf("authorization state not persisted after grant: %#v install=%#v", grantedState, installSummary)
+	if len(grantedRecords) != 1 || grantedRecords[0].PermissionID != "demo.execute" || grantedPlugin.PolicyRevision <= installSummary.PolicyRevision {
+		t.Fatalf("authorization state not persisted after grant: records=%#v plugin=%#v install=%#v", grantedRecords, grantedPlugin, installSummary)
 	}
 
 	listOutput, err := captureCLIOutput(t, "dev-permission-list", stateRoot, "--active-only")
@@ -1028,19 +1069,19 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 		revokeSummary.Permission.RevokedReason != "reviewed" {
 		t.Fatalf("dev-permission-revoke summary mismatch: %#v", revokeSummary)
 	}
-	registryStore, err = registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
+	harness, revokedPlugin, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	revokedState, err := registryStore.GetAuthorization(ctx, installSummary.PluginInstanceID)
+	revokedRecords, err := harness.host.ListPermissionGrants(ctx, host.ListPermissionGrantsRequest{PluginInstanceID: installSummary.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registryStore.Close(); err != nil {
+	if err := harness.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(revokedState.Grants) != 1 || revokedState.Grants[0].RevokedAt == nil || revokedState.Plugin.RevokeEpoch <= grantedState.Plugin.RevokeEpoch {
-		t.Fatalf("permission revoke state mismatch: %#v before=%#v", revokedState, grantedState.Plugin)
+	if len(revokedRecords) != 1 || revokedRecords[0].RevokedAt == nil || revokedPlugin.RevokeEpoch <= grantedPlugin.RevokeEpoch {
+		t.Fatalf("permission revoke state mismatch: records=%#v plugin=%#v before=%#v", revokedRecords, revokedPlugin, grantedPlugin)
 	}
 
 	activeOutput, err := captureCLIOutput(t, "dev-permission-list", stateRoot, "--active-only")
@@ -1068,170 +1109,6 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 
 	if _, err := captureCLIOutput(t, "dev-permission-revoke", stateRoot, "missing.permission"); !errors.Is(err, permissions.ErrGrantNotFound) {
 		t.Fatalf("dev-permission-revoke missing error = %v, want ErrGrantNotFound", err)
-	}
-}
-
-func TestCLIHostCapabilityGenerateClientRequiresVerifiedBundleAndDetectsStaleOutput(t *testing.T) {
-	dir := t.TempDir()
-	scaffoldDir := filepath.Join(dir, "generated")
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.client", "Generated Client Plugin", scaffoldDir); err != nil {
-		t.Fatal(err)
-	}
-	manifestFile := filepath.Join(scaffoldDir, "manifest.json")
-	artifactRoot, pinFile, publicKeyFile := buildCLITestCapabilityArtifact(t, dir, manifestFile)
-	outputFile := filepath.Join(dir, "generated", "client.ts")
-	if _, err := captureCLIOutput(t, "host-capability", "generate-client", artifactRoot, pinFile, publicKeyFile, outputFile); err != nil {
-		t.Fatalf("generate-client error = %v", err)
-	}
-	if _, err := captureCLIOutput(t, "host-capability", "generate-client", artifactRoot, pinFile, publicKeyFile, outputFile, "--check"); err != nil {
-		t.Fatalf("generate-client --check error = %v", err)
-	}
-	if err := os.WriteFile(outputFile, []byte("stale client\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureCLIOutput(t, "host-capability", "generate-client", artifactRoot, pinFile, publicKeyFile, outputFile, "--check"); err == nil || !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("generate-client --check error = %v, want stale output", err)
-	}
-}
-
-func TestCLIHostCapabilityVerifyRejectsLinkedArtifacts(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		link func(string, string) error
-	}{
-		{name: "symlink", link: os.Symlink},
-		{name: "hardlink", link: os.Link},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			scaffoldDir := filepath.Join(dir, "generated")
-			if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.linked", "Generated Linked Plugin", scaffoldDir); err != nil {
-				t.Fatal(err)
-			}
-			manifestFile := filepath.Join(scaffoldDir, "manifest.json")
-			artifactRoot, pinFile, publicKeyFile := buildCLITestCapabilityArtifact(t, dir, manifestFile)
-			var pin capabilitycontract.Pin
-			if err := readStrictJSONFile(pinFile, &pin); err != nil {
-				t.Fatal(err)
-			}
-			artifactFile := filepath.Join(artifactRoot, filepath.FromSlash(pin.ArtifactRef))
-			outsideFile := filepath.Join(dir, "outside.schema.json")
-			content, err := os.ReadFile(artifactFile)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(outsideFile, content, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Remove(artifactFile); err != nil {
-				t.Fatal(err)
-			}
-			if err := tc.link(outsideFile, artifactFile); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := captureCLIOutput(t, "host-capability", "verify", artifactRoot, pinFile, publicKeyFile); err == nil || !strings.Contains(err.Error(), "regular unlinked file") {
-				t.Fatalf("verify linked artifact error = %v", err)
-			}
-		})
-	}
-}
-
-func TestCLIHostCapabilityExternalSignerWorkflow(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	contractFile, err := filepath.Abs(filepath.Join("..", "..", "testdata", "host-capability", "sample-documents-v1", "capabilities", "example.documents", "v1.0.0", "example.documents.v1.schema.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	privateKeyFile := filepath.Join(root, "private.json")
-	publicKeyFile := filepath.Join(root, "public.json")
-	if _, err := captureCLIOutput(t, "keygen", "example_documents_2026", privateKeyFile, publicKeyFile); err != nil {
-		t.Fatal(err)
-	}
-	var publicDoc signingPublicKeyFile
-	if err := readStrictJSONFile(publicKeyFile, &publicDoc); err != nil {
-		t.Fatal(err)
-	}
-	publicDoc.PublisherID = "example.publisher"
-	if err := writeJSONFile(publicKeyFile, publicDoc, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	configFile := filepath.Join(root, "publisher.json")
-	if err := writeJSONFile(configFile, hostCapabilityPublisherConfig{
-		SchemaVersion: capabilitypublisher.ConfigSchemaVersion, ContractFile: contractFile, PublicKeyFile: publicKeyFile,
-		ArtifactBaseRef: "capabilities/example.documents/v1.0.0", GeneratedAt: "2026-08-01T00:00:00Z",
-		SourceCommit: strings.Repeat("a", 40), MinReDevPluginVersion: version.CurrentCompatibilityVersion(),
-		SignaturePolicyEpoch: "1", SignatureRevocationEpoch: "1",
-	}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	workspace := filepath.Join(root, "workspace")
-	output := filepath.Join(root, "output")
-	if _, err := captureCLIOutput(t, "host-capability", "prepare", configFile, workspace); err != nil {
-		t.Fatal(err)
-	}
-	requests, err := filepath.Glob(filepath.Join(workspace, "requests", "*.json"))
-	if err != nil || len(requests) != 1 {
-		t.Fatalf("requests = %v, err = %v", requests, err)
-	}
-	var request capabilitypublisher.SignerRequestV1
-	if err := readStrictJSONFile(requests[0], &request); err != nil {
-		t.Fatal(err)
-	}
-	preimage, err := base64.StdEncoding.DecodeString(request.SigningPreimage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, privateKey, err := readSigningPrivateKey(privateKeyFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	responseFile := filepath.Join(root, "response.json")
-	if err := writeJSONFile(responseFile, capabilitypublisher.SignerResponseV1{
-		SchemaVersion: capabilitypublisher.ResponseSchemaVersion, RequestID: request.RequestID, Usage: request.Usage,
-		KeyID: request.KeyID, PublisherID: request.PublisherID, ContractID: request.ContractID,
-		ContractVersion: request.ContractVersion, ManifestSHA256: request.ManifestSHA256,
-		SigningPreimageSHA256: request.SigningPreimageSHA256, Algorithm: "ed25519",
-		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, preimage)),
-	}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureCLIOutput(t, "host-capability", "apply-signature", workspace, responseFile); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureCLIOutput(t, "host-capability", "finalize", workspace, output); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureCLIOutput(t, "host-capability", "verify", output, filepath.Join(output, hostCapabilityPinFile), filepath.Join(output, "host-capability.public.json")); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestCLIDevInstallCapabilityFailureLeavesNoState(t *testing.T) {
-	dir := t.TempDir()
-	scaffoldDir := filepath.Join(dir, "generated")
-	stateRoot := filepath.Join(dir, "state")
-	packageFile := filepath.Join(dir, "generated.redevplugin")
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.atomic", "Generated Atomic Plugin", scaffoldDir); err != nil {
-		t.Fatal(err)
-	}
-	artifactRoot, pinFile, publicKeyFile := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "dist", "manifest.json"))
-	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
-		t.Fatal(err)
-	}
-	var pin capabilitycontract.Pin
-	if err := readStrictJSONFile(pinFile, &pin); err != nil {
-		t.Fatal(err)
-	}
-	artifactFile := filepath.Join(artifactRoot, filepath.FromSlash(pin.ArtifactRef))
-	if err := os.WriteFile(artifactFile, []byte("tampered\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile, "--capability", artifactRoot, pinFile, publicKeyFile); err == nil {
-		t.Fatal("dev-install accepted a tampered capability artifact")
-	}
-	if _, err := os.Lstat(stateRoot); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("failed dev-install left state root behind: %v", err)
 	}
 }
 
@@ -1292,7 +1169,7 @@ func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
 		ManifestSHA256:     "sha256:manifest",
 		PresentationSHA256: "sha256:presentation",
 		ContractSetSHA256:  "sha256:contracts",
-		VerifierVersion:    "0.7.27",
+		VerifierVersion:    "1.0.0",
 	}
 	raw, err := json.Marshal(summary)
 	if err != nil {
@@ -1323,7 +1200,7 @@ func TestReleaseIconExtractionJSONContract(t *testing.T) {
 			Path:          "ui/assets/plugin.png", MediaType: "image/png", Width: 128, Height: 128,
 			SHA256: "sha256:" + strings.Repeat("a", 64), Size: 1024,
 		},
-		ContractSetSHA256: "sha256:contracts", VerifierVersion: "0.7.27",
+		ContractSetSHA256: "sha256:contracts", VerifierVersion: "1.0.0",
 	}
 	raw, err := json.Marshal(summary)
 	if err != nil {
@@ -1389,7 +1266,6 @@ func TestCLIVerifyCompatibilityManifest(t *testing.T) {
 
 func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	ctx := cliContext(context.Background())
-	resourceScope := cliTestResourceScope(t, ctx, sessionctx.ScopeUser)
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
@@ -1417,9 +1293,9 @@ func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
+	if _, err := harness.host.WritePluginDataFile(ctx, host.WritePluginDataFileRequest{
 		PluginInstanceID: installed.PluginInstanceID,
-		ResourceScope:    resourceScope,
+		Scope:            sessionctx.ScopeUser,
 		StoreID:          "workspace",
 		Path:             "notes/private.txt",
 		Data:             []byte("secret contents"),
@@ -1461,19 +1337,6 @@ func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	if allSummary.NamespaceCount != 1 || allSummary.PluginInstanceID != "" {
 		t.Fatalf("inspect-data all summary mismatch: %#v", allSummary)
 	}
-}
-
-func cliTestResourceScope(t testing.TB, ctx context.Context, kind sessionctx.ScopeKind) sessionctx.ResourceScope {
-	t.Helper()
-	session, err := sessionctx.Require(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope, err := session.ResourceScope(kind)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return scope
 }
 
 func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {
@@ -1632,137 +1495,6 @@ func addLifecycleSettingsToManifest(t *testing.T, filename string) {
 			"label":      "API token",
 			"secret_ref": "api_token",
 		}},
-	}
-	updated, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filename, append(updated, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func buildCLITestCapabilityArtifact(t *testing.T, root, manifestFile string) (string, string, string) {
-	t.Helper()
-	raw, err := os.ReadFile(manifestFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var plugin manifest.Manifest
-	if err := json.Unmarshal(raw, &plugin); err != nil {
-		t.Fatal(err)
-	}
-	if len(plugin.Methods) == 0 {
-		t.Fatalf("capability fixture manifest mismatch: %#v", plugin)
-	}
-	method := plugin.Methods[0]
-	responseSchema := map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties":           map[string]any{},
-	}
-	contract := capabilitycontract.Contract{
-		SchemaVersion:     capabilitycontract.SchemaVersion,
-		ContractID:        "example.capability.demo.v1",
-		ContractVersion:   "1.0.0",
-		PublisherID:       "example.contracts",
-		CapabilityID:      "example.capability.demo",
-		CapabilityVersion: "1.0.0",
-		ClientName:        "ExampleDemoCapabilityClient",
-		Methods: []capabilitycontract.Method{{
-			Name:                "worker.echo",
-			ClientMethod:        "echo",
-			Effect:              string(method.Effect),
-			Execution:           string(method.Execution),
-			RequiredPermissions: []string{"demo.execute"},
-			TargetFields:        []string{},
-			TargetSchema:        method.RequestSchema,
-			RequestTypeName:     "ExampleDemoEchoRequest",
-			ResponseTypeName:    "ExampleDemoEchoResponse",
-			RequestSchema:       method.RequestSchema,
-			ResponseSchema:      responseSchema,
-		}},
-	}
-	contractFile := filepath.Join(root, "host-capability.contract.json")
-	privateKeyFile := filepath.Join(root, "host-capability.private.json")
-	publicKeyFile := filepath.Join(root, "host-capability.public.json")
-	configFile := filepath.Join(root, "host-capability.build.json")
-	artifactRoot := filepath.Join(root, "host-capability-artifact")
-	if err := writeJSONFile(contractFile, contract, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureCLIOutput(t, "keygen", "host-capability-test-key", privateKeyFile, publicKeyFile); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeJSONFile(configFile, hostCapabilityBuildConfig{
-		ContractFile:             contractFile,
-		PrivateKeyFile:           privateKeyFile,
-		ArtifactBaseRef:          "capabilities/example/demo/v1.0.0",
-		GeneratedAt:              "2026-07-13T00:00:00Z",
-		SourceCommit:             strings.Repeat("a", 40),
-		MinReDevPluginVersion:    version.CurrentCompatibilityVersion(),
-		SignaturePolicyEpoch:     "1",
-		SignatureRevocationEpoch: "1",
-	}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureCLIOutput(t, "host-capability", "build", configFile, artifactRoot); err != nil {
-		t.Fatal(err)
-	}
-	pinFile := filepath.Join(artifactRoot, hostCapabilityPinFile)
-	if _, err := captureCLIOutput(t, "host-capability", "verify", artifactRoot, pinFile, publicKeyFile); err != nil {
-		t.Fatal(err)
-	}
-	var pin capabilitycontract.Pin
-	if err := readStrictJSONFile(pinFile, &pin); err != nil {
-		t.Fatal(err)
-	}
-	addLifecyclePermissionBindingToManifest(t, manifestFile, pin)
-	clientFile := filepath.Join(root, "host-capability.client.ts")
-	if _, err := captureCLIOutput(t, "host-capability", "generate-client", artifactRoot, pinFile, publicKeyFile, clientFile); err != nil {
-		t.Fatal(err)
-	}
-	return artifactRoot, pinFile, publicKeyFile
-}
-
-func addLifecyclePermissionBindingToManifest(t *testing.T, filename string, pin capabilitycontract.Pin) {
-	t.Helper()
-	raw, err := os.ReadFile(filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
-	doc["capability_bindings"] = []map[string]any{{
-		"binding_id": "demo",
-		"contract":   pin,
-	}}
-	methods, ok := doc["methods"].([]any)
-	if !ok || len(methods) == 0 {
-		t.Fatalf("manifest missing methods: %s", raw)
-	}
-	method, ok := methods[0].(map[string]any)
-	if !ok {
-		t.Fatalf("manifest method has unexpected shape: %#v", methods[0])
-	}
-	method["route"] = map[string]any{
-		"kind":          "capability",
-		"binding_id":    "demo",
-		"target_method": "worker.echo",
-	}
-	for _, field := range []string{
-		"effect",
-		"execution",
-		"dangerous",
-		"preflight_only",
-		"confirmation",
-		"cancel_policy",
-		"request_schema",
-		"response_schema",
-	} {
-		delete(method, field)
 	}
 	updated, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

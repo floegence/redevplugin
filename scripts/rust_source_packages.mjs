@@ -35,7 +35,6 @@ export const rustSourcePackages = Object.freeze([
   Object.freeze({ name: "redevplugin-contracts", role: "contracts" }),
   Object.freeze({ name: "redevplugin-ipc", role: "ipc" }),
   Object.freeze({ name: "redevplugin-wasm-abi", role: "wasm_abi" }),
-  Object.freeze({ name: "redevplugin-target-classifier", role: "target_classifier" }),
   Object.freeze({ name: "redevplugin-worker-sdk", role: "worker_sdk" }),
   Object.freeze({ name: "redevplugin-runtime", role: "runtime" }),
 ]);
@@ -168,7 +167,7 @@ export function validateSourcePackageMetadata() {
     "--no-deps",
   ], { cwd: root, env: cargoEnvironment(process.env.CARGO_HOME) }));
   const packageSet = JSON.parse(
-    readFileSync(join(root, "spec/plugin/platform-package-set-v1.json"), "utf8"),
+    readFileSync(join(root, "spec/plugin/platform-package-set-v2.json"), "utf8"),
   );
   const expected = packageSet.rust_crates.map(({ name, version, role }) => ({ name, version, role }));
   if (JSON.stringify(expected) !== JSON.stringify(rustSourcePackages.map(({ name, role }) => ({
@@ -219,7 +218,6 @@ export function validateSourcePackageMetadata() {
 
   const expectedInternalDependencies = new Map([
     ["redevplugin-ipc", new Set(["redevplugin-contracts"])],
-    ["redevplugin-target-classifier", new Set(["redevplugin-contracts"])],
     ["redevplugin-runtime", new Set(["redevplugin-ipc", "redevplugin-wasm-abi"])],
   ]);
   for (const coordinate of rustSourcePackages) {

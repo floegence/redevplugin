@@ -14,7 +14,7 @@ func runRelease(ctx context.Context, args []string) error {
 	}
 	switch args[0] {
 	case "prepare":
-		if len(args) != 4 && (len(args) != 6 || args[4] != "--previous") {
+		if len(args) != 4 {
 			return usage()
 		}
 		configRaw, err := os.ReadFile(args[1])
@@ -25,11 +25,7 @@ func runRelease(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		previousOutput := ""
-		if len(args) == 6 {
-			previousOutput = args[5]
-		}
-		status, err := releasepublisher.PrepareWithPrevious(ctx, config, args[2], args[3], previousOutput)
+		status, err := releasepublisher.Prepare(ctx, config, args[2], args[3])
 		if err != nil {
 			return err
 		}

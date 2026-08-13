@@ -48,6 +48,34 @@ func TestMemorySecurityAuditJournalRequiresCompleteBeforeExport(t *testing.T) {
 	}
 }
 
+func TestSecurityAuditJournalAcceptsCurrentExecutionIdentity(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemorySecurityAuditJournal()
+	record, err := journal.BeginSecurityAudit(ctx, AuditEvent{
+		Type:    "plugin.execution.started",
+		Details: map[string]any{"execution_id": "execution_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeCommitted, nil); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := journal.ListUnexportedSecurityAudits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(completed) != 1 || completed[0].Event.Details["execution_id"] != "execution_1" {
+		t.Fatalf("completed execution audit = %#v", completed)
+	}
+	if _, err := journal.BeginSecurityAudit(ctx, AuditEvent{
+		Type:    "plugin.execution.started",
+		Details: map[string]any{"operation_id": "operation_legacy"},
+	}); !errors.Is(err, ErrInvalidAuditDetails) {
+		t.Fatalf("legacy operation_id error = %v, want ErrInvalidAuditDetails", err)
+	}
+}
+
 func TestMemorySecurityAuditJournalReconcilesPendingAsUnknown(t *testing.T) {
 	ctx := context.Background()
 	journal := NewMemorySecurityAuditJournal()

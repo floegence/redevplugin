@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -14,7 +15,9 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -22,17 +25,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/controlstore"
 	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/externalsource"
-	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -46,7 +49,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -59,14 +61,12 @@ type DiagnosticLister = observability.DiagnosticLister
 type AuditEvent = observability.AuditEvent
 
 type DiagnosticDetails struct {
-	OperationsDeleted         int64                                   `json:"operations_deleted,omitempty"`
-	StreamsDeleted            int64                                   `json:"streams_deleted,omitempty"`
+	ExecutionsDeleted         int64                                   `json:"executions_deleted,omitempty"`
 	InvocationID              string                                  `json:"invocation_id,omitempty"`
 	Method                    string                                  `json:"method,omitempty"`
 	FailureCode               string                                  `json:"failure_code,omitempty"`
 	RuntimeProcessFailureCode observability.RuntimeProcessFailureCode `json:"runtime_process_failure_code,omitempty"`
-	OperationID               string                                  `json:"operation_id,omitempty"`
-	StreamID                  string                                  `json:"stream_id,omitempty"`
+	ExecutionID               string                                  `json:"execution_id,omitempty"`
 	RuntimeInstanceID         string                                  `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID       string                                  `json:"runtime_generation_id,omitempty"`
 	RuntimeVersion            string                                  `json:"runtime_version,omitempty"`
@@ -121,12 +121,13 @@ type ListDiagnosticEventsRequest struct {
 }
 
 var (
-	ErrStreamTicketRequired          = errors.New("stream ticket is required")
 	ErrPluginDataNotDeclared         = errors.New("plugin does not declare exportable data")
 	ErrPluginStorageNotDeclared      = errors.New("target plugin does not declare storage")
 	ErrPluginSettingsNotDeclared     = errors.New("target plugin does not declare settings")
 	ErrPluginDataContractChanged     = errors.New("plugin data contract changed")
-	ErrOperationCancelDispatchFailed = errors.New("operation cancel dispatch failed")
+	ErrExecutionDeleteBlocked        = errors.New("execution blocks data deletion")
+	ErrPluginRecoveryNotEnabled      = errors.New("plugin runtime recovery requires an enabled plugin")
+	ErrExecutionCancelDispatchFailed = errors.New("execution cancel dispatch failed")
 	ErrMethodRequestContract         = errors.New("plugin method request contract validation failed")
 	ErrMethodResponseContract        = errors.New("plugin method response contract validation failed")
 	ErrMethodAdapterPanic            = errors.New("plugin method adapter panicked")
@@ -156,8 +157,6 @@ var (
 	ErrExternalPackageModuleRequired = errors.New("external package module is required")
 	ErrDurableSessionScopeRequired   = errors.New("durable session scope coordinator is required")
 	ErrSessionTeardownIncomplete     = errors.New("plugin session teardown is incomplete")
-	ErrSessionMaintenanceUnavailable = errors.New("session lifecycle maintenance is unavailable")
-	ErrSessionMaintenanceAbsent      = errors.New("session lifecycle maintenance record is absent")
 	ErrSessionMaintenanceState       = errors.New("session lifecycle maintenance state is invalid")
 )
 
@@ -253,7 +252,6 @@ const (
 )
 
 const (
-	installStageTTL             = 30 * time.Minute
 	hostRuntimeShutdownTimeout  = 5 * time.Second
 	refreshEnabledConcurrency   = 4
 	refreshEnabledPluginTimeout = 15 * time.Second
@@ -371,12 +369,9 @@ type HostRequirement struct {
 }
 
 type HostCapabilityRequirement struct {
-	CapabilityID      string                    `json:"capability_id"`
-	CapabilityVersion string                    `json:"capability_version"`
-	Contract          HostCapabilityContractRef `json:"contract"`
+	CapabilityID      string `json:"capability_id"`
+	CapabilityVersion string `json:"capability_version"`
 }
-
-type HostCapabilityContractRef = capabilitycontract.Pin
 
 type HostRequirementSelectionRequest struct {
 	SourceID      string            `json:"source_id"`
@@ -392,47 +387,6 @@ type HostRequirementSelection struct {
 
 type HostRequirementPolicy interface {
 	SelectHostRequirement(ctx context.Context, req HostRequirementSelectionRequest) (HostRequirementSelection, error)
-}
-
-type CapabilityContractResolveRequest struct {
-	SourceID          string                         `json:"source_id"`
-	PluginPublisherID string                         `json:"plugin_publisher_id"`
-	Pin               capabilitycontract.Pin         `json:"pin"`
-	SourcePolicy      releasecontract.SourcePolicyV2 `json:"source_policy"`
-}
-
-type CapabilityArtifactFetchHop struct {
-	URL        string `json:"url"`
-	ResolvedIP string `json:"resolved_ip"`
-}
-
-// CapabilityArtifactOrigin identifies how capability contract bytes reached the
-// Host. The Host validates origin-specific evidence before the signed bundle.
-type CapabilityArtifactOrigin string
-
-const (
-	CapabilityArtifactOriginHost     CapabilityArtifactOrigin = "host_artifact"
-	CapabilityArtifactOriginRegistry CapabilityArtifactOrigin = "registry"
-)
-
-type ResolvedCapabilityContractFile struct {
-	Reader     io.ReadCloser                `json:"-"`
-	Size       int64                        `json:"size"`
-	MediaType  string                       `json:"media_type"`
-	Origin     CapabilityArtifactOrigin     `json:"origin"`
-	FetchChain []CapabilityArtifactFetchHop `json:"fetch_chain"`
-}
-
-type CapabilityContractArtifactSet interface {
-	OpenCapabilityContractArtifact(ctx context.Context, ref string) (ResolvedCapabilityContractFile, error)
-}
-
-type ResolvedCapabilityContractArtifact struct {
-	Artifacts CapabilityContractArtifactSet `json:"-"`
-}
-
-type CapabilityContractArtifactResolver interface {
-	ResolveCapabilityContract(ctx context.Context, req CapabilityContractResolveRequest) (ResolvedCapabilityContractArtifact, error)
 }
 
 type ReleaseEvidence struct {
@@ -494,115 +448,6 @@ type SurfaceCatalogSink interface {
 	PublishSurfaces(ctx context.Context, snapshot SurfaceSnapshot) error
 }
 
-type PrepareSessionScopeCloseRequest struct {
-	Session sessionctx.Context `json:"-"`
-}
-
-type CommitSessionScopeCloseRequest struct {
-	Session  sessionctx.Context            `json:"-"`
-	Identity sessionscope.TeardownIdentity `json:"-"`
-}
-
-type ValidateClosedSessionScopeRequest struct {
-	Session  sessionctx.Context            `json:"-"`
-	Identity sessionscope.TeardownIdentity `json:"-"`
-}
-
-type ReconcileRetainedSessionScopesRequest struct {
-	Scopes []sessionscope.RetainedScope `json:"-"`
-}
-
-// SessionScopeLifecyclePhase is the adapter-owned durable phase for one exact
-// authenticated session scope.
-type SessionScopeLifecyclePhase string
-
-const (
-	SessionScopeLifecyclePrepared   SessionScopeLifecyclePhase = "prepared"
-	SessionScopeLifecycleClosed     SessionScopeLifecyclePhase = "closed"
-	SessionScopeLifecycleFinalizing SessionScopeLifecyclePhase = "finalizing"
-)
-
-// Valid reports whether phase is a persisted maintenance phase.
-func (phase SessionScopeLifecyclePhase) Valid() bool {
-	switch phase {
-	case SessionScopeLifecyclePrepared, SessionScopeLifecycleClosed, SessionScopeLifecycleFinalizing:
-		return true
-	default:
-		return false
-	}
-}
-
-// SessionScopeMaintenanceRecord is the host-private, exact lifecycle view used
-// for startup recovery. An empty Phase represents a durable terminal intent
-// for which the adapter has not prepared a teardown identity yet.
-type SessionScopeMaintenanceRecord struct {
-	Session          sessionctx.Context            `json:"-"`
-	Identity         sessionscope.TeardownIdentity `json:"-"`
-	Phase            SessionScopeLifecyclePhase    `json:"-"`
-	TerminalEvidence bool                          `json:"-"`
-}
-
-func (record SessionScopeMaintenanceRecord) Valid() bool {
-	if !record.Session.Valid() {
-		return false
-	}
-	if record.Phase == "" {
-		return record.TerminalEvidence && !record.Identity.Valid() && strings.TrimSpace(record.Identity.OperationID) == ""
-	}
-	if !record.Phase.Valid() || !record.Identity.Valid() {
-		return false
-	}
-	return record.Phase != SessionScopeLifecycleFinalizing || record.TerminalEvidence
-}
-
-// InspectSessionScopeMaintenanceRequest identifies one exact adapter record.
-type InspectSessionScopeMaintenanceRequest struct {
-	Session sessionctx.Context `json:"-"`
-}
-
-// ValidateTerminalSessionScopeCloseRequest requests read-only terminal evidence
-// for an exact session and, during recovery, its teardown identity.
-type ValidateTerminalSessionScopeCloseRequest struct {
-	Session  sessionctx.Context            `json:"-"`
-	Identity sessionscope.TeardownIdentity `json:"-"`
-}
-
-// PrepareSessionScopeFinalizationRequest binds the adapter's durable
-// closed-to-finalizing transition to one exact teardown identity.
-type PrepareSessionScopeFinalizationRequest struct {
-	Session  sessionctx.Context            `json:"-"`
-	Identity sessionscope.TeardownIdentity `json:"-"`
-}
-
-// CommitSessionScopeFinalizationRequest binds post-commit adapter cleanup to
-// the same exact identity used to prepare finalization.
-type CommitSessionScopeFinalizationRequest = PrepareSessionScopeFinalizationRequest
-
-// SessionLifecycleAdapter owns durable closed-session identities. Startup
-// reconciliation must verify that every retained platform fence still has its
-// exact host-side closed-session record. Prepare and Commit are idempotent for
-// one exact SessionScope: repeated Prepare calls return the same identity, and
-// repeated Commit calls preserve the same irreversibly closed session. The
-// identity never crosses HTTP, plugin IPC, or runtime payloads.
-type SessionLifecycleAdapter interface {
-	ReconcileRetainedSessionScopes(context.Context, ReconcileRetainedSessionScopesRequest) error
-	PrepareSessionScopeClose(context.Context, PrepareSessionScopeCloseRequest) (sessionscope.TeardownIdentity, error)
-	CommitSessionScopeClose(context.Context, CommitSessionScopeCloseRequest) error
-	ValidateClosedSessionScope(context.Context, ValidateClosedSessionScopeRequest) error
-}
-
-// SessionLifecycleMaintenanceAdapter is a separately versioned capability for
-// terminal session recovery and post-fence finalization. Implementations must
-// expose one exact snapshot for every durable lifecycle record or terminal
-// intent. Inspection and terminal validation are read-only.
-type SessionLifecycleMaintenanceAdapter interface {
-	ListSessionScopeMaintenanceRecords(context.Context) ([]SessionScopeMaintenanceRecord, error)
-	InspectSessionScopeMaintenance(context.Context, InspectSessionScopeMaintenanceRequest) (SessionScopeMaintenanceRecord, error)
-	ValidateTerminalSessionScopeClose(context.Context, ValidateTerminalSessionScopeCloseRequest) (SessionScopeMaintenanceRecord, error)
-	PrepareSessionScopeFinalization(context.Context, PrepareSessionScopeFinalizationRequest) error
-	CommitSessionScopeFinalization(context.Context, CommitSessionScopeFinalizationRequest) error
-}
-
 type SurfaceSnapshot struct {
 	PluginInstanceID  string                 `json:"plugin_instance_id"`
 	ActiveFingerprint string                 `json:"active_fingerprint"`
@@ -624,28 +469,18 @@ type CoreAdapters struct {
 	Policy               PolicyAdapter
 	Authorization        AuthorizationAdapter
 	PackageTrustVerifier PackageTrustVerifier
-	Registry             registry.Store
 	Audit                AuditSink
 	SecurityAudit        observability.SecurityAuditJournal
 	Diagnostics          DiagnosticsSink
 	SurfaceCatalog       SurfaceCatalogSink
-	SurfaceTokens        *bridge.SurfaceTokenService
-	PluginData           PluginData
 	Assets               pluginpkg.AssetStore
-	InstallStages        installstage.Store
-	Operations           operation.Store
-	ConfirmationIntents  security.ConfirmationIntentStore
-	Streams              stream.Store
-	SessionLifecycle     SessionLifecycleAdapter
-	SessionMaintenance   SessionLifecycleMaintenanceAdapter
-	SessionScopes        *sessionscope.Coordinator
+	internalStateOwners  *internalStateOwnerOverrides
 }
 
 type ReleaseModule struct {
-	Trust                       *releasetrust.ServiceSet
-	ReleaseArtifactResolver     ReleaseArtifactResolver
-	HostRequirements            HostRequirementPolicy
-	CapabilityContractArtifacts CapabilityContractArtifactResolver
+	Trust                   *releasetrust.ServiceSet
+	ReleaseArtifactResolver ReleaseArtifactResolver
+	HostRequirements        HostRequirementPolicy
 }
 
 type RuntimeModule struct {
@@ -675,15 +510,27 @@ type CoreActionModule struct {
 
 // ExternalPackageModule configures the host-neutral public HTTPS and GitHub
 // Release admission pipeline. Pending inspections are process-local and expire
-// on Host restart; committed receipts remain durable in the registry store.
+// on Host restart; only installed plugin facts become durable.
 type ExternalPackageModule struct {
-	StageStore        ExternalPackageStageStore
-	PackageFetcher    ExternalPackageFetcher
-	GitHubResolver    ExternalPackageGitHubResolver
 	SignatureAssessor ExternalPackageSignatureAssessor
+	AddressResolver   externalsource.AddressResolver
+	Credentials       externalsource.CredentialProvider
+	SourceID          string
+	TotalTimeout      time.Duration
+	GitHub            externalsource.GitHubRESTReleaseClientOptions
+
+	// Test-only package-local overrides keep deterministic unit tests off the
+	// network without exposing storage or commit ownership to host products.
+	stageStore     externalPackageStageStore
+	packageFetcher externalPackageFetcher
+	githubResolver externalPackageGitHubResolver
 }
 
 type Config struct {
+	// StateRoot is the Host-owned persistent control-plane root. When set, Open
+	// creates, migrates, verifies, retains, and closes exactly one control DB at
+	// StateRoot/control.sqlite.
+	StateRoot       string
 	Core            CoreAdapters
 	Release         *ReleaseModule
 	Runtime         *RuntimeModule
@@ -694,6 +541,12 @@ type Config struct {
 	ExternalPackage *ExternalPackageModule
 }
 
+type internalStateOwnerOverrides struct {
+	surfaceTokens       *bridge.SurfaceTokenService
+	confirmationIntents security.ConfirmationIntentStore
+	sessionScopes       *sessionscope.Coordinator
+}
+
 type normalizedAdapters struct {
 	Policy                           PolicyAdapter
 	Authorization                    AuthorizationAdapter
@@ -701,8 +554,6 @@ type normalizedAdapters struct {
 	ReleaseTrust                     *releasetrust.ServiceSet
 	ReleaseArtifactResolver          ReleaseArtifactResolver
 	HostRequirements                 HostRequirementPolicy
-	CapabilityContractArtifacts      CapabilityContractArtifactResolver
-	Registry                         registry.Store
 	Audit                            AuditSink
 	SecurityAudit                    observability.SecurityAuditJournal
 	Diagnostics                      DiagnosticsSink
@@ -710,23 +561,18 @@ type normalizedAdapters struct {
 	RuntimeManager                   runtimeclient.Manager
 	SurfaceCatalog                   SurfaceCatalogSink
 	Assets                           pluginpkg.AssetStore
-	InstallStages                    installstage.Store
 	Capabilities                     *capability.Registry
 	CoreActions                      CoreActionAdapter
 	SurfaceTokens                    *bridge.SurfaceTokenService
 	PluginData                       PluginData
 	Connectivity                     connectivity.Broker
 	NetworkExecutor                  connectivity.NetworkExecutor
-	Operations                       operation.Store
 	ConfirmationIntents              security.ConfirmationIntentStore
-	Streams                          stream.Store
-	SessionLifecycle                 SessionLifecycleAdapter
-	SessionMaintenance               SessionLifecycleMaintenanceAdapter
 	SessionScopes                    *sessionscope.Coordinator
 	RuntimeModule                    *RuntimeModule
-	ExternalPackageStageStore        ExternalPackageStageStore
-	ExternalPackageFetcher           ExternalPackageFetcher
-	ExternalPackageGitHubResolver    ExternalPackageGitHubResolver
+	ExternalPackageStageStore        externalPackageStageStore
+	ExternalPackageFetcher           externalPackageFetcher
+	ExternalPackageGitHubResolver    externalPackageGitHubResolver
 	ExternalPackageSignatureAssessor ExternalPackageSignatureAssessor
 }
 
@@ -740,6 +586,7 @@ type PluginData interface {
 }
 
 type Host struct {
+	controlStore         *controlstore.Store
 	adapters             normalizedAdapters
 	features             map[Feature]struct{}
 	securityJournal      observability.SecurityAuditJournal
@@ -751,14 +598,9 @@ type Host struct {
 	surfaceGenerationID  string
 	lifecycleLocks       *pluginLifecycleLockRegistry
 	executions           *executionLeaseRegistry
-	streamReads          *streamReadLockRegistry
 	verifiedReleases     *verifiedReleaseRegistry
-	releaseLeases        *releaseLeaseRegistry
-	sourceFences         *sourceFenceRegistry
 	sessionScopes        *sessionscope.Coordinator
 	sessionMaintenance   *sessionScopeMaintenanceLockRegistry
-	detachedCancelJobs   *detachedCancelJobRegistry
-	operationObservers   *surfaceOperationObservationRegistry
 	lifecycleCtx         context.Context
 	lifecycleCancel      context.CancelFunc
 	lifecycleMu          sync.RWMutex
@@ -769,97 +611,11 @@ type Host struct {
 	closeErr             error
 	runtimeModule        *RuntimeModule
 	externalInspections  *externalPackageInspectionStore
+	externalStage        *externalsource.StageStore
 	refreshPluginTimeout time.Duration
-}
-
-type detachedCancelJob struct {
-	operationID string
-	scope       sessionctx.SessionScope
-	cancel      context.CancelCauseFunc
-	done        chan struct{}
-}
-
-type detachedCancelJobRegistry struct {
-	mu        sync.Mutex
-	jobs      map[string]*detachedCancelJob
-	bySession map[sessionctx.SessionScope]map[string]*detachedCancelJob
-}
-
-func newDetachedCancelJobRegistry() *detachedCancelJobRegistry {
-	return &detachedCancelJobRegistry{
-		jobs: make(map[string]*detachedCancelJob), bySession: make(map[sessionctx.SessionScope]map[string]*detachedCancelJob),
-	}
-}
-
-func (r *detachedCancelJobRegistry) register(operationID string, scope sessionctx.SessionScope, cancel context.CancelCauseFunc) (*detachedCancelJob, bool) {
-	if r == nil || strings.TrimSpace(operationID) == "" || scope.Validate() != nil || cancel == nil {
-		return nil, false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, exists := r.jobs[operationID]; exists {
-		return nil, false
-	}
-	job := &detachedCancelJob{operationID: operationID, scope: scope, cancel: cancel, done: make(chan struct{})}
-	r.jobs[operationID] = job
-	indexed := r.bySession[scope]
-	if indexed == nil {
-		indexed = make(map[string]*detachedCancelJob)
-		r.bySession[scope] = indexed
-	}
-	indexed[operationID] = job
-	return job, true
-}
-
-func (r *detachedCancelJobRegistry) finish(job *detachedCancelJob) {
-	if r == nil || job == nil {
-		return
-	}
-	r.mu.Lock()
-	if r.jobs[job.operationID] == job {
-		delete(r.jobs, job.operationID)
-		indexed := r.bySession[job.scope]
-		delete(indexed, job.operationID)
-		if len(indexed) == 0 {
-			delete(r.bySession, job.scope)
-		}
-		close(job.done)
-	}
-	r.mu.Unlock()
-}
-
-func (r *detachedCancelJobRegistry) cancelSession(ctx context.Context, scope sessionctx.SessionScope, cause error) error {
-	if r == nil {
-		return nil
-	}
-	r.mu.Lock()
-	indexed := r.bySession[scope]
-	jobs := make([]*detachedCancelJob, 0, len(indexed))
-	for _, job := range indexed {
-		jobs = append(jobs, job)
-	}
-	r.mu.Unlock()
-	for _, job := range jobs {
-		job.cancel(cause)
-	}
-	for _, job := range jobs {
-		select {
-		case <-job.done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
-}
-
-func (r *detachedCancelJobRegistry) Load(operationID string) (any, bool) {
-	if r == nil {
-		return nil, false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	job, ok := r.jobs[operationID]
-	return job, ok
+	recoveryMu           sync.Mutex
+	recoveryRevision     int64
+	recoverySnapshot     *RecoverySnapshot
 }
 
 type ImportLocalPackageRequest struct {
@@ -1185,22 +941,15 @@ type CallMethodRequest struct {
 	Now                    time.Time      `json:"-"`
 	session                sessionctx.Context
 	executionAuthorization methodExecutionAuthorization
-	streamTicketMinter     methodStreamTicketMinter
 }
 
-type methodStreamTicketMinter func(operationID string, streamID string) (bridge.StreamTicketResult, error)
-
 type CallMethodResult struct {
-	Data                 any        `json:"data"`
-	OperationID          string     `json:"operation_id,omitempty"`
-	StreamID             string     `json:"stream_id,omitempty"`
-	StreamTicket         string     `json:"stream_ticket,omitempty"`
-	StreamTicketID       string     `json:"stream_ticket_id,omitempty"`
-	StreamExpiresAt      *time.Time `json:"stream_expires_at,omitempty"`
-	ConfirmationRequired bool       `json:"confirmation_required,omitempty"`
-	ConfirmationTokenID  string     `json:"confirmation_token_id,omitempty"`
-	RequestHash          string     `json:"request_hash,omitempty"`
-	PlanHash             string     `json:"plan_hash,omitempty"`
+	Data                 any    `json:"data"`
+	ExecutionID          string `json:"execution_id,omitempty"`
+	ConfirmationRequired bool   `json:"confirmation_required,omitempty"`
+	ConfirmationTokenID  string `json:"confirmation_token_id,omitempty"`
+	RequestHash          string `json:"request_hash,omitempty"`
+	PlanHash             string `json:"plan_hash,omitempty"`
 }
 
 type IntentRecord struct {
@@ -1252,8 +1001,7 @@ type workerInvocationPayload struct {
 	OwnerEnvHash         string             `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string             `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string             `json:"bridge_channel_id,omitempty"`
-	OperationID          string             `json:"operation_id,omitempty"`
-	StreamID             string             `json:"stream_id,omitempty"`
+	ExecutionID          string             `json:"execution_id,omitempty"`
 	AuditCorrelationID   string             `json:"audit_correlation_id"`
 	ParamsSHA256         string             `json:"params_sha256"`
 	Params               map[string]any     `json:"params"`
@@ -1319,28 +1067,17 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 	adapters.Policy = core.Policy
 	adapters.Authorization = core.Authorization
 	adapters.PackageTrustVerifier = core.PackageTrustVerifier
-	adapters.Registry = core.Registry
 	adapters.Audit = core.Audit
 	adapters.SecurityAudit = core.SecurityAudit
 	adapters.Diagnostics = core.Diagnostics
 	adapters.SurfaceCatalog = core.SurfaceCatalog
-	adapters.SurfaceTokens = core.SurfaceTokens
-	adapters.PluginData = core.PluginData
 	adapters.Assets = core.Assets
-	adapters.InstallStages = core.InstallStages
-	adapters.Operations = core.Operations
-	adapters.ConfirmationIntents = core.ConfirmationIntents
-	adapters.Streams = core.Streams
-	adapters.SessionLifecycle = core.SessionLifecycle
-	adapters.SessionMaintenance = core.SessionMaintenance
-	adapters.SessionScopes = core.SessionScopes
 
 	features := make(map[Feature]struct{}, 7)
 	if module := config.Release; module != nil {
 		adapters.ReleaseTrust = module.Trust
 		adapters.ReleaseArtifactResolver = module.ReleaseArtifactResolver
 		adapters.HostRequirements = module.HostRequirements
-		adapters.CapabilityContractArtifacts = module.CapabilityContractArtifacts
 		features[FeatureRelease] = struct{}{}
 	}
 	if module := config.Runtime; module != nil {
@@ -1369,9 +1106,9 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 		features[FeatureCoreAction] = struct{}{}
 	}
 	if module := config.ExternalPackage; module != nil {
-		adapters.ExternalPackageStageStore = module.StageStore
-		adapters.ExternalPackageFetcher = module.PackageFetcher
-		adapters.ExternalPackageGitHubResolver = module.GitHubResolver
+		adapters.ExternalPackageStageStore = module.stageStore
+		adapters.ExternalPackageFetcher = module.packageFetcher
+		adapters.ExternalPackageGitHubResolver = module.githubResolver
 		adapters.ExternalPackageSignatureAssessor = module.SignatureAssessor
 		features[FeatureExternalPackage] = struct{}{}
 	}
@@ -1386,30 +1123,18 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 		{"policy", adapters.Policy},
 		{"authorization", adapters.Authorization},
 		{"package trust verifier", adapters.PackageTrustVerifier},
-		{"registry store", adapters.Registry},
 		{"audit sink", adapters.Audit},
 		{"security audit journal", adapters.SecurityAudit},
 		{"diagnostics sink", adapters.Diagnostics},
-		{"surface token service", adapters.SurfaceTokens},
-		{"plugin data store", adapters.PluginData},
 		{"asset store", adapters.Assets},
-		{"install stage store", adapters.InstallStages},
-		{"operation store", adapters.Operations},
-		{"confirmation intent store", adapters.ConfirmationIntents},
-		{"stream store", adapters.Streams},
-		{"session lifecycle adapter", adapters.SessionLifecycle},
-		{"session scope coordinator", adapters.SessionScopes},
+	}
+	if strings.TrimSpace(config.StateRoot) == "" {
+		return &HostConfigError{Module: "core", Adapter: "state root"}
 	}
 	for _, check := range checks {
 		if isNilInterfaceValue(check.value) {
 			return &HostConfigError{Module: "core", Adapter: check.name}
 		}
-	}
-	if !adapters.SessionScopes.Durable() && hasDurableCoreResourceStore(adapters) {
-		return &HostConfigError{Module: "core", Adapter: "session scope coordinator", Cause: ErrDurableSessionScopeRequired}
-	}
-	if adapters.SessionMaintenance != nil && isNilInterfaceValue(adapters.SessionMaintenance) {
-		return &HostConfigError{Module: "core", Adapter: "session lifecycle maintenance adapter"}
 	}
 	if adapters.SurfaceCatalog != nil && isNilInterfaceValue(adapters.SurfaceCatalog) {
 		return &HostConfigError{Module: "core", Adapter: "surface catalog sink"}
@@ -1422,7 +1147,6 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 			{"trust service", module.Trust},
 			{"artifact resolver", module.ReleaseArtifactResolver},
 			{"host requirements", module.HostRequirements},
-			{"capability contract artifacts", module.CapabilityContractArtifacts},
 		}
 		for _, check := range checks {
 			if isNilInterfaceValue(check.value) {
@@ -1461,18 +1185,8 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 		return &HostConfigError{Module: string(FeatureCoreAction), Adapter: "action", Cause: ErrCoreActionModuleRequired}
 	}
 	if module := config.ExternalPackage; module != nil {
-		for _, check := range []struct {
-			name  string
-			value any
-		}{
-			{"stage store", module.StageStore},
-			{"package fetcher", module.PackageFetcher},
-			{"GitHub resolver", module.GitHubResolver},
-			{"signature assessor", module.SignatureAssessor},
-		} {
-			if isNilInterfaceValue(check.value) {
-				return &HostConfigError{Module: string(FeatureExternalPackage), Adapter: check.name, Cause: ErrExternalPackageModuleRequired}
-			}
+		if isNilInterfaceValue(module.SignatureAssessor) {
+			return &HostConfigError{Module: string(FeatureExternalPackage), Adapter: "signature assessor", Cause: ErrExternalPackageModuleRequired}
 		}
 		if _, ok := module.SignatureAssessor.(ExternalPackageSignatureFreshnessAssessor); !ok {
 			return &HostConfigError{Module: string(FeatureExternalPackage), Adapter: "signature freshness assessor", Cause: ErrExternalPackageModuleRequired}
@@ -1481,14 +1195,40 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 	return nil
 }
 
-func hasDurableCoreResourceStore(adapters normalizedAdapters) bool {
-	return adapters.Registry.Durable() ||
-		adapters.PluginData.Durable() ||
-		adapters.Assets.Durable() ||
-		adapters.InstallStages.Durable() ||
-		adapters.Operations.Durable() ||
-		adapters.ConfirmationIntents.Durable() ||
-		adapters.Streams.Durable()
+func openExternalPackagePipeline(config Config, adapters *normalizedAdapters) (*externalsource.StageStore, error) {
+	module := config.ExternalPackage
+	if module == nil {
+		return nil, nil
+	}
+	if module.stageStore != nil || module.packageFetcher != nil || module.githubResolver != nil {
+		if module.stageStore == nil || module.packageFetcher == nil || module.githubResolver == nil {
+			return nil, &HostConfigError{Module: string(FeatureExternalPackage), Adapter: "test pipeline", Cause: ErrExternalPackageModuleRequired}
+		}
+		return nil, nil
+	}
+	root, err := filepath.Abs(strings.TrimSpace(config.StateRoot))
+	if err != nil {
+		return nil, fmt.Errorf("resolve external package stage root: %w", err)
+	}
+	stage, err := externalsource.NewStageStore(filepath.Join(root, "external-inspections"))
+	if err != nil {
+		return nil, fmt.Errorf("open external package stage: %w", err)
+	}
+	fetcher, err := externalsource.NewFetcher(externalsource.FetcherOptions{
+		Stage: stage, Resolver: module.AddressResolver, Credentials: module.Credentials,
+		SourceID: module.SourceID, TotalTimeout: module.TotalTimeout,
+	})
+	if err != nil {
+		return nil, errors.Join(err, stage.Close())
+	}
+	github, err := externalsource.NewGitHubRESTReleaseResolver(module.GitHub, fetcher)
+	if err != nil {
+		return nil, errors.Join(err, stage.Close())
+	}
+	adapters.ExternalPackageStageStore = stage
+	adapters.ExternalPackageFetcher = fetcher
+	adapters.ExternalPackageGitHubResolver = github
+	return stage, nil
 }
 
 func isNilInterfaceValue(value any) bool {
@@ -1519,59 +1259,6 @@ const (
 	maxReleaseMetadataSignature int64 = 64 << 10
 	maxReleasePackageBytes      int64 = 256 << 20
 )
-
-type ListOperationsRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
-	Cursor           string `json:"cursor,omitempty"`
-	Limit            int    `json:"limit,omitempty"`
-}
-
-type ListOperationsResult struct {
-	Operations []operation.Record `json:"operations"`
-	NextCursor string             `json:"next_cursor,omitempty"`
-}
-
-type CancelOperationRequest struct {
-	OperationID string    `json:"operation_id"`
-	Reason      string    `json:"reason,omitempty"`
-	Now         time.Time `json:"-"`
-}
-
-type CancelSurfaceOperationRequest struct {
-	OperationID       string    `json:"operation_id"`
-	SurfaceInstanceID string    `json:"surface_instance_id"`
-	BridgeChannelID   string    `json:"bridge_channel_id"`
-	Reason            string    `json:"reason,omitempty"`
-	Now               time.Time `json:"-"`
-}
-
-type ReadStreamRequest struct {
-	StreamID          string        `json:"stream_id"`
-	StreamTicket      string        `json:"stream_ticket,omitempty"`
-	ReadID            string        `json:"read_id"`
-	SurfaceInstanceID string        `json:"surface_instance_id,omitempty"`
-	MaxEvents         int           `json:"max_events,omitempty"`
-	MaxBytes          int64         `json:"max_bytes,omitempty"`
-	WaitTimeout       time.Duration `json:"-"`
-	Now               time.Time     `json:"-"`
-}
-
-type ReadStreamResult struct {
-	Record         stream.Record  `json:"record"`
-	DeliveryID     string         `json:"delivery_id,omitempty"`
-	ReadID         string         `json:"read_id"`
-	Events         []stream.Event `json:"events,omitempty"`
-	Done           bool           `json:"done"`
-	TerminalStatus stream.Status  `json:"terminal_status,omitempty"`
-}
-
-type AcknowledgeStreamRequest struct {
-	StreamID          string    `json:"stream_id"`
-	StreamTicket      string    `json:"stream_ticket"`
-	DeliveryID        string    `json:"delivery_id"`
-	SurfaceInstanceID string    `json:"surface_instance_id"`
-	Now               time.Time `json:"-"`
-}
 
 type MintConnectionGrantRequest struct {
 	PluginInstanceID    string                 `json:"plugin_instance_id"`
@@ -1629,6 +1316,128 @@ func New(config Config) (*Host, error) {
 	return Open(context.Background(), config)
 }
 
+func controlStorePath(config Config) (string, error) {
+	stateRoot := strings.TrimSpace(config.StateRoot)
+	if stateRoot == "" {
+		return "", &HostConfigError{Module: "core", Adapter: "state root"}
+	}
+	root, err := filepath.Abs(stateRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve state root: %w", err)
+	}
+	return filepath.Join(root, "control.sqlite"), nil
+}
+
+func openControlStore(ctx context.Context, config Config) (*controlstore.Store, error) {
+	path, err := controlStorePath(config)
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Dir(path)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("create state root: %w", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		return controlstore.Open(ctx, controlstore.Config{Path: path})
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	sources, err := discoverControlMigrationSources(root)
+	if err != nil {
+		return nil, err
+	}
+	if len(sources) != 0 {
+		return controlstore.Migrate(ctx, controlstore.Config{Path: path, Sources: sources})
+	}
+	return controlstore.Open(ctx, controlstore.Config{Path: path})
+}
+
+func discoverControlMigrationSources(root string) ([]controlstore.Source, error) {
+	type candidate struct{ path, kind string }
+	candidates := []candidate{
+		{"registry.sqlite", "registry"}, {"operations.sqlite", "operation"}, {"streams.sqlite", "stream"},
+		{"confirmation_intents.sqlite", "confirmation"}, {"session-scopes.sqlite", "session"}, {"session_scopes.sqlite", "session"},
+		{"db/registry.sqlite", "registry"}, {"db/operations.sqlite", "operation"}, {"db/streams.sqlite", "stream"},
+		{"db/confirmation_intents.sqlite", "confirmation"}, {"db/session_scopes.sqlite", "session"},
+	}
+	seenKind := map[string]string{}
+	var sources []controlstore.Source
+	for _, candidate := range candidates {
+		path := filepath.Join(root, filepath.FromSlash(candidate.path))
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return nil, fmt.Errorf("%w: inspect legacy %s: %v", controlstore.ErrMigration, candidate.path, err)
+		}
+		if previous := seenKind[candidate.kind]; previous != "" {
+			return nil, fmt.Errorf("%w: ambiguous %s sources %s and %s", controlstore.ErrMigration, candidate.kind, previous, candidate.path)
+		}
+		version := 0
+		if candidate.kind != "confirmation" {
+			db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String())
+			if err != nil {
+				return nil, fmt.Errorf("%w: open legacy %s: %v", controlstore.ErrMigration, candidate.path, err)
+			}
+			err = db.QueryRow(`PRAGMA user_version`).Scan(&version)
+			db.Close()
+			if err != nil {
+				return nil, fmt.Errorf("%w: inspect legacy %s version: %v", controlstore.ErrMigration, candidate.path, err)
+			}
+		}
+		seenKind[candidate.kind] = candidate.path
+		sources = append(sources, controlstore.Source{Name: candidate.kind, Path: path, Kind: candidate.kind, Version: version})
+	}
+	return sources, nil
+}
+
+func bindInternalPlatformState(config Config, control *controlstore.Store, adapters *normalizedAdapters) error {
+	if adapters == nil {
+		return errors.New("normalized adapters are required")
+	}
+	overrides := config.Core.internalStateOwners
+	if overrides != nil {
+		adapters.SurfaceTokens = overrides.surfaceTokens
+		adapters.ConfirmationIntents = overrides.confirmationIntents
+		adapters.SessionScopes = overrides.sessionScopes
+	}
+	if adapters.SurfaceTokens == nil {
+		adapters.SurfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+	}
+	if control == nil {
+		return errors.New("control store is required")
+	}
+	if adapters.ConfirmationIntents == nil {
+		var err error
+		adapters.ConfirmationIntents, err = security.NewControlConfirmationIntentStore(control.Confirmations(), security.ConfirmationIntentStoreOptions{})
+		if err != nil {
+			return fmt.Errorf("open internal confirmation store: %w", err)
+		}
+	}
+	if adapters.SessionScopes == nil {
+		store, err := sessionscope.NewControlStore(control.Sessions(), sessionscope.StoreOptions{})
+		if err != nil {
+			return fmt.Errorf("open internal session scope store: %w", err)
+		}
+		adapters.SessionScopes, err = sessionscope.NewCoordinator(store)
+		if err != nil {
+			return fmt.Errorf("open internal session scope coordinator: %w", err)
+		}
+	}
+	return nil
+}
+
+func openPluginDataStore(ctx context.Context, config Config, catalog plugindata.Catalog) (PluginData, error) {
+	root, err := filepath.Abs(strings.TrimSpace(config.StateRoot))
+	if err != nil {
+		return nil, fmt.Errorf("resolve plugin data state root: %w", err)
+	}
+	store, err := plugindata.Open(ctx, filepath.Join(root, "plugin-data"), catalog)
+	if err != nil {
+		return nil, fmt.Errorf("open plugin data store: %w", err)
+	}
+	return store, nil
+}
+
 func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	if ctx == nil {
 		return nil, errors.New("context is required")
@@ -1641,6 +1450,37 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		}
 		return nil, err
 	}
+	control, err := openControlStore(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if openedHost == nil && control != nil {
+			retErr = errors.Join(retErr, control.Close())
+		}
+	}()
+	if err := bindInternalPlatformState(config, control, &adapters); err != nil {
+		return nil, err
+	}
+	externalStage, err := openExternalPackagePipeline(config, &adapters)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if openedHost == nil && externalStage != nil {
+			retErr = errors.Join(retErr, externalStage.Close())
+		}
+	}()
+	pluginData, err := openPluginDataStore(ctx, config, control)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if openedHost == nil && pluginData != nil {
+			retErr = errors.Join(retErr, pluginData.Close())
+		}
+	}()
+	adapters.PluginData = pluginData
 	var transferredRuntime *RuntimeModule
 	if adapters.RuntimeModule != nil {
 		capability, claimErr := adapters.RuntimeModule.claimForHost()
@@ -1680,6 +1520,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	host := &Host{
+		controlStore:         control,
 		adapters:             adapters,
 		features:             features,
 		securityJournal:      adapters.SecurityAudit,
@@ -1689,36 +1530,16 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		surfaceGenerationID:  surfaceGenerationID,
 		lifecycleLocks:       newPluginLifecycleLockRegistry(),
 		executions:           newExecutionLeaseRegistry(),
-		streamReads:          newStreamReadLockRegistry(),
 		verifiedReleases:     newVerifiedReleaseRegistry(),
-		releaseLeases:        newReleaseLeaseRegistry(),
-		sourceFences:         newSourceFenceRegistry(),
-		detachedCancelJobs:   newDetachedCancelJobRegistry(),
-		operationObservers:   newSurfaceOperationObservationRegistry(),
 		sessionScopes:        adapters.SessionScopes,
 		sessionMaintenance:   newSessionScopeMaintenanceLockRegistry(),
 		lifecycleCtx:         lifecycleCtx,
 		lifecycleCancel:      lifecycleCancel,
 		runtimeModule:        transferredRuntime,
 		externalInspections:  newExternalPackageInspectionStore(),
+		externalStage:        externalStage,
 		refreshPluginTimeout: refreshEnabledPluginTimeout,
-	}
-	if host.adapters.ReleaseTrust != nil {
-		if err := host.adapters.ReleaseTrust.BindFenceCoordinator(hostSourceFenceCoordinator{host: host}); err != nil {
-			lifecycleCancel()
-			return nil, fmt.Errorf("bind release trust fencing: %w", err)
-		}
-	}
-	retainedSessionScopes, err := host.sessionScopes.ListRetained(ctx)
-	if err != nil {
-		lifecycleCancel()
-		return nil, fmt.Errorf("reconcile retained session scopes: %w", err)
-	}
-	if err := host.adapters.SessionLifecycle.ReconcileRetainedSessionScopes(ctx, ReconcileRetainedSessionScopesRequest{
-		Scopes: retainedSessionScopes,
-	}); err != nil {
-		lifecycleCancel()
-		return nil, ErrAdapterFailure
+		recoveryRevision:     1,
 	}
 	if host.securityJournal != nil {
 		if err := host.securityJournal.ReconcilePendingSecurityAudits(ctx); err != nil {
@@ -1733,22 +1554,6 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 			}
 		}
 	}
-	if err := host.reconcileSessionScopeMaintenance(ctx); err != nil {
-		lifecycleCancel()
-		return nil, fmt.Errorf("reconcile session scope maintenance: %w", err)
-	}
-	if err := host.reconcileDurableExecutionStates(ctx); err != nil {
-		lifecycleCancel()
-		return nil, fmt.Errorf("reconcile durable operation and stream state: %w", err)
-	}
-	maintenanceNow := time.Now().UTC()
-	if err := host.pruneTerminalExecutionRecords(ctx, maintenanceNow); err != nil {
-		lifecycleCancel()
-		return nil, fmt.Errorf("prune terminal operation and stream state: %w", err)
-	}
-	if host.executions.beginTerminalMaintenance(maintenanceNow) {
-		host.executions.finishTerminalMaintenance()
-	}
 	if host.adapters.RuntimeManager != nil {
 		if err := host.adapters.RuntimeManager.BindHostServices(runtimeclient.RuntimeHostServices{
 			StreamSink: hostRuntimeStreamSink{executions: host.executions},
@@ -1756,6 +1561,22 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 			lifecycleCancel()
 			return nil, fmt.Errorf("bind runtime manager host services: %w", err)
 		}
+	}
+	if err := host.reconcileSessionScopeMaintenance(ctx); err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("reconcile session scope maintenance: %w", err)
+	}
+	if err := host.reconcileDurableExecutionStates(ctx); err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("reconcile durable execution state: %w", err)
+	}
+	maintenanceNow := time.Now().UTC()
+	if err := host.pruneTerminalExecutionRecords(ctx, maintenanceNow); err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("prune terminal execution state: %w", err)
+	}
+	if host.executions.beginTerminalMaintenance(maintenanceNow) {
+		host.executions.finishTerminalMaintenance()
 	}
 	host.startSecurityAuditExporter()
 	openedHost = host
@@ -1782,7 +1603,10 @@ func (h *Host) Close() error {
 		h.lifecycleWG.Wait()
 		h.securityAuditWG.Wait()
 		externalStageCleanupErr := h.drainExternalPackageInspectionArtifacts()
-		h.releaseLeases.clear()
+		var externalStageCloseErr error
+		if h.externalStage != nil {
+			externalStageCloseErr = h.externalStage.Close()
+		}
 		h.verifiedReleases.clear()
 		var runtimeCloseErr error
 		if h.runtimeModule != nil {
@@ -1808,7 +1632,11 @@ func (h *Host) Close() error {
 		if h.adapters.Assets != nil {
 			assetStoreCloseErr = h.adapters.Assets.Close()
 		}
-		h.closeErr = errors.Join(runtimeCloseErr, externalStageCleanupErr, pluginDataCloseErr, assetStoreCloseErr)
+		var controlStoreCloseErr error
+		if h.controlStore != nil {
+			controlStoreCloseErr = h.controlStore.Close()
+		}
+		h.closeErr = errors.Join(runtimeCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr)
 	})
 	return h.closeErr
 }
@@ -1870,7 +1698,7 @@ func (h *Host) featureConfigured(feature Feature) bool {
 	switch feature {
 	case FeatureRelease:
 		return h.adapters.ReleaseTrust != nil && h.adapters.ReleaseArtifactResolver != nil &&
-			h.adapters.HostRequirements != nil && h.adapters.CapabilityContractArtifacts != nil
+			h.adapters.HostRequirements != nil
 	case FeatureRuntime:
 		return h.adapters.RuntimeManager != nil
 	case FeatureCapability:
@@ -1983,7 +1811,7 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 		return bridge.SurfaceBootstrap{}, err
 	}
 	defer releaseLifecycle()
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
@@ -2212,7 +2040,7 @@ func (h *Host) validateSurfaceAssetSession(ctx context.Context, req ReadSurfaceA
 	if validation.Session.SurfaceInstanceID != req.SurfaceInstanceID {
 		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, bridge.ErrTokenAudience
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, validation.Session.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, validation.Session.PluginInstanceID)
 	if err != nil {
 		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, err
 	}
@@ -2277,9 +2105,6 @@ func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) er
 		SessionChannelIDHash: session.SessionChannelIDHash,
 		Now:                  req.Now,
 	})
-	if err == nil {
-		h.operationObservers.dispose(surfaceOperationObservationKeyFor(session, req.SurfaceInstanceID))
-	}
 	return err
 }
 
@@ -2300,9 +2125,6 @@ func (h *Host) ReconcileSurfaceRevocation(ctx context.Context, req DisposeSurfac
 		OwnerSessionHash: session.OwnerSessionHash, OwnerUserHash: session.OwnerUserHash,
 		OwnerEnvHash: session.OwnerEnvHash, SessionChannelIDHash: session.SessionChannelIDHash, Now: req.Now,
 	})
-	if err == nil {
-		h.operationObservers.dispose(surfaceOperationObservationKeyFor(session, req.SurfaceInstanceID))
-	}
 	return result, err
 }
 
@@ -2357,30 +2179,21 @@ func (h *Host) revokeAuthenticatedSessionScope(
 		}
 	}()
 
-	identity := req.Identity
+	identity, err := h.sessionTeardownIdentity(ctx, scope)
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	if req.Identity.Valid() && !req.Identity.Matches(identity) {
+		return RevokeSessionScopeResult{}, sessionscope.ErrTeardownIdentityMismatch
+	}
+	if !req.Identity.Valid() && strings.TrimSpace(req.Identity.OperationID) != "" {
+		return RevokeSessionScopeResult{}, sessionscope.ErrTeardownIdentityInvalid
+	}
 	var teardown *sessionscope.Teardown
 	var snapshot sessionscope.Snapshot
-	if identity.Valid() {
-		prepared, prepareErr := h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
-		if prepareErr != nil || !prepared.Matches(identity) {
-			return RevokeSessionScopeResult{}, ErrAdapterFailure
-		}
-		teardown, snapshot, err = h.sessionScopes.BeginTeardown(ctx, scope, identity, req.Now)
-		if err != nil {
-			return RevokeSessionScopeResult{}, err
-		}
-	} else {
-		if strings.TrimSpace(identity.OperationID) != "" {
-			return RevokeSessionScopeResult{}, sessionscope.ErrTeardownIdentityInvalid
-		}
-		identity, err = h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
-		if err != nil || !identity.Valid() {
-			return RevokeSessionScopeResult{}, ErrAdapterFailure
-		}
-		teardown, snapshot, err = h.sessionScopes.BeginTeardown(ctx, scope, identity, req.Now)
-		if err != nil {
-			return RevokeSessionScopeResult{}, err
-		}
+	teardown, snapshot, err = h.sessionScopes.BeginTeardown(ctx, scope, identity, req.Now)
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
 	}
 	defer teardown.Release()
 	teardownCtx, cancelTeardown := context.WithTimeout(context.WithoutCancel(ctx), sessionScopeTeardownTimeout)
@@ -2388,13 +2201,6 @@ func (h *Host) revokeAuthenticatedSessionScope(
 	if err := h.cleanupExternalPackageInspectionArtifactsForScope(scope); err != nil {
 		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
-	if h.adapters.SessionLifecycle.CommitSessionScopeClose(
-		teardownCtx,
-		CommitSessionScopeCloseRequest{Session: session, Identity: identity},
-	) != nil {
-		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
-	}
-	h.operationObservers.disposeSession(scope)
 	if snapshot.State == sessionscope.StateComplete {
 		result = revokeSessionScopeResult(snapshot)
 		auditDetails = sessionRevokeAuditDetails(result)
@@ -2412,7 +2218,6 @@ func (h *Host) revokeAuthenticatedSessionScope(
 		PluginGatewayTokens: bridgePlan.Tokens.PluginGatewayTokens,
 		ConfirmationTokens:  bridgePlan.Tokens.ConfirmationTokens,
 		HandleGrants:        bridgePlan.Tokens.HandleGrants,
-		StreamTickets:       bridgePlan.Tokens.StreamTickets,
 	})
 	if err != nil {
 		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
@@ -2435,7 +2240,7 @@ func (h *Host) revokeAuthenticatedSessionScope(
 		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
 	liveExecutions := h.executions.sessionLeases(scope)
-	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseExecution, sessionscope.Counts{RuntimeExecutions: uint64(len(liveExecutions))})
+	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseExecution, sessionscope.Counts{Executions: uint64(len(liveExecutions))})
 	if err != nil {
 		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
@@ -2461,31 +2266,6 @@ func (h *Host) revokeAuthenticatedSessionScope(
 	if err != nil {
 		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
-	if err := h.detachedCancelJobs.cancelSession(teardownCtx, scope, capability.ErrExecutionRevoked); err != nil {
-		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
-	}
-	operations, err := h.adapters.Operations.RevokeSessionScope(
-		teardownCtx,
-		operation.RevokeSessionScopeRequest{SessionScope: scope, Now: req.Now},
-	)
-	if err != nil {
-		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
-	}
-	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseOperation, sessionscope.Counts{Operations: uint64(operations.Revoked)})
-	if err != nil {
-		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
-	}
-	streams, err := h.adapters.Streams.RevokeSessionScope(
-		teardownCtx,
-		stream.RevokeSessionScopeRequest{SessionScope: scope, Now: req.Now},
-	)
-	if err != nil {
-		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
-	}
-	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseStream, sessionscope.Counts{Streams: uint64(streams.Revoked)})
-	if err != nil {
-		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
-	}
 	reconcileRevokedExecutions(teardownCtx, liveExecutions, capability.ErrExecutionRevoked)
 	for _, lease := range liveExecutions {
 		lease.finish()
@@ -2508,7 +2288,7 @@ func sessionRevokeSequence(operationID string) uint64 {
 	return sequence
 }
 
-func (h *Host) FinalizeSessionScope(ctx context.Context, req FinalizeSessionScopeRequest) (retErr error) {
+func (h *Host) FinalizeSessionScope(ctx context.Context, req FinalizeSessionScopeRequest) error {
 	if !req.Identity.Valid() {
 		return sessionscope.ErrTeardownIdentityInvalid
 	}
@@ -2524,64 +2304,32 @@ func (h *Host) FinalizeSessionScope(ctx context.Context, req FinalizeSessionScop
 	); err != nil {
 		return err
 	}
-	if h.adapters.SessionMaintenance != nil {
-		result, err := h.FinalizeClosedSessionScope(ctx, FinalizeClosedSessionScopeRequest{
-			Session: session, Identity: req.Identity,
-		})
-		if err != nil {
-			return err
-		}
-		if result.Status == SessionScopeFinalizationAbsent {
-			return sessionscope.ErrClosedSessionProofInvalid
-		}
-		return nil
-	}
-	if err := h.adapters.SessionLifecycle.ValidateClosedSessionScope(ctx, ValidateClosedSessionScopeRequest{
-		Session: session, Identity: req.Identity,
-	}); err != nil {
-		return ErrAdapterFailure
-	}
-	scope, err := session.SessionScope()
+	result, err := h.FinalizeClosedSessionScope(ctx, FinalizeClosedSessionScopeRequest{Session: session, Identity: req.Identity})
 	if err != nil {
 		return err
 	}
-	snapshot, err := h.sessionScopes.Snapshot(ctx, scope)
-	if err != nil {
-		if errors.Is(err, sessionscope.ErrScopeNotFound) {
-			return sessionscope.ErrClosedSessionProofInvalid
-		}
-		return err
+	if result.Status == SessionScopeFinalizationAbsent {
+		return sessionscope.ErrClosedSessionProofInvalid
 	}
-	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.session_scope.finalized"})
-	if err != nil {
-		return err
-	}
-	finalized := false
-	defer func() {
-		completedErr := auditMutation.completeWithDetails(
-			context.WithoutCancel(ctx),
-			retErr,
-			sessionRevokeAuditDetails(revokeSessionScopeResult(snapshot)),
-		)
-		if finalized {
-			retErr = mutation.ForceCommitted(completedErr)
-		} else {
-			retErr = completedErr
-		}
-	}()
-	if err := h.cleanupExternalPackageInspectionArtifactsForScope(scope); err != nil {
-		return err
-	}
-	if err := h.adapters.ConfirmationIntents.FinalizeSessionConfirmationRevocation(ctx, security.FinalizeSessionConfirmationRevocationRequest{
-		SessionScope: scope, TeardownOperationID: req.Identity.OperationID,
-	}); err != nil {
-		return ErrAdapterFailure
-	}
-	if err := h.sessionScopes.Finalize(ctx, scope, req.Identity); err != nil {
-		return err
-	}
-	finalized = true
 	return nil
+}
+
+func (h *Host) sessionTeardownIdentity(ctx context.Context, scope sessionctx.SessionScope) (sessionscope.TeardownIdentity, error) {
+	if h == nil || h.controlStore == nil {
+		return sessionscope.TeardownIdentity{}, ErrControlStoreRequired
+	}
+	operationID, proofBytes, err := h.controlStore.Sessions().DeriveSessionTeardownIdentity(ctx, controlstore.SessionKey{
+		OwnerSessionHash: scope.OwnerSessionHash, OwnerUserHash: scope.OwnerUserHash,
+		OwnerEnvHash: scope.OwnerEnvHash, SessionChannelIDHash: scope.SessionChannelIDHash,
+	})
+	if err != nil {
+		return sessionscope.TeardownIdentity{}, err
+	}
+	proof, err := sessionscope.NewClosedSessionProof(proofBytes)
+	if err != nil {
+		return sessionscope.TeardownIdentity{}, err
+	}
+	return sessionscope.NewTeardownIdentity(operationID, proof)
 }
 
 func (h *Host) markSessionTeardownIncomplete(ctx context.Context, teardown *sessionscope.Teardown, snapshot sessionscope.Snapshot, now time.Time) (RevokeSessionScopeResult, error) {
@@ -2613,12 +2361,9 @@ func sessionRevokeAuditDetails(result RevokeSessionScopeResult) map[string]any {
 		"asset_session_count":          result.Counts.AssetSessions,
 		"gateway_token_count":          result.Counts.PluginGatewayTokens,
 		"confirmation_token_count":     result.Counts.ConfirmationTokens,
-		"stream_ticket_count":          result.Counts.StreamTickets,
 		"handle_grant_count":           result.Counts.HandleGrants,
 		"confirmation_count":           result.Counts.Confirmations,
-		"operation_count":              result.Counts.Operations,
-		"stream_count":                 result.Counts.Streams,
-		"runtime_execution_count":      result.Counts.RuntimeExecutions,
+		"execution_count":              result.Counts.Executions,
 		"active_network_request_count": result.Counts.ActiveNetworkRequests,
 		"socket_count":                 result.Counts.Sockets,
 		"network_stream_count":         result.Counts.NetworkStreams,
@@ -2661,7 +2406,7 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 	if err := h.requireSurfaceRuntimeGeneration(ctx, validation.Session.PluginInstanceID, validation.Session.SurfaceInstanceID, validation.Session.RuntimeGenerationID, req.Now); err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, validation.Session.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, validation.Session.PluginInstanceID)
 	if err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
@@ -2812,7 +2557,6 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 			targetHash: targetHash,
 		}
 	}
-	req.streamTicketMinter = h.newMethodStreamTicketMinter(call.audience, call.revision, call.method.Method, req.Now)
 	result, err = h.dispatchMethod(ctx, call.record, call.method, req)
 	if err != nil {
 		return CallMethodResult{}, err
@@ -2987,7 +2731,7 @@ func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodCon
 		strings.TrimSpace(req.ConfirmationID) == "" {
 		return RejectMethodConfirmationResult{}, ErrConfirmationInvalid
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return RejectMethodConfirmationResult{}, err
 	}
@@ -3055,7 +2799,7 @@ func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]Inten
 	); err != nil {
 		return nil, err
 	}
-	records, err := h.adapters.Registry.ListPlugins(ctx)
+	records, err := h.listPluginRecords(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -3160,17 +2904,6 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (respo
 		Now:              req.Now,
 		session:          session,
 	}
-	callReq.streamTicketMinter = h.newMethodStreamTicketMinter(bridge.Audience{
-		PluginID:             resolved.record.PluginID,
-		PluginInstanceID:     resolved.record.PluginInstanceID,
-		PluginVersion:        resolved.record.Version,
-		ActiveFingerprint:    resolved.record.ActiveFingerprint,
-		RouteRole:            bridge.RouteRoleTrustedIntent,
-		OwnerSessionHash:     session.OwnerSessionHash,
-		OwnerUserHash:        session.OwnerUserHash,
-		OwnerEnvHash:         session.OwnerEnvHash,
-		SessionChannelIDHash: session.SessionChannelIDHash,
-	}, resolved.revision, resolved.method.Method, req.Now)
 	result, err := h.dispatchMethod(ctx, resolved.record, resolved.method, callReq)
 	if err != nil {
 		return CallMethodResult{}, err
@@ -3209,7 +2942,7 @@ const runtimeCapabilityRevokeTimeout = 2 * time.Second
 const sessionScopeTeardownTimeout = 2 * time.Second
 
 func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (result resolvedMethodCall, resultErr error) {
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return resolvedMethodCall{}, err
 	}
@@ -3268,7 +3001,7 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 	if err != nil {
 		return resolvedMethodCall{}, err
 	}
-	authorization, err := h.adapters.Registry.Authorize(ctx, registry.AuthorizeRequest{
+	authorization, err := h.authorizePlugin(ctx, registry.AuthorizeRequest{
 		PluginInstanceID: record.PluginInstanceID,
 		Method:           method.Method,
 		PermissionIDs:    requiredPermissions,
@@ -3291,13 +3024,13 @@ func (h *Host) resolveIntentIdentity(ctx context.Context, req InvokeIntentReques
 	}
 	var candidates []registry.PluginRecord
 	if strings.TrimSpace(req.PluginInstanceID) != "" {
-		record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+		record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 		if err != nil {
 			return resolvedIntentCall{}, err
 		}
 		candidates = []registry.PluginRecord{record}
 	} else {
-		records, err := h.adapters.Registry.ListPlugins(ctx)
+		records, err := h.listPluginRecords(ctx)
 		if err != nil {
 			return resolvedIntentCall{}, err
 		}
@@ -3358,7 +3091,7 @@ func (h *Host) authorizeResolvedIntent(ctx context.Context, req InvokeIntentRequ
 	if err != nil {
 		return err
 	}
-	authorization, err := h.adapters.Registry.Authorize(ctx, registry.AuthorizeRequest{
+	authorization, err := h.authorizePlugin(ctx, registry.AuthorizeRequest{
 		PluginInstanceID: resolved.record.PluginInstanceID,
 		Method:           resolved.method.Method,
 		PermissionIDs:    requiredPermissions,
@@ -3437,7 +3170,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if existing, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID); err == nil {
+	if existing, err := h.getPluginRecord(ctx, pluginInstanceID); err == nil {
 		return registry.PluginRecord{}, fmt.Errorf("%w: plugin %q is at management revision %d", ErrPluginAlreadyInstalled, pluginInstanceID, existing.ManagementRevision)
 	} else if !errors.Is(err, registry.ErrNotFound) {
 		return registry.PluginRecord{}, err
@@ -3454,31 +3187,17 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 		return registry.PluginRecord{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	stage, err := h.createInstallStage(ctx, installstage.ActionInstall, pkg, pluginInstanceID, trustInput.stageRequestedTrust(), now)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
 	trustAssessment, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, trustInput, nil, pluginInstanceID, now)
 	if err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, now)
+		return registry.PluginRecord{}, err
 	}
 	observeReleaseInstallPhase(trustInput.Observe, "fetch_capability_evidence")
 	capabilityPins, err := h.resolvePackageCapabilityPins(ctx, pkg.Manifest, trustInput)
 	if err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "capability_contract_failed", err, now)
+		return registry.PluginRecord{}, err
 	}
 	metadata := cloneStringMap(trustAssessment.Metadata)
 	metadata = mergeStringMap(baseMetadata, metadata)
-	if _, err := h.adapters.InstallStages.MarkPrepared(ctx, installstage.MarkPreparedRequest{
-		StageID:       stage.StageID,
-		ResolvedTrust: string(trustAssessment.TrustState),
-		ValidationSummary: map[string]string{
-			"trust": "resolved",
-		},
-		Now: now,
-	}); err != nil {
-		return registry.PluginRecord{}, err
-	}
 	observeReleaseInstallPhase(trustInput.Observe, "commit")
 	record := packageRecord(pkg, trustAssessment, pluginInstanceID, metadata, capabilityPins)
 	record.RuntimeRequirement = runtimeRequirement
@@ -3487,39 +3206,18 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	}
 	if trustInput.VerifiedRelease != nil {
 		record.ReleaseTrustBinding = releaseTrustBinding(*trustInput.VerifiedRelease)
-		if err := registry.SealReleaseActivationEvidence(&record); err != nil {
-			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "activation_evidence_failed", err, now)
-		}
 	}
 	record.EnableState = registry.EnableDisabled
 	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, now)
+		return registry.PluginRecord{}, err
 	}
-	previous, hadPrevious, err := h.getExistingInstallRecord(ctx, record.PluginInstanceID)
+	stored, err := h.putPluginRecord(ctx, record, now)
 	if err != nil {
 		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_lookup_failed", err, now)
-	}
-	stored, err := h.adapters.Registry.PutPlugin(ctx, record, registry.PutOptions{Now: now})
-	if err != nil {
-		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_failed", err, now)
+		return registry.PluginRecord{}, err
 	}
 	h.rememberVerifiedRelease(stored.PluginInstanceID, stored.ReleaseTrustBinding, trustInput.VerifiedRelease)
-	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: now}); err != nil {
-		_ = h.rollbackInstallRecord(ctx, previous, hadPrevious, stored.PluginInstanceID, pkg.PackageHash, now)
-		h.reportLifecycleDiagnostic(
-			ctx,
-			stored,
-			"plugin.install_stage.commit_failed",
-			"plugin install stage commit failed",
-			err,
-			observability.DiagnosticDetails{StageID: stage.StageID},
-		)
-		return registry.PluginRecord{}, mutation.Unknown(err)
-	}
 	if stored.ReleaseTrustBinding == nil {
-		h.releaseLeases.delete(stored.PluginInstanceID)
 		h.verifiedReleases.delete(stored.PluginInstanceID)
 	}
 	return stored, nil
@@ -3551,7 +3249,7 @@ func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageReq
 		return registry.PluginRecord{}, err
 	}
 	defer releaseLifecycle()
-	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	current, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -3572,7 +3270,7 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 	); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	current, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -3588,7 +3286,7 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 		return registry.PluginRecord{}, err
 	}
 	defer unlockLifecycle()
-	current, err = h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	current, err = h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -3628,17 +3326,13 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 		return registry.PluginRecord{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	stage, err := h.createInstallStage(ctx, installstage.ActionUpdate, pkg, current.PluginInstanceID, trustInput.stageRequestedTrust(), now)
+	trustAssessment, err := h.resolvePackageTrust(ctx, PackageTrustActionUpdate, pkg, trustInput, &current, current.PluginInstanceID, now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	trustAssessment, err := h.resolvePackageTrust(ctx, PackageTrustActionUpdate, pkg, trustInput, &current, current.PluginInstanceID, now)
-	if err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, now)
-	}
 	capabilityPins, err := h.resolvePackageCapabilityPins(ctx, pkg.Manifest, trustInput)
 	if err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "capability_contract_failed", err, now)
+		return registry.PluginRecord{}, err
 	}
 	metadata := cloneStringMap(trustAssessment.Metadata)
 	metadata = mergeStringMap(baseMetadata, metadata)
@@ -3649,25 +3343,11 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	}
 	if trustInput.VerifiedRelease != nil {
 		next.ReleaseTrustBinding = releaseTrustBinding(*trustInput.VerifiedRelease)
-		if err := registry.SealReleaseActivationEvidence(&next); err != nil {
-			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "activation_evidence_failed", err, now)
-		}
 	}
 	if err := validateSamePluginIdentity(current, next); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "identity_mismatch", err, now)
+		return registry.PluginRecord{}, err
 	}
 	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "data_contract_changed", err, now)
-	}
-	if _, err := h.adapters.InstallStages.MarkPrepared(ctx, installstage.MarkPreparedRequest{
-		StageID:       stage.StageID,
-		ResolvedTrust: string(trustAssessment.TrustState),
-		ValidationSummary: map[string]string{
-			"trust":   "resolved",
-			"version": "switch_prepared",
-		},
-		Now: now,
-	}); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	next.VersionHistory = current.VersionHistory
@@ -3675,29 +3355,26 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	if next.EnableState == registry.EnableEnabled {
 		activationChanged = true
 		h.rememberVerifiedRelease(next.PluginInstanceID, next.ReleaseTrustBinding, trustInput.VerifiedRelease)
-		if err := h.ensureReleaseActivationLease(ctx, next); err != nil {
-			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "release_lease_failed", err, now)
-		}
 		if err := h.validateEnabledRuntimeState(ctx, next); err != nil {
-			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_validation_failed", err, now)
+			return registry.PluginRecord{}, err
 		}
 		if err := h.prepareEnabledRuntimeState(ctx, next); err != nil {
-			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_prepare_failed", err, now)
+			return registry.PluginRecord{}, err
 		}
 	}
 	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, now)
+		return registry.PluginRecord{}, err
 	}
-	stored, err := h.adapters.Registry.PutPlugin(ctx, next, registry.PutOptions{Now: now})
+	stored, err := h.putPluginRecord(ctx, next, now)
 	if err != nil {
 		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_failed", err, now)
+		return registry.PluginRecord{}, err
 	}
 	activationChanged = true
 	h.rememberVerifiedRelease(stored.PluginInstanceID, stored.ReleaseTrustBinding, trustInput.VerifiedRelease)
 	if err := h.publishEnabledSurfaces(ctx, stored); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
-		return registry.PluginRecord{}, mutation.Unknown(h.markInstallStageFailed(ctx, stage.StageID, "runtime_refresh_failed", err, now))
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if err := h.revokePluginRuntimeCapabilities(ctx, stored, now); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
@@ -3707,24 +3384,11 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 			"plugin.runtime_capabilities.revoke_failed",
 			"plugin runtime capability revocation failed",
 			err,
-			observability.DiagnosticDetails{StageID: stage.StageID},
-		)
-		return registry.PluginRecord{}, mutation.Unknown(h.markInstallStageFailed(ctx, stage.StageID, "runtime_revoke_failed", err, now))
-	}
-	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: now}); err != nil {
-		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
-		h.reportLifecycleDiagnostic(
-			ctx,
-			stored,
-			"plugin.install_stage.commit_failed",
-			"plugin install stage commit failed",
-			err,
-			observability.DiagnosticDetails{StageID: stage.StageID},
+			observability.DiagnosticDetails{},
 		)
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if stored.ReleaseTrustBinding == nil {
-		h.releaseLeases.delete(stored.PluginInstanceID)
 		h.verifiedReleases.delete(stored.PluginInstanceID)
 	}
 	updateCommitted = true
@@ -3788,7 +3452,7 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != expectedArtifactSHA {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact sha256 mismatch", ErrReleaseRefVerificationFailed)
 	}
-	observeReleaseInstallPhase(progressObserver, "verify_signatures_ledger")
+	observeReleaseInstallPhase(progressObserver, "verify_signatures")
 	verifiedMetadata, err := h.adapters.ReleaseTrust.VerifyReleaseMetadata(ctx, prepared, resolved.ReleaseMetadataBytes, resolved.ReleaseMetadataSignature)
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, releaseTrustBoundaryError(err)
@@ -3892,14 +3556,7 @@ func releaseTrustBoundaryError(err error) error {
 	case errors.Is(err, releasetrust.ErrInvalidReleaseIdentity),
 		errors.Is(err, releasetrust.ErrReleaseTrustVerification),
 		errors.Is(err, releasetrust.ErrReleaseTrustExpired),
-		errors.Is(err, releasetrust.ErrReleaseTrustRollback),
-		errors.Is(err, releasetrust.ErrReleaseTrustRevoked),
-		errors.Is(err, releasetrust.ErrInvalidReleaseTrustState),
-		errors.Is(err, releasetrust.ErrReleaseTrustStateConflict),
-		errors.Is(err, releasetrust.ErrReleaseTrustStateUnknown),
-		errors.Is(err, releasetrust.ErrReleaseTrustSplitView),
-		errors.Is(err, releasetrust.ErrInvalidTrustedTimeEvidence),
-		errors.Is(err, releasetrust.ErrTrustedTimeRollback):
+		errors.Is(err, releasetrust.ErrReleaseTrustRevoked):
 		return fmt.Errorf("%w: release trust verification rejected the release", ErrReleaseRefVerificationFailed)
 	}
 	return err
@@ -3920,7 +3577,6 @@ func pluginPackageReleaseFromDocument(document releasecontract.ReleaseMetadataV8
 		for requirementIndex, requirement := range value.RequiredCapabilityContracts {
 			requirements[requirementIndex] = HostCapabilityRequirement{
 				CapabilityID: requirement.CapabilityID, CapabilityVersion: requirement.CapabilityVersion,
-				Contract: hostCapabilityPinFromReleaseRef(requirement.Contract),
 			}
 		}
 		hostRequirements[index] = HostRequirement{
@@ -3967,20 +3623,6 @@ func pluginPackageReleaseFromDocument(document releasecontract.ReleaseMetadataV8
 	}, nil
 }
 
-func hostCapabilityPinFromReleaseRef(ref releasecontract.HostCapabilityContractRef) capabilitycontract.Pin {
-	return capabilitycontract.Pin{
-		PublisherID: ref.PublisherID, ContractID: ref.ContractID, ContractVersion: ref.ContractVersion,
-		ArtifactRef: ref.ArtifactRef, ArtifactSHA256: ref.ArtifactSHA256,
-		ManifestRef: ref.ManifestRef, ManifestSHA256: ref.ManifestSHA256,
-		SignatureRef: ref.SignatureRef, SignatureSHA256: ref.SignatureSHA256,
-		SignatureKeyID: ref.SignatureKeyID, SignaturePolicyEpoch: ref.SignaturePolicyEpoch,
-		SignatureRevocationEpoch: ref.SignatureRevocationEpoch,
-		CompatibilityRef:         ref.CompatibilityRef, CompatibilitySHA256: ref.CompatibilitySHA256,
-		GeneratedClientRef: ref.GeneratedClientRef, GeneratedClientSHA256: ref.GeneratedClientSHA256,
-		NoticesRef: ref.NoticesRef, NoticesSHA256: ref.NoticesSHA256,
-	}
-}
-
 func releasePackageSignature(signature pluginpkg.PackageSignature) releasecontract.PackageSignatureV1 {
 	return releasecontract.PackageSignatureV1{
 		SchemaVersion: signature.SchemaVersion, Algorithm: signature.Algorithm, KeyID: signature.KeyID,
@@ -4005,7 +3647,8 @@ func releaseTrustBinding(verified releasetrust.VerifiedPackage) *registry.Releas
 		SourceID: identity.SourceID, Channel: identity.Channel,
 		ReleaseMetadataRef: identity.ReleaseMetadataRef, ReleaseMetadataSHA256: identity.ReleaseMetadataSHA256,
 		PublisherID: identity.PublisherID, PluginID: identity.PluginID, Version: identity.Version,
-		VerifiedStateSHA256: prepared.StateSHA256(), RootEpoch: policy.RootEpoch, PolicyEpoch: policy.Epoch,
+		PackageSigningKeyID: verified.PackageSignature().KeyID,
+		RootEpoch:           policy.RootEpoch, PolicyEpoch: policy.Epoch,
 		RevocationEpoch: document.PackageSignature.RevocationEpoch,
 	}
 }
@@ -4129,60 +3772,11 @@ func validateReleaseHostRequirements(requirements []HostRequirement) error {
 			if _, err := version.ParseSemVer(contract.CapabilityVersion); err != nil {
 				return fmt.Errorf("%w: %s.capability_version is invalid: %v", ErrReleaseRefVerificationFailed, contractPrefix, err)
 			}
-			contractRef := contract.Contract
-			if strings.TrimSpace(contractRef.PublisherID) == "" {
-				return fmt.Errorf("%w: %s.contract.publisher_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
-			}
-			if strings.TrimSpace(contractRef.ContractID) == "" {
-				return fmt.Errorf("%w: %s.contract_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
-			}
-			if _, err := version.ParseSemVer(contractRef.ContractVersion); err != nil {
-				return fmt.Errorf("%w: %s.contract_version is invalid: %v", ErrReleaseRefVerificationFailed, contractPrefix, err)
-			}
-			contractKey := contract.CapabilityID + "\x00" + contract.CapabilityVersion + "\x00" + contractRef.ContractID + "\x00" + contractRef.ContractVersion
+			contractKey := contract.CapabilityID + "\x00" + contract.CapabilityVersion
 			if _, exists := seenContracts[contractKey]; exists {
 				return fmt.Errorf("%w: %s contains a duplicate capability contract", ErrReleaseRefVerificationFailed, contractPrefix)
 			}
 			seenContracts[contractKey] = struct{}{}
-			if err := validateRegistryRelativeArtifactRef(contractRef.ArtifactRef, contractPrefix+".contract.artifact_ref", true); err != nil {
-				return err
-			}
-			if err := validateRegistryRelativeArtifactRef(contractRef.ManifestRef, contractPrefix+".contract.manifest_ref", true); err != nil {
-				return err
-			}
-			if err := validateRegistryRelativeArtifactRef(contractRef.SignatureRef, contractPrefix+".contract.signature_ref", true); err != nil {
-				return err
-			}
-			if err := validateRegistryRelativeArtifactRef(contractRef.CompatibilityRef, contractPrefix+".contract.compatibility_ref", true); err != nil {
-				return err
-			}
-			if err := validateRegistryRelativeArtifactRef(contractRef.GeneratedClientRef, contractPrefix+".contract.generated_client_ref", true); err != nil {
-				return err
-			}
-			if err := validateRegistryRelativeArtifactRef(contractRef.NoticesRef, contractPrefix+".contract.notices_ref", true); err != nil {
-				return err
-			}
-			if strings.TrimSpace(contractRef.SignatureKeyID) == "" {
-				return fmt.Errorf("%w: %s.contract.signature_key_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
-			}
-			if strings.TrimSpace(contractRef.SignaturePolicyEpoch) == "" || strings.TrimSpace(contractRef.SignatureRevocationEpoch) == "" {
-				return fmt.Errorf("%w: %s.contract signature epochs are required", ErrReleaseRefVerificationFailed, contractPrefix)
-			}
-			for _, field := range []struct {
-				name  string
-				value string
-			}{
-				{name: "artifact_sha256", value: contractRef.ArtifactSHA256},
-				{name: "manifest_sha256", value: contractRef.ManifestSHA256},
-				{name: "signature_sha256", value: contractRef.SignatureSHA256},
-				{name: "compatibility_sha256", value: contractRef.CompatibilitySHA256},
-				{name: "generated_client_sha256", value: contractRef.GeneratedClientSHA256},
-				{name: "notices_sha256", value: contractRef.NoticesSHA256},
-			} {
-				if err := validateSHA256Hex(field.value); err != nil {
-					return fmt.Errorf("%w: %s.contract.%s %v", ErrReleaseRefVerificationFailed, contractPrefix, field.name, err)
-				}
-			}
 		}
 	}
 	return nil
@@ -4359,52 +3953,6 @@ func localImportProvenance(now time.Time) *registry.LocalImportProvenance {
 	}
 }
 
-func (h *Host) createInstallStage(ctx context.Context, action installstage.Action, pkg pluginpkg.Package, pluginInstanceID string, requestedTrust string, now time.Time) (installstage.Record, error) {
-	if h.adapters.InstallStages == nil {
-		return installstage.Record{}, errors.New("install stage store is required")
-	}
-	stageID, err := installstage.NewStageID()
-	if err != nil {
-		return installstage.Record{}, err
-	}
-	stageNow := lifecycleNow(now)
-	return h.adapters.InstallStages.Create(ctx, installstage.CreateRequest{
-		StageID:          stageID,
-		Action:           action,
-		PluginInstanceID: pluginInstanceID,
-		PublisherID:      pkg.Manifest.Publisher.PublisherID,
-		PluginID:         pkg.Manifest.PluginID(),
-		Version:          pkg.Manifest.Version(),
-		PackageHash:      pkg.PackageHash,
-		ManifestHash:     pkg.ManifestHash,
-		EntriesHash:      pkg.EntriesHash,
-		RequestedTrust:   requestedTrust,
-		ValidationSummary: map[string]string{
-			"package_read": "ok",
-		},
-		ExpiresAt: stageNow.Add(installStageTTL),
-		Now:       stageNow,
-	})
-}
-
-func (h *Host) markInstallStageFailed(ctx context.Context, stageID string, code string, cause error, now time.Time) error {
-	if cause == nil {
-		cause = errors.New("install stage failed")
-	}
-	if h.adapters.InstallStages == nil {
-		return cause
-	}
-	if _, err := h.adapters.InstallStages.MarkFailed(ctx, installstage.MarkFailedRequest{
-		StageID:      stageID,
-		ErrorCode:    code,
-		ErrorMessage: "plugin package lifecycle stage failed",
-		Now:          lifecycleNow(now),
-	}); err != nil {
-		return fmt.Errorf("%w; failed to update install stage: %v", cause, err)
-	}
-	return cause
-}
-
 func requireStablePluginDataShape(current manifest.Manifest, next manifest.Manifest) error {
 	currentShape, err := plugindata.ShapeFromManifest(current)
 	if err != nil {
@@ -4438,7 +3986,7 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 		return registry.PluginRecord{}, err
 	}
 	defer releaseLifecycle()
-	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	current, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -4471,7 +4019,7 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 			return registry.PluginRecord{}, err
 		}
 	}
-	stored, err := h.adapters.Registry.PutPlugin(ctx, next, registry.PutOptions{Now: req.Now})
+	stored, err := h.putPluginRecord(ctx, next, req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -4482,10 +4030,6 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	return stored, nil
-}
-
-func (input packageTrustInput) stageRequestedTrust() string {
-	return ""
 }
 
 func (h *Host) resolvePackageTrust(ctx context.Context, action PackageTrustAction, pkg pluginpkg.Package, input packageTrustInput, current *registry.PluginRecord, instanceID string, now time.Time) (registry.TrustAssessment, error) {
@@ -5074,11 +4618,7 @@ func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.P
 	if record.EnableState != registry.EnableEnabled {
 		return nil
 	}
-	// Refresh reconstructs all in-memory execution authority after a host
-	// restart. Release-bound plugins need their activation lease restored before
-	// any surface or runtime state is published, otherwise OpenSurface rejects
-	// the otherwise-enabled record as untrusted.
-	if err := h.ensureReleaseActivationLease(ctx, record); err != nil {
+	if err := h.refreshInstalledReleaseTrust(ctx, record); err != nil {
 		return err
 	}
 	if pluginHasWorkers(record.Manifest) {
@@ -5123,38 +4663,13 @@ func (h *Host) publishEnabledSurfaces(ctx context.Context, record registry.Plugi
 }
 
 func (h *Host) rollbackVersionSwitch(ctx context.Context, current registry.PluginRecord, packageHash string, now time.Time) error {
-	if _, err := h.adapters.Registry.PutPlugin(ctx, current, registry.PutOptions{Now: now}); err != nil {
+	if _, err := h.putPluginRecord(ctx, current, now); err != nil {
 		return err
 	}
 	if packageHash != "" && packageHash != current.PackageHash {
 		_ = h.adapters.Assets.DeletePackage(ctx, packageHash)
 	}
 	return h.publishEnabledSurfaces(ctx, current)
-}
-
-func (h *Host) getExistingInstallRecord(ctx context.Context, pluginInstanceID string) (registry.PluginRecord, bool, error) {
-	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
-	if errors.Is(err, registry.ErrNotFound) {
-		return registry.PluginRecord{}, false, nil
-	}
-	if err != nil {
-		return registry.PluginRecord{}, false, err
-	}
-	return record, true, nil
-}
-
-func (h *Host) rollbackInstallRecord(ctx context.Context, previous registry.PluginRecord, hadPrevious bool, pluginInstanceID string, packageHash string, now time.Time) error {
-	if hadPrevious {
-		if _, err := h.adapters.Registry.PutPlugin(ctx, previous, registry.PutOptions{Now: now}); err != nil {
-			return err
-		}
-	} else if err := h.adapters.Registry.AbortInstall(ctx, pluginInstanceID); err != nil && !errors.Is(err, registry.ErrNotFound) {
-		return err
-	}
-	if packageHash != "" && (!hadPrevious || packageHash != previous.PackageHash) {
-		_ = h.adapters.Assets.DeletePackage(ctx, packageHash)
-	}
-	return nil
 }
 
 func cloneTimePtr(value *time.Time) *time.Time {
@@ -5190,6 +4705,150 @@ func mergeStringMap(base map[string]string, overlay map[string]string) map[strin
 	return merged
 }
 
+func (h *Host) getPluginRecord(ctx context.Context, pluginInstanceID string) (registry.PluginRecord, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if h.controlStore == nil {
+		return registry.PluginRecord{}, ErrControlStoreRequired
+	}
+	return h.controlStore.Registry().GetPlugin(ctx, session.OwnerEnvHash, pluginInstanceID)
+}
+
+func (h *Host) listPluginRecords(ctx context.Context) ([]registry.PluginRecord, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if h.controlStore == nil {
+		return nil, ErrControlStoreRequired
+	}
+	return h.controlStore.Registry().ListPlugins(ctx, session.OwnerEnvHash)
+}
+
+func (h *Host) putPluginRecord(ctx context.Context, record registry.PluginRecord, now time.Time) (registry.PluginRecord, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if h.controlStore == nil {
+		return registry.PluginRecord{}, ErrControlStoreRequired
+	}
+	return h.controlStore.Registry().PutPlugin(ctx, session.OwnerEnvHash, record, now)
+}
+
+func (h *Host) setPluginEnableState(ctx context.Context, pluginInstanceID string, state registry.EnableState, reason string, now time.Time) (registry.PluginRecord, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if h.controlStore == nil {
+		return registry.PluginRecord{}, ErrControlStoreRequired
+	}
+	return h.controlStore.Registry().SetEnableState(ctx, session.OwnerEnvHash, pluginInstanceID, state, reason, now)
+}
+
+func (h *Host) getAuthorizationSnapshot(ctx context.Context, pluginInstanceID string) (registry.AuthorizationSnapshot, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	return h.controlStore.Registry().GetAuthorization(ctx, session.OwnerEnvHash, pluginInstanceID)
+}
+
+func (h *Host) listAuthorizationSnapshots(ctx context.Context) ([]registry.AuthorizationSnapshot, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return h.controlStore.Registry().ListAuthorization(ctx, session.OwnerEnvHash)
+}
+
+func (h *Host) replaceAuthorizationSnapshot(ctx context.Context, snapshot registry.AuthorizationSnapshot, expected registry.AuthorizationRevisions) error {
+	err := h.controlStore.Registry().ReplaceAuthorizationSnapshot(ctx, snapshot, expected)
+	if !errors.Is(err, controlstore.ErrRevisionConflict) {
+		return err
+	}
+	current, readErr := h.getAuthorizationSnapshot(ctx, snapshot.Plugin.PluginInstanceID)
+	if readErr != nil {
+		return errors.Join(err, readErr)
+	}
+	return &registry.AuthorizationRevisionConflictError{
+		PluginInstanceID: snapshot.Plugin.PluginInstanceID,
+		Expected:         expected,
+		Actual:           registry.AuthorizationRevisionsFromRecord(current.Plugin),
+	}
+}
+
+func (h *Host) authorizePlugin(ctx context.Context, req registry.AuthorizeRequest) (registry.AuthorizationDecision, error) {
+	snapshot, err := h.getAuthorizationSnapshot(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.AuthorizationDecision{}, err
+	}
+	return registry.EvaluateAuthorizationSnapshot(snapshot, req)
+}
+
+func (h *Host) grantPluginPermission(ctx context.Context, req permissions.GrantRequest, expected registry.AuthorizationRevisions) (registry.AuthorizationSnapshot, error) {
+	snapshot, err := h.getAuthorizationSnapshot(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	next, err := registry.PrepareGrantPermission(snapshot, req, expected)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	if err := h.replaceAuthorizationSnapshot(ctx, next, expected); err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	return next, nil
+}
+
+func (h *Host) revokePluginPermission(ctx context.Context, req permissions.RevokeRequest, expected registry.AuthorizationRevisions) (registry.AuthorizationSnapshot, error) {
+	snapshot, err := h.getAuthorizationSnapshot(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	next, err := registry.PrepareRevokePermission(snapshot, req, expected)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	if err := h.replaceAuthorizationSnapshot(ctx, next, expected); err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	return next, nil
+}
+
+func (h *Host) putPluginSecurityPolicy(ctx context.Context, req security.PutPolicyRequest, expected registry.AuthorizationRevisions) (registry.AuthorizationSnapshot, error) {
+	snapshot, err := h.getAuthorizationSnapshot(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	next, err := registry.PrepareSecurityPolicy(snapshot, req, expected)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	if err := h.replaceAuthorizationSnapshot(ctx, next, expected); err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	return next, nil
+}
+
+func (h *Host) deletePluginSecurityPolicy(ctx context.Context, pluginInstanceID string, now time.Time, expected registry.AuthorizationRevisions) (registry.AuthorizationSnapshot, error) {
+	snapshot, err := h.getAuthorizationSnapshot(ctx, pluginInstanceID)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	next, err := registry.PrepareDeleteSecurityPolicy(snapshot, pluginInstanceID, now, expected)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	if err := h.replaceAuthorizationSnapshot(ctx, next, expected); err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	return next, nil
+}
+
 func cloneEntries(entries []pluginpkg.Entry) []pluginpkg.Entry {
 	if entries == nil {
 		return nil
@@ -5198,10 +4857,11 @@ func cloneEntries(entries []pluginpkg.Entry) []pluginpkg.Entry {
 }
 
 func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
-	if _, err := h.authorizeManagement(ctx, ManagementActionListPlugins, scopedAuthorizationCollectionTarget(ResourcePlugin, sessionctx.ScopeEnvironment)); err != nil {
+	authorization, err := h.authorizeManagement(ctx, ManagementActionListPlugins, scopedAuthorizationCollectionTarget(ResourcePlugin, sessionctx.ScopeEnvironment))
+	if err != nil {
 		return nil, err
 	}
-	return h.adapters.Registry.ListPlugins(ctx)
+	return h.controlStore.Registry().ListPlugins(ctx, authorization.session.OwnerEnvHash)
 }
 
 // ReadPluginIcon returns the content-addressed presentation icon from an
@@ -5216,7 +4876,7 @@ func (h *Host) ReadPluginIcon(ctx context.Context, req ReadPluginIconRequest) (R
 	if h.adapters.Assets == nil || req.PluginInstanceID == "" || req.ExpectedSHA256 == "" {
 		return ReadPluginIconResult{}, bridge.ErrTokenAudience
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return ReadPluginIconResult{}, err
 	}
@@ -5239,66 +4899,62 @@ func (h *Host) ReadPluginIcon(ctx context.Context, req ReadPluginIconRequest) (R
 	return ReadPluginIconResult{Entry: asset.Entry, Content: asset.Content}, nil
 }
 
-type RefreshEnabledPluginStatus string
+type refreshEnabledPluginStatus string
 
 const (
-	RefreshEnabledPluginStatusRefreshed RefreshEnabledPluginStatus = "refreshed"
-	RefreshEnabledPluginStatusFailed    RefreshEnabledPluginStatus = "failed"
+	refreshEnabledPluginStatusRefreshed refreshEnabledPluginStatus = "refreshed"
+	refreshEnabledPluginStatusFailed    refreshEnabledPluginStatus = "failed"
 	refreshEnabledPluginFailureMessage                             = "Plugin runtime state could not be refreshed"
 )
 
-type RefreshEnabledPluginFailureReason string
+type refreshEnabledPluginFailureReason string
 
 const (
-	RefreshFailureReasonUnknown                   RefreshEnabledPluginFailureReason = "unknown"
-	RefreshFailureReasonTrustStateAdvanced        RefreshEnabledPluginFailureReason = "trust_state_advanced"
-	RefreshFailureReasonTrustRevoked              RefreshEnabledPluginFailureReason = "trust_revoked"
-	RefreshFailureReasonTrustFenced               RefreshEnabledPluginFailureReason = "trust_fenced"
-	RefreshFailureReasonTrustEpochMismatch        RefreshEnabledPluginFailureReason = "trust_epoch_mismatch"
-	RefreshFailureReasonActivationEvidenceInvalid RefreshEnabledPluginFailureReason = "activation_evidence_invalid"
-	RefreshFailureReasonActivationLeaseExpired    RefreshEnabledPluginFailureReason = "activation_lease_expired"
-	RefreshFailureReasonRecoveryCanceled          RefreshEnabledPluginFailureReason = "recovery_canceled"
-	RefreshFailureReasonRecoveryTimeout           RefreshEnabledPluginFailureReason = "recovery_timeout"
+	refreshFailureReasonUnknown            refreshEnabledPluginFailureReason = "unknown"
+	refreshFailureReasonTrustStateAdvanced refreshEnabledPluginFailureReason = "trust_state_advanced"
+	refreshFailureReasonTrustRevoked       refreshEnabledPluginFailureReason = "trust_revoked"
+	refreshFailureReasonRecoveryCanceled   refreshEnabledPluginFailureReason = "recovery_canceled"
+	refreshFailureReasonRecoveryTimeout    refreshEnabledPluginFailureReason = "recovery_timeout"
 )
 
-type RefreshEnabledPluginFailureAction string
+type refreshEnabledPluginFailureAction string
 
 const (
-	RefreshFailureActionRetry        RefreshEnabledPluginFailureAction = "retry"
-	RefreshFailureActionReinstall    RefreshEnabledPluginFailureAction = "reinstall"
-	RefreshFailureActionContactAdmin RefreshEnabledPluginFailureAction = "contact_admin"
+	refreshFailureActionRetry        refreshEnabledPluginFailureAction = "retry"
+	refreshFailureActionReinstall    refreshEnabledPluginFailureAction = "reinstall"
+	refreshFailureActionContactAdmin refreshEnabledPluginFailureAction = "contact_admin"
 )
 
-type RefreshEnabledPluginResult struct {
-	PluginInstanceID string                           `json:"plugin_instance_id"`
-	Status           RefreshEnabledPluginStatus       `json:"status"`
-	Error            *RefreshEnabledPluginPublicError `json:"error,omitempty"`
+type refreshEnabledPluginResult struct {
+	PluginInstanceID string
+	Status           refreshEnabledPluginStatus
+	Error            *refreshEnabledPluginError
 }
 
-type RefreshEnabledPluginPublicError struct {
-	Code    security.ErrorCode                `json:"code"`
-	Message string                            `json:"message"`
-	Reason  RefreshEnabledPluginFailureReason `json:"reason"`
-	Action  RefreshEnabledPluginFailureAction `json:"action"`
+type refreshEnabledPluginError struct {
+	Code    security.ErrorCode
+	Message string
+	Reason  refreshEnabledPluginFailureReason
+	Action  refreshEnabledPluginFailureAction
 }
 
-func refreshedPluginResult(pluginInstanceID string) RefreshEnabledPluginResult {
-	return RefreshEnabledPluginResult{
+func refreshedPluginResult(pluginInstanceID string) refreshEnabledPluginResult {
+	return refreshEnabledPluginResult{
 		PluginInstanceID: strings.TrimSpace(pluginInstanceID),
-		Status:           RefreshEnabledPluginStatusRefreshed,
+		Status:           refreshEnabledPluginStatusRefreshed,
 	}
 }
 
-func failedPluginRefreshResult(pluginInstanceID string) RefreshEnabledPluginResult {
+func failedPluginRefreshResult(pluginInstanceID string) refreshEnabledPluginResult {
 	return failedPluginRefreshResultForError(pluginInstanceID, nil)
 }
 
-func failedPluginRefreshResultForError(pluginInstanceID string, cause error) RefreshEnabledPluginResult {
+func failedPluginRefreshResultForError(pluginInstanceID string, cause error) refreshEnabledPluginResult {
 	reason, action, message := classifyRefreshFailure(cause)
-	return RefreshEnabledPluginResult{
+	return refreshEnabledPluginResult{
 		PluginInstanceID: strings.TrimSpace(pluginInstanceID),
-		Status:           RefreshEnabledPluginStatusFailed,
-		Error: &RefreshEnabledPluginPublicError{
+		Status:           refreshEnabledPluginStatusFailed,
+		Error: &refreshEnabledPluginError{
 			Code:    security.ErrRuntimeUnavailable,
 			Message: message,
 			Reason:  reason,
@@ -5307,40 +4963,20 @@ func failedPluginRefreshResultForError(pluginInstanceID string, cause error) Ref
 	}
 }
 
-func classifyRefreshFailure(cause error) (RefreshEnabledPluginFailureReason, RefreshEnabledPluginFailureAction, string) {
+func classifyRefreshFailure(cause error) (refreshEnabledPluginFailureReason, refreshEnabledPluginFailureAction, string) {
 	if cause == nil {
-		return RefreshFailureReasonUnknown, RefreshFailureActionRetry, refreshEnabledPluginFailureMessage
+		return refreshFailureReasonUnknown, refreshFailureActionRetry, refreshEnabledPluginFailureMessage
 	}
 	if errors.Is(cause, context.DeadlineExceeded) {
-		return RefreshFailureReasonRecoveryTimeout, RefreshFailureActionRetry, "Plugin runtime recovery timed out; retry to continue"
+		return refreshFailureReasonRecoveryTimeout, refreshFailureActionRetry, "Plugin runtime recovery timed out; retry to continue"
 	}
 	if errors.Is(cause, context.Canceled) {
-		return RefreshFailureReasonRecoveryCanceled, RefreshFailureActionRetry, "Plugin runtime recovery was canceled; retry to continue"
+		return refreshFailureReasonRecoveryCanceled, refreshFailureActionRetry, "Plugin runtime recovery was canceled; retry to continue"
 	}
-	if errors.Is(cause, releasetrust.ErrActivationLeaseExpired) {
-		return RefreshFailureReasonActivationLeaseExpired, RefreshFailureActionRetry, "Plugin activation lease expired; retry to continue"
+	if errors.Is(cause, releasetrust.ErrReleaseTrustRevoked) || errors.Is(cause, releasetrust.ErrReleasePolicyDenied) {
+		return refreshFailureReasonTrustRevoked, refreshFailureActionContactAdmin, "Plugin release trust was revoked; review the installed release"
 	}
-	if errors.Is(cause, releasetrust.ErrActivationRecoveryRejected) {
-		reason := RefreshFailureReasonActivationEvidenceInvalid
-		action := RefreshFailureActionReinstall
-		message := "Plugin activation evidence is invalid; reinstall the plugin"
-		var rejection *releasetrust.ActivationRecoveryRejection
-		if !errors.As(cause, &rejection) {
-			return reason, action, message
-		}
-		switch rejection.Reason() {
-		case releasetrust.ActivationRecoveryReasonStateAdvancementFailed:
-			reason, action, message = RefreshFailureReasonTrustStateAdvanced, RefreshFailureActionRetry, "Plugin trust state advanced; retry to revalidate"
-		case releasetrust.ActivationRecoveryReasonTrustFenced:
-			reason, action, message = RefreshFailureReasonTrustFenced, RefreshFailureActionContactAdmin, "Plugin trust source is fenced; contact an administrator"
-		case releasetrust.ActivationRecoveryReasonReleaseRevoked:
-			reason, action, message = RefreshFailureReasonTrustRevoked, RefreshFailureActionReinstall, "Plugin release was revoked; reinstall from a trusted source"
-		case releasetrust.ActivationRecoveryReasonTrustEpochMismatch:
-			reason, action, message = RefreshFailureReasonTrustEpochMismatch, RefreshFailureActionReinstall, "Plugin trust policy changed; reinstall the plugin"
-		}
-		return reason, action, message
-	}
-	return RefreshFailureReasonUnknown, RefreshFailureActionRetry, refreshEnabledPluginFailureMessage
+	return refreshFailureReasonUnknown, refreshFailureActionRetry, refreshEnabledPluginFailureMessage
 }
 
 func refreshFailureDiagnosticDetails(cause error) observability.DiagnosticDetails {
@@ -5352,16 +4988,16 @@ func refreshFailureDiagnosticDetails(cause error) observability.DiagnosticDetail
 	}
 }
 
-func (result RefreshEnabledPluginResult) validate() error {
+func (result refreshEnabledPluginResult) validate() error {
 	if strings.TrimSpace(result.PluginInstanceID) == "" {
 		return errors.New("runtime refresh result requires plugin_instance_id")
 	}
 	switch result.Status {
-	case RefreshEnabledPluginStatusRefreshed:
+	case refreshEnabledPluginStatusRefreshed:
 		if result.Error != nil {
 			return errors.New("refreshed runtime result must not include an error")
 		}
-	case RefreshEnabledPluginStatusFailed:
+	case refreshEnabledPluginStatusFailed:
 		if result.Error == nil || result.Error.Code != security.ErrRuntimeUnavailable || result.Error.Reason == "" || result.Error.Action == "" || result.Error.Message == "" {
 			return errors.New("failed runtime refresh result requires the stable runtime error")
 		}
@@ -5371,24 +5007,13 @@ func (result RefreshEnabledPluginResult) validate() error {
 	return nil
 }
 
-func (result RefreshEnabledPluginResult) MarshalJSON() ([]byte, error) {
-	if err := result.validate(); err != nil {
-		return nil, err
-	}
-	type wireResult RefreshEnabledPluginResult
-	return json.Marshal(wireResult(result))
-}
-
-func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPluginResult, error) {
-	if _, err := h.authorizeManagement(ctx, ManagementActionRefreshEnabledPlugins, authorizationCollectionTarget(ResourceRuntime)); err != nil {
-		return nil, err
-	}
+func (h *Host) refreshEnabledPlugins(ctx context.Context) ([]refreshEnabledPluginResult, error) {
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
 		return nil, err
 	}
 	defer releaseOpen()
-	records, err := h.adapters.Registry.ListPlugins(ctx)
+	records, err := h.listPluginRecords(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -5401,7 +5026,7 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 	sort.Slice(enabled, func(i, j int) bool {
 		return enabled[i].PluginInstanceID < enabled[j].PluginInstanceID
 	})
-	results := make([]RefreshEnabledPluginResult, len(enabled))
+	results := make([]refreshEnabledPluginResult, len(enabled))
 	auditErrors := make([]error, len(enabled))
 	jobs := make(chan int)
 	workerCount := min(refreshEnabledConcurrency, len(enabled))
@@ -5458,21 +5083,16 @@ func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) 
 		return PermissionMutationResult{}, err
 	}
 	session := authorization.session
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return PermissionMutationResult{}, err
-	}
-	if record.ReleaseTrustBinding != nil {
-		if err := h.ensureReleaseActivationLease(ctx, record); err != nil {
-			return PermissionMutationResult{}, err
-		}
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.permission.granted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if err != nil {
 		return PermissionMutationResult{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	snapshot, err := h.adapters.Registry.GrantPermission(ctx, permissions.GrantRequest{
+	snapshot, err := h.grantPluginPermission(ctx, permissions.GrantRequest{
 		PluginInstanceID: record.PluginInstanceID,
 		PermissionID:     req.PermissionID,
 		GrantedBy:        session.OwnerUserHash,
@@ -5503,7 +5123,7 @@ func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest
 		return PermissionMutationResult{}, err
 	}
 	session := authorization.session
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return PermissionMutationResult{}, err
 	}
@@ -5512,7 +5132,7 @@ func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest
 		return PermissionMutationResult{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	snapshot, err := h.adapters.Registry.RevokePermission(ctx, permissions.RevokeRequest{
+	snapshot, err := h.revokePluginPermission(ctx, permissions.RevokeRequest{
 		PluginInstanceID: record.PluginInstanceID,
 		PermissionID:     req.PermissionID,
 		RevokedBy:        session.OwnerUserHash,
@@ -5545,14 +5165,14 @@ func (h *Host) ListPermissionGrants(ctx context.Context, req ListPermissionGrant
 	}
 	var snapshots []registry.AuthorizationSnapshot
 	if strings.TrimSpace(req.PluginInstanceID) != "" {
-		snapshot, err := h.adapters.Registry.GetAuthorization(ctx, req.PluginInstanceID)
+		snapshot, err := h.getAuthorizationSnapshot(ctx, req.PluginInstanceID)
 		if err != nil {
 			return nil, err
 		}
 		snapshots = []registry.AuthorizationSnapshot{snapshot}
 	} else {
 		var err error
-		snapshots, err = h.adapters.Registry.ListAuthorization(ctx)
+		snapshots, err = h.listAuthorizationSnapshots(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -5577,7 +5197,7 @@ func (h *Host) GetPermissionRequirements(ctx context.Context, req GetPermissionR
 	); err != nil {
 		return PermissionRequirementsResult{}, err
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return PermissionRequirementsResult{}, err
 	}
@@ -5635,7 +5255,7 @@ func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyReque
 	if _, err := h.authorizeManagement(ctx, ManagementActionPutSecurityPolicy, scopedAuthorizationTarget(ResourceSecurityPolicy, req.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
 		return SecurityPolicyResult{}, err
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return SecurityPolicyResult{}, err
 	}
@@ -5644,7 +5264,7 @@ func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyReque
 		return SecurityPolicyResult{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	snapshot, err := h.adapters.Registry.PutSecurityPolicy(ctx, security.PutPolicyRequest{
+	snapshot, err := h.putPluginSecurityPolicy(ctx, security.PutPolicyRequest{
 		PluginInstanceID:   record.PluginInstanceID,
 		AllowedPermissions: req.AllowedPermissions,
 		DeniedMethods:      req.DeniedMethods,
@@ -5670,7 +5290,7 @@ func (h *Host) GetSecurityPolicy(ctx context.Context, req GetSecurityPolicyReque
 	if _, err := h.authorizeManagement(ctx, ManagementActionGetSecurityPolicy, scopedAuthorizationTarget(ResourceSecurityPolicy, req.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
 		return SecurityPolicyResult{}, err
 	}
-	snapshot, err := h.adapters.Registry.GetAuthorization(ctx, req.PluginInstanceID)
+	snapshot, err := h.getAuthorizationSnapshot(ctx, req.PluginInstanceID)
 	if err != nil {
 		return SecurityPolicyResult{}, err
 	}
@@ -5684,7 +5304,7 @@ func (h *Host) ListSecurityPolicies(ctx context.Context) ([]SecurityPolicyResult
 	if _, err := h.authorizeManagement(ctx, ManagementActionListSecurityPolicies, scopedAuthorizationCollectionTarget(ResourceSecurityPolicy, sessionctx.ScopeEnvironment)); err != nil {
 		return nil, err
 	}
-	snapshots, err := h.adapters.Registry.ListAuthorization(ctx)
+	snapshots, err := h.listAuthorizationSnapshots(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -5709,7 +5329,7 @@ func (h *Host) DeleteSecurityPolicy(ctx context.Context, req DeleteSecurityPolic
 	if _, err := h.authorizeManagement(ctx, ManagementActionDeleteSecurityPolicy, scopedAuthorizationTarget(ResourceSecurityPolicy, req.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
 		return registry.AuthorizationRevisions{}, err
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.AuthorizationRevisions{}, err
 	}
@@ -5718,7 +5338,7 @@ func (h *Host) DeleteSecurityPolicy(ctx context.Context, req DeleteSecurityPolic
 		return registry.AuthorizationRevisions{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	snapshot, err := h.adapters.Registry.DeleteSecurityPolicy(
+	snapshot, err := h.deletePluginSecurityPolicy(
 		ctx,
 		record.PluginInstanceID,
 		req.Now,
@@ -5853,10 +5473,10 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 
 func publicDiagnosticDetails(details observability.DiagnosticDetails) DiagnosticDetails {
 	return DiagnosticDetails{
-		OperationsDeleted: details.OperationsDeleted, StreamsDeleted: details.StreamsDeleted,
-		InvocationID: details.InvocationID, Method: details.Method, FailureCode: details.FailureCode,
+		ExecutionsDeleted: details.ExecutionsDeleted,
+		InvocationID:      details.InvocationID, Method: details.Method, FailureCode: details.FailureCode,
 		RuntimeProcessFailureCode: details.RuntimeProcessFailureCode,
-		OperationID:               details.OperationID, StreamID: details.StreamID, RuntimeInstanceID: details.RuntimeInstanceID,
+		ExecutionID:               details.ExecutionID, RuntimeInstanceID: details.RuntimeInstanceID,
 		RuntimeGenerationID: details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
 		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
 		ContractSetSHA256: details.ContractSetSHA256,
@@ -5868,36 +5488,6 @@ func publicDiagnosticDetails(details observability.DiagnosticDetails) Diagnostic
 		Transport: details.Transport, RevokeEpoch: details.RevokeEpoch, StageID: details.StageID,
 		Reason: details.Reason, SurfaceInstanceID: details.SurfaceInstanceID,
 	}
-}
-
-func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) (ListOperationsResult, error) {
-	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionListOperations,
-		authorizationCollectionTarget(ResourceOperation),
-		relatedAuthorizationTargets(authorizationTarget(ResourcePlugin, req.PluginInstanceID))...,
-	)
-	if err != nil {
-		return ListOperationsResult{}, err
-	}
-	session := authorization.session
-	cursor, err := operation.DecodeCursor(req.Cursor)
-	if err != nil {
-		return ListOperationsResult{}, err
-	}
-	page, err := h.adapters.Operations.List(ctx, operation.ListRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		Cursor:           cursor,
-		Limit:            req.Limit,
-		Owner:            operationOwnerScope(session),
-	})
-	if err != nil {
-		return ListOperationsResult{}, err
-	}
-	nextCursor, err := operation.EncodeCursor(page.NextCursor)
-	if err != nil {
-		return ListOperationsResult{}, err
-	}
-	return ListOperationsResult{Operations: page.Records, NextCursor: nextCursor}, nil
 }
 
 func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (result RuntimeHealth, retErr error) {
@@ -5923,7 +5513,7 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (resul
 	if err != nil {
 		return RuntimeHealth{}, err
 	}
-	records, err := h.adapters.Registry.ListPlugins(ctx)
+	records, err := h.listPluginRecords(ctx)
 	if err != nil {
 		return RuntimeHealth{}, err
 	}
@@ -6061,7 +5651,7 @@ func (h *Host) RuntimeHealth(ctx context.Context) (RuntimeHealth, error) {
 }
 
 func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, pluginInstanceID, surfaceInstanceID, boundGenerationID string, now time.Time) error {
-	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
+	record, err := h.getPluginRecord(ctx, pluginInstanceID)
 	if err != nil {
 		return err
 	}
@@ -6078,199 +5668,6 @@ func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, pluginInstan
 	}
 	h.surfaceTokens.DisposeSurface(surfaceInstanceID, now)
 	return bridge.ErrTokenRevoked
-}
-
-func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.Record, error) {
-	operationID = strings.TrimSpace(operationID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionGetOperation, authorizationTarget(ResourceOperation, operationID))
-	if err != nil {
-		return operation.Record{}, err
-	}
-	session := authorization.session
-	record, err := h.adapters.Operations.Get(ctx, operationID)
-	if err != nil {
-		return operation.Record{}, err
-	}
-	if !operationOwnedBySession(record, session) {
-		return operation.Record{}, operation.ErrNotFound
-	}
-	return record, nil
-}
-
-func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) (result operation.Record, retErr error) {
-	req.OperationID = strings.TrimSpace(req.OperationID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionCancelOperation, authorizationTarget(ResourceOperation, req.OperationID))
-	if err != nil {
-		return operation.Record{}, err
-	}
-	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
-	if err != nil {
-		return operation.Record{}, err
-	}
-	defer releaseReservation()
-	return h.cancelOperationAuthorized(ctx, authorization, req)
-}
-
-func (h *Host) cancelOperationAuthorized(ctx context.Context, authorization authorizedAction, req CancelOperationRequest) (result operation.Record, retErr error) {
-	session := authorization.session
-	current, err := h.adapters.Operations.Get(ctx, req.OperationID)
-	if err != nil {
-		return operation.Record{}, err
-	}
-	if !operationOwnedBySession(current, session) {
-		return operation.Record{}, operation.ErrNotFound
-	}
-	if operationTerminal(current.Status) {
-		return current, nil
-	}
-	if !current.Cancelable {
-		return operation.Record{}, operation.ErrNotCancelable
-	}
-	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.operation.cancel_requested", PluginID: current.PluginID, PluginInstanceID: current.PluginInstanceID})
-	if err != nil {
-		return operation.Record{}, err
-	}
-	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	record, err := h.adapters.Operations.RequestCancel(ctx, operation.CancelRequest{
-		OperationID: req.OperationID,
-		Reason:      req.Reason,
-		Now:         req.Now,
-	})
-	if err != nil {
-		return operation.Record{}, err
-	}
-	if err := h.dispatchOperationCancellation(ctx, record, req.Reason, req.Now, errors.New("operation cancellation requested")); err != nil {
-		return record, mutation.Unknown(err)
-	}
-	return record, nil
-}
-
-func operationOwnerScope(session sessionctx.Context) operation.OwnerScope {
-	return operation.OwnerScope{
-		OwnerSessionHash:     strings.TrimSpace(session.OwnerSessionHash),
-		OwnerUserHash:        strings.TrimSpace(session.OwnerUserHash),
-		OwnerEnvHash:         strings.TrimSpace(session.OwnerEnvHash),
-		SessionChannelIDHash: strings.TrimSpace(session.SessionChannelIDHash),
-	}
-}
-
-func operationOwnedBySession(record operation.Record, session sessionctx.Context) bool {
-	return operationOwnerScope(session) == (operation.OwnerScope{
-		OwnerSessionHash:     record.OwnerSessionHash,
-		OwnerUserHash:        record.OwnerUserHash,
-		OwnerEnvHash:         record.OwnerEnvHash,
-		SessionChannelIDHash: record.SessionChannelIDHash,
-	})
-}
-
-func (h *Host) dispatchOperationCancellation(ctx context.Context, record operation.Record, reason string, now time.Time, cause error) error {
-	matched, dispatchErr := h.executions.cancelOperation(ctx, capability.OperationCancellation{
-		Execution:   capability.ExecutionContext{ExecutionBinding: record.ExecutionBinding},
-		OperationID: record.OperationID,
-		Reason:      reason,
-		RequestedAt: lifecycleNow(now),
-	}, cause)
-	if dispatchErr != nil {
-		return fmt.Errorf("%w: %w", ErrOperationCancelDispatchFailed, dispatchErr)
-	}
-	if !matched {
-		if err := h.armDetachedOperationCancelAckTimeout(ctx, record); err != nil {
-			return fmt.Errorf("%w: %w", ErrOperationCancelDispatchFailed, err)
-		}
-	}
-	return nil
-}
-
-func (h *Host) CancelSurfaceOperation(ctx context.Context, req CancelSurfaceOperationRequest) (operation.Record, error) {
-	req.OperationID = strings.TrimSpace(req.OperationID)
-	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
-	req.BridgeChannelID = strings.TrimSpace(req.BridgeChannelID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionCancelSurfaceOperation,
-		authorizationTarget(ResourceOperation, req.OperationID),
-		authorizationTarget(ResourceSurface, req.SurfaceInstanceID),
-		authorizationTarget(ResourceBridgeChannel, req.BridgeChannelID),
-	)
-	if err != nil {
-		return operation.Record{}, err
-	}
-	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
-	if err != nil {
-		return operation.Record{}, err
-	}
-	defer releaseReservation()
-	session := authorization.session
-	record, err := h.adapters.Operations.Get(ctx, req.OperationID)
-	if err != nil {
-		return operation.Record{}, err
-	}
-	if !surfaceOperationMatchesAudience(record, session, req.SurfaceInstanceID, req.BridgeChannelID) {
-		return operation.Record{}, bridge.ErrTokenAudience
-	}
-	return h.cancelOperationAuthorized(ctx, authorization, CancelOperationRequest{OperationID: req.OperationID, Reason: req.Reason, Now: req.Now})
-}
-
-func (h *Host) GetSurfaceOperation(ctx context.Context, req GetSurfaceOperationRequest) (PluginOperationSnapshot, error) {
-	req.OperationID = strings.TrimSpace(req.OperationID)
-	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
-	req.BridgeChannelID = strings.TrimSpace(req.BridgeChannelID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionGetSurfaceOperation,
-		authorizationTarget(ResourceOperation, req.OperationID),
-		authorizationTarget(ResourceSurface, req.SurfaceInstanceID),
-		authorizationTarget(ResourceBridgeChannel, req.BridgeChannelID),
-	)
-	if err != nil {
-		return PluginOperationSnapshot{}, err
-	}
-	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
-	if err != nil {
-		return PluginOperationSnapshot{}, err
-	}
-	defer releaseReservation()
-	boundSurface, err := h.surfaceTokens.InspectBoundSurface(bridge.InspectBoundSurfaceRequest{
-		SurfaceInstanceID: req.SurfaceInstanceID, BridgeChannelID: req.BridgeChannelID,
-		OwnerSessionHash: authorization.session.OwnerSessionHash, OwnerUserHash: authorization.session.OwnerUserHash,
-		OwnerEnvHash: authorization.session.OwnerEnvHash, SessionChannelIDHash: authorization.session.SessionChannelIDHash,
-		Now: req.Now,
-	})
-	if err != nil {
-		return PluginOperationSnapshot{}, operation.ErrNotFound
-	}
-	if boundSurface.UIProtocolVersion != "plugin-ui-v6" && boundSurface.UIProtocolVersion != "plugin-ui-v7" {
-		return PluginOperationSnapshot{}, fmt.Errorf("%w: operation observation requires plugin-ui-v6 or plugin-ui-v7", ErrPluginUIProtocolUnsupported)
-	}
-	releaseObservation, err := h.operationObservers.acquire(
-		surfaceOperationObservationKeyFor(authorization.session, req.SurfaceInstanceID), req.OperationID, req.Now,
-	)
-	if err != nil {
-		return PluginOperationSnapshot{}, err
-	}
-	defer releaseObservation()
-	record, err := h.adapters.Operations.Get(ctx, req.OperationID)
-	if err != nil {
-		return PluginOperationSnapshot{}, err
-	}
-	if !surfaceOperationMatchesAudience(record, authorization.session, req.SurfaceInstanceID, req.BridgeChannelID) ||
-		boundSurface.PluginInstanceID != record.PluginInstanceID || boundSurface.PluginVersion != record.PluginVersion ||
-		boundSurface.ActiveFingerprint != record.ActiveFingerprint {
-		return PluginOperationSnapshot{}, operation.ErrNotFound
-	}
-	return projectPluginOperationSnapshot(record)
-}
-
-func (h *Host) armDetachedOperationCancelAckTimeout(ctx context.Context, record operation.Record) error {
-	if record.CancelAckTimeoutMS <= 0 {
-		return nil
-	}
-	scope := sessionctx.SessionScope{
-		OwnerSessionHash: record.OwnerSessionHash, OwnerUserHash: record.OwnerUserHash,
-		OwnerEnvHash: record.OwnerEnvHash, SessionChannelIDHash: record.SessionChannelIDHash,
-	}
-	if err := scope.Validate(); err != nil {
-		return err
-	}
-	return h.withSessionScopeReservation(ctx, scope, func() error {
-		return h.armDetachedOperationCancelAckTimeoutReserved(record, scope)
-	})
 }
 
 func (h *Host) withSessionScopeReservation(
@@ -6290,259 +5687,6 @@ func (h *Host) withSessionScopeReservation(
 	}
 	defer reservation.Release()
 	return action()
-}
-
-func (h *Host) armDetachedOperationCancelAckTimeoutReserved(
-	record operation.Record,
-	scope sessionctx.SessionScope,
-) error {
-	h.lifecycleMu.RLock()
-	if h.closed {
-		h.lifecycleMu.RUnlock()
-		return ErrHostClosed
-	}
-	jobCtx, cancel := context.WithCancelCause(h.lifecycleCtx)
-	job, registered := h.detachedCancelJobs.register(record.OperationID, scope, cancel)
-	if !registered {
-		h.lifecycleMu.RUnlock()
-		cancel(nil)
-		return nil
-	}
-	h.lifecycleWG.Add(1)
-	h.lifecycleMu.RUnlock()
-	timeout := time.Duration(record.CancelAckTimeoutMS) * time.Millisecond
-	go func() {
-		defer h.lifecycleWG.Done()
-		defer h.detachedCancelJobs.finish(job)
-		defer cancel(nil)
-		ctx := jobCtx
-		if !waitForCancellationReconcile(ctx, timeout) {
-			return
-		}
-		current, err := h.adapters.Operations.Get(ctx, record.OperationID)
-		if errors.Is(err, operation.ErrNotFound) || (err == nil && current.Status != operation.StatusCancelRequested) {
-			return
-		}
-		if err != nil {
-			return
-		}
-		if current.StreamID != "" {
-			closed, closeErr := h.adapters.Streams.Close(ctx, stream.CloseRequest{
-				StreamID: current.StreamID, Status: stream.StatusCanceled, Reason: "cancellation acknowledgement timed out",
-			})
-			if closeErr != nil {
-				return
-			}
-			status, ok := operationStatusForStreamStatus(closed.Status)
-			if !ok {
-				return
-			}
-			current.Status = status
-			current.Reason = closed.Reason
-		} else {
-			current.Status = operation.StatusCanceled
-			current.Reason = "cancellation acknowledgement timed out"
-		}
-		finished, err := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
-			OperationID: current.OperationID, Status: current.Status, Reason: current.Reason,
-		})
-		if err == nil {
-			if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}}); auditErr != nil {
-				h.diagnostic(ctx, observability.DiagnosticEvent{
-					Type:            "plugin.security_event.persistence_failed",
-					Severity:        observability.DiagnosticSeverityWarning,
-					Message:         "security event persistence failed",
-					MutationOutcome: mutation.ForError(auditErr),
-					Failure: observability.FailureFromError(
-						observability.FailureAdapter,
-						observability.FailureComponentSecurity,
-						observability.FailureOperationSecurityEventPersist,
-						auditErr,
-					),
-				})
-			}
-		}
-	}()
-	return nil
-}
-
-func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStreamResult, error) {
-	req.StreamID = strings.TrimSpace(req.StreamID)
-	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
-	req.ReadID = strings.TrimSpace(req.ReadID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionReadSurfaceStream,
-		authorizationTarget(ResourceStream, req.StreamID),
-		relatedAuthorizationTargets(authorizationTarget(ResourceSurface, req.SurfaceInstanceID))...,
-	)
-	if err != nil {
-		return ReadStreamResult{}, err
-	}
-	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
-	if err != nil {
-		return ReadStreamResult{}, err
-	}
-	defer releaseReservation()
-	session := authorization.session
-	if strings.TrimSpace(req.StreamTicket) == "" {
-		return ReadStreamResult{}, ErrStreamTicketRequired
-	}
-	if strings.TrimSpace(req.ReadID) == "" {
-		return ReadStreamResult{}, stream.ErrInvalidStream
-	}
-	release, err := h.streamReads.acquire(ctx, req.StreamID)
-	if err != nil {
-		return ReadStreamResult{}, err
-	}
-	defer release()
-
-	now := lifecycleNow(req.Now)
-	record, _, validation, err := h.resolveStreamReadAuthorization(ctx, req, session, now)
-	if err != nil {
-		return ReadStreamResult{}, err
-	}
-	if _, err := h.surfaceTokens.InspectBoundStreamTicket(validation); err != nil {
-		return ReadStreamResult{}, err
-	}
-	if record.Status == stream.StatusOpen && req.WaitTimeout > 0 {
-		_, delivery, deliverErr := h.adapters.Streams.Deliver(ctx, stream.DeliverRequest{
-			StreamID: req.StreamID, ReadID: req.ReadID, MaxEvents: req.MaxEvents, MaxBytes: req.MaxBytes,
-		})
-		if deliverErr != nil {
-			return ReadStreamResult{}, deliverErr
-		}
-		if delivery.DeliveryID == "" {
-			waitCtx, cancel := context.WithTimeout(ctx, req.WaitTimeout)
-			err = h.adapters.Streams.Wait(waitCtx, req.StreamID)
-			cancel()
-			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-				return ReadStreamResult{}, err
-			}
-		}
-	}
-
-	releaseLifecycle, err := h.lifecycleLocks.acquireRead(ctx, record.PluginInstanceID)
-	if err != nil {
-		return ReadStreamResult{}, err
-	}
-	defer releaseLifecycle()
-	now = lifecycleNow(req.Now)
-	record, _, validation, err = h.resolveStreamReadAuthorization(ctx, req, session, now)
-	if err != nil {
-		return ReadStreamResult{}, err
-	}
-	if _, err := h.surfaceTokens.InspectBoundStreamTicket(validation); err != nil {
-		return ReadStreamResult{}, err
-	}
-	record, delivery, err := h.adapters.Streams.Deliver(ctx, stream.DeliverRequest{
-		StreamID: req.StreamID, ReadID: req.ReadID, MaxEvents: req.MaxEvents, MaxBytes: req.MaxBytes,
-	})
-	if err != nil {
-		return ReadStreamResult{}, err
-	}
-	return readStreamResult(record, delivery), nil
-}
-
-func readStreamResult(record stream.Record, delivery stream.Delivery) ReadStreamResult {
-	return ReadStreamResult{
-		Record: record, DeliveryID: delivery.DeliveryID, ReadID: delivery.ReadID,
-		Events: delivery.Events, Done: delivery.Done, TerminalStatus: delivery.TerminalStatus,
-	}
-}
-
-func (h *Host) AcknowledgeStream(ctx context.Context, req AcknowledgeStreamRequest) (stream.Record, error) {
-	req.StreamID = strings.TrimSpace(req.StreamID)
-	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
-	req.DeliveryID = strings.TrimSpace(req.DeliveryID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionAcknowledgeSurfaceStream,
-		authorizationTarget(ResourceStream, req.StreamID),
-		authorizationTarget(ResourceSurface, req.SurfaceInstanceID),
-	)
-	if err != nil {
-		return stream.Record{}, err
-	}
-	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
-	if err != nil {
-		return stream.Record{}, err
-	}
-	defer releaseReservation()
-	session := authorization.session
-	if strings.TrimSpace(req.StreamTicket) == "" {
-		return stream.Record{}, ErrStreamTicketRequired
-	}
-	if strings.TrimSpace(req.DeliveryID) == "" {
-		return stream.Record{}, stream.ErrDeliveryInvalid
-	}
-	release, err := h.streamReads.acquire(ctx, req.StreamID)
-	if err != nil {
-		return stream.Record{}, err
-	}
-	defer release()
-	readReq := ReadStreamRequest{
-		StreamID: req.StreamID, StreamTicket: req.StreamTicket,
-		SurfaceInstanceID: req.SurfaceInstanceID, Now: req.Now,
-	}
-	streamRecord, _, _, err := h.resolveStreamReadAuthorization(ctx, readReq, session, lifecycleNow(req.Now))
-	if err != nil {
-		return stream.Record{}, err
-	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireRead(ctx, streamRecord.PluginInstanceID)
-	if err != nil {
-		return stream.Record{}, err
-	}
-	defer releaseLifecycle()
-	_, _, validation, err := h.resolveStreamReadAuthorization(ctx, readReq, session, lifecycleNow(req.Now))
-	if err != nil {
-		return stream.Record{}, err
-	}
-	if _, err := h.surfaceTokens.InspectBoundStreamTicket(validation); err != nil {
-		return stream.Record{}, err
-	}
-	record, err := h.adapters.Streams.Acknowledge(ctx, stream.AcknowledgeRequest{StreamID: req.StreamID, DeliveryID: req.DeliveryID})
-	if err == nil && record.Status != stream.StatusOpen {
-		h.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
-	}
-	return record, err
-}
-
-func (h *Host) resolveStreamReadAuthorization(ctx context.Context, req ReadStreamRequest, session sessionctx.Context, now time.Time) (stream.Record, registry.PluginRecord, bridge.ValidateBoundStreamTicketRequest, error) {
-	record, err := h.adapters.Streams.Get(ctx, req.StreamID)
-	if err != nil {
-		return stream.Record{}, registry.PluginRecord{}, bridge.ValidateBoundStreamTicketRequest{}, err
-	}
-	if record.SurfaceInstanceID != req.SurfaceInstanceID ||
-		record.OwnerSessionHash != session.OwnerSessionHash ||
-		record.OwnerUserHash != session.OwnerUserHash ||
-		record.OwnerEnvHash != session.OwnerEnvHash ||
-		record.SessionChannelIDHash != session.SessionChannelIDHash {
-		return stream.Record{}, registry.PluginRecord{}, bridge.ValidateBoundStreamTicketRequest{}, bridge.ErrTokenAudience
-	}
-	plugin, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
-	if err != nil {
-		return stream.Record{}, registry.PluginRecord{}, bridge.ValidateBoundStreamTicketRequest{}, err
-	}
-	return record, plugin, bridge.ValidateBoundStreamTicketRequest{
-		StreamTicket:         req.StreamTicket,
-		PluginID:             record.PluginID,
-		PluginInstanceID:     record.PluginInstanceID,
-		PluginVersion:        plugin.Version,
-		ActiveFingerprint:    plugin.ActiveFingerprint,
-		SurfaceInstanceID:    record.SurfaceInstanceID,
-		OwnerSessionHash:     record.OwnerSessionHash,
-		OwnerUserHash:        record.OwnerUserHash,
-		OwnerEnvHash:         record.OwnerEnvHash,
-		SessionChannelIDHash: record.SessionChannelIDHash,
-		BridgeChannelID:      record.BridgeChannelID,
-		StreamID:             record.StreamID,
-		OperationID:          record.OperationID,
-		StreamDirection:      string(record.Direction),
-		Method:               record.Method,
-		Revision: bridge.RevisionBinding{
-			PolicyRevision:     plugin.PolicyRevision,
-			ManagementRevision: plugin.ManagementRevision,
-			RevokeEpoch:        plugin.RevokeEpoch,
-		},
-		Now: now,
-	}, nil
 }
 
 func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantRequest) (result connectivity.ConnectionGrant, retErr error) {
@@ -6581,7 +5725,7 @@ func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantR
 func (h *Host) resolveConnectionGrantAuthorization(ctx context.Context, req MintConnectionGrantRequest, session sessionctx.Context) (registry.PluginRecord, MintConnectionGrantRequest, sessionctx.ResourceScope, error) {
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	req.ConnectorID = strings.TrimSpace(req.ConnectorID)
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, MintConnectionGrantRequest{}, sessionctx.ResourceScope{}, err
 	}
@@ -6720,7 +5864,7 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 	}
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	req.StoreID = strings.TrimSpace(req.StoreID)
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return StorageHandleGrantResult{}, err
 	}
@@ -6807,7 +5951,7 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 		return registry.PluginRecord{}, err
 	}
 	defer releaseLifecycle()
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -6822,9 +5966,6 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 func (h *Host) enablePluginLocked(ctx context.Context, record registry.PluginRecord, now time.Time) (result registry.PluginRecord, retErr error) {
 	if !version.SupportsPluginUIProtocol(record.Manifest.Plugin.UIProtocolVersion) {
 		return registry.PluginRecord{}, fmt.Errorf("%w: installed %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion)
-	}
-	if err := h.ensureReleaseActivationLease(ctx, record); err != nil {
-		return registry.PluginRecord{}, err
 	}
 	if err := h.canRun(ctx, record); err != nil {
 		return registry.PluginRecord{}, err
@@ -6857,7 +5998,7 @@ func (h *Host) enablePluginLocked(ctx context.Context, record registry.PluginRec
 	}); err != nil {
 		return registry.PluginRecord{}, managementMutationError(record, err)
 	}
-	enabled, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
+	enabled, err := h.getPluginRecord(ctx, record.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
@@ -6882,12 +6023,7 @@ func (h *Host) enablePluginLocked(ctx context.Context, record registry.PluginRec
 
 func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result registry.PluginRecord, retErr error) {
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionDisablePlugin, scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment))
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	session := authorization.session
-	resourceScope, err := session.ResourceScope(sessionctx.ScopeEnvironment)
+	_, err := h.authorizeManagement(ctx, ManagementActionDisablePlugin, scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment))
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -6896,7 +6032,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 		return registry.PluginRecord{}, err
 	}
 	defer releaseLifecycle()
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -6912,19 +6048,9 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 		return registry.PluginRecord{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	disabled, err := h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableDisabled, reason, req.Now)
+	disabled, err := h.setPluginEnableState(ctx, req.PluginInstanceID, registry.EnableDisabled, reason, req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
-	}
-	h.releaseLeases.delete(req.PluginInstanceID)
-	operations, err := h.adapters.Operations.MarkPluginDisabled(ctx, operation.PluginTransitionRequest{
-		PluginInstanceID: disabled.PluginInstanceID,
-		ResourceScope:    resourceScope,
-		Reason:           reason,
-		Now:              req.Now,
-	})
-	if err != nil {
-		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if h.adapters.SurfaceCatalog != nil {
 		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
@@ -6932,26 +6058,6 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 			ActiveFingerprint: disabled.ActiveFingerprint,
 			Surfaces:          nil,
 		}); err != nil {
-			return registry.PluginRecord{}, mutation.Unknown(err)
-		}
-	}
-	if len(operations) > 0 {
-		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operations.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID}); err != nil {
-			return registry.PluginRecord{}, mutation.Unknown(err)
-		}
-	}
-	streams, err := h.adapters.Streams.MarkPluginTransition(ctx, stream.PluginTransitionRequest{
-		PluginInstanceID: disabled.PluginInstanceID,
-		ResourceScope:    resourceScope,
-		Status:           stream.StatusOrphanedDisabled,
-		Reason:           reason,
-		Now:              req.Now,
-	})
-	if err != nil {
-		return registry.PluginRecord{}, mutation.Unknown(err)
-	}
-	if streams.Changed > 0 {
-		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.streams.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID}); err != nil {
 			return registry.PluginRecord{}, mutation.Unknown(err)
 		}
 	}
@@ -6970,12 +6076,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 
 func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (result registry.PluginRecord, retErr error) {
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
-	authorization, err := h.authorizeManagement(ctx, ManagementActionUninstallPlugin, scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment))
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	session := authorization.session
-	resourceScope, err := session.ResourceScope(sessionctx.ScopeEnvironment)
+	_, err := h.authorizeManagement(ctx, ManagementActionUninstallPlugin, scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment))
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -6984,7 +6085,7 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 		return registry.PluginRecord{}, err
 	}
 	defer releaseLifecycle()
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -6996,27 +6097,15 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 		return registry.PluginRecord{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	operations, err := h.adapters.Operations.MarkPluginUninstalled(ctx, operation.PluginTransitionRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		ResourceScope:    resourceScope,
-		Reason:           "uninstalled",
-		Now:              req.Now,
-	})
+	blockingExecutions, err := h.requestUninstallExecutionCancellations(ctx, record, req.Now)
 	if err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
-	for _, operationRecord := range operations {
-		if operationRecord.Status == operation.StatusCancelRequested {
-			if err := h.dispatchOperationCancellation(ctx, operationRecord, operationRecord.Reason, req.Now, errors.New("plugin uninstall cancellation requested")); err != nil {
-				return registry.PluginRecord{}, mutation.Unknown(err)
-			}
+	if req.DeleteData && blockingExecutions > 0 {
+		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.executions.delete_blocked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"execution_count": blockingExecutions}}); err != nil {
+			return registry.PluginRecord{}, mutation.Unknown(errors.Join(ErrExecutionDeleteBlocked, err))
 		}
-	}
-	if req.DeleteData && operationsBlockDelete(operations) {
-		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operations.delete_blocked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
-			return registry.PluginRecord{}, mutation.Unknown(errors.Join(operation.ErrDeleteBlocked, err))
-		}
-		return registry.PluginRecord{}, mutation.Unknown(operation.ErrDeleteBlocked)
+		return registry.PluginRecord{}, mutation.Unknown(ErrExecutionDeleteBlocked)
 	}
 	commit, err := h.adapters.PluginData.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
 		PluginInstanceID:           record.PluginInstanceID,
@@ -7034,7 +6123,6 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 	record.EnabledAt = nil
 	record.UpdatedAt = commit.DeletedAt
 	record.DeletedAt = &commit.DeletedAt
-	h.releaseLeases.delete(record.PluginInstanceID)
 	h.verifiedReleases.delete(record.PluginInstanceID)
 
 	var derivedErr error
@@ -7046,31 +6134,11 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 			derivedErr = errors.Join(derivedErr, err)
 		}
 	}
-	streams, err := h.adapters.Streams.MarkPluginTransition(ctx, stream.PluginTransitionRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		ResourceScope:    resourceScope,
-		Status:           stream.StatusOrphanedRemoved,
-		Reason:           "uninstalled",
-		Now:              req.Now,
-	})
-	if err != nil {
-		derivedErr = errors.Join(derivedErr, err)
-	}
 	if err := h.revokePluginRuntimeCapabilities(ctx, record, req.Now); err != nil {
 		derivedErr = errors.Join(derivedErr, err)
 	}
 	if err := h.deleteSecretBindingsIfNeeded(ctx, record, req.DeleteData); err != nil {
 		derivedErr = errors.Join(derivedErr, err)
-	}
-	if len(operations) > 0 {
-		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operations.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
-			derivedErr = errors.Join(derivedErr, err)
-		}
-	}
-	if streams.Changed > 0 {
-		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.streams.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
-			derivedErr = errors.Join(derivedErr, err)
-		}
 	}
 	if derivedErr != nil {
 		return registry.PluginRecord{}, mutation.Unknown(derivedErr)
@@ -7138,7 +6206,7 @@ func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest
 		return plugindata.Binding{}, err
 	}
 	defer releaseLifecycle()
-	target, err := h.adapters.Registry.GetPlugin(ctx, targetPluginInstanceID)
+	target, err := h.getPluginRecord(ctx, targetPluginInstanceID)
 	if err != nil {
 		return plugindata.Binding{}, err
 	}
@@ -7190,7 +6258,7 @@ func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (res
 	); err != nil {
 		return ExportDataResult{}, err
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return ExportDataResult{}, err
 	}
@@ -7240,7 +6308,7 @@ func (h *Host) GetSettingsSchema(ctx context.Context, req GetSettingsRequest) (S
 	); err != nil {
 		return SettingsSchemaResult{}, err
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return SettingsSchemaResult{}, err
 	}
@@ -7276,7 +6344,7 @@ func (h *Host) GetPluginSettings(ctx context.Context, req GetSettingsRequest) (S
 	); err != nil {
 		return SettingsResult{}, err
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return SettingsResult{}, err
 	}
@@ -7310,7 +6378,7 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 	); err != nil {
 		return SettingsResult{}, err
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return SettingsResult{}, err
 	}
@@ -7365,7 +6433,7 @@ func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (res
 		return registry.PluginRecord{}, err
 	}
 	defer releaseLifecycle()
-	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
+	record, err := h.getPluginRecord(ctx, pluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -7390,7 +6458,7 @@ func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (res
 	}); err != nil {
 		return registry.PluginRecord{}, managementMutationError(record, err)
 	}
-	updated, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
+	updated, err := h.getPluginRecord(ctx, record.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
@@ -7587,74 +6655,21 @@ func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req 
 	}, nil
 }
 
-func (h *Host) newMethodStreamTicketMinter(audience bridge.Audience, revision bridge.RevisionBinding, method string, now time.Time) methodStreamTicketMinter {
-	return func(operationID string, streamID string) (bridge.StreamTicketResult, error) {
-		return h.surfaceTokens.MintStreamTicket(bridge.MintStreamTicketRequest{
-			PluginID:             audience.PluginID,
-			PluginInstanceID:     audience.PluginInstanceID,
-			PluginVersion:        audience.PluginVersion,
-			ActiveFingerprint:    audience.ActiveFingerprint,
-			SurfaceID:            audience.SurfaceID,
-			SurfaceInstanceID:    audience.SurfaceInstanceID,
-			EntryPath:            audience.EntryPath,
-			EntrySHA256:          audience.EntrySHA256,
-			AssetSessionNonce:    audience.AssetSessionNonce,
-			RouteRole:            audience.RouteRole,
-			OwnerSessionHash:     audience.OwnerSessionHash,
-			OwnerUserHash:        audience.OwnerUserHash,
-			OwnerEnvHash:         audience.OwnerEnvHash,
-			SessionChannelIDHash: audience.SessionChannelIDHash,
-			BridgeChannelID:      audience.BridgeChannelID,
-			RuntimeGenerationID:  audience.RuntimeGenerationID,
-			StreamID:             streamID,
-			OperationID:          operationID,
-			StreamDirection:      "read",
-			Method:               method,
-			Revision:             revision,
-			Now:                  now,
-		})
-	}
-}
-
-func (h *Host) mintMethodStreamTicket(req CallMethodRequest, operationID string, streamID string) (*bridge.StreamTicketResult, error) {
-	if strings.TrimSpace(streamID) == "" {
-		return nil, nil
-	}
-	if req.streamTicketMinter == nil {
-		return nil, errors.New("stream ticket minter is required for subscription methods")
-	}
-	result, err := req.streamTicketMinter(operationID, streamID)
-	if err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-func (h *Host) revokeMethodStreamTicket(ticket *bridge.StreamTicketResult) {
-	if ticket == nil {
-		return
-	}
-	h.surfaceTokens.RevokeStreamTicketID(ticket.StreamTicketID, time.Now().UTC())
-}
-
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (response CallMethodResult, responseErr error) {
 	if err := h.validateMethodRequest(record, method, req.Params); err != nil {
 		return CallMethodResult{}, err
 	}
 
 	var (
-		result       capability.Result
-		operationID  string
-		streamID     string
-		streamTicket *bridge.StreamTicketResult
-		finish       executionFinish
-		dispatched   bool
-		err          error
+		result      capability.Result
+		executionID string
+		finish      executionFinish
+		dispatched  bool
+		err         error
 	)
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panicErr := fmt.Errorf("%w: adapter panic", ErrMethodAdapterPanic)
-			h.revokeMethodStreamTicket(streamTicket)
 			if finish != nil {
 				panicErr = errors.Join(panicErr, finish(false, panicErr))
 			}
@@ -7676,15 +6691,8 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 			return CallMethodResult{}, prepareErr
 		}
 		finish = closeExecution
-		if invocation.Execution.Operation != nil {
-			operationID = invocation.Execution.Operation.ID()
-		}
-		if invocation.Execution.Stream != nil {
-			streamID = invocation.Execution.Stream.ID()
-		}
-		streamTicket, err = h.mintMethodStreamTicket(req, operationID, streamID)
-		if err != nil {
-			break
+		if invocation.Execution.Events != nil {
+			executionID = invocation.Execution.Events.ID()
 		}
 		dispatched = true
 		result, err = resolved.registration.Adapter.Invoke(executionCtx, invocation)
@@ -7694,9 +6702,7 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 	case manifest.MethodRouteWorker:
 		workerDispatch, workerErr := h.invokeWorker(ctx, record, method, req)
 		result = workerDispatch.result
-		operationID = workerDispatch.operationID
-		streamID = workerDispatch.streamID
-		streamTicket = workerDispatch.streamTicket
+		executionID = workerDispatch.executionID
 		finish = workerDispatch.finish
 		dispatched = workerDispatch.dispatched
 		err = workerErr
@@ -7705,24 +6711,17 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		var executionCtx context.Context
 		invocation, executionCtx, finish, err = h.prepareCoreActionExecution(ctx, record, method, req)
 		if err == nil {
-			if invocation.Execution.Operation != nil {
-				operationID = invocation.Execution.Operation.ID()
+			if invocation.Execution.Events != nil {
+				executionID = invocation.Execution.Events.ID()
 			}
-			if invocation.Execution.Stream != nil {
-				streamID = invocation.Execution.Stream.ID()
-			}
-			streamTicket, err = h.mintMethodStreamTicket(req, operationID, streamID)
-			if err == nil {
-				dispatched = true
-				result, err = h.adapters.CoreActions.InvokeCoreAction(executionCtx, invocation)
-			}
+			dispatched = true
+			result, err = h.adapters.CoreActions.InvokeCoreAction(executionCtx, invocation)
 		}
 	default:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is invalid", method.Route.Kind)
 	}
 	err = finalizeRPCError(ctx, err)
 	if err != nil {
-		h.revokeMethodStreamTicket(streamTicket)
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
@@ -7733,14 +6732,12 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 	}
 	visibleData, err := capability.PrepareResponseData(result.Data)
 	if err != nil {
-		h.revokeMethodStreamTicket(streamTicket)
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
 		return CallMethodResult{}, methodErrorAfterDispatch(ctx, method, fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err))
 	}
 	if err := h.validateMethodResponse(record, method, visibleData); err != nil {
-		h.revokeMethodStreamTicket(streamTicket)
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
@@ -7748,17 +6745,10 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 	}
 	if finish != nil {
 		if err := finish(true, nil); err != nil {
-			h.revokeMethodStreamTicket(streamTicket)
 			return CallMethodResult{}, methodErrorAfterDispatch(ctx, method, err)
 		}
 	}
-	response = CallMethodResult{Data: visibleData, OperationID: operationID, StreamID: streamID}
-	if streamTicket != nil {
-		response.StreamTicket = streamTicket.StreamTicket
-		response.StreamTicketID = streamTicket.StreamTicketID
-		expiresAt := streamTicket.ExpiresAt
-		response.StreamExpiresAt = &expiresAt
-	}
+	response = CallMethodResult{Data: visibleData, ExecutionID: executionID}
 	return response, nil
 }
 
@@ -7944,12 +6934,10 @@ func (h *Host) prepareCoreActionExecution(ctx context.Context, record registry.P
 }
 
 type workerMethodDispatch struct {
-	result       capability.Result
-	operationID  string
-	streamID     string
-	streamTicket *bridge.StreamTicketResult
-	finish       executionFinish
-	dispatched   bool
+	result      capability.Result
+	executionID string
+	finish      executionFinish
+	dispatched  bool
 }
 
 func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (dispatch workerMethodDispatch, responseErr error) {
@@ -8049,15 +7037,8 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		return workerMethodDispatch{}, err
 	}
 	dispatch = workerMethodDispatch{finish: finish}
-	if invocation.Execution.Operation != nil {
-		dispatch.operationID = invocation.Execution.Operation.ID()
-	}
-	if invocation.Execution.Stream != nil {
-		dispatch.streamID = invocation.Execution.Stream.ID()
-	}
-	dispatch.streamTicket, err = h.mintMethodStreamTicket(req, dispatch.operationID, dispatch.streamID)
-	if err != nil {
-		return dispatch, err
+	if invocation.Execution.Events != nil {
+		dispatch.executionID = invocation.Execution.Events.ID()
 	}
 	brokerAccess, err := normalizedWorkerBrokerAccess(record.Manifest, method.BrokerAccess)
 	if err != nil {
@@ -8085,8 +7066,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		OwnerEnvHash:         req.session.OwnerEnvHash,
 		SessionChannelIDHash: req.session.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
-		OperationID:          dispatch.operationID,
-		StreamID:             dispatch.streamID,
+		ExecutionID:          dispatch.executionID,
 		AuditCorrelationID:   binding.AuditCorrelationID,
 		Params:               params,
 		BrokerAccess:         brokerAccess,
@@ -8140,8 +7120,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Method:                 method.Method,
 		Effect:                 string(method.Effect),
 		Execution:              string(method.Execution),
-		OperationID:            dispatch.operationID,
-		StreamID:               dispatch.streamID,
+		ExecutionID:            dispatch.executionID,
 		AuditCorrelationID:     binding.AuditCorrelationID,
 		TargetDescriptorHashes: targetDescriptorHashes,
 		Limits: bridge.RuntimeExecutionLeaseLimits{
@@ -8176,6 +7155,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		return dispatch, err
 	}
 	dispatch.dispatched = true
+	executionID := strings.TrimSpace(lease.ExecutionID)
 	rawResult, err := h.adapters.RuntimeManager.InvokeWorker(executionCtx, runtimeBinding, runtimeclient.Lease{
 		LeaseID:                lease.LeaseID,
 		TokenID:                lease.TokenID,
@@ -8194,8 +7174,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Method:                 lease.Method,
 		Effect:                 lease.Effect,
 		Execution:              lease.Execution,
-		OperationID:            lease.OperationID,
-		StreamID:               lease.StreamID,
+		ExecutionID:            executionID,
 		AuditCorrelationID:     lease.AuditCorrelationID,
 		TargetDescriptorHashes: append([]string(nil), lease.TargetDescriptorHashes...),
 		Limits: runtimeclient.LeaseLimits{
@@ -8355,8 +7334,7 @@ func workerInvocationTargetHash(payload workerInvocationPayload) (string, error)
 		payload.OwnerEnvHash,
 		payload.SessionChannelIDHash,
 		payload.BridgeChannelID,
-		payload.OperationID,
-		payload.StreamID,
+		payload.ExecutionID,
 		payload.AuditCorrelationID,
 		payload.ParamsSHA256,
 		payload.BrokerAccessSHA256,
@@ -8390,7 +7368,7 @@ func (h *Host) resolveSecretRequest(ctx context.Context, req SecretBindRequest) 
 	if req.Scope != "user" && req.Scope != "environment" {
 		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: scope must be user or environment", ErrInvalidSecretRef)
 	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	record, err := h.getPluginRecord(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, SecretBindRequest{}, err
 	}
@@ -8400,27 +7378,85 @@ func (h *Host) resolveSecretRequest(ctx context.Context, req SecretBindRequest) 
 	return record, req, nil
 }
 
-func operationsBlockDelete(records []operation.Record) bool {
-	for _, record := range records {
-		if record.Status == operation.StatusCancelRequested && record.UninstallBehavior == operation.UninstallBehaviorCancelThenBlockDelete {
-			return true
+func (h *Host) requestUninstallExecutionCancellations(ctx context.Context, record registry.PluginRecord, now time.Time) (int, error) {
+	if h.controlStore == nil {
+		return 0, ErrControlStoreRequired
+	}
+	if h.executions == nil {
+		return 0, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	h.executions.mu.Lock()
+	pluginLeases := h.executions.leasesByPlugin[record.PluginInstanceID]
+	leases := make([]*executionLease, 0, len(pluginLeases))
+	for _, lease := range pluginLeases {
+		leases = append(leases, lease)
+	}
+	h.executions.mu.Unlock()
+
+	blocking := 0
+	for _, lease := range leases {
+		if strings.TrimSpace(lease.binding.ExecutionID) == "" {
+			continue
+		}
+		declared, ok := manifestMethod(record.Manifest, lease.binding.Method)
+		if !ok {
+			return blocking, fmt.Errorf("active execution method %q is not declared", lease.binding.Method)
+		}
+		method, err := h.effectiveMethod(record, declared)
+		if err != nil {
+			return blocking, err
+		}
+		if method.CancelPolicy == nil || method.CancelPolicy.UninstallBehavior != manifest.CancelUninstallBehaviorCancelThenBlockDelete {
+			continue
+		}
+		current, err := h.controlStore.Executions().Get(ctx, lease.binding.ExecutionID)
+		if err != nil {
+			return blocking, err
+		}
+		if executionTerminal(current.Status) {
+			continue
+		}
+		blocking++
+		requestDispatched := current.Status == execution.StatusCancelRequested
+		if current.Status == execution.StatusRunning && current.Cancelable {
+			if err := h.controlStore.Executions().RequestCancel(ctx, current.ID, now); err != nil {
+				latest, latestErr := h.controlStore.Executions().Get(ctx, current.ID)
+				if latestErr != nil || !executionTerminal(latest.Status) {
+					return blocking, errors.Join(err, latestErr)
+				}
+				blocking--
+				continue
+			}
+		}
+		if !current.Cancelable {
+			continue
+		}
+		if requestDispatched {
+			continue
+		}
+		matched, err := h.executions.cancelOperation(ctx, capability.ExecutionCancellation{
+			ExecutionID: current.ID,
+			Reason:      "uninstalled",
+			RequestedAt: now,
+		}, errors.New("plugin uninstall cancellation requested"))
+		if err != nil {
+			return blocking, fmt.Errorf("%w: %w", ErrExecutionCancelDispatchFailed, err)
+		}
+		if !matched {
+			latest, latestErr := h.controlStore.Executions().Get(ctx, current.ID)
+			if latestErr == nil && executionTerminal(latest.Status) {
+				blocking--
+				continue
+			}
+			return blocking, errors.Join(fmt.Errorf("active execution %q is not registered for cancellation", current.ID), latestErr)
 		}
 	}
-	return false
-}
-
-func cancelPolicyDisableBehavior(policy *manifest.CancelPolicySpec) string {
-	if policy == nil {
-		return operation.DisableBehaviorCancel
-	}
-	return policy.DisableBehavior
-}
-
-func cancelPolicyUninstallBehavior(policy *manifest.CancelPolicySpec) string {
-	if policy == nil {
-		return operation.UninstallBehaviorCancelThenBlockDelete
-	}
-	return policy.UninstallBehavior
+	return blocking, nil
 }
 
 func pluginRefFromRecord(record registry.PluginRecord) PluginRef {
@@ -8995,15 +8031,6 @@ func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
 	if err := h.validateExternalPackageSignatureFreshness(ctx, record); err != nil {
 		return err
 	}
-	if err := h.ensureReleaseActivationLease(ctx, record); err != nil {
-		return err
-	}
-	if err := h.validateReleaseActivationLease(record); err != nil {
-		return err
-	}
-	if record.ReleaseTrustBinding != nil && h.sourceFences.contains(record.ReleaseTrustBinding.SourceID, record.ReleaseTrustBinding.Channel) {
-		return releasetrust.ErrSourceTrustFenced
-	}
 	if record.TrustState == registry.TrustUnsignedLocal {
 		if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
 			now := time.Now().UTC()
@@ -9039,7 +8066,7 @@ func (h *Host) disablePluginForPolicyFailure(ctx context.Context, record registr
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	disabled, err := h.adapters.Registry.SetEnableState(ctx, record.PluginInstanceID, registry.EnableDisabledByPolicy, reason, now)
+	disabled, err := h.setPluginEnableState(ctx, record.PluginInstanceID, registry.EnableDisabledByPolicy, reason, now)
 	if err != nil {
 		return err
 	}

@@ -9,8 +9,8 @@ import {
   PluginBridgeError,
   type PluginBridgeClient,
 } from "../src/plugin.js";
-import type { PluginStreamReadResult } from "../src/surface.js";
-import type { PluginOperationSnapshot } from "../src/surface.js";
+import type { PluginExecutionEventList } from "../src/surface.js";
+import type { PluginExecutionSnapshot } from "../src/surface.js";
 
 const requestSchema = {
   type: "object",
@@ -70,6 +70,18 @@ function streamContract(method: string, effect: CapabilityEffect = "read") {
 }
 
 const encodeEvent = (event: unknown) => btoa(JSON.stringify(event));
+const dataEvent = (executionID: string, sequence: number, data: unknown, typeName = eventTypeName) => ({
+  execution_id: executionID,
+  sequence,
+  kind: "data" as const,
+  payload: { event_type: typeName, data: encodeEvent(data) },
+});
+const terminalEvent = (executionID: string, sequence: number, status: "completed" | "canceled" | "failed" | "orphaned") => ({
+  execution_id: executionID,
+  sequence,
+  kind: "terminal" as const,
+  payload: { status },
+});
 
 test("generated capability helpers validate sync request and response payloads", async () => {
   const bridge = fakeBridge({ data: { accepted: true } });
@@ -102,32 +114,32 @@ test("generated capability helpers validate sync request and response payloads",
   );
 });
 
-test("generated capability helpers preserve host-owned operation and stream handles", async () => {
-  const operationBridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_opaque_1" });
+test("generated capability helpers expose one host-owned execution identity", async () => {
+  const operationBridge = fakeBridge({ data: { accepted: true }, execution_id: "execution_opaque_1" });
   const operation = await callCapabilityOperation<{ document_id: string }, { accepted: boolean }>(
     operationBridge.client,
     operationContract("documents.archive"),
     { document_id: "doc-1" },
   );
   assert.equal(operation.data.accepted, true);
-  assert.equal(operation.operation_id, "operation_opaque_1");
+  assert.equal(operation.execution_id, "execution_opaque_1");
   assert.equal(typeof operation.cancel, "function");
 
-  const streamBridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_opaque_2", stream_handle: "stream_opaque_1" });
+  const streamBridge = fakeBridge({ data: { accepted: true }, execution_id: "execution_opaque_2" });
   const stream = await callCapabilityStream<{ document_id: string }, { accepted: boolean }, { line: string }>(
     streamBridge.client,
     streamContract("documents.watch"),
     { document_id: "doc-1" },
   );
   assert.equal(stream.data.accepted, true);
-  assert.equal(stream.operation_id, "operation_opaque_2");
-  assert.equal(stream.stream_handle, "stream_opaque_1");
+  assert.equal(stream.execution_id, "execution_opaque_2");
+  assert.equal("stream_handle" in stream, false);
   assert.equal(typeof stream.read, "function");
   assert.equal(typeof stream.cancel, "function");
   assert.equal(typeof stream[Symbol.asyncIterator], "function");
 
   await stream.cancel("user canceled");
-  assert.deepEqual(streamBridge.cancellations, [{ operationID: "operation_opaque_2", reason: "user canceled" }]);
+  assert.deepEqual(streamBridge.cancellations, [{ executionID: "execution_opaque_2", reason: "user canceled" }]);
 
   await assert.rejects(
     callCapabilityOperation(
@@ -141,7 +153,7 @@ test("generated capability helpers preserve host-owned operation and stream hand
 
 test("capability calls and returned handle cancellation forward only per-call abort signals", async () => {
   const controller = new AbortController();
-  const operationBridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_signal_1" });
+  const operationBridge = fakeBridge({ data: { accepted: true }, execution_id: "execution_signal_1" });
   const operation = await callCapabilityOperation(
     operationBridge.client,
     operationContract("documents.archive"),
@@ -156,8 +168,7 @@ test("capability calls and returned handle cancellation forward only per-call ab
 
   const streamBridge = fakeBridge({
     data: { accepted: true },
-    operation_id: "operation_signal_2",
-    stream_handle: "stream_signal_2",
+    execution_id: "execution_signal_2",
   });
   const stream = await callCapabilityStream(
     streamBridge.client,
@@ -173,24 +184,28 @@ test("capability calls and returned handle cancellation forward only per-call ab
 test("operation handles expose snapshot and wait without implicit cancellation", async () => {
   const createdAt = "2026-07-26T00:00:00Z";
   const bridge = fakeBridge(
-    { data: { accepted: true }, operation_id: "operation_observe_1" },
+    { data: { accepted: true }, execution_id: "execution_observe_1" },
     undefined,
     [
       {
-        operation_id: "operation_observe_1",
+        execution_id: "execution_observe_1",
+        plugin_instance_id: "plugini_1",
+        kind: "operation",
+        cursor: 0,
         status: "running",
         cancelable: true,
         created_at: createdAt,
         updated_at: createdAt,
-        retry_after_ms: 500,
       },
       {
-        operation_id: "operation_observe_1",
+        execution_id: "execution_observe_1",
+        plugin_instance_id: "plugini_1",
+        kind: "operation",
+        cursor: 0,
         status: "completed",
         cancelable: true,
         created_at: createdAt,
         updated_at: "2026-07-26T00:00:01Z",
-        retry_after_ms: 500,
         terminal_at: "2026-07-26T00:00:01Z",
       },
     ],
@@ -204,21 +219,42 @@ test("operation handles expose snapshot and wait without implicit cancellation",
   const terminal = await operation.wait({ pollIntervalMs: 1 });
   assert.equal(terminal.status, "completed");
   assert.equal(terminal.snapshot.terminal_at, "2026-07-26T00:00:01Z");
-  assert.deepEqual(bridge.observations, ["operation_observe_1", "operation_observe_1"]);
+  assert.deepEqual(bridge.observations, ["execution_observe_1", "execution_observe_1"]);
   assert.deepEqual(bridge.cancellations, []);
+});
+
+test("operation wait propagates unknown snapshot errors without retrying", async () => {
+  const bridge = fakeBridge({ data: { accepted: true }, execution_id: "execution_observe_error" });
+  const retiredErrorCode = ["PLUGIN", "OPERATION", "RATE", "LIMITED"].join("_");
+  const snapshotError = new PluginBridgeError(retiredErrorCode as never, "execution snapshot failed");
+  let snapshotCalls = 0;
+  bridge.client.executionSnapshot = async () => {
+    snapshotCalls += 1;
+    throw snapshotError;
+  };
+  const operation = await callCapabilityOperation(
+    bridge.client,
+    operationContract("documents.archive"),
+    { document_id: "doc-1" },
+  );
+
+  await assert.rejects(operation.wait({ timeoutMs: 1_000, pollIntervalMs: 500 }), (error: unknown) => error === snapshotError);
+  assert.equal(snapshotCalls, 1);
 });
 
 test("aborting operation wait stops local observation without canceling the operation", async () => {
   const bridge = fakeBridge(
-    { data: { accepted: true }, operation_id: "operation_observe_abort" },
+    { data: { accepted: true }, execution_id: "execution_observe_abort" },
     undefined,
     [{
-      operation_id: "operation_observe_abort",
+      execution_id: "execution_observe_abort",
+      plugin_instance_id: "plugini_1",
+      kind: "operation",
+      cursor: 0,
       status: "running",
       cancelable: true,
       created_at: "2026-07-26T00:00:00Z",
       updated_at: "2026-07-26T00:00:00Z",
-      retry_after_ms: 500,
     }],
   );
   const operation = await callCapabilityOperation(
@@ -236,9 +272,9 @@ test("aborting operation wait stops local observation without canceling the oper
 });
 
 test("operation wait deadline aborts an in-flight snapshot without canceling the operation", async () => {
-  const bridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_observe_timeout" });
+  const bridge = fakeBridge({ data: { accepted: true }, execution_id: "execution_observe_timeout" });
   let snapshotSignal: AbortSignal | undefined;
-  bridge.client.operationSnapshot = (_operationID, options = {}) => new Promise((_resolve, reject) => {
+  bridge.client.executionSnapshot = (_executionID, options = {}) => new Promise((_resolve, reject) => {
     snapshotSignal = options.signal;
     options.signal?.addEventListener("abort", () => {
       reject(new PluginBridgeError("PLUGIN_BRIDGE_CANCELLED", "snapshot cancelled"));
@@ -270,8 +306,8 @@ test("capability helpers reject malformed result envelopes with stable errors", 
   }
 
   for (const result of [
-    { data: { accepted: true }, operation_id: "wrong.handle" },
-    { data: { accepted: true }, operation_id: "operation_opaque_1", stream_handle: "wrong.handle" },
+    { data: { accepted: true }, execution_id: "wrong.handle" },
+    { data: { accepted: true }, execution_id: "execution_opaque_1", stream_handle: "wrong.handle" },
   ]) {
     const invocation = "stream_handle" in result
       ? callCapabilityStream(fakeBridge(result).client, streamContract("documents.invalid"), { document_id: "doc-1" })
@@ -284,7 +320,7 @@ test("capability helpers reject malformed result envelopes with stable errors", 
 });
 
 test("capability helpers cancel live handles when response validation fails", async () => {
-  const operationBridge = fakeBridge({ data: { unexpected: true }, operation_id: "operation_opaque_1" });
+  const operationBridge = fakeBridge({ data: { unexpected: true }, execution_id: "execution_opaque_1" });
   await assert.rejects(
     callCapabilityOperation(
       operationBridge.client,
@@ -293,12 +329,11 @@ test("capability helpers cancel live handles when response validation fails", as
     ),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
   );
-  assert.deepEqual(operationBridge.cancellations, [{ operationID: "operation_opaque_1", reason: "response_contract_mismatch" }]);
+  assert.deepEqual(operationBridge.cancellations, [{ executionID: "execution_opaque_1", reason: "response_contract_mismatch" }]);
 
   const streamBridge = fakeBridge({
     data: { unexpected: true },
-    operation_id: "operation_opaque_2",
-    stream_handle: "stream_opaque_1",
+    execution_id: "execution_opaque_2",
   });
   await assert.rejects(
     callCapabilityStream(
@@ -308,26 +343,25 @@ test("capability helpers cancel live handles when response validation fails", as
     ),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
   );
-  assert.deepEqual(streamBridge.cancellations, [{ operationID: "operation_opaque_2", reason: "response_contract_mismatch" }]);
+  assert.deepEqual(streamBridge.cancellations, [{ executionID: "execution_opaque_2", reason: "response_contract_mismatch" }]);
 });
 
 test("subscription helpers keep reading events produced after dispatch", async () => {
   const bridge = fakeBridge(
-    { data: { accepted: true }, operation_id: "operation_opaque_2", stream_handle: "stream_opaque_1" },
+    { data: { accepted: true }, execution_id: "execution_opaque_2" },
     [
       async () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         return {
-          events: [{ sequence: 1, kind: eventTypeName, data: encodeEvent({ line: "one" }), at: "2026-07-13T08:00:00Z" }],
-          done: false,
-          retry_after_ms: 0,
+          execution_id: "execution_opaque_2",
+          events: [dataEvent("execution_opaque_2", 1, { line: "one" })],
+          cursor: 1,
         };
       },
       async () => ({
-        events: [{ sequence: 2, kind: eventTypeName, data: encodeEvent({ line: "two" }), at: "2026-07-13T08:00:01Z" }],
-        done: true,
-        terminal_status: "closed",
-        retry_after_ms: 0,
+        execution_id: "execution_opaque_2",
+        events: [dataEvent("execution_opaque_2", 2, { line: "two" }), terminalEvent("execution_opaque_2", 3, "completed")],
+        cursor: 3,
       }),
     ],
   );
@@ -349,8 +383,10 @@ test("subscription helpers reject event type and schema mismatches", async () =>
     { sequence: 1, kind: eventTypeName, data: btoa("not json"), at: "2026-07-13T08:00:00Z" },
   ]) {
     const bridge = fakeBridge(
-      { data: { accepted: true }, operation_id: "operation_event_invalid", stream_handle: "stream_event_invalid" },
-      [async () => ({ events: [event], done: false, retry_after_ms: 0 })],
+      { data: { accepted: true }, execution_id: "execution_event_invalid" },
+      [async () => ({ execution_id: "execution_event_invalid", events: [
+        { execution_id: "execution_event_invalid", sequence: 1, kind: "data", payload: { event_type: event.kind === "OtherEvent" ? "OtherEvent" : eventTypeName, data: event.data } },
+      ], cursor: 1 })],
     );
     const stream = await callCapabilityStream(
       bridge.client,
@@ -361,17 +397,17 @@ test("subscription helpers reject event type and schema mismatches", async () =>
       stream[Symbol.asyncIterator]().next(),
       (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
     );
-    assert.deepEqual(bridge.cancellations, [{ operationID: "operation_event_invalid", reason: "stream_contract_mismatch" }]);
+    assert.deepEqual(bridge.cancellations, [{ executionID: "execution_event_invalid", reason: "stream_contract_mismatch" }]);
   }
 });
 
 test("subscription read cancels the host operation when an event violates the published contract", async () => {
   const bridge = fakeBridge(
-    { data: { accepted: true }, operation_id: "operation_direct_read_invalid", stream_handle: "stream_direct_read_invalid" },
+    { data: { accepted: true }, execution_id: "execution_direct_read_invalid" },
     [async () => ({
-      events: [{ sequence: 1, kind: "OtherEvent", data: encodeEvent({ line: "one" }), at: "2026-07-13T08:00:00Z" }],
-      done: false,
-      retry_after_ms: 0,
+      execution_id: "execution_direct_read_invalid",
+      events: [dataEvent("execution_direct_read_invalid", 1, { line: "one" }, "OtherEvent")],
+      cursor: 1,
     })],
   );
   const stream = await callCapabilityStream(
@@ -384,7 +420,7 @@ test("subscription read cancels the host operation when an event violates the pu
     stream.read(),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
   );
-  assert.deepEqual(bridge.cancellations, [{ operationID: "operation_direct_read_invalid", reason: "stream_contract_mismatch" }]);
+  assert.deepEqual(bridge.cancellations, [{ executionID: "execution_direct_read_invalid", reason: "stream_contract_mismatch" }]);
 });
 
 test("subscription read abort stays per-call and leaves the stream reusable", async () => {
@@ -395,10 +431,9 @@ test("subscription read abort stays per-call and leaves the stream reusable", as
   const bridge = {
     call: async () => ({
       data: { accepted: true },
-      operation_id: "operation_signal_1",
-      stream_handle: "stream_signal_1",
+      execution_id: "execution_signal_1",
     }),
-    readStream: async (_streamHandle: string, options?: { signal?: AbortSignal }) => {
+    executionEvents: async (_executionID: string, _cursor: number, options?: { signal?: AbortSignal }) => {
       streamReads += 1;
       if (streamReads === 1) {
         receivedSignal = options?.signal;
@@ -408,9 +443,9 @@ test("subscription read abort stays per-call and leaves the stream reusable", as
           }, { once: true });
         });
       }
-      return { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 } as const;
+      return { execution_id: "execution_signal_1", events: [terminalEvent("execution_signal_1", 1, "completed")], cursor: 1 } as const;
     },
-    cancelOperation: async (_operationID: string, reason?: string) => {
+    cancelExecution: async (_executionID: string, reason?: string) => {
       if (reason) cancellations.push(reason);
     },
   } as unknown as PluginBridgeClient;
@@ -429,12 +464,12 @@ test("subscription read abort stays per-call and leaves the stream reusable", as
   const next = await stream.read();
 
   assert.equal(receivedSignal, controller.signal);
-  assert.deepEqual(next, { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 });
+  assert.deepEqual(next, { events: [], done: true, cursor: 1 });
   assert.deepEqual(cancellations, []);
 });
 
 test("non-cancelable operation helpers do not expose or dispatch cancellation", async () => {
-  const bridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_non_cancelable" });
+  const bridge = fakeBridge({ data: { accepted: true }, execution_id: "execution_non_cancelable" });
   const operation = await callCapabilityOperation(
     bridge.client,
     operationContract("documents.archive", false),
@@ -447,8 +482,8 @@ test("non-cancelable operation helpers do not expose or dispatch cancellation", 
 
 test("subscription helpers reject failed terminal states and cancel early iterator return", async () => {
   const failedBridge = fakeBridge(
-    { data: { accepted: true }, operation_id: "operation_failed_1", stream_handle: "stream_failed_1" },
-    [async () => ({ events: [], done: true, terminal_status: "failed", retry_after_ms: 0 })],
+    { data: { accepted: true }, execution_id: "execution_failed_1" },
+    [async () => ({ execution_id: "execution_failed_1", events: [terminalEvent("execution_failed_1", 1, "failed")], cursor: 1 })],
   );
   const failed = await callCapabilityStream(
     failedBridge.client,
@@ -466,11 +501,11 @@ test("subscription helpers reject failed terminal states and cancel early iterat
   assert.deepEqual(failedBridge.cancellations, []);
 
   const earlyBridge = fakeBridge(
-    { data: { accepted: true }, operation_id: "operation_early_1", stream_handle: "stream_early_1" },
+    { data: { accepted: true }, execution_id: "execution_early_1" },
     [async () => ({
-      events: [{ sequence: 1, kind: eventTypeName, data: encodeEvent({ line: "one" }), at: "2026-07-13T08:00:00Z" }],
-      done: false,
-      retry_after_ms: 0,
+      execution_id: "execution_early_1",
+      events: [dataEvent("execution_early_1", 1, { line: "one" })],
+      cursor: 1,
     })],
   );
   const early = await callCapabilityStream(
@@ -481,7 +516,7 @@ test("subscription helpers reject failed terminal states and cancel early iterat
   const iterator = early[Symbol.asyncIterator]();
   assert.equal((await iterator.next()).done, false);
   await iterator.return?.();
-  assert.deepEqual(earlyBridge.cancellations, [{ operationID: "operation_early_1", reason: "stream_iterator_closed" }]);
+  assert.deepEqual(earlyBridge.cancellations, [{ executionID: "execution_early_1", reason: "stream_iterator_closed" }]);
 });
 
 test("generated capability helpers enforce exact oneOf matches", async () => {
@@ -663,20 +698,20 @@ test("generated capability helpers validate typed business error details", () =>
 
 function fakeBridge(
   result: unknown,
-  streamResults?: Array<() => Promise<PluginStreamReadResult>>,
-  operationSnapshots?: PluginOperationSnapshot[],
+  streamResults?: Array<() => Promise<unknown>>,
+  executionSnapshots?: PluginExecutionSnapshot[],
 ): {
   client: PluginBridgeClient;
   calls: Array<{ method: string; params: unknown }>;
   callOptions: Array<{ signal?: AbortSignal } | undefined>;
-  cancellations: Array<{ operationID: string; reason?: string }>;
+  cancellations: Array<{ executionID: string; reason?: string }>;
   cancellationOptions: Array<{ signal?: AbortSignal } | undefined>;
   streamReads: number;
   observations: string[];
 } {
   const calls: Array<{ method: string; params: unknown }> = [];
   const callOptions: Array<{ signal?: AbortSignal } | undefined> = [];
-  const cancellations: Array<{ operationID: string; reason?: string }> = [];
+  const cancellations: Array<{ executionID: string; reason?: string }> = [];
   const cancellationOptions: Array<{ signal?: AbortSignal } | undefined> = [];
   const observations: string[] = [];
   const state = {
@@ -692,21 +727,23 @@ function fakeBridge(
         callOptions.push(options ? { signal: options.signal } : undefined);
         return result;
       },
-      cancelOperation: async (operationID: string, reason?: string, options?: { signal?: AbortSignal }) => {
-        cancellations.push({ operationID, reason });
+      cancelExecution: async (executionID: string, reason?: string, options?: { signal?: AbortSignal }) => {
+        cancellations.push({ executionID, reason });
         cancellationOptions.push(options ? { signal: options.signal } : undefined);
       },
-      operationSnapshot: async (operationID: string) => {
-        observations.push(operationID);
-        const snapshot = operationSnapshots?.shift();
+      executionSnapshot: async (executionID: string) => {
+        observations.push(executionID);
+        const snapshot = executionSnapshots?.shift();
         if (!snapshot) throw new Error("unexpected operation snapshot");
         return snapshot;
       },
-      readStream: async () => {
+      executionEvents: async (executionID: string, _cursor: number) => {
         const read = streamResults?.[state.streamReads];
         state.streamReads += 1;
         if (!read) throw new Error("unexpected stream read");
-        return read();
+        const result = await read() as PluginExecutionEventList;
+        if (result.execution_id !== executionID) throw new Error("execution identity mismatch");
+        return result;
       },
     } as unknown as PluginBridgeClient,
   };

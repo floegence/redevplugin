@@ -789,8 +789,7 @@ func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 			"method",
 			"effect",
 			"execution",
-			"operation_id",
-			"stream_id",
+			"execution_id",
 			"audit_correlation_id",
 			"surface_instance_id",
 			"owner_session_hash",
@@ -809,6 +808,11 @@ func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 		} {
 			if _, ok := props[name].(map[string]any); !ok {
 				t.Fatalf("invoke_worker lease schema missing %s", name)
+			}
+		}
+		for _, retired := range []string{"operation_id", "stream_id"} {
+			if _, ok := props[retired]; ok {
+				t.Fatalf("invoke_worker lease schema exposes retired %s", retired)
 			}
 		}
 		if lease["additionalProperties"] != false {

@@ -13,7 +13,7 @@ import type {
   PluginDiagnosticEventList,
   PluginDiagnosticMutationOutcome,
   PluginIntentList,
-  PluginOperationList,
+  PluginExecutionList,
   PluginPermissionList,
   PluginPlatformClient,
   PluginRuntimeHealth,
@@ -24,8 +24,6 @@ import type {
 
 // @ts-expect-error trusted parent transport must not be available to plugin workers
 import type { ReDevPluginSurfaceTransport } from "../src/plugin.js";
-// @ts-expect-error trusted parent method results must not expose stream tickets to plugin workers
-import type { PluginTrustedMethodResult } from "../src/plugin.js";
 // @ts-expect-error runtime process diagnostics belong to trusted parent orchestration
 import type { RuntimeProcessFailureCode as PluginRuntimeProcessFailureCode } from "../src/plugin.js";
 
@@ -42,12 +40,11 @@ void invalidPluginRequestOptions;
 void pluginTree;
 void invalidPluginTree;
 void (null as unknown as ReDevPluginSurfaceTransport);
-void (null as unknown as PluginTrustedMethodResult);
 
 // @ts-expect-error generated catalog lists require the plugins array
 const invalidCatalog: PluginCatalogResult = {};
-// @ts-expect-error generated operation lists require the operations array
-const invalidOperations: PluginOperationList = {};
+// @ts-expect-error generated execution lists require the executions array
+const invalidExecutions: PluginExecutionList = {};
 // @ts-expect-error generated intent lists require the intents array
 const invalidIntents: PluginIntentList = {};
 // @ts-expect-error generated permission lists require the permissions array
@@ -83,7 +80,7 @@ function mutateRuntimeLimits(limits: PluginRuntimeLimits): void {
   limits.worker_count = 9;
 }
 void invalidCatalog;
-void invalidOperations;
+void invalidExecutions;
 void invalidIntents;
 void invalidPermissions;
 void invalidDiagnostics;

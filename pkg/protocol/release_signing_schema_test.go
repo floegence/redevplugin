@@ -93,8 +93,6 @@ func TestReleasePointerSchemasExposeTheExactClosedFieldSet(t *testing.T) {
 		"source_id",
 		"channel",
 		"epoch",
-		"previous_epoch",
-		"previous_document_sha256",
 		"ref",
 		"document_sha256",
 		"generated_at",
@@ -122,6 +120,11 @@ func TestReleasePointerSchemasExposeTheExactClosedFieldSet(t *testing.T) {
 			}
 			assertStringSet(t, requireStringSlice(t, pointer["required"], "pointer required"), want, "pointer required fields")
 			assertStringSet(t, objectKeys(requireNestedObject(t, pointer, "properties")), want, "pointer properties")
+			for _, retired := range []string{"previous_epoch", "previous_document_sha256"} {
+				if _, ok := requireNestedObject(t, pointer, "properties")[retired]; ok {
+					t.Fatalf("pointer schema retains publisher-continuity field %s", retired)
+				}
+			}
 		})
 	}
 }
@@ -176,16 +179,15 @@ func TestReleaseSigningSchemaFieldsMatchGoWireDTOs(t *testing.T) {
 	}
 }
 
-func TestLegacyReleaseSigningSchemasRemainAvailable(t *testing.T) {
+func TestRetiredPublisherContinuitySchemasAreRemoved(t *testing.T) {
 	root := repoRoot(t)
 	for _, name := range []string{
-		"release-source-policy-v2.schema.json",
 		"release-source-policy-pointer-v1.schema.json",
 		"release-revocation-v2.schema.json",
 		"release-revocation-pointer-v1.schema.json",
 	} {
-		if _, err := os.Stat(filepath.Join(root, "spec", "plugin", name)); err != nil {
-			t.Fatalf("legacy schema %s is unavailable: %v", name, err)
+		if _, err := os.Stat(filepath.Join(root, "spec", "plugin", name)); !os.IsNotExist(err) {
+			t.Fatalf("retired publisher-continuity schema %s remains available: %v", name, err)
 		}
 	}
 }

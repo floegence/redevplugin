@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,114 +62,17 @@ type TrustAssessment struct {
 }
 
 type ReleaseTrustBinding struct {
-	SourceID                        string `json:"source_id"`
-	Channel                         string `json:"channel"`
-	ReleaseMetadataRef              string `json:"release_metadata_ref"`
-	ReleaseMetadataSHA256           string `json:"release_metadata_sha256"`
-	PublisherID                     string `json:"publisher_id"`
-	PluginID                        string `json:"plugin_id"`
-	Version                         string `json:"version"`
-	VerifiedStateSHA256             string `json:"verified_state_sha256"`
-	RootEpoch                       string `json:"root_epoch"`
-	PolicyEpoch                     string `json:"policy_epoch"`
-	RevocationEpoch                 string `json:"revocation_epoch"`
-	ActivationEvidenceSchemaVersion string `json:"activation_evidence_schema_version"`
-	ActivationEvidenceSHA256        string `json:"activation_evidence_sha256"`
-}
-
-const ReleaseActivationEvidenceSchemaVersion = "redevplugin.release_activation_evidence.v1"
-
-type releaseActivationEvidenceV1 struct {
-	SchemaVersion         string `json:"schema_version"`
-	PluginInstanceID      string `json:"plugin_instance_id"`
-	PublisherID           string `json:"publisher_id"`
-	PluginID              string `json:"plugin_id"`
-	Version               string `json:"version"`
-	ActiveFingerprint     string `json:"active_fingerprint"`
-	PackageSHA256         string `json:"package_sha256"`
-	ManifestSHA256        string `json:"manifest_sha256"`
-	EntriesSHA256         string `json:"entries_sha256"`
 	SourceID              string `json:"source_id"`
 	Channel               string `json:"channel"`
 	ReleaseMetadataRef    string `json:"release_metadata_ref"`
 	ReleaseMetadataSHA256 string `json:"release_metadata_sha256"`
-	VerifiedStateSHA256   string `json:"verified_state_sha256"`
+	PublisherID           string `json:"publisher_id"`
+	PluginID              string `json:"plugin_id"`
+	Version               string `json:"version"`
+	PackageSigningKeyID   string `json:"package_signing_key_id"`
 	RootEpoch             string `json:"root_epoch"`
 	PolicyEpoch           string `json:"policy_epoch"`
 	RevocationEpoch       string `json:"revocation_epoch"`
-}
-
-func SealReleaseActivationEvidence(record *PluginRecord) error {
-	if record == nil || record.ReleaseTrustBinding == nil {
-		return nil
-	}
-	digest, err := releaseActivationEvidenceDigest(
-		record.PluginInstanceID, record.PublisherID, record.PluginID, record.Version,
-		record.ActiveFingerprint, record.PackageHash, record.ManifestHash, record.EntriesHash,
-		*record.ReleaseTrustBinding,
-	)
-	if err != nil {
-		return err
-	}
-	record.ReleaseTrustBinding.ActivationEvidenceSchemaVersion = ReleaseActivationEvidenceSchemaVersion
-	record.ReleaseTrustBinding.ActivationEvidenceSHA256 = digest
-	return nil
-}
-
-func ValidateReleaseActivationEvidence(record PluginRecord) error {
-	if record.ReleaseTrustBinding == nil {
-		return nil
-	}
-	binding := *record.ReleaseTrustBinding
-	if binding.ActivationEvidenceSchemaVersion != ReleaseActivationEvidenceSchemaVersion {
-		return errors.New("release activation evidence schema is invalid")
-	}
-	digest, err := releaseActivationEvidenceDigest(
-		record.PluginInstanceID, record.PublisherID, record.PluginID, record.Version,
-		record.ActiveFingerprint, record.PackageHash, record.ManifestHash, record.EntriesHash,
-		binding,
-	)
-	if err != nil || digest != binding.ActivationEvidenceSHA256 {
-		return errors.New("release activation evidence digest mismatch")
-	}
-	return nil
-}
-
-func releaseActivationEvidenceDigest(
-	pluginInstanceID string,
-	publisherID string,
-	pluginID string,
-	version string,
-	activeFingerprint string,
-	packageSHA256 string,
-	manifestSHA256 string,
-	entriesSHA256 string,
-	binding ReleaseTrustBinding,
-) (string, error) {
-	evidence := releaseActivationEvidenceV1{
-		SchemaVersion:    ReleaseActivationEvidenceSchemaVersion,
-		PluginInstanceID: pluginInstanceID, PublisherID: publisherID, PluginID: pluginID, Version: version,
-		ActiveFingerprint: activeFingerprint, PackageSHA256: packageSHA256, ManifestSHA256: manifestSHA256, EntriesSHA256: entriesSHA256,
-		SourceID: binding.SourceID, Channel: binding.Channel, ReleaseMetadataRef: binding.ReleaseMetadataRef,
-		ReleaseMetadataSHA256: binding.ReleaseMetadataSHA256, VerifiedStateSHA256: binding.VerifiedStateSHA256,
-		RootEpoch: binding.RootEpoch, PolicyEpoch: binding.PolicyEpoch, RevocationEpoch: binding.RevocationEpoch,
-	}
-	for _, value := range []string{
-		evidence.PluginInstanceID, evidence.PublisherID, evidence.PluginID, evidence.Version, evidence.ActiveFingerprint,
-		evidence.PackageSHA256, evidence.ManifestSHA256, evidence.EntriesSHA256, evidence.SourceID, evidence.Channel,
-		evidence.ReleaseMetadataRef, evidence.ReleaseMetadataSHA256, evidence.VerifiedStateSHA256,
-		evidence.RootEpoch, evidence.PolicyEpoch, evidence.RevocationEpoch,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return "", errors.New("release activation evidence is incomplete")
-		}
-	}
-	raw, err := json.Marshal(evidence)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256(raw)
-	return fmt.Sprintf("%x", digest[:]), nil
 }
 
 type PluginRecord struct {
@@ -251,14 +153,6 @@ type PutOptions struct {
 	Now time.Time `json:"-"`
 }
 
-type RefreshReleaseActivationEvidenceRequest struct {
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	ExpectedStateSHA256        string
-	NextStateSHA256            string
-	Now                        time.Time
-}
-
 type AuthorizationStore interface {
 	GrantPermission(ctx context.Context, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error)
 	RevokePermission(ctx context.Context, req permissions.RevokeRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error)
@@ -272,11 +166,8 @@ type AuthorizationStore interface {
 type Store interface {
 	Durable() bool
 	AuthorizationStore
-	ExternalPackageStore
-	ReleaseInstallOperationStore
 	plugindata.Catalog
 	PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error)
-	RefreshReleaseActivationEvidence(ctx context.Context, req RefreshReleaseActivationEvidenceRequest) (PluginRecord, error)
 	GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error)
 	ListPlugins(ctx context.Context) ([]PluginRecord, error)
 	SetEnableState(ctx context.Context, pluginInstanceID string, state EnableState, reason string, now time.Time) (PluginRecord, error)
@@ -287,25 +178,21 @@ type Store interface {
 var ErrNotFound = errors.New("plugin record not found")
 
 type MemoryStore struct {
-	mu                     sync.RWMutex
-	records                map[string]PluginRecord
-	permissionGrants       map[string]map[string]permissions.Record
-	securityPolicies       map[string]security.PolicyRecord
-	dataBindings           map[string]plugindata.Binding
-	dataObjects            map[string]plugindata.Object
-	externalPackageCommits map[string]externalPackageCommitReceipt
-	releaseInstallOps      map[string]releaseInstallOperationReceipt
+	mu               sync.RWMutex
+	records          map[string]PluginRecord
+	permissionGrants map[string]map[string]permissions.Record
+	securityPolicies map[string]security.PolicyRecord
+	dataBindings     map[string]plugindata.Binding
+	dataObjects      map[string]plugindata.Object
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		records:                map[string]PluginRecord{},
-		permissionGrants:       map[string]map[string]permissions.Record{},
-		securityPolicies:       map[string]security.PolicyRecord{},
-		dataBindings:           map[string]plugindata.Binding{},
-		dataObjects:            map[string]plugindata.Object{},
-		externalPackageCommits: map[string]externalPackageCommitReceipt{},
-		releaseInstallOps:      map[string]releaseInstallOperationReceipt{},
+		records:          map[string]PluginRecord{},
+		permissionGrants: map[string]map[string]permissions.Record{},
+		securityPolicies: map[string]security.PolicyRecord{},
+		dataBindings:     map[string]plugindata.Binding{},
+		dataObjects:      map[string]plugindata.Object{},
 	}
 }
 
@@ -323,21 +210,37 @@ func (s *MemoryStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := opts.Now
+	key := environmentRecordKey(ownerEnvHash, record.PluginInstanceID)
+	existing, exists := s.records[key]
+	var current *PluginRecord
+	if exists {
+		current = &existing
+	}
+	record, err = PreparePluginPut(ownerEnvHash, record, current, opts.Now)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	s.records[key] = record
+	return clonePluginRecord(record)
+}
+
+func PreparePluginPut(ownerEnvHash string, record PluginRecord, existing *PluginRecord, now time.Time) (PluginRecord, error) {
+	if record.OwnerEnvHash != "" && record.OwnerEnvHash != ownerEnvHash {
+		return PluginRecord{}, ErrOwnerScopeMismatch
+	}
+	if strings.TrimSpace(record.PluginInstanceID) == "" {
+		return PluginRecord{}, errors.New("plugin_instance_id is required")
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
-	}
-	if record.PluginInstanceID == "" {
-		return PluginRecord{}, errors.New("plugin_instance_id is required")
 	}
 	cloned, err := clonePluginRecord(record)
 	if err != nil {
 		return PluginRecord{}, fmt.Errorf("clone plugin record: %w", err)
 	}
 	record = cloned
-	key := environmentRecordKey(ownerEnvHash, record.PluginInstanceID)
-	existing, exists := s.records[key]
-	if exists {
+	record.OwnerEnvHash = ownerEnvHash
+	if existing != nil {
 		record.InstalledAt = existing.InstalledAt
 		record.ManagementRevision = existing.ManagementRevision + 1
 		record.PolicyRevision = existing.PolicyRevision
@@ -356,60 +259,24 @@ func (s *MemoryStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 	if err := validatePersistedPluginSecurityFacts(record); err != nil {
 		return PluginRecord{}, err
 	}
-	s.records[key] = record
-	return clonePluginRecord(record)
+	return record, nil
 }
 
-func (s *MemoryStore) RefreshReleaseActivationEvidence(ctx context.Context, req RefreshReleaseActivationEvidenceRequest) (PluginRecord, error) {
-	if ctx == nil {
-		return PluginRecord{}, context.Canceled
+func PrepareEnableState(record PluginRecord, state EnableState, reason string, now time.Time) PluginRecord {
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
-	if err := ctx.Err(); err != nil {
-		return PluginRecord{}, err
+	record.EnableState = state
+	record.DisabledReason = reason
+	record.ManagementRevision++
+	record.RevokeEpoch++
+	record.UpdatedAt = now
+	if state == EnableEnabled {
+		record.EnabledAt = &now
+	} else {
+		record.EnabledAt = nil
 	}
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return PluginRecord{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := environmentRecordKey(ownerEnvHash, req.PluginInstanceID)
-	record, ok := s.records[key]
-	if !ok || record.DeletedAt != nil {
-		return PluginRecord{}, ErrNotFound
-	}
-	if record.ManagementRevision != req.ExpectedManagementRevision {
-		return PluginRecord{}, &ManagementRevisionConflictError{PluginInstanceID: req.PluginInstanceID, Expected: req.ExpectedManagementRevision, Actual: record.ManagementRevision}
-	}
-	if record.ReleaseTrustBinding == nil {
-		return PluginRecord{}, ErrManagementRevisionConflict
-	}
-	if err := ValidateReleaseActivationEvidence(record); err != nil {
-		return PluginRecord{}, err
-	}
-	if record.ReleaseTrustBinding.VerifiedStateSHA256 == req.NextStateSHA256 {
-		return clonePluginRecord(record)
-	}
-	if record.ReleaseTrustBinding.VerifiedStateSHA256 != req.ExpectedStateSHA256 {
-		return PluginRecord{}, ErrManagementRevisionConflict
-	}
-	next, err := clonePluginRecord(record)
-	if err != nil {
-		return PluginRecord{}, err
-	}
-	next.ReleaseTrustBinding.VerifiedStateSHA256 = req.NextStateSHA256
-	if err := SealReleaseActivationEvidence(&next); err != nil {
-		return PluginRecord{}, err
-	}
-	if req.Now.IsZero() {
-		req.Now = time.Now().UTC()
-	}
-	next.UpdatedAt = req.Now
-	if err := validatePersistedPluginSecurityFacts(next); err != nil {
-		return PluginRecord{}, err
-	}
-	s.records[key] = next
-	return clonePluginRecord(next)
+	return record
 }
 
 func (s *MemoryStore) GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error) {
@@ -470,16 +337,7 @@ func (s *MemoryStore) SetEnableState(ctx context.Context, pluginInstanceID strin
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	record.EnableState = state
-	record.DisabledReason = reason
-	record.ManagementRevision++
-	record.RevokeEpoch++
-	record.UpdatedAt = now
-	if state == EnableEnabled {
-		record.EnabledAt = &now
-	} else {
-		record.EnabledAt = nil
-	}
+	record = PrepareEnableState(record, state, reason, now)
 	s.records[key] = record
 	return clonePluginRecord(record)
 }

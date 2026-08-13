@@ -2,99 +2,19 @@ package host
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/controlstore"
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/capability"
-	"github.com/floegence/redevplugin/pkg/operation"
-	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/sessionscope"
-	"github.com/floegence/redevplugin/pkg/stream"
 )
 
-type blockingSessionScopeRegistry struct {
-	registry.Store
-	entered chan struct{}
-	release chan struct{}
-}
-
-func TestDetachedCancellationRegistrationReservationPreventsPostFenceJob(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
-	ctx := hostTestContext()
-	session, err := requireUserSession(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope, err := session.SessionScope()
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := operation.Record{
-		OperationID: "operation_detached_registration_race", CancelAckTimeoutMS: 60_000,
-		ExecutionBinding: testSessionExecutionBinding(session),
-	}
-
-	registrationEntered := make(chan struct{})
-	registrationRelease := make(chan struct{})
-	registrationDone := make(chan error, 1)
-	go func() {
-		registrationDone <- h.withSessionScopeReservation(ctx, scope, func() error {
-			close(registrationEntered)
-			<-registrationRelease
-			return h.armDetachedOperationCancelAckTimeoutReserved(record, scope)
-		})
-	}()
-	<-registrationEntered
-	identity, err := h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
-	if err != nil {
-		t.Fatal(err)
-	}
-	type teardownResult struct {
-		teardown *sessionscope.Teardown
-		err      error
-	}
-	teardownDone := make(chan teardownResult, 1)
-	go func() {
-		teardown, _, beginErr := h.sessionScopes.BeginTeardown(ctx, scope, identity, time.Now().UTC())
-		teardownDone <- teardownResult{teardown: teardown, err: beginErr}
-	}()
-	select {
-	case result := <-teardownDone:
-		if result.teardown != nil {
-			result.teardown.Release()
-		}
-		t.Fatalf("session fence passed detached-job registration: %v", result.err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(registrationRelease)
-	if err := <-registrationDone; err != nil {
-		t.Fatal(err)
-	}
-	result := <-teardownDone
-	if result.err != nil {
-		t.Fatal(result.err)
-	}
-	defer result.teardown.Release()
-	if err := h.detachedCancelJobs.cancelSession(context.Background(), scope, errors.New("session revoked")); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := h.detachedCancelJobs.Load(record.OperationID); ok {
-		t.Fatal("detached cancellation job survived the exact session fence")
-	}
-	if err := h.armDetachedOperationCancelAckTimeout(context.Background(), record); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := h.detachedCancelJobs.Load(record.OperationID); ok {
-		t.Fatal("fenced session registered a new detached cancellation job")
-	}
-}
-
 func TestCriticalResourceMutationReservationsPreventPostFenceCommit(t *testing.T) {
-	for _, resource := range []string{"confirmation", "operation", "stream", "network_handle_grant", "storage_handle_grant"} {
+	for _, resource := range []string{"confirmation", "execution", "network_handle_grant", "storage_handle_grant"} {
 		t.Run(resource, func(t *testing.T) {
 			h, _, _ := newTestHost(t, true, true)
 			ctx := hostTestContext()
@@ -120,7 +40,7 @@ func TestCriticalResourceMutationReservationsPreventPostFenceCommit(t *testing.T
 				})
 			}()
 			<-entered
-			identity, err := h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
+			identity, err := h.sessionTeardownIdentity(ctx, scope)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -189,22 +109,14 @@ func criticalSessionResourceMutation(
 			})
 			return err
 		}
-	case "operation":
+	case "execution":
 		return func() error {
-			binding := testSessionExecutionBinding(session)
-			_, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
-				OperationID: "operation_reservation", ExecutionBinding: binding, Now: now,
+			return h.controlStore.Executions().CreateOwned(context.Background(), execution.Execution{
+				ID: "execution_reservation", PluginInstanceID: "plugini_reservation", Kind: execution.KindOperation,
+			}, controlstore.ExecutionOwner{
+				OwnerSessionHash: session.OwnerSessionHash, OwnerUserHash: session.OwnerUserHash,
+				OwnerEnvHash: session.OwnerEnvHash, SessionChannelIDHash: session.SessionChannelIDHash,
 			})
-			return err
-		}
-	case "stream":
-		return func() error {
-			binding := testSessionExecutionBinding(session)
-			binding.Execution = "subscription"
-			_, err := h.adapters.Streams.Register(context.Background(), stream.RegisterRequest{
-				StreamID: "stream_reservation", ExecutionBinding: binding, Now: now,
-			})
-			return err
 		}
 	case "network_handle_grant", "storage_handle_grant":
 		return func() error {
@@ -228,34 +140,6 @@ func criticalSessionResourceMutation(
 	}
 }
 
-func testSessionExecutionBinding(session sessionctx.Context) capability.ExecutionBinding {
-	return capability.ExecutionBinding{
-		InvocationID: "invocation_detached_registration_race", AuditCorrelationID: "audit_detached_registration_race",
-		PublisherID: "example.publisher", PluginID: "com.example.detached", PluginInstanceID: "plugini_detached",
-		PluginVersion: "1.0.0", ActiveFingerprint: "sha256:detached", CapabilityID: "example.detached",
-		CapabilityVersion: "1.0.0", BindingID: "detached", Method: "detached.run", TargetMethod: "detached.run",
-		Effect: capability.EffectExecute, Execution: "operation",
-		Target:                 capability.TargetDescriptor{Kind: "detached", Fields: map[string]any{"id": "one"}},
-		TargetDescriptorSHA256: "sha256:detached_target", OwnerSessionHash: session.OwnerSessionHash,
-		OwnerUserHash: session.OwnerUserHash, OwnerEnvHash: session.OwnerEnvHash,
-		SessionChannelIDHash: session.SessionChannelIDHash,
-	}
-}
-
-func (s *blockingSessionScopeRegistry) GetPlugin(ctx context.Context, pluginInstanceID string) (registry.PluginRecord, error) {
-	select {
-	case <-s.entered:
-	default:
-		close(s.entered)
-	}
-	select {
-	case <-ctx.Done():
-		return registry.PluginRecord{}, ctx.Err()
-	case <-s.release:
-		return s.Store.GetPlugin(ctx, pluginInstanceID)
-	}
-}
-
 func TestOpenSurfaceReservationPreventsPostFenceCommit(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	ctx := hostTestContext()
@@ -270,12 +154,10 @@ func TestOpenSurfaceReservationPreventsPostFenceCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocking := &blockingSessionScopeRegistry{
-		Store:   h.adapters.Registry,
-		entered: make(chan struct{}),
-		release: make(chan struct{}),
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, enabled.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	h.adapters.Registry = blocking
 	openDone := make(chan error, 1)
 	go func() {
 		_, err := h.OpenSurface(ctx, OpenSurfaceRequest{
@@ -286,7 +168,7 @@ func TestOpenSurfaceReservationPreventsPostFenceCommit(t *testing.T) {
 		})
 		openDone <- err
 	}()
-	<-blocking.entered
+	waitForQueuedLifecycleOperation(t, h.lifecycleLocks, []string{enabled.PluginInstanceID}, "surface open")
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +177,7 @@ func TestOpenSurfaceReservationPreventsPostFenceCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
+	identity, err := h.sessionTeardownIdentity(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +198,7 @@ func TestOpenSurfaceReservationPreventsPostFenceCommit(t *testing.T) {
 		t.Fatalf("session fence committed before resource reservation released: %v", result.err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	close(blocking.release)
+	releaseLifecycle()
 	if err := <-openDone; err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}

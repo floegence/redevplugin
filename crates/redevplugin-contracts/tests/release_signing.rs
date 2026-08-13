@@ -238,34 +238,6 @@ fn release_metadata_requires_exact_schema_ui_protocol_pairs() {
 }
 
 #[test]
-fn root_delegation_keeps_source_wide_and_channel_scoped_usages_disjoint() {
-    let fixture = fixture();
-    let mut source_wide = fixture.documents.root_delegation.clone();
-    source_wide.delegated_keys[0].usages = vec![
-        DelegatedKeyUsage::SigningLedger,
-        DelegatedKeyUsage::TrustedTime,
-    ];
-    source_wide.delegated_keys[0].channels.clear();
-    canonical_root_delegation(&source_wide).unwrap();
-
-    let mut with_channel = source_wide.clone();
-    with_channel.delegated_keys[0].channels = vec!["stable".to_owned()];
-    assert_eq!(
-        canonical_root_delegation(&with_channel),
-        Err(ReleaseContractError::InvalidDocument)
-    );
-
-    let mut mixed = source_wide;
-    mixed.delegated_keys[0].usages =
-        vec![DelegatedKeyUsage::Package, DelegatedKeyUsage::SigningLedger];
-    mixed.delegated_keys[0].channels = vec!["stable".to_owned()];
-    assert_eq!(
-        canonical_root_delegation(&mixed),
-        Err(ReleaseContractError::InvalidDocument)
-    );
-}
-
-#[test]
 fn release_signing_rejects_source_policy_schema_limit_drift() {
     let fixture = fixture();
     let mut input = source_policy_input(&fixture.documents.source_policy);
@@ -276,6 +248,97 @@ fn release_signing_rejects_source_policy_schema_limit_drift() {
         source_policy_signing_preimage(&input),
         Err(ReleaseContractError::InvalidDocument)
     );
+}
+
+#[test]
+fn release_signing_decoders_reject_retired_continuity_fields() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/release-signing-v1.json")).unwrap();
+    let documents = fixture["documents"].as_object().unwrap();
+
+    let cases: Vec<(&str, &[(&str, &str)], DocumentDecoder)> = vec![
+        (
+            "root_delegation",
+            &[
+                ("previous_root_epoch", "0"),
+                (
+                    "previous_delegation_sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+            ],
+            Box::new(|raw| decode_root_delegation(raw).map(|_| ())),
+        ),
+        (
+            "source_policy",
+            &[
+                ("previous_epoch", "0"),
+                (
+                    "previous_document_sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+            ],
+            Box::new(|raw| decode_source_policy(raw).map(|_| ())),
+        ),
+        (
+            "source_policy_pointer",
+            &[
+                ("previous_epoch", "0"),
+                (
+                    "previous_document_sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+            ],
+            Box::new(|raw| decode_source_policy_pointer(raw).map(|_| ())),
+        ),
+        (
+            "revocation",
+            &[
+                ("previous_epoch", "0"),
+                (
+                    "previous_document_sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+            ],
+            Box::new(|raw| decode_revocation(raw).map(|_| ())),
+        ),
+        (
+            "revocation_pointer",
+            &[
+                ("previous_epoch", "0"),
+                (
+                    "previous_document_sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+            ],
+            Box::new(|raw| decode_revocation_pointer(raw).map(|_| ())),
+        ),
+    ];
+
+    for (name, retired_fields, decode) in cases {
+        let mut current = documents[name].clone();
+        let object = current.as_object_mut().unwrap();
+        for (field, _) in retired_fields {
+            object.remove(*field);
+        }
+        let current_raw = serde_json::to_vec(&current).unwrap();
+        decode(&current_raw)
+            .unwrap_or_else(|error| panic!("{name} without retired continuity fields: {error:?}"));
+
+        let mut retired = current;
+        let object = retired.as_object_mut().unwrap();
+        for (field, value) in retired_fields {
+            object.insert(
+                (*field).to_owned(),
+                serde_json::Value::String((*value).to_owned()),
+            );
+        }
+        let retired_raw = serde_json::to_vec(&retired).unwrap();
+        assert_eq!(
+            decode(&retired_raw),
+            Err(ReleaseContractError::InvalidDocument),
+            "{name} accepted retired continuity fields"
+        );
+    }
 }
 
 fn fixture() -> Fixture {
@@ -357,8 +420,6 @@ fn root_input(value: &RootDelegationV1) -> RootDelegationInput {
     RootDelegationInput {
         source_id: value.source_id.clone(),
         root_epoch: value.root_epoch.clone(),
-        previous_root_epoch: value.previous_root_epoch.clone(),
-        previous_delegation_sha256: value.previous_delegation_sha256.clone(),
         generated_at: value.generated_at.clone(),
         expires_at: value.expires_at.clone(),
         delegated_keys: value.delegated_keys.clone(),
@@ -388,15 +449,12 @@ fn source_policy_input(value: &SourcePolicyV2) -> SourcePolicyInput {
         source_id: value.source_id.clone(),
         channel: value.channel.clone(),
         epoch: value.epoch.clone(),
-        previous_epoch: value.previous_epoch.clone(),
-        previous_document_sha256: value.previous_document_sha256.clone(),
         root_epoch: value.root_epoch.clone(),
         source_type: value.source_type.clone(),
         source_class: value.source_class.clone(),
         allowed_publishers: value.allowed_publishers.clone(),
         allowed_artifact_hosts: value.allowed_artifact_hosts.clone(),
         active_keys: value.active_keys.clone(),
-        capability_publisher_scopes: value.capability_publisher_scopes.clone(),
         require_signature: value.require_signature,
         install_policy: value.install_policy.clone(),
         unsigned_policy: value.unsigned_policy.clone(),
@@ -414,8 +472,6 @@ fn source_pointer_input(value: &SourcePolicyPointerV1) -> ReleasePointerInput {
         source_id: value.source_id.clone(),
         channel: value.channel.clone(),
         epoch: value.epoch.clone(),
-        previous_epoch: value.previous_epoch.clone(),
-        previous_document_sha256: value.previous_document_sha256.clone(),
         r#ref: value.r#ref.clone(),
         document_sha256: value.document_sha256.clone(),
         generated_at: value.generated_at.clone(),
@@ -429,8 +485,6 @@ fn revocation_input(value: &RevocationV2) -> RevocationInput {
         source_id: value.source_id.clone(),
         channel: value.channel.clone(),
         epoch: value.epoch.clone(),
-        previous_epoch: value.previous_epoch.clone(),
-        previous_document_sha256: value.previous_document_sha256.clone(),
         root_epoch: value.root_epoch.clone(),
         generated_at: value.generated_at.clone(),
         expires_at: value.expires_at.clone(),
@@ -445,8 +499,6 @@ fn revocation_pointer_input(value: &RevocationPointerV1) -> ReleasePointerInput 
         source_id: value.source_id.clone(),
         channel: value.channel.clone(),
         epoch: value.epoch.clone(),
-        previous_epoch: value.previous_epoch.clone(),
-        previous_document_sha256: value.previous_document_sha256.clone(),
         r#ref: value.r#ref.clone(),
         document_sha256: value.document_sha256.clone(),
         generated_at: value.generated_at.clone(),

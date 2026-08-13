@@ -233,7 +233,7 @@ if [[ "$MODE" != "fast" ]]; then
   }
 fi
 
-run_step go_race_core env GOWORK=off go test -p=1 -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/registry ./internal/runtimeclient ./pkg/storage ./pkg/stream ./pkg/stress || {
+run_step go_race_core env GOWORK=off go test -p=1 -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/registry ./internal/runtimeclient ./pkg/storage ./pkg/stress || {
   write_summary
   exit "$STATUS"
 }

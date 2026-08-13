@@ -48,7 +48,6 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 		string(security.ErrValuesRevisionMismatch),
 		string(security.ErrCapabilityError),
 		string(security.ErrWorkerError),
-		string(security.ErrOperationRateLimited),
 	}
 	genericCodes := readOpenAPIEnum(t, string(openAPIRaw), "GenericPlatformErrorCode")
 	assertStringSlicesEqual(t, genericCodes, diffStrings(platformCodes, typedCodes), "OpenAPI generic platform error code partition")
@@ -73,6 +72,28 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	assertStringSlicesEqual(t, readTypeScriptLiteralArray(t, string(tsSource), "pluginPlatformErrorCodes"), platformCodes, "TypeScript pluginPlatformErrorCodes")
 	assertStringSlicesEqual(t, readTypeScriptLiteralArray(t, string(tsSource), "pluginBridgeErrorCodes"), bridgeCodes, "TypeScript pluginBridgeErrorCodes")
 	assertStringSlicesEqual(t, readTypeScriptLiteralArray(t, string(tsSource), "pluginClientErrorCodes"), clientCodes, "TypeScript pluginClientErrorCodes")
+}
+
+func TestStableErrorCodesExposeOnlyCurrentExecutionLifecycle(t *testing.T) {
+	codes := strings.Join(errorCodesToStrings(security.PlatformErrorCodes()), "\n")
+	for _, retired := range []string{
+		"PLUGIN_OPERATION_BLOCKED",
+		"PLUGIN_OPERATION_NOT_FOUND",
+		"PLUGIN_OPERATION_NOT_CANCELABLE",
+	} {
+		if strings.Contains(codes, retired) {
+			t.Fatalf("platform error catalog retains retired operation lifecycle code %q", retired)
+		}
+	}
+	for _, current := range []string{
+		"PLUGIN_EXECUTION_BLOCKED",
+		"PLUGIN_EXECUTION_NOT_FOUND",
+		"PLUGIN_EXECUTION_NOT_CANCELABLE",
+	} {
+		if !strings.Contains(codes, current) {
+			t.Fatalf("platform error catalog is missing current execution lifecycle code %q", current)
+		}
+	}
 }
 
 func readOpenAPIEnum(t *testing.T, source string, schemaName string) []string {

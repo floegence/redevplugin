@@ -66,12 +66,12 @@ RFC 4647 parent lookup, then the author-declared default locale. They do not add
 an English fallback or mix locales within one resolved presentation.
 - `redevplugin release prepare`, `apply-signature`, `finalize`, and `verify`
   provide a resumable publisher flow for signed packages, release metadata,
-  source policy, revocation, root delegation, and signing-ledger evidence.
+  source policy, revocation, root delegation, and current release signatures.
   The external signer exchange contains only public key identities, signing
   subjects, preimage digests, and signatures; signer storage and invocation
   remain entirely outside this repository and its configuration.
 - `pkg/remoterelease` adapts one reviewed, content-addressed release asset set
-  to the release-document, signing-ledger, and Host artifact resolver
+  to the release-document and Host artifact resolver
   interfaces. Downloads reuse `pkg/externalsource` public-DNS validation,
   pinned dialing, TLS verification, redirect checks, exact host allowlists,
   byte ceilings, and SHA-256 readback. A bounded in-memory content-addressed
@@ -99,14 +99,10 @@ an English fallback or mix locales within one resolved presentation.
   PluginData persists non-secret values with a values revision; the independent
   SecretStore contributes redacted binding metadata and never enters an export
   bundle.
-- Stream stores include both in-memory and SQLite-backed implementations with
-  required event notification through `Observe` and revision-aware `Wait`.
-  Records persist revision, next sequence, buffered event count, and separate
-  byte/event limits. The memory store uses per-stream locks and notifications;
-  SQLite schema v4 performs bounded reads and range deletes without sequence
-  scans. Both stores default to 4096 buffered events, enforce the 65536 platform
-  ceiling, mark streams orphaned during plugin disable/uninstall transitions,
-  and fail closed on newer schemas.
+- The Host-owned control database stores asynchronous work as one Execution and
+  its ordered Events. Cursor reads are bounded by event and byte limits, waiters
+  are notified without polling, and disable/uninstall transitions fence the same
+  execution identity. Unknown or newer schemas fail closed.
 - Observability stores include both in-memory and SQLite-backed implementations.
   Audit events are append-only through the host adapter contract. Owner-scoped
   diagnostic listing preserves filtering, defaults, newest-first ordering,
@@ -121,12 +117,12 @@ an English fallback or mix locales within one resolved presentation.
   confirmation token id, request hash, plan hash, and expiry, but not the raw
   confirmation token; after a process restart, missing token-manager state makes
   any recovered intent fail closed instead of silently confirming.
-- Host lifecycle APIs include `RefreshEnabledPlugins`, which lets an embedding
+- Host lifecycle APIs include idempotent `RecoverEnabled`, which lets an embedding
   product restore enabled plugin runtime state after restart by replaying
   connectivity policy installation and
   surface publication from the durable registry without re-enabling plugins.
   The mountable HTTP adapter exposes the same behavior at
-  `POST /_redevplugin/api/plugins/runtime/refresh-enabled`, so hosts can keep
+  `POST /_redevplugin/api/plugins/runtime/recover-enabled`, so hosts can keep
   route mounting thin instead of reimplementing the refresh loop.
 - Updates and downgrades require the target package to keep the exact current
   PluginData shape. A package that changes settings or storage schema must use a
@@ -168,24 +164,24 @@ an English fallback or mix locales within one resolved presentation.
   local-import flows carry explicit local import provenance. Runnable verified
   state requires a host-provided `PackageTrustVerifier`; unsigned local packages
   can be enabled only when host policy permits local generated plugins.
-- Durable release-install operations continue through the authoritative enable
+- Durable release-install executions continue through the authoritative enable
   transaction for verified official releases by default. Required permissions
   are granted only when the request explicitly approves their signed IDs;
   otherwise the installed plugin remains disabled with a `needs_attention`
-  result. Fetch, download, hash, signature/ledger, capability, commit, and enable
-  phases persist real progress, retries, cache hits, durations, and terminal
-  activation so a host can resume observation after reconnect or restart.
+  result. Fetch, download, hash, signature, capability, commit, and enable
+  progress uses the shared Execution/Event stream so a host can resume
+  observation after reconnect or restart.
 - External package admission accepts a public HTTPS package URL or GitHub
-  repository through a staged `inspect -> commit -> query` transaction. The
+  repository through a process-local `inspect -> confirm -> install` transaction. The
   inspection returns immutable source, hash, signature, execution-approval,
   update-eligibility, and effective capability evidence for explicit review.
   Signature state does not decide basic manual installation: absent,
   unknown-signer, and temporarily unavailable assessments may be confirmed, but
   the plugin is committed disabled with no grants and manual-only updates.
-  Invalid or revoked signatures block commit and execution. Every request and
-  durable receipt remains bound to the authenticated environment owner, and the
-  downloader revalidates public HTTPS, DNS, redirects, TLS identity, size, and
-  the exact staged bytes before commit.
+  Invalid or revoked signatures block installation and execution. Each opaque,
+  expiring inspection stays bound to the exact authenticated owner/session; the
+  installer reopens and revalidates public HTTPS, DNS, redirects, TLS identity,
+  size, and exact bytes before the single Host control transaction.
 - The host-neutral `pkg/trust` package provides an Ed25519 verifier and keyring
   interface for package signatures. Hosts still decide which keys, publishers,
   registries, or enterprise policies are trusted, but they can reuse the common
@@ -213,36 +209,17 @@ an English fallback or mix locales within one resolved presentation.
   full release verification before writing the exact verified image and refuses
   to overwrite an existing target. Repeating a completed step with the same
   bytes is idempotent; a changed request, response, or output fails closed.
-  After the first release, pass `--previous <verified-output>` to `release
-  prepare`. The CLI fully verifies that public output, reuses exact same-epoch
-  root, policy, revocation, and pointer bytes, appends only new subjects to the
-  signing ledger, and emits the old-to-new checkpoint consistency proof.
-  Rollbacks, changed same-epoch trust content, invalid signatures, and
-  incomplete ledger history fail before publication.
-- Host capability publishers can keep signing outside the CLI with
-  `redevplugin host-capability prepare <config.json> <workspace>`,
-  `redevplugin host-capability apply-signature <workspace> <response.json>`,
-  and `redevplugin host-capability finalize <workspace> <out-dir>`. The request
-  contains only the public canonical manifest and its identity; the response is
-  bound to the exact request, public key, contract, and manifest. Repeating the
-  same step is idempotent, while changed inputs or workspace state fail closed.
-  The legacy single-process
-  `redevplugin host-capability build <config.json> <out-dir>` remains available.
-  Consumers verify
-  the published bundle with
-  `redevplugin host-capability verify <artifact-root> <pin.json> <public.json>`
-  and export its pinned client with
-  `redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check]`.
-  The generator never accepts an unsigned raw schema or a sibling checkout.
-  Contract, pin, manifest, compatibility, signature, and notices artifacts each
-  have a closed versioned JSON Schema. Verification regenerates the TypeScript
-  client from the signed contract and requires byte-for-byte identity before a
-  capability contract can enter the registry.
+  Current release verification binds each response to its exact Ed25519 key,
+  usage, and canonical signing preimage. SHA-256 or signature mismatches fail
+  before publication.
+  Capability contracts and exact pins are part of the host's closed local
+  registry. ReDevPlugin validates that registry at startup and does not resolve
+  or publish capability bundles through an independent distribution channel.
 - `testdata/generated_plugins/minimal`, `networked`, `storage`, and
   `method-contract` are positive generated-plugin fixtures that the platform
   gate validates and packages through the same CLI path. `method-contract`
   covers dangerous confirmation, atomic confirmation rejection, risk preflight,
-  operation/subscription cancel policy, and delete-effect metadata.
+  asynchronous cancellation policy and delete-effect metadata.
   `testdata/generated_plugins/malicious-build/*`
   must fail packaging before any dependency install or build step can run.
 - Mountable HTTP routes call a host-provided `websecurity.Guard` through the
@@ -283,11 +260,11 @@ an English fallback or mix locales within one resolved presentation.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
   generated render policy, TypeScript SDK route coverage, and package validator
   aligned.
-- Manifest v5 requires every method to declare closed request and response
+- Manifest v8 requires every method to declare closed request and response
   object schemas. Package validation compiles those schemas without remote
   references; Host dispatch validates requests before adapters/runtime and
   validates canonical redacted responses before returning them to plugin code.
-- Manifest v5 surface declarations use only host-neutral `view`, `command`, or
+- Manifest v8 surface declarations use only host-neutral `view`, `command`, or
   `background` kinds with optional `primary`, `secondary`, or `utility` intent.
   Activity bars, workbench panes, settings pages, and modal placement remain
   host-product decisions.
@@ -340,11 +317,9 @@ an English fallback or mix locales within one resolved presentation.
   independent Store, Linker, memory limiter, and fuel budget. Health reports
   active/queued counts, effective limits, and cache hit/miss/compile/entry/byte
   metrics.
-- Runtime lease replay stores let hosts extend the Rust in-process replay check
-  across runtime restarts and the full lease TTL window. `runtimeclient` provides
-  memory and SQLite stores that record only a hash of `lease_id + lease_nonce`;
-  `ProcessSupervisor` consumes the ledger before sending worker IPC and emits a
-  replay diagnostic without opening the artifact on duplicate use.
+- Runtime lease replay protection is generation-local and enforced before
+  worker IPC. A fresh runtime generation receives a fresh signing identity;
+  duplicate leases fail closed without a local trust ledger.
 - `ProcessSupervisor` generates a fresh ephemeral Ed25519 keypair for every
   supervisor instance, requires a non-empty public-key set in the startup
   `hello` frame, binds every worker lease to the current runtime audience, and
@@ -352,13 +327,13 @@ an English fallback or mix locales within one resolved presentation.
   signature or public key. The canonical payload excludes only `signature` and
   covers the display token ID, plugin metadata, active package
   fingerprint, issued timestamp, method, effect, execution mode, Host-owned
-  operation and stream ids, audit correlation id, surface and owner context,
+  execution id, audit correlation id, surface and owner context,
   descriptor hashes, quota limits, policy and management revisions, revoke
   epoch, expiry, `lease_nonce`, `key_id`, and runtime audience fields.
   The Go supervisor verifies that exact audience and signature before IPC. Rust
   independently rejects a missing keyring, invalid signature, expired lease, or
   any mismatch between the signed lease and the worker invocation's plugin,
-  method/effect/execution, operation/stream, audit, surface/session, or runtime
+  method/effect/execution, execution identity, audit, surface/session, or runtime
   binding before replay-cache consumption or artifact open. Worker-route
   dispatch emits a `plugin.runtime.lease.issued` Host audit event with
   lease/token IDs, runtime IDs, revision bindings, descriptor hashes, and expiry
@@ -380,7 +355,7 @@ an English fallback or mix locales within one resolved presentation.
   `PluginPlatformClient` for release-reference platform management routes:
   compatibility manifest read, release-ref install/update, downgrade,
   enable/disable/uninstall, surface open, runtime
-  start/health/refresh-enabled/stop, settings schema/read/patch, operation
+  start/health/recover-enabled/retry/stop, settings schema/read/patch, execution
   list/get/cancel, data export/import, permission grant/revoke/list, secret
   bind/test/delete, host-mediated intent list/invoke, and owner-scoped diagnostic
   event list. Audit events remain an internal host adapter contract and are not
@@ -389,7 +364,7 @@ an English fallback or mix locales within one resolved presentation.
   `PluginLocalImportClient`, exported only from
   `@floegence/redevplugin-ui/local-import`, for explicit dev/admin local-import
   route sets. List helpers preserve the same data wrapper fields returned by the
-  Go HTTP adapter, such as `operations`, `permissions`, and
+  Go HTTP adapter, such as `executions`, `permissions`, and
   `diagnostic_events`, so host products can consume the SDK and raw HTTP contract
   consistently. The browser harness uses the platform client from the host page to
   exercise settings management without exposing management
@@ -427,32 +402,21 @@ an English fallback or mix locales within one resolved presentation.
   package client and must not be imported by official release-reference product
   paths. The opaque bootstrap HTML factory remains internal and is not exported
   by any public entrypoint.
-- Operation cancel requests are durable Host decisions: `CancelOperation`
+- Execution cancellation is a durable Host decision: `CancelExecution`
   records `cancel_requested`, emits audit evidence, and signals the live
   execution lease. The lease captures an optional route-local cancellation hook
   from the capability adapter, core action, or runtime supervisor when execution
-  starts. Persisted inactive operations are never redispatched through a global
-  registry lookup; their durable cancel request remains observable.
-- Capability operation methods return one Host-owned operation id.
-  Subscription methods return a paired Host-owned operation id and stream id;
-  stream tickets bind both, while plugin workers receive only an opaque stream
-  handle plus the operation id. Generated business-error guards also bind the
-  capability id, capability version, and published details-schema SHA-256.
-- Stream reads are serialized per stream but wait without holding plugin
-  lifecycle locks. `Wait` uses `after_revision` to prevent lost wakeups. After an
-  event or terminal transition, the Host acquires the plugin lifecycle read
-  lock, revalidates registry and token audience, observes the batch, performs
-  one bounded read, and commits or rotates the single-use ticket. A failed read
-  preserves both events and the current ticket; a drained terminal stream
-  commits without allocating a replacement.
-- Operation and stream terminal states are reconciled as one paired lifecycle.
-  The first terminal intent is latched before either durable store is written;
-  a conflicting retry fails closed. Host startup terminates running or
-  cancel-requested records that have no live execution owner, and refuses
-  contradictory terminal operation/stream pairs.
-  Either store may reach terminal state first; Host startup and subsequent
-  execution entrypoints repair the other side, including after a SQLite reopen,
-  before releasing the live execution lease.
+  starts. An inactive persisted execution is never redispatched through a
+  global registry lookup; its durable cancellation remains observable.
+- Every asynchronous method returns one Host-owned execution ID. Progress,
+  output, and terminal state are ordered Events under that identity and cursor.
+  Any internal byte-stream handle remains an implementation detail and cannot
+  create a second public lifecycle. Generated business-error guards also bind
+  the capability ID, capability version, and details-schema SHA-256.
+- Event reads use a cursor to prevent lost wakeups, wait without holding plugin
+  lifecycle locks, and revalidate registry and token audience after each wait.
+  Terminal state and the final event commit atomically in the Host-owned control
+  database, so restart cannot expose contradictory public identities.
 - Dangerous method confirmation uses server-held one-time intents. When a method
   declares a risk preflight method, the Host runs that read-only sync preflight
   during confirmation preparation, returns the redacted plan plus `plan_hash` to
@@ -489,16 +453,16 @@ an English fallback or mix locales within one resolved presentation.
   manifest, signature, release-metadata, source-policy, source-revocations,
   token/ticket, bridge, opaque-surface document and transport, compatibility,
   release-manifest, IPC, WASM,
-  network-grant, worker invocation, all six host-capability artifact schemas,
+  network-grant, worker invocation, capability contract and exact-pin schemas,
   error-code, performance-evidence, and target-classifier contracts. Network
   grant schema, release manifest schema,
   and target-classifier fixture versions are tracked independently so hosts can
   distinguish grant envelope drift, bundle manifest drift, and classifier rule
   drift. The target-classifier fixture now carries executable allow/deny cases
   for public DNS, punycode hostnames, metadata hosts, RFC1918/ULA/link-local
-  addresses, and IPv4-mapped IPv6 private addresses, with Go and Rust tests
-  reading the same JSON contract.
-- `spec/plugin/contract-registry-v1.json` is the generated complete inventory of
+  addresses, and IPv4-mapped IPv6 private addresses, with Go tests reading the
+  same JSON contract.
+- `spec/plugin/contract-registry-v2.json` is the generated complete inventory of
   those public contract IDs, paths, versions, and SHA-256 identities; Go and
   TypeScript registries are generated from the same source set.
 - Platform package-set and publication tests keep Go, npm, Rust registry
@@ -603,10 +567,12 @@ an English fallback or mix locales within one resolved presentation.
   install -> enable -> open -> disable -> uninstall flow without importing any
   host-product internals. Dev uninstall always removes the copied package,
   plugin data, settings, secret bindings, and authorization records.
-- `redevplugin examples-server <state-root> <runtime-path>` starts the
+- `redevplugin examples-server <state-root> <runtime-path> <runtime-descriptor.json>` starts the
   user-facing Examples Showcase with Memos, Weather, and Sky Strike. Every
   example uses the Go Host, HTTP adapter, real Rust runtime, installable plugin
-  package, and persisted plugin storage. The examples server is a local
+  package, and persisted plugin storage. The descriptor must be generated at
+  build time and travel with the runtime; startup never derives its expected
+  digest from the binary it is about to execute. The examples server is a local
   conformance harness, not a production authentication or authorization
   implementation: it injects one synthetic session and accepts every valid
   platform action. An embedding product must provide its own authenticated
@@ -736,20 +702,21 @@ cargo deny check
 ```
 
 `check_redevplugin_runtime_contract.sh` also runs connectivity and runtimeclient
-Go tests plus the Rust target-classifier fixture test so grant validation, the
-Go classifier, Rust crate, and JSON contract cannot drift.
+Go tests plus the target-classifier fixture checks so grant validation, the Go
+classifier, and the shared JSON cases cannot drift. Target classification has
+no separately published Rust crate.
 
 `check_redevplugin_stress.sh` always emits a JSON summary. The `stress_evidence`
-field records structured counters from `pkg/stress`, including stream
-backpressure denials plus stream close/cancel fail-closed checks, operation
-cancel ownership and inactive-operation non-redispatch,
+field records structured counters from `pkg/stress`, including event
+backpressure denials, execution cancellation, and inactive-execution
+non-redispatch,
 connectivity grant/classifier denials, runtime revoke ACK p95 latency,
 redirect/DNS rebinding denials, HTTP proxy/CONNECT/header hardening, TCP mock
 database round trips, TCP size denials, TCP cancelled reads, UDP source-pin
 mismatch drops, UDP rate-limit denials, WebSocket round trips, WebSocket size
 denials, WebSocket cancelled reads, KV byte quota pressure, file-count quota,
 and SQLite sidecar/sparse bypass checks. The exact-main pre-push gate retains
-that local summary as release evidence for host-neutral broker/backpressure and
-stream close/cancel, operation cancel ownership, runtime-control, storage, and
+that local summary as release evidence for host-neutral broker/backpressure,
+execution cancellation, runtime-control, storage, and
 sandbox telemetry behavior. Non-Linux hosts require Docker so the Linux-only
 runtime revoke evidence is collected instead of skipped.

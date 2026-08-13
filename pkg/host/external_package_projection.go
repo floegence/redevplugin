@@ -284,30 +284,15 @@ type ExternalPackageInspection struct {
 	ExecutionApproval   ExternalPackageExecutionApproval   `json:"execution_approval"`
 	UpdateEligibility   ExternalPackageUpdateEligibility   `json:"update_eligibility"`
 	SecuritySummary     ExternalPackageSecuritySummary     `json:"security_summary"`
-	ConfirmationDigest  string                             `json:"confirmation_digest"`
 }
 
-type ExternalPackageCommitReceipt struct {
-	CommitID           string    `json:"commit_id"`
-	InspectionID       string    `json:"inspection_id"`
-	PackageSHA256      string    `json:"package_sha256"`
-	ManagementRevision uint64    `json:"management_revision"`
-	CommittedAt        time.Time `json:"committed_at"`
-}
-
-type ExternalPackageCommitResult struct {
-	Status              string                              `json:"status"`
-	InspectionID        string                              `json:"inspection_id"`
-	Intent              ExternalPackageIntent               `json:"intent"`
-	Receipt             *ExternalPackageCommitReceipt       `json:"receipt,omitempty"`
-	Plugin              *registry.PluginRecord              `json:"plugin,omitempty"`
+type InstalledExternalPackage struct {
+	Plugin              *registry.PluginRecord              `json:"plugin"`
 	SignatureAssessment *ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
 	SourceProvenance    *ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
 	ExecutionApproval   *ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
 	UpdateEligibility   *ExternalPackageUpdateEligibility   `json:"update_eligibility,omitempty"`
 	SecuritySummary     *ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
-	FailureCode         string                              `json:"failure_code,omitempty"`
-	RetryAfterMS        int                                 `json:"retry_after_ms,omitempty"`
 }
 
 // buildExternalPackageSecuritySummary is deterministic for semantically equal

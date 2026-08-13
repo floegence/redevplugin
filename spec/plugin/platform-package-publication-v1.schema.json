@@ -24,14 +24,13 @@
     },
     "rust_crates": {
       "type": "array",
-      "minItems": 6,
-      "maxItems": 6,
+      "minItems": 5,
+      "maxItems": 5,
       "uniqueItems": true,
       "prefixItems": [
         {"$ref": "#/$defs/rust_contracts"},
         {"$ref": "#/$defs/rust_ipc"},
         {"$ref": "#/$defs/rust_wasm_abi"},
-        {"$ref": "#/$defs/rust_target_classifier"},
         {"$ref": "#/$defs/rust_worker_sdk"},
         {"$ref": "#/$defs/rust_runtime"}
       ],
@@ -119,12 +118,6 @@
       "allOf": [
         {"$ref": "#/$defs/rust_crate"},
         {"properties": {"name": {"const": "redevplugin-wasm-abi"}}}
-      ]
-    },
-    "rust_target_classifier": {
-      "allOf": [
-        {"$ref": "#/$defs/rust_crate"},
-        {"properties": {"name": {"const": "redevplugin-target-classifier"}}}
       ]
     },
     "rust_worker_sdk": {

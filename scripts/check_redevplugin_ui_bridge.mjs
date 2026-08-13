@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const operationSnapshotFrame = "redevplugin.bridge.operation.snapshot";
+const executionFrames = [
+  "redevplugin.bridge.execution.cancel",
+  "redevplugin.bridge.execution.query",
+  "redevplugin.bridge.execution.events",
+];
 const trustedParentFields = [
   "redevplugin.bridge.handshake",
   "handshake_transcript_sha256",
@@ -14,12 +18,11 @@ const trustedParentFields = [
   "plugin_gateway_token",
   "asset_ticket",
   "asset_session",
-  "stream_ticket",
   "confirmation_token",
 ];
 const commonFrames = [
   "redevplugin.bridge.call",
-  "redevplugin.bridge.stream.read",
+  ...executionFrames,
   "redevplugin.ui.mount",
   "redevplugin.ui.patch",
   "redevplugin.bridge.cancel",
@@ -38,16 +41,14 @@ export async function validateUIBridgeRepository(rootDir = defaultRoot) {
   const descriptors = resolveBridgeContractDescriptors(source);
   const activeSchemaPath = resolveRepositoryPath(rootDir, descriptors.active.path, "active bridge artifact");
   const activeTransportPath = resolveRepositoryPath(rootDir, descriptors.active.transportPath, "active surface transport artifact");
-  const legacySchemaPath = resolveRepositoryPath(rootDir, descriptors.legacy.path, "legacy bridge artifact");
-  const [activeSchema, activeTransportSchema, legacySchema, surface, contracts, rendererPerformance] = await Promise.all([
+  const [activeSchema, activeTransportSchema, surface, contracts, rendererPerformance] = await Promise.all([
     readJSON(activeSchemaPath, "active bridge schema"),
     readJSON(activeTransportPath, "active surface transport schema"),
-    readJSON(legacySchemaPath, "legacy bridge schema"),
     readFile(join(rootDir, "packages/redevplugin-ui/src/surface.ts"), "utf8"),
     readFile(join(rootDir, "packages/redevplugin-ui/src/contracts.gen.ts"), "utf8"),
     readFile(join(rootDir, "scripts/measure_redevplugin_renderer_performance.mjs"), "utf8"),
   ]);
-  validateUIBridgeInputs({ descriptors, activeSchema, activeTransportSchema, legacySchema, surface, contracts, rendererPerformance });
+  validateUIBridgeInputs({ descriptors, activeSchema, activeTransportSchema, surface, contracts, rendererPerformance });
 }
 
 export function resolveBridgeContractDescriptors(source) {
@@ -64,13 +65,11 @@ export function resolveBridgeContractDescriptors(source) {
     /^opaque-surface-transport-v[1-9][0-9]*$/,
     "active surface transport schema",
   );
-  if (!Array.isArray(matrix.supported_plugin_ui_protocol_versions) ||
-      new Set(matrix.supported_plugin_ui_protocol_versions).size !== matrix.supported_plugin_ui_protocol_versions.length ||
-      !matrix.supported_plugin_ui_protocol_versions.includes(activeUI)) {
-    throw new Error("supported UI protocols must be unique and include the active protocol");
+  if (activeUI !== "plugin-ui-v7" || activeBridge !== "bridge-v7" || activeTransport !== "opaque-surface-transport-v6" ||
+      JSON.stringify(matrix.supported_plugin_ui_protocol_versions) !== JSON.stringify(["plugin-ui-v7"])) {
+    throw new Error("active UI bridge gate requires plugin-ui-v7, bridge-v7, and opaque-surface-transport-v6 only");
   }
-  if (!Array.isArray(matrix.plugin_ui_transport_mappings) ||
-      matrix.plugin_ui_transport_mappings.length !== matrix.supported_plugin_ui_protocol_versions.length) {
+  if (!Array.isArray(matrix.plugin_ui_transport_mappings) || matrix.plugin_ui_transport_mappings.length !== 1) {
     throw new Error("UI transport mappings must exactly cover supported UI protocols");
   }
   const mappings = new Map();
@@ -115,9 +114,6 @@ export function resolveBridgeContractDescriptors(source) {
       transportSchemaVersion: activeTransport,
       transportPath: activeTransportArtifact.path,
     },
-    // Historical bridge files remain auditable without advertising them as
-    // current package-admission mappings.
-    legacy: { uiProtocolVersion: "plugin-ui-v5", bridgeSchemaVersion: "bridge-v5", path: "spec/plugin/bridge-v5.schema.json" },
   };
 }
 
@@ -125,21 +121,22 @@ export function validateUIBridgeInputs({
   descriptors,
   activeSchema,
   activeTransportSchema,
-  legacySchema,
   surface,
   contracts,
   rendererPerformance,
 }) {
-  if (!isRecord(descriptors) || !isRecord(descriptors.active) || !isRecord(descriptors.legacy) ||
+  if (!isRecord(descriptors) || !isRecord(descriptors.active) ||
       typeof surface !== "string" || typeof contracts !== "string" || typeof rendererPerformance !== "string") {
     throw new Error("bridge gate inputs are invalid");
   }
   validateBridgeSchemaIdentity(activeSchema, descriptors.active);
   validateTransportSchemaIdentity(activeTransportSchema, descriptors.active);
-  validateBridgeSchemaIdentity(legacySchema, descriptors.legacy);
   validatePluginVisibleIsolation(activeSchema, "active bridge schema");
-  validatePluginVisibleIsolation(legacySchema, "legacy bridge-v5 schema");
 
+  if (descriptors.active.uiProtocolVersion !== "plugin-ui-v7") {
+    throw new Error(`bridge gate does not understand active UI protocol ${descriptors.active.uiProtocolVersion}`);
+  }
+  validateExecutionSchemas(activeSchema);
   const activeText = JSON.stringify(activeSchema);
   for (const frame of commonFrames) {
     if (!activeText.includes(frame)) throw new Error(`active bridge schema is missing ${frame}`);
@@ -148,43 +145,17 @@ export function validateUIBridgeInputs({
   if (activeText.includes("redevplugin.ui.render") || surface.includes("redevplugin.ui.render")) {
     throw new Error("active plugin UI must not retain the full-tree render frame");
   }
-  switch (descriptors.active.uiProtocolVersion) {
-  case "plugin-ui-v6":
-    validateOperationSnapshotSchema(activeSchema);
-    for (const required of [
-      operationSnapshotFrame,
-      'protocolVersion !== "plugin-ui-v6"',
-      'this.bootstrap.uiProtocolVersion !== "plugin-ui-v6"',
-    ]) {
-      if (!surface.includes(required)) throw new Error(`plugin-ui-v6 surface gate is missing ${required}`);
-    }
-    break;
-  case "plugin-ui-v7":
-    validateOperationSnapshotSchema(activeSchema);
-    if (!activeSchema.$defs?.context || !surface.includes("redevplugin.bridge.context") || !surface.includes("redevplugin.surface.context")) {
-      throw new Error("plugin-ui-v7 surface context contract is missing");
-    }
-    for (const required of [
-      operationSnapshotFrame,
-      'protocolVersion !== "plugin-ui-v6"',
-      'this.bootstrap.uiProtocolVersion !== "plugin-ui-v6"',
-    ]) {
-      if (!surface.includes(required)) throw new Error(`plugin-ui-v7 surface gate is missing ${required}`);
-    }
-    break;
-  case "plugin-ui-v5":
-    if (activeText.includes(operationSnapshotFrame) || activeSchema.$defs?.operation_snapshot !== undefined) {
-      throw new Error("plugin-ui-v5 active bridge must not expose operation snapshot");
-    }
-    break;
-  default:
-    throw new Error(`bridge gate does not understand active UI protocol ${descriptors.active.uiProtocolVersion}`);
+  if (!activeSchema.$defs?.context || !surface.includes("redevplugin.bridge.context") || !surface.includes("redevplugin.surface.context")) {
+    throw new Error("plugin-ui-v7 surface context contract is missing");
   }
-
-  const legacyText = JSON.stringify(legacySchema);
-  if (legacyText.includes(operationSnapshotFrame) || legacySchema.$defs?.operation_snapshot !== undefined) {
-    throw new Error("legacy bridge-v5 must not expose operation snapshot");
+  for (const required of [...executionFrames, "redevplugin.bridge.context", "redevplugin.surface.context", "pluginUIProtocolVersion"]) {
+    if (!surface.includes(required)) throw new Error(`plugin-ui-v7 surface gate is missing ${required}`);
   }
+  if (!surface.includes("pluginUIProtocolVersion") || /plugin-ui-v[1-6]\b/.test(surface)) {
+    throw new Error("surface SDK retains a retired UI protocol");
+  }
+  const bridgeProtocolLiterals = [...new Set(surface.match(/bridge-v[0-9]+/g) ?? [])];
+  if (bridgeProtocolLiterals.length > 0) throw new Error("surface SDK retains a retired bridge protocol");
   requireGeneratedVersion(contracts, "plugin_ui_protocol_version", descriptors.active.uiProtocolVersion);
   requireGeneratedVersion(contracts, "bridge_schema_version", descriptors.active.bridgeSchemaVersion);
   validateRendererPerformanceProtocolBinding(rendererPerformance);
@@ -371,18 +342,43 @@ function rendererPerformanceProtocolBindingError() {
   return new Error("renderer performance harness is not structurally bound to the generated active UI protocol");
 }
 
-function validateOperationSnapshotSchema(schema) {
-  const snapshot = schema.$defs?.operation_snapshot;
-  if (!isRecord(snapshot) || snapshot.type !== "object" || snapshot.additionalProperties !== false ||
-      JSON.stringify(snapshot.required) !== JSON.stringify(["type", "id", "operation_id"]) ||
-      !hasExactKeys(snapshot.properties, ["type", "id", "operation_id"]) ||
-      snapshot.properties?.type?.const !== operationSnapshotFrame ||
-      snapshot.properties?.id?.$ref !== "#/$defs/request_id" ||
-      snapshot.properties?.operation_id?.$ref !== "#/$defs/opaque_handle") {
-    throw new Error("plugin-ui-v6 operation snapshot frame is not closed and exact");
+function validateExecutionSchemas(schema) {
+  validateExecutionFrame(schema, "execution_cancel", {
+    required: ["type", "id", "execution_id"],
+    properties: ["type", "id", "execution_id", "reason"],
+    frame: "redevplugin.bridge.execution.cancel",
+    validate: (properties) => properties.reason?.type === "string" && properties.reason?.maxLength === 256,
+  });
+  validateExecutionFrame(schema, "execution_query", {
+    required: ["type", "id", "execution_id"],
+    properties: ["type", "id", "execution_id"],
+    frame: "redevplugin.bridge.execution.query",
+  });
+  validateExecutionFrame(schema, "execution_events", {
+    required: ["type", "id", "execution_id", "after_cursor"],
+    properties: ["type", "id", "execution_id", "after_cursor"],
+    frame: "redevplugin.bridge.execution.events",
+    validate: (properties) => properties.after_cursor?.type === "integer" &&
+      properties.after_cursor?.minimum === 0 && properties.after_cursor?.maximum === 9007199254740991,
+  });
+}
+
+function validateExecutionFrame(schema, definition, contract) {
+  const frame = schema.$defs?.[definition];
+  const properties = frame?.properties;
+  if (!isRecord(frame) || frame.type !== "object" || frame.additionalProperties !== false ||
+      JSON.stringify(frame.required) !== JSON.stringify(contract.required) ||
+      !hasExactKeys(properties, contract.properties) ||
+      properties?.type?.const !== contract.frame ||
+      properties?.id?.$ref !== "#/$defs/request_id" ||
+      properties?.execution_id?.$ref !== "#/$defs/opaque_handle" ||
+      (contract.validate && !contract.validate(properties))) {
+    throw new Error(`plugin-ui-v7 ${definition} frame is not closed and exact`);
   }
-  const references = Array.isArray(schema.oneOf) ? schema.oneOf.filter((entry) => entry?.$ref === "#/$defs/operation_snapshot") : [];
-  if (references.length !== 1) throw new Error("plugin-ui-v6 must publish exactly one operation snapshot frame reference");
+  const references = Array.isArray(schema.oneOf)
+    ? schema.oneOf.filter((entry) => entry?.$ref === `#/$defs/${definition}`)
+    : [];
+  if (references.length !== 1) throw new Error(`plugin-ui-v7 must publish exactly one ${definition} frame reference`);
 }
 
 function validateTransportSchemaIdentity(schema, descriptor) {

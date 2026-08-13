@@ -4,13 +4,12 @@
   "title": "ReDevPlugin external signer response v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "request_id", "usage", "key_id", "subject_identity_sha256", "signing_preimage_sha256", "algorithm", "signature"],
+  "required": ["schema_version", "request_id", "usage", "key_id", "signing_preimage_sha256", "algorithm", "signature"],
   "properties": {
     "schema_version": { "const": "redevplugin.external_signer_response.v1" },
     "request_id": { "$ref": "#/$defs/sha256" },
     "usage": { "$ref": "#/$defs/usage" },
     "key_id": { "$ref": "#/$defs/id" },
-    "subject_identity_sha256": { "$ref": "#/$defs/sha256" },
     "signing_preimage_sha256": { "$ref": "#/$defs/sha256" },
     "algorithm": { "const": "ed25519" },
     "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
@@ -25,9 +24,7 @@
       "redevplugin.release-signing.source-policy-document.v1",
       "redevplugin.release-signing.source-policy-pointer.v1",
       "redevplugin.release-signing.revocation-document.v1",
-      "redevplugin.release-signing.revocation-pointer.v1",
-      "redevplugin.release-signing.ledger-checkpoint.v1",
-      "redevplugin.release-signing.ledger-receipt.v1"
+      "redevplugin.release-signing.revocation-pointer.v1"
     ] }
   }
 }

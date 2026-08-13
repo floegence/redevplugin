@@ -52,16 +52,11 @@ func finalizeTestRelease(t *testing.T, ctx context.Context, packageDir string) s
 	if err != nil {
 		t.Fatal(err)
 	}
-	ledgerPublic, ledgerPrivate, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	config := ConfigV1{
 		SchemaVersion: ConfigSchemaVersion, SourceID: "example_official", Channel: "stable",
 		SourceType: "registry", SourceClass: "official", GeneratedAt: "2026-08-01T00:00:00Z", ExpiresAt: "2026-10-30T00:00:00Z",
 		Root:                 PublicKeyV1{Algorithm: "ed25519", KeyID: "example_root", PublicKey: base64.StdEncoding.EncodeToString(rootPublic)},
 		Signing:              PublicKeyV1{Algorithm: "ed25519", KeyID: "example_signing", PublicKey: base64.StdEncoding.EncodeToString(signingPublic)},
-		SigningLedger:        SigningLedgerConfigV1{LogID: "example_signing_log", PublicKeyV1: PublicKeyV1{Algorithm: "ed25519", KeyID: "example_ledger", PublicKey: base64.StdEncoding.EncodeToString(ledgerPublic)}},
 		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.6.23", Distribution: "registry_ref", HostRequirements: []releasecontract.ReleaseHostRequirement{},
 	}
 	workspace := filepath.Join(t.TempDir(), "workspace")
@@ -69,7 +64,7 @@ func finalizeTestRelease(t *testing.T, ctx context.Context, packageDir string) s
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys := map[string]ed25519.PrivateKey{config.Root.KeyID: rootPrivate, config.Signing.KeyID: signingPrivate, config.SigningLedger.KeyID: ledgerPrivate}
+	keys := map[string]ed25519.PrivateKey{config.Root.KeyID: rootPrivate, config.Signing.KeyID: signingPrivate}
 	for attempts := 0; status.PendingRequests > 0 && attempts < 32; attempts++ {
 		entries, err := os.ReadDir(filepath.Join(workspace, "requests"))
 		if err != nil {
@@ -90,7 +85,7 @@ func finalizeTestRelease(t *testing.T, ctx context.Context, packageDir string) s
 			}
 			response := ExternalSignerResponseV1{
 				SchemaVersion: ExternalSignerResponseSchemaVersion, RequestID: request.RequestID, Usage: request.Usage,
-				KeyID: request.KeyID, SubjectIdentitySHA256: request.SubjectIdentitySHA256,
+				KeyID:                 request.KeyID,
 				SigningPreimageSHA256: request.SigningPreimageSHA256, Algorithm: releasecontract.SignatureAlgorithmEd25519,
 				Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(keys[request.KeyID], digest)),
 			}

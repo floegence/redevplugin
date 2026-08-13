@@ -23,7 +23,6 @@ func TestTokenManagerRevokeSessionScopeUsesExactIndexAndCountsKinds(t *testing.T
 		TokenKindPluginGatewayToken,
 		TokenKindConfirmationToken,
 		TokenKindHandleGrant,
-		TokenKindStreamTicket,
 	}
 	targets := make(map[TokenKind]MintedToken, len(kinds))
 	siblings := make(map[TokenKind]MintedToken, len(kinds))
@@ -57,7 +56,6 @@ func TestTokenManagerRevokeSessionScopeUsesExactIndexAndCountsKinds(t *testing.T
 		PluginGatewayTokens: 1,
 		ConfirmationTokens:  1,
 		HandleGrants:        1,
-		StreamTickets:       1,
 	}) {
 		t.Fatalf("RevokeSessionScope() = %#v", revoked)
 	}

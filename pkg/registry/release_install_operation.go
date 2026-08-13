@@ -1,27 +1,16 @@
 package registry
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/mutation"
-)
-
-type ReleaseInstallOperationStatus string
-
-const (
-	ReleaseInstallQueued      ReleaseInstallOperationStatus = "queued"
-	ReleaseInstallRunning     ReleaseInstallOperationStatus = "running"
-	ReleaseInstallReconciling ReleaseInstallOperationStatus = "reconciling"
-	ReleaseInstallSucceeded   ReleaseInstallOperationStatus = "succeeded"
-	ReleaseInstallFailed      ReleaseInstallOperationStatus = "failed"
 )
 
 const (
@@ -104,7 +93,7 @@ type ReleaseInstallIdentity struct {
 
 type StartReleaseInstallOperationRequest struct {
 	RequestID        string                          `json:"request_id"`
-	OperationID      string                          `json:"operation_id"`
+	ExecutionID      string                          `json:"execution_id"`
 	PluginInstanceID string                          `json:"plugin_instance_id"`
 	Release          ReleaseInstallIdentity          `json:"release"`
 	Activation       ReleaseInstallActivationRequest `json:"activation"`
@@ -112,28 +101,27 @@ type StartReleaseInstallOperationRequest struct {
 }
 
 type UpdateReleaseInstallOperationRequest struct {
-	OperationID      string
-	ExpectedRevision uint64
-	Status           ReleaseInstallOperationStatus
-	Phase            string
-	Progress         ReleaseInstallProgress
-	ArtifactRole     string
-	CacheHit         bool
-	Attempt          int
-	RetryAfterMS     int64
-	MutationOutcome  mutation.Outcome
-	Failure          *ReleaseInstallFailure
-	PluginRecord     *PluginRecord
-	Activation       ReleaseInstallActivation
-	Now              time.Time
+	ExecutionID     string
+	ExpectedCursor  uint64
+	Status          string
+	Phase           string
+	Progress        ReleaseInstallProgress
+	ArtifactRole    string
+	CacheHit        bool
+	Attempt         int
+	RetryAfterMS    int64
+	MutationOutcome mutation.Outcome
+	Failure         *ReleaseInstallFailure
+	PluginRecord    *PluginRecord
+	Activation      ReleaseInstallActivation
+	Now             time.Time
 }
 
 type ReleaseInstallOperation struct {
+	Execution         execution.Execution             `json:"-"`
 	RequestID         string                          `json:"request_id"`
-	OperationID       string                          `json:"operation_id"`
 	PluginInstanceID  string                          `json:"plugin_instance_id"`
 	RequestSHA256     string                          `json:"request_sha256"`
-	Status            ReleaseInstallOperationStatus   `json:"status"`
 	Phase             string                          `json:"phase"`
 	Progress          ReleaseInstallProgress          `json:"progress"`
 	Attempt           int                             `json:"attempt"`
@@ -143,20 +131,8 @@ type ReleaseInstallOperation struct {
 	PluginRecord      *PluginRecord                   `json:"plugin_record,omitempty"`
 	Activation        ReleaseInstallActivation        `json:"activation"`
 	PhaseDiagnostics  []ReleaseInstallPhaseDiagnostic `json:"phase_diagnostics"`
-	CreatedAt         time.Time                       `json:"created_at"`
-	UpdatedAt         time.Time                       `json:"updated_at"`
-	TerminalAt        *time.Time                      `json:"terminal_at,omitempty"`
-	Revision          uint64                          `json:"-"`
 	Release           ReleaseInstallIdentity          `json:"-"`
 	ActivationRequest ReleaseInstallActivationRequest `json:"-"`
-}
-
-type ReleaseInstallOperationStore interface {
-	StartReleaseInstallOperation(context.Context, StartReleaseInstallOperationRequest) (ReleaseInstallOperation, bool, error)
-	UpdateReleaseInstallOperation(context.Context, UpdateReleaseInstallOperationRequest) (ReleaseInstallOperation, error)
-	GetReleaseInstallOperation(context.Context, string) (ReleaseInstallOperation, error)
-	GetReleaseInstallOperationByRequest(context.Context, string) (ReleaseInstallOperation, error)
-	ListReleaseInstallOperations(context.Context) ([]ReleaseInstallOperation, error)
 }
 
 var (
@@ -164,135 +140,6 @@ var (
 	ErrReleaseInstallOperationConflict = errors.New("release install operation conflict")
 	ErrInvalidReleaseInstallOperation  = errors.New("invalid release install operation")
 )
-
-type releaseInstallOperationReceipt struct {
-	OwnerEnvHash string
-	Request      StartReleaseInstallOperationRequest
-	Operation    ReleaseInstallOperation
-}
-
-func (s *MemoryStore) StartReleaseInstallOperation(ctx context.Context, req StartReleaseInstallOperationRequest) (ReleaseInstallOperation, bool, error) {
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return ReleaseInstallOperation{}, false, err
-	}
-	requestSHA256, err := releaseInstallRequestSHA256(req)
-	if err != nil {
-		return ReleaseInstallOperation{}, false, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	requestKey := releaseInstallRequestKey(ownerEnvHash, req.RequestID)
-	if receipt, ok := s.releaseInstallOps[requestKey]; ok {
-		if receipt.Operation.RequestSHA256 != requestSHA256 {
-			return ReleaseInstallOperation{}, false, ErrReleaseInstallOperationConflict
-		}
-		cloned, cloneErr := cloneReleaseInstallOperation(receipt.Operation)
-		return cloned, false, cloneErr
-	}
-	for _, receipt := range s.releaseInstallOps {
-		if receipt.OwnerEnvHash != ownerEnvHash {
-			continue
-		}
-		if receipt.Operation.OperationID == req.OperationID {
-			return ReleaseInstallOperation{}, false, ErrReleaseInstallOperationConflict
-		}
-		if receipt.Operation.PluginInstanceID == req.PluginInstanceID && releaseInstallOperationActive(receipt.Operation.Status) {
-			cloned, cloneErr := cloneReleaseInstallOperation(receipt.Operation)
-			return cloned, false, cloneErr
-		}
-	}
-	now := normalizedOperationTime(req.Now)
-	op := ReleaseInstallOperation{
-		RequestID: req.RequestID, OperationID: req.OperationID, PluginInstanceID: req.PluginInstanceID,
-		RequestSHA256: requestSHA256, Status: ReleaseInstallQueued, Phase: "queued",
-		Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, Attempt: 1,
-		MutationOutcome: mutation.OutcomeNotCommitted, CreatedAt: now, UpdatedAt: now, Revision: 1, Release: req.Release,
-		ActivationRequest: req.Activation, Activation: initialReleaseInstallActivation(req.Activation),
-		PhaseDiagnostics: []ReleaseInstallPhaseDiagnostic{{
-			Phase: "queued", Attempt: 1, Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, StartedAt: now,
-		}},
-	}
-	s.releaseInstallOps[requestKey] = releaseInstallOperationReceipt{OwnerEnvHash: ownerEnvHash, Request: req, Operation: op}
-	cloned, err := cloneReleaseInstallOperation(op)
-	return cloned, true, err
-}
-
-func (s *MemoryStore) UpdateReleaseInstallOperation(ctx context.Context, req UpdateReleaseInstallOperationRequest) (ReleaseInstallOperation, error) {
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return ReleaseInstallOperation{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key, receipt, ok := findMemoryReleaseInstallOperation(s.releaseInstallOps, ownerEnvHash, req.OperationID)
-	if !ok {
-		return ReleaseInstallOperation{}, ErrReleaseInstallOperationNotFound
-	}
-	updated, err := applyReleaseInstallOperationUpdate(receipt.Operation, req)
-	if err != nil {
-		return ReleaseInstallOperation{}, err
-	}
-	receipt.Operation = updated
-	s.releaseInstallOps[key] = receipt
-	return cloneReleaseInstallOperation(updated)
-}
-
-func (s *MemoryStore) GetReleaseInstallOperation(ctx context.Context, operationID string) (ReleaseInstallOperation, error) {
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return ReleaseInstallOperation{}, err
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, receipt, ok := findMemoryReleaseInstallOperation(s.releaseInstallOps, ownerEnvHash, operationID)
-	if !ok {
-		return ReleaseInstallOperation{}, ErrReleaseInstallOperationNotFound
-	}
-	return cloneReleaseInstallOperation(receipt.Operation)
-}
-
-func (s *MemoryStore) GetReleaseInstallOperationByRequest(ctx context.Context, requestID string) (ReleaseInstallOperation, error) {
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return ReleaseInstallOperation{}, err
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	receipt, ok := s.releaseInstallOps[releaseInstallRequestKey(ownerEnvHash, requestID)]
-	if !ok {
-		return ReleaseInstallOperation{}, ErrReleaseInstallOperationNotFound
-	}
-	return cloneReleaseInstallOperation(receipt.Operation)
-}
-
-func (s *MemoryStore) ListReleaseInstallOperations(ctx context.Context) ([]ReleaseInstallOperation, error) {
-	ownerEnvHash, err := environmentOwner(ctx)
-	if err != nil {
-		return nil, err
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]ReleaseInstallOperation, 0)
-	for _, receipt := range s.releaseInstallOps {
-		if receipt.OwnerEnvHash != ownerEnvHash {
-			continue
-		}
-		cloned, err := cloneReleaseInstallOperation(receipt.Operation)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, cloned)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
-			return result[i].OperationID < result[j].OperationID
-		}
-		return result[i].CreatedAt.Before(result[j].CreatedAt)
-	})
-	return result, nil
-}
 
 func releaseInstallRequestSHA256(req StartReleaseInstallOperationRequest) (string, error) {
 	if err := validateStartReleaseInstallOperation(req); err != nil {
@@ -312,9 +159,33 @@ func releaseInstallRequestSHA256(req StartReleaseInstallOperationRequest) (strin
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// PrepareReleaseInstallOperation validates one request and constructs the
+// canonical initial payload for a Host-owned Execution.
+func PrepareReleaseInstallOperation(req StartReleaseInstallOperationRequest) (ReleaseInstallOperation, error) {
+	requestSHA256, err := releaseInstallRequestSHA256(req)
+	if err != nil {
+		return ReleaseInstallOperation{}, err
+	}
+	now := normalizedOperationTime(req.Now)
+	return ReleaseInstallOperation{
+		Execution: execution.Execution{
+			ID: req.ExecutionID, PluginInstanceID: req.PluginInstanceID, Kind: execution.KindOperation,
+			Status: execution.StatusRunning, CreatedAt: now, UpdatedAt: now,
+		},
+		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID,
+		RequestSHA256: requestSHA256, Phase: "queued",
+		Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, Attempt: 1,
+		MutationOutcome: mutation.OutcomeNotCommitted, Release: req.Release,
+		ActivationRequest: req.Activation, Activation: initialReleaseInstallActivation(req.Activation),
+		PhaseDiagnostics: []ReleaseInstallPhaseDiagnostic{{
+			Phase: "queued", Attempt: 1, Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, StartedAt: now,
+		}},
+	}, nil
+}
+
 func validateStartReleaseInstallOperation(req StartReleaseInstallOperationRequest) error {
 	values := map[string]string{
-		"request_id": req.RequestID, "operation_id": req.OperationID, "plugin_instance_id": req.PluginInstanceID,
+		"request_id": req.RequestID, "execution_id": req.ExecutionID, "plugin_instance_id": req.PluginInstanceID,
 		"source_id": req.Release.SourceID, "channel": req.Release.Channel, "release_metadata_ref": req.Release.ReleaseMetadataRef,
 		"release_metadata_sha256": req.Release.ReleaseMetadataSHA256, "publisher_id": req.Release.PublisherID,
 		"plugin_id": req.Release.PluginID, "version": req.Release.Version,
@@ -353,10 +224,10 @@ func validCanonicalSHA256Hex(value string) bool {
 }
 
 func applyReleaseInstallOperationUpdate(current ReleaseInstallOperation, req UpdateReleaseInstallOperationRequest) (ReleaseInstallOperation, error) {
-	if req.ExpectedRevision == 0 || req.ExpectedRevision != current.Revision || strings.TrimSpace(req.OperationID) == "" || req.OperationID != current.OperationID {
+	if req.ExpectedCursor != current.Execution.Cursor || strings.TrimSpace(req.ExecutionID) == "" || req.ExecutionID != current.Execution.ID {
 		return ReleaseInstallOperation{}, ErrReleaseInstallOperationConflict
 	}
-	if !validReleaseInstallTransition(current.Status, req.Status) || strings.TrimSpace(req.Phase) == "" {
+	if !validReleaseInstallTransition(current.Execution.Status, req.Status) || strings.TrimSpace(req.Phase) == "" {
 		return ReleaseInstallOperation{}, ErrInvalidReleaseInstallOperation
 	}
 	if !validReleaseInstallPhase(req.Phase) || req.Attempt < 1 || req.Attempt > 3 || req.RetryAfterMS < 0 || req.RetryAfterMS > 10000 {
@@ -368,44 +239,45 @@ func applyReleaseInstallOperationUpdate(current ReleaseInstallOperation, req Upd
 	if !validReleaseInstallActivation(req.Activation) {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: activation result is invalid", ErrInvalidReleaseInstallOperation)
 	}
-	terminal := req.Status == ReleaseInstallSucceeded || req.Status == ReleaseInstallFailed
+	terminal := req.Status == execution.StatusCompleted || req.Status == execution.StatusFailed
 	if terminal != (req.Failure != nil || req.PluginRecord != nil) {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: terminal operation requires exactly one result", ErrInvalidReleaseInstallOperation)
 	}
-	if req.Status == ReleaseInstallSucceeded && (req.PluginRecord == nil || req.Failure != nil || req.MutationOutcome != mutation.OutcomeCommitted) {
+	if req.Status == execution.StatusCompleted && (req.PluginRecord == nil || req.Failure != nil || req.MutationOutcome != mutation.OutcomeCommitted) {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: successful operation requires committed plugin record", ErrInvalidReleaseInstallOperation)
 	}
-	if req.Status == ReleaseInstallSucceeded && req.Activation.Status == ReleaseInstallActivationPending {
+	if req.Status == execution.StatusCompleted && req.Activation.Status == ReleaseInstallActivationPending {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: successful operation requires a terminal activation result", ErrInvalidReleaseInstallOperation)
 	}
-	if req.Status == ReleaseInstallSucceeded && !releaseInstallActivationMatchesRecord(req.Activation, *req.PluginRecord) {
+	if req.Status == execution.StatusCompleted && !releaseInstallActivationMatchesRecord(req.Activation, *req.PluginRecord) {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: successful operation activation does not match plugin enable state", ErrInvalidReleaseInstallOperation)
 	}
-	if req.Status == ReleaseInstallFailed && (req.Failure == nil || req.PluginRecord != nil || strings.TrimSpace(req.Failure.Code) == "") {
+	if req.Status == execution.StatusFailed && (req.Failure == nil || req.PluginRecord != nil || strings.TrimSpace(req.Failure.Code) == "") {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: failed operation requires safe failure code", ErrInvalidReleaseInstallOperation)
 	}
 	now := normalizedOperationTime(req.Now)
-	if now.Before(current.UpdatedAt) {
+	if now.Before(current.Execution.UpdatedAt) {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: update time moved backwards", ErrInvalidReleaseInstallOperation)
 	}
 	current.PhaseDiagnostics = updateReleaseInstallPhaseDiagnostics(current, req, now)
-	current.Status, current.Phase, current.Progress = req.Status, req.Phase, req.Progress
+	current.Phase, current.Progress = req.Phase, req.Progress
 	current.Attempt, current.RetryAfterMS, current.MutationOutcome = req.Attempt, req.RetryAfterMS, req.MutationOutcome
-	current.Failure, current.PluginRecord, current.UpdatedAt = req.Failure, req.PluginRecord, now
+	current.Failure, current.PluginRecord = req.Failure, req.PluginRecord
 	current.Activation = req.Activation
-	current.Revision++
-	if terminal {
-		terminalAt := now
-		current.TerminalAt = &terminalAt
-	}
 	return current, nil
+}
+
+// ApplyReleaseInstallOperationUpdate is the canonical transition helper used
+// by Host-owned durable execution stores.
+func ApplyReleaseInstallOperationUpdate(current ReleaseInstallOperation, req UpdateReleaseInstallOperationRequest) (ReleaseInstallOperation, error) {
+	return applyReleaseInstallOperationUpdate(current, req)
 }
 
 func updateReleaseInstallPhaseDiagnostics(current ReleaseInstallOperation, req UpdateReleaseInstallOperationRequest, now time.Time) []ReleaseInstallPhaseDiagnostic {
 	diagnostics := append([]ReleaseInstallPhaseDiagnostic(nil), current.PhaseDiagnostics...)
 	if len(diagnostics) == 0 {
 		diagnostics = append(diagnostics, ReleaseInstallPhaseDiagnostic{
-			Phase: current.Phase, Attempt: max(current.Attempt, 1), Progress: current.Progress, StartedAt: current.UpdatedAt,
+			Phase: current.Phase, Attempt: max(current.Attempt, 1), Progress: current.Progress, StartedAt: current.Execution.UpdatedAt,
 		})
 	}
 	last := &diagnostics[len(diagnostics)-1]
@@ -423,7 +295,7 @@ func updateReleaseInstallPhaseDiagnostics(current ReleaseInstallOperation, req U
 		last.Progress = req.Progress
 		last.CacheHit = last.CacheHit || req.CacheHit
 	}
-	if req.Status == ReleaseInstallSucceeded || req.Status == ReleaseInstallFailed {
+	if req.Status == execution.StatusCompleted || req.Status == execution.StatusFailed {
 		last = &diagnostics[len(diagnostics)-1]
 		completedAt := now
 		last.CompletedAt = &completedAt
@@ -481,7 +353,7 @@ func validReleaseInstallActivation(activation ReleaseInstallActivation) bool {
 func validReleaseInstallPhase(phase string) bool {
 	switch phase {
 	case "queued", "fetch_trust_evidence", "fetch_release_evidence", "download_package", "verify_hashes",
-		"verify_signatures_ledger", "fetch_capability_evidence", "commit", "enable", "complete", "failed", "reconciling":
+		"verify_signatures", "fetch_capability_evidence", "commit", "enable", "complete", "failed", "reconciling":
 		return true
 	default:
 		return false
@@ -495,14 +367,10 @@ func releaseInstallActivationMatchesRecord(activation ReleaseInstallActivation, 
 	return record.EnableState == EnableDisabled
 }
 
-func validReleaseInstallTransition(from, to ReleaseInstallOperationStatus) bool {
+func validReleaseInstallTransition(from, to string) bool {
 	switch from {
-	case ReleaseInstallQueued:
-		return to == ReleaseInstallRunning || to == ReleaseInstallReconciling || to == ReleaseInstallFailed
-	case ReleaseInstallRunning:
-		return to == ReleaseInstallRunning || to == ReleaseInstallSucceeded || to == ReleaseInstallFailed
-	case ReleaseInstallReconciling:
-		return to == ReleaseInstallSucceeded || to == ReleaseInstallFailed
+	case execution.StatusRunning:
+		return to == execution.StatusRunning || to == execution.StatusCompleted || to == execution.StatusFailed
 	default:
 		return false
 	}
@@ -524,56 +392,9 @@ func validateReleaseInstallProgress(progress ReleaseInstallProgress) error {
 	return nil
 }
 
-func releaseInstallOperationActive(status ReleaseInstallOperationStatus) bool {
-	return status == ReleaseInstallQueued || status == ReleaseInstallRunning || status == ReleaseInstallReconciling
-}
-
 func normalizedOperationTime(value time.Time) time.Time {
 	if value.IsZero() {
 		return time.Now().UTC()
 	}
 	return value.UTC()
-}
-
-func releaseInstallRequestKey(ownerEnvHash, requestID string) string {
-	return ownerEnvHash + "\x00" + requestID
-}
-
-func findMemoryReleaseInstallOperation(values map[string]releaseInstallOperationReceipt, ownerEnvHash, operationID string) (string, releaseInstallOperationReceipt, bool) {
-	for key, receipt := range values {
-		if receipt.OwnerEnvHash == ownerEnvHash && receipt.Operation.OperationID == operationID {
-			return key, receipt, true
-		}
-	}
-	return "", releaseInstallOperationReceipt{}, false
-}
-
-func cloneReleaseInstallOperation(value ReleaseInstallOperation) (ReleaseInstallOperation, error) {
-	cloned := value
-	cloned.ActivationRequest.ApprovedPermissionIDs = append([]string(nil), value.ActivationRequest.ApprovedPermissionIDs...)
-	cloned.Activation.MissingPermissionIDs = append([]string(nil), value.Activation.MissingPermissionIDs...)
-	cloned.PhaseDiagnostics = make([]ReleaseInstallPhaseDiagnostic, len(value.PhaseDiagnostics))
-	for index, diagnostic := range value.PhaseDiagnostics {
-		cloned.PhaseDiagnostics[index] = diagnostic
-		if diagnostic.CompletedAt != nil {
-			completedAt := *diagnostic.CompletedAt
-			cloned.PhaseDiagnostics[index].CompletedAt = &completedAt
-		}
-	}
-	if value.Failure != nil {
-		failure := *value.Failure
-		cloned.Failure = &failure
-	}
-	if value.PluginRecord != nil {
-		record, err := clonePluginRecord(*value.PluginRecord)
-		if err != nil {
-			return ReleaseInstallOperation{}, err
-		}
-		cloned.PluginRecord = &record
-	}
-	if value.TerminalAt != nil {
-		terminalAt := *value.TerminalAt
-		cloned.TerminalAt = &terminalAt
-	}
-	return cloned, nil
 }

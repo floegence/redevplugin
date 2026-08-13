@@ -28,11 +28,8 @@ func writeAssembly(output string, assembly assemblyResult) error {
 		files[locator] = slices.Clone(value)
 	}
 	rootRaw, _ := json.Marshal(assembly.ReleaseRef.Root)
-	ledgerRaw, _ := json.Marshal(assembly.ReleaseRef.SigningLedger)
 	const rootLocator = "anchors/root.public.json"
-	const ledgerLocator = "anchors/signing-ledger.public.json"
 	files[rootLocator] = rootRaw
-	files[ledgerLocator] = ledgerRaw
 	locators := make([]string, 0, len(files))
 	for locator := range files {
 		locators = append(locators, locator)
@@ -125,16 +122,12 @@ func verifyOutputSnapshot(ctx context.Context, output string, verified *Verified
 	if err != nil {
 		return err
 	}
-	ledgerKey, err := decodePublicKey(reference.SigningLedger.PublicKeyV1)
-	if err != nil {
-		return err
-	}
 	rootBytes := byLocator[fmt.Sprintf("sources/%s/root/current.json", reference.ReleaseRef.SourceID)]
 	root, err := releasecontract.DecodeRootDelegation(rootBytes)
 	if err != nil {
 		return err
 	}
-	verifier := releasecontract.Ed25519PublicKeyVerifier{reference.Root.KeyID: rootKey, reference.SigningLedger.KeyID: ledgerKey}
+	verifier := releasecontract.Ed25519PublicKeyVerifier{reference.Root.KeyID: rootKey}
 	if err := releasecontract.VerifyRootDelegation(root, verifier); err != nil {
 		return err
 	}
@@ -207,48 +200,6 @@ func verifyOutputSnapshot(ctx context.Context, output string, verified *Verified
 		pkg.EntriesHash != reference.ReleaseRef.ExpectedHashes.EntriesSHA256 || pkg.PackageSignature.Signature != packageSignature.Signature {
 		return ErrInvalidWorkspace
 	}
-	expectedSubjects := []releasecontract.SigningSubjectV1{
-		{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageRootDelegation, SourceID: root.SourceID, RootEpoch: root.RootEpoch},
-		{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageSourcePolicyPointer, SourceID: policy.SourceID, Channel: policy.Channel, Epoch: policy.Epoch},
-		{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageSourcePolicy, SourceID: policy.SourceID, Channel: policy.Channel, Epoch: policy.Epoch},
-		{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageRevocationPointer, SourceID: revocation.SourceID, Channel: revocation.Channel, Epoch: revocation.Epoch},
-		{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageRevocation, SourceID: revocation.SourceID, Channel: revocation.Channel, Epoch: revocation.Epoch},
-		{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageReleaseMetadata, SourceID: metadata.SourceID, Channel: reference.ReleaseRef.Channel, PublisherID: metadata.PublisherID, PluginID: metadata.PluginID, Version: metadata.Version, ArtifactIdentitySHA256: reference.ReleaseRef.ReleaseMetadataSHA256},
-		{SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsagePackage, SourceID: metadata.SourceID, Channel: reference.ReleaseRef.Channel, PublisherID: metadata.PublisherID, PluginID: metadata.PluginID, Version: metadata.Version, ArtifactIdentitySHA256: strings.TrimPrefix(pkg.PackageHash, "sha256:")},
-	}
-	for _, subject := range expectedSubjects {
-		digest, err := releasecontract.SigningSubjectIdentitySHA256(subject)
-		if err != nil {
-			return err
-		}
-		evidenceRef := fmt.Sprintf("sources/%s/signing-ledger/evidence/%s.json", reference.ReleaseRef.SourceID, digest)
-		evidence, err := releasecontract.DecodeSigningLedgerEvidence(byLocator[evidenceRef])
-		if err != nil {
-			return err
-		}
-		receipt, err := releasecontract.DecodeSigningLedgerReceipt(byLocator[evidence.ReceiptRef])
-		if err != nil || sha256Hex(byLocator[evidence.ReceiptRef]) != evidence.ReceiptSHA256 {
-			return ErrInvalidWorkspace
-		}
-		checkpoint, err := releasecontract.DecodeSigningLedgerCheckpoint(byLocator[evidence.CheckpointRef])
-		if err != nil || sha256Hex(byLocator[evidence.CheckpointRef]) != evidence.CheckpointSHA256 {
-			return ErrInvalidWorkspace
-		}
-		inclusion, err := releasecontract.DecodeSigningLedgerInclusionProof(byLocator[evidence.InclusionProofRef])
-		if err != nil || sha256Hex(byLocator[evidence.InclusionProofRef]) != evidence.InclusionProofSHA256 {
-			return ErrInvalidWorkspace
-		}
-		latest, err := releasecontract.DecodeSigningLedgerLatestProof(byLocator[evidence.LatestProofRef])
-		if err != nil || sha256Hex(byLocator[evidence.LatestProofRef]) != evidence.LatestProofSHA256 {
-			return ErrInvalidWorkspace
-		}
-		if err := releasecontract.VerifySigningLedgerInclusion(receipt, inclusion, checkpoint, verifier); err != nil {
-			return err
-		}
-		if err := releasecontract.VerifySigningLedgerLatest(receipt, latest, checkpoint, verifier); err != nil {
-			return err
-		}
-	}
 	presentation := pkg.Manifest.PresentationCatalog()
 	presentationSHA256, err := manifest.PresentationCatalogSHA256(presentation)
 	if err != nil {
@@ -279,8 +230,6 @@ func outputAssetName(reference PublisherReleaseRefV1, locator string) string {
 	switch locator {
 	case "anchors/root.public.json":
 		return "root.public.json"
-	case "anchors/signing-ledger.public.json":
-		return "signing-ledger.public.json"
 	case reference.ReleaseRef.ReleaseMetadataRef:
 		return pluginSlug(reference.ReleaseRef.PluginID) + "-" + reference.ReleaseRef.Version + ".release.json"
 	}

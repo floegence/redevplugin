@@ -5,8 +5,11 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
+
+var _ host.ManagementAction = RouteActionListPlugins
 
 func TestSessionContextRequiresCompleteAuthenticatedPrincipal(t *testing.T) {
 	valid := sessionctx.Context{

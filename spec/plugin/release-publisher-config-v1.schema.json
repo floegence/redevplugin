@@ -14,7 +14,6 @@
     "expires_at",
     "root",
     "signing",
-    "signing_ledger",
     "allowed_artifact_hosts",
     "min_redevplugin_version",
     "distribution",
@@ -30,7 +29,6 @@
     "expires_at": { "$ref": "#/$defs/canonical_time" },
     "root": { "$ref": "#/$defs/public_key" },
     "signing": { "$ref": "#/$defs/public_key" },
-    "signing_ledger": { "$ref": "#/$defs/signing_ledger" },
     "allowed_artifact_hosts": {
       "type": "array",
       "maxItems": 1024,
@@ -63,17 +61,6 @@
       "additionalProperties": false,
       "required": ["algorithm", "key_id", "public_key"],
       "properties": {
-        "algorithm": { "const": "ed25519" },
-        "key_id": { "$ref": "#/$defs/id" },
-        "public_key": { "$ref": "#/$defs/public_key_value" }
-      }
-    },
-    "signing_ledger": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["log_id", "algorithm", "key_id", "public_key"],
-      "properties": {
-        "log_id": { "$ref": "#/$defs/id" },
         "algorithm": { "const": "ed25519" },
         "key_id": { "$ref": "#/$defs/id" },
         "public_key": { "$ref": "#/$defs/public_key_value" }

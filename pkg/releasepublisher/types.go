@@ -18,11 +18,6 @@ type PublicKeyV1 struct {
 	PublicKey string `json:"public_key"`
 }
 
-type SigningLedgerConfigV1 struct {
-	LogID string `json:"log_id"`
-	PublicKeyV1
-}
-
 type ConfigV1 struct {
 	SchemaVersion         string                                   `json:"schema_version"`
 	SourceID              string                                   `json:"source_id"`
@@ -33,7 +28,6 @@ type ConfigV1 struct {
 	ExpiresAt             string                                   `json:"expires_at"`
 	Root                  PublicKeyV1                              `json:"root"`
 	Signing               PublicKeyV1                              `json:"signing"`
-	SigningLedger         SigningLedgerConfigV1                    `json:"signing_ledger"`
 	AllowedArtifactHosts  []string                                 `json:"allowed_artifact_hosts"`
 	MinReDevPluginVersion string                                   `json:"min_redevplugin_version"`
 	Distribution          string                                   `json:"distribution"`
@@ -65,11 +59,10 @@ type PublishedFileV1 struct {
 }
 
 type PublisherReleaseRefV1 struct {
-	SchemaVersion string                `json:"schema_version"`
-	ReleaseRef    PluginReleaseRefV1    `json:"release_ref"`
-	Root          PublicKeyV1           `json:"root"`
-	SigningLedger SigningLedgerConfigV1 `json:"signing_ledger"`
-	Files         []PublishedFileV1     `json:"files"`
+	SchemaVersion string             `json:"schema_version"`
+	ReleaseRef    PluginReleaseRefV1 `json:"release_ref"`
+	Root          PublicKeyV1        `json:"root"`
+	Files         []PublishedFileV1  `json:"files"`
 }
 
 type VerifiedOutputV1 struct {

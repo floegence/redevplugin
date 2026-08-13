@@ -20,14 +20,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/floegence/redevplugin/internal/controlstore"
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -38,7 +38,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -47,24 +46,13 @@ type successResponse struct {
 	Data any  `json:"data"`
 }
 
-type mutationSuccessResponse struct {
-	OK   bool `json:"ok"`
-	Data any  `json:"data"`
-}
+type mutationSuccessResponse = successResponse
 
 func (r successResponse) MarshalJSON() ([]byte, error) {
 	if !r.OK {
 		return nil, errors.New("success response must set ok=true")
 	}
 	type successAlias successResponse
-	return json.Marshal(successAlias(r))
-}
-
-func (r mutationSuccessResponse) MarshalJSON() ([]byte, error) {
-	if !r.OK {
-		return nil, errors.New("mutation success response must set ok=true")
-	}
-	type successAlias mutationSuccessResponse
 	return json.Marshal(successAlias(r))
 }
 
@@ -97,7 +85,6 @@ type mutationErrorBody struct {
 }
 
 type errorDetails struct {
-	RetryAfterMS               int                         `json:"retry_after_ms,omitempty"`
 	Reason                     string                      `json:"reason,omitempty"`
 	Path                       string                      `json:"path,omitempty"`
 	Pointer                    string                      `json:"pointer,omitempty"`
@@ -246,10 +233,6 @@ func (d errorDetails) validateForCode(code security.ErrorCode) error {
 		if !validJSONLimitReason(d.Reason) || d.hasNonReasonDetails() {
 			return errors.New("JSON limit error details are incomplete")
 		}
-	case security.ErrOperationRateLimited:
-		if d.RetryAfterMS < host.SurfaceOperationSnapshotRetryMinMS || d.RetryAfterMS > host.SurfaceOperationSnapshotRetryMaxMS || d.hasNonRateLimitDetails() {
-			return errors.New("operation rate limit details are incomplete")
-		}
 	case security.ErrManifestInvalid, security.ErrPackageInvalid, security.ErrPackageTooLarge, security.ErrPackagePathForbidden:
 		if _, ok := packageValidationReasonSet[d.Reason]; !ok || d.hasNonPackageDetails() {
 			return errors.New("package validation details are incomplete")
@@ -315,33 +298,27 @@ func (d errorDetails) hasPackageDetails() bool {
 }
 
 func (d errorDetails) hasNonRevisionDetails() bool {
-	return d.RetryAfterMS != 0 || d.hasPackageDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+	return d.hasPackageDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
 }
 
 func (d errorDetails) hasNonCapabilityDetails() bool {
-	return d.RetryAfterMS != 0 || d.hasPackageDetails() || d.hasRevisionDetails() || d.hasWorkerDetails()
+	return d.hasPackageDetails() || d.hasRevisionDetails() || d.hasWorkerDetails()
 }
 
 func (d errorDetails) hasNonWorkerDetails() bool {
-	return d.RetryAfterMS != 0 || d.hasPackageDetails() || d.hasRevisionDetails() || d.hasCapabilityDetails()
+	return d.hasPackageDetails() || d.hasRevisionDetails() || d.hasCapabilityDetails()
 }
 
 func (d errorDetails) hasNonReasonDetails() bool {
-	return d.RetryAfterMS != 0 || d.Path != "" || d.Pointer != "" || d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+	return d.Path != "" || d.Pointer != "" || d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
 }
 
 func (d errorDetails) hasNonPackageDetails() bool {
-	return d.RetryAfterMS != 0 || d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
-}
-
-func (d errorDetails) hasNonRateLimitDetails() bool {
-	copy := d
-	copy.RetryAfterMS = 0
-	return !copy.empty()
+	return d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
 }
 
 func (d errorDetails) empty() bool {
-	return d.RetryAfterMS == 0 && !d.hasPackageDetails() && !d.hasRevisionDetails() && !d.hasCapabilityDetails() && !d.hasWorkerDetails() && d.SessionScope == nil
+	return !d.hasPackageDetails() && !d.hasRevisionDetails() && !d.hasCapabilityDetails() && !d.hasWorkerDetails() && d.SessionScope == nil
 }
 
 func (d errorDetails) MarshalJSON() ([]byte, error) {
@@ -447,19 +424,22 @@ type installReleaseRefRequest struct {
 	PluginInstanceID string            `json:"plugin_instance_id"`
 }
 
+type startReleaseInstallExecutionRequest struct {
+	RequestID             string            `json:"request_id"`
+	PluginInstanceID      string            `json:"plugin_instance_id"`
+	ReleaseRef            releaseRefRequest `json:"release_ref"`
+	ActivateAfterInstall  *bool             `json:"activate_after_install,omitempty"`
+	ApprovedPermissionIDs []string          `json:"approved_permission_ids,omitempty"`
+}
+
 type inspectExternalPackageRequest struct {
 	Intent host.ExternalPackageIntent `json:"intent"`
 	Source host.ExternalPackageSource `json:"source"`
 }
 
-type commitExternalPackageRequest struct {
-	InspectionID       string `json:"inspection_id"`
-	ConfirmationDigest string `json:"confirmation_digest"`
-}
-
-type queryExternalPackageCommitRequest struct {
-	InspectionID string `json:"inspection_id"`
-	CommitID     string `json:"commit_id,omitempty"`
+type installInspectedPackageRequest struct {
+	InspectionID          string `json:"inspection_id"`
+	ExpectedPackageSHA256 string `json:"expected_package_sha256"`
 }
 
 type updateReleaseRefRequest struct {
@@ -565,29 +545,6 @@ type readSurfaceAssetRequest struct {
 	AssetSession   string `json:"asset_session"`
 	AssetSessionID string `json:"asset_session_id"`
 	BindingID      string `json:"binding_id"`
-}
-
-type readSurfaceStreamRequest struct {
-	StreamID     string `json:"stream_id"`
-	StreamTicket string `json:"stream_ticket"`
-	ReadID       string `json:"read_id"`
-}
-
-type acknowledgeSurfaceStreamRequest struct {
-	StreamID     string `json:"stream_id"`
-	StreamTicket string `json:"stream_ticket"`
-	DeliveryID   string `json:"delivery_id"`
-}
-
-type cancelSurfaceOperationRequest struct {
-	OperationID     string `json:"operation_id"`
-	BridgeChannelID string `json:"bridge_channel_id"`
-	Reason          string `json:"reason,omitempty"`
-}
-
-type getSurfaceOperationRequest struct {
-	OperationID     string `json:"operation_id"`
-	BridgeChannelID string `json:"bridge_channel_id"`
 }
 
 type rejectSurfaceConfirmationRequest struct {
@@ -716,191 +673,34 @@ type patchSettingsRequest struct {
 	Remove                 []string       `json:"remove,omitempty"`
 }
 
-type cancelOperationRequest struct {
+type cancelExecutionRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-type operationPermissionEvidenceResponse struct {
-	Required []string `json:"required"`
-	Granted  []string `json:"granted"`
+type executionListResponse struct {
+	Executions []execution.Execution `json:"executions"`
+	NextCursor uint64                `json:"next_cursor,omitempty"`
 }
 
-type operationConfirmationEvidenceResponse struct {
-	Required       bool   `json:"required"`
-	Confirmed      bool   `json:"confirmed"`
-	ConfirmationID string `json:"confirmation_id,omitempty"`
-	RequestSHA256  string `json:"request_sha256,omitempty"`
-	PlanSHA256     string `json:"plan_sha256,omitempty"`
-	TargetSHA256   string `json:"target_sha256,omitempty"`
+type executionEventListResponse struct {
+	ExecutionID string            `json:"execution_id"`
+	Events      []execution.Event `json:"events"`
+	Cursor      uint64            `json:"cursor"`
 }
 
-type operationRevisionEvidenceResponse struct {
-	PolicyRevision     uint64 `json:"policy_revision"`
-	ManagementRevision uint64 `json:"management_revision"`
-	RevokeEpoch        uint64 `json:"revoke_epoch"`
-}
-
-type operationQuotaResponse struct {
-	MaxConcurrent  int        `json:"max_concurrent,omitempty"`
-	MaxDurationMS  int        `json:"max_duration_ms,omitempty"`
-	MaxStreamBytes int64      `json:"max_stream_bytes,omitempty"`
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
-}
-
-type operationTargetResponse struct {
-	Kind   string         `json:"kind"`
-	Fields map[string]any `json:"fields"`
-}
-
-type operationResponse struct {
-	OperationID             string                                `json:"operation_id"`
-	InvocationID            string                                `json:"invocation_id"`
-	AuditCorrelationID      string                                `json:"audit_correlation_id"`
-	StreamID                string                                `json:"stream_id,omitempty"`
-	PublisherID             string                                `json:"publisher_id"`
-	PluginID                string                                `json:"plugin_id"`
-	PluginInstanceID        string                                `json:"plugin_instance_id"`
-	PluginVersion           string                                `json:"plugin_version"`
-	ActiveFingerprint       string                                `json:"active_fingerprint"`
-	SurfaceInstanceID       string                                `json:"surface_instance_id,omitempty"`
-	RouteKind               string                                `json:"route_kind"`
-	CapabilityID            string                                `json:"capability_id"`
-	CapabilityVersion       string                                `json:"capability_version"`
-	BindingID               string                                `json:"binding_id"`
-	Contract                *capabilityPinResponse                `json:"contract,omitempty"`
-	Method                  string                                `json:"method"`
-	TargetMethod            string                                `json:"target_method"`
-	Effect                  string                                `json:"effect"`
-	Execution               string                                `json:"execution"`
-	Permissions             operationPermissionEvidenceResponse   `json:"permissions"`
-	Confirmation            operationConfirmationEvidenceResponse `json:"confirmation"`
-	Revision                operationRevisionEvidenceResponse     `json:"revision"`
-	Quota                   operationQuotaResponse                `json:"quota"`
-	Target                  operationTargetResponse               `json:"target"`
-	TargetDescriptorSHA256  string                                `json:"target_descriptor_sha256"`
-	StreamEventTypeName     string                                `json:"stream_event_type_name,omitempty"`
-	StreamEventSchemaSHA256 string                                `json:"stream_event_schema_sha256,omitempty"`
-	Status                  string                                `json:"status"`
-	Cancelable              bool                                  `json:"cancelable"`
-	CancelAckTimeoutMS      int                                   `json:"cancel_ack_timeout_ms,omitempty"`
-	DisableBehavior         string                                `json:"disable_behavior,omitempty"`
-	UninstallBehavior       string                                `json:"uninstall_behavior,omitempty"`
-	FailureCode             string                                `json:"failure_code,omitempty"`
-	Reason                  string                                `json:"reason,omitempty"`
-	CreatedAt               time.Time                             `json:"created_at"`
-	UpdatedAt               time.Time                             `json:"updated_at"`
-	CancelRequestedAt       *time.Time                            `json:"cancel_requested_at,omitempty"`
-	OrphanedAt              *time.Time                            `json:"orphaned_at,omitempty"`
-	TerminalAt              *time.Time                            `json:"terminal_at,omitempty"`
-}
-
-type operationListResponse struct {
-	Operations []operationResponse `json:"operations"`
-	NextCursor string              `json:"next_cursor,omitempty"`
-}
-
-type pluginOperationSnapshotResponse struct {
-	OperationID  string                           `json:"operation_id"`
-	Status       operation.Status                 `json:"status"`
-	Cancelable   bool                             `json:"cancelable"`
-	CreatedAt    time.Time                        `json:"created_at"`
-	UpdatedAt    time.Time                        `json:"updated_at"`
-	RetryAfterMS int                              `json:"retry_after_ms"`
-	TerminalAt   *time.Time                       `json:"terminal_at,omitempty"`
-	FailureCode  *capability.ExecutionFailureCode `json:"failure_code,omitempty"`
-}
-
-func publicPluginOperationSnapshot(snapshot host.PluginOperationSnapshot) (pluginOperationSnapshotResponse, error) {
-	response := pluginOperationSnapshotResponse{
-		OperationID: snapshot.OperationID, Status: snapshot.Status, Cancelable: snapshot.Cancelable,
-		CreatedAt: snapshot.CreatedAt, UpdatedAt: snapshot.UpdatedAt, RetryAfterMS: snapshot.RetryAfterMS,
-		TerminalAt: cloneWireTime(snapshot.TerminalAt),
-	}
-	if snapshot.FailureCode != nil {
-		failureCode := *snapshot.FailureCode
-		response.FailureCode = &failureCode
-	}
-	if strings.TrimSpace(response.OperationID) == "" || response.CreatedAt.IsZero() || response.UpdatedAt.IsZero() ||
-		response.RetryAfterMS < host.SurfaceOperationSnapshotRetryMinMS || response.RetryAfterMS > host.SurfaceOperationSnapshotRetryMaxMS {
-		return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
-	}
-	switch response.Status {
-	case operation.StatusRunning, operation.StatusCancelRequested:
-		if response.TerminalAt != nil || response.FailureCode != nil {
-			return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
-		}
-	case operation.StatusCompleted, operation.StatusCanceled, operation.StatusOrphanedAfterDisable, operation.StatusOrphanedAfterUninstall:
-		if response.TerminalAt == nil || response.FailureCode != nil {
-			return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
-		}
-	case operation.StatusFailed:
-		if response.TerminalAt == nil || response.FailureCode == nil || !response.FailureCode.Valid() {
-			return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
-		}
-	default:
-		return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
-	}
-	return response, nil
-}
-
-func publicOperationRecord(record operation.Record) (operationResponse, error) {
-	binding := record.ExecutionBinding
-	targetFields, err := cloneWireJSONMap(binding.Target.Fields)
-	if err != nil {
-		return operationResponse{}, err
-	}
-	var contract *capabilityPinResponse
-	if binding.Contract != nil {
-		mapped := publicCapabilityPin(*binding.Contract)
-		contract = &mapped
-	}
-	var quotaExpiresAt *time.Time
-	if !binding.Quota.ExpiresAt.IsZero() {
-		quotaExpiresAt = cloneWireTime(&binding.Quota.ExpiresAt)
-	}
-	return operationResponse{
-		OperationID: record.OperationID, InvocationID: binding.InvocationID, AuditCorrelationID: binding.AuditCorrelationID,
-		StreamID: binding.StreamID, PublisherID: binding.PublisherID, PluginID: binding.PluginID,
-		PluginInstanceID: binding.PluginInstanceID, PluginVersion: binding.PluginVersion, ActiveFingerprint: binding.ActiveFingerprint,
-		SurfaceInstanceID: binding.SurfaceInstanceID, RouteKind: string(binding.RouteKind),
-		CapabilityID: binding.CapabilityID, CapabilityVersion: binding.CapabilityVersion, BindingID: binding.BindingID,
-		Contract: contract, Method: binding.Method, TargetMethod: binding.TargetMethod, Effect: string(binding.Effect),
-		Execution: binding.Execution,
-		Permissions: operationPermissionEvidenceResponse{
-			Required: append([]string(nil), binding.Permissions.Required...), Granted: append([]string(nil), binding.Permissions.Granted...),
-		},
-		Confirmation: operationConfirmationEvidenceResponse{
-			Required: binding.Confirmation.Required, Confirmed: binding.Confirmation.Confirmed,
-			ConfirmationID: binding.Confirmation.ConfirmationID, RequestSHA256: binding.Confirmation.RequestSHA256,
-			PlanSHA256: binding.Confirmation.PlanSHA256, TargetSHA256: binding.Confirmation.TargetSHA256,
-		},
-		Revision: operationRevisionEvidenceResponse{
-			PolicyRevision: binding.Revision.PolicyRevision, ManagementRevision: binding.Revision.ManagementRevision,
-			RevokeEpoch: binding.Revision.RevokeEpoch,
-		},
-		Quota: operationQuotaResponse{
-			MaxConcurrent: binding.Quota.MaxConcurrent, MaxDurationMS: binding.Quota.MaxDurationMS,
-			MaxStreamBytes: binding.Quota.MaxStreamBytes, ExpiresAt: quotaExpiresAt,
-		},
-		Target:                 operationTargetResponse{Kind: binding.Target.Kind, Fields: targetFields},
-		TargetDescriptorSHA256: binding.TargetDescriptorSHA256,
-		StreamEventTypeName:    binding.StreamEventTypeName, StreamEventSchemaSHA256: binding.StreamEventSchemaSHA256,
-		Status: string(record.Status), Cancelable: record.Cancelable, CancelAckTimeoutMS: record.CancelAckTimeoutMS,
-		DisableBehavior: record.DisableBehavior, UninstallBehavior: record.UninstallBehavior, FailureCode: string(record.FailureCode),
-		Reason: record.Reason, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
-		CancelRequestedAt: cloneWireTime(record.CancelRequestedAt), OrphanedAt: cloneWireTime(record.OrphanedAt),
-		TerminalAt: cloneWireTime(record.TerminalAt),
-	}, nil
-}
-
-func publicOperationRecords(records []operation.Record) ([]operationResponse, error) {
-	result := make([]operationResponse, len(records))
-	for index, record := range records {
-		mapped, err := publicOperationRecord(record)
+func publicExecutionEvents(events []execution.Event) ([]execution.Event, error) {
+	result := make([]execution.Event, len(events))
+	for index, event := range events {
+		payload, err := cloneWireJSONMap(event.Payload)
 		if err != nil {
 			return nil, err
 		}
-		result[index] = mapped
+		result[index] = event
+		result[index].Payload = payload
+		if event.Error != nil {
+			publicError := *event.Error
+			result[index].Error = &publicError
+		}
 	}
 	return result, nil
 }
@@ -1006,10 +806,15 @@ type listIntentsQueryRequest struct {
 	PluginInstanceID optionalQueryString `json:"plugin_instance_id"`
 }
 
-type listOperationsQueryRequest struct {
+type listExecutionsRequest struct {
 	PluginInstanceID optionalQueryString  `json:"plugin_instance_id"`
-	Cursor           optionalQueryString  `json:"cursor"`
+	Cursor           *uint64              `json:"cursor"`
 	Limit            optionalQueryInteger `json:"limit"`
+}
+
+type listExecutionEventsRequest struct {
+	AfterCursor *uint64              `json:"after_cursor"`
+	Limit       optionalQueryInteger `json:"limit"`
 }
 
 type listRetainedDataQueryRequest struct {
@@ -1039,9 +844,6 @@ type settingsQueryRequest struct {
 }
 
 const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
-const defaultStreamReadMaxEvents = 256
-const defaultStreamReadMaxBytes = 1 << 20
-const defaultStreamReadWaitTimeout = 20 * time.Second
 const defaultJSONRequestMaxBytes = 1 << 20
 const defaultJSONMaxDepth = 64
 const maxJSONSafeInteger int64 = 1<<53 - 1
@@ -1087,15 +889,11 @@ func (e *jsonLimitError) status() int {
 var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/release-install-operations", websecurity.RouteActionStartReleaseInstall, func(h *Handler) http.HandlerFunc { return h.handleStartReleaseInstallOperation }),
-	getRoute("/_redevplugin/api/plugins/release-install-operations", websecurity.RouteActionListReleaseInstalls, func(h *Handler) http.HandlerFunc { return h.handleListReleaseInstallOperations }),
-	getRoute("/_redevplugin/api/plugins/release-install-operations/{operation_id}", websecurity.RouteActionGetReleaseInstall, func(h *Handler) http.HandlerFunc { return h.handleGetReleaseInstallOperation }),
-	getRoute("/_redevplugin/api/plugins/release-install-operations/by-request/{request_id}", websecurity.RouteActionGetReleaseInstall, func(h *Handler) http.HandlerFunc { return h.handleGetReleaseInstallOperationByRequest }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/executions/release-installs", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleStartReleaseInstallExecution }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectExternalPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackage }),
 	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackageUpdate }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/commit", websecurity.RouteActionCommitExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleCommitExternalPackage }),
-	queryRoute("/_redevplugin/api/plugins/external-packages/commit/query", websecurity.RouteActionQueryExternalPackageCommit, func(h *Handler) http.HandlerFunc { return h.handleQueryExternalPackageCommit }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/install", websecurity.RouteActionInstallInspectedPackage, func(h *Handler) http.HandlerFunc { return h.handleInstallInspectedPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/disable", websecurity.RouteActionDisablePlugin, func(h *Handler) http.HandlerFunc { return h.handleDisable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/uninstall", websecurity.RouteActionUninstallPlugin, func(h *Handler) http.HandlerFunc { return h.handleUninstall }),
@@ -1111,22 +909,20 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare", websecurity.RouteActionPrepareSurface, func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token", websecurity.RouteActionMintBridgeToken, func(h *Handler) http.HandlerFunc { return h.handleBridgeToken }),
 	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read", websecurity.RouteActionReadSurfaceAsset, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }),
-	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read", websecurity.RouteActionReadSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceStream }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack", websecurity.RouteActionAcknowledgeSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleAcknowledgeSurfaceStream }),
-	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/query", websecurity.RouteActionGetSurfaceOperation, func(h *Handler) http.HandlerFunc { return h.handleGetSurfaceOperation }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel", websecurity.RouteActionCancelSurfaceOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelSurfaceOperation }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject", websecurity.RouteActionRejectSurfaceConfirmation, func(h *Handler) http.HandlerFunc { return h.handleRejectSurfaceConfirmation }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose", websecurity.RouteActionDisposeSurface, func(h *Handler) http.HandlerFunc { return h.handleDisposeSurface }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/rpc", websecurity.RouteActionCallPluginMethod, func(h *Handler) http.HandlerFunc { return h.handleRPC }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/confirmations/prepare", websecurity.RouteActionPrepareMethodConfirmation, func(h *Handler) http.HandlerFunc { return h.handlePrepareMethodConfirmation }),
 	queryRoute("/_redevplugin/api/plugins/intents/query", websecurity.RouteActionListIntents, func(h *Handler) http.HandlerFunc { return h.handleListIntents }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", websecurity.RouteActionInvokeIntent, func(h *Handler) http.HandlerFunc { return h.handleInvokeIntent }),
-	queryRoute("/_redevplugin/api/plugins/operations/query", websecurity.RouteActionListOperations, func(h *Handler) http.HandlerFunc { return h.handleListOperations }),
-	queryRoute("/_redevplugin/api/plugins/operations/{operation_id}/query", websecurity.RouteActionGetOperation, func(h *Handler) http.HandlerFunc { return h.handleGetOperation }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/operations/{operation_id}/cancel", websecurity.RouteActionCancelOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelOperation }),
+	queryRoute("/_redevplugin/api/plugins/executions/query", websecurity.RouteActionListExecutions, func(h *Handler) http.HandlerFunc { return h.handleListExecutions }),
+	queryRoute("/_redevplugin/api/plugins/executions/{execution_id}/query", websecurity.RouteActionGetExecution, func(h *Handler) http.HandlerFunc { return h.handleGetExecution }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/executions/{execution_id}/cancel", websecurity.RouteActionCancelExecution, func(h *Handler) http.HandlerFunc { return h.handleCancelExecution }),
+	queryRoute("/_redevplugin/api/plugins/executions/{execution_id}/events/query", websecurity.RouteActionListExecutionEvents, func(h *Handler) http.HandlerFunc { return h.handleListExecutionEvents }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/start", websecurity.RouteActionStartRuntime, func(h *Handler) http.HandlerFunc { return h.handleStartRuntime }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/stop", websecurity.RouteActionStopRuntime, func(h *Handler) http.HandlerFunc { return h.handleStopRuntime }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/refresh-enabled", websecurity.RouteActionRefreshEnabledRuntimeState, func(h *Handler) http.HandlerFunc { return h.handleRefreshEnabledRuntimeState }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/recover-enabled", websecurity.RouteActionRecoverEnabledPlugins, func(h *Handler) http.HandlerFunc { return h.handleRecoverEnabledPlugins }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/recover/retry", websecurity.RouteActionRecoverEnabledPlugins, func(h *Handler) http.HandlerFunc { return h.handleRetryRuntimeRecovery }),
 	queryRoute("/_redevplugin/api/plugins/runtime/health/query", websecurity.RouteActionGetRuntimeHealth, func(h *Handler) http.HandlerFunc { return h.handleRuntimeHealth }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export", websecurity.RouteActionExportData, func(h *Handler) http.HandlerFunc { return h.handleExportData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export/delete", websecurity.RouteActionDeleteDataExport, func(h *Handler) http.HandlerFunc { return h.handleDeleteDataExport }),
@@ -1299,70 +1095,6 @@ func (h Handler) hasMutationEffect() bool {
 	return h.routeEffect != websecurity.RouteEffectQuery
 }
 
-func (h Handler) handleCancelSurfaceOperation(w http.ResponseWriter, r *http.Request) {
-	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/operations/cancel")
-	if !ok {
-		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
-		return
-	}
-	var req cancelSurfaceOperationRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	record, err := h.host.CancelSurfaceOperation(r.Context(), host.CancelSurfaceOperationRequest{
-		OperationID: req.OperationID, SurfaceInstanceID: surfaceInstanceID,
-		BridgeChannelID: req.BridgeChannelID, Reason: req.Reason,
-	})
-	if err != nil {
-		writeMutationError(w, httpStatusForOperationError(err), errorCodeForOperationError(err), publicPluginErrorMessage(errorCodeForOperationError(err)), errorDetails{}, mutation.ForError(err))
-		return
-	}
-	response, err := publicOperationRecord(record)
-	if err != nil {
-		h.writeProjectionError(w, r, "surface.operation.cancel.response", err)
-		return
-	}
-	writeMutationSuccess(w, response)
-}
-
-func (h Handler) handleGetSurfaceOperation(w http.ResponseWriter, r *http.Request) {
-	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/operations/query")
-	if !ok {
-		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
-		return
-	}
-	var req getSurfaceOperationRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	snapshot, err := h.host.GetSurfaceOperation(r.Context(), host.GetSurfaceOperationRequest{
-		OperationID: req.OperationID, SurfaceInstanceID: surfaceInstanceID, BridgeChannelID: req.BridgeChannelID,
-	})
-	if err != nil {
-		code := errorCodeForOperationError(err)
-		status := httpStatusForOperationError(err)
-		if errors.Is(err, operation.ErrNotFound) {
-			code = security.ErrOperationNotFound
-			status = http.StatusNotFound
-		}
-		details := errorDetails{}
-		var limited *host.SurfaceOperationRateLimitError
-		if errors.As(err, &limited) {
-			details.RetryAfterMS = limited.RetryAfterMS
-		}
-		writeError(w, status, code, publicPluginErrorMessage(code), details)
-		return
-	}
-	response, err := publicPluginOperationSnapshot(snapshot)
-	if err != nil {
-		h.writeProjectionError(w, r, "surface.operation.query.response", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
-}
-
 func (h Handler) handleRejectSurfaceConfirmation(w http.ResponseWriter, r *http.Request) {
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/confirmations/reject")
 	if !ok {
@@ -1414,7 +1146,7 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	if err != nil {
 		status = http.StatusInternalServerError
 		switch payload.(type) {
-		case mutationSuccessResponse, mutationErrorResponse:
+		case successResponse, mutationErrorResponse:
 			encoded = []byte(`{"ok":false,"error":{"code":"PLUGIN_CONTRACT_MISMATCH","message":"plugin platform response encoding failed","details":{},"mutation_outcome":"unknown"}}`)
 		default:
 			encoded = []byte(`{"ok":false,"error":{"code":"PLUGIN_CONTRACT_MISMATCH","message":"plugin platform response encoding failed","details":{}}}`)
@@ -1431,7 +1163,7 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func responseStatusMatchesPayload(status int, payload any) bool {
 	switch payload.(type) {
-	case successResponse, mutationSuccessResponse:
+	case successResponse:
 		return status == http.StatusOK
 	case errorResponse, mutationErrorResponse:
 		return status >= http.StatusBadRequest && status <= 599
@@ -1593,6 +1325,24 @@ func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request)
 	h.writePluginMutationSuccess(w, r, "release.install.response", record)
 }
 
+func (h Handler) handleStartReleaseInstallExecution(w http.ResponseWriter, r *http.Request) {
+	var req startReleaseInstallExecutionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	record, err := h.host.StartReleaseInstallExecution(r.Context(), host.StartReleaseInstallExecutionRequest{
+		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef.domain(),
+		ActivateAfterInstall: req.ActivateAfterInstall, ApprovedPermissionIDs: req.ApprovedPermissionIDs,
+	})
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "execution.release_install.start", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, record)
+}
+
 func (h Handler) handleInspectExternalPackage(w http.ResponseWriter, r *http.Request) {
 	var req inspectExternalPackageRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1662,46 +1412,26 @@ func (h Handler) writeExternalPackageInspectError(w http.ResponseWriter, r *http
 	writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.upload.inspect", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 }
 
-func (h Handler) handleCommitExternalPackage(w http.ResponseWriter, r *http.Request) {
-	var req commitExternalPackageRequest
+func (h Handler) handleInstallInspectedPackage(w http.ResponseWriter, r *http.Request) {
+	var req installInspectedPackageRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	result, err := h.host.CommitExternalPackage(r.Context(), host.CommitExternalPackageRequest{
-		InspectionID: req.InspectionID, ConfirmationDigest: req.ConfirmationDigest,
+	result, err := h.host.InstallInspectedPackage(r.Context(), host.InstallInspectedPackageRequest{
+		InspectionID: req.InspectionID, ExpectedPackageSHA256: req.ExpectedPackageSHA256,
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)
-		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.commit", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.install", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	projected, err := publicExternalPackageCommitResult(result)
+	projected, err := publicInstalledExternalPackage(result)
 	if err != nil {
-		h.writeProjectionError(w, r, "external-package.commit.response", err)
+		h.writeProjectionError(w, r, "external-package.install.response", err)
 		return
 	}
 	writeMutationSuccess(w, projected)
-}
-
-func (h Handler) handleQueryExternalPackageCommit(w http.ResponseWriter, r *http.Request) {
-	var req queryExternalPackageCommitRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	result, err := h.host.QueryExternalPackageCommit(r.Context(), host.QueryExternalPackageCommitRequest{InspectionID: req.InspectionID, CommitID: req.CommitID})
-	if err != nil {
-		code := errorCodeForManagementError(err)
-		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.query", code, err), errorDetailsForManagementError(err))
-		return
-	}
-	projected, err := publicExternalPackageCommitResult(result)
-	if err != nil {
-		h.writeProjectionError(w, r, "external-package.query.response", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: projected})
 }
 
 func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
@@ -1972,13 +1702,13 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	records, err := h.host.ListPlugins(r.Context())
+	records, err := h.host.ListPluginInventory(r.Context())
 	if err != nil {
 		code := errorCodeForManagementError(err)
 		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.catalog", code, err), errorDetails{})
 		return
 	}
-	plugins, err := publicPluginRecords(records)
+	plugins, err := publicPluginInventory(records)
 	if err != nil {
 		h.writeProjectionError(w, r, "plugin.catalog.response", err)
 		return
@@ -2189,56 +1919,6 @@ func (h Handler) handleReadSurfaceAsset(w http.ResponseWriter, r *http.Request) 
 	}})
 }
 
-func (h Handler) handleReadSurfaceStream(w http.ResponseWriter, r *http.Request) {
-	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/streams/read")
-	if !ok {
-		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
-		return
-	}
-	var req readSurfaceStreamRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	result, err := h.host.ReadStream(r.Context(), host.ReadStreamRequest{
-		StreamID:          req.StreamID,
-		StreamTicket:      req.StreamTicket,
-		ReadID:            req.ReadID,
-		SurfaceInstanceID: surfaceInstanceID,
-		MaxEvents:         defaultStreamReadMaxEvents,
-		MaxBytes:          defaultStreamReadMaxBytes,
-		WaitTimeout:       defaultStreamReadWaitTimeout,
-	})
-	if err != nil {
-		code := errorCodeForStreamError(err)
-		writeJSON(w, httpStatusForStreamError(err), errorResponse{OK: false, Message: publicPluginErrorMessage(code), Code: code})
-		return
-	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicSurfaceStream(result)})
-}
-
-func (h Handler) handleAcknowledgeSurfaceStream(w http.ResponseWriter, r *http.Request) {
-	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/streams/ack")
-	if !ok {
-		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
-		return
-	}
-	var req acknowledgeSurfaceStreamRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	if _, err := h.host.AcknowledgeStream(r.Context(), host.AcknowledgeStreamRequest{
-		StreamID: req.StreamID, StreamTicket: req.StreamTicket,
-		DeliveryID: req.DeliveryID, SurfaceInstanceID: surfaceInstanceID,
-	}); err != nil {
-		code := errorCodeForStreamError(err)
-		writeMutationError(w, httpStatusForStreamError(err), code, publicPluginErrorMessage(code), errorDetails{}, mutation.ForError(err))
-		return
-	}
-	writeMutationSuccess(w, acknowledgementResponse{Acknowledged: true})
-}
-
 func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/dispose")
 	if !ok {
@@ -2400,89 +2080,116 @@ func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
 	writeMutationSuccess(w, response)
 }
 
-func (h Handler) handleListOperations(w http.ResponseWriter, r *http.Request) {
-	var req listOperationsQueryRequest
+func (h Handler) handleListExecutions(w http.ResponseWriter, r *http.Request) {
+	var req listExecutionsRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	limit, err := req.Limit.bounded("limit", 1, operation.MaxListLimit)
+	limit, err := req.Limit.bounded("limit", 1, 500)
 	if err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	result, err := h.host.ListOperations(r.Context(), host.ListOperationsRequest{
-		PluginInstanceID: req.PluginInstanceID.get(),
-		Cursor:           req.Cursor.get(),
-		Limit:            limit,
-	})
+	cursor := uint64(0)
+	if req.Cursor != nil {
+		cursor = *req.Cursor
+	}
+	executions, nextCursor, err := h.host.ListExecutions(r.Context(), req.PluginInstanceID.get(), cursor, limit)
 	if err != nil {
-		code := errorCodeForOperationError(err)
-		writeJSON(w, httpStatusForOperationError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "operation.list", code, err), Code: code})
+		code := errorCodeForExecutionError(err)
+		writeJSON(w, httpStatusForExecutionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "execution.list", code, err), Code: code})
 		return
 	}
-	operations, err := publicOperationRecords(result.Operations)
-	if err != nil {
-		h.writeProjectionError(w, r, "operation.list.response", err)
-		return
+	if executions == nil {
+		executions = []execution.Execution{}
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: operationListResponse{
-		Operations: operations,
-		NextCursor: result.NextCursor,
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: executionListResponse{
+		Executions: executions,
+		NextCursor: nextCursor,
 	}})
 }
 
-func (h Handler) handleGetOperation(w http.ResponseWriter, r *http.Request) {
+func (h Handler) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 	var req emptyRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	operationID, ok := operationIDFromPath(r.URL.Path, "/query")
+	executionID, ok := executionIDFromPath(r.URL.Path, "/query")
 	if !ok {
 		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	record, err := h.host.GetOperation(r.Context(), operationID)
+	record, err := h.host.GetExecution(r.Context(), executionID)
 	if err != nil {
-		code := errorCodeForOperationError(err)
-		writeJSON(w, httpStatusForOperationError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "operation.get", code, err), Code: code})
+		code := errorCodeForExecutionError(err)
+		writeJSON(w, httpStatusForExecutionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "execution.get", code, err), Code: code})
 		return
 	}
-	response, err := publicOperationRecord(record)
-	if err != nil {
-		h.writeProjectionError(w, r, "operation.get.response", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: record})
 }
 
-func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
-	operationID, ok := operationIDFromPath(r.URL.Path, "/cancel")
+func (h Handler) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
+	executionID, ok := executionIDFromPath(r.URL.Path, "/cancel")
 	if !ok {
 		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
-	var req cancelOperationRequest
+	var req cancelExecutionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.host.CancelOperation(r.Context(), host.CancelOperationRequest{
-		OperationID: operationID,
-		Reason:      req.Reason,
-	})
+	record, err := h.host.CancelExecution(r.Context(), executionID, req.Reason)
 	if err != nil {
-		code := errorCodeForOperationError(err)
-		writeMutationError(w, httpStatusForOperationError(err), code, h.publicFailureMessage(r.Context(), "operation.cancel", code, err), errorDetails{}, mutation.ForError(err))
+		code := errorCodeForExecutionError(err)
+		writeMutationError(w, httpStatusForExecutionError(err), code, h.publicFailureMessage(r.Context(), "execution.cancel", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	response, err := publicOperationRecord(record)
-	if err != nil {
-		h.writeProjectionError(w, r, "operation.cancel.response", err)
+	writeMutationSuccess(w, record)
+}
+
+func (h Handler) handleListExecutionEvents(w http.ResponseWriter, r *http.Request) {
+	executionID, ok := executionIDFromPath(r.URL.Path, "/events/query")
+	if !ok {
+		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
 		return
 	}
-	writeMutationSuccess(w, response)
+	var req listExecutionEventsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	if req.AfterCursor == nil {
+		writeInvalidRequestError(w, errors.New("after_cursor is required"))
+		return
+	}
+	limit, err := req.Limit.bounded("limit", 1, 1000)
+	if err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	events, err := h.host.EventsAfter(r.Context(), executionID, *req.AfterCursor, limit)
+	if err != nil {
+		code := errorCodeForExecutionError(err)
+		writeJSON(w, httpStatusForExecutionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "execution.events", code, err), Code: code})
+		return
+	}
+	events, err = publicExecutionEvents(events)
+	if err != nil {
+		h.writeProjectionError(w, r, "execution.events.response", err)
+		return
+	}
+	cursor := *req.AfterCursor
+	if len(events) > 0 {
+		cursor = events[len(events)-1].Sequence
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: executionEventListResponse{
+		ExecutionID: executionID,
+		Events:      events,
+		Cursor:      cursor,
+	}})
 }
 
 func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {
@@ -2534,19 +2241,36 @@ func (h Handler) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicRuntimeHealth(health)})
 }
 
-func (h Handler) handleRefreshEnabledRuntimeState(w http.ResponseWriter, r *http.Request) {
+func (h Handler) handleRecoverEnabledPlugins(w http.ResponseWriter, r *http.Request) {
 	var req emptyRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	records, err := h.host.RefreshEnabledPlugins(r.Context())
+	snapshot, err := h.host.RecoverEnabled(r.Context())
 	if err != nil {
 		code, status := runtimeManagementError(err)
-		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.refresh_enabled", code, err), errorDetails{}, mutation.ForError(err))
+		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.recover_enabled", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, publicRuntimeRefresh(records))
+	writeMutationSuccess(w, publicRecoverySnapshot(snapshot))
+}
+
+func (h Handler) handleRetryRuntimeRecovery(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PluginInstanceID string `json:"plugin_instance_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.RetryPluginRecovery(r.Context(), req.PluginInstanceID)
+	if err != nil {
+		code, status := runtimeManagementError(err)
+		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.recover.retry", code, err), errorDetails{}, mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, publicPluginRecoveryResult(result))
 }
 
 func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
@@ -3355,23 +3079,23 @@ func surfaceInstanceIDFromPath(path string, suffix string) (string, bool) {
 	return id, id != ""
 }
 
-func operationIDFromPath(path string, suffix string) (string, bool) {
-	const prefix = "/_redevplugin/api/plugins/operations/"
+func executionIDFromPath(path string, suffix string) (string, bool) {
+	const prefix = "/_redevplugin/api/plugins/executions/"
 	if !strings.HasPrefix(path, prefix) {
 		return "", false
 	}
-	operationID := strings.TrimPrefix(path, prefix)
+	executionID := strings.TrimPrefix(path, prefix)
 	if suffix != "" {
-		if !strings.HasSuffix(operationID, suffix) {
+		if !strings.HasSuffix(executionID, suffix) {
 			return "", false
 		}
-		operationID = strings.TrimSuffix(operationID, suffix)
+		executionID = strings.TrimSuffix(executionID, suffix)
 	}
-	operationID = strings.Trim(operationID, "/")
-	if operationID == "" || strings.Contains(operationID, "/") {
+	executionID = strings.Trim(executionID, "/")
+	if executionID == "" || strings.Contains(executionID, "/") {
 		return "", false
 	}
-	return operationID, true
+	return executionID, true
 }
 
 func pluginInstanceIDFromPath(requestPath string, suffix string) (string, bool) {
@@ -3621,12 +3345,12 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin capability grant is invalid"
 	case security.ErrStorageQuotaExceeded:
 		return "plugin storage quota was exceeded"
-	case security.ErrOperationBlocked:
-		return "plugin operation is blocked"
-	case security.ErrOperationNotFound:
-		return "plugin operation was not found"
-	case security.ErrOperationNotCancelable:
-		return "plugin operation cannot be cancelled"
+	case security.ErrExecutionBlocked:
+		return "plugin execution is blocked"
+	case security.ErrExecutionNotFound:
+		return "plugin execution was not found"
+	case security.ErrExecutionNotCancelable:
+		return "plugin execution cannot be cancelled"
 	case security.ErrNetworkTargetDenied:
 		return "plugin network target was denied"
 	case security.ErrNetworkRateLimited:
@@ -3752,7 +3476,7 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
-	case errors.Is(err, host.ErrExternalPackageCommitBlocked):
+	case errors.Is(err, host.ErrExternalPackageInstallBlocked):
 		return security.ErrSignatureInvalid
 	case errors.Is(err, host.ErrExternalPackageConfirmation):
 		return security.ErrConfirmationInvalid
@@ -3760,8 +3484,7 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		errors.Is(err, host.ErrExternalPackageInspectionExpired),
 		errors.Is(err, host.ErrExternalPackageInspectionStale),
 		errors.Is(err, host.ErrExternalPackageRequestInvalid),
-		errors.Is(err, registry.ErrExternalPackageCommitNotFound),
-		errors.Is(err, registry.ErrInvalidExternalPackageCommit):
+		errors.Is(err, registry.ErrInvalidExternalPackageInstall):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, connectivity.ErrResourceScopeMismatch):
 		return security.ErrOwnerScopeMismatch
@@ -3796,13 +3519,13 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	case errors.Is(err, registry.ErrReleaseInstallOperationConflict), errors.Is(err, host.ErrPluginAlreadyInstalled):
 		return security.ErrInstallStateConflict
 	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound):
-		return security.ErrOperationNotFound
+		return security.ErrExecutionNotFound
 	case errors.Is(err, registry.ErrInvalidReleaseInstallOperation):
 		return security.ErrInvalidRequest
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
-	case errors.Is(err, operation.ErrDeleteBlocked):
-		return security.ErrOperationBlocked
+	case errors.Is(err, host.ErrExecutionDeleteBlocked):
+		return security.ErrExecutionBlocked
 	case errors.Is(err, connectivity.ErrInvalidConnector), errors.Is(err, connectivity.ErrTargetDenied), errors.Is(err, connectivity.ErrConnectorDenied):
 		return security.ErrNetworkTargetDenied
 	default:
@@ -3870,15 +3593,14 @@ func httpStatusForManagementError(err error) int {
 		errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, connectivity.ErrResourceScopeMismatch),
 		errors.Is(err, host.ErrStorageScopeMismatch):
 		return http.StatusForbidden
-	case errors.Is(err, host.ErrExternalPackageCommitBlocked):
+	case errors.Is(err, host.ErrExternalPackageInstallBlocked):
 		return http.StatusForbidden
 	case errors.Is(err, host.ErrExternalPackageConfirmation),
 		errors.Is(err, host.ErrExternalPackageInspectionNotFound),
 		errors.Is(err, host.ErrExternalPackageInspectionExpired),
 		errors.Is(err, host.ErrExternalPackageInspectionStale),
 		errors.Is(err, host.ErrExternalPackageRequestInvalid),
-		errors.Is(err, registry.ErrExternalPackageCommitNotFound),
-		errors.Is(err, registry.ErrInvalidExternalPackageCommit):
+		errors.Is(err, registry.ErrInvalidExternalPackageInstall):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return http.StatusConflict
@@ -3908,7 +3630,7 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
-	case errors.Is(err, operation.ErrDeleteBlocked):
+	case errors.Is(err, host.ErrExecutionDeleteBlocked):
 		return http.StatusConflict
 	case errors.Is(err, connectivity.ErrInvalidConnector), errors.Is(err, connectivity.ErrTargetDenied), errors.Is(err, connectivity.ErrConnectorDenied):
 		return http.StatusForbidden
@@ -3917,75 +3639,39 @@ func httpStatusForManagementError(err error) int {
 	}
 }
 
-func errorCodeForOperationError(err error) security.ErrorCode {
-	var limited *host.SurfaceOperationRateLimitError
+func errorCodeForExecutionError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
-	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
-		return security.ErrRuntimeUnavailable
-	case errors.Is(err, operation.ErrNotCancelable):
-		return security.ErrOperationNotCancelable
-	case errors.As(err, &limited):
-		return security.ErrOperationRateLimited
-	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
+	case errors.Is(err, execution.ErrNotCancelable):
+		return security.ErrExecutionNotCancelable
+	case errors.Is(err, execution.ErrInvalidTransition):
+		return security.ErrExecutionBlocked
+	case errors.Is(err, execution.ErrSequenceConflict):
 		return security.ErrInvalidRequest
+	case errors.Is(err, controlstore.ErrRecordNotFound):
+		return security.ErrExecutionNotFound
 	default:
-		return security.ErrPermissionDenied
+		return security.ErrExecutionNotFound
 	}
 }
 
-func httpStatusForOperationError(err error) int {
-	var limited *host.SurfaceOperationRateLimitError
+func httpStatusForExecutionError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
-	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
-		return http.StatusServiceUnavailable
-	case errors.Is(err, operation.ErrNotCancelable):
+	case errors.Is(err, execution.ErrNotCancelable), errors.Is(err, execution.ErrInvalidTransition):
 		return http.StatusConflict
-	case errors.As(err, &limited):
-		return http.StatusTooManyRequests
-	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
+	case errors.Is(err, execution.ErrSequenceConflict):
 		return http.StatusBadRequest
-	default:
-		return http.StatusForbidden
-	}
-}
-
-func errorCodeForStreamError(err error) security.ErrorCode {
-	switch {
-	case errors.Is(err, host.ErrAdapterFailure):
-		return security.ErrAdapterFailure
+	case errors.Is(err, controlstore.ErrRecordNotFound):
+		return http.StatusNotFound
 	case errors.Is(err, host.ErrActionDenied):
-		return security.ErrActionDenied
-	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
-		return security.ErrInvalidRequest
-	case errors.Is(err, stream.ErrDeliveryInvalid):
-		return security.ErrStreamDeliveryInvalid
-	case errors.Is(err, stream.ErrBackpressure):
-		return security.ErrOperationBlocked
-	case errors.Is(err, host.ErrStreamTicketRequired), isSandboxTokenValidationError(err):
-		return security.ErrStreamTicketInvalid
-	default:
-		return security.ErrPermissionDenied
-	}
-}
-
-func httpStatusForStreamError(err error) int {
-	switch {
-	case errors.Is(err, host.ErrAdapterFailure):
-		return http.StatusBadGateway
-	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
-		return http.StatusBadRequest
-	case errors.Is(err, stream.ErrDeliveryInvalid):
-		return http.StatusConflict
-	case errors.Is(err, stream.ErrBackpressure):
-		return http.StatusTooManyRequests
-	default:
 		return http.StatusForbidden
+	default:
+		return http.StatusNotFound
 	}
 }
 

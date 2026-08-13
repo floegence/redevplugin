@@ -1,26 +1,61 @@
 package host
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 	"github.com/floegence/redevplugin/pkg/releasetrust"
 	"github.com/floegence/redevplugin/pkg/security"
 )
+
+func TestStartReleaseInstallExecutionReturnsUnifiedExecution(t *testing.T) {
+	fixture := newHostReleaseTrustFixture(t)
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust:            fixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
+	})
+	ctx := hostTestContext()
+	started, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
+		RequestID: "request_unified_execution", PluginInstanceID: nextTestPluginInstanceID(t),
+		ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.ID == "" || started.Kind != execution.KindOperation || started.Status != execution.StatusRunning || started.Cancelable {
+		t.Fatalf("StartReleaseInstallExecution() = %#v", started)
+	}
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.ID)
+	if terminal.Execution.Status != execution.StatusCompleted {
+		t.Fatalf("release install status = %q", terminal.Execution.Status)
+	}
+	observed, err := h.GetExecution(ctx, started.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status != execution.StatusCompleted || observed.Cursor == 0 {
+		t.Fatalf("GetExecution() = %#v", observed)
+	}
+	events, err := h.EventsAfter(ctx, started.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || events[len(events)-1].Kind != execution.EventTerminal {
+		t.Fatalf("EventsAfter() = %#v", events)
+	}
+}
 
 func TestReleaseInstallOperationActivatesVerifiedOfficialReleaseWithoutPermissions(t *testing.T) {
 	fixture := newHostReleaseTrustFixture(t)
@@ -32,7 +67,7 @@ func TestReleaseInstallOperationActivatesVerifiedOfficialReleaseWithoutPermissio
 	})
 	ctx := hostTestContext()
 	pluginInstanceID := nextTestPluginInstanceID(t)
-	started, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{
+	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID:        "request_activate_official_release",
 		PluginInstanceID: pluginInstanceID,
 		ReleaseRef:       releaseTrustFixtureRef(fixture),
@@ -42,9 +77,9 @@ func TestReleaseInstallOperationActivatesVerifiedOfficialReleaseWithoutPermissio
 		t.Fatal(err)
 	}
 
-	terminal := waitForReleaseInstallOperation(t, h, ctx, started.OperationID)
-	if terminal.Status != registry.ReleaseInstallSucceeded || terminal.PluginRecord == nil {
-		t.Fatalf("terminal operation status=%q phase=%q failure=%#v", terminal.Status, terminal.Phase, terminal.Failure)
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
+	if terminal.Execution.Status != execution.StatusCompleted || terminal.PluginRecord == nil {
+		t.Fatalf("terminal operation status=%q phase=%q failure=%#v", terminal.Execution.Status, terminal.Phase, terminal.Failure)
 	}
 	if terminal.PluginRecord.EnableState != registry.EnableEnabled {
 		t.Fatalf("enable state = %q, want %q", terminal.PluginRecord.EnableState, registry.EnableEnabled)
@@ -65,7 +100,7 @@ func TestReleaseInstallOperationHonorsExplicitDisabledActivation(t *testing.T) {
 	})
 	ctx := hostTestContext()
 	activate := false
-	started, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{
+	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID: "request_keep_official_release_disabled", PluginInstanceID: nextTestPluginInstanceID(t),
 		ReleaseRef: releaseTrustFixtureRef(fixture), ActivateAfterInstall: &activate, Now: time.Now().UTC(),
 	})
@@ -73,8 +108,8 @@ func TestReleaseInstallOperationHonorsExplicitDisabledActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	terminal := waitForReleaseInstallOperation(t, h, ctx, started.OperationID)
-	if terminal.Status != registry.ReleaseInstallSucceeded || terminal.PluginRecord == nil ||
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
+	if terminal.Execution.Status != execution.StatusCompleted || terminal.PluginRecord == nil ||
 		terminal.PluginRecord.EnableState != registry.EnableDisabled ||
 		terminal.Activation.Status != registry.ReleaseInstallActivationNotRequested {
 		t.Fatalf("terminal operation = %#v", terminal)
@@ -93,7 +128,7 @@ func TestReleaseInstallOperationDoesNotAutomaticallyActivateNonOfficialRelease(t
 		},
 	})
 	ctx := hostTestContext()
-	started, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{
+	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID: "request_keep_community_release_disabled", PluginInstanceID: nextTestPluginInstanceID(t),
 		ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
 	})
@@ -101,8 +136,8 @@ func TestReleaseInstallOperationDoesNotAutomaticallyActivateNonOfficialRelease(t
 		t.Fatal(err)
 	}
 
-	terminal := waitForReleaseInstallOperation(t, h, ctx, started.OperationID)
-	if terminal.Status != registry.ReleaseInstallSucceeded || terminal.PluginRecord == nil ||
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
+	if terminal.Execution.Status != execution.StatusCompleted || terminal.PluginRecord == nil ||
 		terminal.PluginRecord.EnableState != registry.EnableDisabled ||
 		terminal.Activation.Status != registry.ReleaseInstallActivationNotRequested {
 		t.Fatalf("terminal operation = %#v", terminal)
@@ -122,56 +157,41 @@ func TestReleaseInstallOperationTerminalActivationSurvivesHostRestart(t *testing
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var fixture *releasetrustfixture.Fixture
-			var capabilityArtifacts CapabilityContractArtifactResolver
+			var verified *capabilitycontract.KnownContract
 			if test.withPermission {
-				var bundle capabilitycontract.Bundle
-				fixture, bundle = newReleaseInstallCapabilityFixture(t)
-				capabilityArtifacts = &recordingCapabilityContractArtifactResolver{result: ResolvedCapabilityContractArtifact{
-					Artifacts: &memoryCapabilityContractArtifactSet{bundle: bundle},
-				}}
+				var value capabilitycontract.KnownContract
+				fixture, value = newReleaseInstallCapabilityFixture(t)
+				verified = &value
 			} else {
 				fixture = newHostReleaseTrustFixture(t)
 			}
 			ctx := hostTestContext()
-			registryPath := filepath.Join(t.TempDir(), "registry.sqlite")
-			pluginDataRoot := filepath.Join(t.TempDir(), "plugin-data")
-			store, err := registry.NewSQLiteStore(ctx, registryPath)
-			if err != nil {
-				t.Fatal(err)
-			}
+			stateRoot := filepath.Join(t.TempDir(), "control-state")
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				registry: store, pluginDataRoot: pluginDataRoot, releaseTrust: fixture.ServiceSet,
+				stateRoot: stateRoot, releaseTrust: fixture.ServiceSet,
 				releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
-				capabilityArtifacts:     capabilityArtifacts,
+				capabilityContract:      verified,
+				capabilityAdapter:       &recordingCapabilityAdapter{},
 			})
-			started, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{
+			started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 				RequestID:        "request_restart_" + strings.ReplaceAll(test.name, " ", "_"),
 				PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			terminal := waitForReleaseInstallOperation(t, h, ctx, started.OperationID)
+			terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
 			if err := h.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.Close(); err != nil {
-				t.Fatal(err)
-			}
-
-			reopenedStore, err := registry.NewSQLiteStore(ctx, registryPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = reopenedStore.Close() })
 			restarted, _, _ := newTestHostWithOptions(t, testHostOptions{
-				registry: reopenedStore, pluginDataRoot: pluginDataRoot,
+				stateRoot: stateRoot,
 			})
-			recovered, err := restarted.GetReleaseInstallOperation(ctx, terminal.OperationID)
+			recovered, err := restarted.controlStore.Executions().GetReleaseInstall(ctx, executionOwnerScope(ctx).OwnerEnvHash, terminal.Execution.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if recovered.Status != registry.ReleaseInstallSucceeded || recovered.PluginRecord == nil ||
+			if recovered.Execution.Status != execution.StatusCompleted || recovered.PluginRecord == nil ||
 				recovered.Activation.Status != test.wantActivation || recovered.PluginRecord.EnableState != test.wantEnableState ||
 				len(recovered.Activation.MissingPermissionIDs) != test.wantMissingCount {
 				t.Fatalf("recovered operation = %#v", recovered)
@@ -181,18 +201,17 @@ func TestReleaseInstallOperationTerminalActivationSurvivesHostRestart(t *testing
 }
 
 func TestReleaseInstallOperationRequiresExplicitPermissionApprovalBeforeActivation(t *testing.T) {
-	fixture, bundle := newReleaseInstallCapabilityFixture(t)
+	fixture, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		releaseTrust: fixture.ServiceSet,
 		releaseArtifactResolver: &recordingReleaseArtifactResolver{
 			artifact: resolvedReleaseTrustFixture(fixture),
 		},
-		capabilityArtifacts: &recordingCapabilityContractArtifactResolver{result: ResolvedCapabilityContractArtifact{
-			Artifacts: &memoryCapabilityContractArtifactSet{bundle: bundle},
-		}},
+		capabilityContract: &verified,
+		capabilityAdapter:  &recordingCapabilityAdapter{},
 	})
 	ctx := hostTestContext()
-	started, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{
+	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID:        "request_official_release_missing_approval",
 		PluginInstanceID: nextTestPluginInstanceID(t),
 		ReleaseRef:       releaseTrustFixtureRef(fixture),
@@ -202,9 +221,9 @@ func TestReleaseInstallOperationRequiresExplicitPermissionApprovalBeforeActivati
 		t.Fatal(err)
 	}
 
-	terminal := waitForReleaseInstallOperation(t, h, ctx, started.OperationID)
-	if terminal.Status != registry.ReleaseInstallSucceeded || terminal.PluginRecord == nil {
-		t.Fatalf("terminal operation status=%q phase=%q failure=%#v", terminal.Status, terminal.Phase, terminal.Failure)
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
+	if terminal.Execution.Status != execution.StatusCompleted || terminal.PluginRecord == nil {
+		t.Fatalf("terminal operation status=%q phase=%q failure=%#v", terminal.Execution.Status, terminal.Phase, terminal.Failure)
 	}
 	if terminal.PluginRecord.EnableState != registry.EnableDisabled {
 		t.Fatalf("enable state = %q, want %q", terminal.PluginRecord.EnableState, registry.EnableDisabled)
@@ -224,18 +243,17 @@ func TestReleaseInstallOperationRequiresExplicitPermissionApprovalBeforeActivati
 }
 
 func TestReleaseInstallOperationGrantsApprovedRequiredPermissionAndActivates(t *testing.T) {
-	fixture, bundle := newReleaseInstallCapabilityFixture(t)
+	fixture, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		releaseTrust: fixture.ServiceSet,
 		releaseArtifactResolver: &recordingReleaseArtifactResolver{
 			artifact: resolvedReleaseTrustFixture(fixture),
 		},
-		capabilityArtifacts: &recordingCapabilityContractArtifactResolver{result: ResolvedCapabilityContractArtifact{
-			Artifacts: &memoryCapabilityContractArtifactSet{bundle: bundle},
-		}},
+		capabilityContract: &verified,
+		capabilityAdapter:  &recordingCapabilityAdapter{},
 	})
 	ctx := hostTestContext()
-	started, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{
+	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID:             "request_official_release_approved",
 		PluginInstanceID:      nextTestPluginInstanceID(t),
 		ReleaseRef:            releaseTrustFixtureRef(fixture),
@@ -246,9 +264,9 @@ func TestReleaseInstallOperationGrantsApprovedRequiredPermissionAndActivates(t *
 		t.Fatal(err)
 	}
 
-	terminal := waitForReleaseInstallOperation(t, h, ctx, started.OperationID)
-	if terminal.Status != registry.ReleaseInstallSucceeded || terminal.PluginRecord == nil {
-		t.Fatalf("terminal operation status=%q phase=%q failure=%#v", terminal.Status, terminal.Phase, terminal.Failure)
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
+	if terminal.Execution.Status != execution.StatusCompleted || terminal.PluginRecord == nil {
+		t.Fatalf("terminal operation status=%q phase=%q failure=%#v", terminal.Execution.Status, terminal.Phase, terminal.Failure)
 	}
 	if terminal.PluginRecord.EnableState != registry.EnableEnabled || terminal.Activation.Status != registry.ReleaseInstallActivationEnabled {
 		t.Fatalf("plugin=%#v activation=%#v", terminal.PluginRecord, terminal.Activation)
@@ -262,41 +280,18 @@ func TestReleaseInstallOperationGrantsApprovedRequiredPermissionAndActivates(t *
 	}
 }
 
-type recordingReleaseInstallRegistry struct {
-	registry.Store
-	mu     sync.Mutex
-	phases []string
-}
-
-func (store *recordingReleaseInstallRegistry) UpdateReleaseInstallOperation(ctx context.Context, req registry.UpdateReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
-	store.mu.Lock()
-	if len(store.phases) == 0 || store.phases[len(store.phases)-1] != req.Phase {
-		store.phases = append(store.phases, req.Phase)
-	}
-	store.mu.Unlock()
-	return store.Store.UpdateReleaseInstallOperation(ctx, req)
-}
-
-func (store *recordingReleaseInstallRegistry) observedPhases() []string {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	return append([]string(nil), store.phases...)
-}
-
 func TestReleaseInstallOperationPersistsExplainablePhaseOrder(t *testing.T) {
-	fixture, bundle := newReleaseInstallCapabilityFixture(t)
-	store := &recordingReleaseInstallRegistry{Store: registry.NewMemoryStore()}
+	fixture, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		registry: store, releaseTrust: fixture.ServiceSet,
+		releaseTrust: fixture.ServiceSet,
 		releaseArtifactResolver: &recordingReleaseArtifactResolver{
 			artifact: resolvedReleaseTrustFixture(fixture),
 		},
-		capabilityArtifacts: &recordingCapabilityContractArtifactResolver{result: ResolvedCapabilityContractArtifact{
-			Artifacts: &memoryCapabilityContractArtifactSet{bundle: bundle},
-		}},
+		capabilityContract: &verified,
+		capabilityAdapter:  &recordingCapabilityAdapter{},
 	})
 	ctx := hostTestContext()
-	started, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{
+	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID:             "request_explainable_phases",
 		PluginInstanceID:      nextTestPluginInstanceID(t),
 		ReleaseRef:            releaseTrustFixtureRef(fixture),
@@ -306,8 +301,8 @@ func TestReleaseInstallOperationPersistsExplainablePhaseOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	terminal := waitForReleaseInstallOperation(t, h, ctx, started.OperationID)
-	if terminal.Status != registry.ReleaseInstallSucceeded {
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
+	if terminal.Execution.Status != execution.StatusCompleted {
 		t.Fatalf("terminal failure = %#v", terminal.Failure)
 	}
 	want := []string{
@@ -315,14 +310,11 @@ func TestReleaseInstallOperationPersistsExplainablePhaseOrder(t *testing.T) {
 		"fetch_release_evidence",
 		"download_package",
 		"verify_hashes",
-		"verify_signatures_ledger",
+		"verify_signatures",
 		"fetch_capability_evidence",
 		"commit",
 		"enable",
 		"complete",
-	}
-	if got := store.observedPhases(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("observed phases = %#v, want %#v", got, want)
 	}
 	diagnosticPhases := make([]string, 0, len(terminal.PhaseDiagnostics))
 	for _, diagnostic := range terminal.PhaseDiagnostics {
@@ -333,7 +325,7 @@ func TestReleaseInstallOperationPersistsExplainablePhaseOrder(t *testing.T) {
 		if diagnostic.CompletedAt == nil || diagnostic.DurationMS < 0 {
 			t.Fatalf("incomplete phase diagnostic = %#v", diagnostic)
 		}
-		if (diagnostic.Phase == "verify_hashes" || diagnostic.Phase == "verify_signatures_ledger") && diagnostic.DurationMS >= 1000 {
+		if (diagnostic.Phase == "verify_hashes" || diagnostic.Phase == "verify_signatures") && diagnostic.DurationMS >= 1000 {
 			t.Fatalf("pure verification phase exceeded budget: %#v", diagnostic)
 		}
 	}
@@ -342,22 +334,14 @@ func TestReleaseInstallOperationPersistsExplainablePhaseOrder(t *testing.T) {
 	}
 }
 
-func newReleaseInstallCapabilityFixture(t *testing.T) (*releasetrustfixture.Fixture, capabilitycontract.Bundle) {
+func newReleaseInstallCapabilityFixture(t *testing.T) (*releasetrustfixture.Fixture, capabilitycontract.KnownContract) {
 	t.Helper()
 	contract, err := fixtureCapabilityContract("example.capability.echo")
 	if err != nil {
 		t.Fatal(err)
 	}
 	contract.PublisherID = "fixture.capability"
-	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{12}, ed25519.SeedSize))
-	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
-		Contract: contract, PublisherID: contract.PublisherID,
-		ArtifactBaseRef: "capabilities/fixture/install/1.0.0",
-		GeneratedAt:     time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC),
-		SourceCommit:    "0123456789abcdef0123456789abcdef01234567", MinReDevPluginVersion: "0.1.0",
-		SignatureKeyID: "fixture_signing_key", SignaturePolicyEpoch: "1", SignatureRevocationEpoch: "1",
-		PrivateKey: privateKey,
-	})
+	known, err := capabilitycontract.NewKnownContract(contract)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +349,7 @@ func newReleaseInstallCapabilityFixture(t *testing.T) (*releasetrustfixture.Fixt
 	if err := json.Unmarshal([]byte(hostReleaseManifestJSON()), &document); err != nil {
 		t.Fatal(err)
 	}
-	pinBytes, err := json.Marshal(bundle.Pin)
+	pinBytes, err := json.Marshal(known.Pin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,56 +371,58 @@ func newReleaseInstallCapabilityFixture(t *testing.T) (*releasetrustfixture.Fixt
 			HostID: "test-host", MinHostVersion: "0.1.0",
 			RequiredCapabilityContracts: []releasecontract.HostCapabilityRequirementRef{{
 				CapabilityID: contract.CapabilityID, CapabilityVersion: contract.CapabilityVersion,
-				Contract: releaseCapabilityContractRef(bundle.Pin),
+				Contract: releaseCapabilityContractRef(known.Pin),
 			}},
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fixture, bundle
+	return fixture, known
 }
 
 func waitForReleaseInstallOperation(t *testing.T, h *Host, ctx context.Context, operationID string) registry.ReleaseInstallOperation {
 	t.Helper()
+	var last registry.ReleaseInstallOperation
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		operation, err := h.GetReleaseInstallOperation(ctx, operationID)
+		operation, err := h.controlStore.Executions().GetReleaseInstall(ctx, executionOwnerScope(ctx).OwnerEnvHash, operationID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if operation.Status == registry.ReleaseInstallSucceeded || operation.Status == registry.ReleaseInstallFailed {
+		if operation.Execution.Status == execution.StatusCompleted || operation.Execution.Status == execution.StatusFailed {
 			return operation
 		}
+		last = operation
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("release install operation %q did not terminate", operationID)
+	t.Fatalf("release install operation %q did not terminate: last=%#v", operationID, last)
 	return registry.ReleaseInstallOperation{}
 }
 
-type failingReleaseInstallProgressRegistry struct {
-	registry.Store
-	err error
-}
-
-func (store failingReleaseInstallProgressRegistry) UpdateReleaseInstallOperation(context.Context, registry.UpdateReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
-	return registry.ReleaseInstallOperation{}, store.err
-}
-
 func TestReleaseInstallProgressTrackerPreservesPersistenceFailure(t *testing.T) {
-	persistErr := errors.New("operation journal unavailable")
-	h := &Host{adapters: normalizedAdapters{Registry: failingReleaseInstallProgressRegistry{Store: registry.NewMemoryStore(), err: persistErr}}}
+	h, _, _ := newTestHost(t, true, true)
+	ctx := hostTestContext()
+	started, _, err := h.controlStore.Executions().StartReleaseInstall(ctx, executionOwnerScope(ctx), registry.StartReleaseInstallOperationRequest{
+		RequestID: "request_persistence_failure", ExecutionID: "operation_install_example", PluginInstanceID: "plugini_failure",
+		Release:    registry.ReleaseInstallIdentity{SourceID: "source", Channel: "stable", ReleaseMetadataRef: "metadata.json", ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0", PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64)},
+		Activation: registry.ReleaseInstallActivationRequest{Mode: registry.ReleaseInstallActivationDisabled},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.controlStore.Close(); err != nil {
+		t.Fatal(err)
+	}
 	tracker := &releaseInstallProgressTracker{
-		host: h,
-		ctx:  context.Background(),
-		current: registry.ReleaseInstallOperation{
-			OperationID: "operation_install_example", Revision: 1,
-		},
+		host:    h,
+		ctx:     ctx,
+		current: started,
 	}
 
 	tracker.observe(ReleaseArtifactProgress{Phase: "download", ArtifactRole: "package", Completed: 1, Total: 2, Attempt: 1})
 	operation, err := tracker.snapshot()
-	if operation.OperationID != "operation_install_example" || !errors.Is(err, persistErr) {
+	if operation.Execution.ID != "operation_install_example" || err == nil {
 		t.Fatalf("snapshot = %#v, %v; want original operation and persistence error", operation, err)
 	}
 }
@@ -449,7 +435,6 @@ func TestReleaseInstallFailureClassifiesReleaseTrustErrors(t *testing.T) {
 	}{
 		{name: "verification", err: releasetrust.ErrReleaseTrustVerification, code: security.ErrReleaseRefVerificationFailed},
 		{name: "expired", err: releasetrust.ErrReleaseTrustExpired, code: security.ErrReleaseRefVerificationFailed},
-		{name: "rollback", err: releasetrust.ErrReleaseTrustRollback, code: security.ErrReleaseRefVerificationFailed},
 		{name: "revoked", err: releasetrust.ErrReleaseTrustRevoked, code: security.ErrReleaseRefVerificationFailed},
 		{name: "policy", err: releasetrust.ErrReleasePolicyDenied, code: security.ErrReleaseRefPolicyDenied},
 	}

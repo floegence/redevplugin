@@ -26,11 +26,11 @@ import (
 	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -52,8 +52,7 @@ type Lease struct {
 	Method                 string      `json:"method"`
 	Effect                 string      `json:"effect"`
 	Execution              string      `json:"execution"`
-	OperationID            string      `json:"operation_id,omitempty"`
-	StreamID               string      `json:"stream_id,omitempty"`
+	ExecutionID            string      `json:"execution_id,omitempty"`
 	AuditCorrelationID     string      `json:"audit_correlation_id"`
 	TargetDescriptorHashes []string    `json:"target_descriptor_hashes"`
 	Limits                 LeaseLimits `json:"limits"`
@@ -4425,13 +4424,13 @@ func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTION_CLOSED", Message: "network connection was closed", InternalError: err}
 	case errors.Is(err, connectivity.ErrWebSocketFailed):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_WEBSOCKET_FAILED", Message: "network websocket operation failed", InternalError: err}
-	case errors.Is(err, stream.ErrBackpressure):
+	case errors.Is(err, capability.ErrQuotaExceeded):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_BACKPRESSURE", Message: "network stream is backpressured", InternalError: err}
-	case errors.Is(err, stream.ErrInvalidStream):
+	case errors.Is(err, execution.ErrInvalidTransition):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_INVALID", Message: "network stream is invalid", InternalError: err}
-	case errors.Is(err, stream.ErrNotFound):
+	case errors.Is(err, capability.ErrExecutionRevoked):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_NOT_FOUND", Message: "network stream was not found", InternalError: err}
-	case errors.Is(err, stream.ErrStreamClosed):
+	case errors.Is(err, execution.ErrTerminal):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_CLOSED", Message: "network stream is closed", InternalError: err}
 	default:
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_FAILED", Message: "network execute operation failed", InternalError: err}
@@ -4516,8 +4515,7 @@ func workerInvocationContextFromInvocation(lease Lease, invocation json.RawMessa
 		OwnerEnvHash         string          `json:"owner_env_hash"`
 		SessionChannelIDHash string          `json:"session_channel_id_hash"`
 		BridgeChannelID      string          `json:"bridge_channel_id"`
-		OperationID          string          `json:"operation_id"`
-		StreamID             string          `json:"stream_id"`
+		ExecutionID          string          `json:"execution_id"`
 		AuditCorrelationID   string          `json:"audit_correlation_id"`
 		BrokerAccess         json.RawMessage `json:"broker_access"`
 		BrokerAccessSHA256   string          `json:"broker_access_sha256"`
@@ -4544,8 +4542,7 @@ func workerInvocationContextFromInvocation(lease Lease, invocation json.RawMessa
 		{name: "owner_env_hash", lease: lease.OwnerEnvHash, invocation: envelope.OwnerEnvHash},
 		{name: "session_channel_id_hash", lease: lease.SessionChannelIDHash, invocation: envelope.SessionChannelIDHash},
 		{name: "bridge_channel_id", lease: lease.BridgeChannelID, invocation: envelope.BridgeChannelID},
-		{name: "operation_id", lease: lease.OperationID, invocation: envelope.OperationID},
-		{name: "stream_id", lease: lease.StreamID, invocation: envelope.StreamID},
+		{name: "execution_id", lease: lease.ExecutionID, invocation: envelope.ExecutionID},
 		{name: "audit_correlation_id", lease: lease.AuditCorrelationID, invocation: envelope.AuditCorrelationID},
 	}
 	for _, binding := range bindings {

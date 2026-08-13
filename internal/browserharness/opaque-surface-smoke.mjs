@@ -220,19 +220,18 @@ async function verifyScenario(credentiallessScenario) {
   await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes("typed MessagePort"));
   assert.equal((await frame.locator("#plugin-result").textContent()).includes("gateway_token"), false);
 
-  await frame.getByRole("button", { name: "Read stream" }).click();
+  await frame.getByRole("button", { name: "Read execution events" }).click();
   try {
     await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes("opaque log line 2"));
   } catch (error) {
     const diagnostics = await (await fetch(`${baseURL}/__browser_harness/diagnostics`)).json();
     const pluginResult = await frame.locator("#plugin-result").textContent();
-    throw new Error(`stream response recovery failed: ${JSON.stringify({ diagnostics, pluginResult })}`, { cause: error });
+    throw new Error(`execution event response recovery failed: ${JSON.stringify({ diagnostics, pluginResult })}`, { cause: error });
   }
-  const streamResult = await frame.locator("#plugin-result").textContent();
-  const realStreamRedeemed = streamResult.includes("opaque log line 1") && streamResult.includes("opaque log line 2");
-  assert.equal(streamResult.includes("stream_ticket"), false);
-  assert.equal(streamResult.includes("parent_stream_ticket"), false);
-  assert.equal(streamResult.includes('"parent_stream_credential_visible": false'), true);
+  const executionResult = await frame.locator("#plugin-result").textContent();
+  const realExecutionEventsRead = executionResult.includes("opaque log line 1") && executionResult.includes("opaque log line 2");
+  assert.equal(executionResult.includes("ticket"), false);
+  assert.equal(executionResult.includes('"parent_execution_credential_visible": false'), true);
 
   await frame.getByRole("button", { name: "Dangerous action" }).click();
   try {
@@ -245,7 +244,7 @@ async function verifyScenario(credentiallessScenario) {
   await page.locator("#approve-confirmation").click();
   await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes('"confirmed": true'));
 
-  await frame.getByRole("button", { name: "Observe operation" }).click();
+  await frame.getByRole("button", { name: "Observe execution" }).click();
   await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes('"retry_status": "completed"'));
   const observationResult = await frame.locator("#plugin-result").textContent();
   assert.equal(observationResult.includes('"first_cancelled": true'), true);
@@ -309,7 +308,7 @@ async function verifyScenario(credentiallessScenario) {
   assert.deepEqual(page.context().serviceWorkers(), [], `${credentiallessScenario} service worker creation`);
   assert.equal(eventLog.includes("confirmation-aborted"), true);
   assert.equal(finalDiagnostics.dispose_completed_at > 0, true);
-  assert.equal(finalDiagnostics.operation_snapshot_cancel_recovered, true);
+  assert.equal(finalDiagnostics.execution_snapshot_cancel_recovered, true);
   assert.equal(disposed.iframeSrcdocEmpty, true);
   assert.equal(await iframe.count(), 0, `${credentiallessScenario} slot removes the disposed iframe`);
   assert.equal(disposed.errors.length, 0, `${credentiallessScenario} disposed surface errors`);
@@ -334,8 +333,8 @@ async function verifyScenario(credentiallessScenario) {
     service_worker_absent: page.context().serviceWorkers().length === 0 && isolation.service_worker_blocked === true,
     opening_progress: snapshot.progressEvents.length >= 1 && snapshot.progressEvents[0] >= 300,
     first_paint_before_lazy_asset: snapshot.openedAt > 0 && snapshot.openedAt < diagnostics.asset_completed_at,
-    stream_response_loss_recovered: finalDiagnostics.stream_response_loss_recovered === true,
-    real_stream_redeemed: realStreamRedeemed && finalDiagnostics.requests.filter((request) => request.includes(`/surfaces/${currentSurfaceID}/streams/read`)).length === 3,
+    execution_event_response_loss_recovered: finalDiagnostics.execution_event_response_loss_recovered === true,
+    real_execution_events_read: realExecutionEventsRead && requests.filter((request) => request.url.includes("/executions/execution_harness_logs/events/query")).length === 3,
     confirmation_disposal_aborted: eventLog.includes("confirmation-aborted"),
     server_disposed: finalDiagnostics.dispose_completed_at > 0,
     disposed: disposed.iframeSrcdocEmpty === true,
@@ -373,7 +372,9 @@ function requestAllowed(request, credentiallessScenario) {
     return request.method === expectedMethod && url.search === expectedSearch;
   }
   return request.method === "POST" && url.search === "" &&
-    /^\/_redevplugin\/api\/plugins\/surfaces\/surface_browser_[0-9]{4}\/(prepare|bridge-token|assets\/read|streams\/read|streams\/ack|operations\/query|dispose)$/.test(url.pathname);
+    (/^\/_redevplugin\/api\/plugins\/surfaces\/surface_browser_[0-9]{4}\/(prepare|bridge-token|assets\/read|dispose)$/.test(url.pathname) ||
+      url.pathname === "/_redevplugin/api/plugins/executions/execution_harness_logs/events/query" ||
+      url.pathname === "/_redevplugin/api/plugins/executions/execution_harness_1/query");
 }
 
 function normalizeCSP(srcdoc) {

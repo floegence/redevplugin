@@ -3,6 +3,7 @@ import type {
   PluginRecord,
   PluginSettingsPatchRequest,
 } from "../src/platform.js";
+import type { PluginUIProtocolVersion } from "../src/surface.js";
 
 type IsUnknown<T> = unknown extends T ? ([keyof T] extends [never] ? true : false) : false;
 
@@ -41,3 +42,9 @@ void emptyRemove;
 void invalidScope;
 void missingScope;
 void incompletePin;
+
+const currentUIProtocol: PluginUIProtocolVersion = "plugin-ui-v7";
+// @ts-expect-error Retired UI protocols are not part of the current SDK.
+const retiredUIProtocol: PluginUIProtocolVersion = "plugin-ui-v6";
+void currentUIProtocol;
+void retiredUIProtocol;

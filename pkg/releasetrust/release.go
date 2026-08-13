@@ -2,21 +2,17 @@ package releasetrust
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"slices"
 	"strings"
-	"sync"
+	"time"
 
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/releasecontract"
-	"github.com/floegence/redevplugin/pkg/version"
 )
 
 var (
 	ErrInvalidReleaseIdentity = errors.New("release trust release identity is invalid")
 	ErrReleasePolicyDenied    = errors.New("release trust source policy denied the release")
-	ErrServiceSetFenceBound   = errors.New("release trust service set fence coordinator is already bound")
 )
 
 type ReleaseIdentity struct {
@@ -36,10 +32,17 @@ type PreparedRelease struct {
 }
 
 func (prepared PreparedRelease) SourceTrustKey() SourceTrustKey { return prepared.snapshot.key }
-func (prepared PreparedRelease) StateSHA256() string            { return prepared.snapshot.stateSHA256 }
+func (prepared PreparedRelease) VerifiedAt() time.Time          { return prepared.snapshot.verifiedAt }
 func (prepared PreparedRelease) Identity() ReleaseIdentity      { return prepared.identity }
 func (prepared PreparedRelease) SourcePolicy() releasecontract.SourcePolicyV2 {
 	return prepared.snapshot.SourcePolicy()
+}
+
+// AllowsPackageSigningKey reports whether the freshly prepared source state
+// still authorizes a package signing key and has not revoked it.
+func (prepared PreparedRelease) AllowsPackageSigningKey(keyID string) bool {
+	return keyID != "" && slices.Contains(prepared.snapshot.policy.ActiveKeys.Package, keyID) &&
+		!slices.Contains(prepared.snapshot.revocation.RevokedKeyIDs, keyID)
 }
 
 type VerifiedReleaseMetadata struct {
@@ -70,8 +73,6 @@ func (verified VerifiedPackage) PackageSignature() releasecontract.PackageSignat
 }
 
 type ServiceSet struct {
-	mu       sync.Mutex
-	bound    bool
 	services map[string]*ReleaseTrustService
 }
 
@@ -80,7 +81,6 @@ func NewServiceSet(services ...*ReleaseTrustService) (*ServiceSet, error) {
 		return nil, ErrInvalidReleaseTrustOptions
 	}
 	result := &ServiceSet{services: make(map[string]*ReleaseTrustService, len(services))}
-	var fenceConfigured *bool
 	for _, service := range services {
 		if service == nil || !service.options.valid() {
 			return nil, ErrInvalidReleaseTrustOptions
@@ -89,63 +89,9 @@ func NewServiceSet(services ...*ReleaseTrustService) (*ServiceSet, error) {
 		if _, exists := result.services[sourceID]; exists {
 			return nil, ErrInvalidReleaseTrustOptions
 		}
-		configured := service.adapters.Fence != nil
-		if fenceConfigured != nil && *fenceConfigured != configured {
-			return nil, ErrInvalidReleaseTrustOptions
-		}
-		if fenceConfigured == nil {
-			fenceConfigured = new(bool)
-			*fenceConfigured = configured
-		}
 		result.services[sourceID] = service
 	}
-	result.bound = fenceConfigured != nil && *fenceConfigured
 	return result, nil
-}
-
-func (set *ServiceSet) BindFenceCoordinator(coordinator SourceFenceCoordinator) error {
-	if set == nil || isNilInterface(coordinator) {
-		return ErrInvalidReleaseTrustOptions
-	}
-	set.mu.Lock()
-	defer set.mu.Unlock()
-	if set.bound {
-		return ErrServiceSetFenceBound
-	}
-	for _, service := range set.services {
-		service.refreshMu.Lock()
-		service.adapters.Fence = coordinator
-		service.refreshMu.Unlock()
-	}
-	set.bound = true
-	return nil
-}
-
-func (set *ServiceSet) ValidateActivationLease(lease ActivationLease) error {
-	service := set.serviceForKey(lease.key)
-	if service == nil {
-		return ErrActivationLeaseInvalid
-	}
-	return service.ValidateActivationLease(lease)
-}
-
-func (set *ServiceSet) RefreshActivationLease(ctx context.Context, lease ActivationLease) (ActivationLease, error) {
-	service := set.serviceForKey(lease.key)
-	if service == nil {
-		return ActivationLease{}, ErrActivationLeaseInvalid
-	}
-	return service.RefreshActivationLease(ctx, lease)
-}
-
-func (set *ServiceSet) serviceForKey(key SourceTrustKey) *ReleaseTrustService {
-	if set == nil || !key.valid() {
-		return nil
-	}
-	service := set.services[key.sourceID]
-	if service == nil || !sourceConfigurationContainsKey(service.options.sourceConfiguration, key) {
-		return nil
-	}
-	return service
 }
 
 func (set *ServiceSet) PrepareRelease(ctx context.Context, identity ReleaseIdentity) (PreparedRelease, error) {
@@ -200,18 +146,9 @@ func (set *ServiceSet) VerifyReleaseMetadata(
 		document.ReleaseMetadataSignature.RevocationEpoch != revocation.Epoch || releaseRevoked(revocation, identity, keyID) {
 		return VerifiedReleaseMetadata{}, ErrReleasePolicyDenied
 	}
-	verifier, err := delegatedVerifier(prepared.snapshot.root, releasecontract.DelegatedKeyUsageReleaseMetadata, identity.Channel, prepared.snapshot.trustedFloor, []string{keyID})
+	verifier, err := delegatedVerifier(prepared.snapshot.root, releasecontract.DelegatedKeyUsageReleaseMetadata, identity.Channel, prepared.snapshot.verifiedAt, []string{keyID})
 	if err != nil || releasecontract.VerifyReleaseMetadata(identity.Channel, document, signature, verifier) != nil {
 		return VerifiedReleaseMetadata{}, ErrReleaseTrustVerification
-	}
-	preimage, _ := releasecontract.ReleaseMetadataSigningPreimage(identity.Channel, document)
-	subject := releasecontract.SigningSubjectV1{
-		SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageReleaseMetadata,
-		SourceID: identity.SourceID, Channel: identity.Channel, PublisherID: identity.PublisherID, PluginID: identity.PluginID,
-		Version: identity.Version, ArtifactIdentitySHA256: identity.ReleaseMetadataSHA256,
-	}
-	if err := prepared.verifyReleaseLedger(ctx, subject, preimage, keyID, base64.StdEncoding.EncodeToString(signature)); err != nil {
-		return VerifiedReleaseMetadata{}, err
 	}
 	return VerifiedReleaseMetadata{prepared: clonePreparedRelease(prepared), document: document, raw: slices.Clone(raw)}, nil
 }
@@ -234,7 +171,7 @@ func (set *ServiceSet) VerifyPackage(
 		return VerifiedPackage{}, ErrReleasePolicyDenied
 	}
 	context := releasecontract.PackageVerificationContext{SourceID: identity.SourceID, Channel: identity.Channel, Version: identity.Version}
-	verifier, err := delegatedVerifier(prepared.snapshot.root, releasecontract.DelegatedKeyUsagePackage, identity.Channel, prepared.snapshot.trustedFloor, []string{signature.KeyID})
+	verifier, err := delegatedVerifier(prepared.snapshot.root, releasecontract.DelegatedKeyUsagePackage, identity.Channel, prepared.snapshot.verifiedAt, []string{signature.KeyID})
 	if err != nil || releasecontract.VerifyPackageSignature(context, signature, verifier) != nil {
 		return VerifiedPackage{}, ErrReleaseTrustVerification
 	}
@@ -244,139 +181,7 @@ func (set *ServiceSet) VerifyPackage(
 		signature.PublisherID != identity.PublisherID || signature.PluginID != identity.PluginID {
 		return VerifiedPackage{}, ErrInvalidReleaseIdentity
 	}
-	input := releasecontract.PackageSigningInput{
-		SourceID: identity.SourceID, Channel: identity.Channel, Version: identity.Version,
-		Algorithm: signature.Algorithm, KeyID: signature.KeyID, PublisherID: signature.PublisherID,
-		PluginID: signature.PluginID, PackageHash: signature.PackageHash, ManifestHash: signature.ManifestHash,
-		EntriesHash: signature.EntriesHash, SignedAt: signature.SignedAt,
-	}
-	preimage, _ := releasecontract.PackageSigningPreimage(input)
-	subject := releasecontract.SigningSubjectV1{
-		SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsagePackage,
-		SourceID: identity.SourceID, Channel: identity.Channel, PublisherID: identity.PublisherID, PluginID: identity.PluginID,
-		Version: identity.Version, ArtifactIdentitySHA256: normalizeReleaseSHA256(document.Hashes.PackageSHA256),
-	}
-	if err := prepared.verifyReleaseLedger(ctx, subject, preimage, signature.KeyID, signature.Signature); err != nil {
-		return VerifiedPackage{}, err
-	}
 	return VerifiedPackage{metadata: cloneVerifiedReleaseMetadata(metadata), signature: signature}, nil
-}
-
-func (set *ServiceSet) VerifyCapabilityContract(
-	metadata VerifiedReleaseMetadata,
-	bundle capabilitycontract.Bundle,
-	expected capabilitycontract.Pin,
-) (capabilitycontract.VerifiedContract, error) {
-	prepared := metadata.prepared
-	if set == nil || !prepared.validFor(set) || !releaseMetadataContainsCapabilityPin(metadata.document, expected) {
-		return capabilitycontract.VerifiedContract{}, ErrInvalidReleaseIdentity
-	}
-	policy := prepared.snapshot.policy
-	if !slices.Contains(policy.ActiveKeys.HostCapabilityContract, expected.SignatureKeyID) ||
-		expected.SignaturePolicyEpoch != policy.Epoch ||
-		expected.SignatureRevocationEpoch != prepared.snapshot.revocation.Epoch ||
-		slices.Contains(prepared.snapshot.revocation.RevokedKeyIDs, expected.SignatureKeyID) ||
-		!capabilityPublisherAllowed(policy, expected.SignatureKeyID, expected.PublisherID) {
-		return capabilitycontract.VerifiedContract{}, ErrReleasePolicyDenied
-	}
-	key, err := delegatedKey(
-		prepared.snapshot.root,
-		expected.SignatureKeyID,
-		releasecontract.DelegatedKeyUsageHostCapabilityContract,
-		prepared.identity.Channel,
-		prepared.snapshot.trustedFloor,
-	)
-	if err != nil {
-		return capabilitycontract.VerifiedContract{}, ErrReleaseTrustVerification
-	}
-	publicKey, err := decodeDelegatedPublicKey(key.PublicKey)
-	if err != nil {
-		return capabilitycontract.VerifiedContract{}, ErrReleaseTrustVerification
-	}
-	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
-		Bundle:      bundle,
-		ExpectedPin: expected,
-		TrustedKey: capabilitycontract.TrustedKey{
-			PublisherID: expected.PublisherID, KeyID: expected.SignatureKeyID, PublicKey: publicKey,
-			PolicyEpoch: expected.SignaturePolicyEpoch, RevocationEpoch: expected.SignatureRevocationEpoch,
-		},
-		CurrentReDevPluginVersion: version.CurrentCompatibilityVersion(),
-	})
-	if err != nil {
-		return capabilitycontract.VerifiedContract{}, ErrReleaseTrustVerification
-	}
-	return verified, nil
-}
-
-func releaseMetadataContainsCapabilityPin(document releasecontract.ReleaseMetadataV8, expected capabilitycontract.Pin) bool {
-	for _, hostRequirement := range document.HostRequirements {
-		for _, capability := range hostRequirement.RequiredCapabilityContracts {
-			if capabilityContractPinFromRef(capability.Contract) == expected {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func capabilityPublisherAllowed(policy releasecontract.SourcePolicyV2, keyID, publisherID string) bool {
-	for _, scope := range policy.CapabilityPublisherScopes {
-		if scope.KeyID == keyID {
-			return slices.Contains(scope.AllowedPublishers, publisherID)
-		}
-	}
-	return false
-}
-
-func capabilityContractPinFromRef(ref releasecontract.HostCapabilityContractRef) capabilitycontract.Pin {
-	return capabilitycontract.Pin{
-		PublisherID: ref.PublisherID, ContractID: ref.ContractID, ContractVersion: ref.ContractVersion,
-		ArtifactRef: ref.ArtifactRef, ArtifactSHA256: ref.ArtifactSHA256,
-		ManifestRef: ref.ManifestRef, ManifestSHA256: ref.ManifestSHA256,
-		SignatureRef: ref.SignatureRef, SignatureSHA256: ref.SignatureSHA256,
-		SignatureKeyID: ref.SignatureKeyID, SignaturePolicyEpoch: ref.SignaturePolicyEpoch,
-		SignatureRevocationEpoch: ref.SignatureRevocationEpoch,
-		CompatibilityRef:         ref.CompatibilityRef, CompatibilitySHA256: ref.CompatibilitySHA256,
-		GeneratedClientRef: ref.GeneratedClientRef, GeneratedClientSHA256: ref.GeneratedClientSHA256,
-		NoticesRef: ref.NoticesRef, NoticesSHA256: ref.NoticesSHA256,
-	}
-}
-
-func (verified VerifiedPackage) AuthorizeActivation() (ActivationLease, error) {
-	prepared := verified.metadata.prepared
-	if prepared.service == nil {
-		return ActivationLease{}, ErrInvalidReleaseIdentity
-	}
-	return prepared.service.authorizeActivation(prepared.snapshot)
-}
-
-func (prepared PreparedRelease) verifyReleaseLedger(
-	ctx context.Context,
-	subject releasecontract.SigningSubjectV1,
-	preimage []byte,
-	keyID string,
-	signature string,
-) error {
-	service := prepared.service
-	service.refreshMu.Lock()
-	defer service.refreshMu.Unlock()
-	current, currentSHA256, err := service.loadAndRecover(ctx)
-	if err != nil {
-		return err
-	}
-	if currentSHA256 != prepared.snapshot.stateSHA256 || current.SigningLedger == nil {
-		return ErrActivationLeaseInvalid
-	}
-	_, checkpointSHA256, _, err := service.verifySigningLedgerEvidence(
-		ctx, current, prepared.snapshot.root, subject, preimage, keyID, signature, prepared.snapshot.trustedFloor,
-	)
-	if err != nil {
-		return err
-	}
-	if checkpointSHA256 != current.SigningLedger.CheckpointSHA256 {
-		return ErrReleaseTrustRollback
-	}
-	return nil
 }
 
 func (prepared PreparedRelease) validFor(set *ServiceSet) bool {
@@ -384,8 +189,7 @@ func (prepared PreparedRelease) validFor(set *ServiceSet) bool {
 		prepared.snapshot.key.sourceID != prepared.identity.SourceID || prepared.snapshot.key.channel != prepared.identity.Channel {
 		return false
 	}
-	current, ok := prepared.service.CurrentVerifiedSource(prepared.snapshot.key)
-	return ok && current.stateSHA256 == prepared.snapshot.stateSHA256 && current.processInstanceID == prepared.snapshot.processInstanceID
+	return prepared.snapshot.service == prepared.service && !prepared.snapshot.verifiedAt.IsZero()
 }
 
 func validReleaseIdentity(identity ReleaseIdentity) bool {
@@ -397,12 +201,7 @@ func validReleaseIdentity(identity ReleaseIdentity) bool {
 	if err != nil || locator.String() != identity.ReleaseMetadataRef {
 		return false
 	}
-	_, err = releasecontract.CanonicalSigningSubject(releasecontract.SigningSubjectV1{
-		SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageReleaseMetadata,
-		SourceID: identity.SourceID, Channel: identity.Channel, PublisherID: identity.PublisherID, PluginID: identity.PluginID,
-		Version: identity.Version, ArtifactIdentitySHA256: identity.ReleaseMetadataSHA256,
-	})
-	return err == nil
+	return true
 }
 
 func releaseRevoked(revocation releasecontract.RevocationV2, identity ReleaseIdentity, keyID string) bool {

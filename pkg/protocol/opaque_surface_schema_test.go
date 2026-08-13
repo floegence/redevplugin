@@ -71,12 +71,13 @@ func TestOpaqueSurfaceDocumentSchemaIsClosedAndDigestBound(t *testing.T) {
 }
 
 func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
-	schema := readPluginSchema(t, "opaque-surface-transport-v4.schema.json")
+	schema := readPluginSchema(t, "opaque-surface-transport-v6.schema.json")
 	refs := requireObjectArray(t, schema["oneOf"], "opaque transport oneOf")
 	wantRefs := map[string]bool{
 		"#/$defs/port_envelope":     false,
 		"#/$defs/port_ack":          false,
 		"#/$defs/initialize":        false,
+		"#/$defs/context":           false,
 		"#/$defs/first_paint":       false,
 		"#/$defs/first_commit":      false,
 		"#/$defs/worker_ready":      false,
@@ -107,7 +108,9 @@ func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
 		"port_envelope",
 		"port_ack",
 		"initialize",
+		"context",
 		"first_paint",
+		"first_commit",
 		"worker_ready",
 		"surface_error",
 		"interaction",
@@ -122,6 +125,10 @@ func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
 	initialize := requireNestedObject(t, defs, "initialize")
 	if got := requireNestedObject(t, initialize, "properties", "document")["$ref"]; got != "https://schemas.redevplugin.dev/plugin/opaque-surface-document-v3.schema.json" {
 		t.Fatalf("opaque initialize document ref = %#v", got)
+	}
+	context := requireNestedObject(t, defs, "context")
+	if got := requireNestedObject(t, context, "properties", "context")["$ref"]; got != "#/$defs/context_snapshot" {
+		t.Fatalf("opaque context snapshot ref = %#v", got)
 	}
 	assetResponse := requireNestedObject(t, defs, "asset_response")
 	if got := requireNestedObject(t, assetResponse, "properties", "content_base64")["contentEncoding"]; got != "base64" {
@@ -167,7 +174,7 @@ func TestOpaqueSurfaceSchemasCompileAndRejectUnsafePackagePaths(t *testing.T) {
 	compiler.AssertFormat = true
 	for resource, path := range map[string]string{
 		"https://schemas.redevplugin.dev/plugin/opaque-surface-document-v3.schema.json": "opaque-surface-document-v3.schema.json",
-		"urn:redevplugin:opaque-surface-transport-v4":                                   "opaque-surface-transport-v4.schema.json",
+		"urn:redevplugin:opaque-surface-transport-v6":                                   "opaque-surface-transport-v6.schema.json",
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", path))
 		if err != nil {
@@ -177,7 +184,7 @@ func TestOpaqueSurfaceSchemasCompileAndRejectUnsafePackagePaths(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	compiled, err := compiler.Compile("urn:redevplugin:opaque-surface-transport-v4")
+	compiled, err := compiler.Compile("urn:redevplugin:opaque-surface-transport-v6")
 	if err != nil {
 		t.Fatal(err)
 	}

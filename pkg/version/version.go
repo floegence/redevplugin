@@ -18,7 +18,7 @@ import (
 const (
 	modulePath                      = "github.com/floegence/redevplugin"
 	devVersion                      = "0.0.0-dev"
-	developmentCompatibilityVersion = "0.7.27"
+	developmentCompatibilityVersion = "1.0.0"
 )
 
 var (
@@ -30,61 +30,48 @@ var (
 )
 
 type Matrix struct {
-	PluginUIProtocolVersion             string                     `json:"plugin_ui_protocol_version"`
-	SupportedPluginUIProtocolVersions   []string                   `json:"supported_plugin_ui_protocol_versions"`
-	PluginUITransportMappings           []PluginUITransportMapping `json:"plugin_ui_transport_mappings"`
-	PluginHostProtocolVersion           string                     `json:"plugin_host_protocol_version"`
-	RustIPCVersion                      string                     `json:"rust_ipc_version"`
-	WASMABIVersion                      string                     `json:"wasm_abi_version"`
-	ManifestSchemaVersion               string                     `json:"manifest_schema_version"`
-	PackageSignatureSchemaVersion       string                     `json:"package_signature_schema_version"`
-	ReleaseMetadataSchemaVersion        string                     `json:"release_metadata_schema_version"`
-	ReleaseRootDelegationVersion        string                     `json:"release_root_delegation_schema_version"`
-	ReleaseSourcePolicyVersion          string                     `json:"release_source_policy_schema_version"`
-	ReleaseSourcePolicyPointerVersion   string                     `json:"release_source_policy_pointer_schema_version"`
-	ReleaseRevocationVersion            string                     `json:"release_revocation_schema_version"`
-	ReleaseRevocationPointerVersion     string                     `json:"release_revocation_pointer_schema_version"`
-	ReleaseTrustStateVersion            string                     `json:"release_trust_state_schema_version"`
-	TrustedTimeEvidenceVersion          string                     `json:"trusted_time_evidence_schema_version"`
-	TrustedTimeLeafVersion              string                     `json:"trusted_time_leaf_schema_version"`
-	ReleaseSigningLedgerVersion         string                     `json:"release_signing_ledger_schema_version"`
-	ReleaseSigningSubjectVersion        string                     `json:"release_signing_subject_schema_version"`
-	ReleaseSignatureEnvelopeVersion     string                     `json:"release_signature_envelope_schema_version"`
-	ReleaseSigningLedgerReceiptVersion  string                     `json:"release_signing_ledger_receipt_schema_version"`
-	ReleaseSigningLedgerEvidenceVersion string                     `json:"release_signing_ledger_evidence_schema_version"`
-	TokenTicketSchemaVersion            string                     `json:"token_ticket_schema_version"`
-	BridgeSchemaVersion                 string                     `json:"bridge_schema_version"`
-	OpaqueSurfaceDocumentVersion        string                     `json:"opaque_surface_document_schema_version"`
-	OpaqueSurfaceTransportVersion       string                     `json:"opaque_surface_transport_schema_version"`
-	TargetClassifierVersion             string                     `json:"target_classifier_version"`
-	NetworkGrantSchemaVersion           string                     `json:"network_grant_schema_version"`
-	ResourceScopeSchemaVersion          string                     `json:"resource_scope_schema_version"`
-	SessionScopeSchemaVersion           string                     `json:"session_scope_schema_version"`
-	SessionScopeMaintenanceVersion      string                     `json:"session_scope_maintenance_schema_version"`
-	PluginPlatformOpenAPIVersion        string                     `json:"plugin_platform_openapi_version"`
-	CompatibilitySchemaVersion          string                     `json:"compatibility_schema_version"`
-	WorkerInvocationSchemaVersion       string                     `json:"worker_invocation_schema_version"`
-	HostCapabilityContractVersion       string                     `json:"host_capability_contract_schema_version"`
-	HostCapabilityPinVersion            string                     `json:"host_capability_pin_schema_version"`
-	HostCapabilityManifestVersion       string                     `json:"host_capability_manifest_schema_version"`
-	HostCapabilityCompatVersion         string                     `json:"host_capability_compatibility_schema_version"`
-	HostCapabilitySignatureVersion      string                     `json:"host_capability_signature_schema_version"`
-	HostCapabilityNoticesVersion        string                     `json:"host_capability_notices_schema_version"`
-	ErrorCodesSchemaVersion             string                     `json:"error_codes_schema_version"`
-	PerformanceContractVersion          string                     `json:"performance_contract_version"`
-	PerformanceEvidenceVersion          string                     `json:"performance_evidence_schema_version"`
-	ContractRegistryVersion             string                     `json:"contract_registry_version"`
-	PlatformPackageSetVersion           string                     `json:"platform_package_set_schema_version"`
-	PlatformPackagePublicationVersion   string                     `json:"platform_package_publication_schema_version"`
-	RuntimeAdmissionVersion             string                     `json:"runtime_admission_schema_version"`
-	RuntimeDescriptorVersion            string                     `json:"runtime_descriptor_schema_version"`
-	OwnerScopeInventoryRegistryVersion  string                     `json:"owner_scope_inventory_registry_version"`
-	OwnerScopeInventoryVersion          string                     `json:"owner_scope_inventory_schema_version"`
-	OwnerScopeMigrationVersion          string                     `json:"owner_scope_migration_schema_version"`
-	OwnerScopeRootRecoveryVersion       string                     `json:"owner_scope_root_recovery_schema_version"`
-	ProcessContainmentVersion           string                     `json:"process_containment_schema_version"`
-	RuntimeExecJournalVersion           string                     `json:"runtime_exec_journal_schema_version"`
-	QuarantineCleanupVersion            string                     `json:"quarantine_cleanup_schema_version"`
+	PluginUIProtocolVersion            string                     `json:"plugin_ui_protocol_version"`
+	SupportedPluginUIProtocolVersions  []string                   `json:"supported_plugin_ui_protocol_versions"`
+	PluginUITransportMappings          []PluginUITransportMapping `json:"plugin_ui_transport_mappings"`
+	PluginHostProtocolVersion          string                     `json:"plugin_host_protocol_version"`
+	RustIPCVersion                     string                     `json:"rust_ipc_version"`
+	WASMABIVersion                     string                     `json:"wasm_abi_version"`
+	ManifestSchemaVersion              string                     `json:"manifest_schema_version"`
+	PackageSignatureSchemaVersion      string                     `json:"package_signature_schema_version"`
+	ReleaseMetadataSchemaVersion       string                     `json:"release_metadata_schema_version"`
+	ReleaseRootDelegationVersion       string                     `json:"release_root_delegation_schema_version"`
+	ReleaseSourcePolicyVersion         string                     `json:"release_source_policy_schema_version"`
+	ReleaseSourcePolicyPointerVersion  string                     `json:"release_source_policy_pointer_schema_version"`
+	ReleaseRevocationVersion           string                     `json:"release_revocation_schema_version"`
+	ReleaseRevocationPointerVersion    string                     `json:"release_revocation_pointer_schema_version"`
+	TokenTicketSchemaVersion           string                     `json:"token_ticket_schema_version"`
+	BridgeSchemaVersion                string                     `json:"bridge_schema_version"`
+	OpaqueSurfaceDocumentVersion       string                     `json:"opaque_surface_document_schema_version"`
+	OpaqueSurfaceTransportVersion      string                     `json:"opaque_surface_transport_schema_version"`
+	TargetClassifierVersion            string                     `json:"target_classifier_version"`
+	NetworkGrantSchemaVersion          string                     `json:"network_grant_schema_version"`
+	ResourceScopeSchemaVersion         string                     `json:"resource_scope_schema_version"`
+	SessionScopeSchemaVersion          string                     `json:"session_scope_schema_version"`
+	PluginPlatformOpenAPIVersion       string                     `json:"plugin_platform_openapi_version"`
+	CompatibilitySchemaVersion         string                     `json:"compatibility_schema_version"`
+	WorkerInvocationSchemaVersion      string                     `json:"worker_invocation_schema_version"`
+	HostCapabilityContractVersion      string                     `json:"host_capability_contract_schema_version"`
+	HostCapabilityPinVersion           string                     `json:"host_capability_pin_schema_version"`
+	ErrorCodesSchemaVersion            string                     `json:"error_codes_schema_version"`
+	PerformanceContractVersion         string                     `json:"performance_contract_version"`
+	PerformanceEvidenceVersion         string                     `json:"performance_evidence_schema_version"`
+	ContractRegistryVersion            string                     `json:"contract_registry_version"`
+	PlatformPackageSetVersion          string                     `json:"platform_package_set_schema_version"`
+	PlatformPackagePublicationVersion  string                     `json:"platform_package_publication_schema_version"`
+	RuntimeAdmissionVersion            string                     `json:"runtime_admission_schema_version"`
+	RuntimeDescriptorVersion           string                     `json:"runtime_descriptor_schema_version"`
+	OwnerScopeInventoryRegistryVersion string                     `json:"owner_scope_inventory_registry_version"`
+	OwnerScopeInventoryVersion         string                     `json:"owner_scope_inventory_schema_version"`
+	OwnerScopeMigrationVersion         string                     `json:"owner_scope_migration_schema_version"`
+	OwnerScopeRootRecoveryVersion      string                     `json:"owner_scope_root_recovery_schema_version"`
+	ProcessContainmentVersion          string                     `json:"process_containment_schema_version"`
+	RuntimeExecJournalVersion          string                     `json:"runtime_exec_journal_schema_version"`
+	QuarantineCleanupVersion           string                     `json:"quarantine_cleanup_schema_version"`
 }
 
 type PluginUITransportMapping struct {
@@ -146,58 +133,45 @@ func CurrentMatrix() Matrix {
 		PluginUITransportMappings: []PluginUITransportMapping{
 			{PluginUIProtocolVersion: "plugin-ui-v7", OpaqueSurfaceTransportSchemaVersion: "opaque-surface-transport-v6", BridgeSchemaVersion: "bridge-v7"},
 		},
-		PluginHostProtocolVersion:           PluginHostProtocolVersion,
-		RustIPCVersion:                      RustIPCVersion,
-		WASMABIVersion:                      WASMABIVersion,
-		ManifestSchemaVersion:               ManifestSchemaVersion,
-		PackageSignatureSchemaVersion:       PackageSignatureSchemaVersion,
-		ReleaseMetadataSchemaVersion:        ReleaseMetadataSchemaVersion,
-		ReleaseRootDelegationVersion:        ReleaseRootDelegationSchemaVersion,
-		ReleaseSourcePolicyVersion:          ReleaseSourcePolicySchemaVersion,
-		ReleaseSourcePolicyPointerVersion:   ReleaseSourcePolicyPointerSchemaVersion,
-		ReleaseRevocationVersion:            ReleaseRevocationSchemaVersion,
-		ReleaseRevocationPointerVersion:     ReleaseRevocationPointerSchemaVersion,
-		ReleaseTrustStateVersion:            ReleaseTrustStateSchemaVersion,
-		TrustedTimeEvidenceVersion:          TrustedTimeEvidenceSchemaVersion,
-		TrustedTimeLeafVersion:              TrustedTimeLeafSchemaVersion,
-		ReleaseSigningLedgerVersion:         ReleaseSigningLedgerSchemaVersion,
-		ReleaseSigningSubjectVersion:        ReleaseSigningSubjectSchemaVersion,
-		ReleaseSignatureEnvelopeVersion:     ReleaseSignatureEnvelopeSchemaVersion,
-		ReleaseSigningLedgerReceiptVersion:  ReleaseSigningLedgerReceiptSchemaVersion,
-		ReleaseSigningLedgerEvidenceVersion: ReleaseSigningLedgerEvidenceSchemaVersion,
-		TokenTicketSchemaVersion:            TokenTicketSchemaVersion,
-		BridgeSchemaVersion:                 BridgeSchemaVersion,
-		OpaqueSurfaceDocumentVersion:        OpaqueSurfaceDocumentSchemaVersion,
-		OpaqueSurfaceTransportVersion:       OpaqueSurfaceTransportSchemaVersion,
-		TargetClassifierVersion:             TargetClassifierVersion,
-		NetworkGrantSchemaVersion:           NetworkGrantSchemaVersion,
-		ResourceScopeSchemaVersion:          ResourceScopeSchemaVersion,
-		SessionScopeSchemaVersion:           SessionScopeSchemaVersion,
-		SessionScopeMaintenanceVersion:      SessionScopeMaintenanceSchemaVersion,
-		PluginPlatformOpenAPIVersion:        PluginPlatformOpenAPIVersion,
-		CompatibilitySchemaVersion:          CompatibilitySchemaVersion,
-		WorkerInvocationSchemaVersion:       WorkerInvocationSchemaVersion,
-		HostCapabilityContractVersion:       HostCapabilityContractSchemaVersion,
-		HostCapabilityPinVersion:            HostCapabilityPinSchemaVersion,
-		HostCapabilityManifestVersion:       HostCapabilityManifestSchemaVersion,
-		HostCapabilityCompatVersion:         HostCapabilityCompatibilitySchemaVersion,
-		HostCapabilitySignatureVersion:      HostCapabilitySignatureSchemaVersion,
-		HostCapabilityNoticesVersion:        HostCapabilityNoticesSchemaVersion,
-		ErrorCodesSchemaVersion:             ErrorCodesSchemaVersion,
-		PerformanceContractVersion:          PerformanceContractVersion,
-		PerformanceEvidenceVersion:          PerformanceEvidenceSchemaVersion,
-		ContractRegistryVersion:             ContractRegistryVersion,
-		PlatformPackageSetVersion:           PlatformPackageSetSchemaVersion,
-		PlatformPackagePublicationVersion:   PlatformPackagePublicationSchemaVersion,
-		RuntimeAdmissionVersion:             RuntimeAdmissionSchemaVersion,
-		RuntimeDescriptorVersion:            RuntimeDescriptorSchemaVersion,
-		OwnerScopeInventoryRegistryVersion:  OwnerScopeInventoryRegistryVersion,
-		OwnerScopeInventoryVersion:          OwnerScopeInventorySchemaVersion,
-		OwnerScopeMigrationVersion:          OwnerScopeMigrationSchemaVersion,
-		OwnerScopeRootRecoveryVersion:       OwnerScopeRootRecoverySchemaVersion,
-		ProcessContainmentVersion:           ProcessContainmentSchemaVersion,
-		RuntimeExecJournalVersion:           RuntimeExecJournalSchemaVersion,
-		QuarantineCleanupVersion:            QuarantineCleanupSchemaVersion,
+		PluginHostProtocolVersion:          PluginHostProtocolVersion,
+		RustIPCVersion:                     RustIPCVersion,
+		WASMABIVersion:                     WASMABIVersion,
+		ManifestSchemaVersion:              ManifestSchemaVersion,
+		PackageSignatureSchemaVersion:      PackageSignatureSchemaVersion,
+		ReleaseMetadataSchemaVersion:       ReleaseMetadataSchemaVersion,
+		ReleaseRootDelegationVersion:       ReleaseRootDelegationSchemaVersion,
+		ReleaseSourcePolicyVersion:         ReleaseSourcePolicySchemaVersion,
+		ReleaseSourcePolicyPointerVersion:  ReleaseSourcePolicyPointerSchemaVersion,
+		ReleaseRevocationVersion:           ReleaseRevocationSchemaVersion,
+		ReleaseRevocationPointerVersion:    ReleaseRevocationPointerSchemaVersion,
+		TokenTicketSchemaVersion:           TokenTicketSchemaVersion,
+		BridgeSchemaVersion:                BridgeSchemaVersion,
+		OpaqueSurfaceDocumentVersion:       OpaqueSurfaceDocumentSchemaVersion,
+		OpaqueSurfaceTransportVersion:      OpaqueSurfaceTransportSchemaVersion,
+		TargetClassifierVersion:            TargetClassifierVersion,
+		NetworkGrantSchemaVersion:          NetworkGrantSchemaVersion,
+		ResourceScopeSchemaVersion:         ResourceScopeSchemaVersion,
+		SessionScopeSchemaVersion:          SessionScopeSchemaVersion,
+		PluginPlatformOpenAPIVersion:       PluginPlatformOpenAPIVersion,
+		CompatibilitySchemaVersion:         CompatibilitySchemaVersion,
+		WorkerInvocationSchemaVersion:      WorkerInvocationSchemaVersion,
+		HostCapabilityContractVersion:      HostCapabilityContractSchemaVersion,
+		HostCapabilityPinVersion:           HostCapabilityPinSchemaVersion,
+		ErrorCodesSchemaVersion:            ErrorCodesSchemaVersion,
+		PerformanceContractVersion:         PerformanceContractVersion,
+		PerformanceEvidenceVersion:         PerformanceEvidenceSchemaVersion,
+		ContractRegistryVersion:            ContractRegistryVersion,
+		PlatformPackageSetVersion:          PlatformPackageSetSchemaVersion,
+		PlatformPackagePublicationVersion:  PlatformPackagePublicationSchemaVersion,
+		RuntimeAdmissionVersion:            RuntimeAdmissionSchemaVersion,
+		RuntimeDescriptorVersion:           RuntimeDescriptorSchemaVersion,
+		OwnerScopeInventoryRegistryVersion: OwnerScopeInventoryRegistryVersion,
+		OwnerScopeInventoryVersion:         OwnerScopeInventorySchemaVersion,
+		OwnerScopeMigrationVersion:         OwnerScopeMigrationSchemaVersion,
+		OwnerScopeRootRecoveryVersion:      OwnerScopeRootRecoverySchemaVersion,
+		ProcessContainmentVersion:          ProcessContainmentSchemaVersion,
+		RuntimeExecJournalVersion:          RuntimeExecJournalSchemaVersion,
+		QuarantineCleanupVersion:           QuarantineCleanupSchemaVersion,
 	}
 }
 
@@ -285,7 +259,6 @@ func currentPlatformPackageSet() PlatformPackageSet {
 			{Name: "redevplugin-contracts", Version: version, Role: "contracts"},
 			{Name: "redevplugin-ipc", Version: version, Role: "ipc"},
 			{Name: "redevplugin-wasm-abi", Version: version, Role: "wasm_abi"},
-			{Name: "redevplugin-target-classifier", Version: version, Role: "target_classifier"},
 			{Name: "redevplugin-worker-sdk", Version: version, Role: "worker_sdk"},
 			{Name: "redevplugin-runtime", Version: version, Role: "runtime"},
 		},

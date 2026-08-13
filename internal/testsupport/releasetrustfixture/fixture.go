@@ -6,9 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -16,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 	"github.com/floegence/redevplugin/pkg/releasetrust"
@@ -27,11 +24,6 @@ const (
 	defaultChannel   = "stable"
 	defaultSigningID = "fixture_signing_key"
 	defaultRootID    = "fixture_root_key"
-	defaultTimeID    = "fixture_time_key"
-	defaultTimeLogID = "fixture_time_log"
-	defaultLedgerID  = "fixture_ledger_key"
-	defaultLedgerLog = "fixture_signing_log"
-	zeroSHA256       = "0000000000000000000000000000000000000000000000000000000000000000"
 )
 
 type Options struct {
@@ -45,10 +37,6 @@ type Options struct {
 	HostRequirements     []releasecontract.ReleaseHostRequirement
 	GeneratedAt          time.Time
 	ExpiresAt            time.Time
-	StateStore           *StateStore
-	TrustedTime          *TrustedTimeAdapter
-	UseMonotonicState    bool
-	RotateSigningLedger  bool
 }
 
 type Fixture struct {
@@ -63,11 +51,7 @@ type Fixture struct {
 	MetadataSignature     []byte
 	PackageSignature      releasecontract.PackageSignatureV1
 	SigningPrivateKey     ed25519.PrivateKey
-	CapabilityBundle      *capabilitycontract.Bundle
 	DocumentTransport     *DocumentTransport
-	LedgerTransport       *LedgerTransport
-	StateStore            *StateStore
-	TrustedTime           *TrustedTimeAdapter
 	ReleaseArtifactSHA256 string
 	GeneratedAt           time.Time
 	ExpiresAt             time.Time
@@ -81,7 +65,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	channel := valueOrDefault(options.Channel, defaultChannel)
 	generatedAt := options.GeneratedAt.UTC()
 	if generatedAt.IsZero() {
-		generatedAt = time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC)
+		generatedAt = time.Now().UTC().Truncate(time.Second)
 	}
 	expiresAt := options.ExpiresAt.UTC()
 	if expiresAt.IsZero() {
@@ -97,33 +81,13 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	}
 	rootPrivate := deterministicPrivateKey(11)
 	signingPrivate := deterministicPrivateKey(12)
-	timePrivate := deterministicPrivateKey(13)
-	ledgerPrivate := deterministicPrivateKey(14)
 	rootAnchor, err := releasetrust.NewEd25519TrustAnchor(defaultRootID, rootPrivate.Public().(ed25519.PublicKey))
-	if err != nil {
-		return nil, err
-	}
-	timeAnchor, err := releasetrust.NewEd25519TrustAnchor(defaultTimeID, timePrivate.Public().(ed25519.PublicKey))
-	if err != nil {
-		return nil, err
-	}
-	timeRoot, err := releasetrust.NewTransparencyRoot(defaultTimeLogID, timeAnchor)
-	if err != nil {
-		return nil, err
-	}
-	ledgerAnchor, err := releasetrust.NewEd25519TrustAnchor(defaultLedgerID, ledgerPrivate.Public().(ed25519.PublicKey))
-	if err != nil {
-		return nil, err
-	}
-	ledgerRoot, err := releasetrust.NewPinnedSigningLedgerRoot(defaultLedgerLog, ledgerAnchor)
 	if err != nil {
 		return nil, err
 	}
 	trustOptions, err := releasetrust.NewReleaseTrustOptions(
 		configuration,
 		rootAnchor,
-		[]releasetrust.TransparencyRoot{timeRoot},
-		ledgerRoot,
 		releasetrust.SourceRelativeLocatorPolicyV1,
 	)
 	if err != nil {
@@ -168,16 +132,14 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	generatedAtValue := generatedAt.Format(time.RFC3339Nano)
 	expiresAtValue := expiresAt.Format(time.RFC3339Nano)
 	rootInput := releasecontract.RootDelegationInput{
-		SourceID: sourceID, RootEpoch: "1", PreviousRootEpoch: releasecontract.GenesisPreviousEpoch,
-		PreviousDelegationSHA256: releasecontract.GenesisPreviousDocumentSHA256,
-		GeneratedAt:              generatedAtValue, ExpiresAt: expiresAtValue,
+		SourceID: sourceID, RootEpoch: "1",
+		GeneratedAt: generatedAtValue, ExpiresAt: expiresAtValue,
 		DelegatedKeys: []releasecontract.RootDelegatedKey{{
 			Algorithm: releasecontract.SignatureAlgorithmEd25519, KeyID: defaultSigningID,
 			PublicKey: base64.StdEncoding.EncodeToString(signingPrivate.Public().(ed25519.PublicKey)),
 			Usages: []releasecontract.DelegatedKeyUsage{
 				releasecontract.DelegatedKeyUsagePackage,
 				releasecontract.DelegatedKeyUsageReleaseMetadata,
-				releasecontract.DelegatedKeyUsageHostCapabilityContract,
 				releasecontract.DelegatedKeyUsageRevocation,
 				releasecontract.DelegatedKeyUsageRevocationPointer,
 				releasecontract.DelegatedKeyUsageSourcePolicy,
@@ -206,29 +168,17 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		allowedArtifactHosts = []string{"artifacts.example.com"}
 	}
 	policyInput := releasecontract.SourcePolicyInput{
-		SourceID: sourceID, Channel: channel, Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
-		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, RootEpoch: "1",
+		SourceID: sourceID, Channel: channel, Epoch: "1", RootEpoch: "1",
 		SourceType: sourceType, SourceClass: valueOrDefault(options.SourceClass, "official"),
 		AllowedPublishers: []string{signedPackage.Manifest.Publisher.PublisherID}, AllowedArtifactHosts: allowedArtifactHosts,
 		ActiveKeys: releasecontract.SourcePolicyActiveKeys{
-			Package: []string{defaultSigningID}, ReleaseMetadata: []string{defaultSigningID}, HostCapabilityContract: []string{defaultSigningID},
+			Package: []string{defaultSigningID}, ReleaseMetadata: []string{defaultSigningID},
 			SourcePolicyPointer: []string{defaultSigningID}, Revocation: []string{defaultSigningID}, RevocationPointer: []string{defaultSigningID},
 		},
 		RequireSignature: true, InstallPolicy: valueOrDefault(options.InstallPolicy, "allow"), UnsignedPolicy: "block",
 		DowngradePolicy: valueOrDefault(options.DowngradePolicy, "block"), MinimumRevocationEpoch: "1",
-		Limits: releasecontract.DefaultSourcePolicyLimits(), GeneratedAt: generatedAtValue, ExpiresAt: expiresAtValue, KeyID: defaultSigningID,
+		Limits: releasecontract.PersonalMaintainerSourcePolicyLimits(), GeneratedAt: generatedAtValue, ExpiresAt: expiresAtValue, KeyID: defaultSigningID,
 	}
-	policyInput.CapabilityPublisherScopes = []releasecontract.SourcePolicyCapabilityPublisherScope{{
-		KeyID: defaultSigningID, AllowedPublishers: []string{"fixture.capability"},
-	}}
-	for _, requirement := range options.HostRequirements {
-		for _, capability := range requirement.RequiredCapabilityContracts {
-			policyInput.CapabilityPublisherScopes = append(policyInput.CapabilityPublisherScopes, releasecontract.SourcePolicyCapabilityPublisherScope{
-				KeyID: defaultSigningID, AllowedPublishers: []string{capability.Contract.PublisherID},
-			})
-		}
-	}
-	policyInput.CapabilityPublisherScopes = canonicalCapabilityScopes(policyInput.CapabilityPublisherScopes)
 	policyPreimage, err := releasecontract.SourcePolicySigningPreimage(policyInput)
 	if err != nil {
 		return nil, err
@@ -243,8 +193,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	}
 	policyRef := fmt.Sprintf("sources/%s/%s/policy/1.json", sourceID, channel)
 	policyPointerInput := releasecontract.ReleasePointerInput{
-		SourceID: sourceID, Channel: channel, Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
-		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, Ref: policyRef, DocumentSHA256: digestHex(policyBytes),
+		SourceID: sourceID, Channel: channel, Epoch: "1", Ref: policyRef, DocumentSHA256: digestHex(policyBytes),
 		GeneratedAt: generatedAtValue, ExpiresAt: expiresAtValue, KeyID: defaultSigningID,
 	}
 	policyPointerPreimage, err := releasecontract.SourcePolicyPointerSigningPreimage(policyPointerInput)
@@ -261,8 +210,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	}
 
 	revocationInput := releasecontract.RevocationInput{
-		SourceID: sourceID, Channel: channel, Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
-		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, RootEpoch: "1",
+		SourceID: sourceID, Channel: channel, Epoch: "1", RootEpoch: "1",
 		GeneratedAt: generatedAtValue, ExpiresAt: expiresAtValue, RevokedKeyIDs: []string{},
 		RevokedReleases: []releasecontract.RevokedRelease{}, KeyID: defaultSigningID,
 	}
@@ -280,8 +228,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	}
 	revocationRef := fmt.Sprintf("sources/%s/%s/revocation/1.json", sourceID, channel)
 	revocationPointerInput := releasecontract.ReleasePointerInput{
-		SourceID: sourceID, Channel: channel, Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
-		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, Ref: revocationRef, DocumentSHA256: digestHex(revocationBytes),
+		SourceID: sourceID, Channel: channel, Epoch: "1", Ref: revocationRef, DocumentSHA256: digestHex(revocationBytes),
 		GeneratedAt: generatedAtValue, ExpiresAt: expiresAtValue, KeyID: defaultSigningID,
 	}
 	revocationPointerPreimage, err := releasecontract.RevocationPointerSigningPreimage(revocationPointerInput)
@@ -358,56 +305,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		documents.values[locator] = slices.Clone(value)
 		documents.tokens[locator] = "fixture-token-" + digestHex([]byte(locator))[:16]
 	}
-	signedDocuments := []signedDocument{
-		{subject: rootSigningSubject(root), preimage: rootPreimage, keyID: root.KeyID, signature: root.Signature},
-		{subject: epochSigningSubject(sourceID, channel, releasecontract.SigningSubjectUsageSourcePolicyPointer, "1"), preimage: policyPointerPreimage, keyID: policyPointer.KeyID, signature: policyPointer.Signature},
-		{subject: epochSigningSubject(sourceID, channel, releasecontract.SigningSubjectUsageSourcePolicy, "1"), preimage: policyPreimage, keyID: policy.KeyID, signature: policy.Signature},
-		{subject: epochSigningSubject(sourceID, channel, releasecontract.SigningSubjectUsageRevocationPointer, "1"), preimage: revocationPointerPreimage, keyID: revocationPointer.KeyID, signature: revocationPointer.Signature},
-		{subject: epochSigningSubject(sourceID, channel, releasecontract.SigningSubjectUsageRevocation, "1"), preimage: revocationPreimage, keyID: revocation.KeyID, signature: revocation.Signature},
-		{subject: releasecontract.SigningSubjectV1{
-			SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageReleaseMetadata,
-			SourceID: sourceID, Channel: channel, PublisherID: identity.PublisherID, PluginID: identity.PluginID,
-			Version: identity.Version, ArtifactIdentitySHA256: metadataSHA256,
-		}, preimage: metadataPreimage, keyID: defaultSigningID, signature: base64.StdEncoding.EncodeToString(metadataSignature)},
-		{subject: releasecontract.SigningSubjectV1{
-			SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsagePackage,
-			SourceID: sourceID, Channel: channel, PublisherID: identity.PublisherID, PluginID: identity.PluginID,
-			Version: identity.Version, ArtifactIdentitySHA256: strings.TrimPrefix(signedPackage.PackageHash, "sha256:"),
-		}, preimage: packagePreimage, keyID: defaultSigningID, signature: packageSignature.Signature},
-	}
-	if options.RotateSigningLedger {
-		extraPreimage := []byte("rotated-ledger-subject")
-		signedDocuments = append(signedDocuments, signedDocument{
-			subject: releasecontract.SigningSubjectV1{
-				SchemaVersion: releasecontract.SigningSubjectSchemaVersion,
-				Usage:         releasecontract.SigningSubjectUsageReleaseMetadata,
-				SourceID:      sourceID, Channel: channel,
-				PublisherID: identity.PublisherID, PluginID: identity.PluginID,
-				Version: "1.0.1", ArtifactIdentitySHA256: digestHex(extraPreimage),
-			},
-			preimage: extraPreimage, keyID: defaultSigningID,
-			signature: base64.StdEncoding.EncodeToString(signDigest(signingPrivate, extraPreimage)),
-		})
-	}
-	ledger, err := buildLedger(configuration, signedDocuments, ledgerPrivate, generatedAt.Add(time.Hour))
-	if err != nil {
-		return nil, err
-	}
-	state := options.StateStore
-	if state == nil {
-		state = &StateStore{}
-	}
-	trustedTime := options.TrustedTime
-	if trustedTime == nil {
-		trustedTime = &TrustedTimeAdapter{privateKey: timePrivate, start: generatedAt.Add(time.Hour)}
-	}
-	adapters := releasetrust.ReleaseTrustAdapters{
-		Documents: documents, Ledger: ledger, State: state, TrustedTime: trustedTime,
-	}
-	if options.UseMonotonicState {
-		adapters.Monotonic = state
-	}
-	service, err := releasetrust.NewReleaseTrustService(trustOptions, adapters)
+	service, err := releasetrust.NewReleaseTrustService(trustOptions, releasetrust.ReleaseTrustAdapters{Documents: documents})
 	if err != nil {
 		return nil, err
 	}
@@ -420,38 +318,87 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		Service: service, ServiceSet: serviceSet, Identity: identity, SourcePolicy: policy, Package: signedPackage,
 		PackageBytes: slices.Clone(signedPackageBytes), Metadata: releaseMetadata, MetadataBytes: slices.Clone(metadataBytes),
 		MetadataSignature: slices.Clone(metadataSignature), PackageSignature: packageSignature,
-		SigningPrivateKey: slices.Clone(signingPrivate),
-		DocumentTransport: documents, LedgerTransport: ledger, StateStore: state, TrustedTime: trustedTime,
+		SigningPrivateKey:     slices.Clone(signingPrivate),
+		DocumentTransport:     documents,
 		ReleaseArtifactSHA256: artifactDigest, GeneratedAt: generatedAt, ExpiresAt: expiresAt,
 	}, nil
 }
 
-// AdvanceTrustedTime commits a valid successor state through the same trust
-// service used by host tests. It is intentionally test-only fixture support.
-func (fixture *Fixture) AdvanceTrustedTime(ctx context.Context) (releasetrust.TrustedTimeStatus, error) {
-	if fixture == nil || fixture.Service == nil {
-		return releasetrust.TrustedTimeStatus{}, releasetrust.ErrInvalidReleaseTrustOptions
-	}
-	configuration, err := releasetrust.NewSourceConfiguration(fixture.Identity.SourceID, []string{fixture.Identity.Channel})
-	if err != nil {
-		return releasetrust.TrustedTimeStatus{}, err
-	}
-	key, err := configuration.TrustKey(fixture.Identity.Channel)
-	if err != nil {
-		return releasetrust.TrustedTimeStatus{}, err
-	}
-	return fixture.Service.RefreshTrustedTime(ctx, key)
+func (fixture *Fixture) RevokeRelease(now time.Time) error {
+	return fixture.publishRevocation(now, []string{}, []releasecontract.RevokedRelease{{
+		PublisherID: fixture.Identity.PublisherID, PluginID: fixture.Identity.PluginID, Version: fixture.Identity.Version,
+		ReleaseMetadataSHA256: fixture.Identity.ReleaseMetadataSHA256, RevokedAt: normalizedRevocationTime(now).Format(time.RFC3339Nano),
+	}})
 }
 
-func (fixture *Fixture) SetCapabilityBundle(bundle capabilitycontract.Bundle) {
-	if fixture == nil {
-		return
+func (fixture *Fixture) RevokeSigningKey(now time.Time) error {
+	return fixture.publishRevocation(now, []string{defaultSigningID}, []releasecontract.RevokedRelease{})
+}
+
+func normalizedRevocationTime(now time.Time) time.Time {
+	now = now.UTC().Truncate(time.Second)
+	if now.IsZero() {
+		now = time.Now().UTC().Truncate(time.Second)
 	}
-	cloned := capabilitycontract.Bundle{Pin: bundle.Pin, Files: make(map[string][]byte, len(bundle.Files))}
-	for name, value := range bundle.Files {
-		cloned.Files[name] = slices.Clone(value)
+	return now
+}
+
+func (fixture *Fixture) publishRevocation(now time.Time, revokedKeyIDs []string, revokedReleases []releasecontract.RevokedRelease) error {
+	if fixture == nil || fixture.DocumentTransport == nil {
+		return errors.New("release trust fixture is required")
 	}
-	fixture.CapabilityBundle = &cloned
+	now = normalizedRevocationTime(now)
+	currentRef := fmt.Sprintf("sources/%s/%s/revocation/current.json", fixture.Identity.SourceID, fixture.Identity.Channel)
+	fixture.DocumentTransport.mu.Lock()
+	previousPointerBytes := slices.Clone(fixture.DocumentTransport.values[currentRef])
+	fixture.DocumentTransport.mu.Unlock()
+	if _, err := releasecontract.DecodeRevocationPointer(previousPointerBytes); err != nil {
+		return err
+	}
+	revocationRef := fmt.Sprintf("sources/%s/%s/revocation/2.json", fixture.Identity.SourceID, fixture.Identity.Channel)
+	revocationInput := releasecontract.RevocationInput{
+		SourceID: fixture.Identity.SourceID, Channel: fixture.Identity.Channel, Epoch: "2",
+		RootEpoch:   fixture.SourcePolicy.RootEpoch,
+		GeneratedAt: now.Format(time.RFC3339Nano), ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339Nano),
+		RevokedKeyIDs: slices.Clone(revokedKeyIDs), RevokedReleases: slices.Clone(revokedReleases),
+		KeyID: defaultSigningID,
+	}
+	preimage, err := releasecontract.RevocationSigningPreimage(revocationInput)
+	if err != nil {
+		return err
+	}
+	revocation, err := releasecontract.BuildRevocation(revocationInput, signDigest(fixture.SigningPrivateKey, preimage))
+	if err != nil {
+		return err
+	}
+	revocationBytes, err := releasecontract.CanonicalRevocation(revocation)
+	if err != nil {
+		return err
+	}
+	pointerInput := releasecontract.ReleasePointerInput{
+		SourceID: fixture.Identity.SourceID, Channel: fixture.Identity.Channel, Epoch: "2",
+		Ref: revocationRef, DocumentSHA256: digestHex(revocationBytes), GeneratedAt: now.Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339Nano), KeyID: defaultSigningID,
+	}
+	pointerPreimage, err := releasecontract.RevocationPointerSigningPreimage(pointerInput)
+	if err != nil {
+		return err
+	}
+	pointer, err := releasecontract.BuildRevocationPointer(pointerInput, signDigest(fixture.SigningPrivateKey, pointerPreimage))
+	if err != nil {
+		return err
+	}
+	pointerBytes, err := releasecontract.CanonicalRevocationPointer(pointer)
+	if err != nil {
+		return err
+	}
+	fixture.DocumentTransport.mu.Lock()
+	fixture.DocumentTransport.values[revocationRef] = slices.Clone(revocationBytes)
+	fixture.DocumentTransport.tokens[revocationRef] = "fixture-token-" + digestHex([]byte(revocationRef))[:16]
+	fixture.DocumentTransport.values[currentRef] = slices.Clone(pointerBytes)
+	fixture.DocumentTransport.tokens[currentRef] = "fixture-token-" + digestHex(pointerBytes)[:16]
+	fixture.DocumentTransport.mu.Unlock()
+	return nil
 }
 
 type DocumentTransport struct {
@@ -506,362 +453,6 @@ func (transport *DocumentTransport) FirstDeadlineRemaining() (time.Duration, boo
 	return transport.firstDeadlineRemaining, transport.hasDeadline
 }
 
-type LedgerTransport struct {
-	mu     sync.Mutex
-	values map[string][]byte
-	calls  int
-}
-
-func (transport *LedgerTransport) FetchSigningLedgerArtifact(_ context.Context, request releasetrust.SigningLedgerRequest) (releasetrust.SigningLedgerResult, error) {
-	transport.mu.Lock()
-	defer transport.mu.Unlock()
-	transport.calls++
-	locator := request.Locator().String()
-	value := transport.values[locator]
-	if value == nil {
-		return releasetrust.SigningLedgerResult{}, fmt.Errorf("missing signing ledger fixture %s", locator)
-	}
-	return releasetrust.NewSigningLedgerResult(request, value)
-}
-
-func (transport *LedgerTransport) Calls() int {
-	transport.mu.Lock()
-	defer transport.mu.Unlock()
-	return transport.calls
-}
-
-type StateStore struct {
-	mu        sync.Mutex
-	committed []byte
-	pending   []byte
-	loadHook  func()
-	counter   uint64
-	digest    string
-}
-
-func (store *StateStore) ReadMonotonicState(_ context.Context, request releasetrust.MonotonicStateReadRequest) (releasetrust.MonotonicStateReadResult, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	digest := store.digest
-	if digest == "" {
-		digest = zeroSHA256
-	}
-	return releasetrust.NewMonotonicStateReadResult(request, store.counter, digest)
-}
-
-func (store *StateStore) CompareAndSwapMonotonicState(_ context.Context, request releasetrust.MonotonicStateCASRequest) (releasetrust.StateMutationOutcome, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	digest := store.digest
-	if digest == "" {
-		digest = zeroSHA256
-	}
-	if store.counter != request.ExpectedCounter() || digest != request.PreviousSHA256() || request.NextCounter() != store.counter+1 {
-		return releasetrust.StateMutationConflict, nil
-	}
-	store.counter = request.NextCounter()
-	store.digest = request.NextSHA256()
-	return releasetrust.StateMutationApplied, nil
-}
-
-func (store *StateStore) LoadSourceTrustState(_ context.Context, request releasetrust.SourceTrustStateLoadRequest) (releasetrust.SourceTrustStateLoadResult, error) {
-	store.mu.Lock()
-	result, err := releasetrust.NewSourceTrustStateLoadResult(request, store.committed, store.pending)
-	hook := store.loadHook
-	store.mu.Unlock()
-	if hook != nil {
-		hook()
-	}
-	return result, err
-}
-
-func (store *StateStore) PrepareSourceTrustState(_ context.Context, request releasetrust.SourceTrustStatePrepareRequest) (releasetrust.StateMutationOutcome, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if digestOrEmpty(store.committed) != request.ExpectedCommittedSHA256() {
-		return releasetrust.StateMutationConflict, nil
-	}
-	if len(store.pending) != 0 && digestHex(store.pending) != request.PendingSHA256() {
-		return releasetrust.StateMutationConflict, nil
-	}
-	store.pending = request.PendingBytes()
-	return releasetrust.StateMutationApplied, nil
-}
-
-func (store *StateStore) CommitSourceTrustState(_ context.Context, request releasetrust.SourceTrustStateCommitRequest) (releasetrust.StateMutationOutcome, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if len(store.pending) == 0 || digestHex(store.pending) != request.PendingSHA256() || digestHex(request.NextStateBytes()) != request.NextStateSHA256() {
-		return releasetrust.StateMutationConflict, nil
-	}
-	store.committed = request.NextStateBytes()
-	store.pending = nil
-	return releasetrust.StateMutationApplied, nil
-}
-
-func (store *StateStore) CommittedBytes() []byte {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	return slices.Clone(store.committed)
-}
-
-func (store *StateStore) ReplaceCommittedBytes(value []byte) {
-	store.mu.Lock()
-	store.committed = slices.Clone(value)
-	store.pending = nil
-	store.mu.Unlock()
-}
-
-func (store *StateStore) SetLoadHook(hook func()) {
-	store.mu.Lock()
-	store.loadHook = hook
-	store.mu.Unlock()
-}
-
-type TrustedTimeAdapter struct {
-	mu         sync.Mutex
-	privateKey ed25519.PrivateKey
-	start      time.Time
-	calls      int
-	leaves     [][]byte
-}
-
-func (adapter *TrustedTimeAdapter) Observe(_ context.Context, request releasetrust.TrustedTimeRequest) (releasetrust.TrustedTimeObservation, error) {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	integrated := adapter.start.Add(time.Duration(adapter.calls) * time.Minute)
-	leaf := releasetrust.TrustedTimeLeafV1{
-		SchemaVersion: releasetrust.TrustedTimeLeafSchemaVersion, SourceID: request.SourceTrustKey().SourceID(), Channel: request.SourceTrustKey().Channel(),
-		Nonce: request.Nonce(), MinimumTime: request.MinimumTime(), ClaimedTime: integrated.Add(time.Hour).Format(time.RFC3339Nano),
-		RequestSHA256: request.RequestSHA256(), LogID: request.LogID(),
-	}
-	leafBytes, err := json.Marshal(leaf)
-	if err != nil {
-		return releasetrust.TrustedTimeObservation{}, err
-	}
-	leafHashes := make([][]byte, 0, len(adapter.leaves)+1)
-	for _, previous := range adapter.leaves {
-		leafHashes = append(leafHashes, merkleLeafHash(previous))
-	}
-	leafHashes = append(leafHashes, merkleLeafHash(leafBytes))
-	treeSize := uint64(len(leafHashes))
-	rootHash := merkleRoot(leafHashes)
-	checkpoint := releasetrust.TrustedTimeCheckpointV1{
-		SchemaVersion: releasetrust.TrustedTimeCheckpointSchemaVersion, LogID: request.LogID(), TreeSize: treeSize,
-		RootHash: hex.EncodeToString(rootHash), CheckpointTime: integrated.Format(time.RFC3339Nano), KeyID: defaultTimeID,
-	}
-	checkpointPreimage, err := json.Marshal(struct {
-		Domain         string `json:"domain"`
-		SchemaVersion  string `json:"schema_version"`
-		LogID          string `json:"log_id"`
-		TreeSize       uint64 `json:"tree_size"`
-		RootHash       string `json:"root_hash"`
-		CheckpointTime string `json:"checkpoint_time"`
-		KeyID          string `json:"key_id"`
-	}{
-		Domain: "redevplugin.trusted-time.checkpoint.v1", SchemaVersion: checkpoint.SchemaVersion, LogID: checkpoint.LogID,
-		TreeSize: checkpoint.TreeSize, RootHash: checkpoint.RootHash, CheckpointTime: checkpoint.CheckpointTime, KeyID: checkpoint.KeyID,
-	})
-	if err != nil {
-		return releasetrust.TrustedTimeObservation{}, err
-	}
-	checkpoint.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(adapter.privateKey, checkpointPreimage))
-	leafSHA256 := digestHex(leafBytes)
-	setPreimage, err := json.Marshal(struct {
-		Domain         string `json:"domain"`
-		LeafSHA256     string `json:"leaf_sha256"`
-		IntegratedTime string `json:"integrated_time"`
-		LogID          string `json:"log_id"`
-	}{
-		Domain: "redevplugin.trusted-time.set.v1", LeafSHA256: leafSHA256,
-		IntegratedTime: integrated.Format(time.RFC3339Nano), LogID: request.LogID(),
-	})
-	if err != nil {
-		return releasetrust.TrustedTimeObservation{}, err
-	}
-	var consistency []string
-	previousTreeSize := request.PreviousCheckpointTreeSize()
-	if previousTreeSize > uint64(len(adapter.leaves)) {
-		return releasetrust.TrustedTimeObservation{}, releasetrust.ErrInvalidTrustedTimeRequest
-	}
-	if previousTreeSize != 0 {
-		consistency = encodeProof(merkleConsistencyProof(leafHashes, int(previousTreeSize)))
-	}
-	evidence := releasetrust.TrustedTimeEvidenceV1{
-		SchemaVersion: releasetrust.TrustedTimeEvidenceSchemaVersion, Kind: releasetrust.TrustedTimeEvidenceTransparency,
-		Leaf: leaf, LeafSHA256: leafSHA256, IntegratedTime: integrated.Format(time.RFC3339Nano),
-		SignedEntryTimestamp: base64.StdEncoding.EncodeToString(ed25519.Sign(adapter.privateKey, setPreimage)),
-		Checkpoint:           checkpoint, LeafIndex: treeSize - 1, InclusionProof: encodeProof(merkleInclusionProof(leafHashes, len(leafHashes)-1)),
-		ConsistencyProof: consistency,
-	}
-	evidenceBytes, err := json.Marshal(evidence)
-	if err != nil {
-		return releasetrust.TrustedTimeObservation{}, err
-	}
-	adapter.leaves = append(adapter.leaves, slices.Clone(leafBytes))
-	adapter.calls++
-	return releasetrust.NewTransparencyTimeObservation(request, evidenceBytes)
-}
-
-type signedDocument struct {
-	subject   releasecontract.SigningSubjectV1
-	preimage  []byte
-	keyID     string
-	signature string
-}
-
-type ledgerValue struct {
-	subject       releasecontract.SigningSubjectV1
-	subjectDigest string
-	preimageHash  string
-	envelopeHash  string
-	sequence      uint64
-}
-
-func buildLedger(configuration releasetrust.SourceConfiguration, documents []signedDocument, privateKey ed25519.PrivateKey, checkpointTime time.Time) (*LedgerTransport, error) {
-	values := make([]ledgerValue, len(documents))
-	logLeaves := make([][]byte, len(documents))
-	for index, document := range documents {
-		subjectDigest, err := releasecontract.SigningSubjectIdentitySHA256(document.subject)
-		if err != nil {
-			return nil, fmt.Errorf("build signing ledger subject %q: %w", document.subject.Usage, err)
-		}
-		preimageDigest := sha256.Sum256(document.preimage)
-		envelope := releasecontract.SignatureEnvelopeV1{
-			SchemaVersion: releasecontract.SigningEnvelopeSchemaVersion, SubjectIdentitySHA256: subjectDigest,
-			SigningPreimageSHA256: hex.EncodeToString(preimageDigest[:]), Algorithm: releasecontract.SignatureAlgorithmEd25519,
-			KeyID: document.keyID, Signature: document.signature,
-		}
-		envelopeBytes, err := releasecontract.CanonicalSignatureEnvelope(envelope)
-		if err != nil {
-			return nil, err
-		}
-		sequence := uint64(index + 1)
-		leaf := releasecontract.SigningLedgerLogLeafV1{
-			SchemaVersion: releasecontract.SigningLedgerLogLeafSchemaVersion, SourceID: document.subject.SourceID,
-			Channel: document.subject.Channel, SubjectIdentitySHA256: subjectDigest,
-			SigningPreimageSHA256: envelope.SigningPreimageSHA256, SignatureEnvelopeSHA256: digestHex(envelopeBytes), Sequence: sequence,
-		}
-		leafBytes, err := releasecontract.CanonicalSigningLedgerLogLeaf(leaf)
-		if err != nil {
-			return nil, err
-		}
-		logLeaves[index] = merkleLeafHash(leafBytes)
-		values[index] = ledgerValue{
-			subject: document.subject, subjectDigest: subjectDigest, preimageHash: envelope.SigningPreimageSHA256,
-			envelopeHash: digestHex(envelopeBytes), sequence: sequence,
-		}
-	}
-	logRoot := merkleRoot(logLeaves)
-	latestRoot, latestProofs := latestMap(values)
-	checkpoint := releasecontract.SigningLedgerCheckpointV1{
-		SchemaVersion: releasecontract.SigningLedgerSchemaVersion, Kind: releasecontract.SigningLedgerArtifactCheckpoint,
-		LogID: defaultLedgerLog, TreeSize: uint64(len(values)), LogRootHash: hex.EncodeToString(logRoot),
-		LatestMapRootHash: hex.EncodeToString(latestRoot), CheckpointTime: checkpointTime.Format(time.RFC3339Nano), KeyID: defaultLedgerID,
-	}
-	checkpointPreimage, err := releasecontract.SigningLedgerCheckpointSigningPreimage(checkpoint)
-	if err != nil {
-		return nil, err
-	}
-	checkpoint.Signature = base64.StdEncoding.EncodeToString(signDigest(privateKey, checkpointPreimage))
-	checkpointBytes, err := releasecontract.CanonicalSigningLedgerCheckpoint(checkpoint)
-	if err != nil {
-		return nil, err
-	}
-	checkpointSHA256 := digestHex(checkpointBytes)
-	base := fmt.Sprintf("sources/%s/signing-ledger", configuration.SourceID())
-	transport := &LedgerTransport{values: map[string][]byte{
-		fmt.Sprintf("%s/checkpoints/%s.json", base, checkpointSHA256): checkpointBytes,
-	}}
-	for index, value := range values {
-		receipt := releasecontract.SigningLedgerReceiptV1{
-			SchemaVersion: releasecontract.SigningLedgerReceiptSchemaVersion, LogID: defaultLedgerLog,
-			SourceID: value.subject.SourceID, Channel: value.subject.Channel, SubjectIdentitySHA256: value.subjectDigest,
-			SigningPreimageSHA256: value.preimageHash, SignatureEnvelopeSHA256: value.envelopeHash,
-			Sequence: value.sequence, LeafIndex: uint64(index), TreeSize: uint64(len(values)), LogRootHash: checkpoint.LogRootHash,
-			LatestMapRootHash: checkpoint.LatestMapRootHash, CheckpointSHA256: checkpointSHA256,
-			CheckpointTime: checkpoint.CheckpointTime, KeyID: defaultLedgerID,
-		}
-		receiptPreimage, err := releasecontract.SigningLedgerReceiptSigningPreimage(receipt)
-		if err != nil {
-			return nil, err
-		}
-		receipt.Signature = base64.StdEncoding.EncodeToString(signDigest(privateKey, receiptPreimage))
-		receiptBytes, err := releasecontract.CanonicalSigningLedgerReceipt(receipt)
-		if err != nil {
-			return nil, err
-		}
-		inclusion := releasecontract.SigningLedgerInclusionProofV1{
-			SchemaVersion: releasecontract.SigningLedgerSchemaVersion, Kind: releasecontract.SigningLedgerArtifactInclusionProof,
-			LogID: defaultLedgerLog, LeafIndex: uint64(index), TreeSize: uint64(len(values)), Nodes: encodeProof(merkleInclusionProof(logLeaves, index)),
-		}
-		inclusionBytes, err := releasecontract.CanonicalSigningLedgerInclusionProof(inclusion)
-		if err != nil {
-			return nil, err
-		}
-		latest := releasecontract.SigningLedgerLatestProofV1{
-			SchemaVersion: releasecontract.SigningLedgerSchemaVersion, Kind: releasecontract.SigningLedgerArtifactLatestProof,
-			LogID: defaultLedgerLog, SubjectIdentitySHA256: value.subjectDigest, Present: true, Sequence: value.sequence,
-			SigningPreimageSHA256: value.preimageHash, SignatureEnvelopeSHA256: value.envelopeHash, Siblings: latestProofs[value.subjectDigest],
-		}
-		latestBytes, err := releasecontract.CanonicalSigningLedgerLatestProof(latest)
-		if err != nil {
-			return nil, err
-		}
-		receiptRef := fmt.Sprintf("%s/receipts/%s.json", base, value.subjectDigest)
-		checkpointRef := fmt.Sprintf("%s/checkpoints/%s.json", base, checkpointSHA256)
-		inclusionRef := fmt.Sprintf("%s/proofs/inclusion/%s.json", base, value.subjectDigest)
-		latestRef := fmt.Sprintf("%s/proofs/latest/%s.json", base, value.subjectDigest)
-		evidence := releasecontract.SigningLedgerEvidenceV1{
-			SchemaVersion: releasecontract.SigningLedgerEvidenceSchemaVersion, SourceID: value.subject.SourceID,
-			Channel: value.subject.Channel, SubjectIdentitySHA256: value.subjectDigest,
-			SigningPreimageSHA256: value.preimageHash, SignatureEnvelopeSHA256: value.envelopeHash,
-			ReceiptRef: receiptRef, ReceiptSHA256: digestHex(receiptBytes), CheckpointRef: checkpointRef,
-			CheckpointSHA256: checkpointSHA256, InclusionProofRef: inclusionRef, InclusionProofSHA256: digestHex(inclusionBytes),
-			LatestProofRef: latestRef, LatestProofSHA256: digestHex(latestBytes),
-		}
-		evidenceBytes, err := releasecontract.CanonicalSigningLedgerEvidence(evidence)
-		if err != nil {
-			return nil, err
-		}
-		transport.values[fmt.Sprintf("%s/evidence/%s.json", base, value.subjectDigest)] = evidenceBytes
-		transport.values[receiptRef] = receiptBytes
-		transport.values[inclusionRef] = inclusionBytes
-		transport.values[latestRef] = latestBytes
-	}
-	return transport, nil
-}
-
-func rootSigningSubject(root releasecontract.RootDelegationV1) releasecontract.SigningSubjectV1 {
-	return releasecontract.SigningSubjectV1{
-		SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageRootDelegation,
-		SourceID: root.SourceID, RootEpoch: root.RootEpoch,
-	}
-}
-
-func epochSigningSubject(sourceID, channel string, usage releasecontract.SigningSubjectUsage, epoch string) releasecontract.SigningSubjectV1 {
-	return releasecontract.SigningSubjectV1{
-		SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: usage, SourceID: sourceID, Channel: channel, Epoch: epoch,
-	}
-}
-
-func canonicalCapabilityScopes(values []releasecontract.SourcePolicyCapabilityPublisherScope) []releasecontract.SourcePolicyCapabilityPublisherScope {
-	byKey := make(map[string][]string, len(values))
-	for _, value := range values {
-		byKey[value.KeyID] = append(byKey[value.KeyID], value.AllowedPublishers...)
-	}
-	result := make([]releasecontract.SourcePolicyCapabilityPublisherScope, 0, len(byKey))
-	for keyID, publishers := range byKey {
-		slices.Sort(publishers)
-		publishers = slices.Compact(publishers)
-		result = append(result, releasecontract.SourcePolicyCapabilityPublisherScope{KeyID: keyID, AllowedPublishers: publishers})
-	}
-	slices.SortFunc(result, func(left, right releasecontract.SourcePolicyCapabilityPublisherScope) int {
-		return strings.Compare(left.KeyID, right.KeyID)
-	})
-	return result
-}
-
 func cloneHostRequirements(values []releasecontract.ReleaseHostRequirement) []releasecontract.ReleaseHostRequirement {
 	cloned := make([]releasecontract.ReleaseHostRequirement, len(values))
 	for index, value := range values {
@@ -889,168 +480,11 @@ func digestHex(value []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func digestOrEmpty(value []byte) string {
-	if len(value) == 0 {
-		return zeroSHA256
-	}
-	return digestHex(value)
-}
-
 func valueOrDefault(value, fallback string) string {
 	if value == "" {
 		return fallback
 	}
 	return value
-}
-
-func merkleLeafHash(value []byte) []byte {
-	digest := sha256.Sum256(append([]byte{0}, value...))
-	return digest[:]
-}
-
-func merkleNodeHash(left, right []byte) []byte {
-	value := make([]byte, 1, 1+len(left)+len(right))
-	value[0] = 1
-	value = append(value, left...)
-	value = append(value, right...)
-	digest := sha256.Sum256(value)
-	return digest[:]
-}
-
-func merkleRoot(leaves [][]byte) []byte {
-	if len(leaves) == 0 {
-		return nil
-	}
-	if len(leaves) == 1 {
-		return slices.Clone(leaves[0])
-	}
-	k := largestPowerOfTwoLessThan(len(leaves))
-	return merkleNodeHash(merkleRoot(leaves[:k]), merkleRoot(leaves[k:]))
-}
-
-func merkleInclusionProof(leaves [][]byte, index int) [][]byte {
-	if len(leaves) <= 1 {
-		return nil
-	}
-	k := largestPowerOfTwoLessThan(len(leaves))
-	if index < k {
-		return append(merkleInclusionProof(leaves[:k], index), merkleRoot(leaves[k:]))
-	}
-	return append(merkleInclusionProof(leaves[k:], index-k), merkleRoot(leaves[:k]))
-}
-
-func merkleConsistencyProof(leaves [][]byte, oldSize int) [][]byte {
-	if oldSize <= 0 || oldSize >= len(leaves) {
-		return nil
-	}
-	return merkleConsistencySubproof(leaves, oldSize, true)
-}
-
-func merkleConsistencySubproof(leaves [][]byte, oldSize int, complete bool) [][]byte {
-	if oldSize == len(leaves) {
-		if complete {
-			return nil
-		}
-		return [][]byte{merkleRoot(leaves)}
-	}
-	k := largestPowerOfTwoLessThan(len(leaves))
-	if oldSize <= k {
-		return append(merkleConsistencySubproof(leaves[:k], oldSize, complete), merkleRoot(leaves[k:]))
-	}
-	return append(merkleConsistencySubproof(leaves[k:], oldSize-k, false), merkleRoot(leaves[:k]))
-}
-
-func largestPowerOfTwoLessThan(value int) int {
-	result := 1
-	for result<<1 < value {
-		result <<= 1
-	}
-	return result
-}
-
-func encodeProof(values [][]byte) []string {
-	encoded := make([]string, len(values))
-	for index, value := range values {
-		encoded[index] = hex.EncodeToString(value)
-	}
-	return encoded
-}
-
-type latestLeaf struct {
-	key   [sha256.Size]byte
-	value []byte
-}
-
-func latestMap(values []ledgerValue) ([]byte, map[string][]string) {
-	leaves := make([]latestLeaf, len(values))
-	for index, value := range values {
-		keyBytes, _ := hex.DecodeString(value.subjectDigest)
-		copy(leaves[index].key[:], keyBytes)
-		sequence := make([]byte, 8)
-		binary.BigEndian.PutUint64(sequence, value.sequence)
-		preimage, _ := hex.DecodeString(value.preimageHash)
-		envelope, _ := hex.DecodeString(value.envelopeHash)
-		encoded := append([]byte{3}, keyBytes...)
-		encoded = append(encoded, sequence...)
-		encoded = append(encoded, preimage...)
-		encoded = append(encoded, envelope...)
-		digest := sha256.Sum256(encoded)
-		leaves[index].value = digest[:]
-	}
-	root := latestSubtree(leaves, 0)
-	proofs := make(map[string][]string, len(leaves))
-	for _, leaf := range leaves {
-		nodes := latestProof(leaves, leaf.key, 0)
-		slices.Reverse(nodes)
-		proofs[hex.EncodeToString(leaf.key[:])] = encodeProof(nodes)
-	}
-	return root, proofs
-}
-
-func latestSubtree(leaves []latestLeaf, depth int) []byte {
-	if len(leaves) == 0 {
-		return make([]byte, sha256.Size)
-	}
-	if depth == sha256.Size*8 {
-		return slices.Clone(leaves[0].value)
-	}
-	left, right := splitLatestLeaves(leaves, depth)
-	return latestNode(latestSubtree(left, depth+1), latestSubtree(right, depth+1))
-}
-
-func latestProof(leaves []latestLeaf, key [sha256.Size]byte, depth int) [][]byte {
-	if depth == sha256.Size*8 {
-		return nil
-	}
-	left, right := splitLatestLeaves(leaves, depth)
-	if latestKeyBit(key, depth) == 0 {
-		return append([][]byte{latestSubtree(right, depth+1)}, latestProof(left, key, depth+1)...)
-	}
-	return append([][]byte{latestSubtree(left, depth+1)}, latestProof(right, key, depth+1)...)
-}
-
-func splitLatestLeaves(leaves []latestLeaf, depth int) ([]latestLeaf, []latestLeaf) {
-	left := make([]latestLeaf, 0, len(leaves))
-	right := make([]latestLeaf, 0, len(leaves))
-	for _, leaf := range leaves {
-		if latestKeyBit(leaf.key, depth) == 0 {
-			left = append(left, leaf)
-		} else {
-			right = append(right, leaf)
-		}
-	}
-	return left, right
-}
-
-func latestKeyBit(key [sha256.Size]byte, depth int) byte {
-	return (key[depth/8] >> uint(7-depth%8)) & 1
-}
-
-func latestNode(left, right []byte) []byte {
-	value := append([]byte{4}, left...)
-	value = append(value, right...)
-	digest := sha256.Sum256(value)
-	return digest[:]
 }
 
 func releaseMetadataSchemaVersion(uiProtocolVersion string) string {

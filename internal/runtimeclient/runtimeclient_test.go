@@ -27,10 +27,10 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -1841,8 +1841,7 @@ func TestWorkerInvocationContextRejectsSignedLeaseAudienceMismatch(t *testing.T)
 		"owner_env_hash",
 		"session_channel_id_hash",
 		"bridge_channel_id",
-		"operation_id",
-		"stream_id",
+		"execution_id",
 		"audit_correlation_id",
 	} {
 		t.Run(field, func(t *testing.T) {
@@ -2146,7 +2145,7 @@ func TestProcessSupervisorRoutesLateCompileFlightArtifactAfterInvocationCancella
 		),
 		Artifacts:   provider,
 		Diagnostics: diagnostics,
-		StreamSink:  storeRuntimeStreamSink{store: stream.NewMemoryStore()},
+		StreamSink:  &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3066,7 +3065,7 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 		},
 		streamChunks: [][]byte{[]byte("alpha\n"), []byte("beta\n")},
 	}
-	streams := stream.NewMemoryStore()
+	executionEvents := newExecutionEventSink(streamIDForRuntimeNetworkTest)
 	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
@@ -3077,7 +3076,7 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http_stream"),
 		Connectivity:          broker,
 		NetworkExecutor:       executor,
-		StreamSink:            storeRuntimeStreamSink{store: streams},
+		StreamSink:            executionEvents,
 		Now:                   func() time.Time { return now },
 	})
 	if err != nil {
@@ -3091,27 +3090,6 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 		t.Fatal(err)
 	}
 	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	const streamID = "stream_runtime_1"
-	if _, err := streams.Register(context.Background(), stream.RegisterRequest{
-		StreamID: streamID,
-		ExecutionBinding: capability.ExecutionBinding{
-			PluginID:             "com.example.worker",
-			PluginInstanceID:     "plugini_1",
-			Method:               "worker.echo",
-			Effect:               capability.EffectRead,
-			Execution:            "subscription",
-			SurfaceInstanceID:    "surface_runtime",
-			OwnerSessionHash:     "session_hash",
-			OwnerUserHash:        "user_hash",
-			OwnerEnvHash:         "env_hash",
-			SessionChannelIDHash: "channel_hash",
-			BridgeChannelID:      "bridge_runtime",
-		},
-		Direction: stream.DirectionRead,
-		Now:       now,
-	}); err != nil {
-		t.Fatalf("Streams.Register() error = %v", err)
-	}
 	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 		LeaseID:             "lease_1",
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -3134,29 +3112,18 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 	returnedStreamID, _ := networkExecute["stream_id"].(string)
 	if networkExecute["ok"] != true ||
 		networkExecute["status_code"] != float64(http.StatusAccepted) ||
-		returnedStreamID != streamID ||
+		returnedStreamID != streamIDForRuntimeNetworkTest ||
 		networkExecute["body_base64"] != nil ||
 		networkExecute["bytes_read"] != float64(len("alpha\nbeta\n")) ||
 		networkExecute["chunk_count"] != float64(2) {
 		t.Fatalf("stream network execute result mismatch: %#v", networkExecute)
 	}
-	record, delivery, err := streams.Deliver(context.Background(), stream.DeliverRequest{StreamID: streamID, ReadID: "read_runtime_1"})
-	if err != nil {
-		t.Fatalf("Streams.Deliver(%s) error = %v", streamID, err)
+	events, closed, failureCode := executionEvents.snapshot()
+	if !closed || failureCode != "" {
+		t.Fatalf("execution terminal state = closed %t failure %q", closed, failureCode)
 	}
-	if record.PluginID != "com.example.worker" ||
-		record.PluginInstanceID != "plugini_1" ||
-		record.Method != "worker.echo" ||
-		record.SurfaceInstanceID != "surface_runtime" ||
-		record.OwnerSessionHash != "session_hash" ||
-		record.OwnerUserHash != "user_hash" ||
-		record.SessionChannelIDHash != "channel_hash" ||
-		record.BridgeChannelID != "bridge_runtime" ||
-		record.Status != stream.StatusClosed {
-		t.Fatalf("stream record audience mismatch: %#v", record)
-	}
-	if len(delivery.Events) != 2 || string(delivery.Events[0].Data) != "alpha\n" || string(delivery.Events[1].Data) != "beta\n" {
-		t.Fatalf("stream events mismatch: %#v", delivery.Events)
+	if len(events) != 2 || events[0].executionID != streamIDForRuntimeNetworkTest || events[0].kind != "data" || string(events[0].data) != "alpha\n" || events[1].executionID != streamIDForRuntimeNetworkTest || events[1].kind != "data" || string(events[1].data) != "beta\n" {
+		t.Fatalf("execution events mismatch: %#v", events)
 	}
 	if executor.streamCalls != 1 ||
 		executor.lastStreamHTTP.MaxChunkBytes != 4 ||
@@ -3178,6 +3145,23 @@ func TestNetworkExecuteErrorResponseMapsRateLimit(t *testing.T) {
 	}
 	if !errors.Is(response.InternalError, connectivity.ErrRateLimited) {
 		t.Fatalf("rate-limit internal error = %v, want ErrRateLimited", response.InternalError)
+	}
+}
+
+func TestNetworkExecuteErrorResponseMapsExecutionSinkFailures(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		code string
+	}{
+		{capability.ErrQuotaExceeded, "NETWORK_STREAM_BACKPRESSURE"},
+		{execution.ErrInvalidTransition, "NETWORK_STREAM_INVALID"},
+		{capability.ErrExecutionRevoked, "NETWORK_STREAM_NOT_FOUND"},
+		{execution.ErrTerminal, "NETWORK_STREAM_CLOSED"},
+	} {
+		response := networkExecuteErrorResponse(test.err)
+		if response.OK || response.Code != test.code || !errors.Is(response.InternalError, test.err) {
+			t.Fatalf("network execution sink error %v mapped to %#v, want %s", test.err, response, test.code)
+		}
 	}
 }
 
@@ -5118,7 +5102,7 @@ func networkExecuteRequestFromInvoke(request ipcFrame, operation string) network
 			OwnerEnvHash         string `json:"owner_env_hash"`
 			SessionChannelIDHash string `json:"session_channel_id_hash"`
 			BridgeChannelID      string `json:"bridge_channel_id"`
-			StreamID             string `json:"stream_id"`
+			ExecutionID          string `json:"execution_id"`
 		}
 		if err := json.Unmarshal(request.Payload, &payload); err == nil {
 			_ = json.Unmarshal(payload.Invocation, &invocation)
@@ -5137,7 +5121,7 @@ func networkExecuteRequestFromInvoke(request ipcFrame, operation string) network
 			req.OwnerEnvHash = invocation.OwnerEnvHash
 			req.SessionChannelIDHash = invocation.SessionChannelIDHash
 			req.BridgeChannelID = invocation.BridgeChannelID
-			req.StreamID = invocation.StreamID
+			req.StreamID = invocation.ExecutionID
 		}
 	}
 	switch operation {
@@ -5723,8 +5707,7 @@ func workerInvocationLeaseFixture() Lease {
 		OwnerEnvHash:         "env_hash",
 		SessionChannelIDHash: "channel_hash",
 		BridgeChannelID:      "bridge_runtime",
-		OperationID:          "operation_runtime_1",
-		StreamID:             "stream_runtime_1",
+		ExecutionID:          "execution_runtime_1",
 		AuditCorrelationID:   "audit_runtime_1",
 		PolicyRevision:       1,
 		ManagementRevision:   2,
@@ -5747,7 +5730,7 @@ func workerInvocationFixtureWithAccess(access workerBrokerAccess) []byte {
 	}
 	accessSum := sha256.Sum256(rawAccess)
 	accessHash := "sha256:" + hex.EncodeToString(accessSum[:])
-	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"default","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","operation_id":"operation_runtime_1","stream_id":"stream_runtime_1","audit_correlation_id":"audit_runtime_1","broker_access":%s,"broker_access_sha256":%q,"params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA, rawAccess, accessHash))
+	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"default","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","execution_id":"execution_runtime_1","audit_correlation_id":"audit_runtime_1","broker_access":%s,"broker_access_sha256":%q,"params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA, rawAccess, accessHash))
 }
 
 func (s *ProcessSupervisor) invokeWorkerForTest(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error) {
@@ -5783,16 +5766,8 @@ func (s *ProcessSupervisor) invokeWorkerForTest(ctx context.Context, lease Lease
 	if lease.Execution == "" {
 		lease.Execution = "subscription"
 	}
-	if lease.Execution == "operation" && lease.OperationID == "" {
-		lease.OperationID = "operation_runtime_1"
-	}
-	if lease.Execution == "subscription" {
-		if lease.OperationID == "" {
-			lease.OperationID = "operation_runtime_1"
-		}
-		if lease.StreamID == "" {
-			lease.StreamID = "stream_runtime_1"
-		}
+	if (lease.Execution == "operation" || lease.Execution == "subscription") && lease.ExecutionID == "" {
+		lease.ExecutionID = "execution_runtime_1"
 	}
 	if lease.AuditCorrelationID == "" {
 		lease.AuditCorrelationID = "audit_runtime_1"
@@ -5881,8 +5856,7 @@ func bindWorkerInvocationFixtureToLease(payload []byte, lease Lease) []byte {
 		"owner_env_hash":          lease.OwnerEnvHash,
 		"session_channel_id_hash": lease.SessionChannelIDHash,
 		"bridge_channel_id":       lease.BridgeChannelID,
-		"operation_id":            lease.OperationID,
-		"stream_id":               lease.StreamID,
+		"execution_id":            lease.ExecutionID,
 		"audit_correlation_id":    lease.AuditCorrelationID,
 	}
 	for field, value := range bindings {
@@ -5899,23 +5873,62 @@ func bindWorkerInvocationFixtureToLease(payload []byte, lease Lease) []byte {
 	return raw
 }
 
-type storeRuntimeStreamSink struct {
-	store stream.Store
+const streamIDForRuntimeNetworkTest = "execution_runtime_1"
+
+type capturedExecutionEvent struct {
+	executionID string
+	kind        string
+	data        []byte
 }
 
-func (s storeRuntimeStreamSink) AppendRuntimeStream(ctx context.Context, streamID, kind string, data []byte) error {
-	_, err := s.store.Append(ctx, stream.AppendRequest{StreamID: streamID, Kind: kind, Data: data})
-	return err
+type executionEventSink struct {
+	mu          sync.Mutex
+	executionID string
+	events      []capturedExecutionEvent
+	closed      bool
+	failureCode capability.ExecutionFailureCode
 }
 
-func (s storeRuntimeStreamSink) CloseRuntimeStream(ctx context.Context, streamID string) error {
-	_, err := s.store.Close(ctx, stream.CloseRequest{StreamID: streamID, Status: stream.StatusClosed})
-	return err
+func newExecutionEventSink(executionID string) *executionEventSink {
+	return &executionEventSink{executionID: executionID}
 }
 
-func (s storeRuntimeStreamSink) FailRuntimeStream(ctx context.Context, streamID string, code capability.ExecutionFailureCode, _ error) error {
-	_, err := s.store.Close(ctx, stream.CloseRequest{StreamID: streamID, Status: stream.StatusFailed, FailureCode: code})
-	return err
+func (s *executionEventSink) AppendRuntimeStream(_ context.Context, executionID, kind string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if executionID != s.executionID || s.closed || s.failureCode != "" {
+		return execution.ErrInvalidTransition
+	}
+	s.events = append(s.events, capturedExecutionEvent{executionID: executionID, kind: kind, data: bytes.Clone(data)})
+	return nil
+}
+
+func (s *executionEventSink) CloseRuntimeStream(_ context.Context, executionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if executionID != s.executionID || s.closed || s.failureCode != "" {
+		return execution.ErrInvalidTransition
+	}
+	s.closed = true
+	return nil
+}
+
+func (s *executionEventSink) FailRuntimeStream(_ context.Context, executionID string, code capability.ExecutionFailureCode, _ error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if executionID != s.executionID || s.closed || s.failureCode != "" {
+		return execution.ErrInvalidTransition
+	}
+	s.failureCode = code
+	return nil
+}
+
+func (s *executionEventSink) snapshot() ([]capturedExecutionEvent, bool, capability.ExecutionFailureCode) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := make([]capturedExecutionEvent, len(s.events))
+	copy(events, s.events)
+	return events, s.closed, s.failureCode
 }
 
 func stopRuntimeSupervisor(t *testing.T, supervisor *ProcessSupervisor) {

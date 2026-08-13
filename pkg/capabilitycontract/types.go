@@ -13,11 +13,8 @@ import (
 const SchemaVersion = "redevplugin.host_capability_contract.v1"
 
 var (
-	ErrInvalidContract = errors.New("host capability contract is invalid")
-	ErrInvalidBundle   = errors.New("host capability artifact bundle is invalid")
-	ErrPinMismatch     = errors.New("host capability artifact pin mismatch")
-	ErrSignature       = errors.New("host capability artifact signature is invalid")
-	ErrCompatibility   = errors.New("host capability artifact is incompatible")
+	ErrInvalidContract  = errors.New("host capability contract is invalid")
+	ErrIdentityMismatch = errors.New("host capability contract identity mismatch")
 )
 
 type Contract struct {
@@ -78,112 +75,17 @@ type BusinessError struct {
 	DetailsSchema map[string]any `json:"details_schema,omitempty"`
 }
 
-type Notice struct {
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	License   string `json:"license"`
-	SourceURL string `json:"source_url,omitempty"`
-}
-
 type Pin struct {
-	PublisherID              string `json:"publisher_id"`
-	ContractID               string `json:"contract_id"`
-	ContractVersion          string `json:"contract_version"`
-	ArtifactRef              string `json:"artifact_ref"`
-	ArtifactSHA256           string `json:"artifact_sha256"`
-	ManifestRef              string `json:"manifest_ref"`
-	ManifestSHA256           string `json:"manifest_sha256"`
-	SignatureRef             string `json:"signature_ref"`
-	SignatureSHA256          string `json:"signature_sha256"`
-	SignatureKeyID           string `json:"signature_key_id"`
-	SignaturePolicyEpoch     string `json:"signature_policy_epoch"`
-	SignatureRevocationEpoch string `json:"signature_revocation_epoch"`
-	CompatibilityRef         string `json:"compatibility_ref"`
-	CompatibilitySHA256      string `json:"compatibility_sha256"`
-	GeneratedClientRef       string `json:"generated_client_ref"`
-	GeneratedClientSHA256    string `json:"generated_client_sha256"`
-	NoticesRef               string `json:"notices_ref"`
-	NoticesSHA256            string `json:"notices_sha256"`
+	PublisherID     string `json:"publisher_id"`
+	ContractID      string `json:"contract_id"`
+	ContractVersion string `json:"contract_version"`
+	ArtifactSHA256  string `json:"artifact_sha256"`
 }
 
-type Bundle struct {
-	Pin   Pin
-	Files map[string][]byte
-}
-
-// PreparedBundle contains the public, deterministic capability artifacts that
-// exist before the manifest signature is supplied by an external signer.
-type PreparedBundle struct {
+type KnownContract struct {
+	Contract Contract
 	Pin      Pin
-	Files    map[string][]byte
-	Manifest []byte
-}
-
-type TrustedKey struct {
-	PublisherID     string
-	KeyID           string
-	PublicKey       []byte
-	PolicyEpoch     string
-	RevocationEpoch string
-}
-
-type VerifiedContract struct {
-	Contract         Contract
-	Pin              Pin
-	Manifest         Manifest
-	Compatibility    Compatibility
-	GeneratedClient  []byte
-	Notices          []Notice
-	verificationSeal string
-	publicKeySHA256  string
-}
-
-func (v VerifiedContract) PublicKeySHA256() string {
-	if !v.authentic() {
-		return ""
-	}
-	return v.publicKeySHA256
-}
-
-type Manifest struct {
-	SchemaVersion            string          `json:"schema_version"`
-	PublisherID              string          `json:"publisher_id"`
-	ContractID               string          `json:"contract_id"`
-	ContractVersion          string          `json:"contract_version"`
-	CapabilityID             string          `json:"capability_id"`
-	CapabilityVersion        string          `json:"capability_version"`
-	GeneratedAt              string          `json:"generated_at"`
-	SourceCommit             string          `json:"source_commit"`
-	SignatureAlgorithm       string          `json:"signature_algorithm"`
-	SignatureKeyID           string          `json:"signature_key_id"`
-	SignaturePolicyEpoch     string          `json:"signature_policy_epoch"`
-	SignatureRevocationEpoch string          `json:"signature_revocation_epoch"`
-	Entries                  []ManifestEntry `json:"entries"`
-}
-
-type ManifestEntry struct {
-	Role      string `json:"role"`
-	Ref       string `json:"ref"`
-	MediaType string `json:"media_type"`
-	SHA256    string `json:"sha256"`
-	Size      int64  `json:"size"`
-}
-
-type Compatibility struct {
-	SchemaVersion         string `json:"schema_version"`
-	ContractID            string `json:"contract_id"`
-	ContractVersion       string `json:"contract_version"`
-	CapabilityID          string `json:"capability_id"`
-	CapabilityVersion     string `json:"capability_version"`
-	MinReDevPluginVersion string `json:"min_redevplugin_version"`
-}
-
-type SignatureEnvelope struct {
-	SchemaVersion   string `json:"schema_version"`
-	Algorithm       string `json:"algorithm"`
-	KeyID           string `json:"key_id"`
-	ManifestSHA256  string `json:"manifest_sha256"`
-	SignatureBase64 string `json:"signature_base64"`
+	seal     string
 }
 
 var (

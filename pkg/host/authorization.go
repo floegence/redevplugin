@@ -20,10 +20,6 @@ const (
 	ManagementActionPrepareSurface             ManagementAction = "surface.prepare"
 	ManagementActionMintBridgeToken            ManagementAction = "surface.mint_bridge_token"
 	ManagementActionReadSurfaceAsset           ManagementAction = "surface.read_asset"
-	ManagementActionReadSurfaceStream          ManagementAction = "surface.read_stream"
-	ManagementActionAcknowledgeSurfaceStream   ManagementAction = "surface.acknowledge_stream"
-	ManagementActionGetSurfaceOperation        ManagementAction = "surface.get_operation"
-	ManagementActionCancelSurfaceOperation     ManagementAction = "surface.cancel_operation"
 	ManagementActionRejectSurfaceConfirmation  ManagementAction = "surface.reject_confirmation"
 	ManagementActionDisposeSurface             ManagementAction = "surface.dispose"
 	ManagementActionRevokeSessionScope         ManagementAction = "session.revoke_scope"
@@ -34,19 +30,15 @@ const (
 	ManagementActionInvokeIntent               ManagementAction = "intent.invoke"
 	ManagementActionImportLocalPackage         ManagementAction = "plugin.import_local_package"
 	ManagementActionInstallReleaseRef          ManagementAction = "plugin.install_release_ref"
-	ManagementActionStartReleaseInstall        ManagementAction = "plugin.release_install_operation.start"
-	ManagementActionGetReleaseInstall          ManagementAction = "plugin.release_install_operation.get"
-	ManagementActionListReleaseInstalls        ManagementAction = "plugin.release_install_operation.list"
 	ManagementActionInspectExternalPackage     ManagementAction = "plugin.inspect_external_package"
-	ManagementActionCommitExternalPackage      ManagementAction = "plugin.commit_external_package"
-	ManagementActionQueryExternalPackageCommit ManagementAction = "plugin.query_external_package_commit"
+	ManagementActionInstallInspectedPackage    ManagementAction = "plugin.install_inspected_package"
 	ManagementActionUpdateLocalPackage         ManagementAction = "plugin.update_local_package"
 	ManagementActionUpdateReleaseRef           ManagementAction = "plugin.update_release_ref"
 	ManagementActionDowngradePlugin            ManagementAction = "plugin.downgrade"
 	ManagementActionListPlugins                ManagementAction = "plugin.list"
 	ManagementActionListFeatures               ManagementAction = "platform.list_features"
 	ManagementActionGetCompatibility           ManagementAction = "platform.get_compatibility"
-	ManagementActionRefreshEnabledPlugins      ManagementAction = "runtime.refresh_enabled"
+	ManagementActionRecoverEnabledPlugins      ManagementAction = "runtime.recover_enabled"
 	ManagementActionGrantPermission            ManagementAction = "permission.grant"
 	ManagementActionRevokePermission           ManagementAction = "permission.revoke"
 	ManagementActionListPermissionGrants       ManagementAction = "permission.list"
@@ -56,9 +48,10 @@ const (
 	ManagementActionListSecurityPolicies       ManagementAction = "security_policy.list"
 	ManagementActionDeleteSecurityPolicy       ManagementAction = "security_policy.delete"
 	ManagementActionListDiagnosticEvents       ManagementAction = "diagnostic.list"
-	ManagementActionListOperations             ManagementAction = "operation.list"
-	ManagementActionGetOperation               ManagementAction = "operation.get"
-	ManagementActionCancelOperation            ManagementAction = "operation.cancel"
+	ManagementActionListExecutions             ManagementAction = "execution.list"
+	ManagementActionGetExecution               ManagementAction = "execution.get"
+	ManagementActionCancelExecution            ManagementAction = "execution.cancel"
+	ManagementActionListExecutionEvents        ManagementAction = "execution.events"
 	ManagementActionStartRuntime               ManagementAction = "runtime.start"
 	ManagementActionStopRuntime                ManagementAction = "runtime.stop"
 	ManagementActionGetRuntimeHealth           ManagementAction = "runtime.get_health"
@@ -75,6 +68,9 @@ const (
 	ManagementActionExportPluginData           ManagementAction = "data.export"
 	ManagementActionDeleteExportedPluginData   ManagementAction = "data.delete_export"
 	ManagementActionImportPluginData           ManagementAction = "data.import"
+	ManagementActionInspectPluginData          ManagementAction = "data.inspect"
+	ManagementActionReadPluginDataFile         ManagementAction = "data.file.read"
+	ManagementActionWritePluginDataFile        ManagementAction = "data.file.write"
 	ManagementActionGetSettingsSchema          ManagementAction = "settings.get_schema"
 	ManagementActionGetPluginSettings          ManagementAction = "settings.get"
 	ManagementActionPatchPluginSettings        ManagementAction = "settings.patch"
@@ -95,10 +91,6 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourceSurface
 	case ManagementActionRevokeSessionScope, ManagementActionFinalizeSessionScope:
 		return ResourceSessionScope
-	case ManagementActionReadSurfaceStream, ManagementActionAcknowledgeSurfaceStream:
-		return ResourceStream
-	case ManagementActionGetSurfaceOperation, ManagementActionCancelSurfaceOperation:
-		return ResourceOperation
 	case ManagementActionRejectSurfaceConfirmation:
 		return ResourceConfirmation
 	case ManagementActionCallPluginMethod, ManagementActionPrepareMethodConfirmation:
@@ -106,9 +98,7 @@ func (action ManagementAction) Resource() ResourceRef {
 	case ManagementActionListIntents, ManagementActionInvokeIntent:
 		return ResourceIntent
 	case ManagementActionImportLocalPackage, ManagementActionInstallReleaseRef,
-		ManagementActionStartReleaseInstall, ManagementActionGetReleaseInstall, ManagementActionListReleaseInstalls,
-		ManagementActionInspectExternalPackage, ManagementActionCommitExternalPackage,
-		ManagementActionQueryExternalPackageCommit,
+		ManagementActionInspectExternalPackage, ManagementActionInstallInspectedPackage,
 		ManagementActionUpdateLocalPackage, ManagementActionUpdateReleaseRef,
 		ManagementActionDowngradePlugin, ManagementActionListPlugins,
 		ManagementActionEnablePlugin,
@@ -123,10 +113,10 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourceSecurityPolicy
 	case ManagementActionListDiagnosticEvents:
 		return ResourceDiagnostic
-	case ManagementActionListOperations, ManagementActionGetOperation, ManagementActionCancelOperation:
-		return ResourceOperation
+	case ManagementActionListExecutions, ManagementActionGetExecution, ManagementActionCancelExecution, ManagementActionListExecutionEvents:
+		return ResourceExecution
 	case ManagementActionStartRuntime, ManagementActionStopRuntime, ManagementActionGetRuntimeHealth,
-		ManagementActionRefreshEnabledPlugins:
+		ManagementActionRecoverEnabledPlugins:
 		return ResourceRuntime
 	case ManagementActionMintConnectionGrant, ManagementActionMintNetworkHandleGrant:
 		return ResourceConnector
@@ -135,7 +125,8 @@ func (action ManagementAction) Resource() ResourceRef {
 	case ManagementActionListRetainedData, ManagementActionDeleteRetainedData,
 		ManagementActionBindRetainedData, ManagementActionCleanupExpiredRetainedData:
 		return ResourceRetainedData
-	case ManagementActionExportPluginData, ManagementActionImportPluginData:
+	case ManagementActionExportPluginData, ManagementActionImportPluginData,
+		ManagementActionInspectPluginData, ManagementActionReadPluginDataFile, ManagementActionWritePluginDataFile:
 		return ResourcePluginData
 	case ManagementActionDeleteExportedPluginData:
 		return ResourceDataExport
@@ -159,14 +150,13 @@ const (
 	ResourceSurfaceAsset      ResourceRef = "surface_asset"
 	ResourceAssetSession      ResourceRef = "asset_session"
 	ResourceBridgeChannel     ResourceRef = "bridge_channel"
-	ResourceStream            ResourceRef = "stream"
 	ResourceConfirmation      ResourceRef = "confirmation"
 	ResourceMethod            ResourceRef = "method"
 	ResourceIntent            ResourceRef = "intent"
 	ResourcePermission        ResourceRef = "permission"
 	ResourceSecurityPolicy    ResourceRef = "security_policy"
 	ResourceDiagnostic        ResourceRef = "diagnostic"
-	ResourceOperation         ResourceRef = "operation"
+	ResourceExecution         ResourceRef = "execution"
 	ResourceRuntime           ResourceRef = "runtime"
 	ResourceConnector         ResourceRef = "connector"
 	ResourceStore             ResourceRef = "store"
@@ -182,9 +172,9 @@ func (resource ResourceRef) Valid() bool {
 	switch resource {
 	case ResourcePlugin, ResourcePlatform, ResourceSurface,
 		ResourceSurfaceDefinition, ResourceSurfaceAsset,
-		ResourceAssetSession, ResourceBridgeChannel, ResourceStream,
+		ResourceAssetSession, ResourceBridgeChannel,
 		ResourceConfirmation, ResourceMethod, ResourceIntent, ResourcePermission,
-		ResourceSecurityPolicy, ResourceDiagnostic, ResourceOperation,
+		ResourceSecurityPolicy, ResourceDiagnostic, ResourceExecution,
 		ResourceRuntime, ResourceConnector, ResourceStore,
 		ResourceRetainedData, ResourcePluginData, ResourceDataExport,
 		ResourceSettings, ResourceSecret, ResourceSessionScope:
@@ -389,15 +379,16 @@ func (action ManagementAction) allowsCollectionTarget() bool {
 		ManagementActionInspectExternalPackage,
 		ManagementActionListIntents,
 		ManagementActionListPlugins,
-		ManagementActionListReleaseInstalls,
-		ManagementActionRefreshEnabledPlugins,
+		ManagementActionRecoverEnabledPlugins,
 		ManagementActionListPermissionGrants,
 		ManagementActionGetPermissionRequirements,
 		ManagementActionListSecurityPolicies,
 		ManagementActionListDiagnosticEvents,
-		ManagementActionListOperations,
+		ManagementActionListExecutions,
 		ManagementActionListRetainedData,
 		ManagementActionCleanupExpiredRetainedData:
+		return true
+	case ManagementActionInspectPluginData:
 		return true
 	default:
 		return false

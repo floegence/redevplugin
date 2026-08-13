@@ -32,8 +32,7 @@ This repository owns:
 - the Rust `redevplugin-runtime` process plus the host-neutral process lifecycle
   contract used to start, stop, health-check, restart, and observe that process;
 - the Rust IPC protocol, WASM actor/job execution, storage/network hot paths,
-  target classifier enforcement, quotas, stream handling, revocation handling,
-  and runtime diagnostics;
+  quotas, stream handling, revocation handling, and runtime diagnostics;
 - OpenAPI specs, JSON schemas, Rust IPC schemas, WASM ABI schemas,
   token/ticket schemas, target-classifier fixtures, generated DTOs, and contract
   hashes;
@@ -73,25 +72,26 @@ surface that a host imports:
   utilities, and host-neutral UI primitives required by plugin UIs and product
   shells.
 - Host/back-end platform implementation lives in released Go packages:
-  lifecycle services, registry and staged-package state, manifest/package/signature
-  validators, permission and confirmation pipeline, token/ticket issuance,
-  broker contracts, operation/stream envelopes, runtime manager/supervisor,
+  lifecycle services, the Host-owned control database and process-local package
+  inspection state, manifest/package/signature validators, permission and
+  confirmation pipeline, token/ticket issuance, broker contracts, unified
+  Execution/Event envelopes, runtime manager/supervisor,
   stable errors, audit DTOs, HTTP adapter, and adapter interfaces.
 - Plugin backend execution lives in the published Rust source crates for
   `redevplugin-runtime`: WASM actor/job execution, IPC, hostcall contracts,
-  storage/network hot paths, target classification, stream handling, leases,
-  quotas, revoke epochs, generation IDs, and diagnostics. Host products build
+  storage/network hot paths, stream handling, leases, quotas, revoke epochs,
+  generation IDs, and diagnostics. Host products build
   the executable bytes but do not own or fork these runtime semantics.
 - Host products provide concrete adapters and product policy. They should never
   be asked to implement a second manifest parser, lifecycle state machine,
-  sandbox bridge, token issuer, storage/network broker, operation stream,
+  sandbox bridge, token issuer, storage/network broker, execution event stream,
   runtime process supervisor, IPC protocol, or WASM executor to make
   ReDevPlugin usable.
 
 Public ReDevPlugin behavior must be expressed as released contracts before a
 host product depends on it. A feature that changes plugin lifecycle behavior,
 manifest shape, bridge messages, token/ticket semantics, runtime IPC, WASM ABI,
-broker behavior, operation/stream envelopes, registry state, stable errors, or
+broker behavior, Execution/Event envelopes, registry state, stable errors, or
 generated SDK calls is not complete until the Go API, TypeScript API, Rust
 runtime contract, machine-readable schema, fixtures, compatibility metadata,
 and tests are updated together.
@@ -111,7 +111,7 @@ Redeven internals into this repository.
 Do not add a host-specific "convenience" path that bypasses the reusable
 contract. For example, a host product may provide a vault adapter or a Docker
 capability adapter, but the plugin lifecycle, sandbox bootstrap, bridge tokens,
-operation/stream envelopes, storage/network/runtime brokers, and runtime
+Execution/Event envelopes, storage/network/runtime brokers, and runtime
 supervisor remain ReDevPlugin responsibilities.
 
 Do not leave platform behavior as "the host should implement this later" unless
@@ -144,7 +144,7 @@ missing piece as a ReDevPlugin platform requirement and add it here first.
 Use this placement rule when designing a new package:
 
 - Platform library: belongs here. It defines reusable plugin package,
-  lifecycle, registry, bridge, sandbox, broker, runtime, operation/stream,
+  lifecycle, registry, bridge, sandbox, broker, runtime, Execution/Event,
   permission, signing, generated SDK, CLI validator, template, or compatibility
   behavior.
 - Host adapter contract: belongs here as an interface, DTO, schema, callback, or
@@ -201,14 +201,12 @@ boundary must stay explicit in both directions:
   registered by Redeven. They are not plugin runtime mechanisms and must not be
   implemented as generic ReDevPlugin core unless the capability becomes
   host-neutral by design.
-- Host-provided capability contract bundles may satisfy a registry release's
-  signed exact pin without fabricating network provenance. The adapter must mark
-  every returned file as `host_artifact` and provide no fetch chain; registry
-  artifacts must be marked `registry` and retain request-bound public-network
-  evidence. ReDevPlugin validates that origin before signature, policy epoch,
-  revocation epoch, manifest binding, and capability identity admission.
+- Capability schemas ship in the ReDevPlugin package set. Host adapters register
+  known capability contracts, and release requirements bind only to that closed
+  local registry; no independent capability publisher or remote admission chain
+  exists.
 - ReDevPlugin may define the generic capability registration contract, request
-  context, permission hooks, stream/operation envelope, and audit/error shapes;
+  context, permission hooks, Execution/Event envelope, and audit/error shapes;
   Redeven owns the adapter implementation that talks to Docker, Podman, local
   files, shells, cloud APIs, or any other Redeven-specific resource.
 - Flower-generated plugins are supported through host-neutral templates,
@@ -224,8 +222,8 @@ Use this responsibility matrix as the default decision rule:
 | Lifecycle | Install, enable, open, disable, uninstall, update, downgrade, export/import, diagnostics, and data-retention APIs; durable owner-scoped release-install operations with idempotent request recovery, restart reconciliation, progress, and stable failure codes | Where those actions appear in product UI, who may invoke them, and how they are audited in the host product |
 | UI runtime | Sandboxed iframe bootstrap, asset ticket/session protocol, bridge SDK, opaque-origin-safe source/port-bound MessageChannel messaging, settings and intent contracts | Activity Bar, Workbench, Settings, Desktop shell, route mounting, native product chrome, and product copy |
 | Backend runtime | Rust `redevplugin-runtime` source crates, runtime admission and manager/supervisor, WASM actor/job model, IPC, leases, quotas, revocation, hostcall contracts, stream envelopes | Fixed package coordinates and toolchain, verified source build, product binary/SBOM/provenance/signature, process placement, and diagnostics presentation |
-| Storage, network, and secrets | Host-neutral broker contracts, request contexts, target classifiers, quotas, secret reference contracts, and stable errors | Concrete vault, filesystem root, environment policy, allowlists, proxy settings, and product-specific grant UX |
-| Business capabilities | Generic capability adapter interface, permission hooks, operation/stream envelope, and audit DTOs | Docker/Podman, files, shells, cloud services, database access, local product APIs, and any domain-specific adapter |
+| Storage, network, and secrets | Host-neutral broker contracts, request contexts, Go connectivity target classification, quotas, secret reference contracts, and stable errors | Concrete vault, filesystem root, environment policy, allowlists, proxy settings, and product-specific grant UX |
+| Business capabilities | Generic capability adapter interface, permission hooks, Execution/Event envelope, and audit DTOs | Docker/Podman, files, shells, cloud services, database access, local product APIs, and any domain-specific adapter |
 | Plugin generation | Templates, validators, package builder, replay harness, generated SDK clients, and example fixtures | Flower prompt orchestration, user intent collection, environment selection, review/approval UX, and generated-plugin install flow |
 
 If the right column is needed before the left column has a stable contract, add
@@ -241,9 +239,9 @@ not grant trust: the committed plugin starts disabled with no permission grants
 and remains manual-update-only. An invalid signature or a signature from a
 revoked key is an integrity failure and must block commit and execution.
 
-The platform owns the staged `inspect -> commit -> query` transaction, immutable
-package and source evidence, exact owner/session binding before commit, durable
-owner-scoped receipt, and generated SDK routes. Hosts own the product review UI,
+The platform owns the process-local `inspect -> install` transaction, immutable
+package and source evidence, exact owner/session binding before installation,
+and generated SDK routes. Hosts own the product review UI,
 the decision to expose external sources, trusted keyring and revocation inputs,
 and any stricter enterprise source policy. A host must not convert a missing
 signature into an installation ban, silently grant permissions after commit, or
@@ -267,7 +265,7 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   adapter contract.
 - If the feature talks to Docker, Podman, shells, files outside a plugin storage
   namespace, cloud-provider APIs, database servers, or any other business
-  resource, ReDevPlugin may own the permission/operation/stream envelope, but the
+  resource, ReDevPlugin may own the permission and Execution/Event envelope, but the
   concrete adapter must live in the host product.
 - If a plugin UI document is loaded, the loading path must remain the
   ReDevPlugin sandbox bootstrap, asset-ticket/session validation, and
@@ -288,19 +286,12 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   single-surface revocation contract. Reconciliation may confirm that the exact
   bound surface is closed or authoritatively absent, but it must not widen into
   session-scope revocation or affect sibling surfaces.
-- Closed authenticated plugin sessions must use the host-neutral Go maintenance
-  lifecycle. Fresh close, teardown resume, and finalization bind the exact
-  four-hash session scope and durable teardown identity without adding an HTTP,
-  npm, Rust IPC, or plugin-callable maintenance path. Finalization additionally
-  requires dedicated adapter terminal evidence; a complete platform fence or
-  caller assertion is never sufficient.
-- `SessionLifecycleMaintenanceAdapter` is an optional, independently versioned
-  capability. Legacy `SessionLifecycleAdapter` implementations retain completed
-  fences and do not gain automatic maintenance. When the capability is
-  registered, startup reconciles exact adapter records against exact retained
-  fences, rejects every unlisted state combination without mutation, and treats
-  platform fence deletion as the finalization commit point before idempotent
-  adapter cleanup.
+- Closed authenticated plugin sessions use the Host-owned Go maintenance
+  lifecycle. Fresh close, startup recovery, teardown resume, and finalization
+  bind the exact four-hash session scope and one opaque durable teardown
+  identity without an HTTP, npm, Rust IPC, plugin-callable, or host-adapter
+  maintenance path. Unknown or conflicting durable state fails closed without
+  mutation, and platform fence deletion remains the finalization commit point.
 - Permission requirement discovery must project only the active plugin
   version's Host-verified capability contracts and bind the result to the
   plugin instance, active fingerprint, version, management revision, contract
@@ -852,16 +843,16 @@ Core invariants:
 - storage, networking, streaming, secrets, confirmations, and privileged host
   capabilities must go through ReDevPlugin brokers and host adapters;
 - Rust runtime hot paths enforce signed grants, leases, quotas, revoke epochs,
-  generation IDs, and target-classifier decisions, but host policy remains
-  authoritative in the Go Host library;
+  and generation IDs. Go connectivity is the sole target-classification
+  execution owner, and Host policy remains authoritative;
 - host products may register business capabilities, but they must not bypass the
   ReDevPlugin permission, confirmation, token, lease, audit, or lifecycle chain.
 - external package retrieval accepts only validated public HTTPS sources, checks
   every DNS result and redirect hop, pins the validated connection target while
   preserving TLS hostname verification, strips credentials across origins, and
   enforces bounded identity-encoded downloads before package parsing;
-- external package commit reopens and re-verifies the exact staged artifact,
-  binds the durable approval and receipt to the authenticated environment owner,
+- external package installation reopens and re-verifies the exact staged artifact,
+  binds the explicit approval to the authenticated session and environment owner,
   and never treats an absent or unknown signature as a permission grant or an
   automatic-update entitlement;
 - invalid or revoked signatures fail closed, while absent, unknown-signer, and

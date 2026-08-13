@@ -50,10 +50,9 @@ const (
 	ErrLeaseReplayed                 ErrorCode = "PLUGIN_LEASE_REPLAYED"
 	ErrGrantInvalid                  ErrorCode = "PLUGIN_GRANT_INVALID"
 	ErrStorageQuotaExceeded          ErrorCode = "PLUGIN_STORAGE_QUOTA_EXCEEDED"
-	ErrOperationBlocked              ErrorCode = "PLUGIN_OPERATION_BLOCKED"
-	ErrOperationNotFound             ErrorCode = "PLUGIN_OPERATION_NOT_FOUND"
-	ErrOperationNotCancelable        ErrorCode = "PLUGIN_OPERATION_NOT_CANCELABLE"
-	ErrOperationRateLimited          ErrorCode = "PLUGIN_OPERATION_RATE_LIMITED"
+	ErrExecutionBlocked              ErrorCode = "PLUGIN_EXECUTION_BLOCKED"
+	ErrExecutionNotFound             ErrorCode = "PLUGIN_EXECUTION_NOT_FOUND"
+	ErrExecutionNotCancelable        ErrorCode = "PLUGIN_EXECUTION_NOT_CANCELABLE"
 	ErrNetworkTargetDenied           ErrorCode = "PLUGIN_NETWORK_TARGET_DENIED"
 	ErrNetworkRateLimited            ErrorCode = "PLUGIN_NETWORK_RATE_LIMITED"
 	ErrRuntimeUnavailable            ErrorCode = "PLUGIN_RUNTIME_UNAVAILABLE"
@@ -130,10 +129,9 @@ var platformErrorCodes = []ErrorCode{
 	ErrLeaseReplayed,
 	ErrGrantInvalid,
 	ErrStorageQuotaExceeded,
-	ErrOperationBlocked,
-	ErrOperationNotFound,
-	ErrOperationNotCancelable,
-	ErrOperationRateLimited,
+	ErrExecutionBlocked,
+	ErrExecutionNotFound,
+	ErrExecutionNotCancelable,
 	ErrNetworkTargetDenied,
 	ErrNetworkRateLimited,
 	ErrRuntimeUnavailable,

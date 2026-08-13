@@ -41,7 +41,7 @@ func TestCoordinatorFenceIsIrreversibleAndCountsAreCumulative(t *testing.T) {
 	if _, err := teardown.Accumulate(context.Background(), Counts{Surfaces: 2, AssetTickets: 1}); err != nil {
 		t.Fatalf("Accumulate(first) error = %v", err)
 	}
-	if _, err := teardown.Accumulate(context.Background(), Counts{Operations: 3, StorageHostcalls: 4}); err != nil {
+	if _, err := teardown.Accumulate(context.Background(), Counts{Executions: 3, StorageHostcalls: 4}); err != nil {
 		t.Fatalf("Accumulate(second) error = %v", err)
 	}
 	if _, err := teardown.MarkIncomplete(context.Background(), time.Unix(2, 0).UTC()); err != nil {
@@ -53,7 +53,7 @@ func TestCoordinatorFenceIsIrreversibleAndCountsAreCumulative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginTeardown(resume) error = %v", err)
 	}
-	if resumed.Counts.Surfaces != 2 || resumed.Counts.AssetTickets != 1 || resumed.Counts.Operations != 3 || resumed.Counts.StorageHostcalls != 4 {
+	if resumed.Counts.Surfaces != 2 || resumed.Counts.AssetTickets != 1 || resumed.Counts.Executions != 3 || resumed.Counts.StorageHostcalls != 4 {
 		t.Fatalf("resumed counts = %#v", resumed.Counts)
 	}
 	complete, err := continued.MarkComplete(context.Background(), time.Unix(4, 0).UTC())

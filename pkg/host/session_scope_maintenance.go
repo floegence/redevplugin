@@ -3,8 +3,6 @@ package host
 import (
 	"context"
 	"errors"
-	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -25,7 +23,7 @@ const (
 )
 
 // SessionScopeFinalizationStatus reports whether this call finalized an exact
-// scope or found no adapter record and no platform fence.
+// scope or found no Host-owned platform fence.
 type SessionScopeFinalizationStatus string
 
 const (
@@ -33,8 +31,8 @@ const (
 	SessionScopeFinalizationAbsent SessionScopeFinalizationStatus = "absent"
 )
 
-// CloseAuthenticatedSessionScopeRequest starts the first teardown for terminal
-// adapter evidence that has no prepared identity or platform fence.
+// CloseAuthenticatedSessionScopeRequest starts Host-owned teardown for one
+// exact authenticated session.
 type CloseAuthenticatedSessionScopeRequest struct {
 	Session sessionctx.Context `json:"-"`
 	Now     time.Time          `json:"-"`
@@ -122,9 +120,9 @@ func (registry *sessionScopeMaintenanceLockRegistry) releaseReference(scope sess
 	}
 }
 
-// CloseAuthenticatedSessionScope starts teardown only after the host adapter
-// has durably proved that the exact authenticated channel is terminal. It is a
-// Go maintenance API and never consults browser authorization state.
+// CloseAuthenticatedSessionScope starts Host-owned teardown for one exact
+// authenticated session scope. It is a Go maintenance API and never consults
+// browser authorization state.
 func (h *Host) CloseAuthenticatedSessionScope(
 	ctx context.Context,
 	req CloseAuthenticatedSessionScopeRequest,
@@ -138,37 +136,12 @@ func (h *Host) CloseAuthenticatedSessionScope(
 		return SessionScopeTeardownMaintenanceResult{}, err
 	}
 	defer release()
-	adapter, err := h.sessionMaintenanceAdapter()
+	identity, err := h.sessionTeardownIdentity(ctx, scope)
 	if err != nil {
 		return SessionScopeTeardownMaintenanceResult{}, err
 	}
-	record, err := adapter.ValidateTerminalSessionScopeClose(ctx, ValidateTerminalSessionScopeCloseRequest{Session: req.Session})
-	if errors.Is(err, ErrSessionMaintenanceAbsent) {
-		return SessionScopeTeardownMaintenanceResult{Status: SessionScopeTeardownAbsent}, nil
-	}
-	if err != nil {
-		return SessionScopeTeardownMaintenanceResult{}, ErrAdapterFailure
-	}
-	if !record.Valid() || record.Session != req.Session || record.Phase != "" || !record.TerminalEvidence {
-		return SessionScopeTeardownMaintenanceResult{}, ErrSessionMaintenanceState
-	}
-	if _, err := h.sessionScopes.InspectRetained(ctx, scope); err == nil {
-		return SessionScopeTeardownMaintenanceResult{}, ErrSessionMaintenanceState
-	} else if !errors.Is(err, sessionscope.ErrScopeNotFound) {
-		return SessionScopeTeardownMaintenanceResult{}, err
-	}
-
-	teardown, revokeErr := h.revokeAuthenticatedSessionScope(ctx, req.Session, RevokeSessionScopeRequest{Now: req.Now})
-	prepared, inspectErr := adapter.InspectSessionScopeMaintenance(ctx, InspectSessionScopeMaintenanceRequest{Session: req.Session})
-	if inspectErr != nil || !prepared.Valid() || prepared.Session != req.Session || !prepared.Identity.Valid() ||
-		(prepared.Phase != SessionScopeLifecyclePrepared && prepared.Phase != SessionScopeLifecycleClosed) {
-		if revokeErr != nil {
-			return SessionScopeTeardownMaintenanceResult{}, errors.Join(revokeErr, ErrAdapterFailure)
-		}
-		return SessionScopeTeardownMaintenanceResult{}, ErrSessionMaintenanceState
-	}
-	result := teardownMaintenanceResult(prepared.Identity, teardown)
-	return result, revokeErr
+	teardown, revokeErr := h.revokeAuthenticatedSessionScope(ctx, req.Session, RevokeSessionScopeRequest{Identity: identity, Now: req.Now})
+	return teardownMaintenanceResult(identity, teardown), revokeErr
 }
 
 // ResumeClosedSessionScopeTeardown continues an exact prepared, draining, or
@@ -197,61 +170,28 @@ func (h *Host) resumeClosedSessionScopeTeardownLocked(
 	req ResumeClosedSessionScopeTeardownRequest,
 	scope sessionctx.SessionScope,
 ) (SessionScopeTeardownMaintenanceResult, error) {
-	adapter, err := h.sessionMaintenanceAdapter()
+	expected, err := h.sessionTeardownIdentity(ctx, scope)
 	if err != nil {
 		return SessionScopeTeardownMaintenanceResult{}, err
 	}
-	record, recordPresent, err := inspectSessionScopeMaintenanceRecord(ctx, adapter, req.Session)
-	if err != nil {
-		return SessionScopeTeardownMaintenanceResult{}, err
+	if !expected.Matches(req.Identity) {
+		return SessionScopeTeardownMaintenanceResult{}, sessionscope.ErrTeardownIdentityMismatch
 	}
 	fence, fencePresent, err := h.inspectSessionScopeFence(ctx, scope)
 	if err != nil {
 		return SessionScopeTeardownMaintenanceResult{}, err
 	}
-	if !recordPresent && !fencePresent {
+	if !fencePresent {
 		return SessionScopeTeardownMaintenanceResult{Status: SessionScopeTeardownAbsent}, nil
 	}
-	if !recordPresent || !record.Identity.Matches(req.Identity) || record.Session != req.Session {
+	if !fence.MatchesIdentity(req.Identity) {
 		return SessionScopeTeardownMaintenanceResult{}, ErrSessionMaintenanceState
-	}
-	if fencePresent && !fence.MatchesIdentity(req.Identity) {
-		return SessionScopeTeardownMaintenanceResult{}, ErrSessionMaintenanceState
-	}
-
-	if !fencePresent {
-		switch record.Phase {
-		case SessionScopeLifecyclePrepared:
-			if err := validateExactTerminalRecord(ctx, adapter, record); err != nil {
-				return SessionScopeTeardownMaintenanceResult{}, err
-			}
-			return h.continueSessionScopeTeardown(ctx, req)
-		case SessionScopeLifecycleFinalizing:
-			if err := validateExactTerminalRecord(ctx, adapter, record); err != nil {
-				return SessionScopeTeardownMaintenanceResult{}, err
-			}
-			return SessionScopeTeardownMaintenanceResult{
-				Status: SessionScopeTeardownComplete, Identity: req.Identity,
-				Teardown: RevokeSessionScopeResult{State: sessionscope.StateComplete, Fenced: false, Complete: true},
-			}, nil
-		default:
-			return SessionScopeTeardownMaintenanceResult{}, ErrSessionMaintenanceState
-		}
 	}
 
 	switch fence.Snapshot.State {
 	case sessionscope.StateDraining, sessionscope.StateIncomplete:
-		if record.Phase != SessionScopeLifecyclePrepared && record.Phase != SessionScopeLifecycleClosed {
-			return SessionScopeTeardownMaintenanceResult{}, ErrSessionMaintenanceState
-		}
 		return h.continueSessionScopeTeardown(ctx, req)
 	case sessionscope.StateComplete:
-		if record.Phase != SessionScopeLifecycleClosed && record.Phase != SessionScopeLifecycleFinalizing {
-			return SessionScopeTeardownMaintenanceResult{}, ErrSessionMaintenanceState
-		}
-		if err := validateExactTerminalRecord(ctx, adapter, record); err != nil {
-			return SessionScopeTeardownMaintenanceResult{}, err
-		}
 		return SessionScopeTeardownMaintenanceResult{
 			Status: SessionScopeTeardownComplete, Identity: req.Identity, Teardown: revokeSessionScopeResult(fence.Snapshot),
 		}, nil
@@ -268,9 +208,8 @@ func (h *Host) continueSessionScopeTeardown(
 	return teardownMaintenanceResult(req.Identity, teardown), err
 }
 
-// FinalizeClosedSessionScope validates terminal evidence, persists finalizing,
-// deletes the complete platform fence as the commit point, and then performs
-// idempotent adapter cleanup.
+// FinalizeClosedSessionScope validates the Host-owned identity and deletes the
+// complete platform fence as the finalization commit point.
 func (h *Host) FinalizeClosedSessionScope(
 	ctx context.Context,
 	req FinalizeClosedSessionScopeRequest,
@@ -295,56 +234,34 @@ func (h *Host) finalizeClosedSessionScopeLocked(
 	req FinalizeClosedSessionScopeRequest,
 	scope sessionctx.SessionScope,
 ) (result SessionScopeFinalizationResult, retErr error) {
-	adapter, err := h.sessionMaintenanceAdapter()
+	expected, err := h.sessionTeardownIdentity(ctx, scope)
 	if err != nil {
 		return SessionScopeFinalizationResult{}, err
 	}
-	record, recordPresent, err := inspectSessionScopeMaintenanceRecord(ctx, adapter, req.Session)
-	if err != nil {
-		return SessionScopeFinalizationResult{}, err
+	if !expected.Matches(req.Identity) {
+		return SessionScopeFinalizationResult{}, sessionscope.ErrTeardownIdentityMismatch
 	}
 	fence, fencePresent, err := h.inspectSessionScopeFence(ctx, scope)
 	if err != nil {
 		return SessionScopeFinalizationResult{}, err
 	}
-	if !recordPresent && !fencePresent {
+	if !fencePresent {
 		return SessionScopeFinalizationResult{Status: SessionScopeFinalizationAbsent}, nil
 	}
-	if !recordPresent || !record.Identity.Matches(req.Identity) || record.Session != req.Session ||
-		(fencePresent && !fence.MatchesIdentity(req.Identity)) {
+	if !fence.MatchesIdentity(req.Identity) {
 		return SessionScopeFinalizationResult{}, ErrSessionMaintenanceState
 	}
-	platformFinalized := !fencePresent && record.Phase == SessionScopeLifecycleFinalizing
-	if err := validateExactTerminalRecord(ctx, adapter, record); err != nil {
-		if platformFinalized {
-			return SessionScopeFinalizationResult{}, mutation.ForceCommitted(err)
-		}
-		return SessionScopeFinalizationResult{}, err
-	}
-	if fencePresent {
-		if fence.Snapshot.State != sessionscope.StateComplete ||
-			(record.Phase != SessionScopeLifecycleClosed && record.Phase != SessionScopeLifecycleFinalizing) {
-			return SessionScopeFinalizationResult{}, ErrSessionMaintenanceState
-		}
-	} else if record.Phase != SessionScopeLifecycleFinalizing {
+	if fence.Snapshot.State != sessionscope.StateComplete {
 		return SessionScopeFinalizationResult{}, ErrSessionMaintenanceState
 	}
 
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.session_scope.finalized"})
 	if err != nil {
-		if platformFinalized {
-			return SessionScopeFinalizationResult{}, mutation.ForceCommitted(err)
-		}
 		return SessionScopeFinalizationResult{}, err
 	}
-	auditResult := RevokeSessionScopeResult{State: sessionscope.StateComplete, Complete: true}
-	if fencePresent {
-		auditResult = revokeSessionScopeResult(fence.Snapshot)
-	}
+	auditResult := revokeSessionScopeResult(fence.Snapshot)
+	platformFinalized := false
 	defer func() {
-		if platformFinalized {
-			retErr = mutation.ForceCommitted(retErr)
-		}
 		completedErr := auditMutation.completeWithDetails(
 			context.WithoutCancel(ctx), retErr, sessionRevokeAuditDetails(auditResult),
 		)
@@ -355,38 +272,20 @@ func (h *Host) finalizeClosedSessionScopeLocked(
 		}
 	}()
 
-	if record.Phase == SessionScopeLifecycleClosed {
-		if err := adapter.PrepareSessionScopeFinalization(ctx, PrepareSessionScopeFinalizationRequest(req)); err != nil {
-			return SessionScopeFinalizationResult{}, ErrAdapterFailure
-		}
-		record.Phase = SessionScopeLifecycleFinalizing
+	if err := h.cleanupExternalPackageInspectionArtifactsForScope(scope); err != nil {
+		return SessionScopeFinalizationResult{}, err
 	}
-	if fencePresent {
-		if err := h.cleanupExternalPackageInspectionArtifactsForScope(scope); err != nil {
-			return SessionScopeFinalizationResult{}, err
-		}
-		if err := h.adapters.ConfirmationIntents.FinalizeSessionConfirmationRevocation(ctx, security.FinalizeSessionConfirmationRevocationRequest{
-			SessionScope: scope, TeardownOperationID: req.Identity.OperationID,
-		}); err != nil {
-			return SessionScopeFinalizationResult{}, ErrAdapterFailure
-		}
-		if err := h.sessionScopes.Finalize(ctx, scope, req.Identity); err != nil {
-			return SessionScopeFinalizationResult{}, err
-		}
-		platformFinalized = true
-	}
-	if err := adapter.CommitSessionScopeFinalization(ctx, CommitSessionScopeFinalizationRequest(req)); err != nil {
+	if err := h.adapters.ConfirmationIntents.FinalizeSessionConfirmationRevocation(ctx, security.FinalizeSessionConfirmationRevocationRequest{
+		SessionScope: scope, TeardownOperationID: req.Identity.OperationID,
+	}); err != nil {
 		return SessionScopeFinalizationResult{}, ErrAdapterFailure
 	}
+	if err := h.sessionScopes.Finalize(ctx, scope, req.Identity); err != nil {
+		return SessionScopeFinalizationResult{}, err
+	}
+	platformFinalized = true
 	result.Status = SessionScopeFinalized
 	return result, nil
-}
-
-func (h *Host) sessionMaintenanceAdapter() (SessionLifecycleMaintenanceAdapter, error) {
-	if h == nil || isNilInterfaceValue(h.adapters.SessionMaintenance) {
-		return nil, ErrSessionMaintenanceUnavailable
-	}
-	return h.adapters.SessionMaintenance, nil
 }
 
 func (h *Host) inspectSessionScopeFence(
@@ -400,48 +299,6 @@ func (h *Host) inspectSessionScopeFence(
 	return retained, err == nil, err
 }
 
-func inspectSessionScopeMaintenanceRecord(
-	ctx context.Context,
-	adapter SessionLifecycleMaintenanceAdapter,
-	session sessionctx.Context,
-) (SessionScopeMaintenanceRecord, bool, error) {
-	record, err := adapter.InspectSessionScopeMaintenance(ctx, InspectSessionScopeMaintenanceRequest{Session: session})
-	if errors.Is(err, ErrSessionMaintenanceAbsent) {
-		return SessionScopeMaintenanceRecord{}, false, nil
-	}
-	if err != nil {
-		return SessionScopeMaintenanceRecord{}, false, ErrAdapterFailure
-	}
-	if !record.Valid() || record.Session != session {
-		return SessionScopeMaintenanceRecord{}, false, ErrSessionMaintenanceState
-	}
-	return record, true, nil
-}
-
-func validateExactTerminalRecord(
-	ctx context.Context,
-	adapter SessionLifecycleMaintenanceAdapter,
-	expected SessionScopeMaintenanceRecord,
-) error {
-	if !expected.TerminalEvidence {
-		return ErrSessionMaintenanceState
-	}
-	actual, err := adapter.ValidateTerminalSessionScopeClose(ctx, ValidateTerminalSessionScopeCloseRequest{
-		Session: expected.Session, Identity: expected.Identity,
-	})
-	if err != nil {
-		if errors.Is(err, ErrSessionMaintenanceAbsent) {
-			return ErrSessionMaintenanceState
-		}
-		return ErrAdapterFailure
-	}
-	if !actual.Valid() || !actual.TerminalEvidence || actual.Session != expected.Session || actual.Phase != expected.Phase ||
-		!actual.Identity.Matches(expected.Identity) {
-		return ErrSessionMaintenanceState
-	}
-	return nil
-}
-
 func teardownMaintenanceResult(
 	identity sessionscope.TeardownIdentity,
 	teardown RevokeSessionScopeResult,
@@ -453,144 +310,49 @@ func teardownMaintenanceResult(
 	return SessionScopeTeardownMaintenanceResult{Status: status, Identity: identity, Teardown: teardown}
 }
 
-func sessionScopeMaintenanceRecordKey(record SessionScopeMaintenanceRecord) (sessionctx.SessionScope, error) {
-	if !record.Valid() {
-		return sessionctx.SessionScope{}, ErrSessionMaintenanceState
-	}
-	scope, err := record.Session.SessionScope()
-	if err != nil {
-		return sessionctx.SessionScope{}, fmt.Errorf("%w: %v", ErrSessionMaintenanceState, err)
-	}
-	return scope, nil
-}
-
 func (h *Host) reconcileSessionScopeMaintenance(ctx context.Context) error {
-	adapter, err := h.sessionMaintenanceAdapter()
-	if errors.Is(err, ErrSessionMaintenanceUnavailable) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	records, err := adapter.ListSessionScopeMaintenanceRecords(ctx)
-	if err != nil {
-		return ErrAdapterFailure
-	}
-	recordByScope := make(map[sessionctx.SessionScope]SessionScopeMaintenanceRecord, len(records))
-	scopes := make([]sessionctx.SessionScope, 0, len(records))
-	for _, record := range records {
-		scope, keyErr := sessionScopeMaintenanceRecordKey(record)
-		if keyErr != nil {
-			return keyErr
-		}
-		if _, duplicate := recordByScope[scope]; duplicate {
-			return ErrSessionMaintenanceState
-		}
-		recordByScope[scope] = record
-		scopes = append(scopes, scope)
-	}
 	retained, err := h.sessionScopes.ListRetained(ctx)
 	if err != nil {
 		return err
 	}
 	for _, fence := range retained {
-		record, ok := recordByScope[fence.SessionScope]
-		if !ok || !record.Identity.Valid() || !fence.MatchesIdentity(record.Identity) {
-			return ErrSessionMaintenanceState
-		}
-	}
-	sort.Slice(scopes, func(i, j int) bool { return sessionScopeLess(scopes[i], scopes[j]) })
-	for _, scope := range scopes {
-		if err := h.reconcileOneSessionScopeMaintenance(ctx, recordByScope[scope].Session); err != nil {
+		session := sessionctx.Context(fence.SessionScope)
+		if err := h.reconcileOneSessionScopeMaintenance(ctx, session); err != nil {
 			return err
 		}
-	}
-	remainingRecords, err := adapter.ListSessionScopeMaintenanceRecords(ctx)
-	if err != nil {
-		return ErrAdapterFailure
 	}
 	remainingFences, err := h.sessionScopes.ListRetained(ctx)
 	if err != nil {
 		return err
 	}
-	if len(remainingRecords) != 0 || len(remainingFences) != 0 {
+	if len(remainingFences) != 0 {
 		return ErrSessionMaintenanceState
 	}
 	return nil
 }
 
 func (h *Host) reconcileOneSessionScopeMaintenance(ctx context.Context, session sessionctx.Context) error {
-	for attempt := 0; attempt < 4; attempt++ {
-		adapter, err := h.sessionMaintenanceAdapter()
-		if err != nil {
-			return err
-		}
-		record, present, err := inspectSessionScopeMaintenanceRecord(ctx, adapter, session)
-		if err != nil {
-			return err
-		}
-		scope, err := session.SessionScope()
-		if err != nil {
-			return err
-		}
-		fence, fenced, err := h.inspectSessionScopeFence(ctx, scope)
-		if err != nil {
-			return err
-		}
-		if !present && !fenced {
-			return nil
-		}
-		if !present || (fenced && (!record.Identity.Valid() || !fence.MatchesIdentity(record.Identity))) {
-			return ErrSessionMaintenanceState
-		}
-		if !fenced && record.Phase == "" && record.TerminalEvidence {
-			result, closeErr := h.CloseAuthenticatedSessionScope(ctx, CloseAuthenticatedSessionScopeRequest{Session: session})
-			if closeErr != nil {
-				return closeErr
-			}
-			if result.Status == SessionScopeTeardownAbsent {
-				return ErrSessionMaintenanceState
-			}
-			continue
-		}
-		if (!fenced && (record.Phase == SessionScopeLifecyclePrepared || record.Phase == SessionScopeLifecycleFinalizing)) ||
-			(fenced && (fence.Snapshot.State == sessionscope.StateDraining || fence.Snapshot.State == sessionscope.StateIncomplete || fence.Snapshot.State == sessionscope.StateComplete)) {
-			resume, resumeErr := h.ResumeClosedSessionScopeTeardown(ctx, ResumeClosedSessionScopeTeardownRequest{
-				Session: session, Identity: record.Identity,
-			})
-			if resumeErr != nil {
-				return resumeErr
-			}
-			if resume.Status == SessionScopeTeardownAbsent {
-				return ErrSessionMaintenanceState
-			}
-			if resume.Status == SessionScopeTeardownComplete {
-				finalized, finalizeErr := h.FinalizeClosedSessionScope(ctx, FinalizeClosedSessionScopeRequest{
-					Session: session, Identity: record.Identity,
-				})
-				if finalizeErr != nil {
-					return finalizeErr
-				}
-				if finalized.Status == SessionScopeFinalizationAbsent {
-					return ErrSessionMaintenanceState
-				}
-			}
-			continue
-		}
+	scope, err := session.SessionScope()
+	if err != nil {
+		return err
+	}
+	identity, err := h.sessionTeardownIdentity(ctx, scope)
+	if err != nil {
+		return err
+	}
+	result, err := h.ResumeClosedSessionScopeTeardown(ctx, ResumeClosedSessionScopeTeardownRequest{Session: session, Identity: identity})
+	if err != nil {
+		return err
+	}
+	if result.Status != SessionScopeTeardownComplete {
 		return ErrSessionMaintenanceState
 	}
-	return ErrSessionMaintenanceState
-}
-
-func sessionScopeLess(left, right sessionctx.SessionScope) bool {
-	if left.OwnerSessionHash != right.OwnerSessionHash {
-		return left.OwnerSessionHash < right.OwnerSessionHash
+	finalized, err := h.FinalizeClosedSessionScope(ctx, FinalizeClosedSessionScopeRequest{Session: session, Identity: identity})
+	if err != nil {
+		return err
 	}
-	if left.OwnerUserHash != right.OwnerUserHash {
-		return left.OwnerUserHash < right.OwnerUserHash
+	if finalized.Status != SessionScopeFinalized {
+		return ErrSessionMaintenanceState
 	}
-	if left.OwnerEnvHash != right.OwnerEnvHash {
-		return left.OwnerEnvHash < right.OwnerEnvHash
-	}
-	return left.SessionChannelIDHash < right.SessionChannelIDHash
+	return nil
 }

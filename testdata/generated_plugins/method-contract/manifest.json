@@ -39,21 +39,7 @@
         "publisher_id": "example.contracts",
         "contract_id": "example.capability.tasks.v1",
         "contract_version": "1.0.0",
-        "artifact_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.schema.json",
-        "artifact_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-        "manifest_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.manifest.json",
-        "manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
-        "signature_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.sig",
-        "signature_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
-        "signature_key_id": "example-contract-key",
-        "signature_policy_epoch": "1",
-        "signature_revocation_epoch": "1",
-        "compatibility_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.compatibility.json",
-        "compatibility_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
-        "generated_client_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.client.ts",
-        "generated_client_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
-        "notices_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.notices.json",
-        "notices_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+        "artifact_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
       }
     }
   ],

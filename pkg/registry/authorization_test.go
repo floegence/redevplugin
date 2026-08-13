@@ -154,12 +154,12 @@ func TestExternalPackageAuthorizationStoreContract(t *testing.T) {
 			now := time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC)
 			req := externalPackageInstallRequest("owner_env_hash_test", now)
 
-			committed, err := store.CommitExternalPackage(ctx, req)
+			committed, err := store.PutPlugin(ctx, req.Record, PutOptions{Now: now})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if committed.RecordSnapshot == nil {
-				t.Fatal("CommitExternalPackage() returned no record snapshot")
+			if committed.PluginInstanceID == "" {
+				t.Fatal("PutPlugin() returned no record")
 			}
 			enabled, err := store.SetEnableState(ctx, req.Record.PluginInstanceID, EnableEnabled, "", now.Add(time.Second))
 			if err != nil {
@@ -215,12 +215,12 @@ func TestSQLiteAuthorizeRejectsCorruptExternalPackageAuthorizationFacts(t *testi
 			t.Cleanup(func() { _ = store.Close() })
 			now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
 			req := externalPackageInstallRequest("owner_env_hash_test", now)
-			committed, err := store.CommitExternalPackage(ctx, req)
+			committed, err := store.PutPlugin(ctx, req.Record, PutOptions{Now: now})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if committed.RecordSnapshot == nil {
-				t.Fatal("CommitExternalPackage() returned no record snapshot")
+			if committed.PluginInstanceID == "" {
+				t.Fatal("PutPlugin() returned no record")
 			}
 			if _, err := store.db.ExecContext(ctx,
 				"UPDATE plugin_records SET "+column+" = ? WHERE owner_env_hash = ? AND plugin_instance_id = ?",
@@ -232,7 +232,7 @@ func TestSQLiteAuthorizeRejectsCorruptExternalPackageAuthorizationFacts(t *testi
 			_, err = store.Authorize(ctx, AuthorizeRequest{
 				PluginInstanceID: req.Record.PluginInstanceID,
 				Method:           "containers.status",
-				Expected:         AuthorizationRevisionsFromRecord(*committed.RecordSnapshot),
+				Expected:         AuthorizationRevisionsFromRecord(committed),
 				Now:              now.Add(time.Second),
 			})
 			if err == nil {

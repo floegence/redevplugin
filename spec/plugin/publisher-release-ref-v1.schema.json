@@ -4,12 +4,11 @@
   "title": "ReDevPlugin publisher release reference v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "release_ref", "root", "signing_ledger", "files"],
+  "required": ["schema_version", "release_ref", "root", "files"],
   "properties": {
     "schema_version": { "const": "redevplugin.publisher_release_ref.v1" },
     "release_ref": { "$ref": "#/$defs/release_ref" },
     "root": { "$ref": "#/$defs/public_key" },
-    "signing_ledger": { "$ref": "#/$defs/signing_ledger" },
     "files": {
       "type": "array",
       "minItems": 1,
@@ -57,17 +56,6 @@
       "additionalProperties": false,
       "required": ["algorithm", "key_id", "public_key"],
       "properties": {
-        "algorithm": { "const": "ed25519" },
-        "key_id": { "$ref": "#/$defs/id" },
-        "public_key": { "$ref": "#/$defs/public_key_value" }
-      }
-    },
-    "signing_ledger": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["log_id", "algorithm", "key_id", "public_key"],
-      "properties": {
-        "log_id": { "$ref": "#/$defs/id" },
         "algorithm": { "const": "ed25519" },
         "key_id": { "$ref": "#/$defs/id" },
         "public_key": { "$ref": "#/$defs/public_key_value" }

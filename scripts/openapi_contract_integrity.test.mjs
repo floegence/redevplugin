@@ -19,10 +19,6 @@ async function readSessionScopeSchema() {
   return JSON.parse(await readFile(join(root, "spec/plugin/session-scope-v1.schema.json"), "utf8"));
 }
 
-async function readSessionScopeMaintenanceContract() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/session-scope-maintenance-v1.json"), "utf8"));
-}
-
 async function readCompatibilitySchema() {
   return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v17.schema.json"), "utf8"));
 }
@@ -103,20 +99,17 @@ test("session scope contract closes identity, phases, counts, and public result 
   assert.deepEqual(defs.session_scope.required, identityFields);
   assert.equal(defs.session_scope.additionalProperties, false);
   assert.deepEqual(Object.keys(defs.session_scope.properties), identityFields);
-  assert.deepEqual(defs.teardown_phase.enum, ["bridge", "confirmation", "execution", "operation", "stream", "runtime"]);
+	assert.deepEqual(defs.teardown_phase.enum, ["bridge", "confirmation", "execution", "runtime"]);
 
   const countFields = [
     "surfaces",
     "asset_tickets",
-    "asset_sessions",
-    "plugin_gateway_tokens",
-    "confirmation_tokens",
-    "stream_tickets",
-    "handle_grants",
-    "confirmations",
-    "operations",
-    "streams",
-    "runtime_executions",
+		"asset_sessions",
+		"plugin_gateway_tokens",
+		"confirmation_tokens",
+		"handle_grants",
+		"confirmations",
+		"executions",
     "active_network_requests",
     "sockets",
     "network_streams",
@@ -180,76 +173,61 @@ test("Rust IPC v6 carries closed session revoke request and acknowledgement fram
   assert.equal(schema.$defs.session_revoke_count.maximum, Number.MAX_SAFE_INTEGER);
 });
 
-test("session maintenance publishes the closed fail-closed recovery matrix", async () => {
-  const contract = await readSessionScopeMaintenanceContract();
-  assert.equal(contract.schema_version, "redevplugin.session_scope_maintenance.v1");
-  assert.equal(contract.go_host_protocol_version, "plugin-host-v7");
-  assert.deepEqual(contract.phases, ["prepared", "closed", "finalizing"]);
-  assert.deepEqual(contract.teardown_statuses, ["incomplete", "complete", "absent"]);
-  assert.deepEqual(contract.finalization_statuses, ["finalized", "absent"]);
-  assert.equal(contract.platform_commit_point, "fence_deleted");
-  assert.equal(contract.default_behavior, "fail_closed_without_mutation");
-  assert.equal(contract.visibility.transport, "go_host_only");
-  assert.equal(contract.visibility.http_route, false);
-  assert.equal(contract.visibility.plugin_callable, false);
-  assert.equal(contract.visibility.teardown_identity, "opaque");
-
-  const states = new Map(contract.allowed_states.map((state) => [
-    `${state.fence}:${state.record}:${state.terminal_evidence}:${state.identity_binding}`,
-    state,
-  ]));
-  assert.equal(states.size, 7);
-  assert.equal(states.get("absent:absent:absent:absent")?.finalize, "absent");
-  assert.equal(states.get("absent:terminal_intent:required:absent")?.close, "prepare_and_begin_teardown");
-  assert.equal(states.get("complete:closed:required:exact")?.finalize, "prepare_delete_fence_commit");
-  assert.equal(states.get("complete:finalizing:required:exact")?.resume, "handoff_to_finalization");
-  assert.equal(states.get("absent:finalizing:required:exact")?.finalize, "post_commit_cleanup");
-  assert.doesNotMatch(JSON.stringify(contract), /closed_session_proof|operation_id|proof_sha256/);
-});
-
 test("compatibility v17 publishes the complete session revoke and UI transport matrix", async () => {
   const schema = await readCompatibilitySchema();
   const matrix = schema.properties.matrix;
   assert.ok(matrix.required.includes("session_scope_schema_version"));
-  assert.ok(matrix.required.includes("session_scope_maintenance_schema_version"));
+  assert.ok(!matrix.required.includes("session_scope_maintenance_schema_version"));
   assert.deepEqual(matrix.properties.plugin_host_protocol_version, { const: "plugin-host-v11" });
   assert.deepEqual(matrix.properties.rust_ipc_version, { const: "rust-ipc-v6" });
   assert.deepEqual(matrix.properties.token_ticket_schema_version, { const: "token-ticket-v4" });
   assert.deepEqual(matrix.properties.session_scope_schema_version, { const: "session-scope-v1" });
-  assert.deepEqual(matrix.properties.session_scope_maintenance_schema_version, { const: "session-scope-maintenance-v1" });
+  assert.equal(matrix.properties.session_scope_maintenance_schema_version, undefined);
   assert.deepEqual(matrix.properties.error_codes_schema_version, { const: "error-codes-v8" });
   assert.deepEqual(matrix.properties.supported_plugin_ui_protocol_versions, { const: ["plugin-ui-v7"] });
   assert.equal(matrix.properties.plugin_ui_transport_mappings.const.length, 1);
 });
 
-test("release install operation closes progress and terminal result states", async () => {
+test("async work exposes one execution identity and cursor event contract", async () => {
   const openAPI = await readOpenAPI();
-	const start = openAPI.components.schemas.StartReleaseInstallOperationRequest;
-	assert.deepEqual(start.if.properties.activate_after_install, { const: false });
-	assert.deepEqual(start.then.not.required, ["approved_permission_ids"]);
-  const progress = openAPI.components.schemas.ReleaseInstallProgress;
-  assert.equal(progress.oneOf.length, 2);
-  assert.deepEqual(progress.oneOf[0].properties.kind, { const: "indeterminate" });
-  assert.deepEqual(progress.oneOf[1].properties.kind.enum, ["items", "bytes"]);
-  assert.equal(progress.oneOf[1].properties.completed.minimum, 0);
-  assert.equal(progress.oneOf[1].properties.total.minimum, 1);
+  const paths = openAPI.paths;
+  const executionRoutes = {
+    "/_redevplugin/api/plugins/executions/query": "listPluginExecutions",
+    "/_redevplugin/api/plugins/executions/{execution_id}/query": "getPluginExecution",
+    "/_redevplugin/api/plugins/executions/{execution_id}/cancel": "cancelPluginExecution",
+    "/_redevplugin/api/plugins/executions/{execution_id}/events/query": "listPluginExecutionEvents",
+  };
+  for (const [path, operationId] of Object.entries(executionRoutes)) {
+    assert.equal(paths[path]?.post?.operationId, operationId, `${path} must be the active execution route`);
+  }
+  for (const path of Object.keys(paths)) {
+    assert.doesNotMatch(path, /\/operations(?:\/|$)|\/streams(?:\/|$)/, `${path} retains a second lifecycle route`);
+  }
 
-  const operation = openAPI.components.schemas.ReleaseInstallOperation;
-  assert.equal(operation.properties.attempt.maximum, 3);
-  assert.equal(operation.properties.retry_after_ms.maximum, 10000);
-  assert.equal(operation.oneOf.length, 3);
-  assert.deepEqual(operation.oneOf[1].properties.status, { const: "succeeded" });
-  assert.deepEqual(operation.oneOf[1].properties.mutation_outcome, { const: "committed" });
-	assert.deepEqual(operation.oneOf[1].properties.activation.allOf[1].properties.status.enum, ["enabled", "needs_attention", "not_requested"]);
-  assert.deepEqual(operation.oneOf[2].properties.status, { const: "failed" });
+  const schemas = openAPI.components.schemas;
+  assert.deepEqual(schemas.Execution.required, [
+    "execution_id", "plugin_instance_id", "kind", "status", "cursor", "cancelable", "created_at", "updated_at",
+  ]);
+  assert.deepEqual(schemas.Execution.properties.kind.enum, ["sync", "operation", "subscription"]);
+  assert.deepEqual(schemas.Execution.properties.status.enum, [
+    "running", "cancel_requested", "completed", "canceled", "failed", "orphaned",
+  ]);
+  assert.deepEqual(schemas.Event.required, ["execution_id", "sequence", "kind"]);
+  assert.deepEqual(Object.keys(schemas.Event.properties), ["execution_id", "sequence", "kind", "payload", "error"]);
+  assert.deepEqual(schemas.Event.properties.kind.enum, ["progress", "data", "diagnostic", "terminal"]);
+	assert.deepEqual(schemas.ListExecutionsRequest.properties.cursor, {
+		type: "integer", minimum: 0, maximum: 9007199254740991,
+	});
 
-	const activation = openAPI.components.schemas.ReleaseInstallActivation;
-	assert.equal(activation.oneOf.length, 2);
-	assert.deepEqual(activation.oneOf[1].properties.status, { const: "needs_attention" });
-	assert.ok(activation.oneOf[1].required.includes("next_action"));
-	const diagnostic = openAPI.components.schemas.ReleaseInstallPhaseDiagnostic;
-	assert.ok(diagnostic.properties.phase.enum.includes("fetch_trust_evidence"));
-	assert.ok(diagnostic.properties.phase.enum.includes("verify_signatures_ledger"));
+  const eventsRequest = schemas.ListExecutionEventsRequest;
+  assert.ok(eventsRequest.required.includes("after_cursor"));
+  assert.equal(eventsRequest.properties.stream_ticket, undefined, "transport credentials must not become lifecycle identity");
+  assert.equal(eventsRequest.properties.stream_id, undefined, "stream must not remain a public lifecycle identity");
+  const rpc = JSON.stringify(schemas.RPCResult);
+  assert.match(rpc, /execution_id/);
+  assert.doesNotMatch(rpc, /operation_id|stream_id|stream_ticket/);
+  assert.equal(schemas.OperationRecord, undefined);
+  assert.equal(schemas.StreamEvent, undefined);
 });
 
 test("OpenAPI source keeps external schema references for structured bundling", async () => {
@@ -338,13 +316,13 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
     "code",
     "connector_id",
     "contract_set_sha256",
+		"execution_id",
+		"executions_deleted",
     "failure_code",
     "hostcall",
     "invocation_id",
     "method",
     "operation",
-    "operation_id",
-    "operations_deleted",
     "os",
     "package_hash",
     "plugin_instance_id",
@@ -361,13 +339,11 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
     "stage_id",
     "store_id",
     "stream",
-    "stream_id",
-    "streams_deleted",
     "surface_instance_id",
     "transport",
     "wasm_abi_version",
   ]);
-  for (const field of ["operations_deleted", "streams_deleted", "revoke_epoch"]) {
+	for (const field of ["executions_deleted", "revoke_epoch"]) {
     assert.deepEqual(schemas.PluginDiagnosticDetails.properties[field], {
       type: "integer",
       minimum: 0,

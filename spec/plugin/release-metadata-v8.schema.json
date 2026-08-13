@@ -147,7 +147,15 @@
       }
     },
     "host_capability_contract_ref": {
-      "$ref": "host-capability-pin-v1.schema.json"
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publisher_id", "contract_id", "contract_version", "artifact_sha256"],
+      "properties": {
+        "publisher_id": { "type": "string", "minLength": 1 },
+        "contract_id": { "type": "string", "minLength": 1 },
+        "contract_version": { "$ref": "#/$defs/semver" },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" }
+      }
     },
     "release_evidence": {
       "type": "object",

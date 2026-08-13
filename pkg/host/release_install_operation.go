@@ -8,8 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/controlstore"
+	"github.com/floegence/redevplugin/pkg/execution"
 	"github.com/floegence/redevplugin/pkg/externalsource"
-	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -26,7 +27,7 @@ const (
 	releaseInstallFailureInternal    = string(security.ErrInternalFailure)
 )
 
-type StartReleaseInstallOperationRequest struct {
+type StartReleaseInstallExecutionRequest struct {
 	RequestID             string           `json:"request_id"`
 	PluginInstanceID      string           `json:"plugin_instance_id"`
 	ReleaseRef            PluginReleaseRef `json:"release_ref"`
@@ -35,7 +36,21 @@ type StartReleaseInstallOperationRequest struct {
 	Now                   time.Time        `json:"-"`
 }
 
-func (h *Host) StartReleaseInstallOperation(ctx context.Context, req StartReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
+func (h *Host) StartReleaseInstallExecution(ctx context.Context, req StartReleaseInstallExecutionRequest) (execution.Execution, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return execution.Execution{}, err
+	}
+	operation, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest(req))
+	if err != nil {
+		return execution.Execution{}, err
+	}
+	return h.controlStore.Executions().GetOwned(ctx, operation.Execution.ID, executionOwner(session))
+}
+
+type startReleaseInstallOperationRequest StartReleaseInstallExecutionRequest
+
+func (h *Host) startReleaseInstallOperation(ctx context.Context, req startReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, err
@@ -44,7 +59,7 @@ func (h *Host) StartReleaseInstallOperation(ctx context.Context, req StartReleas
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	req.ApprovedPermissionIDs = normalizeStringSet(req.ApprovedPermissionIDs)
 	activation := releaseInstallActivationRequest(req)
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionStartReleaseInstall,
+	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallReleaseRef,
 		scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
 		return registry.ReleaseInstallOperation{}, err
 	}
@@ -68,8 +83,8 @@ func (h *Host) StartReleaseInstallOperation(ctx context.Context, req StartReleas
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, err
 	}
-	operation, created, err := h.adapters.Registry.StartReleaseInstallOperation(ctx, registry.StartReleaseInstallOperationRequest{
-		RequestID: req.RequestID, OperationID: operationID, PluginInstanceID: req.PluginInstanceID,
+	operation, created, err := h.controlStore.Executions().StartReleaseInstall(ctx, releaseInstallOwner(session), registry.StartReleaseInstallOperationRequest{
+		RequestID: req.RequestID, ExecutionID: operationID, PluginInstanceID: req.PluginInstanceID,
 		Release: releaseInstallIdentity(req.ReleaseRef), Activation: activation, Now: req.Now,
 	})
 	if err != nil || !created {
@@ -86,7 +101,7 @@ func (h *Host) StartReleaseInstallOperation(ctx context.Context, req StartReleas
 	return operation, nil
 }
 
-func releaseInstallActivationRequest(req StartReleaseInstallOperationRequest) registry.ReleaseInstallActivationRequest {
+func releaseInstallActivationRequest(req startReleaseInstallOperationRequest) registry.ReleaseInstallActivationRequest {
 	mode := registry.ReleaseInstallActivationAutomatic
 	if req.ActivateAfterInstall != nil {
 		if *req.ActivateAfterInstall {
@@ -98,52 +113,11 @@ func releaseInstallActivationRequest(req StartReleaseInstallOperationRequest) re
 	return registry.ReleaseInstallActivationRequest{Mode: mode, ApprovedPermissionIDs: append([]string(nil), req.ApprovedPermissionIDs...)}
 }
 
-func (h *Host) GetReleaseInstallOperation(ctx context.Context, operationID string) (registry.ReleaseInstallOperation, error) {
-	op, err := h.adapters.Registry.GetReleaseInstallOperation(ctx, strings.TrimSpace(operationID))
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	if _, err := h.authorizeManagement(ctx, ManagementActionGetReleaseInstall,
-		scopedAuthorizationTarget(ResourcePlugin, op.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	return h.reconcileReleaseInstallOperation(ctx, op)
-}
-
-func (h *Host) GetReleaseInstallOperationByRequest(ctx context.Context, requestID string) (registry.ReleaseInstallOperation, error) {
-	op, err := h.adapters.Registry.GetReleaseInstallOperationByRequest(ctx, strings.TrimSpace(requestID))
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	if _, err := h.authorizeManagement(ctx, ManagementActionGetReleaseInstall,
-		scopedAuthorizationTarget(ResourcePlugin, op.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	return h.reconcileReleaseInstallOperation(ctx, op)
-}
-
-func (h *Host) ListReleaseInstallOperations(ctx context.Context) ([]registry.ReleaseInstallOperation, error) {
-	if _, err := h.authorizeManagement(ctx, ManagementActionListReleaseInstalls,
-		scopedAuthorizationCollectionTarget(ResourcePlugin, sessionctx.ScopeEnvironment)); err != nil {
-		return nil, err
-	}
-	operations, err := h.adapters.Registry.ListReleaseInstallOperations(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for index := range operations {
-		operations[index], err = h.reconcileReleaseInstallOperation(ctx, operations[index])
-		if err != nil {
-			return nil, err
-		}
-	}
-	return operations, nil
-}
-
 func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registry.ReleaseInstallOperation, ref PluginReleaseRef) {
-	running, err := h.updateReleaseInstallOperation(ctx, operation, registry.ReleaseInstallRunning, "fetch_trust_evidence",
+	running, err := h.updateReleaseInstallOperation(ctx, operation, execution.StatusRunning, "fetch_trust_evidence",
 		registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate}, mutation.OutcomeNotCommitted, nil, nil)
 	if err != nil {
+		_, _ = h.failReleaseInstallOperation(context.WithoutCancel(ctx), operation, releaseInstallFailureCode(err), false, mutation.ForError(err))
 		return
 	}
 	tracker := &releaseInstallProgressTracker{host: h, ctx: ctx, current: running}
@@ -180,7 +154,7 @@ func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registr
 				return
 			}
 			record = *running.PluginRecord
-			_, _ = h.updateReleaseInstallOperation(context.WithoutCancel(ctx), running, registry.ReleaseInstallSucceeded, "complete",
+			_, _ = h.updateReleaseInstallOperation(context.WithoutCancel(ctx), running, execution.StatusCompleted, "complete",
 				registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressItems, Completed: 1, Total: 1},
 				mutation.OutcomeCommitted, nil, &record)
 			return
@@ -199,7 +173,7 @@ func (h *Host) activateInstalledRelease(ctx context.Context, operation registry.
 		return operation, nil
 	}
 
-	running, err := h.updateReleaseInstallOperation(ctx, operation, registry.ReleaseInstallRunning, "enable",
+	running, err := h.updateReleaseInstallOperation(ctx, operation, execution.StatusRunning, "enable",
 		registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate}, mutation.OutcomeCommitted, nil, nil)
 	if err != nil {
 		return operation, err
@@ -226,7 +200,7 @@ func (h *Host) activateInstalledRelease(ctx context.Context, operation registry.
 		}); err != nil {
 			return running, err
 		}
-		record, err = h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
+		record, err = h.getPluginRecord(ctx, record.PluginInstanceID)
 		if err != nil {
 			return running, err
 		}
@@ -303,9 +277,9 @@ func (tracker *releaseInstallProgressTracker) observe(progress ReleaseArtifactPr
 		kind = registry.ReleaseInstallProgressBytes
 	}
 	retryAfterMS := progress.RetryAfter.Milliseconds()
-	updated, err := tracker.host.adapters.Registry.UpdateReleaseInstallOperation(tracker.ctx, registry.UpdateReleaseInstallOperationRequest{
-		OperationID: tracker.current.OperationID, ExpectedRevision: tracker.current.Revision,
-		Status: registry.ReleaseInstallRunning, Phase: phase,
+	updated, err := tracker.host.updateReleaseInstallRecord(tracker.ctx, registry.UpdateReleaseInstallOperationRequest{
+		ExecutionID: tracker.current.Execution.ID, ExpectedCursor: tracker.current.Execution.Cursor,
+		Status: execution.StatusRunning, Phase: phase,
 		Progress:     registry.ReleaseInstallProgress{Kind: kind, Completed: progress.Completed, Total: progress.Total},
 		ArtifactRole: progress.ArtifactRole, CacheHit: progress.CacheHit,
 		Attempt: max(progress.Attempt, 1), RetryAfterMS: retryAfterMS,
@@ -330,43 +304,14 @@ func (tracker *releaseInstallProgressTracker) snapshot() (registry.ReleaseInstal
 
 func (h *Host) finishFailedReleaseInstall(ctx context.Context, running registry.ReleaseInstallOperation, installErr error) {
 	durableCtx := context.WithoutCancel(ctx)
-	if record, err := h.adapters.Registry.GetPlugin(durableCtx, running.PluginInstanceID); err == nil && releaseInstallRecordMatches(running, record) {
+	if record, err := h.getPluginRecord(durableCtx, running.PluginInstanceID); err == nil && releaseInstallRecordMatches(running, record) {
 		running.Activation = reconciledReleaseInstallActivation(running, record)
-		_, _ = h.updateReleaseInstallOperation(durableCtx, running, registry.ReleaseInstallSucceeded, "complete",
+		_, _ = h.updateReleaseInstallOperation(durableCtx, running, execution.StatusCompleted, "complete",
 			registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressItems, Completed: 1, Total: 1},
 			mutation.OutcomeCommitted, nil, &record)
 		return
 	}
 	_, _ = h.failReleaseInstallOperation(durableCtx, running, releaseInstallFailureCode(installErr), releaseInstallFailureRetryable(installErr), mutation.ForError(installErr))
-}
-
-func (h *Host) reconcileReleaseInstallOperation(ctx context.Context, op registry.ReleaseInstallOperation) (registry.ReleaseInstallOperation, error) {
-	if op.Status != registry.ReleaseInstallReconciling {
-		return op, nil
-	}
-	record, err := h.adapters.Registry.GetPlugin(ctx, op.PluginInstanceID)
-	if err == nil {
-		if releaseInstallRecordMatches(op, record) {
-			op.Activation = reconciledReleaseInstallActivation(op, record)
-			return h.updateReleaseInstallOperation(ctx, op, registry.ReleaseInstallSucceeded, "complete",
-				registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressItems, Completed: 1, Total: 1},
-				mutation.OutcomeCommitted, nil, &record)
-		}
-		return h.failReleaseInstallOperation(ctx, op, releaseInstallFailureConflict, false, mutation.OutcomeUnknown)
-	}
-	if !errors.Is(err, registry.ErrNotFound) {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	stages, err := h.adapters.InstallStages.List(ctx, installstage.ListRequest{PluginInstanceID: op.PluginInstanceID})
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	for _, stage := range stages {
-		if stage.Status == installstage.StatusCommitted {
-			return h.failReleaseInstallOperation(ctx, op, releaseInstallFailureConflict, false, mutation.OutcomeUnknown)
-		}
-	}
-	return h.failReleaseInstallOperation(ctx, op, releaseInstallFailureInterrupted, true, mutation.OutcomeNotCommitted)
 }
 
 func reconciledReleaseInstallActivation(operation registry.ReleaseInstallOperation, record registry.PluginRecord) registry.ReleaseInstallActivation {
@@ -383,20 +328,35 @@ func reconciledReleaseInstallActivation(operation registry.ReleaseInstallOperati
 	return registry.ReleaseInstallActivation{Status: registry.ReleaseInstallActivationNeedsAttention, NextAction: registry.ReleaseInstallNextActionRetryActivation}
 }
 
-func (h *Host) updateReleaseInstallOperation(ctx context.Context, current registry.ReleaseInstallOperation, status registry.ReleaseInstallOperationStatus, phase string, progress registry.ReleaseInstallProgress, outcome mutation.Outcome, failure *registry.ReleaseInstallFailure, record *registry.PluginRecord) (registry.ReleaseInstallOperation, error) {
+func (h *Host) updateReleaseInstallOperation(ctx context.Context, current registry.ReleaseInstallOperation, status string, phase string, progress registry.ReleaseInstallProgress, outcome mutation.Outcome, failure *registry.ReleaseInstallFailure, record *registry.PluginRecord) (registry.ReleaseInstallOperation, error) {
 	now := time.Now().UTC()
-	if now.Before(current.UpdatedAt) {
-		now = current.UpdatedAt
+	if now.Before(current.Execution.UpdatedAt) {
+		now = current.Execution.UpdatedAt
 	}
-	return h.adapters.Registry.UpdateReleaseInstallOperation(ctx, registry.UpdateReleaseInstallOperationRequest{
-		OperationID: current.OperationID, ExpectedRevision: current.Revision, Status: status, Phase: phase,
+	return h.updateReleaseInstallRecord(ctx, registry.UpdateReleaseInstallOperationRequest{
+		ExecutionID: current.Execution.ID, ExpectedCursor: current.Execution.Cursor, Status: status, Phase: phase,
 		Progress: progress, Attempt: current.Attempt, MutationOutcome: outcome, Failure: failure, PluginRecord: record, Now: now,
 		Activation: current.Activation,
 	})
 }
 
+func (h *Host) updateReleaseInstallRecord(ctx context.Context, req registry.UpdateReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return registry.ReleaseInstallOperation{}, err
+	}
+	return h.controlStore.Executions().UpdateReleaseInstall(ctx, session.OwnerEnvHash, req)
+}
+
+func releaseInstallOwner(session sessionctx.Context) controlstore.ExecutionOwner {
+	return controlstore.ExecutionOwner{
+		OwnerSessionHash: session.OwnerSessionHash, OwnerUserHash: session.OwnerUserHash,
+		OwnerEnvHash: session.OwnerEnvHash, SessionChannelIDHash: session.SessionChannelIDHash,
+	}
+}
+
 func (h *Host) failReleaseInstallOperation(ctx context.Context, current registry.ReleaseInstallOperation, code string, retryable bool, outcome mutation.Outcome) (registry.ReleaseInstallOperation, error) {
-	return h.updateReleaseInstallOperation(ctx, current, registry.ReleaseInstallFailed, "failed",
+	return h.updateReleaseInstallOperation(ctx, current, execution.StatusFailed, "failed",
 		registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate}, outcome,
 		&registry.ReleaseInstallFailure{Code: code, Retryable: retryable}, nil)
 }

@@ -283,7 +283,7 @@ func TestWorkerEnableRejectsPreflightFailureBeforeMutation(t *testing.T) {
 	if !errors.Is(err, ErrPluginRuntimeIncompatible) {
 		t.Fatalf("EnablePlugin() error = %v, want ErrPluginRuntimeIncompatible", err)
 	}
-	stored, getErr := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	stored, getErr := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
@@ -312,7 +312,7 @@ func TestWorkerUpdateRejectsPreflightFailureBeforeMutation(t *testing.T) {
 	if !errors.Is(err, ErrPluginRuntimeIncompatible) {
 		t.Fatalf("UpdateLocalPackage() error = %v, want ErrPluginRuntimeIncompatible", err)
 	}
-	stored, getErr := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	stored, getErr := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
@@ -349,7 +349,7 @@ func TestWorkerDowngradeRejectsPreflightFailureBeforeMutation(t *testing.T) {
 	if !errors.Is(err, ErrPluginRuntimeIncompatible) {
 		t.Fatalf("DowngradePlugin() error = %v, want ErrPluginRuntimeIncompatible", err)
 	}
-	stored, getErr := h.adapters.Registry.GetPlugin(hostTestContext(), updated.PluginInstanceID)
+	stored, getErr := h.getPluginRecord(hostTestContext(), updated.PluginInstanceID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
@@ -393,12 +393,12 @@ func TestWorkerInvocationRejectsStaleBindingDescriptorBeforeDispatch(t *testing.
 	if manager.calls != 0 {
 		t.Fatalf("stale binding dispatched %d worker calls", manager.calls)
 	}
-	operations, listErr := h.ListOperations(hostTestContext(), ListOperationsRequest{PluginInstanceID: installed.PluginInstanceID})
+	executions, _, listErr := h.ListExecutions(hostTestContext(), installed.PluginInstanceID, 0, 100)
 	if listErr != nil {
 		t.Fatal(listErr)
 	}
-	if len(operations.Operations) != 0 {
-		t.Fatalf("stale binding created operations: %#v", operations.Operations)
+	if len(executions) != 0 {
+		t.Fatalf("stale binding created executions: %#v", executions)
 	}
 }
 

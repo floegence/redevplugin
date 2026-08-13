@@ -30,7 +30,7 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		t.Fatalf("token-ticket schema token_id ref = %q, want #/$defs/token_id", tokenIDRef)
 	}
 	tokenIDPattern, ok := requireNestedObject(t, defs, "token_id")["pattern"].(string)
-	if !ok || tokenIDPattern != "^(at|as|pgt|ct|hg|st)_[A-Za-z0-9_-]+$" {
+	if !ok || tokenIDPattern != "^(at|as|pgt|ct|hg)_[A-Za-z0-9_-]+$" {
 		t.Fatalf("token-ticket schema token_id pattern = %q", tokenIDPattern)
 	}
 	tokenKinds := requireStringSlice(t, requireNestedObject(t, defs, "token_kind")["enum"], "token_kind enum")
@@ -61,6 +61,11 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		}
 	}
 	audienceProperties := requireNestedObject(t, defs, "audience", "properties")
+	for _, retired := range []string{"stream_id", "operation_id", "execution_id", "stream_direction"} {
+		if _, ok := audienceProperties[retired]; ok {
+			t.Fatalf("token-ticket current audience retains retired stream-ticket field %q", retired)
+		}
+	}
 	for _, name := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
 		field := requireNestedObject(t, audienceProperties, name)
 		if field["minLength"] == nil && field["pattern"] == nil {
@@ -154,33 +159,6 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"method",
 		"resource_scope",
 	}, "^hg_[A-Za-z0-9_-]+$")
-	assertTokenTicketCondition(t, conditions, "stream_ticket", "single_use", []string{
-		"plugin_id",
-		"plugin_instance_id",
-		"plugin_version",
-		"active_fingerprint",
-		"route_role",
-		"owner_session_hash",
-		"owner_user_hash",
-		"owner_env_hash",
-		"session_channel_id_hash",
-		"stream_id",
-		"operation_id",
-		"stream_direction",
-		"method",
-	}, "^st_[A-Za-z0-9_-]+$")
-	streamAudience := requireNestedObject(t, tokenTicketConditionByKind(t, schema, "stream_ticket"), "then", "properties", "audience")
-	streamAllOf := requireObjectArray(t, streamAudience["allOf"], "stream ticket audience allOf")
-	trustedParent := requireConstCondition(t, streamAllOf, "route_role", "trusted_parent", "trusted parent stream")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, trustedParent, "then")["required"], "trusted parent stream required"), []string{
-		"surface_id",
-		"surface_instance_id",
-		"entry_path",
-		"entry_sha256",
-		"asset_session_nonce",
-		"bridge_channel_id",
-		"runtime_generation_id",
-	}, "trusted parent stream required")
 }
 
 func TestAssetTicketGoldenFixtureBindsRuntimeGeneration(t *testing.T) {

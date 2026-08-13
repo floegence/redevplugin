@@ -56,12 +56,9 @@ function sessionScopeRevokeResult(state: "fenced" | "draining" | "incomplete" | 
       asset_sessions: 1,
       plugin_gateway_tokens: 1,
       confirmation_tokens: 0,
-      stream_tickets: 0,
       handle_grants: 0,
       confirmations: 0,
-      operations: 0,
-      streams: 0,
-      runtime_executions: 0,
+      executions: 0,
       active_network_requests: 0,
       sockets: 0,
       network_streams: 0,
@@ -135,18 +132,8 @@ function externalPackageInspectionResult(inspectionId: string, pluginInstanceId:
   };
 }
 
-function committedExternalPackageResult(inspection: ReturnType<typeof externalPackageInspectionResult>, commitId: string) {
+function installedExternalPackageResult(inspection: ReturnType<typeof externalPackageInspectionResult>) {
   return {
-    status: "committed",
-    inspection_id: inspection.inspection_id,
-    intent: inspection.intent,
-    receipt: {
-      commit_id: commitId,
-      inspection_id: inspection.inspection_id,
-      package_sha256: inspection.inspected_hashes.package_sha256,
-      management_revision: 8,
-      committed_at: "2026-07-23T00:01:00Z",
-    },
     plugin: {
       plugin_instance_id: inspection.intent.plugin_instance_id,
     },
@@ -160,30 +147,6 @@ function committedExternalPackageResult(inspection: ReturnType<typeof externalPa
     },
     update_eligibility: inspection.update_eligibility,
     security_summary: inspection.security_summary,
-  };
-}
-
-function releaseInstallOperation(
-  status: "queued" | "running" | "reconciling" | "succeeded" | "failed",
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    request_id: "request_1",
-    operation_id: "release_install_1",
-    plugin_instance_id: "plugin_instance_1",
-    request_sha256: `sha256:${"a".repeat(64)}`,
-    status,
-    phase: status === "succeeded" ? "complete" : "download_package",
-    progress: status === "succeeded"
-      ? { kind: "items", completed: 1, total: 1 }
-      : { kind: "bytes", completed: 262144, total: 1048576 },
-    attempt: 1,
-    retry_after_ms: 250,
-    mutation_outcome: status === "succeeded" ? "committed" : "not_committed",
-    created_at: "2026-08-05T00:00:00Z",
-    updated_at: "2026-08-05T00:00:01Z",
-    ...(status === "succeeded" ? { terminal_at: "2026-08-05T00:00:01Z" } : {}),
-    ...overrides,
   };
 }
 
@@ -400,15 +363,16 @@ test("invalid session revoke result is unknown and invalidates local surfaces", 
 });
 
 test("session revoke result validation is exact and JavaScript-safe", async () => {
-	const withoutStreams = sessionScopeRevokeResult() as Record<string, any>;
-	const incompleteCounts = { ...withoutStreams.counts };
-	delete incompleteCounts.streams;
+  const withoutExecutions = sessionScopeRevokeResult() as Record<string, any>;
+  const incompleteCounts = { ...withoutExecutions.counts };
+  delete incompleteCounts.executions;
   const invalidResults = [
     { ...sessionScopeRevokeResult(), state: "active", complete: false },
     { ...sessionScopeRevokeResult(), complete: false },
     { ...sessionScopeRevokeResult(), counts: incompleteCounts },
-    { ...sessionScopeRevokeResult(), counts: { ...sessionScopeRevokeResult().counts, streams: -1 } },
-    { ...sessionScopeRevokeResult(), counts: { ...sessionScopeRevokeResult().counts, streams: Number.MAX_SAFE_INTEGER + 1 } },
+    { ...sessionScopeRevokeResult(), counts: { ...sessionScopeRevokeResult().counts, executions: -1 } },
+    { ...sessionScopeRevokeResult(), counts: { ...sessionScopeRevokeResult().counts, executions: Number.MAX_SAFE_INTEGER + 1 } },
+    { ...sessionScopeRevokeResult(), counts: { ...sessionScopeRevokeResult().counts, operations: 0 } },
   ];
 
   for (const data of invalidResults) {
@@ -577,20 +541,19 @@ test("platform client reads compatibility manifest through host API", async () =
     data: {
       schema_version: "redevplugin.compatibility.v17",
       package_set: {
-        schema_version: "redevplugin.platform_package_set.v1",
-        platform_version: "0.6.0",
-        go_module: { module: "github.com/floegence/redevplugin", version: "v0.6.0" },
+        schema_version: "redevplugin.platform_package_set.v2",
+        platform_version: "1.0.0",
+        go_module: { module: "github.com/floegence/redevplugin", version: "v1.0.0" },
         npm_packages: [
-          { name: "@floegence/redevplugin-contracts", version: "0.6.0" },
-          { name: "@floegence/redevplugin-ui", version: "0.6.0" },
+          { name: "@floegence/redevplugin-contracts", version: "1.0.0" },
+          { name: "@floegence/redevplugin-ui", version: "1.0.0" },
         ],
         rust_crates: [
-          { name: "redevplugin-contracts", version: "0.6.0", role: "contracts" },
-          { name: "redevplugin-ipc", version: "0.6.0", role: "ipc" },
-          { name: "redevplugin-wasm-abi", version: "0.6.0", role: "wasm_abi" },
-          { name: "redevplugin-target-classifier", version: "0.6.0", role: "target_classifier" },
-          { name: "redevplugin-worker-sdk", version: "0.6.0", role: "worker_sdk" },
-          { name: "redevplugin-runtime", version: "0.6.0", role: "runtime" },
+          { name: "redevplugin-contracts", version: "1.0.0", role: "contracts" },
+          { name: "redevplugin-ipc", version: "1.0.0", role: "ipc" },
+          { name: "redevplugin-wasm-abi", version: "1.0.0", role: "wasm_abi" },
+          { name: "redevplugin-worker-sdk", version: "1.0.0", role: "worker_sdk" },
+          { name: "redevplugin-runtime", version: "1.0.0", role: "runtime" },
         ],
         contract_registry_version: "contract-registry-v2",
         contract_set_sha256: contractSetSHA256,
@@ -628,13 +591,9 @@ test("platform client reads compatibility manifest through host API", async () =
   assert.equal(compatibility.matrix.release_revocation_schema_version, "release-revocation-v3");
   assert.equal(compatibility.matrix.release_revocation_pointer_schema_version, "release-revocation-pointer-v2");
   assert.equal(compatibility.matrix.resource_scope_schema_version, "resource-scope-v1");
-  assert.equal(compatibility.matrix.session_scope_maintenance_schema_version, "session-scope-maintenance-v1");
+  assert.equal("session_scope_maintenance_schema_version" in compatibility.matrix, false);
   assert.equal(compatibility.matrix.host_capability_contract_schema_version, "host-capability-contract-v1");
   assert.equal(compatibility.matrix.host_capability_pin_schema_version, "host-capability-pin-v1");
-  assert.equal(compatibility.matrix.host_capability_manifest_schema_version, "host-capability-manifest-v1");
-  assert.equal(compatibility.matrix.host_capability_compatibility_schema_version, "host-capability-compatibility-v1");
-  assert.equal(compatibility.matrix.host_capability_signature_schema_version, "host-capability-signature-v1");
-  assert.equal(compatibility.matrix.host_capability_notices_schema_version, "host-capability-notices-v1");
   assert.deepEqual(compatibility.contracts.map((contract) => contract.id), ["plugin-platform-openapi", "rust-ipc-schema"]);
   assert.equal(compatibility.contracts[0]?.sha256, "sha256-openapi");
   assert.equal(fetch.calls.length, 1);
@@ -669,8 +628,8 @@ test("platform client sends reads through closed POST query bodies", async () =>
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { plugins: [] } });
   fetch.push({ ok: true, data: ["release"] });
-  fetch.push({ ok: true, data: { operations: [] } });
-  fetch.push({ ok: true, data: { operation_id: "operation_1" } });
+  fetch.push({ ok: true, data: { executions: [] } });
+  fetch.push({ ok: true, data: { execution_id: "execution_1", plugin_instance_id: "plugin_instance_1", kind: "operation", status: "completed", cursor: 0, cancelable: true, created_at: "2026-06-30T00:00:00Z", updated_at: "2026-06-30T00:00:00Z", terminal_at: "2026-06-30T00:00:00Z" } });
   fetch.push({ ok: true, data: {
     plugin_instance_id: "plugin_instance_1",
     scope: "user",
@@ -684,8 +643,8 @@ test("platform client sends reads through closed POST query bodies", async () =>
 
   await client.catalog();
   await client.features({ signal: controller.signal });
-  await client.listOperations({ plugin_instance_id: "plugin_instance_1", limit: 25 });
-  await client.getOperation("operation/1", { signal: controller.signal });
+  await client.listExecutions({ plugin_instance_id: "plugin_instance_1", limit: 25 });
+  await client.getExecution("execution/1", { signal: controller.signal });
   await client.getSettings("plugin instance/1", "user");
 
   assert.deepEqual(fetch.calls.map((call) => ({
@@ -707,13 +666,13 @@ test("platform client sends reads through closed POST query bodies", async () =>
       body: {},
     },
     {
-      input: "/_redevplugin/api/plugins/operations/query",
+      input: "/_redevplugin/api/plugins/executions/query",
       method: "POST",
       contentType: "application/json",
       body: { plugin_instance_id: "plugin_instance_1", limit: 25 },
     },
     {
-      input: "/_redevplugin/api/plugins/operations/operation%2F1/query",
+      input: "/_redevplugin/api/plugins/executions/execution%2F1/query",
       method: "POST",
       contentType: "application/json",
       body: {},
@@ -914,11 +873,11 @@ test("uploaded external package inspection rejects aborted dispatch and invalid 
   assert.equal(fetch.calls.length, 0);
 });
 
-test("committed external package commit disposes only the returned plugin scope", async () => {
+test("installing an inspected external package binds the exact package hash and disposes only its plugin scope", async () => {
   const fetch = new FakeFetch();
-  const inspection = externalPackageInspectionResult("inspection_commit", "plugin_instance_target");
+  const inspection = externalPackageInspectionResult("inspection_install", "plugin_instance_target");
   fetch.push({ ok: true, data: inspection });
-  fetch.push({ ok: true, data: committedExternalPackageResult(inspection, "commit_1") });
+  fetch.push({ ok: true, data: installedExternalPackageResult(inspection) });
   const scope = createPluginSurfaceScope();
   let targetDisposed = 0;
   let unrelatedDisposed = 0;
@@ -930,83 +889,23 @@ test("committed external package commit disposes only the returned plugin scope"
     source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
   });
 
-  const result = await client.commitExternalPackage({
-    inspection_id: "inspection_commit",
-    confirmation_digest: inspection.confirmation_digest,
+  const result = await client.installInspectedPackage({
+    inspection_id: "inspection_install",
+    expected_package_sha256: inspection.inspected_hashes.package_sha256,
   });
 
-  assert.equal(result.status, "committed");
+  assert.equal(result.plugin.plugin_instance_id, "plugin_instance_target");
   assert.equal(targetDisposed, 1);
   assert.equal(unrelatedDisposed, 0);
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/external-packages/commit");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/external-packages/install");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
-    inspection_id: "inspection_commit",
-    confirmation_digest: inspection.confirmation_digest,
+    inspection_id: "inspection_install",
+    expected_package_sha256: inspection.inspected_hashes.package_sha256,
   });
   unregisterUnrelated();
 });
 
-test("committed external package query reconciles and disposes the returned plugin scope", async () => {
-  const fetch = new FakeFetch();
-  const inspection = externalPackageInspectionResult("inspection_query", "plugin_instance_target");
-  fetch.push({ ok: true, data: inspection });
-  fetch.push({ ok: true, data: committedExternalPackageResult(inspection, "commit_query") });
-  const scope = createPluginSurfaceScope();
-  let targetDisposed = 0;
-  let unrelatedDisposed = 0;
-  registerPluginSurface(scope, "plugin_instance_target", () => { targetDisposed += 1; }, () => undefined);
-  const unregisterUnrelated = registerPluginSurface(scope, "plugin_instance_unrelated", () => { unrelatedDisposed += 1; }, () => undefined);
-  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
-  await client.inspectExternalPackage({
-    intent: { action: "update", plugin_instance_id: "plugin_instance_target", expected_management_revision: 7 },
-    source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
-  });
-
-  const result = await client.queryExternalPackageCommit({ inspection_id: "inspection_query", commit_id: "commit_query" });
-
-  assert.equal(result.status, "committed");
-  assert.equal(targetDisposed, 1);
-  assert.equal(unrelatedDisposed, 0);
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/external-packages/commit/query");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
-    inspection_id: "inspection_query",
-    commit_id: "commit_query",
-  });
-  unregisterUnrelated();
-});
-
-test("failed external package query returns terminal restart evidence without disposing the target surface", async () => {
-  const fetch = new FakeFetch();
-  const inspection = externalPackageInspectionResult("inspection_failed", "plugin_instance_target");
-  fetch.push({ ok: true, data: inspection });
-  fetch.push({
-    ok: true,
-    data: {
-      status: "failed",
-      inspection_id: "inspection_failed",
-      intent: inspection.intent,
-      failure_code: "host_restarted_before_commit",
-    },
-  });
-  const scope = createPluginSurfaceScope();
-  let disposed = 0;
-  const unregister = registerPluginSurface(scope, "plugin_instance_target", () => { disposed += 1; }, () => undefined);
-  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
-  await client.inspectExternalPackage({
-    intent: { action: "update", plugin_instance_id: "plugin_instance_target", expected_management_revision: 7 },
-    source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
-  });
-
-  const result = await client.queryExternalPackageCommit({ inspection_id: "inspection_failed", commit_id: "commit_failed" });
-
-  assert.equal(result.status, "failed");
-  if (result.status !== "failed") throw new Error("expected terminal failed external package commit result");
-  assert.equal(result.failure_code, "host_restarted_before_commit");
-  assert.equal(disposed, 0);
-  unregister();
-});
-
-test("not-committed external package commit preserves the target surface", async () => {
+test("a rejected inspected-package install preserves the target surface", async () => {
   const fetch = new FakeFetch();
   const inspection = externalPackageInspectionResult("inspection_not_committed", "plugin_instance_target");
   fetch.push({ ok: true, data: inspection });
@@ -1014,7 +913,7 @@ test("not-committed external package commit preserves the target surface", async
     ok: false,
     error: {
       code: "PLUGIN_ADAPTER_FAILURE",
-      message: "external package commit was rejected before durable mutation",
+      message: "external package install was rejected before durable mutation",
       details: {},
       mutation_outcome: "not_committed",
     },
@@ -1034,7 +933,10 @@ test("not-committed external package commit preserves the target surface", async
   });
 
   await assert.rejects(
-    client.commitExternalPackage({ inspection_id: "inspection_not_committed", confirmation_digest: inspection.confirmation_digest }),
+    client.installInspectedPackage({
+      inspection_id: "inspection_not_committed",
+      expected_package_sha256: inspection.inspected_hashes.package_sha256,
+    }),
     (error: unknown) => error instanceof PluginPlatformRequestError && error.mutationOutcome === "not_committed",
   );
   assert.equal(disposed, 0);
@@ -1042,7 +944,7 @@ test("not-committed external package commit preserves the target surface", async
   unregister();
 });
 
-test("unknown external package commit disposes the inspected target and notifies the observer", async () => {
+test("an unknown inspected-package install disposes the inspected target and notifies the observer", async () => {
   const fetch = new FakeFetch();
   const inspection = externalPackageInspectionResult("inspection_unknown", "plugin_instance_target");
   fetch.push({ ok: true, data: inspection });
@@ -1050,7 +952,7 @@ test("unknown external package commit disposes the inspected target and notifies
     ok: false,
     error: {
       code: "PLUGIN_ADAPTER_FAILURE",
-      message: "external package commit outcome is unknown",
+      message: "external package install outcome is unknown",
       details: {},
       mutation_outcome: "unknown",
     },
@@ -1072,13 +974,64 @@ test("unknown external package commit disposes the inspected target and notifies
   });
 
   await assert.rejects(
-    client.commitExternalPackage({ inspection_id: "inspection_unknown", confirmation_digest: inspection.confirmation_digest }),
+    client.installInspectedPackage({
+      inspection_id: "inspection_unknown",
+      expected_package_sha256: inspection.inspected_hashes.package_sha256,
+    }),
     (error: unknown) => error instanceof PluginPlatformRequestError && error.mutationOutcome === "unknown",
   );
   assert.equal(targetDisposed, 1);
   assert.equal(unrelatedDisposed, 0);
   assert.deepEqual(unknownTargets, ["plugin_instance_target"]);
   unregisterUnrelated();
+});
+
+test("external package client exposes no durable commit or query lifecycle", () => {
+  const client = new PluginPlatformClient({ fetch: new FakeFetch().fetch });
+  assert.equal("commitExternalPackage" in client, false);
+  assert.equal("queryExternalPackageCommit" in client, false);
+});
+
+test("release installation starts through the unified execution route", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: true,
+    data: {
+      execution_id: "release_install_1",
+      plugin_instance_id: "plugin_instance_1",
+      kind: "operation",
+      status: "running",
+      cursor: 0,
+      cancelable: false,
+      created_at: "2026-08-13T00:00:00Z",
+      updated_at: "2026-08-13T00:00:00Z",
+    },
+  });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const request = {
+    request_id: "request_1",
+    plugin_instance_id: "plugin_instance_1",
+    release_ref: {
+      source_id: "official",
+      channel: "stable",
+      release_metadata_ref: "release.json",
+      release_metadata_sha256: "a".repeat(64),
+      publisher_id: "publisher",
+      plugin_id: "plugin",
+      version: "1.0.0",
+      expected_hashes: {
+        package_sha256: `sha256:${"b".repeat(64)}`,
+        manifest_sha256: `sha256:${"c".repeat(64)}`,
+        entries_sha256: `sha256:${"d".repeat(64)}`,
+      },
+    },
+  } as const;
+
+  const result = await client.startReleaseInstallExecution(request);
+
+  assert.equal(result.execution_id, "release_install_1");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/executions/release-installs");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), request);
 });
 
 test("platform client reads and patches plugin settings through host API", async () => {
@@ -1466,116 +1419,6 @@ test("platform client installs and updates plugin release refs without package b
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
 });
 
-test("platform client starts and queries durable release install operations", async () => {
-  const fetch = new FakeFetch();
-  const operation = releaseInstallOperation("queued");
-  fetch.push({ ok: true, data: operation });
-  fetch.push({ ok: true, data: { operations: [operation] } });
-  fetch.push({ ok: true, data: operation });
-  fetch.push({ ok: true, data: operation });
-  const client = new PluginPlatformClient({ fetch: fetch.fetch });
-  const request = {
-    request_id: "request_1",
-    plugin_instance_id: "plugin_instance_1",
-    release_ref: {
-      source_id: "official",
-      channel: "stable",
-      release_metadata_ref: "plugins/com.example/com.example.plugin/1.0.0/release.json",
-      release_metadata_sha256: `sha256:${"d".repeat(64)}`,
-      publisher_id: "com.example",
-      plugin_id: "com.example.plugin",
-      version: "1.0.0",
-      expected_hashes: {
-        package_sha256: `sha256:${"a".repeat(64)}`,
-        manifest_sha256: `sha256:${"b".repeat(64)}`,
-        entries_sha256: `sha256:${"c".repeat(64)}`,
-      },
-    },
-  };
-
-  await client.startReleaseInstallOperation(request);
-  await client.listReleaseInstallOperations();
-  await client.getReleaseInstallOperation("release/install 1");
-  await client.getReleaseInstallOperationByRequest("request/1");
-
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? "null"), request);
-  assert.equal(fetch.calls[0]?.init.method, "POST");
-  assert.deepEqual(fetch.calls.slice(1).map((call) => ({
-    input: call.input,
-    method: call.init.method,
-    body: call.init.body,
-    contentType: call.init.headers["Content-Type"],
-  })), [
-    { input: "/_redevplugin/api/plugins/release-install-operations", method: "GET", body: undefined, contentType: undefined },
-    { input: "/_redevplugin/api/plugins/release-install-operations/release%2Finstall%201", method: "GET", body: undefined, contentType: undefined },
-    { input: "/_redevplugin/api/plugins/release-install-operations/by-request/request%2F1", method: "GET", body: undefined, contentType: undefined },
-  ]);
-});
-
-test("release install start recovers a lost response by the same request id", async () => {
-  const calls: FetchCall[] = [];
-  const operation = releaseInstallOperation("running");
-  const fetch: FetchLike = async (input, init) => {
-    calls.push({ input, init });
-    if (calls.length === 1) throw new Error("connection closed after dispatch");
-    return { ok: true, status: 200, json: async () => ({ ok: true, data: operation }) };
-  };
-  const client = new PluginPlatformClient({ fetch });
-
-  const result = await client.startReleaseInstallOperation({
-    request_id: "request_1",
-    plugin_instance_id: "plugin_instance_1",
-    release_ref: {
-      source_id: "official", channel: "stable", release_metadata_ref: "release.json",
-      release_metadata_sha256: `sha256:${"d".repeat(64)}`, publisher_id: "com.example",
-      plugin_id: "com.example.plugin", version: "1.0.0",
-      expected_hashes: {
-        package_sha256: `sha256:${"a".repeat(64)}`,
-        manifest_sha256: `sha256:${"b".repeat(64)}`,
-        entries_sha256: `sha256:${"c".repeat(64)}`,
-      },
-    },
-  });
-
-  assert.equal(result.operation_id, "release_install_1");
-  assert.equal(calls.length, 2);
-  assert.equal(calls[1]?.input, "/_redevplugin/api/plugins/release-install-operations/by-request/request_1");
-  assert.equal(calls[1]?.init.method, "GET");
-});
-
-test("release install watcher reports progress and stops at terminal state", async () => {
-  const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: releaseInstallOperation("running") });
-  fetch.push({ ok: true, data: releaseInstallOperation("succeeded") });
-  const client = new PluginPlatformClient({ fetch: fetch.fetch });
-  const observed: string[] = [];
-
-  const result = await client.watchReleaseInstallOperation("release_install_1", {
-    onUpdate: (operation) => observed.push(operation.status),
-  });
-
-  assert.equal(result.status, "succeeded");
-  assert.deepEqual(observed, ["running", "succeeded"]);
-  assert.equal(fetch.calls.length, 2);
-  assert.equal(fetch.calls.every((call) => call.init.method === "GET"), true);
-});
-
-test("aborting a release install watcher never cancels the platform operation", async () => {
-  const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: releaseInstallOperation("running") });
-  const controller = new AbortController();
-  const client = new PluginPlatformClient({ fetch: fetch.fetch });
-
-  await assert.rejects(
-    client.watchReleaseInstallOperation("release_install_1", {
-      signal: controller.signal,
-      onUpdate: () => controller.abort("panel closed"),
-    }),
-    (error) => error instanceof PluginTransportError && error.mutationOutcome === undefined,
-  );
-  assert.equal(fetch.calls.length, 1);
-  assert.equal(fetch.calls[0]?.init.method, "GET");
-});
 
 test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();
@@ -1605,36 +1448,39 @@ test("platform client manages runtime lifecycle routes", async () => {
   } satisfies PluginRuntimeHealth;
   fetch.push({ ok: true, data: runtimeHealth });
   fetch.push({ ok: true, data: runtimeHealth });
-  fetch.push({ ok: true, data: { results: [
-    { plugin_instance_id: "plugin_instance_1", status: "refreshed" },
-    { plugin_instance_id: "plugin_instance_2", status: "failed", error: { code: "PLUGIN_RUNTIME_UNAVAILABLE", message: "Plugin runtime state could not be refreshed" } },
+  fetch.push({ ok: true, data: { revision: 1, complete: false, results: [
+    { plugin_instance_id: "plugin_instance_1", status: "ready" },
+    { plugin_instance_id: "plugin_instance_2", status: "failed", reason: "recovery_timeout", action: "retry" },
   ] } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_2", status: "ready" } });
   fetch.push({ ok: true, data: { stopped: true } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   const started = await client.startRuntime({ target: { os: "linux", arch: "arm64" } });
   const health = await client.runtimeHealth();
-  const refreshed = await client.refreshEnabledRuntimeState();
+  const recovered = await client.recoverEnabled();
+  const retried = await client.retryRecovery("plugin_instance_2");
   const stopped = await client.stopRuntime();
 
   assert.equal(started.ready, true);
   assert.equal(health.shards[0]?.runtime_generation_id, "gen_1");
-  assert.equal(refreshed.results[0]?.plugin_instance_id, "plugin_instance_1");
-  assert.equal(refreshed.results[0]?.status, "refreshed");
-  const failedRefresh = refreshed.results[1];
-  assert.equal(failedRefresh?.status, "failed");
-  if (failedRefresh?.status !== "failed") throw new Error("expected failed runtime refresh result");
-  assert.deepEqual(failedRefresh.error, { code: "PLUGIN_RUNTIME_UNAVAILABLE", message: "Plugin runtime state could not be refreshed" });
+  assert.equal(recovered.revision, 1);
+  assert.equal(recovered.complete, false);
+  assert.equal(recovered.results[0]?.status, "ready");
+  assert.deepEqual(recovered.results[1], { plugin_instance_id: "plugin_instance_2", status: "failed", reason: "recovery_timeout", action: "retry" });
+  assert.equal(retried.status, "ready");
   assert.equal(stopped.stopped, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/runtime/start");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { target: { os: "linux", arch: "arm64" } });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/runtime/health/query");
   assert.equal(fetch.calls[1]?.init.method, "POST");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {});
-  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/runtime/refresh-enabled");
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/runtime/recover-enabled");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {});
-  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/runtime/stop");
-  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), {});
+  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/runtime/recover/retry");
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_2" });
+  assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/runtime/stop");
+  assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), {});
 });
 
 test("platform client covers operation and data lifecycle routes", async () => {
@@ -1642,34 +1488,28 @@ test("platform client covers operation and data lifecycle routes", async () => {
   fetch.push({
     ok: true,
     data: {
-      operations: [{
-        invocation_id: "invoke_1",
-        audit_correlation_id: "audit_1",
-        operation_id: "op 1",
+      executions: [{
+        execution_id: "execution_1",
         plugin_instance_id: "plugin_instance_1",
-        method: "worker.long",
-        execution: "operation",
+        kind: "operation",
         status: "running",
+        cursor: 0,
         cancelable: true,
-        cancel_ack_timeout_ms: 5000,
         created_at: "2026-06-30T00:00:00Z",
         updated_at: "2026-06-30T00:00:00Z",
       }],
-      next_cursor: "cursor_2",
+      next_cursor: 25,
     },
   });
   fetch.push({
     ok: true,
     data: {
-      invocation_id: "invoke_1",
-      audit_correlation_id: "audit_1",
-      operation_id: "op 1",
+      execution_id: "execution_1",
       plugin_instance_id: "plugin_instance_1",
-      method: "worker.long",
-      execution: "operation",
+      kind: "operation",
       status: "cancel_requested",
+      cursor: 0,
       cancelable: true,
-      cancel_ack_timeout_ms: 5000,
       created_at: "2026-06-30T00:00:00Z",
       updated_at: "2026-06-30T00:00:02Z",
     },
@@ -1683,8 +1523,8 @@ test("platform client covers operation and data lifecycle routes", async () => {
   fetch.push({ ok: true, data: { deleted: [{ plugin_instance_id: "plugin_instance_3", generation_id: "generation_3", state: "retained", revision: 4, shape_hash: "b".repeat(64) }] } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
-  const operations = await client.listOperations({ plugin_instance_id: "plugin_instance_1", cursor: "cursor_1", limit: 25 });
-  const canceled = await client.cancelOperation("op 1", "user canceled");
+  const executions = await client.listExecutions({ plugin_instance_id: "plugin_instance_1", cursor: 0, limit: 25 });
+  const canceled = await client.cancelExecution("execution_1", "user canceled");
   const exported = await client.exportData({ plugin_instance_id: "plugin_instance_1" });
   const exportDeletion = await client.deleteDataExport({ plugin_instance_id: "plugin_instance_1", bundle_ref: exported.bundle_ref });
   const imported = await client.importData({
@@ -1702,10 +1542,9 @@ test("platform client covers operation and data lifecycle routes", async () => {
   });
   const cleanup = await client.cleanupExpiredRetainedData({});
 
-  assert.equal(operations.operations?.[0]?.status, "running");
-  assert.equal(operations.operations?.[0]?.audit_correlation_id, "audit_1");
-  assert.equal(operations.operations?.[0]?.cancel_ack_timeout_ms, 5000);
-  assert.equal(operations.next_cursor, "cursor_2");
+  assert.equal(executions.executions?.[0]?.status, "running");
+  assert.equal(executions.executions?.[0]?.execution_id, "execution_1");
+  assert.equal(executions.next_cursor, 25);
   assert.equal(canceled.status, "cancel_requested");
   assert.equal(exported.bundle_ref, "bundle_ref_1");
   assert.equal(exportDeletion.deleted, true);
@@ -1714,9 +1553,9 @@ test("platform client covers operation and data lifecycle routes", async () => {
   assert.equal(deleted.revision, 3);
   assert.equal(bound.plugin_instance_id, "plugin_instance_2");
   assert.equal(cleanup.deleted[0]?.generation_id, "generation_3");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/operations/query");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", cursor: "cursor_1", limit: 25 });
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/operations/op%201/cancel");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/executions/query");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", cursor: 0, limit: 25 });
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/executions/execution_1/cancel");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { reason: "user canceled" });
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/data/export");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });

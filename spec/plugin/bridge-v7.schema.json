@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.redevplugin.dev/plugin/bridge-v7.schema.json",
   "title": "ReDevPlugin plugin worker bridge v7",
-  "description": "Plugin-visible MessagePort contract. Plugin identity, owner/session bindings, gateway tokens, asset sessions, stream tickets, and confirmation tokens remain in the trusted parent and are intentionally absent from worker-visible messages.",
+  "description": "Plugin-visible MessagePort contract. Plugin identity, owner/session bindings, gateway tokens, asset sessions, execution transport credentials, and confirmation tokens remain in the trusted parent and are intentionally absent from worker-visible messages.",
   "x-redevplugin-render-policy": {
     "max_message_bytes": 524288,
     "max_in_flight_requests": 256,
@@ -62,10 +62,9 @@
   },
   "oneOf": [
     { "$ref": "#/$defs/call" },
-    { "$ref": "#/$defs/stream_read" },
-    { "$ref": "#/$defs/stream_ack" },
-    { "$ref": "#/$defs/operation_cancel" },
-    { "$ref": "#/$defs/operation_snapshot" },
+    { "$ref": "#/$defs/execution_cancel" },
+    { "$ref": "#/$defs/execution_query" },
+    { "$ref": "#/$defs/execution_events" },
     { "$ref": "#/$defs/mount" },
     { "$ref": "#/$defs/patch" },
     { "$ref": "#/$defs/canvas_open" },
@@ -137,7 +136,7 @@
     },
     "request_id": {
       "type": "string",
-      "pattern": "^(rpc|stream|stream_ack|render|operation|canvas|asset)_[1-9][0-9]{0,15}$"
+      "pattern": "^(rpc|execution|render|canvas|asset)_[1-9][0-9]{0,15}$"
     },
     "call": {
       "type": "object",
@@ -165,46 +164,36 @@
         }
       }
     },
-    "stream_read": {
+    "execution_events": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "id", "stream_handle"],
+      "required": ["type", "id", "execution_id", "after_cursor"],
       "properties": {
-        "type": { "const": "redevplugin.bridge.stream.read" },
+        "type": { "const": "redevplugin.bridge.execution.events" },
         "id": { "$ref": "#/$defs/request_id" },
-        "stream_handle": { "$ref": "#/$defs/opaque_handle" }
+        "execution_id": { "$ref": "#/$defs/opaque_handle" },
+        "after_cursor": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
       }
     },
-    "stream_ack": {
+    "execution_cancel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "id", "stream_handle", "delivery_id"],
+      "required": ["type", "id", "execution_id"],
       "properties": {
-        "type": { "const": "redevplugin.bridge.stream.ack" },
+        "type": { "const": "redevplugin.bridge.execution.cancel" },
         "id": { "$ref": "#/$defs/request_id" },
-        "stream_handle": { "$ref": "#/$defs/opaque_handle" },
-        "delivery_id": { "type": "string", "pattern": "^delivery_[A-Za-z0-9_-]{8,128}$" }
-      }
-    },
-    "operation_cancel": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "operation_id"],
-      "properties": {
-        "type": { "const": "redevplugin.bridge.operation.cancel" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "operation_id": { "$ref": "#/$defs/opaque_handle" },
+        "execution_id": { "$ref": "#/$defs/opaque_handle" },
         "reason": { "type": "string", "maxLength": 256 }
       }
     },
-    "operation_snapshot": {
+    "execution_query": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "id", "operation_id"],
+      "required": ["type", "id", "execution_id"],
       "properties": {
-        "type": { "const": "redevplugin.bridge.operation.snapshot" },
+        "type": { "const": "redevplugin.bridge.execution.query" },
         "id": { "$ref": "#/$defs/request_id" },
-        "operation_id": { "$ref": "#/$defs/opaque_handle" }
+        "execution_id": { "$ref": "#/$defs/opaque_handle" }
       }
     },
     "mount": {
@@ -600,10 +589,9 @@
                 "PLUGIN_LEASE_REPLAYED",
                 "PLUGIN_GRANT_INVALID",
                 "PLUGIN_STORAGE_QUOTA_EXCEEDED",
-                "PLUGIN_OPERATION_BLOCKED",
-                "PLUGIN_OPERATION_NOT_FOUND",
-                "PLUGIN_OPERATION_NOT_CANCELABLE",
-                "PLUGIN_OPERATION_RATE_LIMITED",
+                "PLUGIN_EXECUTION_BLOCKED",
+                "PLUGIN_EXECUTION_NOT_FOUND",
+                "PLUGIN_EXECUTION_NOT_CANCELABLE",
                 "PLUGIN_NETWORK_TARGET_DENIED",
                 "PLUGIN_NETWORK_RATE_LIMITED",
                 "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -661,25 +649,6 @@
                 "required": ["error_details"],
                 "properties": {
                   "error_details": { "$ref": "#/$defs/worker_error_details" }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": { "error_code": { "const": "PLUGIN_OPERATION_RATE_LIMITED" } },
-                "required": ["error_code"]
-              },
-              "then": {
-                "required": ["error_details"],
-                "properties": {
-                  "error_details": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["retry_after_ms"],
-                    "properties": {
-                      "retry_after_ms": { "type": "integer", "minimum": 500, "maximum": 10000 }
-                    }
-                  }
                 }
               }
             }

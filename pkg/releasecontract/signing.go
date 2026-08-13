@@ -58,14 +58,12 @@ func RootDelegationSigningPreimage(input RootDelegationInput) ([]byte, error) {
 
 func (document RootDelegationV1) SigningPreimage() ([]byte, error) {
 	return RootDelegationSigningPreimage(RootDelegationInput{
-		SourceID:                 document.SourceID,
-		RootEpoch:                document.RootEpoch,
-		PreviousRootEpoch:        document.PreviousRootEpoch,
-		PreviousDelegationSHA256: document.PreviousDelegationSHA256,
-		GeneratedAt:              document.GeneratedAt,
-		ExpiresAt:                document.ExpiresAt,
-		DelegatedKeys:            cloneDelegatedKeys(document.DelegatedKeys),
-		KeyID:                    document.KeyID,
+		SourceID:      document.SourceID,
+		RootEpoch:     document.RootEpoch,
+		GeneratedAt:   document.GeneratedAt,
+		ExpiresAt:     document.ExpiresAt,
+		DelegatedKeys: cloneDelegatedKeys(document.DelegatedKeys),
+		KeyID:         document.KeyID,
 	})
 }
 
@@ -219,28 +217,25 @@ func SourcePolicySigningPreimage(input SourcePolicyInput) ([]byte, error) {
 
 func (document SourcePolicyV2) SigningPreimage() ([]byte, error) {
 	return SourcePolicySigningPreimage(SourcePolicyInput{
-		SchemaVersion:             document.SchemaVersion,
-		SourceID:                  document.SourceID,
-		Channel:                   document.Channel,
-		Epoch:                     document.Epoch,
-		PreviousEpoch:             document.PreviousEpoch,
-		PreviousDocumentSHA256:    document.PreviousDocumentSHA256,
-		RootEpoch:                 document.RootEpoch,
-		SourceType:                document.SourceType,
-		SourceClass:               document.SourceClass,
-		AllowedPublishers:         slices.Clone(document.AllowedPublishers),
-		AllowedArtifactHosts:      slices.Clone(document.AllowedArtifactHosts),
-		ActiveKeys:                cloneActiveKeys(document.ActiveKeys),
-		CapabilityPublisherScopes: cloneCapabilityPublisherScopes(document.CapabilityPublisherScopes),
-		RequireSignature:          document.RequireSignature,
-		InstallPolicy:             document.InstallPolicy,
-		UnsignedPolicy:            document.UnsignedPolicy,
-		DowngradePolicy:           document.DowngradePolicy,
-		MinimumRevocationEpoch:    document.MinimumRevocationEpoch,
-		Limits:                    document.Limits,
-		GeneratedAt:               document.GeneratedAt,
-		ExpiresAt:                 document.ExpiresAt,
-		KeyID:                     document.KeyID,
+		SchemaVersion:          document.SchemaVersion,
+		SourceID:               document.SourceID,
+		Channel:                document.Channel,
+		Epoch:                  document.Epoch,
+		RootEpoch:              document.RootEpoch,
+		SourceType:             document.SourceType,
+		SourceClass:            document.SourceClass,
+		AllowedPublishers:      slices.Clone(document.AllowedPublishers),
+		AllowedArtifactHosts:   slices.Clone(document.AllowedArtifactHosts),
+		ActiveKeys:             cloneActiveKeys(document.ActiveKeys),
+		RequireSignature:       document.RequireSignature,
+		InstallPolicy:          document.InstallPolicy,
+		UnsignedPolicy:         document.UnsignedPolicy,
+		DowngradePolicy:        document.DowngradePolicy,
+		MinimumRevocationEpoch: document.MinimumRevocationEpoch,
+		Limits:                 document.Limits,
+		GeneratedAt:            document.GeneratedAt,
+		ExpiresAt:              document.ExpiresAt,
+		KeyID:                  document.KeyID,
 	})
 }
 
@@ -265,18 +260,16 @@ func BuildSourcePolicyPointer(input ReleasePointerInput, signature []byte) (Sour
 		schemaVersion = SourcePolicyPointerSchemaVersionV1
 	}
 	document := SourcePolicyPointerV1{
-		SchemaVersion:          schemaVersion,
-		SourceID:               input.SourceID,
-		Channel:                input.Channel,
-		Epoch:                  input.Epoch,
-		PreviousEpoch:          input.PreviousEpoch,
-		PreviousDocumentSHA256: input.PreviousDocumentSHA256,
-		Ref:                    input.Ref,
-		DocumentSHA256:         input.DocumentSHA256,
-		GeneratedAt:            input.GeneratedAt,
-		ExpiresAt:              input.ExpiresAt,
-		KeyID:                  input.KeyID,
-		Signature:              encodeSignature(signature),
+		SchemaVersion:  schemaVersion,
+		SourceID:       input.SourceID,
+		Channel:        input.Channel,
+		Epoch:          input.Epoch,
+		Ref:            input.Ref,
+		DocumentSHA256: input.DocumentSHA256,
+		GeneratedAt:    input.GeneratedAt,
+		ExpiresAt:      input.ExpiresAt,
+		KeyID:          input.KeyID,
+		Signature:      encodeSignature(signature),
 	}
 	if err := validateSourcePolicyPointer(document, true); err != nil {
 		return SourcePolicyPointerV1{}, err
@@ -330,18 +323,16 @@ func RevocationSigningPreimage(input RevocationInput) ([]byte, error) {
 
 func (document RevocationV2) SigningPreimage() ([]byte, error) {
 	return RevocationSigningPreimage(RevocationInput{
-		SchemaVersion:          document.SchemaVersion,
-		SourceID:               document.SourceID,
-		Channel:                document.Channel,
-		Epoch:                  document.Epoch,
-		PreviousEpoch:          document.PreviousEpoch,
-		PreviousDocumentSHA256: document.PreviousDocumentSHA256,
-		RootEpoch:              document.RootEpoch,
-		GeneratedAt:            document.GeneratedAt,
-		ExpiresAt:              document.ExpiresAt,
-		RevokedKeyIDs:          slices.Clone(document.RevokedKeyIDs),
-		RevokedReleases:        slices.Clone(document.RevokedReleases),
-		KeyID:                  document.KeyID,
+		SchemaVersion:   document.SchemaVersion,
+		SourceID:        document.SourceID,
+		Channel:         document.Channel,
+		Epoch:           document.Epoch,
+		RootEpoch:       document.RootEpoch,
+		GeneratedAt:     document.GeneratedAt,
+		ExpiresAt:       document.ExpiresAt,
+		RevokedKeyIDs:   slices.Clone(document.RevokedKeyIDs),
+		RevokedReleases: slices.Clone(document.RevokedReleases),
+		KeyID:           document.KeyID,
 	})
 }
 
@@ -366,18 +357,16 @@ func BuildRevocationPointer(input ReleasePointerInput, signature []byte) (Revoca
 		schemaVersion = RevocationPointerSchemaVersionV1
 	}
 	document := RevocationPointerV1{
-		SchemaVersion:          schemaVersion,
-		SourceID:               input.SourceID,
-		Channel:                input.Channel,
-		Epoch:                  input.Epoch,
-		PreviousEpoch:          input.PreviousEpoch,
-		PreviousDocumentSHA256: input.PreviousDocumentSHA256,
-		Ref:                    input.Ref,
-		DocumentSHA256:         input.DocumentSHA256,
-		GeneratedAt:            input.GeneratedAt,
-		ExpiresAt:              input.ExpiresAt,
-		KeyID:                  input.KeyID,
-		Signature:              encodeSignature(signature),
+		SchemaVersion:  schemaVersion,
+		SourceID:       input.SourceID,
+		Channel:        input.Channel,
+		Epoch:          input.Epoch,
+		Ref:            input.Ref,
+		DocumentSHA256: input.DocumentSHA256,
+		GeneratedAt:    input.GeneratedAt,
+		ExpiresAt:      input.ExpiresAt,
+		KeyID:          input.KeyID,
+		Signature:      encodeSignature(signature),
 	}
 	if err := validateRevocationPointer(document, true); err != nil {
 		return RevocationPointerV1{}, err
@@ -415,48 +404,43 @@ func VerifyRevocationPointer(document RevocationPointerV1, verifier SignatureVer
 
 func rootDelegationFromInput(input RootDelegationInput, signature string) RootDelegationV1 {
 	return RootDelegationV1{
-		SchemaVersion:            RootDelegationSchemaVersion,
-		SourceID:                 input.SourceID,
-		RootEpoch:                input.RootEpoch,
-		PreviousRootEpoch:        input.PreviousRootEpoch,
-		PreviousDelegationSHA256: input.PreviousDelegationSHA256,
-		GeneratedAt:              input.GeneratedAt,
-		ExpiresAt:                input.ExpiresAt,
-		DelegatedKeys:            cloneDelegatedKeys(input.DelegatedKeys),
-		KeyID:                    input.KeyID,
-		Signature:                signature,
+		SchemaVersion: RootDelegationSchemaVersion,
+		SourceID:      input.SourceID,
+		RootEpoch:     input.RootEpoch,
+		GeneratedAt:   input.GeneratedAt,
+		ExpiresAt:     input.ExpiresAt,
+		DelegatedKeys: cloneDelegatedKeys(input.DelegatedKeys),
+		KeyID:         input.KeyID,
+		Signature:     signature,
 	}
 }
 
 func sourcePolicyFromInput(input SourcePolicyInput, signature string) SourcePolicyV2 {
 	schemaVersion := input.SchemaVersion
 	if schemaVersion == "" {
-		schemaVersion = SourcePolicySchemaVersionV2
+		schemaVersion = SourcePolicySchemaVersion
 	}
 	return SourcePolicyV2{
-		SchemaVersion:             schemaVersion,
-		SourceID:                  input.SourceID,
-		Channel:                   input.Channel,
-		Epoch:                     input.Epoch,
-		PreviousEpoch:             input.PreviousEpoch,
-		PreviousDocumentSHA256:    input.PreviousDocumentSHA256,
-		RootEpoch:                 input.RootEpoch,
-		SourceType:                input.SourceType,
-		SourceClass:               input.SourceClass,
-		AllowedPublishers:         slices.Clone(input.AllowedPublishers),
-		AllowedArtifactHosts:      slices.Clone(input.AllowedArtifactHosts),
-		ActiveKeys:                cloneActiveKeys(input.ActiveKeys),
-		CapabilityPublisherScopes: cloneCapabilityPublisherScopes(input.CapabilityPublisherScopes),
-		RequireSignature:          input.RequireSignature,
-		InstallPolicy:             input.InstallPolicy,
-		UnsignedPolicy:            input.UnsignedPolicy,
-		DowngradePolicy:           input.DowngradePolicy,
-		MinimumRevocationEpoch:    input.MinimumRevocationEpoch,
-		Limits:                    input.Limits,
-		GeneratedAt:               input.GeneratedAt,
-		ExpiresAt:                 input.ExpiresAt,
-		KeyID:                     input.KeyID,
-		Signature:                 signature,
+		SchemaVersion:          schemaVersion,
+		SourceID:               input.SourceID,
+		Channel:                input.Channel,
+		Epoch:                  input.Epoch,
+		RootEpoch:              input.RootEpoch,
+		SourceType:             input.SourceType,
+		SourceClass:            input.SourceClass,
+		AllowedPublishers:      slices.Clone(input.AllowedPublishers),
+		AllowedArtifactHosts:   slices.Clone(input.AllowedArtifactHosts),
+		ActiveKeys:             cloneActiveKeys(input.ActiveKeys),
+		RequireSignature:       input.RequireSignature,
+		InstallPolicy:          input.InstallPolicy,
+		UnsignedPolicy:         input.UnsignedPolicy,
+		DowngradePolicy:        input.DowngradePolicy,
+		MinimumRevocationEpoch: input.MinimumRevocationEpoch,
+		Limits:                 input.Limits,
+		GeneratedAt:            input.GeneratedAt,
+		ExpiresAt:              input.ExpiresAt,
+		KeyID:                  input.KeyID,
+		Signature:              signature,
 	}
 }
 
@@ -466,19 +450,17 @@ func revocationFromInput(input RevocationInput, signature string) RevocationV2 {
 		schemaVersion = RevocationSchemaVersionV2
 	}
 	return RevocationV2{
-		SchemaVersion:          schemaVersion,
-		SourceID:               input.SourceID,
-		Channel:                input.Channel,
-		Epoch:                  input.Epoch,
-		PreviousEpoch:          input.PreviousEpoch,
-		PreviousDocumentSHA256: input.PreviousDocumentSHA256,
-		RootEpoch:              input.RootEpoch,
-		GeneratedAt:            input.GeneratedAt,
-		ExpiresAt:              input.ExpiresAt,
-		RevokedKeyIDs:          slices.Clone(input.RevokedKeyIDs),
-		RevokedReleases:        slices.Clone(input.RevokedReleases),
-		KeyID:                  input.KeyID,
-		Signature:              signature,
+		SchemaVersion:   schemaVersion,
+		SourceID:        input.SourceID,
+		Channel:         input.Channel,
+		Epoch:           input.Epoch,
+		RootEpoch:       input.RootEpoch,
+		GeneratedAt:     input.GeneratedAt,
+		ExpiresAt:       input.ExpiresAt,
+		RevokedKeyIDs:   slices.Clone(input.RevokedKeyIDs),
+		RevokedReleases: slices.Clone(input.RevokedReleases),
+		KeyID:           input.KeyID,
+		Signature:       signature,
 	}
 }
 
@@ -500,45 +482,41 @@ func packageInputFromDocument(context PackageVerificationContext, document Packa
 
 func pointerInputFromSourcePolicy(document SourcePolicyPointerV1) ReleasePointerInput {
 	return ReleasePointerInput{
-		SchemaVersion:          document.SchemaVersion,
-		SourceID:               document.SourceID,
-		Channel:                document.Channel,
-		Epoch:                  document.Epoch,
-		PreviousEpoch:          document.PreviousEpoch,
-		PreviousDocumentSHA256: document.PreviousDocumentSHA256,
-		Ref:                    document.Ref,
-		DocumentSHA256:         document.DocumentSHA256,
-		GeneratedAt:            document.GeneratedAt,
-		ExpiresAt:              document.ExpiresAt,
-		KeyID:                  document.KeyID,
+		SchemaVersion:  document.SchemaVersion,
+		SourceID:       document.SourceID,
+		Channel:        document.Channel,
+		Epoch:          document.Epoch,
+		Ref:            document.Ref,
+		DocumentSHA256: document.DocumentSHA256,
+		GeneratedAt:    document.GeneratedAt,
+		ExpiresAt:      document.ExpiresAt,
+		KeyID:          document.KeyID,
 	}
 }
 
 func pointerInputFromRevocation(document RevocationPointerV1) ReleasePointerInput {
 	return ReleasePointerInput{
-		SchemaVersion:          document.SchemaVersion,
-		SourceID:               document.SourceID,
-		Channel:                document.Channel,
-		Epoch:                  document.Epoch,
-		PreviousEpoch:          document.PreviousEpoch,
-		PreviousDocumentSHA256: document.PreviousDocumentSHA256,
-		Ref:                    document.Ref,
-		DocumentSHA256:         document.DocumentSHA256,
-		GeneratedAt:            document.GeneratedAt,
-		ExpiresAt:              document.ExpiresAt,
-		KeyID:                  document.KeyID,
+		SchemaVersion:  document.SchemaVersion,
+		SourceID:       document.SourceID,
+		Channel:        document.Channel,
+		Epoch:          document.Epoch,
+		Ref:            document.Ref,
+		DocumentSHA256: document.DocumentSHA256,
+		GeneratedAt:    document.GeneratedAt,
+		ExpiresAt:      document.ExpiresAt,
+		KeyID:          document.KeyID,
 	}
 }
 
 func validateSourcePolicyPointer(document SourcePolicyPointerV1, requireSignature bool) error {
 	return validatePointer(document.SchemaVersion, SourcePolicyPointerSchemaVersion, document.SourceID, document.Channel,
-		document.Epoch, document.PreviousEpoch, document.PreviousDocumentSHA256, document.Ref, document.DocumentSHA256,
+		document.Epoch, document.Ref, document.DocumentSHA256,
 		document.GeneratedAt, document.ExpiresAt, document.KeyID, document.Signature, requireSignature)
 }
 
 func validateRevocationPointer(document RevocationPointerV1, requireSignature bool) error {
 	return validatePointer(document.SchemaVersion, RevocationPointerSchemaVersion, document.SourceID, document.Channel,
-		document.Epoch, document.PreviousEpoch, document.PreviousDocumentSHA256, document.Ref, document.DocumentSHA256,
+		document.Epoch, document.Ref, document.DocumentSHA256,
 		document.GeneratedAt, document.ExpiresAt, document.KeyID, document.Signature, requireSignature)
 }
 
@@ -609,25 +587,12 @@ func cloneDelegatedKeys(values []RootDelegatedKey) []RootDelegatedKey {
 
 func cloneActiveKeys(value SourcePolicyActiveKeys) SourcePolicyActiveKeys {
 	return SourcePolicyActiveKeys{
-		Package:                slices.Clone(value.Package),
-		ReleaseMetadata:        slices.Clone(value.ReleaseMetadata),
-		HostCapabilityContract: slices.Clone(value.HostCapabilityContract),
-		SourcePolicyPointer:    slices.Clone(value.SourcePolicyPointer),
-		Revocation:             slices.Clone(value.Revocation),
-		RevocationPointer:      slices.Clone(value.RevocationPointer),
+		Package:             slices.Clone(value.Package),
+		ReleaseMetadata:     slices.Clone(value.ReleaseMetadata),
+		SourcePolicyPointer: slices.Clone(value.SourcePolicyPointer),
+		Revocation:          slices.Clone(value.Revocation),
+		RevocationPointer:   slices.Clone(value.RevocationPointer),
 	}
-}
-
-func cloneCapabilityPublisherScopes(values []SourcePolicyCapabilityPublisherScope) []SourcePolicyCapabilityPublisherScope {
-	if values == nil {
-		return nil
-	}
-	cloned := make([]SourcePolicyCapabilityPublisherScope, len(values))
-	for index, value := range values {
-		value.AllowedPublishers = slices.Clone(value.AllowedPublishers)
-		cloned[index] = value
-	}
-	return cloned
 }
 
 func cloneReleaseMetadata(value ReleaseMetadataV8) ReleaseMetadataV8 {

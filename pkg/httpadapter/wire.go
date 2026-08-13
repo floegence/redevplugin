@@ -93,7 +93,6 @@ type releaseTrustBindingResponse struct {
 	PublisherID           string `json:"publisher_id"`
 	PluginID              string `json:"plugin_id"`
 	Version               string `json:"version"`
-	VerifiedStateSHA256   string `json:"verified_state_sha256"`
 	RootEpoch             string `json:"root_epoch"`
 	PolicyEpoch           string `json:"policy_epoch"`
 	RevocationEpoch       string `json:"revocation_epoch"`
@@ -159,6 +158,7 @@ type pluginRecordResponse struct {
 	UpdatedAt             time.Time                                `json:"updated_at"`
 	DeletedAt             *time.Time                               `json:"deleted_at,omitempty"`
 	Metadata              map[string]string                        `json:"metadata,omitempty"`
+	ActionState           *host.PluginActionState                  `json:"action_state,omitempty"`
 }
 
 func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, error) {
@@ -200,37 +200,27 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 	}, nil
 }
 
-type externalPackageCommitResultResponse struct {
-	Status              string                                   `json:"status"`
-	InspectionID        string                                   `json:"inspection_id"`
-	Intent              host.ExternalPackageIntent               `json:"intent"`
-	Receipt             *host.ExternalPackageCommitReceipt       `json:"receipt,omitempty"`
+type installedExternalPackageResponse struct {
 	Plugin              *pluginRecordResponse                    `json:"plugin,omitempty"`
 	SignatureAssessment *host.ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
 	SourceProvenance    *host.ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
 	ExecutionApproval   *host.ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
 	UpdateEligibility   *host.ExternalPackageUpdateEligibility   `json:"update_eligibility,omitempty"`
 	SecuritySummary     *host.ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
-	FailureCode         string                                   `json:"failure_code,omitempty"`
-	RetryAfterMS        int                                      `json:"retry_after_ms,omitempty"`
 }
 
-func publicExternalPackageCommitResult(result host.ExternalPackageCommitResult) (externalPackageCommitResultResponse, error) {
-	response := externalPackageCommitResultResponse{
-		Status: result.Status, InspectionID: result.InspectionID, Intent: result.Intent,
-		Receipt: result.Receipt, SignatureAssessment: result.SignatureAssessment,
-		SourceProvenance: result.SourceProvenance, ExecutionApproval: result.ExecutionApproval,
+func publicInstalledExternalPackage(result host.InstalledExternalPackage) (installedExternalPackageResponse, error) {
+	response := installedExternalPackageResponse{
+		SignatureAssessment: result.SignatureAssessment,
+		SourceProvenance:    result.SourceProvenance, ExecutionApproval: result.ExecutionApproval,
 		UpdateEligibility: result.UpdateEligibility, SecuritySummary: result.SecuritySummary,
-		FailureCode:  result.FailureCode,
-		RetryAfterMS: result.RetryAfterMS,
 	}
 	if result.Plugin != nil {
 		plugin, err := publicPluginRecord(*result.Plugin)
 		if err != nil {
-			return externalPackageCommitResultResponse{}, err
+			return installedExternalPackageResponse{}, err
 		}
 		response.Plugin = &plugin
-		response.Intent.PluginInstanceID = plugin.PluginInstanceID
 	}
 	return response, nil
 }
@@ -281,13 +271,15 @@ func publicExternalPackageFacts(
 	return &publicSignature, &publicProvenance, &publicApproval, &publicUpdate, publicSummary
 }
 
-func publicPluginRecords(records []registry.PluginRecord) ([]pluginRecordResponse, error) {
+func publicPluginInventory(records []host.PluginInventoryRecord) ([]pluginRecordResponse, error) {
 	responses := make([]pluginRecordResponse, len(records))
 	for index, record := range records {
-		mapped, err := publicPluginRecord(record)
+		mapped, err := publicPluginRecord(record.Plugin)
 		if err != nil {
 			return nil, err
 		}
+		action := record.ActionState
+		mapped.ActionState = &action
 		responses[index] = mapped
 	}
 	return responses, nil
@@ -329,7 +321,7 @@ func publicReleaseTrustBinding(value *registry.ReleaseTrustBinding) *releaseTrus
 		SourceID: value.SourceID, Channel: value.Channel,
 		ReleaseMetadataRef: value.ReleaseMetadataRef, ReleaseMetadataSHA256: value.ReleaseMetadataSHA256,
 		PublisherID: value.PublisherID, PluginID: value.PluginID, Version: value.Version,
-		VerifiedStateSHA256: value.VerifiedStateSHA256, RootEpoch: value.RootEpoch,
+		RootEpoch:   value.RootEpoch,
 		PolicyEpoch: value.PolicyEpoch, RevocationEpoch: value.RevocationEpoch,
 	}
 }
@@ -584,35 +576,34 @@ func publicRuntimeModuleCache(metrics host.RuntimeModuleCacheMetrics) runtimeMod
 	}
 }
 
-type runtimeRefreshErrorResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Reason  string `json:"reason"`
-	Action  string `json:"action"`
+type pluginRecoveryResultResponse struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	Status           string `json:"status"`
+	Reason           string `json:"reason,omitempty"`
+	Action           string `json:"action,omitempty"`
 }
 
-type runtimeRefreshEntryResponse struct {
-	PluginInstanceID string                       `json:"plugin_instance_id"`
-	Status           string                       `json:"status"`
-	Error            *runtimeRefreshErrorResponse `json:"error,omitempty"`
+type recoverySnapshotResponse struct {
+	Revision int64                          `json:"revision"`
+	Complete bool                           `json:"complete"`
+	Results  []pluginRecoveryResultResponse `json:"results"`
 }
 
-type runtimeRefreshResponse struct {
-	Results []runtimeRefreshEntryResponse `json:"results"`
-}
-
-func publicRuntimeRefresh(results []host.RefreshEnabledPluginResult) runtimeRefreshResponse {
-	responses := make([]runtimeRefreshEntryResponse, len(results))
-	for index, result := range results {
-		responses[index] = runtimeRefreshEntryResponse{PluginInstanceID: result.PluginInstanceID, Status: string(result.Status)}
-		if result.Error != nil {
-			responses[index].Error = &runtimeRefreshErrorResponse{
-				Code: string(result.Error.Code), Message: result.Error.Message,
-				Reason: string(result.Error.Reason), Action: string(result.Error.Action),
-			}
-		}
+func publicPluginRecoveryResult(result host.PluginRecoveryResult) pluginRecoveryResultResponse {
+	return pluginRecoveryResultResponse{
+		PluginInstanceID: result.PluginInstanceID,
+		Status:           result.Status,
+		Reason:           result.Reason,
+		Action:           result.Action,
 	}
-	return runtimeRefreshResponse{Results: responses}
+}
+
+func publicRecoverySnapshot(snapshot host.RecoverySnapshot) recoverySnapshotResponse {
+	results := make([]pluginRecoveryResultResponse, len(snapshot.Results))
+	for index, result := range snapshot.Results {
+		results[index] = publicPluginRecoveryResult(result)
+	}
+	return recoverySnapshotResponse{Revision: snapshot.Revision, Complete: snapshot.Complete, Results: results}
 }
 
 type surfacePreparationResponse struct {
@@ -655,16 +646,12 @@ func publicBridgeToken(result bridge.GatewayTokenResult) bridgeTokenResponse {
 }
 
 type callMethodResponse struct {
-	Data                 any        `json:"data"`
-	OperationID          string     `json:"operation_id,omitempty"`
-	StreamID             string     `json:"stream_id,omitempty"`
-	StreamTicket         string     `json:"stream_ticket,omitempty"`
-	StreamTicketID       string     `json:"stream_ticket_id,omitempty"`
-	StreamExpiresAt      *time.Time `json:"stream_expires_at,omitempty"`
-	ConfirmationRequired bool       `json:"confirmation_required,omitempty"`
-	ConfirmationTokenID  string     `json:"confirmation_token_id,omitempty"`
-	RequestHash          string     `json:"request_hash,omitempty"`
-	PlanHash             string     `json:"plan_hash,omitempty"`
+	Data                 any    `json:"data"`
+	ExecutionID          string `json:"execution_id,omitempty"`
+	ConfirmationRequired bool   `json:"confirmation_required,omitempty"`
+	ConfirmationTokenID  string `json:"confirmation_token_id,omitempty"`
+	RequestHash          string `json:"request_hash,omitempty"`
+	PlanHash             string `json:"plan_hash,omitempty"`
 }
 
 func publicCallMethod(result host.CallMethodResult) (callMethodResponse, error) {
@@ -673,10 +660,9 @@ func publicCallMethod(result host.CallMethodResult) (callMethodResponse, error) 
 		return callMethodResponse{}, err
 	}
 	return callMethodResponse{
-		Data: data, OperationID: result.OperationID, StreamID: result.StreamID,
-		StreamTicket: result.StreamTicket, StreamTicketID: result.StreamTicketID,
-		StreamExpiresAt: cloneWireTime(result.StreamExpiresAt), ConfirmationRequired: result.ConfirmationRequired,
-		ConfirmationTokenID: result.ConfirmationTokenID, RequestHash: result.RequestHash, PlanHash: result.PlanHash,
+		Data: data, ExecutionID: result.ExecutionID,
+		ConfirmationRequired: result.ConfirmationRequired,
+		ConfirmationTokenID:  result.ConfirmationTokenID, RequestHash: result.RequestHash, PlanHash: result.PlanHash,
 	}, nil
 }
 
@@ -807,14 +793,12 @@ type diagnosticEventResponse struct {
 }
 
 type diagnosticDetailsResponse struct {
-	OperationsDeleted         int64                                   `json:"operations_deleted,omitempty"`
-	StreamsDeleted            int64                                   `json:"streams_deleted,omitempty"`
+	ExecutionsDeleted         int64                                   `json:"executions_deleted,omitempty"`
+	ExecutionID               string                                  `json:"execution_id,omitempty"`
 	InvocationID              string                                  `json:"invocation_id,omitempty"`
 	Method                    string                                  `json:"method,omitempty"`
 	FailureCode               string                                  `json:"failure_code,omitempty"`
 	RuntimeProcessFailureCode observability.RuntimeProcessFailureCode `json:"runtime_process_failure_code,omitempty"`
-	OperationID               string                                  `json:"operation_id,omitempty"`
-	StreamID                  string                                  `json:"stream_id,omitempty"`
 	RuntimeInstanceID         string                                  `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID       string                                  `json:"runtime_generation_id,omitempty"`
 	RuntimeVersion            string                                  `json:"runtime_version,omitempty"`
@@ -866,11 +850,12 @@ func publicDiagnosticDetails(details host.DiagnosticDetails) *diagnosticDetailsR
 		return nil
 	}
 	return &diagnosticDetailsResponse{
-		OperationsDeleted: details.OperationsDeleted, StreamsDeleted: details.StreamsDeleted,
-		InvocationID: details.InvocationID, Method: details.Method, FailureCode: details.FailureCode,
+		ExecutionsDeleted: details.ExecutionsDeleted,
+		ExecutionID:       details.ExecutionID,
+		InvocationID:      details.InvocationID, Method: details.Method, FailureCode: details.FailureCode,
 		RuntimeProcessFailureCode: details.RuntimeProcessFailureCode,
-		OperationID:               details.OperationID, StreamID: details.StreamID, RuntimeInstanceID: details.RuntimeInstanceID,
-		RuntimeGenerationID: details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
+		RuntimeInstanceID:         details.RuntimeInstanceID,
+		RuntimeGenerationID:       details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
 		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
 		ContractSetSHA256: details.ContractSetSHA256,
 		RuntimeTargetOS:   details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
@@ -888,37 +873,6 @@ type surfaceAssetResponse struct {
 	SHA256        string `json:"sha256"`
 	ContentType   string `json:"content_type"`
 	ContentBase64 string `json:"content_base64"`
-}
-
-type streamEventResponse struct {
-	StreamID string    `json:"stream_id"`
-	Sequence uint64    `json:"sequence"`
-	Kind     string    `json:"kind"`
-	Data     []byte    `json:"data,omitempty"`
-	Error    string    `json:"error,omitempty"`
-	At       time.Time `json:"at"`
-}
-
-type surfaceStreamResponse struct {
-	DeliveryID     string                `json:"delivery_id,omitempty"`
-	ReadID         string                `json:"read_id"`
-	Events         []streamEventResponse `json:"events"`
-	Done           bool                  `json:"done"`
-	TerminalStatus string                `json:"terminal_status,omitempty"`
-}
-
-func publicSurfaceStream(result host.ReadStreamResult) surfaceStreamResponse {
-	events := make([]streamEventResponse, len(result.Events))
-	for index, event := range result.Events {
-		events[index] = streamEventResponse{
-			StreamID: event.StreamID, Sequence: event.Sequence, Kind: event.Kind,
-			Data: append([]byte(nil), event.Data...), Error: event.Error, At: event.At,
-		}
-	}
-	return surfaceStreamResponse{
-		DeliveryID: result.DeliveryID, ReadID: result.ReadID, Events: events,
-		Done: result.Done, TerminalStatus: string(result.TerminalStatus),
-	}
 }
 
 type pluginCatalogResponse struct {
@@ -950,12 +904,9 @@ type sessionScopeRevokeCountsResponse struct {
 	AssetSessions         uint64 `json:"asset_sessions"`
 	PluginGatewayTokens   uint64 `json:"plugin_gateway_tokens"`
 	ConfirmationTokens    uint64 `json:"confirmation_tokens"`
-	StreamTickets         uint64 `json:"stream_tickets"`
 	HandleGrants          uint64 `json:"handle_grants"`
 	Confirmations         uint64 `json:"confirmations"`
-	Operations            uint64 `json:"operations"`
-	Streams               uint64 `json:"streams"`
-	RuntimeExecutions     uint64 `json:"runtime_executions"`
+	Executions            uint64 `json:"executions"`
 	ActiveNetworkRequests uint64 `json:"active_network_requests"`
 	Sockets               uint64 `json:"sockets"`
 	NetworkStreams        uint64 `json:"network_streams"`
@@ -979,10 +930,9 @@ func publicSessionScopeRevocation(result host.RevokeSessionScopeResult) sessionS
 		Counts: sessionScopeRevokeCountsResponse{
 			Surfaces: result.Counts.Surfaces, AssetTickets: result.Counts.AssetTickets,
 			AssetSessions: result.Counts.AssetSessions, PluginGatewayTokens: result.Counts.PluginGatewayTokens,
-			ConfirmationTokens: result.Counts.ConfirmationTokens, StreamTickets: result.Counts.StreamTickets,
-			HandleGrants: result.Counts.HandleGrants, Confirmations: result.Counts.Confirmations,
-			Operations: result.Counts.Operations, Streams: result.Counts.Streams,
-			RuntimeExecutions:     result.Counts.RuntimeExecutions,
+			ConfirmationTokens: result.Counts.ConfirmationTokens,
+			HandleGrants:       result.Counts.HandleGrants, Confirmations: result.Counts.Confirmations,
+			Executions:            result.Counts.Executions,
 			ActiveNetworkRequests: result.Counts.ActiveNetworkRequests, Sockets: result.Counts.Sockets,
 			NetworkStreams: result.Counts.NetworkStreams, StorageHostcalls: result.Counts.StorageHostcalls,
 		},

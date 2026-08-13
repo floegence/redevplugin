@@ -147,12 +147,6 @@ func TestPersonalMaintainerTrustDocumentsSupportNinetyDaysWithoutChangingLegacyL
 		t.Fatalf("VerifyRevocationPointer() error = %v", err)
 	}
 
-	legacyPolicy := policyInput
-	legacyPolicy.SchemaVersion = SourcePolicySchemaVersionV2
-	legacyPolicy.Limits = DefaultSourcePolicyLimits()
-	if _, err := SourcePolicySigningPreimage(legacyPolicy); !errors.Is(err, ErrInvalidDocument) {
-		t.Fatalf("legacy policy accepted a 90-day lifetime: %v", err)
-	}
 	tooLong := policyInput
 	tooLong.ExpiresAt = "2026-10-18T00:00:01Z"
 	if _, err := SourcePolicySigningPreimage(tooLong); !errors.Is(err, ErrInvalidDocument) {
@@ -184,37 +178,6 @@ func TestReleaseMetadataAcceptsOnlyReleasedSchemaUIProtocolPairs(t *testing.T) {
 				t.Fatalf("BuildReleaseMetadata() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
-	}
-}
-
-func TestRootDelegationSeparatesChannelAndSourceWideKeyScopes(t *testing.T) {
-	fixture := newReleaseSigningFixture(t)
-	document := fixture.Root
-	document.DelegatedKeys = []RootDelegatedKey{{
-		Algorithm: SignatureAlgorithmEd25519,
-		KeyID:     "source_wide_key",
-		PublicKey: base64.StdEncoding.EncodeToString(fixture.PublicKey),
-		Usages:    []DelegatedKeyUsage{DelegatedKeyUsageSigningLedger, DelegatedKeyUsageTrustedTime},
-		Channels:  []string{},
-		ValidFrom: "2026-07-20T00:00:00Z", ValidUntil: "2027-07-20T00:00:00Z",
-	}}
-	if _, err := CanonicalRootDelegation(document); err != nil {
-		t.Fatalf("source-wide delegation rejected: %v", err)
-	}
-
-	withChannel := document
-	withChannel.DelegatedKeys = cloneDelegatedKeys(document.DelegatedKeys)
-	withChannel.DelegatedKeys[0].Channels = []string{"stable"}
-	if _, err := CanonicalRootDelegation(withChannel); !errors.Is(err, ErrInvalidDocument) {
-		t.Fatalf("source-wide delegation with channel error = %v", err)
-	}
-
-	mixed := document
-	mixed.DelegatedKeys = cloneDelegatedKeys(document.DelegatedKeys)
-	mixed.DelegatedKeys[0].Usages = []DelegatedKeyUsage{DelegatedKeyUsagePackage, DelegatedKeyUsageSigningLedger}
-	mixed.DelegatedKeys[0].Channels = []string{"stable"}
-	if _, err := CanonicalRootDelegation(mixed); !errors.Is(err, ErrInvalidDocument) {
-		t.Fatalf("mixed delegation scope error = %v", err)
 	}
 }
 
@@ -295,7 +258,7 @@ func TestReleaseContractCanonicalRoundTripAndClosedDecoding(t *testing.T) {
 	}
 }
 
-func TestExplicitTimestampsAndGenesisSentinelAreSigned(t *testing.T) {
+func TestExplicitTimestampsAreSigned(t *testing.T) {
 	fixture := newReleaseSigningFixture(t)
 
 	packageChanged := fixture.PackageInput
@@ -309,20 +272,6 @@ func TestExplicitTimestampsAndGenesisSentinelAreSigned(t *testing.T) {
 	assertPreimageChanges(t, fixture.Preimages[SigningUsageSourcePolicy], func() ([]byte, error) {
 		return SourcePolicySigningPreimage(policyChanged)
 	})
-
-	invalidGenesis := fixture.PolicyInput
-	invalidGenesis.PreviousDocumentSHA256 = strings.Repeat("1", 64)
-	if _, err := SourcePolicySigningPreimage(invalidGenesis); !errors.Is(err, ErrInvalidDocument) {
-		t.Fatalf("invalid genesis predecessor error = %v, want ErrInvalidDocument", err)
-	}
-
-	invalidSecondEpoch := fixture.PolicyInput
-	invalidSecondEpoch.Epoch = "2"
-	invalidSecondEpoch.PreviousEpoch = "1"
-	invalidSecondEpoch.PreviousDocumentSHA256 = GenesisPreviousDocumentSHA256
-	if _, err := SourcePolicySigningPreimage(invalidSecondEpoch); !errors.Is(err, ErrInvalidDocument) {
-		t.Fatalf("non-genesis sentinel error = %v, want ErrInvalidDocument", err)
-	}
 
 	invalidMetadata := fixture.Metadata
 	invalidMetadata.SchemaVersion = ""
@@ -381,12 +330,10 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	verifier := Ed25519PublicKeyVerifier{keyID: publicKey}
 
 	rootInput := RootDelegationInput{
-		SourceID:                 "example_source",
-		RootEpoch:                "1",
-		PreviousRootEpoch:        GenesisPreviousEpoch,
-		PreviousDelegationSHA256: GenesisPreviousDocumentSHA256,
-		GeneratedAt:              "2026-07-20T00:00:00Z",
-		ExpiresAt:                "2027-07-20T00:00:00Z",
+		SourceID:    "example_source",
+		RootEpoch:   "1",
+		GeneratedAt: "2026-07-20T00:00:00Z",
+		ExpiresAt:   "2027-07-20T00:00:00Z",
 		DelegatedKeys: []RootDelegatedKey{{
 			Algorithm: SignatureAlgorithmEd25519,
 			KeyID:     keyID,
@@ -394,7 +341,6 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 			Usages: []DelegatedKeyUsage{
 				DelegatedKeyUsagePackage,
 				DelegatedKeyUsageReleaseMetadata,
-				DelegatedKeyUsageHostCapabilityContract,
 				DelegatedKeyUsageRevocation,
 				DelegatedKeyUsageRevocationPointer,
 				DelegatedKeyUsageSourcePolicy,
@@ -481,34 +427,30 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	metadataSignature := signReleasePreimage(privateKey, metadataPreimage)
 
 	policyInput := SourcePolicyInput{
-		SourceID:               "example_source",
-		Channel:                "stable",
-		Epoch:                  "1",
-		PreviousEpoch:          GenesisPreviousEpoch,
-		PreviousDocumentSHA256: GenesisPreviousDocumentSHA256,
-		RootEpoch:              "1",
-		SourceType:             "registry",
-		SourceClass:            "official",
-		AllowedPublishers:      []string{"example.publisher"},
-		AllowedArtifactHosts:   []string{"plugins.example.test"},
+		SourceID:             "example_source",
+		Channel:              "stable",
+		Epoch:                "1",
+		RootEpoch:            "1",
+		SourceType:           "registry",
+		SourceClass:          "official",
+		AllowedPublishers:    []string{"example.publisher"},
+		AllowedArtifactHosts: []string{"plugins.example.test"},
 		ActiveKeys: SourcePolicyActiveKeys{
-			Package:                []string{keyID},
-			ReleaseMetadata:        []string{keyID},
-			SourcePolicyPointer:    []string{keyID},
-			Revocation:             []string{keyID},
-			RevocationPointer:      []string{keyID},
-			HostCapabilityContract: []string{keyID},
+			Package:             []string{keyID},
+			ReleaseMetadata:     []string{keyID},
+			SourcePolicyPointer: []string{keyID},
+			Revocation:          []string{keyID},
+			RevocationPointer:   []string{keyID},
 		},
-		CapabilityPublisherScopes: []SourcePolicyCapabilityPublisherScope{{KeyID: keyID, AllowedPublishers: []string{"example.capability"}}},
-		RequireSignature:          true,
-		InstallPolicy:             "allow",
-		UnsignedPolicy:            "block",
-		DowngradePolicy:           "block",
-		MinimumRevocationEpoch:    "1",
-		Limits:                    DefaultSourcePolicyLimits(),
-		GeneratedAt:               "2026-07-20T00:00:00Z",
-		ExpiresAt:                 "2026-07-21T00:00:00Z",
-		KeyID:                     keyID,
+		RequireSignature:       true,
+		InstallPolicy:          "allow",
+		UnsignedPolicy:         "block",
+		DowngradePolicy:        "block",
+		MinimumRevocationEpoch: "1",
+		Limits:                 PersonalMaintainerSourcePolicyLimits(),
+		GeneratedAt:            "2026-07-20T00:00:00Z",
+		ExpiresAt:              "2026-07-21T00:00:00Z",
+		KeyID:                  keyID,
 	}
 	policyPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicySigningPreimage(policyInput) })
 	policySignature := signReleasePreimage(privateKey, policyPreimage)
@@ -517,16 +459,14 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	policyDigest := sha256.Sum256(policyBytes)
 
 	policyPointerInput := ReleasePointerInput{
-		SourceID:               "example_source",
-		Channel:                "stable",
-		Epoch:                  "1",
-		PreviousEpoch:          GenesisPreviousEpoch,
-		PreviousDocumentSHA256: GenesisPreviousDocumentSHA256,
-		Ref:                    "sources/example_source/stable/policy/1.json",
-		DocumentSHA256:         fmtSHA256(policyDigest),
-		GeneratedAt:            "2026-07-20T00:00:00Z",
-		ExpiresAt:              "2026-07-21T00:00:00Z",
-		KeyID:                  keyID,
+		SourceID:       "example_source",
+		Channel:        "stable",
+		Epoch:          "1",
+		Ref:            "sources/example_source/stable/policy/1.json",
+		DocumentSHA256: fmtSHA256(policyDigest),
+		GeneratedAt:    "2026-07-20T00:00:00Z",
+		ExpiresAt:      "2026-07-21T00:00:00Z",
+		KeyID:          keyID,
 	}
 	policyPointerPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicyPointerSigningPreimage(policyPointerInput) })
 	policyPointerSignature := signReleasePreimage(privateKey, policyPointerPreimage)
@@ -535,15 +475,13 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	})
 
 	revocationInput := RevocationInput{
-		SourceID:               "example_source",
-		Channel:                "stable",
-		Epoch:                  "1",
-		PreviousEpoch:          GenesisPreviousEpoch,
-		PreviousDocumentSHA256: GenesisPreviousDocumentSHA256,
-		RootEpoch:              "1",
-		GeneratedAt:            "2026-07-20T00:00:00Z",
-		ExpiresAt:              "2026-07-21T00:00:00Z",
-		RevokedKeyIDs:          []string{},
+		SourceID:      "example_source",
+		Channel:       "stable",
+		Epoch:         "1",
+		RootEpoch:     "1",
+		GeneratedAt:   "2026-07-20T00:00:00Z",
+		ExpiresAt:     "2026-07-21T00:00:00Z",
+		RevokedKeyIDs: []string{},
 		RevokedReleases: []RevokedRelease{{
 			PublisherID:           "example.publisher",
 			PluginID:              "example.plugin",
@@ -560,16 +498,14 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	revocationDigest := sha256.Sum256(revocationBytes)
 
 	revocationPointerInput := ReleasePointerInput{
-		SourceID:               "example_source",
-		Channel:                "stable",
-		Epoch:                  "1",
-		PreviousEpoch:          GenesisPreviousEpoch,
-		PreviousDocumentSHA256: GenesisPreviousDocumentSHA256,
-		Ref:                    "sources/example_source/stable/revocation/1.json",
-		DocumentSHA256:         fmtSHA256(revocationDigest),
-		GeneratedAt:            "2026-07-20T00:00:00Z",
-		ExpiresAt:              "2026-07-21T00:00:00Z",
-		KeyID:                  keyID,
+		SourceID:       "example_source",
+		Channel:        "stable",
+		Epoch:          "1",
+		Ref:            "sources/example_source/stable/revocation/1.json",
+		DocumentSHA256: fmtSHA256(revocationDigest),
+		GeneratedAt:    "2026-07-20T00:00:00Z",
+		ExpiresAt:      "2026-07-21T00:00:00Z",
+		KeyID:          keyID,
 	}
 	revocationPointerPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationPointerSigningPreimage(revocationPointerInput) })
 	revocationPointerSignature := signReleasePreimage(privateKey, revocationPointerPreimage)

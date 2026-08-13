@@ -87,6 +87,25 @@ const usageOrder = [
   signingUsages.revocationPointer,
 ] as const;
 
+test("active release schemas do not publish publisher continuity fields", () => {
+  for (const [filename, definition] of [
+    ["release-root-delegation-v1.schema.json", undefined],
+    ["release-source-policy-v3.schema.json", undefined],
+    ["release-source-policy-pointer-v2.schema.json", "pointer"],
+    ["release-revocation-v3.schema.json", undefined],
+    ["release-revocation-pointer-v2.schema.json", "pointer"],
+  ] as const) {
+    const schema = JSON.parse(readFileSync(
+      new URL(`../../../../spec/plugin/${filename}`, import.meta.url),
+      "utf8",
+    )) as Record<string, unknown>;
+    const contract = definition === undefined
+      ? schema
+      : (schema.$defs as Record<string, Record<string, unknown>>)[definition]!;
+    assert.equal(/previous_(?:root_)?epoch|previous_(?:delegation|document)_sha256/.test(JSON.stringify(contract)), false);
+  }
+});
+
 test("release signing projection matches every shared canonical preimage", () => {
   const documents = fixture.documents;
   const preimages = new Map<SigningUsage, Uint8Array>([
@@ -198,9 +217,26 @@ test("release metadata requires exact schema and UI protocol pairs", () => {
     assert.throws(() => buildReleaseMetadata({
       ...metadata,
       schema_version: schema_version as typeof releaseMetadataSchemaVersionV8,
-      compatibility: { ...metadata.compatibility, ui_protocol_version },
+      compatibility: { ...metadata.compatibility, ui_protocol_version } as typeof metadata.compatibility,
     }), InvalidReleaseDocumentError);
   }
+});
+
+test("release compatibility public type is current-only", () => {
+  const compatibility: import("../src/release-signing.js").ReleaseCompatibility = {
+    min_redevplugin_version: "1.0.0",
+    min_runtime_version: "1.0.0",
+    ui_protocol_version: "plugin-ui-v7",
+  };
+  assert.equal(compatibility.ui_protocol_version, "plugin-ui-v7");
+
+  const retired: import("../src/release-signing.js").ReleaseCompatibility = {
+    min_redevplugin_version: "1.0.0",
+    min_runtime_version: "1.0.0",
+    // @ts-expect-error retired protocols are not part of the public contract
+    ui_protocol_version: "plugin-ui-v6",
+  };
+  assert.equal(retired.ui_protocol_version, "plugin-ui-v6");
 });
 
 test("release metadata validates canonical semver without regex backtracking", () => {
@@ -213,24 +249,14 @@ test("release metadata validates canonical semver without regex backtracking", (
   }
 });
 
-test("root delegation keeps source-wide and channel-scoped usages disjoint", () => {
+test("root delegation rejects retired local trust-system usages", () => {
   const key = fixture.documents.root_delegation.delegated_keys[0]!;
-  const sourceWide: RootDelegationV1 = {
-    ...fixture.documents.root_delegation,
-    delegated_keys: [{ ...key, usages: ["signing_ledger", "trusted_time"], channels: [] }],
-  };
-  canonicalRootDelegation(sourceWide);
-  assert.throws(
-    () => canonicalRootDelegation({ ...sourceWide, delegated_keys: [{ ...sourceWide.delegated_keys[0]!, channels: ["stable"] }] }),
-    InvalidReleaseDocumentError,
-  );
-  assert.throws(
-    () => canonicalRootDelegation({
-      ...sourceWide,
-      delegated_keys: [{ ...sourceWide.delegated_keys[0]!, usages: ["package", "signing_ledger"], channels: ["stable"] }],
-    }),
-    InvalidReleaseDocumentError,
-  );
+  for (const usage of ["signing_ledger", "trusted_time"] as const) {
+    assert.throws(() => canonicalRootDelegation({
+      ...fixture.documents.root_delegation,
+      delegated_keys: [{ ...key, usages: [usage] as never, channels: [] }],
+    }), InvalidReleaseDocumentError);
+  }
 });
 
 test("release signing APIs reject runtime shape coercion and schema limit drift", () => {

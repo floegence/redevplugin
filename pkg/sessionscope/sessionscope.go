@@ -64,12 +64,9 @@ type Counts struct {
 	AssetSessions         uint64 `json:"asset_sessions"`
 	PluginGatewayTokens   uint64 `json:"plugin_gateway_tokens"`
 	ConfirmationTokens    uint64 `json:"confirmation_tokens"`
-	StreamTickets         uint64 `json:"stream_tickets"`
 	HandleGrants          uint64 `json:"handle_grants"`
 	Confirmations         uint64 `json:"confirmations"`
-	Operations            uint64 `json:"operations"`
-	Streams               uint64 `json:"streams"`
-	RuntimeExecutions     uint64 `json:"runtime_executions"`
+	Executions            uint64 `json:"executions"`
 	ActiveNetworkRequests uint64 `json:"active_network_requests"`
 	Sockets               uint64 `json:"sockets"`
 	NetworkStreams        uint64 `json:"network_streams"`
@@ -82,14 +79,12 @@ const (
 	PhaseBridge       Phase = "bridge"
 	PhaseConfirmation Phase = "confirmation"
 	PhaseExecution    Phase = "execution"
-	PhaseOperation    Phase = "operation"
-	PhaseStream       Phase = "stream"
 	PhaseRuntime      Phase = "runtime"
 )
 
 func (phase Phase) Valid() bool {
 	switch phase {
-	case PhaseBridge, PhaseConfirmation, PhaseExecution, PhaseOperation, PhaseStream, PhaseRuntime:
+	case PhaseBridge, PhaseConfirmation, PhaseExecution, PhaseRuntime:
 		return true
 	default:
 		return false

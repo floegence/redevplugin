@@ -8,22 +8,12 @@ import (
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/pkg/releasetrust"
 )
 
-type noopFence struct{}
-
-func (noopFence) TeardownSourceTrust(context.Context, releasetrust.SourceFenceRequest) error {
-	return nil
-}
-
-func TestFixtureVerifiesReleaseAndAuthorizesActivation(t *testing.T) {
+func TestFixtureVerifiesRelease(t *testing.T) {
 	packageBytes := buildPackage(t)
 	fixture, err := New(packageBytes, Options{})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.ServiceSet.BindFenceCoordinator(noopFence{}); err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := fixture.ServiceSet.PrepareRelease(context.Background(), fixture.Identity)
@@ -40,12 +30,8 @@ func TestFixtureVerifiesReleaseAndAuthorizesActivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := verified.AuthorizeActivation()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.ServiceSet.ValidateActivationLease(lease); err != nil {
-		t.Fatal(err)
+	if verified.PackageSignature().PackageHash != fixture.PackageSignature.PackageHash {
+		t.Fatal("verified package signature hash mismatch")
 	}
 }
 
