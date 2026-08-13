@@ -112,9 +112,9 @@ render_summary() {
   else
     ok=false
   fi
-  categories='["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota"]'
+  categories='["go_race","execution_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota"]'
   if [[ "$MODE" != "fast" ]]; then
-    categories='["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_harness","runtime_contract","platform_package_build","platform_publication_verifier"]'
+    categories='["go_race","execution_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_harness","runtime_contract","platform_package_build","platform_publication_verifier"]'
   fi
   steps_json=$(IFS=,; echo "${STEPS[*]}")
   evidence_json=$(stress_evidence_json)

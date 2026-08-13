@@ -57,7 +57,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
+func TestStressGateExecutionCancelOwnershipEvidence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
 	defer cancel()
 

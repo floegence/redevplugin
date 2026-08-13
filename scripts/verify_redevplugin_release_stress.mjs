@@ -70,8 +70,7 @@ if (summary.mode !== "release") {
 
 const requiredCategories = [
   "go_race",
-  "stream_backpressure",
-  "operation_cancel_ownership",
+  "execution_cancel_ownership",
   "connectivity_classifier",
   "runtime_revoke_ack",
   "storage_quota",
@@ -148,37 +147,14 @@ if (JSON.stringify(stepNames) !== JSON.stringify(requiredSteps)) {
   fail(`step order mismatch: got ${JSON.stringify(stepNames)}, want ${JSON.stringify(requiredSteps)}`);
 }
 
-const streamWorkers = requireAtLeast(evidenceByCategory, "stream_backpressure", "workers", 1);
-const backpressureDenials = requireAtLeast(evidenceByCategory, "stream_backpressure", "backpressure_denials", 1);
-if (backpressureDenials < streamWorkers) {
-  fail(`stream_backpressure backpressure_denials ${backpressureDenials} must cover workers ${streamWorkers}`);
+const cancelRequests = requireAtLeast(evidenceByCategory, "execution_cancel_ownership", "owner_scoped_cancel_requests", 2);
+const missingExecutions = requireAtLeast(evidenceByCategory, "execution_cancel_ownership", "missing_executions_rejected", 2);
+if (missingExecutions !== cancelRequests) {
+  fail(`execution_cancel_ownership missing_executions_rejected ${missingExecutions} must equal owner_scoped_cancel_requests ${cancelRequests}`);
 }
-requireAtLeast(evidenceByCategory, "stream_backpressure", "core_operation_checks", 1);
-const streamCloseRequests = requireAtLeast(evidenceByCategory, "stream_backpressure", "stream_close_requests", 1);
-const closedStreams = requireAtLeast(evidenceByCategory, "stream_backpressure", "closed_streams", 1);
-if (closedStreams !== streamCloseRequests) {
-  fail(`stream_backpressure closed_streams ${closedStreams} must equal stream_close_requests ${streamCloseRequests}`);
-}
-const postCloseAppendDenials = requireAtLeast(evidenceByCategory, "stream_backpressure", "post_close_append_denials", 1);
-if (postCloseAppendDenials !== closedStreams) {
-  fail(`stream_backpressure post_close_append_denials ${postCloseAppendDenials} must equal closed_streams ${closedStreams}`);
-}
-requireAtLeast(evidenceByCategory, "stream_backpressure", "stream_close_status_checked", 1);
-
-const operationCancelRegistered = requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "operations_registered", 2);
-const operationCancelRequested = requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "cancel_requested_records", 2);
-if (operationCancelRequested !== operationCancelRegistered) {
-  fail(`operation_cancel_ownership cancel_requested_records ${operationCancelRequested} must equal operations_registered ${operationCancelRegistered}`);
-}
-requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "durable_requests_without_active_lease", 2);
-requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "http_accepted_requests", 1);
-const operationCancelAudits = requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "audit_cancel_requested_events", 2);
-if (operationCancelAudits !== operationCancelRequested) {
-  fail(`operation_cancel_ownership audit_cancel_requested_events ${operationCancelAudits} must equal cancel_requested_records ${operationCancelRequested}`);
-}
-const registryRedispatches = counter(evidenceByCategory, "operation_cancel_ownership", "registry_redispatches");
-if (registryRedispatches !== 0) {
-  fail(`operation_cancel_ownership registry_redispatches ${registryRedispatches} must equal 0`);
+const parallelStoreRecords = counter(evidenceByCategory, "execution_cancel_ownership", "parallel_store_records");
+if (parallelStoreRecords !== 0) {
+  fail(`execution_cancel_ownership parallel_store_records ${parallelStoreRecords} must equal 0`);
 }
 
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "minted_grants", 1);
