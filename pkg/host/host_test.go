@@ -1295,6 +1295,45 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 	}
 }
 
+func TestReadPluginIconUsesInstalledPackageAsset(t *testing.T) {
+	h, _, _ := newTestHost(t, true, true)
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildPresentationIconFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	iconEntry, ok := packageEntryByPath(installed.PackageEntries, "ui/assets/status.png")
+	if !ok {
+		t.Fatal("installed icon entry is missing")
+	}
+	icon, err := h.ReadPluginIcon(hostTestContext(), ReadPluginIconRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		ExpectedSHA256:   iconEntry.SHA256,
+	})
+	if err != nil {
+		t.Fatalf("ReadPluginIcon() error = %v", err)
+	}
+	if icon.Entry != iconEntry || !bytes.Equal(icon.Content, validPNGForTest()) {
+		t.Fatalf("ReadPluginIcon() = %#v", icon)
+	}
+	if _, err := h.ReadPluginIcon(hostTestContext(), ReadPluginIconRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		ExpectedSHA256:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}); !errors.Is(err, bridge.ErrTokenAudience) {
+		t.Fatalf("ReadPluginIcon() digest mismatch error = %v, want %v", err, bridge.ErrTokenAudience)
+	}
+
+	withoutIcon, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ReadPluginIcon(hostTestContext(), ReadPluginIconRequest{
+		PluginInstanceID: withoutIcon.PluginInstanceID,
+		ExpectedSHA256:   iconEntry.SHA256,
+	}); !errors.Is(err, bridge.ErrTokenAudience) {
+		t.Fatalf("ReadPluginIcon() without manifest icon error = %v, want %v", err, bridge.ErrTokenAudience)
+	}
+}
+
 type mutatingAssetStore struct {
 	pluginpkg.AssetStore
 	mutate func(pluginpkg.Asset) pluginpkg.Asset
@@ -8011,6 +8050,19 @@ func buildFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), fixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Plugin")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildPresentationIconFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(fixtureManifestJSON(), `"localizations": []`, `"localizations": [], "icon": {"path": "ui/assets/status.png"}`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Plugin Icon")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)

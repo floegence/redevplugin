@@ -1121,6 +1121,11 @@ type ReadSurfaceAssetRequest struct {
 	Now               time.Time `json:"-"`
 }
 
+type ReadPluginIconRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	ExpectedSHA256   string `json:"expected_sha256"`
+}
+
 type DisposeSurfaceRequest struct {
 	SurfaceInstanceID string    `json:"surface_instance_id"`
 	BridgeNonce       string    `json:"bridge_nonce"`
@@ -1149,6 +1154,11 @@ type ReadSurfaceAssetResult struct {
 	Entry   pluginpkg.Entry
 	Content []byte
 	Session bridge.SurfaceSession
+}
+
+type ReadPluginIconResult struct {
+	Entry   pluginpkg.Entry
+	Content []byte
 }
 
 type PrepareSurfaceResult struct {
@@ -5192,6 +5202,41 @@ func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error)
 		return nil, err
 	}
 	return h.adapters.Registry.ListPlugins(ctx)
+}
+
+// ReadPluginIcon returns the content-addressed presentation icon from an
+// installed package. Hosts may expose the verified bytes through their local
+// authenticated asset transport without depending on a marketplace service.
+func (h *Host) ReadPluginIcon(ctx context.Context, req ReadPluginIconRequest) (ReadPluginIconResult, error) {
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	req.ExpectedSHA256 = strings.TrimSpace(req.ExpectedSHA256)
+	if _, err := h.authorizeManagement(ctx, ManagementActionListPlugins, scopedAuthorizationCollectionTarget(ResourcePlugin, sessionctx.ScopeEnvironment)); err != nil {
+		return ReadPluginIconResult{}, err
+	}
+	if h.adapters.Assets == nil || req.PluginInstanceID == "" || req.ExpectedSHA256 == "" {
+		return ReadPluginIconResult{}, bridge.ErrTokenAudience
+	}
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return ReadPluginIconResult{}, err
+	}
+	icon := record.Manifest.Presentation.Icon
+	if icon == nil || strings.TrimSpace(icon.Path) == "" {
+		return ReadPluginIconResult{}, bridge.ErrTokenAudience
+	}
+	expected, ok := packageEntryByPath(record.PackageEntries, icon.Path)
+	if !ok || expected.SHA256 != req.ExpectedSHA256 || (expected.ContentType != "image/png" && expected.ContentType != "image/webp") {
+		return ReadPluginIconResult{}, bridge.ErrTokenAudience
+	}
+	asset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, icon.Path)
+	if err != nil {
+		return ReadPluginIconResult{}, err
+	}
+	actualSHA256 := sha256.Sum256(asset.Content)
+	if asset.Entry != expected || int64(len(asset.Content)) != expected.Size || "sha256:"+hex.EncodeToString(actualSHA256[:]) != expected.SHA256 {
+		return ReadPluginIconResult{}, bridge.ErrTokenAudience
+	}
+	return ReadPluginIconResult{Entry: asset.Entry, Content: asset.Content}, nil
 }
 
 type RefreshEnabledPluginStatus string
