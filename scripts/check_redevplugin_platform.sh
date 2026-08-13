@@ -90,9 +90,12 @@ export GOWORK=off
   go run ./cmd/redevplugin disable "$tmp_fixture_package" >/dev/null
   go run ./cmd/redevplugin uninstall "$tmp_fixture_package" >/dev/null
   go run ./cmd/redevplugin dev-install "$tmp_dev_state_root" "$tmp_fixture_package" | grep -q '"enable_state": "disabled"'
-  test -f "$tmp_dev_state_root/registry.sqlite"
+  test -f "$tmp_dev_state_root/control.sqlite"
   test -d "$tmp_dev_state_root/plugin-data"
   test -f "$tmp_dev_state_root/secrets.sqlite"
+  for retired_control_store in registry.sqlite operations.sqlite streams.sqlite installstage.sqlite; do
+    test ! -e "$tmp_dev_state_root/$retired_control_store"
+  done
   if find "$tmp_dev_state_root" -maxdepth 1 -type f -name '*.json' | grep -q .; then
     echo "dev state root contains a JSON authority mirror" >&2
     exit 1
