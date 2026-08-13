@@ -340,10 +340,20 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
 
 test("release workflow derives the publication closure from package-set v2", () => {
   const workflow = read(".github/workflows/release.yml").toString("utf8");
+  const recovery = read(".github/workflows/recover-release.yml").toString("utf8");
+  const registryBytes = read("spec/plugin/contract-registry-v2.json");
+  const registry = decodeContractRegistry(registryBytes);
+  const digest = independentContractSetSHA256(registryBytes, registry.artifacts);
+  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v2.json"), digest);
+  const rustCrates = packageSet.rust_crates.map(({ name }) => name).sort(compareASCII);
   assert.match(workflow, /platform_package_build\.mjs build/);
   assert.match(workflow, /platform_package_build\.mjs verify/);
   assert.doesNotMatch(workflow, /redevplugin-target-classifier/);
   assert.doesNotMatch(workflow, /len\(manifest\["artifacts"\]\) != 8/);
+  for (const name of rustCrates) {
+    assert.match(workflow, new RegExp(`(?:expected_rust|order)[\\s\\S]*${name}`));
+    assert.match(recovery, new RegExp(`(?:expected_rust|order)[\\s\\S]*${name}`));
+  }
 });
 
 test("platform publication schema and decoder cannot describe product artifacts", () => {

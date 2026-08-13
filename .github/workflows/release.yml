@@ -252,7 +252,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
-      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -297,13 +296,15 @@ jobs:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
           path: dist/platform-packages
           merge-multiple: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: "3.13"
       - name: Verify immutable package artifact
         env:
-          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-build.outputs.artifact-digest }}
+          SOURCE_COMMIT: ${{ github.sha }}
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          test -n "$EXPECTED_ARTIFACT_DIGEST"
-          python3 - "$VERSION" "$GITHUB_SHA" <<'PY'
+          python3 - "$VERSION" "$SOURCE_COMMIT" <<'PY'
           import base64
           import hashlib
           import json
@@ -494,14 +495,9 @@ jobs:
           exact_keys(metadata, ["schema_version", "source_commit", "packages"], "Rust publication metadata")
           if metadata["schema_version"] != "redevplugin.rust_publish_metadata.v1" or metadata["source_commit"] != source_commit:
               raise SystemExit("Rust publication metadata identity mismatch")
-          package_order = [
-              "redevplugin-contracts",
-              "redevplugin-wasm-abi",
-              "redevplugin-worker-sdk",
-              "redevplugin-ipc",
-              "redevplugin-runtime",
-          ]
-          if not isinstance(metadata["packages"], list) or [item.get("name") for item in metadata["packages"]] != package_order:
+          if (not isinstance(metadata["packages"], list) or
+                  len(metadata["packages"]) != len(expected_rust) or
+                  {item.get("name") for item in metadata["packages"]} != expected_rust):
               raise SystemExit("Rust publication metadata package set mismatch")
           package_fields = ["name", "vers", "deps", "features", "authors", "description", "documentation", "homepage", "readme", "readme_file", "keywords", "categories", "license", "license_file", "repository", "badges", "links", "rust_version"]
           dependency_fields = ["name", "version_req", "features", "optional", "default_features", "target", "kind", "registry", "explicit_name_in_toml"]

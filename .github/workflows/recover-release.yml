@@ -30,7 +30,6 @@ jobs:
       version: ${{ steps.verify.outputs.version }}
       source-commit: ${{ steps.verify.outputs.source-commit }}
       package-artifact-id: ${{ steps.verify.outputs.package-artifact-id }}
-      package-artifact-digest: ${{ steps.verify.outputs.package-artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,15 +104,14 @@ jobs:
           digest = artifact.get("digest")
           if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
               raise SystemExit("original platform package artifact digest is invalid")
-          print(f'{artifact["id"]} {digest.removeprefix("sha256:")}')
+          print(artifact["id"])
           PY
           )
-          read -r package_artifact_id package_artifact_digest <<< "$package_artifact"
+          package_artifact_id=$package_artifact
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "source-commit=$source_commit" >> "$GITHUB_OUTPUT"
           echo "package-artifact-id=$package_artifact_id" >> "$GITHUB_OUTPUT"
-          echo "package-artifact-digest=$package_artifact_digest" >> "$GITHUB_OUTPUT"
 
   release-admission:
     name: Admit GitHub Release Transaction
@@ -296,25 +294,28 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.release_run_id }}
           github-token: ${{ github.token }}
-      - name: Verify original immutable Rust package bytes
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: "3.13"
+      - name: Verify immutable package artifact
         env:
-          EXPECTED_ARTIFACT_DIGEST: ${{ needs.preflight.outputs.package-artifact-digest }}
           SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          [[ "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          python3 - <<'PY'
+          python3 - "$VERSION" "$SOURCE_COMMIT" <<'PY'
+          import base64
           import hashlib
           import json
           import os
           import pathlib
           import re
           import stat
+          import sys
+          import tarfile
+          import tomllib
 
+          version, source_commit = sys.argv[1:]
           root = pathlib.Path("dist/platform-packages").resolve()
-          version = os.environ["VERSION"]
-          source_commit = os.environ["SOURCE_COMMIT"]
-          order = ["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-runtime"]
 
           def reject_duplicate_keys(pairs):
               result = {}
@@ -324,42 +325,212 @@ jobs:
                   result[key] = value
               return result
 
-          def load(path, label):
-              info = path.lstat()
-              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size < 1 or info.st_size > 256 * 1024:
-                  raise SystemExit(f"{label} is not a bounded regular file")
-              return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+          def load_json_bytes(raw, label, maximum):
+              if not raw or len(raw) > maximum:
+                  raise SystemExit(f"{label} exceeds its closed size limit")
+              try:
+                  return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  raise SystemExit(f"{label} is invalid: {error}") from error
 
-          manifest = load(root / "platform-package-build-v1.json", "package manifest")
-          metadata = load(root / "rust" / "rust-publish-metadata-v1.json", "Rust metadata")
-          if set(manifest) != {"schema_version", "platform_version", "source_commit", "contract_set_sha256", "artifacts"}:
-              raise SystemExit("package manifest fields are invalid")
-          if manifest["schema_version"] != "redevplugin.platform_package_build.v1" or manifest["platform_version"] != version or manifest["source_commit"] != source_commit:
-              raise SystemExit("package manifest identity mismatch")
-          if not re.fullmatch(r"[0-9a-f]{64}", manifest["contract_set_sha256"]):
-              raise SystemExit("package contract digest is invalid")
-          rust = [item for item in manifest["artifacts"] if isinstance(item, dict) and item.get("kind") == "rust"]
-          packages = metadata.get("packages") if isinstance(metadata, dict) else None
-          if metadata.get("schema_version") != "redevplugin.rust_publish_metadata.v1" or metadata.get("source_commit") != source_commit:
-              raise SystemExit("Rust metadata identity mismatch")
-          if [item.get("name") for item in rust] != sorted(order) or [item.get("name") for item in packages] != order:
-              raise SystemExit("Rust package closure mismatch")
-          for item in rust:
-              if set(item) != {"kind", "name", "version", "path", "size", "sha256"} or item["version"] != version:
-                  raise SystemExit("Rust package coordinate is invalid")
-              expected_path = f'rust/{item["name"]}-{version}.crate'
-              if item["path"] != expected_path or not isinstance(item["size"], int) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
-                  raise SystemExit("Rust package artifact declaration is invalid")
-              path = (root / item["path"]).resolve()
-              path.relative_to(root)
+          def load_json(path, label, maximum):
               info = path.lstat()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+                  raise SystemExit(f"{label} must be a regular file")
+              return load_json_bytes(path.read_bytes(), label, maximum)
+
+          def exact_keys(value, expected, label):
+              if not isinstance(value, dict) or set(value) != set(expected):
+                  raise SystemExit(f"{label} fields are invalid")
+
+          def safe_file(relative_path, expected_size, expected_sha256):
+              if not isinstance(relative_path, str) or "\\" in relative_path:
+                  raise SystemExit("package artifact path is invalid")
+              path = (root / relative_path).resolve()
+              try:
+                  path.relative_to(root)
+              except ValueError as error:
+                  raise SystemExit("package artifact escapes its download root") from error
+              info = path.lstat()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size != expected_size:
+                  raise SystemExit("package artifact is not the declared regular file")
               raw = path.read_bytes()
-              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size != item["size"] or hashlib.sha256(raw).hexdigest() != item["sha256"]:
-                  raise SystemExit("Rust package artifact digest mismatch")
-          for item in packages:
-              if item.get("vers") != version or item.get("name") not in order:
-                  raise SystemExit("Rust publication metadata coordinate mismatch")
-          print("verified original immutable Rust package bytes")
+              if hashlib.sha256(raw).hexdigest() != expected_sha256:
+                  raise SystemExit("package artifact digest mismatch")
+              return path, raw
+
+          def normalized_requirement(requirement):
+              if re.fullmatch(r"[0-9]+(?:\.[0-9]+)*(?:-[0-9A-Za-z.-]+)?", requirement):
+                  return f"^{requirement}"
+              return requirement
+
+          def manifest_dependencies(cargo_manifest):
+              result = []
+
+              def append_table(table, kind, target):
+                  if table is None:
+                      return
+                  if not isinstance(table, dict):
+                      raise SystemExit("packaged Cargo dependency table is invalid")
+                  for declared_name, specification in table.items():
+                      if isinstance(specification, str):
+                          specification = {"version": specification}
+                      if not isinstance(specification, dict) or "version" not in specification:
+                          raise SystemExit("packaged Cargo dependency is invalid")
+                      if any(key in specification for key in ("path", "git", "registry")):
+                          raise SystemExit("packaged Cargo dependency uses a forbidden source")
+                      package_name = specification.get("package", declared_name)
+                      explicit_name = declared_name if "package" in specification else None
+                      result.append({
+                          "name": package_name,
+                          "version_req": normalized_requirement(specification["version"]),
+                          "features": sorted(specification.get("features", [])),
+                          "optional": specification.get("optional", False),
+                          "default_features": specification.get("default-features", True),
+                          "target": target,
+                          "kind": kind,
+                          "registry": None,
+                          "explicit_name_in_toml": explicit_name,
+                      })
+
+              append_table(cargo_manifest.get("dependencies"), "normal", None)
+              append_table(cargo_manifest.get("dev-dependencies"), "dev", None)
+              append_table(cargo_manifest.get("build-dependencies"), "build", None)
+              for target, target_manifest in cargo_manifest.get("target", {}).items():
+                  append_table(target_manifest.get("dependencies"), "normal", target)
+                  append_table(target_manifest.get("dev-dependencies"), "dev", target)
+                  append_table(target_manifest.get("build-dependencies"), "build", target)
+              return sorted(result, key=lambda value: json.dumps(value, sort_keys=True, separators=(",", ":")))
+
+          manifest_path = root / "platform-package-build-v1.json"
+          manifest = load_json(manifest_path, "package build manifest", 256 * 1024)
+          exact_keys(manifest, ["schema_version", "platform_version", "source_commit", "contract_set_sha256", "artifacts"], "package build manifest")
+          if manifest["schema_version"] != "redevplugin.platform_package_build.v1" or manifest["source_commit"] != source_commit:
+              raise SystemExit("package artifact source identity mismatch")
+          if manifest["platform_version"] != version or not re.fullmatch(r"[0-9a-f]{64}", manifest["contract_set_sha256"]):
+              raise SystemExit("package artifact platform identity mismatch")
+          expected_npm = {
+              "@floegence/redevplugin-contracts",
+              "@floegence/redevplugin-ui",
+          }
+          expected_rust = {
+              "redevplugin-contracts",
+              "redevplugin-ipc",
+              "redevplugin-runtime",
+              "redevplugin-wasm-abi",
+              "redevplugin-worker-sdk",
+          }
+          if not isinstance(manifest["artifacts"], list) or len(manifest["artifacts"]) != len(expected_npm) + len(expected_rust):
+              raise SystemExit("package artifact manifest is incomplete")
+          expected_paths = {
+              **{("npm", name): f"npm/{name.removeprefix('@').replace('/', '-')}-{version}.tgz" for name in expected_npm},
+              **{("rust", name): f"rust/{name}-{version}.crate" for name in expected_rust},
+          }
+          seen = set()
+          artifact_keys = []
+          cargo_packages = {}
+          for artifact in manifest["artifacts"]:
+              kind = artifact.get("kind") if isinstance(artifact, dict) else None
+              exact_keys(artifact, ["kind", "name", "version", "path", "size", "sha256", "integrity", "sha512"] if kind == "npm" else ["kind", "name", "version", "path", "size", "sha256"], "package artifact")
+              name = artifact["name"]
+              key = (kind, name)
+              if key in seen or key not in expected_paths or artifact["version"] != version or artifact["path"] != expected_paths[key]:
+                  raise SystemExit("unexpected package artifact coordinate")
+              if not isinstance(artifact["size"], int) or artifact["size"] < 1 or artifact["size"] > 32 * 1024 * 1024 or not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]):
+                  raise SystemExit("package artifact integrity fields are invalid")
+              seen.add(key)
+              artifact_keys.append(f"{kind}:{name}")
+              path, raw = safe_file(artifact["path"], artifact["size"], artifact["sha256"])
+              if kind == "npm":
+                  sha512 = hashlib.sha512(raw).hexdigest()
+                  integrity = "sha512-" + base64.b64encode(bytes.fromhex(sha512)).decode("ascii")
+                  if artifact["sha512"] != sha512 or artifact["integrity"] != integrity:
+                      raise SystemExit("npm package integrity mismatch")
+                  continue
+
+              archive_root = f"{name}-{version}"
+              with tarfile.open(path, mode="r:gz") as archive:
+                  members = archive.getmembers()
+                  if not members or len(members) > 4096:
+                      raise SystemExit("Rust package archive entry count is invalid")
+                  member_names = set()
+                  total_size = 0
+                  for member in members:
+                      relative = pathlib.PurePosixPath(member.name)
+                      if member.name in member_names or relative.is_absolute() or ".." in relative.parts or relative.parts[0] != archive_root:
+                          raise SystemExit("Rust package archive path is invalid")
+                      member_names.add(member.name)
+                      if not (member.isfile() or member.isdir()) or member.size < 0 or member.size > 8 * 1024 * 1024:
+                          raise SystemExit("Rust package archive member is invalid")
+                      total_size += member.size
+                  if total_size > 32 * 1024 * 1024:
+                      raise SystemExit("Rust package archive is too large")
+                  cargo_member = archive.getmember(f"{archive_root}/Cargo.toml")
+                  vcs_member = archive.getmember(f"{archive_root}/.cargo_vcs_info.json")
+                  readme_member = archive.getmember(f"{archive_root}/README.md")
+                  cargo_raw = archive.extractfile(cargo_member).read()
+                  vcs = load_json_bytes(archive.extractfile(vcs_member).read(), "Cargo VCS info", 64 * 1024)
+                  readme = archive.extractfile(readme_member).read().decode("utf-8")
+              exact_keys(vcs, ["git", "path_in_vcs"], "Cargo VCS info")
+              exact_keys(vcs["git"], ["sha1"], "Cargo VCS git info")
+              if vcs["git"] != {"sha1": source_commit} or vcs["path_in_vcs"] != f"crates/{name}":
+                  raise SystemExit("Cargo VCS source identity mismatch")
+              try:
+                  cargo = tomllib.loads(cargo_raw.decode("utf-8"))
+              except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+                  raise SystemExit(f"packaged Cargo manifest is invalid: {error}") from error
+              if "patch" in cargo or "replace" in cargo:
+                  raise SystemExit("packaged Cargo manifest contains source replacement")
+              package = cargo.get("package", {})
+              if package.get("name") != name or package.get("version") != version:
+                  raise SystemExit("packaged Cargo identity mismatch")
+              cargo_packages[name] = (package, cargo, readme)
+          if seen != set(expected_paths) or artifact_keys != sorted(artifact_keys):
+              raise SystemExit("package artifact set or ordering is invalid")
+
+          metadata = root / "rust" / "rust-publish-metadata-v1.json"
+          metadata = load_json(metadata, "Rust publication metadata", 128 * 1024)
+          exact_keys(metadata, ["schema_version", "source_commit", "packages"], "Rust publication metadata")
+          if metadata["schema_version"] != "redevplugin.rust_publish_metadata.v1" or metadata["source_commit"] != source_commit:
+              raise SystemExit("Rust publication metadata identity mismatch")
+          if (not isinstance(metadata["packages"], list) or
+                  len(metadata["packages"]) != len(expected_rust) or
+                  {item.get("name") for item in metadata["packages"]} != expected_rust):
+              raise SystemExit("Rust publication metadata package set mismatch")
+          package_fields = ["name", "vers", "deps", "features", "authors", "description", "documentation", "homepage", "readme", "readme_file", "keywords", "categories", "license", "license_file", "repository", "badges", "links", "rust_version"]
+          dependency_fields = ["name", "version_req", "features", "optional", "default_features", "target", "kind", "registry", "explicit_name_in_toml"]
+          for item in metadata["packages"]:
+              exact_keys(item, package_fields, "Rust publication package")
+              name = item["name"]
+              package, cargo, readme = cargo_packages[name]
+              expected_values = {
+                  "vers": version,
+                  "features": cargo.get("features", {}),
+                  "authors": package.get("authors", []),
+                  "description": package.get("description"),
+                  "documentation": package.get("documentation"),
+                  "homepage": package.get("homepage"),
+                  "readme": readme,
+                  "readme_file": package.get("readme"),
+                  "keywords": package.get("keywords", []),
+                  "categories": package.get("categories", []),
+                  "license": package.get("license"),
+                  "license_file": package.get("license-file"),
+                  "repository": package.get("repository"),
+                  "badges": {},
+                  "links": package.get("links"),
+                  "rust_version": package.get("rust-version"),
+              }
+              if any(item[field] != value for field, value in expected_values.items()):
+                  raise SystemExit(f"Rust publication package metadata mismatch for {name}")
+              if not isinstance(item["deps"], list):
+                  raise SystemExit("Rust publication dependency list is invalid")
+              for dependency in item["deps"]:
+                  exact_keys(dependency, dependency_fields, "Rust publication dependency")
+              actual_dependencies = sorted(item["deps"], key=lambda value: json.dumps(value, sort_keys=True, separators=(",", ":")))
+              if actual_dependencies != manifest_dependencies(cargo):
+                  raise SystemExit(f"Rust publication dependency metadata mismatch for {name}")
+          print("verified immutable Rust package bytes")
           PY
       - uses: rust-lang/crates-io-auth-action@275b31c2bd0ae2dc5fc5b03747ab8c88d6e3b1c6 # main
         id: crates-auth

@@ -64,6 +64,68 @@ test("partial release recovery can publish the original immutable Rust artifact"
   assert.ok(recovery.jobs["reconstruct-publication"].needs.includes("publish-rust"));
 });
 
+test("recovery submits each missing crate at most once and only polls afterward", () => {
+  const source = recovery.jobs["publish-rust"].steps.find(
+    (step) => step.name === "Publish or reconcile exact crate graph",
+  ).run;
+  assert.match(source, /for attempt in range\(20\):/);
+  assert.match(source, /if remote is not None:\n\s+raise SystemExit\(f"\{name\}@\{version\} exists with different bytes"\)/);
+  assert.match(source, /if submitted:\n\s+time\.sleep\(6\)\n\s+continue/);
+  const submitted = source.indexOf("submitted = True");
+  const request = source.indexOf('urllib.request.Request("https://crates.io/api/v1/crates/new"');
+  const upload = source.indexOf("urllib.request.urlopen(request, timeout=60)");
+  assert.ok(request >= 0 && request < submitted && submitted < upload);
+  assert.equal(source.match(/method="PUT"/g)?.length, 1);
+  assert.equal(source.match(/submitted = True/g)?.length, 1);
+});
+
+test("recovery uses the normal artifact verifier and no unconsumed digest claim", () => {
+  const normalStep = workflow.jobs["publish-rust"].steps.find(
+    (step) => step.name === "Verify immutable package artifact",
+  );
+  const recoveryStep = recovery.jobs["publish-rust"].steps.find(
+    (step) => step.name === "Verify immutable package artifact",
+  );
+  assert.ok(normalStep, "normal Rust publication must verify the complete package artifact");
+  assert.ok(recoveryStep, "recovery Rust publication must verify the complete package artifact");
+  assert.equal(recoveryStep.run, normalStep.run);
+  assert.equal(normalStep.env.SOURCE_COMMIT, "${{ github.sha }}");
+  assert.equal(recoveryStep.env.SOURCE_COMMIT, "${{ needs.preflight.outputs.source-commit }}");
+  assert.equal(recoveryStep.env.VERSION, "${{ needs.preflight.outputs.version }}");
+
+  const recoverySource = recovery.jobs["publish-rust"].steps.map((step) => step.run ?? "").join("\n");
+  assert.doesNotMatch(recoverySource, /EXPECTED_ARTIFACT_DIGEST/);
+  assert.equal(recovery.jobs.preflight.outputs["package-artifact-digest"], undefined);
+  assert.equal(recovery.jobs.preflight.steps[0].env?.EXPECTED_ARTIFACT_DIGEST, undefined);
+});
+
+test("privileged Rust verifiers pin a tomllib-capable Python", () => {
+  for (const document of [workflow, recovery]) {
+    const steps = document.jobs["publish-rust"].steps;
+    const setupIndex = steps.findIndex((step) => step.uses?.startsWith("actions/setup-python@"));
+    const verifyIndex = steps.findIndex((step) => step.name === "Verify immutable package artifact");
+    assert.ok(setupIndex >= 0 && setupIndex < verifyIndex);
+    assert.equal(steps[setupIndex].uses, "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1");
+    assert.equal(steps[setupIndex].with["python-version"], "3.13");
+  }
+});
+
+test("Rust artifact verification binds a closed metadata set independently of publish order", () => {
+  const packageSet = JSON.parse(readFileSync("spec/plugin/platform-package-set-v2.json", "utf8"));
+  const expected = packageSet.rust_crates.map(({ name }) => name).sort();
+  const source = workflow.jobs["publish-rust"].steps.find(
+    (step) => step.name === "Verify immutable package artifact",
+  ).run;
+  assert.match(source, /len\(metadata\["packages"\]\) != len\(expected_rust\)/);
+  assert.match(source, /\{item\.get\("name"\) for item in metadata\["packages"\]\} != expected_rust/);
+  for (const name of expected) assert.match(source, new RegExp(`expected_rust[\\s\\S]*${name}`));
+
+  const publishSource = workflow.jobs["publish-rust"].steps.find(
+    (step) => step.name === "Publish exact crate graph in dependency order",
+  ).run;
+  assert.match(publishSource, /order = \["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-runtime"\]/);
+});
+
 test("artifact downloads expose files at the declared release paths", () => {
   for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
     const downloads = (job.steps ?? []).filter(
@@ -263,7 +325,8 @@ test("manual recovery binds one failed release run and its immutable package art
   assert.match(source, /platform-packages-\{source_commit\}/);
   assert.match(source, /len\(matches\) != 1/);
   assert.match(source, /sha256:\[0-9a-f\]\{64\}/);
-  assert.match(source, /package-artifact-digest/);
+  assert.match(source, /original platform package artifact digest is invalid/);
+  assert.doesNotMatch(source, /package-artifact-digest=/);
   assert.doesNotMatch(source, /assert_github_release_absent\.sh/);
 
   const download = recovery.jobs["reconstruct-publication"].steps.find(
