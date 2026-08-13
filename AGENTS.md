@@ -869,6 +869,15 @@ Core invariants:
   explicit user confirmation into disabled, zero-grant, manual-update-only
   state.
 
+## First-Principles And Occam Review
+
+- Begin from observable runtime behavior, public contracts, durable state, and reproducible tests. Label facts, assumptions, and decisions separately; a compelling hypothesis is not evidence until the relevant call path or failing test confirms it.
+- Reduce each change to its necessary inputs, invariants, owner, and outcome. Implement the smallest complete solution for that contract and do not add speculative product features, attack scenarios, policy restrictions, or compatibility branches that no current consumer requires.
+- Apply Occam's razor to the platform architecture: prefer one authoritative lifecycle state, one owner for each boundary, and one obvious call path over duplicated projections, facades that preserve old ambiguity, fallback implementations, or extra protocol/configuration layers.
+- Delete or physically merge obsolete behavior whenever the current contract permits it. If a compatibility path is required, name its exact consumer, removal version, and bounded scope in the change; otherwise return a clear unsupported result at the active contract boundary.
+- When new evidence disproves the working model, update the model and focused tests before changing production code. Do not conceal uncertainty with unbounded retries, polling, silent recovery, or a second source of truth.
+- Every review should answer three questions: what is the simplest explanation supported by evidence, who is the single owner, and what code or protocol can be removed? A proposal that cannot answer them is not ready to implement.
+
 ## Change Workflow
 
 - Define one task scope, acceptance criterion, owner, and non-goals before
