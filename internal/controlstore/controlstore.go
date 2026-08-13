@@ -1429,7 +1429,7 @@ func normalizeLegacyRegistryTransientTables(ctx context.Context, path string) er
 		return fmt.Errorf("%w: registry copy transaction: %v", ErrMigration, err)
 	}
 	defer rollbackUnlessCommitted(tx)
-	for _, table := range []string{"external_package_commit_receipts", "external_package_inspections"} {
+	for _, table := range []string{"external_package_inspections"} {
 		exists, err := sqliteTableExists(ctx, tx, table)
 		if err != nil {
 			return fmt.Errorf("%w: inspect registry transient table: %v", ErrMigration, err)

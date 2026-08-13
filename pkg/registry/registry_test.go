@@ -531,6 +531,8 @@ SET source_policy_snapshot_hash = ?, source_policy_snapshot_json = ?, version_hi
 WHERE owner_env_hash = ? AND plugin_instance_id = ?`, "legacy-proof", bindingJSON, historyJSON, stored.OwnerEnvHash, stored.PluginInstanceID); err != nil {
 		t.Fatal(err)
 	}
+	createHistoricalV5ExternalPackageReceiptTable(t, legacy.db)
+	createHistoricalV5ReleaseInstallOperationTable(t, legacy.db)
 	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
 		t.Fatal(err)
 	}
@@ -563,12 +565,81 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`, "legacy-proof", bindingJSO
 			}
 		}
 	}
+	var retiredTables int
+	if err := migrated.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='external_package_commit_receipts'`).Scan(&retiredTables); err != nil {
+		t.Fatal(err)
+	}
+	if retiredTables != 0 {
+		t.Fatalf("v5 external receipt tables remaining = %d", retiredTables)
+	}
 	var version int
 	if err := migrated.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 	if version != registrySQLiteSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", version, registrySQLiteSchemaVersion)
+	}
+}
+
+func createHistoricalV5ExternalPackageReceiptTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+CREATE TABLE external_package_commit_receipts (
+    owner_env_hash TEXT NOT NULL,
+    inspection_id TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    intent TEXT NOT NULL,
+    confirmation_digest TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    expected_management_revision INTEGER NOT NULL,
+    intended_fingerprint TEXT NOT NULL,
+    intended_package_sha256 TEXT NOT NULL,
+    plugin_instance_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    mutation_outcome TEXT NOT NULL,
+    record_snapshot_json TEXT NOT NULL DEFAULT 'null',
+    failure_code TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(owner_env_hash, inspection_id),
+    UNIQUE(owner_env_hash, commit_id)
+)`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createHistoricalV5ReleaseInstallOperationTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+CREATE TABLE release_install_operations (
+    owner_env_hash TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    plugin_instance_id TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    release_identity_json TEXT NOT NULL,
+    activation_request_json TEXT NOT NULL DEFAULT '{"mode":"disabled"}',
+    status TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    progress_kind TEXT NOT NULL,
+    progress_completed INTEGER NOT NULL,
+    progress_total INTEGER NOT NULL,
+    attempt INTEGER NOT NULL,
+    retry_after_ms INTEGER NOT NULL,
+    mutation_outcome TEXT NOT NULL,
+    failure_code TEXT NOT NULL,
+    failure_retryable INTEGER NOT NULL,
+    plugin_record_json TEXT NOT NULL DEFAULT 'null',
+    activation_json TEXT NOT NULL DEFAULT '{"status":"not_requested"}',
+    phase_diagnostics_json TEXT NOT NULL DEFAULT '[]',
+    revision INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    terminal_at INTEGER,
+    PRIMARY KEY(owner_env_hash, request_id),
+    UNIQUE(owner_env_hash, operation_id)
+)`); err != nil {
+		t.Fatal(err)
 	}
 }
 

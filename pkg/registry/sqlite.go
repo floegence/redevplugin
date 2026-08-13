@@ -360,7 +360,7 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
-	if err := rejectRetiredExternalPackageTables(ctx, tx); err != nil {
+	if err := migrateRetiredDurableOperationTables(ctx, tx, schemaVersion); err != nil {
 		return err
 	}
 	if schemaVersion >= 1 {
@@ -576,17 +576,98 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	return tx.Commit()
 }
 
-func rejectRetiredExternalPackageTables(ctx context.Context, tx *sql.Tx) error {
-	for _, table := range []string{"external_package_commit_receipts", "external_package_inspections"} {
+func migrateRetiredDurableOperationTables(ctx context.Context, tx *sql.Tx, sourceVersion int) error {
+	retired := []struct {
+		name    string
+		columns map[string]registrySQLiteColumnSpec
+	}{
+		{name: "external_package_commit_receipts", columns: historicalExternalPackageReceiptColumns()},
+		{name: "external_package_inspections"},
+	}
+	for _, item := range retired {
+		table := item.name
 		exists, err := sqliteTableExists(ctx, tx, table)
 		if err != nil {
 			return err
 		}
 		if exists {
-			return fmt.Errorf("registry contains retired durable external package state %q; source is preserved for explicit migration", table)
+			if sourceVersion <= 0 || sourceVersion >= registrySQLiteSchemaVersion || item.columns == nil {
+				return fmt.Errorf("registry contains retired durable external package state %q; source is preserved for explicit migration", table)
+			}
+			if err := validateRegistrySQLiteTableColumns(ctx, tx, table, item.columns); err != nil {
+				return fmt.Errorf("registry contains incompatible retired durable external package state %q; source is preserved: %w", table, err)
+			}
+			if err := validateHistoricalExternalPackageReceiptIndexes(ctx, tx); err != nil {
+				return fmt.Errorf("registry contains incompatible retired durable external package state %q; source is preserved: %w", table, err)
+			}
+			var count int64
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+				return err
+			}
+			if count != 0 {
+				return fmt.Errorf("registry contains %d retired durable external package receipts; source is preserved for explicit migration", count)
+			}
+			if _, err := tx.ExecContext(ctx, `DROP TABLE `+table); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func validateHistoricalExternalPackageReceiptIndexes(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA index_list(external_package_commit_receipts)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var primary, commitUnique bool
+	for rows.Next() {
+		var sequence, unique, partial int
+		var name, origin string
+		if err := rows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
+			return err
+		}
+		columns, err := registrySQLiteIndexColumns(ctx, tx, name)
+		if err != nil {
+			return err
+		}
+		switch {
+		case origin == "pk" && unique == 1 && partial == 0 && slices.Equal(columns, []string{"owner_env_hash", "inspection_id"}):
+			primary = true
+		case origin == "u" && unique == 1 && partial == 0 && slices.Equal(columns, []string{"owner_env_hash", "commit_id"}):
+			commitUnique = true
+		default:
+			return fmt.Errorf("unexpected historical receipt index %s", name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !primary || !commitUnique {
+		return errors.New("historical receipt constraints are incomplete")
+	}
+	var triggers int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='external_package_commit_receipts'`).Scan(&triggers); err != nil {
+		return err
+	}
+	if triggers != 0 {
+		return errors.New("historical receipt table has unexpected triggers")
+	}
+	return nil
+}
+
+func historicalExternalPackageReceiptColumns() map[string]registrySQLiteColumnSpec {
+	return map[string]registrySQLiteColumnSpec{
+		"owner_env_hash": sqliteColumn("TEXT", 1, 1), "inspection_id": sqliteColumn("TEXT", 1, 2),
+		"commit_id": sqliteColumn("TEXT", 1, 0), "intent": sqliteColumn("TEXT", 1, 0),
+		"confirmation_digest": sqliteColumn("TEXT", 1, 0), "request_sha256": sqliteColumn("TEXT", 1, 0),
+		"expected_management_revision": sqliteColumn("INTEGER", 1, 0), "intended_fingerprint": sqliteColumn("TEXT", 1, 0),
+		"intended_package_sha256": sqliteColumn("TEXT", 1, 0), "plugin_instance_id": sqliteColumn("TEXT", 1, 0),
+		"status": sqliteColumn("TEXT", 1, 0), "mutation_outcome": sqliteColumn("TEXT", 1, 0),
+		"record_snapshot_json": sqliteColumnDefault("TEXT", 1, 0, "'null'"), "failure_code": sqliteColumnDefault("TEXT", 1, 0, "''"),
+		"created_at": sqliteColumn("INTEGER", 1, 0), "updated_at": sqliteColumn("INTEGER", 1, 0),
+	}
 }
 
 func migrateReleaseBindingToV6(ctx context.Context, tx *sql.Tx, sourceVersion int) error {

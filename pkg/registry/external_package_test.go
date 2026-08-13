@@ -111,6 +111,88 @@ func TestSQLiteRegistryRejectsLegacyExternalReceiptTableWithoutChangingSource(t 
 	}
 }
 
+func TestSQLiteRegistryPreservesPopulatedHistoricalV5ExternalReceiptTable(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createHistoricalV5ExternalPackageReceiptTable(t, store.db)
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO external_package_commit_receipts VALUES(
+  'env','inspection','commit','install','confirmation','request',0,
+  'fingerprint','package','plugin','committed','committed','{}','',1,2
+)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
+		_ = reopened.Close()
+		t.Fatal("NewSQLiteStore() discarded a historical external package receipt")
+	}
+	dsn, err := registrySQLiteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version, receipts int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM external_package_commit_receipts`).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if version != 5 || receipts != 1 {
+		t.Fatalf("failed migration changed historical state: version=%d receipts=%d", version, receipts)
+	}
+}
+
+func TestSQLiteRegistryRejectsHistoricalV5ReceiptConstraintDrift(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createHistoricalV5ExternalPackageReceiptTableWithoutCommitUniqueness(t, store.db)
+	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
+		_ = reopened.Close()
+		t.Fatal("NewSQLiteStore() accepted historical receipt constraint drift")
+	}
+}
+
+func createHistoricalV5ExternalPackageReceiptTableWithoutCommitUniqueness(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+CREATE TABLE external_package_commit_receipts (
+    owner_env_hash TEXT NOT NULL, inspection_id TEXT NOT NULL, commit_id TEXT NOT NULL,
+    intent TEXT NOT NULL, confirmation_digest TEXT NOT NULL, request_sha256 TEXT NOT NULL,
+    expected_management_revision INTEGER NOT NULL, intended_fingerprint TEXT NOT NULL,
+    intended_package_sha256 TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, status TEXT NOT NULL,
+    mutation_outcome TEXT NOT NULL, record_snapshot_json TEXT NOT NULL DEFAULT 'null',
+    failure_code TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    PRIMARY KEY(owner_env_hash, inspection_id)
+)`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSQLiteRegistryRejectsFutureSchemaVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	dsn, err := registrySQLiteDSN(path)

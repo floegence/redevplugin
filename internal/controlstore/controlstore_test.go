@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,23 +93,36 @@ func TestMigratedStoreAllowsPostMigrationMutationAndColdReopen(t *testing.T) {
 }
 
 func TestMigrationRejectsOperationStreamLifecycleMismatch(t *testing.T) {
-	dir := t.TempDir()
-	operationPath := filepath.Join(dir, "operations.sqlite")
-	streamPath := filepath.Join(dir, "streams.sqlite")
-	if err := createExecutionFixtures(operationPath, streamPath, false); err != nil {
-		t.Fatal(err)
-	}
-	db := openTestDB(t, operationPath)
-	if _, err := db.Exec(`UPDATE plugin_operations SET status='completed', terminal_at=10`); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(dir, "control.sqlite")
-	if _, err := Migrate(context.Background(), Config{Path: target, Sources: []Source{{Name: "operation", Path: operationPath, Kind: "operation", Version: 1}, {Name: "stream", Path: streamPath, Kind: "stream", Version: 0}}}); !errors.Is(err, ErrMigration) {
-		t.Fatalf("Migrate() error = %v, want ErrMigration", err)
+	for _, tc := range []struct {
+		name, mutation string
+	}{
+		{name: "terminal operation with open stream", mutation: `UPDATE plugin_operations SET status='completed', terminal_at=10`},
+		{name: "running operation with closed stream", mutation: `UPDATE plugin_streams SET status='closed', closed_at=10`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			operationPath := filepath.Join(dir, "operations.sqlite")
+			streamPath := filepath.Join(dir, "streams.sqlite")
+			if err := createExecutionFixtures(operationPath, streamPath, false); err != nil {
+				t.Fatal(err)
+			}
+			path := operationPath
+			if strings.Contains(tc.mutation, "plugin_streams") {
+				path = streamPath
+			}
+			db := openTestDB(t, path)
+			if _, err := db.Exec(tc.mutation); err != nil {
+				db.Close()
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(dir, "control.sqlite")
+			if _, err := Migrate(context.Background(), Config{Path: target, Sources: []Source{{Name: "operation", Path: operationPath, Kind: "operation", Version: 1}, {Name: "stream", Path: streamPath, Kind: "stream", Version: 0}}}); !errors.Is(err, ErrMigration) {
+				t.Fatalf("Migrate() error = %v, want ErrMigration", err)
+			}
+		})
 	}
 }
 
@@ -254,6 +268,62 @@ func TestMigratePreservesCommittedRegistryRowStillInWAL(t *testing.T) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMigrateHistoricalV5RegistryInitializerShape(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "registry.sqlite")
+	if err := createLegacyFixture(source); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, source)
+	createHistoricalV5RegistryTables(t, db)
+	if _, err := db.Exec(`PRAGMA user_version=5`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := mustSourceDigest(t, source)
+	store, err := Migrate(context.Background(), Config{Path: filepath.Join(dir, "control.sqlite"), Sources: []Source{{Name: "registry", Path: source, Kind: "registry", Version: 5}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var records int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM plugin_records WHERE owner_env_hash='env-1' AND plugin_instance_id='instance-1'`).Scan(&records); err != nil {
+		t.Fatal(err)
+	}
+	if records != 1 {
+		t.Fatalf("migrated plugin records = %d", records)
+	}
+	if after := mustSourceDigest(t, source); after != before {
+		t.Fatalf("source digest changed: %s -> %s", before, after)
+	}
+}
+
+func TestMigrateRejectsDriftedHistoricalV5ReceiptSchema(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "registry.sqlite")
+	if err := createLegacyFixture(source); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, source)
+	if _, err := db.Exec(`CREATE TABLE external_package_commit_receipts(legacy TEXT); PRAGMA user_version=5`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := mustSourceDigest(t, source)
+	if _, err := Migrate(context.Background(), Config{Path: filepath.Join(dir, "control.sqlite"), Sources: []Source{{Name: "registry", Path: source, Kind: "registry", Version: 5}}}); !errors.Is(err, ErrMigration) {
+		t.Fatalf("Migrate() error = %v, want ErrMigration", err)
+	}
+	if after := mustSourceDigest(t, source); after != before {
+		t.Fatalf("source digest changed: %s -> %s", before, after)
 	}
 }
 
@@ -1279,6 +1349,29 @@ func createLegacyFixture(path string) error {
 		return err
 	}
 	return store.Close()
+}
+
+func createHistoricalV5RegistryTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+CREATE TABLE external_package_commit_receipts (
+owner_env_hash TEXT NOT NULL, inspection_id TEXT NOT NULL, commit_id TEXT NOT NULL, intent TEXT NOT NULL,
+confirmation_digest TEXT NOT NULL, request_sha256 TEXT NOT NULL, expected_management_revision INTEGER NOT NULL,
+intended_fingerprint TEXT NOT NULL, intended_package_sha256 TEXT NOT NULL, plugin_instance_id TEXT NOT NULL,
+status TEXT NOT NULL, mutation_outcome TEXT NOT NULL, record_snapshot_json TEXT NOT NULL DEFAULT 'null',
+failure_code TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+PRIMARY KEY(owner_env_hash, inspection_id), UNIQUE(owner_env_hash, commit_id));
+CREATE TABLE release_install_operations (
+owner_env_hash TEXT NOT NULL, request_id TEXT NOT NULL, operation_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL,
+request_sha256 TEXT NOT NULL, release_identity_json TEXT NOT NULL,
+activation_request_json TEXT NOT NULL DEFAULT '{"mode":"disabled"}', status TEXT NOT NULL, phase TEXT NOT NULL,
+progress_kind TEXT NOT NULL, progress_completed INTEGER NOT NULL, progress_total INTEGER NOT NULL, attempt INTEGER NOT NULL,
+retry_after_ms INTEGER NOT NULL, mutation_outcome TEXT NOT NULL, failure_code TEXT NOT NULL, failure_retryable INTEGER NOT NULL,
+plugin_record_json TEXT NOT NULL DEFAULT 'null', activation_json TEXT NOT NULL DEFAULT '{"status":"not_requested"}',
+phase_diagnostics_json TEXT NOT NULL DEFAULT '[]', revision INTEGER NOT NULL, created_at INTEGER NOT NULL,
+updated_at INTEGER NOT NULL, terminal_at INTEGER, PRIMARY KEY(owner_env_hash, request_id), UNIQUE(owner_env_hash, operation_id))`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type legacyReleaseInstallSnapshot struct {
