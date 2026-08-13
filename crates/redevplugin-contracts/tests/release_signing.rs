@@ -44,6 +44,8 @@ struct TestVerifier(VerifyingKey);
 
 type DocumentDecoder = Box<dyn Fn(&[u8]) -> Result<(), ReleaseContractError>>;
 type CanonicalCase = (Vec<u8>, DocumentDecoder);
+type RetiredField = (&'static str, &'static str);
+type RetiredCase = (&'static str, &'static [RetiredField], DocumentDecoder);
 
 impl SignatureVerifier for TestVerifier {
     fn verify_signature(&self, request: SignatureVerificationRequest<'_>) -> bool {
@@ -256,7 +258,7 @@ fn release_signing_decoders_reject_retired_continuity_fields() {
         serde_json::from_str(include_str!("fixtures/release-signing-v1.json")).unwrap();
     let documents = fixture["documents"].as_object().unwrap();
 
-    let cases: Vec<(&str, &[(&str, &str)], DocumentDecoder)> = vec![
+    let cases: Vec<RetiredCase> = vec![
         (
             "root_delegation",
             &[
