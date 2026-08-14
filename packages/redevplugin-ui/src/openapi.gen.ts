@@ -1345,8 +1345,21 @@ export interface components {
         SessionScopeRevokeResult: components["schemas"]["SessionScopeV1PublicRevokeResult"];
         SessionScopeRevokeCompleteResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"];
         SessionScopeRevokeIncompleteResult: components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
+        PluginActionState: {
+            can_open: boolean;
+            can_enable: boolean;
+            can_disable: boolean;
+            can_uninstall: boolean;
+            /** @enum {string} */
+            blocked_reason?: "disabled" | "permission_required" | "policy_restricted" | "package_invalid" | "signature_invalid" | "signature_revoked" | "runtime_unavailable" | "incompatible";
+            /** @enum {string} */
+            recovery_action?: "retry";
+        };
+        PluginCatalogRecord: components["schemas"]["PluginRecord"] & {
+            action_state: components["schemas"]["PluginActionState"];
+        };
         PluginCatalogResult: {
-            plugins: components["schemas"]["PluginRecord"][];
+            plugins: components["schemas"]["PluginCatalogRecord"][];
         };
         PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV18"];
         ExecutionList: {

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.1
+
+- Publish the Host action-state projection in the catalog OpenAPI and generated
+  TypeScript contracts so host products can consume one launch authority.
+
 ## v1.1.0
 
 - Publish one complete coordinated package set: the Go module, two npm

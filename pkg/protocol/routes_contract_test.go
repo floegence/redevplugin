@@ -355,6 +355,34 @@ func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 			t.Fatalf("PluginRecord missing closed contract snippet %q: %s", snippet, pluginRecord)
 		}
 	}
+	pluginCatalogResult := openAPISchemaBlock(t, text, "PluginCatalogResult")
+	if !strings.Contains(pluginCatalogResult, `items: { $ref: "#/components/schemas/PluginCatalogRecord" }`) {
+		t.Fatalf("PluginCatalogResult must expose Host action state through PluginCatalogRecord: %s", pluginCatalogResult)
+	}
+	pluginCatalogRecord := openAPISchemaBlock(t, text, "PluginCatalogRecord")
+	for _, snippet := range []string{
+		"unevaluatedProperties: false",
+		"allOf:",
+		`$ref: "#/components/schemas/PluginRecord"`,
+		"required: [action_state]",
+		`action_state: { $ref: "#/components/schemas/PluginActionState" }`,
+	} {
+		if !strings.Contains(pluginCatalogRecord, snippet) {
+			t.Fatalf("PluginCatalogRecord missing Host action-state contract %q: %s", snippet, pluginCatalogRecord)
+		}
+	}
+	pluginActionState := openAPISchemaBlock(t, text, "PluginActionState")
+	for _, snippet := range []string{
+		"additionalProperties: false",
+		"required: [can_open, can_enable, can_disable, can_uninstall]",
+		"can_open: { type: boolean }",
+		"blocked_reason:",
+		"recovery_action:",
+	} {
+		if !strings.Contains(pluginActionState, snippet) {
+			t.Fatalf("PluginActionState missing closed Host projection %q: %s", snippet, pluginActionState)
+		}
+	}
 	for _, reason := range []string{"ambiguous_entry", "non_regular_entry", "invalid_utf8_path", "non_nfc_path"} {
 		if !strings.Contains(text, reason) {
 			t.Fatalf("OpenAPI ErrorDetails missing package reason %q", reason)

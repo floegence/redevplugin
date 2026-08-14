@@ -1866,6 +1866,35 @@ components:
       $ref: "../plugin/session-scope-v1.schema.json#/$defs/complete_revoke_result"
     SessionScopeRevokeIncompleteResult:
       $ref: "../plugin/session-scope-v1.schema.json#/$defs/incomplete_revoke_result"
+    PluginActionState:
+      type: object
+      required: [can_open, can_enable, can_disable, can_uninstall]
+      additionalProperties: false
+      properties:
+        can_open: { type: boolean }
+        can_enable: { type: boolean }
+        can_disable: { type: boolean }
+        can_uninstall: { type: boolean }
+        blocked_reason:
+          type: string
+          enum:
+            - disabled
+            - permission_required
+            - policy_restricted
+            - package_invalid
+            - signature_invalid
+            - signature_revoked
+            - runtime_unavailable
+            - incompatible
+        recovery_action: { type: string, enum: [retry] }
+    PluginCatalogRecord:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: "#/components/schemas/PluginRecord"
+        - type: object
+          required: [action_state]
+          properties:
+            action_state: { $ref: "#/components/schemas/PluginActionState" }
     PluginCatalogResult:
       type: object
       required: [plugins]
@@ -1873,7 +1902,7 @@ components:
       properties:
         plugins:
           type: array
-          items: { $ref: "#/components/schemas/PluginRecord" }
+          items: { $ref: "#/components/schemas/PluginCatalogRecord" }
     PluginCompatibilityManifest:
       $ref: "../plugin/compatibility-manifest-v18.schema.json"
     ExecutionList:
