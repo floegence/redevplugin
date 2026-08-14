@@ -741,7 +741,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 		} `json:"contracts"`
 	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility/query", map[string]any{})
 
-	if got.SchemaVersion != "redevplugin.compatibility.v17" {
+	if got.SchemaVersion != "redevplugin.compatibility.v18" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
 	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v11" ||

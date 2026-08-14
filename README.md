@@ -3,8 +3,8 @@
 ReDevPlugin is the reusable plugin platform intended to be consumed by host
 products through published Go modules, npm packages, Rust source crates, and
 machine-contract artifacts. ReDevPlugin publishes versioned source crates for
-the Rust runtime; host products build the runtime binary from exact published
-Rust source crates and own the resulting product artifact.
+the Rust runtime; host products build the runtime binary from exact
+published Rust source crates and own the resulting product artifact.
 
 This repository owns the host-neutral plugin platform core. Host products own
 their product policy, UI shell integration, session adapters, and business
@@ -16,8 +16,8 @@ capabilities.
 - TypeScript packages: the opt-in raw contract body package
   `@floegence/redevplugin-contracts` and the sandbox/runtime SDK
   `@floegence/redevplugin-ui`
-- Rust workspace and publication set: `redevplugin-runtime`, the public
-  `redevplugin-worker-sdk`, and support source crates
+- Rust workspace and publication set: exactly `redevplugin-runtime` and
+  `redevplugin-worker-sdk`
 - Contracts: OpenAPI, manifest schema, package-signature schema,
   release-metadata schema, source-policy schema, source-revocations schema,
   token/ticket schema, iframe bridge and render policy, opaque surface document
@@ -28,23 +28,23 @@ capabilities.
 - Active coordinated contracts are `plugin-host-v11`, `rust-ipc-v6`,
   `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v15`, `manifest-v8`, opaque
   document v3, opaque transport v6, release metadata v8, compatibility manifest
-  v17, error codes v8, resource scope v1, session scope v1, session scope
+  v18, error codes v8, resource scope v1, session scope v1, session scope
   maintenance v1, token/ticket v4, and release manifest
   v4. WASM ABI v2, worker invocation v3, and package
   signature v1 remain unchanged. Current package admission accepts only manifest
   v8 packages using `plugin-ui-v7`.
-- The staged v2 package registry is available through opt-in Go, npm, and Rust
+- The canonical contract registry is available through opt-in Go and npm
   contract libraries with identical immutable bytes, IDs, versions, hashes,
-  and aggregate digest. It is returned by the active compatibility-v15
+  and aggregate digest. It is returned by the active compatibility-v18
   Host API, and importing ordinary Host or UI entrypoints does not link or load
   the raw schema bodies.
-- The staged contract libraries also expose canonical release-signing DTOs and
+- The contract libraries also expose canonical release-signing DTOs and
   build, preimage, strict-decode, and verifier APIs for root delegation,
   packages, release metadata, source policy and its pointer, and revocation and
   its pointer. The seven signing usages are domain separated, timestamps are
   explicit inputs, and pointer genesis is fixed to epoch `0` plus the all-zero
   SHA-256 sentinel. These APIs live in `pkg/releasecontract` and the opt-in
-  contracts packages; `pkg/releasetrust` consumes the active compatibility-v15
+  contracts packages; `pkg/releasetrust` consumes the active compatibility-v18
   contract.
 - Source policy v3, source-policy pointer v2, revocation v3, and revocation
   pointer v2 provide a 90-day personal-maintainer validity profile while the
@@ -500,7 +500,7 @@ an English fallback or mix locales within one resolved presentation.
   streamed HTTP responses return a Host-readable `stream_id` and stream ticket
   before returning the worker result.
 - The Rust runtime requests a bound WASM artifact only on a compiled-module cache
-  miss, validates the module through `redevplugin-wasm-abi`, executes it through
+  miss, validates the module through its private ABI module, executes it through
   the shared Wasmi engine and fair worker scheduler, and returns the result over
   multiplexed `invoke_worker_result` frames. It exposes brokered storage and
   network hostcalls bound to the parent invocation. Generated plugins use
@@ -639,11 +639,12 @@ provide a local sibling integration path for host products.
 
 ## Release Integrity
 
-ReDevPlugin publishes versioned source crates together with a matching Go
-module, npm packages, generated contracts, compatibility metadata, and package
-publication evidence. Host products build the runtime binary from the exact
-published Rust source crates after independently verifying registry checksums,
-source identity, the Cargo dependency closure, and the contract-set digest.
+ReDevPlugin publishes `redevplugin-runtime` and `redevplugin-worker-sdk` source
+crates together with a matching Go module, npm packages, generated contracts,
+compatibility metadata, and package publication evidence. Host products build
+the runtime binary from the exact published runtime crate after independently
+verifying registry checksums, source identity, dependency metadata, and the
+contract-set digest.
 
 Tagged publication builds every package once in unprivileged jobs, publishes in
 dependency order, and reads the packages back from the Go proxy/sumdb, npm
@@ -654,7 +655,7 @@ partial or mismatched registry publication is fail-closed and cannot be repaired
 by overwriting an existing version.
 
 Only after registry readback and conformance succeed does the GitHub Release
-contain exactly one attested `platform-package-publication-v1.json` completion
+contain exactly one attested `platform-package-publication-v2.json` completion
 manifest. ReDevPlugin GitHub Releases do not contain OS runtime binaries,
 runtime archives, installers, or product signatures. They also do not attach npm
 tarballs, `.crate` files, product checksums, or runtime signing bundles. Registry

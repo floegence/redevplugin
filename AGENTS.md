@@ -50,9 +50,9 @@ must provide the host-importable implementation surface that products need:
 - TypeScript packages that expose the sandbox surface host, bridge SDK,
   generated clients, and host-neutral helpers needed by plugin UIs and product
   shells;
-- published Rust source crates for `redevplugin-runtime` and its support crates,
-  plus a Go-managed supervisor contract for admission, launch, health, shutdown,
-  restart, and diagnostics;
+- published Rust source crates for `redevplugin-runtime` and
+  `redevplugin-worker-sdk`, plus a Go-managed supervisor contract for
+  admission, launch, health, shutdown, restart, and diagnostics;
 - generated contracts, fixtures, compatibility hashes, and release metadata that
   let host products validate the exact behavior they are consuming.
 
@@ -320,8 +320,8 @@ Host products consume ReDevPlugin through published artifacts only:
 - Go module versions;
 - npm package versions;
 - Rust source crate versions and registry checksums for `redevplugin-runtime`
-  and its support crates;
-- package publication evidence and the exact Cargo dependency closure;
+  and `redevplugin-worker-sdk`;
+- package publication evidence and the closed Cargo dependency metadata;
 - released OpenAPI/schema/IPC/WASM ABI/token/classifier contract hashes.
 
 Do not require host products to use local `../redevplugin` checkouts. Do not
@@ -763,8 +763,9 @@ Release-bound changes must keep these artifacts aligned:
 - Go module version for embeddable host libraries and DTOs;
 - npm package versions for UI SDKs, generated clients, bridge helpers, and
   templates;
-- Rust source crate versions, registry checksums, Cargo dependency closure, and
-  packaged-source conformance for `redevplugin-runtime` and support crates;
+- Rust source crate versions, registry checksums, closed dependency metadata,
+  and packaged-source conformance for `redevplugin-runtime` and
+  `redevplugin-worker-sdk`;
 - OpenAPI, JSON schema, IPC, WASM ABI, token/ticket, and classifier contract
   hashes;
 - compatibility manifest, release notes, package publication evidence, registry
@@ -932,7 +933,7 @@ Expected gates for platform changes:
   coverage, and contract hash generation.
 - Release: registry package closure and readback, package checksums/provenance,
   packaged-source extraction and conformance, reproducible source builds,
-  third-party notices, exact-one `platform-package-publication-v1` completion
+  third-party notices, exact-one `platform-package-publication-v2` completion
   evidence, version matrix consistency, and host-consumable compatibility
   manifest validation. Registry verifier fixtures must prove bounded retry of
   temporary failures and immediate rejection of immutable identity, digest,

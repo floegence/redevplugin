@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "private ABI helpers retain validation regression coverage"
+)]
+
 use std::collections::HashMap;
 use std::fmt;
 use wasmparser::{Encoding, ExternalKind, FuncType, Parser, Payload, RefType, TypeRef, ValType};

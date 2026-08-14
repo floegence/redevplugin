@@ -73,7 +73,7 @@ function validPublication(packageSet) {
   const sourceCommit = "1".repeat(40);
   const integrityBytes = [0x11, 0x22];
   return {
-    schema_version: "redevplugin.platform_package_publication.v1",
+    schema_version: "redevplugin.platform_package_publication.v2",
     platform_version: packageSet.platform_version,
     source_commit: sourceCommit,
     workflow: {
@@ -102,15 +102,15 @@ function validPublication(packageSet) {
   };
 }
 
-test("the active compatibility surface is the atomic v17 contract set", () => {
+test("the active compatibility surface is the atomic v18 contract set", () => {
   const activeRegistry = readJSON("spec/plugin/contract-registry-v2.json");
-  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v17.schema.json");
+  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v18.schema.json");
   const generatedGo = read("pkg/version/contracts_gen.go").toString("utf8");
   const generatedTypeScript = read("packages/redevplugin-ui/src/contracts.gen.ts").toString("utf8");
 
   assert.equal(activeRegistry.schema_version, "redevplugin.contract_registry.v2");
   assert.equal(activeRegistry.registry_version, "contract-registry-v2");
-  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v17");
+  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v18");
   assert.match(generatedGo, /ContractRegistryVersion\s+= "contract-registry-v2"/);
   assert.match(generatedTypeScript, /"contract_registry_version": "contract-registry-v2"/);
   assert.equal(activeRegistry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
@@ -139,7 +139,7 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
   assert.equal(registry.artifacts.some(({ id }) => id === "release-revocation-pointer-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "contract-registry"), false);
   assert.equal(registry.artifacts.some(({ path }) => path === "spec/plugin/contract-registry-v2.json"), false);
-  assert.equal(registry.artifacts.some(({ path }) => path === "spec/plugin/platform-package-set-v2.json"), false);
+  assert.equal(registry.artifacts.some(({ path }) => path === "spec/plugin/platform-package-set-v3.json"), false);
   assert.match(read("pkg/host/host.go").toString("utf8"), /type ReleaseArtifactResolver interface/);
 
   const paths = new Set();
@@ -158,7 +158,7 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
     assert.equal(sha256(read(artifact.path)), artifact.sha256);
   }
 
-  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v2.json"));
+  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v3.json"));
   const independentDigest = independentContractSetSHA256(registryBytes, registry.artifacts);
   assert.equal(packageSet.contract_set_sha256, independentDigest);
   assert.equal(computeContractSetSHA256(registryBytes, registry.artifacts), independentDigest);
@@ -192,7 +192,7 @@ test("contract registry v2 rejects malformed, ambiguous, and cyclic inputs", () 
   for (const forbiddenPath of [
     "spec/plugin/../../../../etc/passwd",
     "spec/plugin/contract-registry-v2.json",
-    "spec/plugin/platform-package-set-v2.json",
+    "spec/plugin/platform-package-set-v3.json",
   ]) {
     const invalidPath = clone(registry);
     invalidPath.artifacts[0].path = forbiddenPath;
@@ -229,32 +229,41 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = decodeContractRegistry(registryBytes);
   const digest = independentContractSetSHA256(registryBytes, registry.artifacts);
-  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v2.json"), digest);
+  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v3.json"), digest);
   const platformVersion = readJSON("spec/plugin/platform-version.json");
 
   assert.deepEqual(platformVersion, {
     schema_version: "redevplugin.platform_version.v1",
-    platform_version: "1.0.0",
+    platform_version: "1.1.0",
   });
   assert.equal(packageSet.platform_version, platformVersion.platform_version);
   assert.deepEqual(packageSet.go_module, {
     module: "github.com/floegence/redevplugin",
-    version: "v1.0.0",
+    version: "v1.1.0",
   });
   assert.deepEqual(packageSet.npm_packages, [
-    { name: "@floegence/redevplugin-contracts", version: "1.0.0" },
-    { name: "@floegence/redevplugin-ui", version: "1.0.0" },
+    { name: "@floegence/redevplugin-contracts", version: "1.1.0" },
+    { name: "@floegence/redevplugin-ui", version: "1.1.0" },
   ]);
   assert.deepEqual(packageSet.rust_crates, [
-    { name: "redevplugin-contracts", version: "1.0.0", role: "contracts" },
-    { name: "redevplugin-ipc", version: "1.0.0", role: "ipc" },
-    { name: "redevplugin-wasm-abi", version: "1.0.0", role: "wasm_abi" },
-    { name: "redevplugin-worker-sdk", version: "1.0.0", role: "worker_sdk" },
-    { name: "redevplugin-runtime", version: "1.0.0", role: "runtime" },
+    { name: "redevplugin-runtime", version: "1.1.0", role: "runtime" },
+    { name: "redevplugin-worker-sdk", version: "1.1.0", role: "worker_sdk" },
   ]);
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
   assert.doesNotMatch(JSON.stringify(packageSet), /runtime_binary|runtime_archive|installer|product_signature|product_checksum/i);
+});
+
+test("the public Rust boundary contains only runtime and worker SDK", () => {
+  const workspace = read("Cargo.toml").toString("utf8");
+  const runtimeManifest = read("crates/redevplugin-runtime/Cargo.toml").toString("utf8");
+  for (const retired of ["redevplugin-contracts", "redevplugin-ipc", "redevplugin-wasm-abi"]) {
+    assert.equal(existsSync(join(root, "crates", retired)), false, `${retired} must be physically removed`);
+    assert.doesNotMatch(workspace, new RegExp(`crates/${retired}`));
+    assert.doesNotMatch(runtimeManifest, new RegExp(`${retired}[\\s\\S]{0,160}path\\s*=`));
+  }
+  assert.doesNotMatch(runtimeManifest, /redevplugin-[a-z-]+\s*=\s*\{[^}]*\bpath\s*=/);
+  assert.equal(existsSync(join(root, ".github/workflows/recover-release.yml")), false);
 });
 
 test("Rust source packages remain wired into the complete local and release gates", () => {
@@ -293,7 +302,7 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = decodeContractRegistry(registryBytes);
   const digest = independentContractSetSHA256(registryBytes, registry.artifacts);
-  const raw = read("spec/plugin/platform-package-set-v2.json");
+  const raw = read("spec/plugin/platform-package-set-v3.json");
   const packageSet = decodePlatformPackageSet(raw, digest);
   const invalid = [];
 
@@ -302,11 +311,11 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   invalid.push(duplicateNPM);
 
   const wrongRole = clone(packageSet);
-  wrongRole.rust_crates[0].role = "runtime";
+  wrongRole.rust_crates[0].role = "worker_sdk";
   invalid.push(wrongRole);
 
   const wrongVersion = clone(packageSet);
-  wrongVersion.rust_crates[4].version = "0.6.0";
+  wrongVersion.rust_crates[1].version = "0.6.0";
   invalid.push(wrongVersion);
 
   const wrongDigest = clone(packageSet);
@@ -329,8 +338,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   }
   assert.throws(() => decodePlatformPackageSet(Buffer.from(`${raw.toString("utf8")} null`, "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
-    '"platform_version": "1.0.0",',
-    '"platform_version": "1.0.0",\n  "platform_version": "1.0.0",',
+    '"platform_version": "1.1.0",',
+    '"platform_version": "1.1.0",\n  "platform_version": "1.1.0",',
   ), "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
     '"name": "@floegence/redevplugin-contracts",',
@@ -338,13 +347,12 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   ), "utf8"), digest));
 });
 
-test("release workflow derives the publication closure from package-set v2", () => {
+test("release workflow derives the publication closure from package-set v3", () => {
   const workflow = read(".github/workflows/release.yml").toString("utf8");
-  const recovery = read(".github/workflows/recover-release.yml").toString("utf8");
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = decodeContractRegistry(registryBytes);
   const digest = independentContractSetSHA256(registryBytes, registry.artifacts);
-  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v2.json"), digest);
+  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v3.json"), digest);
   const rustCrates = packageSet.rust_crates.map(({ name }) => name).sort(compareASCII);
   assert.match(workflow, /platform_package_build\.mjs build/);
   assert.match(workflow, /platform_package_build\.mjs verify/);
@@ -352,16 +360,22 @@ test("release workflow derives the publication closure from package-set v2", () 
   assert.doesNotMatch(workflow, /len\(manifest\["artifacts"\]\) != 8/);
   for (const name of rustCrates) {
     assert.match(workflow, new RegExp(`(?:expected_rust|order)[\\s\\S]*${name}`));
-    assert.match(recovery, new RegExp(`(?:expected_rust|order)[\\s\\S]*${name}`));
   }
+  const expectedRustBlock = workflow.match(/expected_rust = \{([\s\S]*?)\n\s*\}/)?.[1] ?? "";
+  const publishOrder = workflow.match(/order = \[([^\]]*)\]/)?.[1] ?? "";
+  for (const retired of ["redevplugin-contracts", "redevplugin-ipc", "redevplugin-wasm-abi"]) {
+    assert.doesNotMatch(expectedRustBlock, new RegExp(`["']${retired}["']`));
+    assert.doesNotMatch(publishOrder, new RegExp(`["']${retired}["']`));
+  }
+  assert.equal(existsSync(join(root, ".github/workflows/recover-release.yml")), false);
 });
 
 test("platform publication schema and decoder cannot describe product artifacts", () => {
-  const schema = readJSON("spec/plugin/platform-package-publication-v1.schema.json");
+  const schema = readJSON("spec/plugin/platform-package-publication-v2.schema.json");
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = decodeContractRegistry(registryBytes);
   const digest = independentContractSetSHA256(registryBytes, registry.artifacts);
-  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v2.json"), digest);
+  const packageSet = decodePlatformPackageSet(read("spec/plugin/platform-package-set-v3.json"), digest);
   const publication = validPublication(packageSet);
 
   assert.deepEqual(Object.keys(schema.properties).sort(compareASCII), [
@@ -375,9 +389,9 @@ test("platform publication schema and decoder cannot describe product artifacts"
     "workflow",
   ]);
   assert.equal(schema.additionalProperties, false);
-  assert.equal(schema.properties.schema_version.const, "redevplugin.platform_package_publication.v1");
+  assert.equal(schema.properties.schema_version.const, "redevplugin.platform_package_publication.v2");
   assert.equal(schema.properties.npm_packages.prefixItems.length, 2);
-  assert.equal(schema.properties.rust_crates.prefixItems.length, 5);
+  assert.equal(schema.properties.rust_crates.prefixItems.length, 2);
   assert.equal(schema.properties.npm_packages.items, false);
   assert.equal(schema.properties.rust_crates.items, false);
   assert.deepEqual(decodePlatformPackagePublication(encode(publication), digest), publication);

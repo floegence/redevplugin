@@ -335,10 +335,14 @@ ambient npm version.
 
 ## Package Publication And Compatibility
 
-`platform-package-set-v2` is the canonical coordinate set for Go, npm, and Rust
+`platform-package-set-v3` is the canonical coordinate set for Go, npm, and Rust
 packages. It does not contain registry checksums or the source commit, avoiding
 self-reference; those identities are verified from the registries and recorded
-in `platform-package-publication-v1` only after readback succeeds.
+in `platform-package-publication-v2` only after readback succeeds.
+
+The public Rust set is exactly `redevplugin-runtime` and
+`redevplugin-worker-sdk`. IPC and WASM ABI implementations are private runtime
+modules and do not have separate registry coordinates.
 
 The compatibility manifest includes contract artifact IDs, versions, paths, and
 hashes for released OpenAPI, plugin schemas, release metadata, source policy,
@@ -361,7 +365,7 @@ build a product runtime binary.
 
 Tagged GitHub Releases publish exactly one machine asset:
 
-- `platform-package-publication-v1.json`, with the fixed publication content
+- `platform-package-publication-v2.json`, with the fixed publication content
   type and an OIDC artifact attestation bound to the exact release workflow and
   source commit.
 

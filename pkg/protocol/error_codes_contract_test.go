@@ -115,7 +115,7 @@ func TestRustIPCErrorCodesMatchSchemaAndSource(t *testing.T) {
 	root := repoRoot(t)
 	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v8.schema.json"))
 	want := schemaEnum(t, requireNestedObject(t, errorCodeSchema, "$defs"), "rust_ipc_error_code")
-	source, err := os.ReadFile(filepath.Join(root, "crates", "redevplugin-ipc", "src", "lib.rs"))
+	source, err := os.ReadFile(filepath.Join(root, "crates", "redevplugin-runtime", "src", "ipc.rs"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,15 +201,15 @@ func TestRuntimeProcessFailureCodesAndExitStatusesMatchContracts(t *testing.T) {
 			t.Fatalf("Rust runtime missing exit mapping %d -> %s", failure.ExitCode, failure.Code)
 		}
 	}
-	ipcSource, err := os.ReadFile(filepath.Join(root, "crates", "redevplugin-ipc", "src", "lib.rs"))
+	ipcSource, err := os.ReadFile(filepath.Join(root, "crates", "redevplugin-runtime", "src", "ipc.rs"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(ipcSource), "parse_frame_identity_v3") {
-		t.Fatal("Rust IPC exposes obsolete parse_frame_identity_v3")
+		t.Fatal("runtime IPC module exposes obsolete parse_frame_identity_v3")
 	}
 	if !strings.Contains(string(ipcSource), "pub fn parse_frame_identity(input: &str) -> IpcResult<FrameIdentity>") {
-		t.Fatal("Rust IPC does not expose the unique typed parse_frame_identity API")
+		t.Fatal("runtime IPC module does not expose the unique typed parse_frame_identity API")
 	}
 }
 

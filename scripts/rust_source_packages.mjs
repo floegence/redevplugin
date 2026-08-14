@@ -32,11 +32,8 @@ export const rustToolchain = rustToolchainMatch[1];
 const OFFICIAL_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index";
 
 export const rustSourcePackages = Object.freeze([
-  Object.freeze({ name: "redevplugin-contracts", role: "contracts" }),
-  Object.freeze({ name: "redevplugin-ipc", role: "ipc" }),
-  Object.freeze({ name: "redevplugin-wasm-abi", role: "wasm_abi" }),
-  Object.freeze({ name: "redevplugin-worker-sdk", role: "worker_sdk" }),
   Object.freeze({ name: "redevplugin-runtime", role: "runtime" }),
+  Object.freeze({ name: "redevplugin-worker-sdk", role: "worker_sdk" }),
 ]);
 
 const MAX_INDEX_BYTES = 8 * 1024 * 1024;
@@ -167,7 +164,7 @@ export function validateSourcePackageMetadata() {
     "--no-deps",
   ], { cwd: root, env: cargoEnvironment(process.env.CARGO_HOME) }));
   const packageSet = JSON.parse(
-    readFileSync(join(root, "spec/plugin/platform-package-set-v2.json"), "utf8"),
+    readFileSync(join(root, "spec/plugin/platform-package-set-v3.json"), "utf8"),
   );
   const expected = packageSet.rust_crates.map(({ name, version, role }) => ({ name, version, role }));
   if (JSON.stringify(expected) !== JSON.stringify(rustSourcePackages.map(({ name, role }) => ({
@@ -216,40 +213,16 @@ export function validateSourcePackageMetadata() {
     assertNoFirstPartyBuildHooks(pkg, coordinate.name);
   }
 
-  const expectedInternalDependencies = new Map([
-    ["redevplugin-ipc", new Set(["redevplugin-contracts"])],
-    ["redevplugin-runtime", new Set(["redevplugin-ipc", "redevplugin-wasm-abi"])],
-  ]);
   for (const coordinate of rustSourcePackages) {
     const pkg = metadata.packages.find(({ name }) => name === coordinate.name);
-    const expected = expectedInternalDependencies.get(coordinate.name) ?? new Set();
-    const actual = new Set();
     for (const dependency of pkg.dependencies) {
-      if (dependency.source !== null) {
-        if (dependency.source !== OFFICIAL_REGISTRY_SOURCE) {
-          throw new Error(`${coordinate.name} dependency ${dependency.name} uses a forbidden source`);
-        }
-        continue;
+      if (dependency.source === null) {
+        throw new Error(`${coordinate.name} has forbidden path dependency ${dependency.name}`);
       }
-      if (!expected.has(dependency.name)) {
-        throw new Error(`${coordinate.name} has unexpected path dependency ${dependency.name}`);
+      if (dependency.source !== OFFICIAL_REGISTRY_SOURCE) {
+        throw new Error(`${coordinate.name} dependency ${dependency.name} uses a forbidden source`);
       }
-      const expectedPath = join(root, "crates", dependency.name);
-      if (dependency.req !== `=${platformVersion}`
-          || typeof dependency.path !== "string"
-          || realpathSync(dependency.path) !== realpathSync(expectedPath)) {
-        throw new Error(`${coordinate.name} must use canonical path + exact ${dependency.name} ${platformVersion}`);
-      }
-      actual.add(dependency.name);
     }
-    if (actual.size !== expected.size || [...expected].some((name) => !actual.has(name))) {
-      throw new Error(`${coordinate.name} internal dependency topology is incomplete`);
-    }
-  }
-
-  const runtime = metadata.packages.find(({ name }) => name === "redevplugin-runtime");
-  if (runtime.dependencies.some(({ name, kind }) => name === "redevplugin-contracts" && kind === null)) {
-    throw new Error("runtime normal dependencies must not link raw contracts");
   }
 }
 
@@ -533,7 +506,7 @@ function isAllowedPackagePath(path) {
   if (["Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "LICENSE", "README.md", ".cargo_vcs_info.json"].includes(path)) {
     return true;
   }
-  return /^(?:src|tests|testdata)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(path)
+  return /^(?:src|tests|testdata|proptest-regressions)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(path)
     && !path.split("/").some((segment) => segment === "." || segment === "..");
 }
 

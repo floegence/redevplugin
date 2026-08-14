@@ -1348,7 +1348,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV17"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV18"];
         ExecutionList: {
             executions: components["schemas"]["Execution"][];
             next_cursor?: number;
@@ -2598,10 +2598,10 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV17: {
+        CompatibilityManifestV18: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v17";
-            package_set: components["schemas"]["PlatformPackageSetV2"];
+            schema_version: "redevplugin.compatibility.v18";
+            package_set: components["schemas"]["PlatformPackageSetV3"];
             matrix: {
                 /** @constant */
                 plugin_ui_protocol_version: "plugin-ui-v7";
@@ -2658,7 +2658,7 @@ export interface components {
                 /** @constant */
                 plugin_platform_openapi_version: "plugin-platform-v15";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v17";
+                compatibility_schema_version: "compatibility-manifest-v18";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -2674,9 +2674,9 @@ export interface components {
                 /** @constant */
                 contract_registry_version: "contract-registry-v2";
                 /** @constant */
-                platform_package_set_schema_version: "platform-package-set-v2";
+                platform_package_set_schema_version: "platform-package-set-v3";
                 /** @constant */
-                platform_package_publication_schema_version: "platform-package-publication-v1";
+                platform_package_publication_schema_version: "platform-package-publication-v2";
                 /** @constant */
                 runtime_admission_schema_version: "runtime-admission-v1";
                 /** @constant */
@@ -2697,84 +2697,63 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV17Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV18Contract"][];
         };
-        CompatibilityManifestV17Contract: {
+        CompatibilityManifestV18Contract: {
             id: string;
             path: string;
             version: string;
             sha256: string;
         };
-        PlatformPackageSetV2: {
+        PlatformPackageSetV3: {
             /** @constant */
-            schema_version: "redevplugin.platform_package_set.v2";
-            platform_version: components["schemas"]["PlatformPackageSetV2Version"];
-            go_module: components["schemas"]["PlatformPackageSetV2GoModule"];
+            schema_version: "redevplugin.platform_package_set.v3";
+            platform_version: components["schemas"]["PlatformPackageSetV3Version"];
+            go_module: components["schemas"]["PlatformPackageSetV3GoModule"];
             npm_packages: [
-                components["schemas"]["PlatformPackageSetV2NpmContracts"],
-                components["schemas"]["PlatformPackageSetV2NpmUi"]
+                components["schemas"]["PlatformPackageSetV3NpmContracts"],
+                components["schemas"]["PlatformPackageSetV3NpmUi"]
             ];
             rust_crates: [
-                components["schemas"]["PlatformPackageSetV2RustContracts"],
-                components["schemas"]["PlatformPackageSetV2RustIpc"],
-                components["schemas"]["PlatformPackageSetV2RustWasmAbi"],
-                components["schemas"]["PlatformPackageSetV2RustWorkerSdk"],
-                components["schemas"]["PlatformPackageSetV2RustRuntime"]
+                components["schemas"]["PlatformPackageSetV3RustRuntime"],
+                components["schemas"]["PlatformPackageSetV3RustWorkerSdk"]
             ];
             /** @constant */
             contract_registry_version: "contract-registry-v2";
-            contract_set_sha256: components["schemas"]["PlatformPackageSetV2Sha256"];
+            contract_set_sha256: components["schemas"]["PlatformPackageSetV3Sha256"];
         };
-        PlatformPackageSetV2Version: string;
-        PlatformPackageSetV2Sha256: string;
-        PlatformPackageSetV2GoModule: {
+        PlatformPackageSetV3Version: string;
+        PlatformPackageSetV3Sha256: string;
+        PlatformPackageSetV3GoModule: {
             /** @constant */
             module: "github.com/floegence/redevplugin";
             version: string;
         };
-        PlatformPackageSetV2NpmPackage: {
+        PlatformPackageSetV3NpmPackage: {
             name: string;
-            version: components["schemas"]["PlatformPackageSetV2Version"];
+            version: components["schemas"]["PlatformPackageSetV3Version"];
         };
-        PlatformPackageSetV2NpmContracts: components["schemas"]["PlatformPackageSetV2NpmPackage"] & {
+        PlatformPackageSetV3NpmContracts: components["schemas"]["PlatformPackageSetV3NpmPackage"] & {
             /** @constant */
             name?: "@floegence/redevplugin-contracts";
         };
-        PlatformPackageSetV2NpmUi: components["schemas"]["PlatformPackageSetV2NpmPackage"] & {
+        PlatformPackageSetV3NpmUi: components["schemas"]["PlatformPackageSetV3NpmPackage"] & {
             /** @constant */
             name?: "@floegence/redevplugin-ui";
         };
-        PlatformPackageSetV2RustCrate: {
+        PlatformPackageSetV3RustCrate: {
             name: string;
-            version: components["schemas"]["PlatformPackageSetV2Version"];
+            version: components["schemas"]["PlatformPackageSetV3Version"];
             /** @enum {unknown} */
-            role: "contracts" | "ipc" | "wasm_abi" | "worker_sdk" | "runtime";
+            role: "runtime" | "worker_sdk";
         };
-        PlatformPackageSetV2RustContracts: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
-            /** @constant */
-            name?: "redevplugin-contracts";
-            /** @constant */
-            role?: "contracts";
-        };
-        PlatformPackageSetV2RustIpc: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
-            /** @constant */
-            name?: "redevplugin-ipc";
-            /** @constant */
-            role?: "ipc";
-        };
-        PlatformPackageSetV2RustWasmAbi: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
-            /** @constant */
-            name?: "redevplugin-wasm-abi";
-            /** @constant */
-            role?: "wasm_abi";
-        };
-        PlatformPackageSetV2RustWorkerSdk: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
+        PlatformPackageSetV3RustWorkerSdk: components["schemas"]["PlatformPackageSetV3RustCrate"] & {
             /** @constant */
             name?: "redevplugin-worker-sdk";
             /** @constant */
             role?: "worker_sdk";
         };
-        PlatformPackageSetV2RustRuntime: components["schemas"]["PlatformPackageSetV2RustCrate"] & {
+        PlatformPackageSetV3RustRuntime: components["schemas"]["PlatformPackageSetV3RustCrate"] & {
             /** @constant */
             name?: "redevplugin-runtime";
             /** @constant */

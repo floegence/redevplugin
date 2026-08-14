@@ -6,21 +6,18 @@ import test from "node:test";
 import { parse } from "yaml";
 
 const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
-const recovery = parse(readFileSync(".github/workflows/recover-release.yml", "utf8"));
 const quickCIEvidenceVerifier = readFileSync("scripts/verify_quick_ci_evidence.mjs", "utf8");
 
 test("privileged release jobs never checkout or execute candidate repository scripts", () => {
   const privileged = ["release-admission", "publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"];
-  for (const document of [workflow, recovery]) {
-    for (const jobName of privileged) {
-      const job = document.jobs?.[jobName];
-      if (!job) continue;
-      const steps = Array.isArray(job.steps) ? job.steps : [];
-      assert.equal(steps.some((step) => typeof step.uses === "string" && step.uses.startsWith("actions/checkout@")), false, `${jobName} must not checkout candidate source`);
-      for (const step of steps) {
-        if (typeof step.run !== "string") continue;
-        assert.doesNotMatch(step.run, /^\s*(?:(?:node|npm|cargo|go|bash)\s+|\.\/scripts\/)[^\n]*(?:scripts\/|Cargo\.toml|go\.mod|package\.json)/m, `${jobName} executes candidate repository code`);
-      }
+  for (const jobName of privileged) {
+    const job = workflow.jobs?.[jobName];
+    if (!job) continue;
+    const steps = Array.isArray(job.steps) ? job.steps : [];
+    assert.equal(steps.some((step) => typeof step.uses === "string" && step.uses.startsWith("actions/checkout@")), false, `${jobName} must not checkout candidate source`);
+    for (const step of steps) {
+      if (typeof step.run !== "string") continue;
+      assert.doesNotMatch(step.run, /^\s*(?:(?:node|npm|cargo|go|bash)\s+|\.\/scripts\/)[^\n]*(?:scripts\/|Cargo\.toml|go\.mod|package\.json)/m, `${jobName} executes candidate repository code`);
     }
   }
 });
@@ -44,74 +41,44 @@ test("Rust publication is artifact-only and has no repository write permission",
   assert.match(source, /struct\.pack\("<I", len\(crate_bytes\)\)/);
   assert.match(source, /"Content-Type": "application\/octet-stream"/);
   assert.match(source, /"Accept": "application\/json"/);
-  assert.doesNotMatch(source, /spec\/plugin\/platform-package-set-v2\.json/);
+  assert.doesNotMatch(source, /spec\/plugin\/platform-package-set-v3\.json/);
 });
 
-test("partial release recovery can publish the original immutable Rust artifact", () => {
-  const job = recovery.jobs["publish-rust"];
-  assert.ok(job, "recovery must include a Rust publication job");
-  assert.deepEqual(job.permissions, { actions: "read", contents: "read", "id-token": "write" });
-  assert.equal(job.environment, "release");
-  assert.ok(job.needs.includes("preflight"));
-  assert.ok(job.needs.includes("release-admission"));
-  const download = job.steps.find((step) => step.uses?.startsWith("actions/download-artifact@"));
-  assert.equal(download.with["artifact-ids"], "${{ needs.preflight.outputs.package-artifact-id }}");
-  assert.equal(download.with["run-id"], "${{ inputs.release_run_id }}");
-  assert.equal(download.with["merge-multiple"], true);
-  const source = job.steps.map((step) => step.run ?? "").join("\n");
-  assert.doesNotMatch(source, /spec\/plugin\/platform-package-set-v2\.json/);
-  assert.match(source, /api\/v1\/crates\/new/);
-  assert.ok(recovery.jobs["reconstruct-publication"].needs.includes("publish-rust"));
-});
-
-test("recovery submits each missing crate at most once and only polls afterward", () => {
-  const source = recovery.jobs["publish-rust"].steps.find(
-    (step) => step.name === "Publish or reconcile exact crate graph",
+test("standard release submits each missing crate at most once and only polls afterward", () => {
+  const source = workflow.jobs["publish-rust"].steps.find(
+    (step) => step.name === "Publish exact crate graph in dependency order",
   ).run;
   assert.match(source, /for attempt in range\(20\):/);
-  assert.match(source, /if remote is not None:\n\s+raise SystemExit\(f"\{name\}@\{version\} exists with different bytes"\)/);
+  assert.match(source, /if remote is not None:\n\s+raise SystemExit\(f"\{name\}@\{version\} already exists with different bytes"\)/);
   assert.match(source, /if submitted:\n\s+time\.sleep\(6\)\n\s+continue/);
   const submitted = source.indexOf("submitted = True");
-  const request = source.indexOf('urllib.request.Request("https://crates.io/api/v1/crates/new"');
+  const request = source.indexOf('"https://crates.io/api/v1/crates/new"');
   const upload = source.indexOf("urllib.request.urlopen(request, timeout=60)");
   assert.ok(request >= 0 && request < submitted && submitted < upload);
   assert.equal(source.match(/method="PUT"/g)?.length, 1);
   assert.equal(source.match(/submitted = True/g)?.length, 1);
 });
 
-test("recovery uses the normal artifact verifier and no unconsumed digest claim", () => {
+test("standard release binds the immutable package verifier to the release source", () => {
   const normalStep = workflow.jobs["publish-rust"].steps.find(
     (step) => step.name === "Verify immutable package artifact",
   );
-  const recoveryStep = recovery.jobs["publish-rust"].steps.find(
-    (step) => step.name === "Verify immutable package artifact",
-  );
   assert.ok(normalStep, "normal Rust publication must verify the complete package artifact");
-  assert.ok(recoveryStep, "recovery Rust publication must verify the complete package artifact");
-  assert.equal(recoveryStep.run, normalStep.run);
   assert.equal(normalStep.env.SOURCE_COMMIT, "${{ github.sha }}");
-  assert.equal(recoveryStep.env.SOURCE_COMMIT, "${{ needs.preflight.outputs.source-commit }}");
-  assert.equal(recoveryStep.env.VERSION, "${{ needs.preflight.outputs.version }}");
-
-  const recoverySource = recovery.jobs["publish-rust"].steps.map((step) => step.run ?? "").join("\n");
-  assert.doesNotMatch(recoverySource, /EXPECTED_ARTIFACT_DIGEST/);
-  assert.equal(recovery.jobs.preflight.outputs["package-artifact-digest"], undefined);
-  assert.equal(recovery.jobs.preflight.steps[0].env?.EXPECTED_ARTIFACT_DIGEST, undefined);
+  assert.equal(normalStep.env.VERSION, "${{ needs.preflight.outputs.version }}");
 });
 
 test("privileged Rust verifiers pin a tomllib-capable Python", () => {
-  for (const document of [workflow, recovery]) {
-    const steps = document.jobs["publish-rust"].steps;
-    const setupIndex = steps.findIndex((step) => step.uses?.startsWith("actions/setup-python@"));
-    const verifyIndex = steps.findIndex((step) => step.name === "Verify immutable package artifact");
-    assert.ok(setupIndex >= 0 && setupIndex < verifyIndex);
-    assert.equal(steps[setupIndex].uses, "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1");
-    assert.equal(steps[setupIndex].with["python-version"], "3.13");
-  }
+  const steps = workflow.jobs["publish-rust"].steps;
+  const setupIndex = steps.findIndex((step) => step.uses?.startsWith("actions/setup-python@"));
+  const verifyIndex = steps.findIndex((step) => step.name === "Verify immutable package artifact");
+  assert.ok(setupIndex >= 0 && setupIndex < verifyIndex);
+  assert.equal(steps[setupIndex].uses, "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1");
+  assert.equal(steps[setupIndex].with["python-version"], "3.13");
 });
 
 test("Rust artifact verification binds a closed metadata set independently of publish order", () => {
-  const packageSet = JSON.parse(readFileSync("spec/plugin/platform-package-set-v2.json", "utf8"));
+  const packageSet = JSON.parse(readFileSync("spec/plugin/platform-package-set-v3.json", "utf8"));
   const expected = packageSet.rust_crates.map(({ name }) => name).sort();
   const source = workflow.jobs["publish-rust"].steps.find(
     (step) => step.name === "Verify immutable package artifact",
@@ -123,7 +90,7 @@ test("Rust artifact verification binds a closed metadata set independently of pu
   const publishSource = workflow.jobs["publish-rust"].steps.find(
     (step) => step.name === "Publish exact crate graph in dependency order",
   ).run;
-  assert.match(publishSource, /order = \["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-runtime"\]/);
+  assert.match(publishSource, /order = \["redevplugin-runtime", "redevplugin-worker-sdk"\]/);
 });
 
 test("artifact downloads expose files at the declared release paths", () => {
@@ -159,25 +126,8 @@ test("inline privileged Python is syntactically valid", () => {
   }
 });
 
-test("inline recovery Python is syntactically valid", () => {
-  for (const job of Object.values(recovery.jobs)) {
-    for (const step of job.steps) {
-      if (typeof step.run !== "string") continue;
-      for (const match of step.run.matchAll(/<<'PY'\n([\s\S]*?)\nPY(?:\n|$)/g)) {
-        const result = spawnSync("python3", ["-c", "import sys; compile(sys.stdin.read(), '<workflow>', 'exec')"], {
-          input: match[1],
-          encoding: "utf8",
-        });
-        assert.equal(result.status, 0, `recovery inline Python syntax: ${result.stderr}`);
-      }
-    }
-  }
-});
-
-test("normal and recovery publication share one resumable release transaction", () => {
+test("standard publication uses one resumable release transaction", () => {
   const source = workflow.jobs["publish-release"].steps.map((step) => step.run ?? "").join("\n");
-  const recoverySource = recovery.jobs["publish-release"].steps.map((step) => step.run ?? "").join("\n");
-  assert.equal(source, recoverySource);
   const syntax = spawnSync("bash", ["-n"], { input: source, encoding: "utf8" });
   assert.equal(syntax.status, 0, syntax.stderr);
   assert.match(source, /redevplugin-release-transaction-v1 source_commit=/);
@@ -196,7 +146,7 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.match(source, /exact_asset_matches/);
   assert.match(source, /cmp -s "\$manifest" "\$downloaded"/);
   assert.match(source, /reconcile_public/);
-  assert.match(source, /name=platform-package-publication-v1\.json/);
+  assert.match(source, /name=platform-package-publication-v2\.json/);
   assert.match(source, /length == 1/);
   assert.match(source, /\.\[0\]\.content_type == \$content_type/);
   assert.match(source, /\.\[0\]\.state == "uploaded"/);
@@ -220,14 +170,9 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.deepEqual([...ordered].sort((left, right) => left - right), ordered);
 
   const normalAdmission = workflow.jobs["release-admission"];
-  const recoveryAdmission = recovery.jobs["release-admission"];
   assert.deepEqual(normalAdmission.permissions, { contents: "write" });
-  assert.deepEqual(recoveryAdmission.permissions, { contents: "write" });
   assert.equal(normalAdmission.environment, "release");
-  assert.equal(recoveryAdmission.environment, "release");
   assert.equal(normalAdmission.steps[0].env.ALLOW_PUBLIC, "false");
-  assert.equal(recoveryAdmission.steps[0].env.ALLOW_PUBLIC, "true");
-  assert.equal(normalAdmission.steps[0].run, recoveryAdmission.steps[0].run);
   assert.match(normalAdmission.steps[0].run, /gh api --paginate --slurp/);
   assert.match(normalAdmission.steps[0].run, /normalize_duplicate_releases/);
   assert.match(normalAdmission.steps[0].run, /validate_empty_bound_draft/);
@@ -239,9 +184,6 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.match(normalAdmission.steps[0].run, /normal release admission refuses an existing public Release/);
   for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"]) {
     assert.ok(workflow.jobs[jobName].needs.includes("release-admission"), `${jobName} must wait for release admission`);
-  }
-  for (const jobName of ["attest-publication", "publish-release"]) {
-    assert.ok(recovery.jobs[jobName].needs.includes("release-admission"), `recovery ${jobName} must wait for release admission`);
   }
 });
 
@@ -270,7 +212,6 @@ test("npm readbacks delegate bounded retry classification to the verifier", () =
   for (const [document, jobName] of [
     [workflow, "verify-npm-contracts"],
     [workflow, "verify-npm"],
-    [recovery, "reconstruct-publication"],
   ]) {
     const source = document.jobs[jobName].steps.map((step) => step.run ?? "").join("\n");
     assert.match(source, /node scripts\/verify_npm_registry_release\.mjs/, `${jobName} must use the typed verifier`);
@@ -290,7 +231,7 @@ test("release preflight binds the tag to the exact remote main tip", () => {
   );
 });
 
-test("release preflight uses a strict bounded Quick CI recovery evidence path", () => {
+test("release preflight uses a strict bounded Quick CI fallback evidence path", () => {
   assert.match(quickCIEvidenceVerifier, /query\("push"\)/);
   assert.match(quickCIEvidenceVerifier, /query\("workflow_dispatch"\)/);
   assert.match(quickCIEvidenceVerifier, /if \(pushRuns\.length !== 0\) return acceptExactlyOne\(pushRuns, "push"\)/);
@@ -310,52 +251,4 @@ test("release package build requires both hosted runtime containment targets", (
   assert.ok(containment.steps.some((step) =>
     step.run?.includes("TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement")));
   assert.ok(workflow.jobs["package-build"].needs.includes("runtime-containment"));
-});
-
-test("manual recovery binds one failed release run and its immutable package artifact", () => {
-  assert.ok(recovery.on?.workflow_dispatch?.inputs?.tag?.required);
-  assert.ok(recovery.on?.workflow_dispatch?.inputs?.release_run_id?.required);
-  assert.deepEqual(recovery.jobs.preflight.permissions, { actions: "read", contents: "read" });
-  const source = recovery.jobs.preflight.steps.map((step) => step.run ?? "").join("\n");
-  assert.match(source, /GITHUB_REF.*refs\/heads\/main/);
-  assert.match(source, /git merge-base --is-ancestor.*origin\/main/);
-  assert.match(source, /"event": "push"/);
-  assert.match(source, /"path": "\.github\/workflows\/release\.yml"/);
-  assert.match(source, /"conclusion": "failure"/);
-  assert.match(source, /platform-packages-\{source_commit\}/);
-  assert.match(source, /len\(matches\) != 1/);
-  assert.match(source, /sha256:\[0-9a-f\]\{64\}/);
-  assert.match(source, /original platform package artifact digest is invalid/);
-  assert.doesNotMatch(source, /package-artifact-digest=/);
-  assert.doesNotMatch(source, /assert_github_release_absent\.sh/);
-
-  const download = recovery.jobs["reconstruct-publication"].steps.find(
-    (step) => step.uses?.startsWith("actions/download-artifact@") && step.with?.["run-id"] !== undefined,
-  );
-  assert.ok(download);
-  assert.equal(download.with["artifact-ids"], "${{ needs.preflight.outputs.package-artifact-id }}");
-  assert.equal(download.with["run-id"], "${{ inputs.release_run_id }}");
-  assert.equal(download.with["merge-multiple"], true);
-  const artifactSource = recovery.jobs["reconstruct-publication"].steps
-    .find((step) => step.name === "Verify original immutable package artifact").run;
-  assert.match(artifactSource, /manifest\.platform_version !== process\.env\.VERSION/);
-  assert.match(artifactSource, /manifest\.source_commit !== process\.env\.SOURCE_COMMIT/);
-});
-
-test("manual recovery separates untrusted readback from privileged publication", () => {
-  assert.deepEqual(recovery.jobs["reconstruct-publication"].permissions, { actions: "read", contents: "read" });
-  for (const jobName of ["attest-publication", "publish-release"]) {
-    const job = recovery.jobs[jobName];
-    assert.equal(job.environment, "release");
-    assert.equal(job.steps.some((step) => step.uses?.startsWith("actions/checkout@")), false);
-    for (const step of job.steps) {
-      assert.doesNotMatch(step.run ?? "", /node scripts\/|\.\/scripts\//, `${jobName} executes repository scripts`);
-    }
-  }
-  const publishSource = recovery.jobs["publish-release"].steps.map((step) => step.run ?? "").join("\n");
-  assert.match(publishSource, /draft: true/);
-  assert.match(publishSource, /redevplugin-release-transaction-v1/);
-  assert.match(publishSource, /name=platform-package-publication-v1\.json/);
-  assert.match(publishSource, /content_type.*CONTENT_TYPE/);
-  assert.match(publishSource, /\{draft: false, make_latest: "true"\}/);
 });

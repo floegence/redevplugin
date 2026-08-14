@@ -136,15 +136,16 @@ business resource, desktop shell, or UI surface.
 
 ## Rust Runtime
 
-The Rust workspace contains `redevplugin-runtime`, the public
-`redevplugin-worker-sdk`, and support crates for IPC, target classification, and
-WASM ABI validation. The runtime is launched by the Go Host through
-`internal/runtimeclient`. Worker authors pin the SDK to the same immutable Git tag as
-the Host/runtime release. ReDevPlugin publishes versioned source crates for this
-runtime set. Host products build the runtime binary from exact published Rust
-source crates after verifying registry checksums, source identity, Cargo.lock,
-and the platform contract digest; they do not download an upstream OS binary or
-replace the platform supervisor.
+The public Rust workspace boundary contains `redevplugin-runtime` and
+`redevplugin-worker-sdk`. IPC framing and WASM ABI validation are private
+runtime modules; target classification remains owned by the Go connectivity
+layer. The runtime is launched by the Go Host through `internal/runtimeclient`.
+Worker authors pin the SDK to the same immutable release as the Host/runtime.
+ReDevPlugin publishes versioned source crates for this boundary. Host products
+build the runtime binary from exact published Rust source crates after verifying
+registry checksums, source identity, dependency metadata, and the platform
+contract digest; they do not download an upstream OS binary or replace the
+platform supervisor.
 
 The current IPC model is supervised stdin/stdout newline JSON. The Host remains
 the authority for identity, policy, grants, quotas, revocation, storage, and
@@ -390,10 +391,10 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/bridge-v7.schema.json`;
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
 - `spec/plugin/opaque-surface-transport-v6.schema.json`;
-- `spec/plugin/compatibility-manifest-v17.schema.json`;
+- `spec/plugin/compatibility-manifest-v18.schema.json`;
 - `spec/plugin/owner-scope-root-recovery-v1.schema.json`;
-- `spec/plugin/platform-package-set-v2.schema.json`;
-- `spec/plugin/platform-package-publication-v1.schema.json`;
+- `spec/plugin/platform-package-set-v3.schema.json`;
+- `spec/plugin/platform-package-publication-v2.schema.json`;
 - `spec/plugin/runtime-admission-v1.schema.json`;
 - `spec/plugin/runtime-descriptor-v2.schema.json`;
 - `spec/plugin/process-containment-v1.schema.json`;

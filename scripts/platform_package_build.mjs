@@ -45,7 +45,7 @@ export async function buildPlatformPackages({
 } = {}) {
   validateBuildInputs({ outDir, version, sourceCommit });
   const platformPackageSet = parseStrictJSON(
-    readFileSync(join(root, "spec/plugin/platform-package-set-v2.json")),
+    readFileSync(join(root, "spec/plugin/platform-package-set-v3.json")),
     "platform package set",
   );
   if (platformPackageSet.platform_version !== version) {
@@ -177,13 +177,6 @@ export function verifyRustPublishMetadata(path, { version, sourceCommit }) {
   if (!Array.isArray(metadata.packages) || metadata.packages.length !== rustSourcePackages.length) {
     throw new Error("Rust publication metadata package set is incomplete");
   }
-  const internalDependencies = new Map([
-    ["redevplugin-ipc", new Map([["redevplugin-contracts", "dev"]])],
-    ["redevplugin-runtime", new Map([
-      ["redevplugin-ipc", "normal"],
-      ["redevplugin-wasm-abi", "normal"],
-    ])],
-  ]);
   const firstPartyNames = new Set(rustSourcePackages.map(({ name }) => name));
   for (let index = 0; index < rustSourcePackages.length; index += 1) {
     const pkg = metadata.packages[index];
@@ -207,8 +200,6 @@ export function verifyRustPublishMetadata(path, { version, sourceCommit }) {
     if (!isClosedStringArrayMap(pkg.features) || !isEmptyObject(pkg.badges) || !Array.isArray(pkg.deps)) {
       throw new Error(`Rust publication metadata collections are invalid for ${expectedName}`);
     }
-    const expectedInternal = internalDependencies.get(expectedName) ?? new Map();
-    const actualInternal = new Map();
     const dependencyKeys = new Set();
     for (const dependency of pkg.deps) {
       exactKeys(dependency, [
@@ -229,16 +220,8 @@ export function verifyRustPublishMetadata(path, { version, sourceCommit }) {
       if (dependencyKeys.has(dependencyKey)) throw new Error(`duplicate Rust publication dependency for ${expectedName}`);
       dependencyKeys.add(dependencyKey);
       if (firstPartyNames.has(dependency.name)) {
-        if (dependency.version_req !== `=${version}` || dependency.optional
-            || dependency.target !== null || dependency.explicit_name_in_toml !== null
-            || expectedInternal.get(dependency.name) !== dependency.kind) {
-          throw new Error(`Rust publication internal dependency is invalid for ${expectedName}`);
-        }
-        actualInternal.set(dependency.name, dependency.kind);
+        throw new Error(`Rust publication package ${expectedName} has a forbidden first-party dependency`);
       }
-    }
-    if (JSON.stringify([...actualInternal]) !== JSON.stringify([...expectedInternal])) {
-      throw new Error(`Rust publication internal dependency set is incomplete for ${expectedName}`);
     }
   }
   return metadata;
@@ -289,15 +272,16 @@ export function verifyPlatformPackageBuild(manifestPath, { verifyArchives = true
   assertSHA256(manifest.contract_set_sha256, "platform package build contract digest");
 
   const packageSet = parseStrictJSON(
-    readFileSync(join(root, "spec/plugin/platform-package-set-v2.json")),
+    readFileSync(join(root, "spec/plugin/platform-package-set-v3.json")),
     "platform package set",
   );
   if (manifest.platform_version !== packageSet.platform_version
       || manifest.contract_set_sha256 !== packageSet.contract_set_sha256) {
     throw new Error("platform package build does not match the active package set");
   }
-  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== 7) {
-    throw new Error("platform package build must contain exactly seven package artifacts");
+  const expectedArtifactCount = npmCoordinates.length + rustSourcePackages.length;
+  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== expectedArtifactCount) {
+    throw new Error(`platform package build must contain exactly ${expectedArtifactCount} package artifacts`);
   }
 
   const expected = new Map([

@@ -539,21 +539,18 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v17",
+      schema_version: "redevplugin.compatibility.v18",
       package_set: {
-        schema_version: "redevplugin.platform_package_set.v2",
-        platform_version: "1.0.0",
-        go_module: { module: "github.com/floegence/redevplugin", version: "v1.0.0" },
+        schema_version: "redevplugin.platform_package_set.v3",
+        platform_version: "1.1.0",
+        go_module: { module: "github.com/floegence/redevplugin", version: "v1.1.0" },
         npm_packages: [
-          { name: "@floegence/redevplugin-contracts", version: "1.0.0" },
-          { name: "@floegence/redevplugin-ui", version: "1.0.0" },
+          { name: "@floegence/redevplugin-contracts", version: "1.1.0" },
+          { name: "@floegence/redevplugin-ui", version: "1.1.0" },
         ],
         rust_crates: [
-          { name: "redevplugin-contracts", version: "1.0.0", role: "contracts" },
-          { name: "redevplugin-ipc", version: "1.0.0", role: "ipc" },
-          { name: "redevplugin-wasm-abi", version: "1.0.0", role: "wasm_abi" },
-          { name: "redevplugin-worker-sdk", version: "1.0.0", role: "worker_sdk" },
-          { name: "redevplugin-runtime", version: "1.0.0", role: "runtime" },
+          { name: "redevplugin-runtime", version: "1.1.0", role: "runtime" },
+          { name: "redevplugin-worker-sdk", version: "1.1.0", role: "worker_sdk" },
         ],
         contract_registry_version: "contract-registry-v2",
         contract_set_sha256: contractSetSHA256,
@@ -583,7 +580,7 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v17");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v18");
   assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v15");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v8");
   assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v3");

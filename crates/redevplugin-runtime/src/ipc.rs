@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "private protocol helpers retain security regression coverage"
+)]
+
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::de::DeserializeOwned;
@@ -14,11 +19,6 @@ pub const RUST_IPC_VERSION: &str = "rust-ipc-v6";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";
 
-#[cfg(test)]
-fn contract_fixture(id: redevplugin_contracts::ContractId) -> &'static str {
-    std::str::from_utf8(redevplugin_contracts::get(id).bytes())
-        .expect("generated contracts are valid UTF-8")
-}
 pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
 pub const RUNTIME_LEASE_SIGNATURE_ALGORITHM: &str = "ed25519";
 pub const WORKER_INVOCATION_TARGET_SCHEMA_VERSION: &str = "redevplugin.worker_invocation_target.v1";
@@ -4172,48 +4172,6 @@ mod tests {
             process_creation_denied: true,
             reexec_denied: true,
             active: true,
-        }
-    }
-
-    #[test]
-    fn runtime_limit_constants_match_the_ipc_schema() {
-        let schema: Value = serde_json::from_str(contract_fixture(
-            redevplugin_contracts::ContractId::RUST_IPC_SCHEMA,
-        ))
-        .expect("IPC schema");
-        let properties = schema["$defs"]["runtime_limits"]["properties"]
-            .as_object()
-            .expect("runtime limit properties");
-        for (field, minimum, maximum) in [
-            (
-                "worker_count",
-                MIN_RUNTIME_WORKER_COUNT,
-                MAX_RUNTIME_WORKER_COUNT,
-            ),
-            (
-                "queue_capacity",
-                MIN_RUNTIME_QUEUE_CAPACITY,
-                MAX_RUNTIME_QUEUE_CAPACITY,
-            ),
-            (
-                "per_plugin_concurrency",
-                MIN_RUNTIME_PER_PLUGIN_CONCURRENCY,
-                MAX_RUNTIME_PER_PLUGIN_CONCURRENCY,
-            ),
-            (
-                "module_cache_entries",
-                MIN_RUNTIME_MODULE_CACHE_ENTRIES,
-                MAX_RUNTIME_MODULE_CACHE_ENTRIES,
-            ),
-            (
-                "module_cache_source_bytes",
-                MIN_RUNTIME_MODULE_CACHE_SOURCE_BYTES,
-                MAX_RUNTIME_MODULE_CACHE_SOURCE_BYTES,
-            ),
-        ] {
-            let property = properties.get(field).expect("runtime limit property");
-            assert_eq!(property["minimum"].as_u64(), Some(minimum as u64));
-            assert_eq!(property["maximum"].as_u64(), Some(maximum as u64));
         }
     }
 

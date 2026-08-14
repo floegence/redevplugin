@@ -48,7 +48,7 @@ func TestWASMWorkerSchemaMatchesExecutableRuntimeContract(t *testing.T) {
 		t.Fatalf("table.max_elements = %#v", got)
 	}
 
-	constants := rustStringConstants(t, filepath.Join(root, "crates", "redevplugin-wasm-abi", "src", "lib.rs"))
+	constants := rustStringConstants(t, filepath.Join(root, "crates", "redevplugin-runtime", "src", "wasm_abi.rs"))
 	if constants["WASM_WORKER_ABI_VERSION"] != version.WASMABIVersion {
 		t.Fatalf("rust ABI version = %q", constants["WASM_WORKER_ABI_VERSION"])
 	}

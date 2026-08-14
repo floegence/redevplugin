@@ -68,29 +68,28 @@ test("Cargo metadata build-code policy accepts inert manifests and rejects execu
 
 test("Rust source package metadata matches the closed platform topology", () => {
   assert.deepEqual(rustSourcePackages.map(({ name, role }) => ({ name, role })), [
-    { name: "redevplugin-contracts", role: "contracts" },
-    { name: "redevplugin-ipc", role: "ipc" },
-    { name: "redevplugin-wasm-abi", role: "wasm_abi" },
-    { name: "redevplugin-worker-sdk", role: "worker_sdk" },
     { name: "redevplugin-runtime", role: "runtime" },
+    { name: "redevplugin-worker-sdk", role: "worker_sdk" },
   ]);
+  assert.match(
+    readFileSync("crates/redevplugin-runtime/Cargo.toml", "utf8"),
+    /"proptest-regressions\/\*\*"/,
+  );
   validateSourcePackageMetadata();
 });
 
 test("crate-local fixtures remain exact copies of their canonical repository inputs", () => {
   for (const [canonical, local] of [
-    ["testdata/contracts/release-signing-v1.json", "crates/redevplugin-contracts/tests/fixtures/release-signing-v1.json"],
-    ["testdata/contracts/runtime-lease-signature-v1.json", "crates/redevplugin-ipc/testdata/runtime-lease-signature-v1.json"],
-    ["testdata/contracts/runtime-lease-signature-v1-invocation.json", "crates/redevplugin-ipc/testdata/runtime-lease-signature-v1-invocation.json"],
-    ["testdata/contracts/ipc/missing_required.json", "crates/redevplugin-ipc/testdata/ipc/missing_required.json"],
-    ["testdata/contracts/ipc/replay_frame.json", "crates/redevplugin-ipc/testdata/ipc/replay_frame.json"],
-    ["testdata/contracts/ipc/runtime_generation_mismatch.json", "crates/redevplugin-ipc/testdata/ipc/runtime_generation_mismatch.json"],
-    ["testdata/contracts/ipc/unknown_enum.json", "crates/redevplugin-ipc/testdata/ipc/unknown_enum.json"],
-    ["testdata/contracts/ipc/valid_hello_ack.json", "crates/redevplugin-ipc/testdata/ipc/valid_hello_ack.json"],
-    ["testdata/contracts/ipc/valid_invoke_worker_result.json", "crates/redevplugin-ipc/testdata/ipc/valid_invoke_worker_result.json"],
-    ["testdata/contracts/ipc/valid_validate_handle_grant.json", "crates/redevplugin-ipc/testdata/ipc/valid_validate_handle_grant.json"],
-    ["testdata/contracts/wasm/invalid-final-opcode.hex", "crates/redevplugin-wasm-abi/testdata/wasm/invalid-final-opcode.hex"],
-    ["testdata/contracts/wasm/table-maximum-exceeds-limit.hex", "crates/redevplugin-wasm-abi/testdata/wasm/table-maximum-exceeds-limit.hex"],
+    ["testdata/contracts/runtime-lease-signature-v1.json", "crates/redevplugin-runtime/testdata/runtime-lease-signature-v1.json"],
+    ["testdata/contracts/ipc/missing_required.json", "crates/redevplugin-runtime/testdata/ipc/missing_required.json"],
+    ["testdata/contracts/ipc/replay_frame.json", "crates/redevplugin-runtime/testdata/ipc/replay_frame.json"],
+    ["testdata/contracts/ipc/runtime_generation_mismatch.json", "crates/redevplugin-runtime/testdata/ipc/runtime_generation_mismatch.json"],
+    ["testdata/contracts/ipc/unknown_enum.json", "crates/redevplugin-runtime/testdata/ipc/unknown_enum.json"],
+    ["testdata/contracts/ipc/valid_hello_ack.json", "crates/redevplugin-runtime/testdata/ipc/valid_hello_ack.json"],
+    ["testdata/contracts/ipc/valid_invoke_worker_result.json", "crates/redevplugin-runtime/testdata/ipc/valid_invoke_worker_result.json"],
+    ["testdata/contracts/ipc/valid_validate_handle_grant.json", "crates/redevplugin-runtime/testdata/ipc/valid_validate_handle_grant.json"],
+    ["testdata/contracts/wasm/invalid-final-opcode.hex", "crates/redevplugin-runtime/testdata/wasm/invalid-final-opcode.hex"],
+    ["testdata/contracts/wasm/table-maximum-exceeds-limit.hex", "crates/redevplugin-runtime/testdata/wasm/table-maximum-exceeds-limit.hex"],
     ["testdata/contracts/runtime-lease-signature-v1-invocation.json", "crates/redevplugin-runtime/testdata/runtime-lease-signature-v1-invocation.json"],
     ["examples/plugins/memos/workers/memos.wasm", "crates/redevplugin-runtime/testdata/memos.wasm"],
   ]) {
@@ -196,7 +195,7 @@ test("all Rust source crates package deterministically and test from an isolated
       validDigest: /^[0-9a-f]{64}$/.test(sha256),
     })), rustSourcePackages.map(({ name }) => ({
       name,
-      version: "1.0.0",
+      version: "1.1.0",
       validSize: true,
       validDigest: true,
     })));

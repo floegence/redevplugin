@@ -1,6 +1,22 @@
 # Changelog
 
+## v1.1.0
+
+- Publish one complete coordinated package set: the Go module, two npm
+  packages, and the independently consumed `redevplugin-runtime` and
+  `redevplugin-worker-sdk` crates.
+- Merge the IPC framing and WASM ABI implementations into private runtime
+  modules while retaining their protocol, isolation, validation, and TOCTOU
+  regression coverage.
+- Retract the incomplete Go `v1.0.0` coordinate; its matching Rust artifacts
+  and GitHub publication evidence were never published.
+- Raise the Go baseline to 1.26.6 so release builds include the current
+  standard-library security fixes.
+
 ## v1.0.0
+
+This coordinated release was incomplete: the Go module and npm packages were
+published, but its Rust package set and GitHub publication evidence were not.
 
 - Make the Go Host the single lifecycle, action-state, recovery, and control
   database owner, with one public Execution/Event model for asynchronous work.

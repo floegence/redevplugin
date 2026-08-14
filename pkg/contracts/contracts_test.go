@@ -132,10 +132,10 @@ func TestContractSnapshotsAndBytesAreOwned(t *testing.T) {
 	packageSet.RustCrates[0].Role = "mutated"
 	packageSet.ContractRegistryVersion = "mutated"
 	packageSet.ContractSetSHA256 = "mutated"
-	if got := contracts.PackageSet(); got.SchemaVersion != "redevplugin.platform_package_set.v2" ||
-		got.PlatformVersion != "1.0.0" ||
+	if got := contracts.PackageSet(); got.SchemaVersion != "redevplugin.platform_package_set.v3" ||
+		got.PlatformVersion != "1.1.0" ||
 		got.GoModule.Module != "github.com/floegence/redevplugin" ||
-		got.NPMPackages[0].Name != wantNPMName || got.RustCrates[0].Role != "contracts" ||
+		got.NPMPackages[0].Name != wantNPMName || got.RustCrates[0].Role != "runtime" ||
 		got.ContractRegistryVersion != "contract-registry-v2" || len(got.ContractSetSHA256) != 64 {
 		t.Fatal("package set snapshot shares mutable coordinate storage")
 	}
@@ -251,7 +251,7 @@ func TestContractReadsAreRaceSafe(t *testing.T) {
 		}()
 	}
 	wait.Wait()
-	if contracts.PackageSet().RustCrates[0].Name != "redevplugin-contracts" {
+	if contracts.PackageSet().RustCrates[0].Name != "redevplugin-runtime" {
 		t.Fatal("concurrent caller mutation changed the embedded package set")
 	}
 }

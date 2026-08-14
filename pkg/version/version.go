@@ -18,7 +18,7 @@ import (
 const (
 	modulePath                      = "github.com/floegence/redevplugin"
 	devVersion                      = "0.0.0-dev"
-	developmentCompatibilityVersion = "1.0.0"
+	developmentCompatibilityVersion = "1.1.0"
 )
 
 var (
@@ -256,11 +256,8 @@ func currentPlatformPackageSet() PlatformPackageSet {
 			{Name: "@floegence/redevplugin-ui", Version: version},
 		},
 		RustCrates: []RustCrateCoordinate{
-			{Name: "redevplugin-contracts", Version: version, Role: "contracts"},
-			{Name: "redevplugin-ipc", Version: version, Role: "ipc"},
-			{Name: "redevplugin-wasm-abi", Version: version, Role: "wasm_abi"},
-			{Name: "redevplugin-worker-sdk", Version: version, Role: "worker_sdk"},
 			{Name: "redevplugin-runtime", Version: version, Role: "runtime"},
+			{Name: "redevplugin-worker-sdk", Version: version, Role: "worker_sdk"},
 		},
 		ContractRegistryVersion: ContractRegistryVersion,
 		ContractSetSHA256:       ContractSetSHA256,

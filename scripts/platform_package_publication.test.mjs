@@ -6,21 +6,19 @@ import test from "node:test";
 
 import {
   createPlatformPackagePublication,
+  publicationAssetContentType,
   publicationAssetName,
   verifyPlatformPackagePublication,
   verifyPlatformReleaseDirectory,
 } from "./platform_package_publication.mjs";
 
-const version = "1.0.0";
+const version = "1.1.0";
 const sourceCommit = "1".repeat(40);
 const h1 = `h1:${Buffer.alloc(32, 1).toString("base64")}`;
 const npmNames = ["@floegence/redevplugin-contracts", "@floegence/redevplugin-ui"];
 const rustNames = [
-  "redevplugin-contracts",
-  "redevplugin-ipc",
-  "redevplugin-wasm-abi",
-  "redevplugin-worker-sdk",
   "redevplugin-runtime",
+  "redevplugin-worker-sdk",
 ];
 
 test("publication creation binds exact registry readbacks and source identity", () => {
@@ -43,6 +41,10 @@ test("publication creation binds exact registry readbacks and source identity", 
 });
 
 test("GitHub Release readback permits exactly one publication asset", () => {
+  assert.equal(
+    publicationAssetContentType,
+    "application/vnd.floegence.redevplugin-platform-publication.v2+json",
+  );
   const directory = mkdtempSync(join(tmpdir(), "redevplugin-platform-release-"));
   try {
     writeFileSync(join(directory, publicationAssetName), `${JSON.stringify(validPublication(), null, 2)}\n`);
@@ -59,7 +61,7 @@ test("GitHub Release readback permits exactly one publication asset", () => {
 
 test("publication creation rejects substituted registry source commits", () => {
   const inputs = validReadbacks();
-  inputs.rustReadback[2].source_commit = "f".repeat(40);
+  inputs.rustReadback[1].source_commit = "f".repeat(40);
   assert.throws(() => createPlatformPackagePublication(inputs), /source commit mismatch/);
 });
 

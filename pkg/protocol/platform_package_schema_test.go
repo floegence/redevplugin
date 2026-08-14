@@ -16,11 +16,11 @@ import (
 
 func TestPlatformPackageSchemasValidateClosedGeneratedContracts(t *testing.T) {
 	registrySchema := compilePlatformPackageSchema(t, "contract-registry-v2.schema.json")
-	packageSetSchema := compilePlatformPackageSchema(t, "platform-package-set-v2.schema.json")
-	publicationSchema := compilePlatformPackageSchema(t, "platform-package-publication-v1.schema.json")
+	packageSetSchema := compilePlatformPackageSchema(t, "platform-package-set-v3.schema.json")
+	publicationSchema := compilePlatformPackageSchema(t, "platform-package-publication-v2.schema.json")
 
 	registry := readPlatformPackageJSON(t, "contract-registry-v2.json")
-	packageSet := readPlatformPackageJSON(t, "platform-package-set-v2.json")
+	packageSet := readPlatformPackageJSON(t, "platform-package-set-v3.json")
 	publication := validPlatformPackagePublication(t, packageSet)
 
 	for name, testCase := range map[string]struct {
@@ -41,11 +41,11 @@ func TestPlatformPackageSchemasValidateClosedGeneratedContracts(t *testing.T) {
 
 func TestPlatformPackageSchemasRejectOpenOrAmbiguousCoordinates(t *testing.T) {
 	registrySchema := compilePlatformPackageSchema(t, "contract-registry-v2.schema.json")
-	packageSetSchema := compilePlatformPackageSchema(t, "platform-package-set-v2.schema.json")
-	publicationSchema := compilePlatformPackageSchema(t, "platform-package-publication-v1.schema.json")
+	packageSetSchema := compilePlatformPackageSchema(t, "platform-package-set-v3.schema.json")
+	publicationSchema := compilePlatformPackageSchema(t, "platform-package-publication-v2.schema.json")
 
 	registry := readPlatformPackageJSON(t, "contract-registry-v2.json")
-	packageSet := readPlatformPackageJSON(t, "platform-package-set-v2.json")
+	packageSet := readPlatformPackageJSON(t, "platform-package-set-v3.json")
 	publication := validPlatformPackagePublication(t, packageSet)
 
 	tests := map[string]struct {
@@ -79,7 +79,7 @@ func TestPlatformPackageSchemasRejectOpenOrAmbiguousCoordinates(t *testing.T) {
 		"registry package set instance path": {
 			schema: registrySchema,
 			value: mutatePlatformPackageValue(t, registry, func(value map[string]any) {
-				value["artifacts"].([]any)[0].(map[string]any)["path"] = "spec/plugin/platform-package-set-v2.json"
+				value["artifacts"].([]any)[0].(map[string]any)["path"] = "spec/plugin/platform-package-set-v3.json"
 			}),
 		},
 		"package set duplicate npm": {
@@ -92,7 +92,7 @@ func TestPlatformPackageSchemasRejectOpenOrAmbiguousCoordinates(t *testing.T) {
 		"package set role mismatch": {
 			schema: packageSetSchema,
 			value: mutatePlatformPackageValue(t, packageSet, func(value map[string]any) {
-				value["rust_crates"].([]any)[0].(map[string]any)["role"] = "runtime"
+				value["rust_crates"].([]any)[0].(map[string]any)["role"] = "worker_sdk"
 			}),
 		},
 		"package set nested OS artifact": {
@@ -213,7 +213,7 @@ func validPlatformPackagePublication(t *testing.T, packageSet map[string]any) ma
 		})
 	}
 	return map[string]any{
-		"schema_version":   "redevplugin.platform_package_publication.v1",
+		"schema_version":   "redevplugin.platform_package_publication.v2",
 		"platform_version": version,
 		"source_commit":    commit,
 		"workflow": map[string]any{

@@ -1,3 +1,4 @@
+use crate::ipc as redevplugin_ipc;
 use redevplugin_ipc::ParsedWorkerInvocation;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};

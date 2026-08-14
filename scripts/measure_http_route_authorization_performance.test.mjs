@@ -8,6 +8,7 @@ import {
   buildInterleavedRunOrder,
   buildRouteAuthorizationDiagnostic,
   persistRouteAuthorizationDiagnostic,
+  routeAuthorizationBuildEnvironment,
 } from "./measure_http_route_authorization_performance.mjs";
 import {
   assertRouteAuthorizationThresholds,
@@ -21,6 +22,14 @@ import {
 } from "./route_authorization_comparison.mjs";
 
 const runOrder = buildInterleavedRunOrder(9);
+
+test("route authorization builds baseline and candidate profiles with the candidate module toolchain", () => {
+  assert.deepEqual(routeAuthorizationBuildEnvironment("go1.26.6"), {
+    GOWORK: "off",
+    GOTOOLCHAIN: "go1.26.6",
+  });
+  assert.throws(() => routeAuthorizationBuildEnvironment("go version go1.26.6 darwin/arm64"), /Go toolchain/);
+});
 
 test("route authorization keeps request tails at c1 and uses batch throughput at high concurrency", () => {
   const attempt = stableAttempt(1, 100, 105, 10, 10.5, 1000, 1040);

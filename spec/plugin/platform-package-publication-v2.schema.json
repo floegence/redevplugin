@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/platform-package-publication-v1.schema.json",
-  "title": "ReDevPlugin Platform Package Publication V1",
+  "$id": "https://schemas.redevplugin.dev/plugin/platform-package-publication-v2.schema.json",
+  "title": "ReDevPlugin Platform Package Publication V2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "platform_version", "source_commit", "workflow", "go_module", "npm_packages", "rust_crates", "contract_set_sha256"],
   "properties": {
-    "schema_version": {"const": "redevplugin.platform_package_publication.v1"},
+    "schema_version": {"const": "redevplugin.platform_package_publication.v2"},
     "platform_version": {"$ref": "#/$defs/version"},
     "source_commit": {"$ref": "#/$defs/commit"},
     "workflow": {"$ref": "#/$defs/workflow"},
@@ -24,15 +24,12 @@
     },
     "rust_crates": {
       "type": "array",
-      "minItems": 5,
-      "maxItems": 5,
+      "minItems": 2,
+      "maxItems": 2,
       "uniqueItems": true,
       "prefixItems": [
-        {"$ref": "#/$defs/rust_contracts"},
-        {"$ref": "#/$defs/rust_ipc"},
-        {"$ref": "#/$defs/rust_wasm_abi"},
-        {"$ref": "#/$defs/rust_worker_sdk"},
-        {"$ref": "#/$defs/rust_runtime"}
+        {"$ref": "#/$defs/rust_runtime"},
+        {"$ref": "#/$defs/rust_worker_sdk"}
       ],
       "items": false
     },
@@ -101,24 +98,6 @@
         "version": {"$ref": "#/$defs/version"},
         "registry_checksum_sha256": {"$ref": "#/$defs/sha256"}
       }
-    },
-    "rust_contracts": {
-      "allOf": [
-        {"$ref": "#/$defs/rust_crate"},
-        {"properties": {"name": {"const": "redevplugin-contracts"}}}
-      ]
-    },
-    "rust_ipc": {
-      "allOf": [
-        {"$ref": "#/$defs/rust_crate"},
-        {"properties": {"name": {"const": "redevplugin-ipc"}}}
-      ]
-    },
-    "rust_wasm_abi": {
-      "allOf": [
-        {"$ref": "#/$defs/rust_crate"},
-        {"properties": {"name": {"const": "redevplugin-wasm-abi"}}}
-      ]
     },
     "rust_worker_sdk": {
       "allOf": [

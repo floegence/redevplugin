@@ -9,24 +9,19 @@ import { parse } from "yaml";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 const workflow = parse(readFileSync(join(repositoryRoot, ".github/workflows/release.yml"), "utf8"));
-const recovery = parse(readFileSync(join(repositoryRoot, ".github/workflows/recover-release.yml"), "utf8"));
 const publicationSource = workflow.jobs["publish-release"].steps.find((step) => step.run)?.run;
-const recoverySource = recovery.jobs["publish-release"].steps.find((step) => step.run)?.run;
 const admissionSource = workflow.jobs["release-admission"].steps.find((step) => step.run)?.run;
-const recoveryAdmissionSource = recovery.jobs["release-admission"].steps.find((step) => step.run)?.run;
 const preflightScript = join(repositoryRoot, "scripts/verify_github_release_reconciliation_candidate.sh");
 
 const repository = "floegence/redevplugin";
 const tag = "v0.7.0";
 const sourceCommit = "1".repeat(40);
 const otherCommit = "2".repeat(40);
-const contentType = "application/vnd.floegence.redevplugin-platform-publication.v1+json";
-const assetName = "platform-package-publication-v1.json";
+const contentType = "application/vnd.floegence.redevplugin-platform-publication.v2+json";
+const assetName = "platform-package-publication-v2.json";
 const manifestBytes = Buffer.from('{"schema_version":1,"platform_version":"0.7.0"}\n');
 const marker = `<!-- redevplugin-release-transaction-v1 source_commit=${sourceCommit} -->`;
 
-assert.equal(publicationSource, recoverySource);
-assert.equal(admissionSource, recoveryAdmissionSource);
 
 const mockCommandSource = String.raw`#!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
@@ -687,10 +682,10 @@ function executePreflight(fixture) {
   });
 }
 
-function executeAdmission(fixture, allowPublic) {
+function executeAdmission(fixture) {
   return spawnSync("bash", ["-c", admissionSource], {
     cwd: fixture.root,
-    env: { ...fixture.env, ALLOW_PUBLIC: allowPublic ? "true" : "false" },
+    env: { ...fixture.env, ALLOW_PUBLIC: "false" },
     encoding: "utf8",
     timeout: 10_000,
   });
@@ -700,7 +695,7 @@ test("local pre-tag and write-authorized workflow admission accept only exact tr
   const cases = [
     ["absent", {}, true],
     ["valid draft", { release: release() }, true],
-    ["valid public", { release: release(false) }, "recovery-only"],
+    ["valid public", { release: release(false) }, false],
     ["wrong marker", { release: release(true, "unrelated") }, false],
     ["wrong source marker", { release: release(true, `<!-- redevplugin-release-transaction-v1 source_commit=${otherCommit} -->`) }, false],
     ["multiple empty drafts", { release: release(), extraReleases: [release(true, marker, 102)] }, "workflow-only"],
@@ -740,19 +735,16 @@ test("local pre-tag and write-authorized workflow admission accept only exact tr
     }, false],
   ];
   const modes = [
-    ["local pre-tag", executePreflight, false, false],
-    ["normal workflow admission", (fixture) => executeAdmission(fixture, false), false, true],
-    ["recovery workflow admission", (fixture) => executeAdmission(fixture, true), true, true],
+    ["local pre-tag", executePreflight, false],
+    ["standard workflow admission", executeAdmission, true],
   ];
-  for (const [mode, execute, allowsPublic, allowsDuplicateRepair] of modes) {
+  for (const [mode, execute, allowsDuplicateRepair] of modes) {
     for (const [name, overrides, accepted] of cases) {
       await t.test(`${mode}: ${name}`, () => {
         const fixture = createFixture(overrides);
         try {
           const result = execute(fixture);
-          const expected = accepted === "recovery-only"
-            ? allowsPublic
-            : accepted === "workflow-only"
+          const expected = accepted === "workflow-only"
               ? allowsDuplicateRepair
               : accepted;
           assert.equal(result.status === 0, expected, `${name}: ${result.stderr}`);
@@ -773,58 +765,6 @@ test("local pre-tag and write-authorized workflow admission accept only exact tr
         }
       });
     }
-  }
-});
-
-test("recovery admission removes only bound empty drafts beside one public release", async (t) => {
-  const cases = [
-    ["public release has the lower ID", {
-      release: release(false),
-      assets: [asset()],
-      extraReleases: [release(true, marker, 102)],
-    }, "delete-release-gh:102"],
-    ["public release has the higher ID", {
-      release: release(),
-      extraReleases: [release(false, marker, 102)],
-      extraReleaseAssets: { "102": [asset({ id: 202 })] },
-    }, "delete-release-gh:101"],
-    ["draft deletion response is lost", {
-      release: release(false),
-      assets: [asset()],
-      extraReleases: [release(true, marker, 102)],
-      deleteReleaseResponseLost: true,
-    }, "delete-release-gh:102"],
-  ];
-
-  for (const [name, overrides, expectedDeletion] of cases) {
-    await t.test(name, () => {
-      const normalFixture = createFixture(overrides);
-      try {
-        const normalResult = executeAdmission(normalFixture, false);
-        assert.notEqual(normalResult.status, 0);
-        assert.equal(
-          normalFixture.readState().events.some((event) => event.startsWith("delete-release-gh:")),
-          false,
-        );
-      } finally {
-        normalFixture.cleanup();
-      }
-
-      const recoveryFixture = createFixture(overrides);
-      try {
-        const recoveryResult = executeAdmission(recoveryFixture, true);
-        assert.equal(recoveryResult.status, 0, recoveryResult.stderr);
-        const state = recoveryFixture.readState();
-        assert.deepEqual(
-          state.events.filter((event) => event.startsWith("delete-release-gh:")),
-          [expectedDeletion],
-        );
-        assert.equal([state.release, ...state.extraReleases].filter(Boolean).length, 1);
-        assert.equal([state.release, ...state.extraReleases].filter(Boolean)[0].draft, false);
-      } finally {
-        recoveryFixture.cleanup();
-      }
-    });
   }
 });
 
@@ -852,7 +792,7 @@ test("workflow admission retains one bound asset draft and removes only empty du
     await t.test(name, () => {
       const fixture = createFixture(overrides);
       try {
-        const result = executeAdmission(fixture, true);
+        const result = executeAdmission(fixture);
         assert.equal(result.status, 0, result.stderr);
         const state = fixture.readState();
         assert.deepEqual(
@@ -863,44 +803,6 @@ test("workflow admission retains one bound asset draft and removes only empty du
         assert.equal(releases.length, 1);
         assert.equal(releases[0].id, expectedCanonicalID);
         assert.equal(releases[0].draft, true);
-      } finally {
-        fixture.cleanup();
-      }
-    });
-  }
-});
-
-test("recovery admission does not mutate ambiguous public and draft duplicates", async (t) => {
-  const cases = [
-    ["empty draft has the wrong marker", {
-      release: release(false),
-      assets: [asset()],
-      extraReleases: [release(true, "unrelated", 102)],
-    }],
-    ["draft has an asset", {
-      release: release(false),
-      assets: [asset()],
-      extraReleases: [release(true, marker, 102)],
-      extraReleaseAssets: { "102": [asset({ id: 202 })] },
-    }],
-    ["two public releases", {
-      release: release(false),
-      assets: [asset()],
-      extraReleases: [release(false, marker, 102)],
-      extraReleaseAssets: { "102": [asset({ id: 202 })] },
-    }],
-  ];
-
-  for (const [name, overrides] of cases) {
-    await t.test(name, () => {
-      const fixture = createFixture(overrides);
-      try {
-        const result = executeAdmission(fixture, true);
-        assert.notEqual(result.status, 0);
-        assert.equal(
-          fixture.readState().events.some((event) => event.startsWith("delete-release-gh:")),
-          false,
-        );
       } finally {
         fixture.cleanup();
       }

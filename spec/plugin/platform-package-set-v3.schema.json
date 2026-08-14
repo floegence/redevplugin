@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/platform-package-set-v2.schema.json",
-  "title": "ReDevPlugin Platform Package Set V2",
+  "$id": "https://schemas.redevplugin.dev/plugin/platform-package-set-v3.schema.json",
+  "title": "ReDevPlugin Platform Package Set V3",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "platform_version", "go_module", "npm_packages", "rust_crates", "contract_registry_version", "contract_set_sha256"],
   "properties": {
-    "schema_version": {"const": "redevplugin.platform_package_set.v2"},
+    "schema_version": {"const": "redevplugin.platform_package_set.v3"},
     "platform_version": {"$ref": "#/$defs/version"},
     "go_module": {"$ref": "#/$defs/go_module"},
     "npm_packages": {
@@ -22,15 +22,12 @@
     },
     "rust_crates": {
       "type": "array",
-      "minItems": 5,
-      "maxItems": 5,
+      "minItems": 2,
+      "maxItems": 2,
       "uniqueItems": true,
       "prefixItems": [
-        {"$ref": "#/$defs/rust_contracts"},
-        {"$ref": "#/$defs/rust_ipc"},
-        {"$ref": "#/$defs/rust_wasm_abi"},
-        {"$ref": "#/$defs/rust_worker_sdk"},
-        {"$ref": "#/$defs/rust_runtime"}
+        {"$ref": "#/$defs/rust_runtime"},
+        {"$ref": "#/$defs/rust_worker_sdk"}
       ],
       "items": false
     },
@@ -82,26 +79,8 @@
       "properties": {
         "name": {"type": "string", "minLength": 1, "maxLength": 128},
         "version": {"$ref": "#/$defs/version"},
-        "role": {"enum": ["contracts", "ipc", "wasm_abi", "worker_sdk", "runtime"]}
+        "role": {"enum": ["runtime", "worker_sdk"]}
       }
-    },
-    "rust_contracts": {
-      "allOf": [
-        {"$ref": "#/$defs/rust_crate"},
-        {"properties": {"name": {"const": "redevplugin-contracts"}, "role": {"const": "contracts"}}}
-      ]
-    },
-    "rust_ipc": {
-      "allOf": [
-        {"$ref": "#/$defs/rust_crate"},
-        {"properties": {"name": {"const": "redevplugin-ipc"}, "role": {"const": "ipc"}}}
-      ]
-    },
-    "rust_wasm_abi": {
-      "allOf": [
-        {"$ref": "#/$defs/rust_crate"},
-        {"properties": {"name": {"const": "redevplugin-wasm-abi"}, "role": {"const": "wasm_abi"}}}
-      ]
     },
     "rust_worker_sdk": {
       "allOf": [

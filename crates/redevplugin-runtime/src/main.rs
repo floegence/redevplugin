@@ -1,9 +1,15 @@
+mod ipc;
+#[cfg(test)]
+mod ipc_session_revoke_tests;
 mod module_cache;
 #[cfg(test)]
 mod performance_evidence;
 mod process_containment;
 mod scheduler;
+mod wasm_abi;
 
+use crate::ipc as redevplugin_ipc;
+use crate::wasm_abi as redevplugin_wasm_abi;
 use serde::Deserialize;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};

@@ -47,10 +47,10 @@ const contractsModuleURL = pathToFileURL(join(root, "packages/redevplugin-contra
 contractsModuleURL.searchParams.set("test", sha256(read("spec/plugin/contract-registry-v2.json")));
 const contracts = await import(contractsModuleURL.href);
 
-test("Go, npm, and Rust projections share one contract inventory and digest", () => {
+test("Go, npm, and runtime projections share one contract inventory and digest", () => {
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = JSON.parse(registryBytes.toString("utf8"));
-  const packageSet = readJSON("spec/plugin/platform-package-set-v2.json");
+  const packageSet = readJSON("spec/plugin/platform-package-set-v3.json");
 
   assert.deepEqual(Object.keys(contracts).sort(), [
     "InvalidReleaseDocumentError",
@@ -135,8 +135,7 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
 
   for (const [path, pattern] of [
     ["pkg/version/contract_set_gen.go", /ContractSetSHA256 = "([0-9a-f]{64})"/],
-    ["crates/redevplugin-ipc/src/contract_set_gen.rs", /CONTRACT_SET_SHA256: &str =\s*"([0-9a-f]{64})"/],
-    ["crates/redevplugin-contracts/src/contracts_gen.rs", /contract_set_sha256: "([0-9a-f]{64})"/],
+    ["crates/redevplugin-runtime/src/ipc/contract_set_gen.rs", /CONTRACT_SET_SHA256: &str =\s*"([0-9a-f]{64})"/],
   ]) {
     const match = readText(path).match(pattern);
     assert.equal(match?.[1], packageSet.contract_set_sha256, path);
@@ -167,7 +166,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
   try {
     const tarball = run("node", [
       "scripts/build_redevplugin_contracts_package.mjs",
-      "1.0.0",
+      "1.1.0",
       outputDirectory,
     ]).split("\n").at(-1);
     assert.ok(tarball);
@@ -202,7 +201,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
       "version",
     ]);
     assert.equal(manifest.name, "@floegence/redevplugin-contracts");
-    assert.equal(manifest.version, "1.0.0");
+    assert.equal(manifest.version, "1.1.0");
     assert.deepEqual(manifest.files, ["dist"]);
     assert.equal(manifest.sideEffects, false);
     assert.deepEqual(Object.keys(manifest.exports), ["."]);
@@ -299,7 +298,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
 
 test("UI entrypoints declare an exact dependency without loading raw contract bodies", async () => {
   const uiPackage = readJSON("packages/redevplugin-ui/package.json");
-  const packageSet = readJSON("spec/plugin/platform-package-set-v2.json");
+  const packageSet = readJSON("spec/plugin/platform-package-set-v3.json");
   assert.deepEqual(uiPackage.dependencies, {
     "@floegence/redevplugin-contracts": packageSet.platform_version,
   });

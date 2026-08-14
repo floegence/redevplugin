@@ -13,14 +13,13 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const contractSourcePath = join(root, "internal/contracts/active-contracts.json");
 const platformVersionPath = join(root, "spec/plugin/platform-version.json");
 const registryOutputPath = join(root, "spec/plugin/contract-registry-v2.json");
-const packageSetOutputPath = join(root, "spec/plugin/platform-package-set-v2.json");
+const packageSetOutputPath = join(root, "spec/plugin/platform-package-set-v3.json");
 const goContractsOutputPath = join(root, "pkg/contracts/contracts_gen.go");
 const goDigestOutputPath = join(root, "pkg/version/contract_set_gen.go");
 const typeScriptContractsOutputPath = join(root, "packages/redevplugin-contracts/src/contracts.gen.ts");
-const rustContractsOutputPath = join(root, "crates/redevplugin-contracts/src/contracts_gen.rs");
-const rustIPCDigestOutputPath = join(root, "crates/redevplugin-ipc/src/contract_set_gen.rs");
+const rustIPCDigestOutputPath = join(root, "crates/redevplugin-runtime/src/ipc/contract_set_gen.rs");
 const canonicalHelloAckFixturePath = join(root, "testdata/contracts/ipc/valid_hello_ack.json");
-const rustHelloAckFixturePath = join(root, "crates/redevplugin-ipc/testdata/ipc/valid_hello_ack.json");
+const rustHelloAckFixturePath = join(root, "crates/redevplugin-runtime/testdata/ipc/valid_hello_ack.json");
 const checkOnly = process.argv.slice(2).includes("--check");
 
 const MAX_JSON_BYTES = 64 * 1024;
@@ -29,7 +28,7 @@ const MAX_TOTAL_CONTRACT_BYTES = 32 * 1024 * 1024;
 const MAX_FORMATTER_BYTES = MAX_TOTAL_CONTRACT_BYTES * 8 + 8 * 1024 * 1024;
 const FORBIDDEN_ARTIFACT_PATHS = new Set([
   "spec/plugin/contract-registry-v2.json",
-  "spec/plugin/platform-package-set-v2.json",
+  "spec/plugin/platform-package-set-v3.json",
 ]);
 const GO_INITIALISMS = new Map([
   ["api", "API"],
@@ -51,11 +50,8 @@ const npmPackages = [
 ];
 
 const rustCrates = [
-  ["redevplugin-contracts", "contracts"],
-  ["redevplugin-ipc", "ipc"],
-  ["redevplugin-wasm-abi", "wasm_abi"],
-  ["redevplugin-worker-sdk", "worker_sdk"],
   ["redevplugin-runtime", "runtime"],
+  ["redevplugin-worker-sdk", "worker_sdk"],
 ];
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -122,7 +118,7 @@ export async function generatePlatformPackageContracts() {
   const contractSetSHA256 = computeContractSetSHA256(registryBytes, artifacts);
   const version = platformVersionSource.platform_version;
   const packageSet = {
-    schema_version: "redevplugin.platform_package_set.v2",
+    schema_version: "redevplugin.platform_package_set.v3",
     platform_version: version,
     go_module: {
       module: "github.com/floegence/redevplugin",
@@ -153,7 +149,6 @@ export async function generatePlatformPackageContracts() {
     [goContractsOutputPath, formatGo(renderGoContracts(registry, packageSet, embeddedArtifacts, registryContract))],
     [goDigestOutputPath, formatGo(renderGoContractSetDigest(contractSetSHA256))],
     [typeScriptContractsOutputPath, renderTypeScriptContracts(registry, packageSet, embeddedArtifacts, registryContract)],
-    [rustContractsOutputPath, formatRust(renderRustContracts(packageSet, embeddedArtifacts, registryContract))],
     [rustIPCDigestOutputPath, formatRust(renderRustContractSetDigest(contractSetSHA256))],
     [canonicalHelloAckFixturePath, helloAckFixtureBytes],
     [rustHelloAckFixturePath, helloAckFixtureBytes],
@@ -301,87 +296,6 @@ export const generatedContractSetSHA256 = ${JSON.stringify(packageSet.contract_s
 `;
 }
 
-function renderRustContracts(packageSet, artifacts, registryContract) {
-  const allContracts = [...artifacts, registryContract].sort(compareArtifactIDs);
-  const idConstants = allContracts
-    .map((contract) => `    pub const ${rustContractIDName(contract.id)}: Self = Self::from_static(${JSON.stringify(contract.id)});`)
-    .join("\n");
-  const parseArms = allContracts
-    .map((contract) => `        ${JSON.stringify(contract.id)} => Some(ContractId::${rustContractIDName(contract.id)}),`)
-    .join("\n");
-  const bodyValues = allContracts
-    .map((contract) => `static ${rustContractBodyName(contract.id)}: &[u8] = ${JSON.stringify(contract.body)}.as_bytes();`)
-    .join("\n");
-  const artifactValues = artifacts
-    .map((contract) => `    Contract::new(ContractId::${rustContractIDName(contract.id)}, ${JSON.stringify(contract.version)}, ${JSON.stringify(contract.sha256)}, ${rustContractBodyName(contract.id)}),`)
-    .join("\n");
-  const allValues = allContracts
-    .map((contract) => `    Contract::new(ContractId::${rustContractIDName(contract.id)}, ${JSON.stringify(contract.version)}, ${JSON.stringify(contract.sha256)}, ${rustContractBodyName(contract.id)}),`)
-    .join("\n");
-  const getArms = allContracts
-    .map((contract, index) => `        ContractId::${rustContractIDName(contract.id)} => &ALL[${index}],`)
-    .join("\n");
-  const registryIndex = allContracts.findIndex(({ id }) => id === "contract-registry");
-  const npmValues = packageSet.npm_packages
-    .map((coordinate) => `    NpmPackageCoordinate { name: ${JSON.stringify(coordinate.name)}, version: ${JSON.stringify(coordinate.version)} },`)
-    .join("\n");
-  const rustValues = packageSet.rust_crates
-    .map((coordinate) => `    RustCrateCoordinate { name: ${JSON.stringify(coordinate.name)}, version: ${JSON.stringify(coordinate.version)}, role: ${JSON.stringify(coordinate.role)} },`)
-    .join("\n");
-  return `// Code generated by scripts/generate_platform_package_contracts.mjs; DO NOT EDIT.
-
-use super::{Contract, ContractId, GoModuleCoordinate, NpmPackageCoordinate, PackageSet, RustCrateCoordinate};
-
-impl ContractId {
-${idConstants}
-}
-
-pub(crate) fn parse_contract_id(value: &str) -> Option<ContractId> {
-    match value {
-${parseArms}
-        _ => None,
-    }
-}
-
-${bodyValues}
-
-pub(crate) static ARTIFACTS: [Contract; ${artifacts.length}] = [
-${artifactValues}
-];
-
-pub(crate) static ALL: [Contract; ${allContracts.length}] = [
-${allValues}
-];
-
-pub(crate) const REGISTRY_CONTRACT_INDEX: usize = ${registryIndex};
-
-pub(crate) fn get(id: ContractId) -> &'static Contract {
-    match id {
-${getArms}
-        _ => unreachable!("ContractId can only contain generated values"),
-    }
-}
-
-static NPM_PACKAGES: [NpmPackageCoordinate; ${packageSet.npm_packages.length}] = [
-${npmValues}
-];
-
-static RUST_CRATES: [RustCrateCoordinate; ${packageSet.rust_crates.length}] = [
-${rustValues}
-];
-
-pub(crate) static PACKAGE_SET: PackageSet = PackageSet {
-    schema_version: ${JSON.stringify(packageSet.schema_version)},
-    platform_version: ${JSON.stringify(packageSet.platform_version)},
-    go_module: GoModuleCoordinate { module: ${JSON.stringify(packageSet.go_module.module)}, version: ${JSON.stringify(packageSet.go_module.version)} },
-    npm_packages: &NPM_PACKAGES,
-    rust_crates: &RUST_CRATES,
-    contract_registry_version: ${JSON.stringify(packageSet.contract_registry_version)},
-    contract_set_sha256: ${JSON.stringify(packageSet.contract_set_sha256)},
-};
-`;
-}
-
 function renderRustContractSetDigest(contractSetSHA256) {
   return `// Code generated by scripts/generate_platform_package_contracts.mjs; DO NOT EDIT.
 
@@ -391,14 +305,6 @@ pub const CONTRACT_SET_SHA256: &str = ${JSON.stringify(contractSetSHA256)};
 
 function goContractIDName(id) {
   return `ID${id.split("-").map(goNamePart).join("")}`;
-}
-
-function rustContractIDName(id) {
-  return id.replaceAll("-", "_").toUpperCase();
-}
-
-function rustContractBodyName(id) {
-  return `CONTRACT_BODY_${rustContractIDName(id)}`;
 }
 
 function goNamePart(value) {
@@ -525,7 +431,7 @@ function validatePlatformPackageSet(value, expectedContractSetSHA256) {
     "contract_registry_version",
     "contract_set_sha256",
   ], "platform package set");
-  if (value.schema_version !== "redevplugin.platform_package_set.v2") {
+  if (value.schema_version !== "redevplugin.platform_package_set.v3") {
     throw new Error("unsupported platform package set schema version");
   }
   assertStableVersion(value.platform_version, "platform package set version");
@@ -553,7 +459,7 @@ function validatePlatformPackagePublication(value, expectedContractSetSHA256) {
     "rust_crates",
     "contract_set_sha256",
   ], "platform package publication");
-  if (value.schema_version !== "redevplugin.platform_package_publication.v1") {
+  if (value.schema_version !== "redevplugin.platform_package_publication.v2") {
     throw new Error("unsupported platform package publication schema version");
   }
   assertStableVersion(value.platform_version, "platform package publication version");

@@ -20,7 +20,7 @@ async function readSessionScopeSchema() {
 }
 
 async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v17.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v18.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {

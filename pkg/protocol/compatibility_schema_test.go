@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v17.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v18.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v17" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v18" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -49,13 +49,13 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"resource_scope_schema_version":                "resource-scope-v1",
 		"session_scope_schema_version":                 "session-scope-v1",
 		"plugin_platform_openapi_version":              "plugin-platform-v15",
-		"compatibility_schema_version":                 "compatibility-manifest-v17",
+		"compatibility_schema_version":                 "compatibility-manifest-v18",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
 		"error_codes_schema_version":                   "error-codes-v8",
 		"performance_contract_version":                 "performance-contract-v4",
 		"performance_evidence_schema_version":          "performance-evidence-v4",
 		"contract_registry_version":                    "contract-registry-v2",
-		"platform_package_set_schema_version":          "platform-package-set-v2",
+		"platform_package_set_schema_version":          "platform-package-set-v3",
 		"runtime_admission_schema_version":             "runtime-admission-v1",
 		"runtime_descriptor_schema_version":            "runtime-descriptor-v2",
 		"owner_scope_root_recovery_schema_version":     "owner-scope-root-recovery-v1",

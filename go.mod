@@ -1,6 +1,8 @@
 module github.com/floegence/redevplugin
 
-go 1.26.5
+go 1.26.6
+
+retract v1.0.0 // Incomplete coordinated release: Rust artifacts and publication evidence were not published.
 
 require (
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1

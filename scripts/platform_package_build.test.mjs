@@ -7,10 +7,10 @@ import test from "node:test";
 
 import { verifyPlatformPackageBuild, verifyRustPublishMetadata } from "./platform_package_build.mjs";
 
-const version = "1.0.0";
+const version = "1.1.0";
 const sourceCommit = "1".repeat(40);
 const contractSetSHA256 = JSON.parse(readFileSync(
-  join(import.meta.dirname, "../spec/plugin/platform-package-set-v2.json"),
+  join(import.meta.dirname, "../spec/plugin/platform-package-set-v3.json"),
   "utf8",
 )).contract_set_sha256;
 
@@ -48,9 +48,8 @@ test("Rust upload metadata is closed and binds the exact first-party dependency 
       (value) => { value.source_commit = "2".repeat(40); },
       (value) => { value.packages.pop(); },
       (value) => { value.packages[0].extra = true; },
-      (value) => { value.packages[1].deps[0].version_req = "^0.6"; },
-      (value) => { value.packages[4].deps[0].kind = "dev"; },
-      (value) => { value.packages[0].deps.push(internalDependency("redevplugin-runtime", "normal")); },
+      (value) => { value.packages[0].deps.push(internalDependency("redevplugin-worker-sdk", "normal")); },
+      (value) => { value.packages[1].deps.push(internalDependency("redevplugin-runtime", "normal")); },
     ]) {
       const candidate = structuredClone(valid);
       mutate(candidate);
@@ -64,26 +63,16 @@ test("Rust upload metadata is closed and binds the exact first-party dependency 
 
 function validRustPublishMetadata() {
   const names = [
-    "redevplugin-contracts",
-    "redevplugin-ipc",
-    "redevplugin-wasm-abi",
-    "redevplugin-worker-sdk",
     "redevplugin-runtime",
+    "redevplugin-worker-sdk",
   ];
-  const dependencies = new Map([
-    ["redevplugin-ipc", [internalDependency("redevplugin-contracts", "dev")]],
-    ["redevplugin-runtime", [
-      internalDependency("redevplugin-ipc", "normal"),
-      internalDependency("redevplugin-wasm-abi", "normal"),
-    ]],
-  ]);
   return {
     schema_version: "redevplugin.rust_publish_metadata.v1",
     source_commit: sourceCommit,
     packages: names.map((name) => ({
       name,
       vers: version,
-      deps: dependencies.get(name) ?? [],
+      deps: [],
       features: {},
       authors: [],
       description: `${name} fixture`,
@@ -125,11 +114,8 @@ function createFixture() {
     ["npm", "@floegence/redevplugin-contracts", `npm/floegence-redevplugin-contracts-${version}.tgz`],
     ["npm", "@floegence/redevplugin-ui", `npm/floegence-redevplugin-ui-${version}.tgz`],
     ...[
-      "redevplugin-contracts",
-      "redevplugin-ipc",
-      "redevplugin-wasm-abi",
-      "redevplugin-worker-sdk",
       "redevplugin-runtime",
+      "redevplugin-worker-sdk",
     ].map((name) => ["rust", name, `rust/${name}-${version}.crate`]),
   ];
   const artifacts = coordinates.map(([kind, name, path], index) => {

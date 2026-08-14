@@ -1,3 +1,5 @@
+use crate::ipc as redevplugin_ipc;
+
 #[cfg(target_os = "linux")]
 const PROCESS_CONTAINMENT_SCHEMA_VERSION: &str = "redevplugin.process_containment.v1";
 #[cfg(target_os = "linux")]
@@ -90,7 +92,7 @@ mod linux {
         }
     }
 
-    pub(super) fn activate() -> Result<redevplugin_ipc::ProcessContainmentEvidence, String> {
+    pub(super) fn activate() -> Result<crate::ipc::ProcessContainmentEvidence, String> {
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         return Err("runtime process containment is unsupported on this architecture".to_string());
 
@@ -100,7 +102,7 @@ mod linux {
             set_no_new_privileges()?;
             install_seccomp_filter()?;
             restore_runtime_signal_mask()?;
-            Ok(redevplugin_ipc::ProcessContainmentEvidence {
+            Ok(crate::ipc::ProcessContainmentEvidence {
                 schema_version: PROCESS_CONTAINMENT_SCHEMA_VERSION.to_string(),
                 profile: PROCESS_CONTAINMENT_PROFILE.to_string(),
                 seccomp_policy_sha256: SECCOMP_POLICY_SHA256.to_string(),

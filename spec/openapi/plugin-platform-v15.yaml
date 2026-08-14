@@ -1875,7 +1875,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PluginRecord" }
     PluginCompatibilityManifest:
-      $ref: "../plugin/compatibility-manifest-v17.schema.json"
+      $ref: "../plugin/compatibility-manifest-v18.schema.json"
     ExecutionList:
       type: object
       required: [executions]

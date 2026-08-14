@@ -1,4 +1,5 @@
 use crate::scheduler::Cancellation;
+use crate::wasm_abi as redevplugin_wasm_abi;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;

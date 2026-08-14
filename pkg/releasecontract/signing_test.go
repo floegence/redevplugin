@@ -653,10 +653,7 @@ func TestReleaseSigningFixtureIsCurrent(t *testing.T) {
 	}
 	raw = append(raw, '\n')
 	root := filepath.Clean(filepath.Join("..", ".."))
-	paths := []string{
-		filepath.Join(root, "testdata", "contracts", "release-signing-v1.json"),
-		filepath.Join(root, "crates", "redevplugin-contracts", "tests", "fixtures", "release-signing-v1.json"),
-	}
+	paths := []string{filepath.Join(root, "testdata", "contracts", "release-signing-v1.json")}
 	if os.Getenv("REDEVPLUGIN_UPDATE_RELEASE_SIGNING_FIXTURE") == "1" {
 		for _, path := range paths {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

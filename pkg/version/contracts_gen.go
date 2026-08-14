@@ -24,8 +24,8 @@ const (
 	ResourceScopeSchemaVersion              = "resource-scope-v1"
 	SessionScopeSchemaVersion               = "session-scope-v1"
 	PluginPlatformOpenAPIVersion            = "plugin-platform-v15"
-	CompatibilityManifestVersion            = "redevplugin.compatibility.v17"
-	CompatibilitySchemaVersion              = "compatibility-manifest-v17"
+	CompatibilityManifestVersion            = "redevplugin.compatibility.v18"
+	CompatibilitySchemaVersion              = "compatibility-manifest-v18"
 	WorkerInvocationSchemaVersion           = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion     = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion          = "host-capability-pin-v1"
@@ -33,8 +33,8 @@ const (
 	PerformanceContractVersion              = "performance-contract-v4"
 	PerformanceEvidenceSchemaVersion        = "performance-evidence-v4"
 	ContractRegistryVersion                 = "contract-registry-v2"
-	PlatformPackageSetSchemaVersion         = "platform-package-set-v2"
-	PlatformPackagePublicationSchemaVersion = "platform-package-publication-v1"
+	PlatformPackageSetSchemaVersion         = "platform-package-set-v3"
+	PlatformPackagePublicationSchemaVersion = "platform-package-publication-v2"
 	RuntimeAdmissionSchemaVersion           = "runtime-admission-v1"
 	RuntimeDescriptorSchemaVersion          = "runtime-descriptor-v2"
 	OwnerScopeInventoryRegistryVersion      = "owner-scope-inventory-registry-v1"
@@ -49,15 +49,15 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v17.schema.json",
-		Version: "compatibility-manifest-v17",
-		SHA256:  "bc426e034b86ef81f947cae6c2fee838d22913c0066f727acb509fa9cbc22ebd",
+		Path:    "spec/plugin/compatibility-manifest-v18.schema.json",
+		Version: "compatibility-manifest-v18",
+		SHA256:  "48889bd7ddd936b9757a56b1b154244abc6904bd8e55e177e80ae4509d15ce06",
 	},
 	{
 		ID:      "contract-registry-schema",
 		Path:    "spec/plugin/contract-registry-v2.schema.json",
 		Version: "contract-registry-v2",
-		SHA256:  "664a80c4cb8e6fc30a46be56d66b40eed8f0a894e7ceb469757bdffe93b4ee97",
+		SHA256:  "92ffee62b7954eecdc1ce0cf364c1f719060a19aec5d997c1b1493362e941367",
 	},
 	{
 		ID:      "error-codes-schema",
@@ -153,7 +153,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "performance-contract",
 		Path:    "spec/plugin/performance-contract-v4.json",
 		Version: "performance-contract-v4",
-		SHA256:  "c0c8b3362e6f5878c12dbd0a5766592425d4e69b50ca18c226b6f5851d2c627c",
+		SHA256:  "75bd7955383cf77711c7df9b624d62b1eda3275ddc558500f206be4ea876f858",
 	},
 	{
 		ID:      "performance-evidence-schema",
@@ -163,21 +163,21 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "platform-package-publication-schema",
-		Path:    "spec/plugin/platform-package-publication-v1.schema.json",
-		Version: "platform-package-publication-v1",
-		SHA256:  "0f4b6788858c3165b6acc94aeab4f771825317f8b05d82d3d202c5848c3f8fdd",
+		Path:    "spec/plugin/platform-package-publication-v2.schema.json",
+		Version: "platform-package-publication-v2",
+		SHA256:  "f506ef7838757a05d5742fd3f223eb80cec99710972c517860cebd61c517012b",
 	},
 	{
 		ID:      "platform-package-set-schema",
-		Path:    "spec/plugin/platform-package-set-v2.schema.json",
-		Version: "platform-package-set-v2",
-		SHA256:  "ce46ba85443349481d7cf4b73fc70be716035c369e833aaaf2650710536f3ea8",
+		Path:    "spec/plugin/platform-package-set-v3.schema.json",
+		Version: "platform-package-set-v3",
+		SHA256:  "2ac6e9a520e21a3294bec0059e0fabb6ee5d285fe6efe08a6bb6cbf2c7aea2bb",
 	},
 	{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v15.yaml",
 		Version: "plugin-platform-v15",
-		SHA256:  "0c95cbb1352040a90acfd63109fb0e41ac452e36ab03a1c6645097d408344d48",
+		SHA256:  "d89af4d7a1a17f6abc9f9a5c418e8f33a2e50daf8e6b64c8c37171213bf15218",
 	},
 	{
 		ID:      "presentation-icon-evidence-schema",

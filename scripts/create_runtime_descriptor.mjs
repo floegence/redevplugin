@@ -16,7 +16,7 @@ if (!binaryPath || !platformTarget || !outputPath || process.argv.length !== 5) 
 const target = runtimeTargetForPlatform(platformTarget);
 if (target.os !== "linux") throw new Error(`runtime admission does not support ${platformTarget}`);
 
-const packageSet = JSON.parse(readFileSync(resolve(root, "spec/plugin/platform-package-set-v2.json"), "utf8"));
+const packageSet = JSON.parse(readFileSync(resolve(root, "spec/plugin/platform-package-set-v3.json"), "utf8"));
 const binarySHA256 = createHash("sha256").update(readFileSync(resolve(binaryPath))).digest("hex");
 const descriptor = {
   schema_version: "runtime-descriptor-v2",

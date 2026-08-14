@@ -416,10 +416,7 @@ jobs:
               "@floegence/redevplugin-ui",
           }
           expected_rust = {
-              "redevplugin-contracts",
-              "redevplugin-ipc",
               "redevplugin-runtime",
-              "redevplugin-wasm-abi",
               "redevplugin-worker-sdk",
           }
           if not isinstance(manifest["artifacts"], list) or len(manifest["artifacts"]) != len(expected_npm) + len(expected_rust):
@@ -560,7 +557,7 @@ jobs:
               raise SystemExit("unsupported Rust publication metadata")
           packages = {item["name"]: item for item in metadata["packages"]}
           manifest_packages = {item["name"]: item for item in manifest["artifacts"] if item["kind"] == "rust"}
-          order = ["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-runtime"]
+          order = ["redevplugin-runtime", "redevplugin-worker-sdk"]
           package_names = set(order)
           if set(packages) != package_names or set(manifest_packages) != package_names:
               raise SystemExit("Rust publication package set mismatch")
@@ -866,20 +863,20 @@ jobs:
         run: |
           mkdir -p dist/publication
           node scripts/platform_package_publication.mjs create \
-            --out dist/publication/platform-package-publication-v1.json \
+            --out dist/publication/platform-package-publication-v2.json \
             --source-commit "$GITHUB_SHA" \
             --go-readback dist/readbacks/go-readback.json \
             --npm-readback dist/readbacks/npm-readback.json \
             --rust-readback dist/readbacks/rust-readback.json
           node scripts/platform_package_publication.mjs verify \
-            dist/publication/platform-package-publication-v1.json \
+            dist/publication/platform-package-publication-v2.json \
             "${{ needs.preflight.outputs.version }}" \
             "$GITHUB_SHA"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: upload
         with:
           name: platform-publication-${{ github.sha }}
-          path: dist/publication/platform-package-publication-v1.json
+          path: dist/publication/platform-package-publication-v2.json
           if-no-files-found: error
           retention-days: 7
 
@@ -902,7 +899,7 @@ jobs:
           merge-multiple: true
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: dist/publication/platform-package-publication-v1.json
+          subject-path: dist/publication/platform-package-publication-v2.json
 
   publish-release:
     name: Publish Exact-One GitHub Release Asset
@@ -926,11 +923,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_COMMIT: ${{ github.sha }}
           TAG: ${{ github.ref_name }}
-          CONTENT_TYPE: application/vnd.floegence.redevplugin-platform-publication.v1+json
+          CONTENT_TYPE: application/vnd.floegence.redevplugin-platform-publication.v2+json
         run: |
           set -euo pipefail
-          asset_name=platform-package-publication-v1.json
-          manifest=dist/publication/platform-package-publication-v1.json
+          asset_name=platform-package-publication-v2.json
+          manifest=dist/publication/platform-package-publication-v2.json
           marker="<!-- redevplugin-release-transaction-v1 source_commit=${SOURCE_COMMIT} -->"
           release_pages=$(mktemp "${RUNNER_TEMP}/redevplugin-release-pages.XXXXXX")
           release_json=$(mktemp "${RUNNER_TEMP}/redevplugin-release.XXXXXX")
@@ -1404,5 +1401,5 @@ jobs:
             "${{ needs.preflight.outputs.version }}" \
             "$GITHUB_SHA"
           gh attestation verify \
-            dist/published/platform-package-publication-v1.json \
+            dist/published/platform-package-publication-v2.json \
             --repo "$GITHUB_REPOSITORY"

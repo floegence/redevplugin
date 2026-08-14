@@ -28,7 +28,7 @@
       ],
       "runner": {
         "path": "scripts/measure_http_route_authorization_performance.mjs",
-        "sha256": "0e182c94158a915d7ee63af23da9156caf611c4832a808fb482bbfe80b417834"
+        "sha256": "dfd105ff3be04d95fa50daaaffd5fce5cb192b710b9f00e8cf5b441cd9f654e7"
       },
       "comparison_logic": {
         "path": "scripts/route_authorization_comparison.mjs",

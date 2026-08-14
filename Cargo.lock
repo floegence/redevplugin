@@ -404,18 +404,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "redevplugin-contracts"
-version = "1.0.0"
-dependencies = [
- "base64",
- "ed25519-dalek",
- "semver",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "redevplugin-example-memos-worker"
 version = "0.1.0"
 dependencies = [
@@ -444,29 +432,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "redevplugin-ipc"
-version = "1.0.0"
+name = "redevplugin-runtime"
+version = "1.1.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
+ "libc",
  "proptest",
- "redevplugin-contracts",
  "serde",
  "serde_json",
  "sha2",
-]
-
-[[package]]
-name = "redevplugin-runtime"
-version = "1.0.0"
-dependencies = [
- "libc",
- "proptest",
- "redevplugin-ipc",
- "redevplugin-wasm-abi",
- "serde",
- "serde_json",
  "wasmi",
+ "wasmparser 0.255.0",
  "wat",
 ]
 
@@ -479,16 +456,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "redevplugin-wasm-abi"
-version = "1.0.0"
-dependencies = [
- "wasmparser 0.255.0",
- "wat",
-]
-
-[[package]]
 name = "redevplugin-worker-sdk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64",
  "serde",

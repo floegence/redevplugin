@@ -42,13 +42,13 @@ done
 echo "==> active contract inventory"
 for required in \
   spec/openapi/plugin-platform-v15.yaml \
-  spec/plugin/compatibility-manifest-v17.schema.json \
+  spec/plugin/compatibility-manifest-v18.schema.json \
   spec/plugin/error-codes-v8.schema.json \
   spec/plugin/ipc-v6.schema.json \
   spec/plugin/performance-contract-v4.json \
   spec/plugin/performance-evidence-v4.schema.json \
-  spec/plugin/platform-package-set-v2.schema.json \
-  spec/plugin/platform-package-publication-v1.schema.json \
+  spec/plugin/platform-package-set-v3.schema.json \
+  spec/plugin/platform-package-publication-v2.schema.json \
   spec/plugin/process-containment-v1.schema.json \
   spec/plugin/manifest-v8.schema.json \
   spec/plugin/release-metadata-v8.schema.json \
@@ -128,11 +128,11 @@ npm run release-workflow-security:test
 
 echo "==> Go and Rust runtime contract tests"
 go test -count=1 ./pkg/contracts ./pkg/protocol ./internal/runtimeclient ./pkg/version
-cargo test -p redevplugin-contracts -p redevplugin-ipc -p redevplugin-runtime
+cargo test -p redevplugin-runtime -p redevplugin-worker-sdk
 
 echo "==> package-only workflow policy"
 release_workflow=.github/workflows/release.yml
-grep -Eq 'platform-package-publication-v1\.json' "$release_workflow"
+grep -Eq 'platform-package-publication-v2\.json' "$release_workflow"
 grep -Eq 'platform_package_build\.mjs' "$release_workflow"
 grep -Eq 'verify_rust_registry_release\.mjs' "$release_workflow"
 grep -Eq 'verify_npm_registry_release\.mjs' "$release_workflow"
@@ -153,7 +153,7 @@ if [[ $(grep -Ec 'redevplugin-release-transaction-v1 source_commit=' "$release_w
   echo "release workflow must contain one admission marker and one bound draft-to-public transaction" >&2
   exit 1
 fi
-if [[ $(grep -Ec 'dist/publication/platform-package-publication-v1\.json' "$release_workflow") -lt 1 ]]; then
+if [[ $(grep -Ec 'dist/publication/platform-package-publication-v2\.json' "$release_workflow") -lt 1 ]]; then
   echo "release workflow does not upload the canonical completion asset" >&2
   exit 1
 fi

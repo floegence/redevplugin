@@ -43,10 +43,13 @@ function main() {
 
     const gomaxprocs = String(options.gomaxprocs);
     const candidateCommit = run("git", ["rev-parse", "HEAD"], root).trim();
+    const buildEnvironment = routeAuthorizationBuildEnvironment(
+      run("go", ["env", "GOVERSION"], root, { GOWORK: "off" }).trim(),
+    );
     const baselineBinary = join(temporaryRoot, "baseline-httpadapter.test");
     const candidateBinary = join(temporaryRoot, "candidate-httpadapter.test");
-    buildProfileBinary(baselineRoot, baselineBinary);
-    buildProfileBinary(root, candidateBinary);
+    buildProfileBinary(baselineRoot, baselineBinary, buildEnvironment);
+    buildProfileBinary(root, candidateBinary, buildEnvironment);
     const attempts = [];
     let comparison;
     let scenarios;
@@ -139,8 +142,15 @@ export function persistRouteAuthorizationDiagnostic(path, diagnostic, output = p
   output.write(`${JSON.stringify({ route_authorization_diagnostic: diagnostic })}\n`);
 }
 
-function buildProfileBinary(repositoryRoot, output) {
-  run("go", ["test", "-c", "-o", output, "./pkg/httpadapter"], repositoryRoot, { GOWORK: "off" });
+function buildProfileBinary(repositoryRoot, output, environment) {
+  run("go", ["test", "-c", "-o", output, "./pkg/httpadapter"], repositoryRoot, environment);
+}
+
+export function routeAuthorizationBuildEnvironment(goToolchain) {
+  if (!/^go[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-z]+[0-9]+)?$/.test(goToolchain)) {
+    throw new Error("route authorization Go toolchain is invalid");
+  }
+  return { GOWORK: "off", GOTOOLCHAIN: goToolchain };
 }
 
 function runProfile(binary, repositoryRoot, output, commit, gomaxprocs) {

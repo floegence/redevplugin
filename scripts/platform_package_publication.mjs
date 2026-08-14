@@ -11,8 +11,8 @@ import {
 } from "./generate_platform_package_contracts.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-export const publicationAssetName = "platform-package-publication-v1.json";
-export const publicationAssetContentType = "application/vnd.floegence.redevplugin-platform-publication.v1+json";
+export const publicationAssetName = "platform-package-publication-v2.json";
+export const publicationAssetContentType = "application/vnd.floegence.redevplugin-platform-publication.v2+json";
 const maxPublicationBytes = 128 * 1024;
 
 export function createPlatformPackagePublication({ sourceCommit, goReadback, npmReadback, rustReadback }) {
@@ -28,7 +28,7 @@ export function createPlatformPackagePublication({ sourceCommit, goReadback, npm
   ]);
 
   const publication = {
-    schema_version: "redevplugin.platform_package_publication.v1",
+    schema_version: "redevplugin.platform_package_publication.v2",
     platform_version: packageSet.platform_version,
     source_commit: sourceCommit,
     workflow: {
@@ -106,7 +106,7 @@ export function verifyPlatformReleaseDirectory(directory, options = {}) {
 }
 
 function readPackageSet() {
-  return decodePlatformPackageSet(readFileSync(join(root, "spec/plugin/platform-package-set-v2.json")));
+  return decodePlatformPackageSet(readFileSync(join(root, "spec/plugin/platform-package-set-v3.json")));
 }
 
 function assertReadbackArray(values, coordinates, sourceCommit, label, keys) {

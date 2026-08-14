@@ -1,4 +1,4 @@
-use redevplugin_ipc::{
+use crate::ipc::{
     RUST_IPC_VERSION, SessionRevokeAckCounts, SessionRevokeState, parse_session_revoke_request,
     session_revoke_ack_frame,
 };
