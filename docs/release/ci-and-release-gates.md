@@ -259,8 +259,10 @@ ReDevPlugin publishes one versioned platform package set:
   generated DTOs;
 - `@floegence/redevplugin-contracts` and
   `@floegence/redevplugin-ui` on the npm registry;
-- the Rust source crates for contracts, IPC, WASM ABI, target classification,
-  Worker SDK, and `redevplugin-runtime` on crates.io;
+- the independently consumed Rust source crates `redevplugin-runtime` and
+  `redevplugin-worker-sdk` on crates.io. Runtime-owned IPC and WASM ABI
+  modules are private implementation details and are not published as
+  standalone coordinates;
 - generated OpenAPI, JSON schemas, compatibility metadata, contract hashes, and
   conformance fixtures.
 

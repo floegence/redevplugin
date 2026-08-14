@@ -263,7 +263,7 @@ jobs:
       - run: npm ci
       - run: rustup show
       - run: rustup target add wasm32-unknown-unknown
-      - name: Build and verify two npm packages and five source crates
+      - name: Build and verify two npm packages and two source crates
         run: |
           node scripts/platform_package_build.mjs build \
             --out-dir dist/platform-packages \

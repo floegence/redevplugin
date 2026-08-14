@@ -252,3 +252,13 @@ test("release package build requires both hosted runtime containment targets", (
     step.run?.includes("TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement")));
   assert.ok(workflow.jobs["package-build"].needs.includes("runtime-containment"));
 });
+
+test("standard release names only the two public Rust source crates", () => {
+  const packageBuild = workflow.jobs["package-build"].steps
+    .find((step) => step.name?.startsWith("Build and verify"));
+  assert.equal(packageBuild.name, "Build and verify two npm packages and two source crates");
+  const workflowSource = readFileSync(".github/workflows/release.yml", "utf8");
+  for (const retired of ["redevplugin-ipc", "redevplugin-wasm-abi", "redevplugin-target-classifier"]) {
+    assert.doesNotMatch(workflowSource, new RegExp(`(?:order|package|crate|name)[^\\n]{0,120}${retired}`));
+  }
+});
