@@ -93,7 +93,7 @@ export const redevPluginContractArtifacts = [
     id: "host-capability-contract-schema",
     path: "spec/plugin/host-capability-contract-v1.schema.json",
     version: "host-capability-contract-v1",
-    sha256: "0a653e36d44104f1d16b06ee424648086c146f23c907b176bdf470ae73025485",
+    sha256: "4816f59ac0819d02fb05ddd48f2ac12a2d2103a8e15d5257ca8b7d5188ab21a4",
   },
   {
     id: "host-capability-pin-schema",

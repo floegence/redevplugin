@@ -110,7 +110,7 @@ var (
 		"PluginBridgeClient":         {},
 		"PluginBridgeError":          {},
 		"PluginBridgeRequestOptions": {},
-		"PluginOperation":            {},
+		"PluginExecution":            {},
 		"PluginStream":               {},
 		"callCapabilityOperation":    {},
 		"callCapabilityStream":       {},

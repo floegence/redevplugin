@@ -195,7 +195,7 @@ test("all Rust source crates package deterministically and test from an isolated
       validDigest: /^[0-9a-f]{64}$/.test(sha256),
     })), rustSourcePackages.map(({ name }) => ({
       name,
-      version: "1.1.1",
+      version: "1.1.2",
       validSize: true,
       validDigest: true,
     })));

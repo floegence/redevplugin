@@ -21,7 +21,7 @@ func GenerateTypeScript(contract Contract) ([]byte, error) {
 	out.WriteString("  type PluginBridgeClient,\n")
 	out.WriteString("  type PluginBridgeError,\n")
 	out.WriteString("  type PluginBridgeRequestOptions,\n")
-	out.WriteString("  type PluginOperation,\n")
+	out.WriteString("  type PluginExecution,\n")
 	out.WriteString("  type PluginStream,\n")
 	out.WriteString("} from \"@floegence/redevplugin-ui/plugin\";\n\n")
 	for _, method := range contract.Methods {
@@ -145,11 +145,11 @@ func GenerateTypeScript(contract Contract) ([]byte, error) {
 		operationCancelable := true
 		switch method.Execution {
 		case "operation":
-			returnType = "PluginOperation<" + method.ResponseTypeName + ">"
+			returnType = "PluginExecution<" + method.ResponseTypeName + ">"
 			call = "callCapabilityOperation"
 			operationCancelable = method.CancelPolicy.Cancelable
 			if !operationCancelable {
-				returnType = "PluginOperation<" + method.ResponseTypeName + ", false>"
+				returnType = "PluginExecution<" + method.ResponseTypeName + ", false>"
 			}
 		case "subscription":
 			returnType = "PluginStream<" + method.ResponseTypeName + ", " + method.EventTypeName + ">"

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.2
+
+- Generate host capability clients against the current `PluginExecution`
+  identity so released clients compile with the current-only UI SDK.
+
 ## v1.1.1
 
 - Publish the Host action-state projection in the catalog OpenAPI and generated

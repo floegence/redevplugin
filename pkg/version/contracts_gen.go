@@ -81,7 +81,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "host-capability-contract-schema",
 		Path:    "spec/plugin/host-capability-contract-v1.schema.json",
 		Version: "host-capability-contract-v1",
-		SHA256:  "0a653e36d44104f1d16b06ee424648086c146f23c907b176bdf470ae73025485",
+		SHA256:  "4816f59ac0819d02fb05ddd48f2ac12a2d2103a8e15d5257ca8b7d5188ab21a4",
 	},
 	{
 		ID:      "host-capability-pin-schema",

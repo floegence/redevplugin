@@ -44,11 +44,15 @@ func TestGenerateTypeScriptPreservesContractPolicy(t *testing.T) {
 	client := string(clientBytes)
 	for _, expected := range []string{
 		"ExampleDocumentsClient", "DocumentsArchiveRequest", "DOCUMENT_NOT_FOUND",
-		"cancelable: true", "documents.watch",
+		"cancelable: true", "documents.watch", "type PluginExecution,",
+		"Promise<PluginExecution<DocumentsArchiveResponse>>",
 	} {
 		if !strings.Contains(client, expected) {
 			t.Fatalf("generated client missing %q", expected)
 		}
+	}
+	if strings.Contains(client, "PluginOperation") {
+		t.Fatal("generated client retained retired PluginOperation identity")
 	}
 }
 
