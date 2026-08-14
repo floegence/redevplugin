@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.3
+
+- Preserve the exact immutable bytes of published capability-contract artifacts
+  when registering their release pins, while continuing to validate and seal
+  the decoded contract semantics.
+- Persist terminal failure for release-install Executions after progress updates
+  so capability-evidence failures cannot leave durable work stuck as running.
+
 ## v1.1.2
 
 - Generate host capability clients against the current `PluginExecution`

@@ -160,6 +160,9 @@ func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registr
 			return
 		}
 	}
+	latest, progressErr := tracker.snapshot()
+	running = latest
+	err = errors.Join(err, progressErr)
 	h.finishFailedReleaseInstall(ctx, running, err)
 }
 

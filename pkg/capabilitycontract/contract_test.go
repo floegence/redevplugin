@@ -1,6 +1,9 @@
 package capabilitycontract
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -77,6 +80,52 @@ func TestKnownContractRegistryRequiresExactIdentityAndHash(t *testing.T) {
 	if _, err := registry.Require(tampered); !errors.Is(err, ErrIdentityMismatch) {
 		t.Fatalf("tampered hash error = %v, want ErrIdentityMismatch", err)
 	}
+}
+
+func TestKnownContractFromArtifactBindsExactPublishedBytes(t *testing.T) {
+	raw, err := json.MarshalIndent(testContract(), "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, '\n')
+	want := sha256.Sum256(raw)
+	known, err := NewKnownContractFromArtifact(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if known.Pin.ArtifactSHA256 != hex.EncodeToString(want[:]) {
+		t.Fatalf("artifact hash = %q, want exact published bytes", known.Pin.ArtifactSHA256)
+	}
+	canonical, err := NewKnownContract(testContract())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if known.Pin.ArtifactSHA256 == canonical.Pin.ArtifactSHA256 {
+		t.Fatal("artifact identity was collapsed to the decoded Go projection")
+	}
+	registry := NewRegistry()
+	if err := registry.Add(known); err != nil {
+		t.Fatal(err)
+	}
+	known.Pin.ArtifactSHA256 = strings.Repeat("0", 64)
+	if err := NewRegistry().Add(known); !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("mutated artifact pin error = %v, want ErrIdentityMismatch", err)
+	}
+
+	t.Run("rejects unknown fields and trailing values", func(t *testing.T) {
+		unknown := append([]byte(nil), raw[:len(raw)-2]...)
+		unknown = append(unknown, []byte(",\n  \"unexpected\": true\n}\n")...)
+		for name, malformed := range map[string][]byte{
+			"unknown field":  unknown,
+			"trailing value": append(append([]byte(nil), raw...), []byte("{}\n")...),
+		} {
+			t.Run(name, func(t *testing.T) {
+				if _, err := NewKnownContractFromArtifact(malformed); !errors.Is(err, ErrInvalidContract) {
+					t.Fatalf("NewKnownContractFromArtifact() error = %v, want ErrInvalidContract", err)
+				}
+			})
+		}
+	})
 }
 
 func TestKnownContractRegistryRejectsForgedOrMutatedContracts(t *testing.T) {

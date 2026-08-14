@@ -592,30 +592,30 @@ export const generatedContractRegistry = {
 
 export const generatedPackageSet = {
   "schema_version": "redevplugin.platform_package_set.v3",
-  "platform_version": "1.1.2",
+  "platform_version": "1.1.3",
   "go_module": {
     "module": "github.com/floegence/redevplugin",
-    "version": "v1.1.2"
+    "version": "v1.1.3"
   },
   "npm_packages": [
     {
       "name": "@floegence/redevplugin-contracts",
-      "version": "1.1.2"
+      "version": "1.1.3"
     },
     {
       "name": "@floegence/redevplugin-ui",
-      "version": "1.1.2"
+      "version": "1.1.3"
     }
   ],
   "rust_crates": [
     {
       "name": "redevplugin-runtime",
-      "version": "1.1.2",
+      "version": "1.1.3",
       "role": "runtime"
     },
     {
       "name": "redevplugin-worker-sdk",
-      "version": "1.1.2",
+      "version": "1.1.3",
       "role": "worker_sdk"
     }
   ],

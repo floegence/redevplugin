@@ -83,9 +83,10 @@ type Pin struct {
 }
 
 type KnownContract struct {
-	Contract Contract
-	Pin      Pin
-	seal     string
+	Contract     Contract
+	Pin          Pin
+	seal         string
+	artifactSeal string
 }
 
 var (

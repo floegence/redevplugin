@@ -12,7 +12,7 @@ import {
   verifyPlatformReleaseDirectory,
 } from "./platform_package_publication.mjs";
 
-const version = "1.1.2";
+const version = "1.1.3";
 const sourceCommit = "1".repeat(40);
 const h1 = `h1:${Buffer.alloc(32, 1).toString("base64")}`;
 const npmNames = ["@floegence/redevplugin-contracts", "@floegence/redevplugin-ui"];

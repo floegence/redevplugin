@@ -1,10 +1,12 @@
 package capabilitycontract
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"sync"
@@ -33,17 +35,48 @@ func NewKnownContract(contract Contract) (KnownContract, error) {
 	if err != nil {
 		return KnownContract{}, fmt.Errorf("%w: hash contract: %v", ErrInvalidContract, err)
 	}
+	return newKnownContract(contract, digest, digest), nil
+}
+
+// NewKnownContractFromArtifact validates a published contract artifact while
+// retaining the digest of its exact immutable bytes as the registry pin.
+func NewKnownContractFromArtifact(raw []byte) (KnownContract, error) {
+	var contract Contract
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&contract); err != nil {
+		return KnownContract{}, fmt.Errorf("%w: decode contract artifact: %v", ErrInvalidContract, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return KnownContract{}, fmt.Errorf("%w: contract artifact contains a trailing value", ErrInvalidContract)
+		}
+		return KnownContract{}, fmt.Errorf("%w: decode contract artifact trailer: %v", ErrInvalidContract, err)
+	}
+	if err := Validate(contract); err != nil {
+		return KnownContract{}, err
+	}
+	contractDigest, err := contractSHA256(contract)
+	if err != nil {
+		return KnownContract{}, fmt.Errorf("%w: hash contract: %v", ErrInvalidContract, err)
+	}
+	artifactDigest := sha256.Sum256(raw)
+	return newKnownContract(contract, contractDigest, hex.EncodeToString(artifactDigest[:])), nil
+}
+
+func newKnownContract(contract Contract, contractDigest, artifactDigest string) KnownContract {
 	known := KnownContract{
 		Contract: cloneContract(contract),
 		Pin: Pin{
 			PublisherID:     contract.PublisherID,
 			ContractID:      contract.ContractID,
 			ContractVersion: contract.ContractVersion,
-			ArtifactSHA256:  digest,
+			ArtifactSHA256:  artifactDigest,
 		},
 	}
-	known.seal = digest
-	return known, nil
+	known.seal = contractDigest
+	known.artifactSeal = artifactDigest
+	return known
 }
 
 func (r *Registry) Add(contract KnownContract) error {
@@ -114,7 +147,7 @@ func validateKnownContract(known KnownContract) error {
 	if known.Contract.PublisherID != known.Pin.PublisherID ||
 		known.Contract.ContractID != known.Pin.ContractID ||
 		known.Contract.ContractVersion != known.Pin.ContractVersion ||
-		known.Pin.ArtifactSHA256 != digest || known.seal != digest {
+		known.seal != digest || known.Pin.ArtifactSHA256 != known.artifactSeal {
 		return ErrIdentityMismatch
 	}
 	return nil

@@ -400,6 +400,29 @@ func waitForReleaseInstallOperation(t *testing.T, h *Host, ctx context.Context, 
 	return registry.ReleaseInstallOperation{}
 }
 
+func TestReleaseInstallCapabilityFailurePersistsTerminalStateAfterProgress(t *testing.T) {
+	fixture, _ := newReleaseInstallCapabilityFixture(t)
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: fixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{
+			artifact: resolvedReleaseTrustFixture(fixture),
+		},
+	})
+	ctx := hostTestContext()
+	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
+		RequestID: "request_capability_failure_terminal", PluginInstanceID: nextTestPluginInstanceID(t),
+		ReleaseRef: releaseTrustFixtureRef(fixture), ActivateAfterInstall: new(false), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
+	if terminal.Execution.Status != execution.StatusFailed || terminal.Phase != "failed" || terminal.Execution.FailureCode == "" {
+		t.Fatalf("capability failure did not persist a terminal execution: %#v", terminal)
+	}
+}
+
 func TestReleaseInstallProgressTrackerPreservesPersistenceFailure(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	ctx := hostTestContext()
