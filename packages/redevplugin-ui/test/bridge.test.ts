@@ -577,7 +577,7 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v19",
+      schema_version: "redevplugin.compatibility.v20",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v3",
         platform_version: "1.1.0",
@@ -598,14 +598,14 @@ test("platform client reads compatibility manifest through host API", async () =
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v16.yaml",
-          version: "plugin-platform-v16",
+          path: "spec/openapi/plugin-platform-v17.yaml",
+          version: "plugin-platform-v17",
           sha256: "sha256-openapi",
         },
         {
           id: "rust-ipc-schema",
-          path: "spec/plugin/ipc-v6.schema.json",
-          version: "rust-ipc-v6",
+          path: "spec/plugin/ipc-v7.schema.json",
+          version: "rust-ipc-v7",
           sha256: "sha256-ipc",
         },
       ],
@@ -618,8 +618,8 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v19");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v16");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v20");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v17");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v8");
   assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v3");
   assert.equal(compatibility.matrix.release_source_policy_pointer_schema_version, "release-source-policy-pointer-v2");
@@ -1489,15 +1489,23 @@ test("platform client inspects an exact release package before confirmation", as
 
 test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();
-  const descriptor = {
-    schema_version: "runtime-descriptor-v2",
+  const descriptor: PluginRuntimeHealth["descriptor"] = {
+    schema_version: "runtime-descriptor-v3",
     platform_version: "0.6.0",
     target: "linux/arm64",
-    rust_ipc_version: "rust-ipc-v6",
-    wasm_abi_version: "redevplugin-wasm-worker-v2",
-    contract_set_sha256: "b".repeat(64),
+    internal: {
+      rust_ipc: "rust-ipc-v7",
+      contract_set_sha256: "b".repeat(64),
+    },
+    public_api: {
+      worker_majors: [1],
+      features: [
+        "fs.environment.v1", "fs.home.v1", "fs.watch.v1", "fs.workspace.v1",
+        "io.stream.v1", "net.http.v1", "net.tcp.v1", "net.udp.v1", "net.websocket.v1",
+      ],
+    },
     binary_sha256: "a".repeat(64),
-  } as const;
+  };
   const runtimeHealth = {
     ready: true,
     descriptor,

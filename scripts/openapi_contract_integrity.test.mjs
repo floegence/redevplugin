@@ -8,11 +8,11 @@ import { parse as parseYAML } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 
 async function readOpenAPI() {
-  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v16.yaml"), "utf8"));
+  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v17.yaml"), "utf8"));
 }
 
 async function readIPCSchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/ipc-v6.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/ipc-v7.schema.json"), "utf8"));
 }
 
 async function readSessionScopeSchema() {
@@ -20,7 +20,7 @@ async function readSessionScopeSchema() {
 }
 
 async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v19.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v20.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
@@ -142,9 +142,9 @@ test("session scope contract closes identity, phases, counts, and public result 
   }
 });
 
-test("Rust IPC v6 carries closed session revoke request and acknowledgement frames", async () => {
+test("Rust IPC v7 carries closed session revoke request and acknowledgement frames", async () => {
   const schema = await readIPCSchema();
-  assert.equal(schema.properties.ipc_version.const, "rust-ipc-v6");
+  assert.equal(schema.properties.ipc_version.const, "rust-ipc-v7");
   assert.ok(schema.properties.frame_type.enum.includes("session_revoke"));
   assert.ok(schema.properties.frame_type.enum.includes("session_revoke_ack"));
 
@@ -179,7 +179,7 @@ test("current compatibility manifest publishes the complete session revoke and U
   assert.ok(matrix.required.includes("session_scope_schema_version"));
   assert.ok(!matrix.required.includes("session_scope_maintenance_schema_version"));
   assert.deepEqual(matrix.properties.plugin_host_protocol_version, { const: "plugin-host-v11" });
-  assert.deepEqual(matrix.properties.rust_ipc_version, { const: "rust-ipc-v6" });
+  assert.deepEqual(matrix.properties.rust_ipc_version, { const: "rust-ipc-v7" });
   assert.deepEqual(matrix.properties.token_ticket_schema_version, { const: "token-ticket-v4" });
   assert.deepEqual(matrix.properties.session_scope_schema_version, { const: "session-scope-v1" });
   assert.equal(matrix.properties.session_scope_maintenance_schema_version, undefined);

@@ -374,8 +374,9 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v16.yaml`;
-- `spec/plugin/manifest-v8.schema.json`;
+- `spec/openapi/plugin-platform-v17.yaml`;
+- `spec/plugin/manifest-v9.schema.json`;
+- `spec/plugin/public-api-v1.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
 - `spec/plugin/release-metadata-v8.schema.json`;
 - `spec/plugin/release-root-delegation-v1.schema.json`;
@@ -391,17 +392,17 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/bridge-v7.schema.json`;
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
 - `spec/plugin/opaque-surface-transport-v6.schema.json`;
-- `spec/plugin/compatibility-manifest-v19.schema.json`;
+- `spec/plugin/compatibility-manifest-v20.schema.json`;
 - `spec/plugin/owner-scope-root-recovery-v1.schema.json`;
 - `spec/plugin/platform-package-set-v3.schema.json`;
 - `spec/plugin/platform-package-publication-v2.schema.json`;
 - `spec/plugin/runtime-admission-v1.schema.json`;
-- `spec/plugin/runtime-descriptor-v2.schema.json`;
+- `spec/plugin/runtime-descriptor-v3.schema.json`;
 - `spec/plugin/process-containment-v1.schema.json`;
 - `spec/plugin/runtime-exec-journal-v1.schema.json`;
 - `spec/plugin/performance-contract-v4.json`;
 - `spec/plugin/performance-evidence-v4.schema.json`;
-- `spec/plugin/ipc-v6.schema.json`;
+- `spec/plugin/ipc-v7.schema.json`;
 - `spec/plugin/wasm-worker-v2.schema.json`;
 - `spec/plugin/worker-invocation-v3.schema.json`;
 - `spec/plugin/network-grant-v2.schema.json`;

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Add Surface API 1 and Worker API 1 as the plugin-observable compatibility
+  boundary, with manifest v9 as the only new scaffold while preserving frozen
+  manifest v8 package, signature, and worker compatibility.
+- Add Host-owned resource-scoped filesystem, streaming HTTP, WebSocket, TCP,
+  and connected UDP APIs over the unified resource table and framed Rust IPC
+  v7 transport.
+- Publish `plugin-platform-v17`, `compatibility-manifest-v20`,
+  `runtime-descriptor-v3`, and the `public-api-v1` catalog.
+
 ## v1.1.4
 
 - Advance the current-only HTTP and compatibility contracts to

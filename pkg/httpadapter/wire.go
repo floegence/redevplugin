@@ -11,6 +11,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 // HTTP wire DTOs are deliberately separate from Host and persistence DTOs.
@@ -514,14 +515,23 @@ func publicSettingsSnapshot(result host.SettingsResult) (settingsSnapshotRespons
 	}, nil
 }
 
-type runtimeDescriptorResponse struct {
-	SchemaVersion     string `json:"schema_version"`
-	PlatformVersion   string `json:"platform_version"`
-	Target            string `json:"target"`
-	RustIPCVersion    string `json:"rust_ipc_version"`
-	WASMABIVersion    string `json:"wasm_abi_version"`
+type runtimeDescriptorInternalResponse struct {
+	RustIPCVersion    string `json:"rust_ipc"`
 	ContractSetSHA256 string `json:"contract_set_sha256"`
-	BinarySHA256      string `json:"binary_sha256"`
+}
+
+type runtimeDescriptorPublicAPIResponse struct {
+	WorkerMajors []uint16 `json:"worker_majors"`
+	Features     []string `json:"features"`
+}
+
+type runtimeDescriptorResponse struct {
+	SchemaVersion   string                             `json:"schema_version"`
+	PlatformVersion string                             `json:"platform_version"`
+	Target          string                             `json:"target"`
+	Internal        runtimeDescriptorInternalResponse  `json:"internal"`
+	PublicAPI       runtimeDescriptorPublicAPIResponse `json:"public_api"`
+	BinarySHA256    string                             `json:"binary_sha256"`
 }
 
 type runtimeLimitsResponse struct {
@@ -573,10 +583,16 @@ func publicRuntimeHealth(health host.RuntimeHealth) runtimeHealthResponse {
 
 func publicRuntimeDescriptor(descriptor host.RuntimeDescriptor) runtimeDescriptorResponse {
 	target := descriptor.Target().String()
+	catalog := version.CurrentPublicAPICatalog()
 	return runtimeDescriptorResponse{
-		SchemaVersion: "runtime-descriptor-v2", PlatformVersion: descriptor.PlatformVersion().String(), Target: target,
-		RustIPCVersion: descriptor.RustIPCVersion().String(), WASMABIVersion: descriptor.WASMABIVersion().String(),
-		ContractSetSHA256: descriptor.ContractSetSHA256().String(), BinarySHA256: descriptor.BinarySHA256().String(),
+		SchemaVersion: "runtime-descriptor-v3", PlatformVersion: descriptor.PlatformVersion().String(), Target: target,
+		Internal: runtimeDescriptorInternalResponse{
+			RustIPCVersion: descriptor.RustIPCVersion().String(), ContractSetSHA256: descriptor.ContractSetSHA256().String(),
+		},
+		PublicAPI: runtimeDescriptorPublicAPIResponse{
+			WorkerMajors: append([]uint16(nil), catalog.WorkerAPIMajors...), Features: append([]string(nil), catalog.Features...),
+		},
+		BinarySHA256: descriptor.BinarySHA256().String(),
 	}
 }
 

@@ -197,12 +197,12 @@ func TestReadIPCFrameRejectsNonCanonicalJSON(t *testing.T) {
 		name  string
 		frame string
 	}{
-		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v6","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
-		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v6","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
-		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v6","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
-		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v6","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
-		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v6","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
-		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v6","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
+		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
+		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
+		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
+		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
+		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
+		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -221,11 +221,11 @@ func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 		RuntimeGenerationID: "g1",
 	}
 	for _, payload := range []string{
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v6","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
-		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v6","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v6","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v6","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v6","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
+		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
+		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
 	} {
 		frame := baseFrame
 		frame.Payload = json.RawMessage(payload)

@@ -17,14 +17,20 @@ const target = runtimeTargetForPlatform(platformTarget);
 if (target.os !== "linux") throw new Error(`runtime admission does not support ${platformTarget}`);
 
 const packageSet = JSON.parse(readFileSync(resolve(root, "spec/plugin/platform-package-set-v3.json"), "utf8"));
+const publicAPI = JSON.parse(readFileSync(resolve(root, "spec/plugin/public-api-v1.json"), "utf8"));
 const binarySHA256 = createHash("sha256").update(readFileSync(resolve(binaryPath))).digest("hex");
 const descriptor = {
-  schema_version: "runtime-descriptor-v2",
+  schema_version: "runtime-descriptor-v3",
   platform_version: packageSet.platform_version,
   target: platformTarget,
-  rust_ipc_version: "rust-ipc-v6",
-  wasm_abi_version: "redevplugin-wasm-worker-v2",
-  contract_set_sha256: packageSet.contract_set_sha256,
+  internal: {
+    rust_ipc: "rust-ipc-v7",
+    contract_set_sha256: packageSet.contract_set_sha256,
+  },
+  public_api: {
+    worker_majors: publicAPI.worker_api_majors,
+    features: publicAPI.features,
+  },
   binary_sha256: binarySHA256,
 };
 writeFileSync(resolve(outputPath), `${JSON.stringify(descriptor, null, 2)}\n`, { mode: 0o600 });

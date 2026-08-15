@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v19.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v20.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v19" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v20" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -30,9 +30,9 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	expectedMatrix := map[string]string{
 		"plugin_ui_protocol_version":                   "plugin-ui-v7",
 		"plugin_host_protocol_version":                 "plugin-host-v11",
-		"rust_ipc_version":                             "rust-ipc-v6",
+		"rust_ipc_version":                             "rust-ipc-v7",
 		"wasm_abi_version":                             "redevplugin-wasm-worker-v2",
-		"manifest_schema_version":                      "manifest-v8",
+		"manifest_schema_version":                      "manifest-v9",
 		"package_signature_schema_version":             "package-signature-v1",
 		"release_metadata_schema_version":              "release-metadata-v8",
 		"release_root_delegation_schema_version":       "release-root-delegation-v1",
@@ -48,8 +48,9 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"network_grant_schema_version":                 "network-grant-v2",
 		"resource_scope_schema_version":                "resource-scope-v1",
 		"session_scope_schema_version":                 "session-scope-v1",
-		"plugin_platform_openapi_version":              "plugin-platform-v16",
-		"compatibility_schema_version":                 "compatibility-manifest-v19",
+		"plugin_platform_openapi_version":              "plugin-platform-v17",
+		"public_api_catalog_version":                   "public-api-v1",
+		"compatibility_schema_version":                 "compatibility-manifest-v20",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
 		"error_codes_schema_version":                   "error-codes-v8",
 		"performance_contract_version":                 "performance-contract-v4",
@@ -57,7 +58,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"contract_registry_version":                    "contract-registry-v2",
 		"platform_package_set_schema_version":          "platform-package-set-v3",
 		"runtime_admission_schema_version":             "runtime-admission-v1",
-		"runtime_descriptor_schema_version":            "runtime-descriptor-v2",
+		"runtime_descriptor_schema_version":            "runtime-descriptor-v3",
 		"owner_scope_root_recovery_schema_version":     "owner-scope-root-recovery-v1",
 		"process_containment_schema_version":           "process-containment-v1",
 		"runtime_exec_journal_schema_version":          "runtime-exec-journal-v1",

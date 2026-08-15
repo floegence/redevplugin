@@ -66,8 +66,12 @@ func TestRuntimeDescriptorV2UsesClosedValidatedIdentity(t *testing.T) {
 	if err := json.Unmarshal(raw, &projection); err != nil {
 		t.Fatal(err)
 	}
-	if len(projection) != 7 || projection["schema_version"] != "runtime-descriptor-v2" ||
-		projection["target"] != "linux/amd64" || projection["binary_sha256"] != strings.Repeat("a", 64) {
+	internal, internalOK := projection["internal"].(map[string]any)
+	_, publicAPIOK := projection["public_api"].(map[string]any)
+	if len(projection) != 6 || projection["schema_version"] != "runtime-descriptor-v3" ||
+		projection["target"] != "linux/amd64" || projection["binary_sha256"] != strings.Repeat("a", 64) ||
+		!internalOK || internal["rust_ipc"] != ipc.String() || internal["contract_set_sha256"] != contractDigest.String() ||
+		!publicAPIOK {
 		t.Fatalf("descriptor wire = %s", raw)
 	}
 	decoded, err := UnmarshalRuntimeDescriptorJSON(raw)

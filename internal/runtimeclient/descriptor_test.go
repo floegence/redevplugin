@@ -68,10 +68,22 @@ func TestRuntimeDescriptorJSONIsClosedAndStrict(t *testing.T) {
 	if err := json.Unmarshal(raw, &projection); err != nil {
 		t.Fatal(err)
 	}
-	if len(projection) != 7 || projection["schema_version"] != "runtime-descriptor-v2" ||
+	internal, internalOK := projection["internal"].(map[string]any)
+	publicAPI, publicAPIOK := projection["public_api"].(map[string]any)
+	if len(projection) != 6 || projection["schema_version"] != "runtime-descriptor-v3" ||
 		projection["platform_version"] != platformversion.CurrentCompatibilityVersion() ||
-		projection["target"] != "linux/amd64" || projection["binary_sha256"] != options.BinarySHA256 {
+		projection["target"] != "linux/amd64" || projection["binary_sha256"] != options.BinarySHA256 ||
+		!internalOK || internal["rust_ipc"] != platformversion.RustIPCVersion || internal["contract_set_sha256"] != platformversion.ContractSetSHA256 ||
+		!publicAPIOK {
 		t.Fatalf("descriptor JSON = %s", raw)
+	}
+	workerMajors, ok := publicAPI["worker_majors"].([]any)
+	if !ok || len(workerMajors) != 1 || workerMajors[0] != float64(1) {
+		t.Fatalf("descriptor public worker majors = %#v", publicAPI["worker_majors"])
+	}
+	features, ok := publicAPI["features"].([]any)
+	if !ok || len(features) == 0 {
+		t.Fatalf("descriptor public features = %#v", publicAPI["features"])
 	}
 	var decoded RuntimeDescriptor
 	if err := json.Unmarshal(raw, &decoded); err != nil || decoded != descriptor {

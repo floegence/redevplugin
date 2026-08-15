@@ -139,6 +139,7 @@ function renderGo(matrix, contracts) {
     ["ResourceScopeSchemaVersion", "resource_scope_schema_version"],
     ["SessionScopeSchemaVersion", "session_scope_schema_version"],
     ["PluginPlatformOpenAPIVersion", "plugin_platform_openapi_version"],
+    ["PublicAPICatalogVersion", "public_api_catalog_version"],
     ["CompatibilityManifestVersion", "compatibility_manifest_version"],
     ["CompatibilitySchemaVersion", "compatibility_schema_version"],
     ["WorkerInvocationSchemaVersion", "worker_invocation_schema_version"],

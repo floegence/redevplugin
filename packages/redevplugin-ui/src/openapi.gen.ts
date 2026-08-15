@@ -1383,7 +1383,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginCatalogRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV19"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV20"];
         ExecutionList: {
             executions: components["schemas"]["Execution"][];
             next_cursor?: number;
@@ -1580,14 +1580,32 @@ export interface components {
         StrictSemVer: string;
         RuntimeDescriptor: {
             /** @constant */
-            schema_version: "runtime-descriptor-v2";
+            schema_version: "runtime-descriptor-v3";
             platform_version: components["schemas"]["StrictSemVer"];
             target: components["schemas"]["RuntimeAdmissionTarget"];
-            /** @constant */
-            rust_ipc_version: "rust-ipc-v6";
-            /** @constant */
-            wasm_abi_version: "redevplugin-wasm-worker-v2";
-            contract_set_sha256: string;
+            internal: {
+                /** @constant */
+                rust_ipc: "rust-ipc-v7";
+                contract_set_sha256: string;
+            };
+            public_api: {
+                /** @constant */
+                worker_majors: [
+                    1
+                ];
+                /** @constant */
+                features: [
+                    "fs.environment.v1",
+                    "fs.home.v1",
+                    "fs.watch.v1",
+                    "fs.workspace.v1",
+                    "io.stream.v1",
+                    "net.http.v1",
+                    "net.tcp.v1",
+                    "net.udp.v1",
+                    "net.websocket.v1"
+                ];
+            };
             binary_sha256: string;
         };
         /** @description Negotiated runtime capacities. per_plugin_concurrency must not exceed worker_count. Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count. */
@@ -2069,7 +2087,7 @@ export interface components {
             update_eligibility?: components["schemas"]["ExternalPackageUpdateEligibility"];
             security_summary?: components["schemas"]["ExternalPackageSecuritySummary"];
             capability_contracts?: components["schemas"]["CapabilityContractPin"][];
-            manifest: components["schemas"]["ManifestV8"];
+            manifest: components["schemas"]["ManifestV9"];
             presentation: components["schemas"]["PresentationCatalog"];
             presentation_sha256: string;
             package_entries: components["schemas"]["PackageEntry"][];
@@ -2109,7 +2127,7 @@ export interface components {
             policy_revision: number;
             management_revision: number;
             revoke_epoch: number;
-            manifest: components["schemas"]["ManifestV8"];
+            manifest: components["schemas"]["ManifestV9"];
             presentation: components["schemas"]["PresentationCatalog"];
             presentation_sha256: string;
             package_entries: components["schemas"]["PackageEntry"][];
@@ -2655,9 +2673,9 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV19: {
+        CompatibilityManifestV20: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v19";
+            schema_version: "redevplugin.compatibility.v20";
             package_set: components["schemas"]["PlatformPackageSetV3"];
             matrix: {
                 /** @constant */
@@ -2677,11 +2695,11 @@ export interface components {
                 /** @constant */
                 plugin_host_protocol_version: "plugin-host-v11";
                 /** @constant */
-                rust_ipc_version: "rust-ipc-v6";
+                rust_ipc_version: "rust-ipc-v7";
                 /** @constant */
                 wasm_abi_version: "redevplugin-wasm-worker-v2";
                 /** @constant */
-                manifest_schema_version: "manifest-v8";
+                manifest_schema_version: "manifest-v9";
                 /** @constant */
                 package_signature_schema_version: "package-signature-v1";
                 /** @constant */
@@ -2713,9 +2731,11 @@ export interface components {
                 /** @constant */
                 session_scope_schema_version: "session-scope-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v16";
+                plugin_platform_openapi_version: "plugin-platform-v17";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v19";
+                public_api_catalog_version: "public-api-v1";
+                /** @constant */
+                compatibility_schema_version: "compatibility-manifest-v20";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -2737,7 +2757,7 @@ export interface components {
                 /** @constant */
                 runtime_admission_schema_version: "runtime-admission-v1";
                 /** @constant */
-                runtime_descriptor_schema_version: "runtime-descriptor-v2";
+                runtime_descriptor_schema_version: "runtime-descriptor-v3";
                 /** @constant */
                 owner_scope_inventory_registry_version: "owner-scope-inventory-registry-v1";
                 /** @constant */
@@ -2754,9 +2774,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV19Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV20Contract"][];
         };
-        CompatibilityManifestV19Contract: {
+        CompatibilityManifestV20Contract: {
             id: string;
             path: string;
             version: string;
@@ -2816,9 +2836,9 @@ export interface components {
             /** @constant */
             role?: "runtime";
         };
-        ManifestV8: {
+        ManifestV9: {
             /** @constant */
-            schema_version: "redevplugin.manifest.v8";
+            schema_version: "redevplugin.manifest.v9";
             publisher: {
                 publisher_id: string;
                 display_name?: string;
@@ -2826,23 +2846,24 @@ export interface components {
             plugin: {
                 plugin_id: string;
                 display_name: string;
-                version: components["schemas"]["ManifestV8Semver"];
-                /** @constant */
-                api_version: "plugin-v1";
-                min_runtime_version: components["schemas"]["ManifestV8Semver"];
-                /** @constant */
-                ui_protocol_version: "plugin-ui-v7";
+                version: components["schemas"]["ManifestV9Semver"];
             };
+            api: {
+                /** @constant */
+                surface: 1;
+                /** @constant */
+                worker: 1;
+                required_features?: components["schemas"]["ManifestV9RequiredFeatures"];
+                optional_features?: components["schemas"]["ManifestV9OptionalFeatures"];
+            };
+            permissions: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen")[];
             presentation: {
-                default_locale: components["schemas"]["ManifestV8Locale"];
-                summary: components["schemas"]["ManifestV8Summary"];
-                description: components["schemas"]["ManifestV8Description"];
-                highlights: components["schemas"]["ManifestV8Highlights"];
-                keywords: components["schemas"]["ManifestV8Keywords"];
+                locales: {
+                    default: components["schemas"]["ManifestV9Locale"];
+                };
                 icon?: {
                     path: string;
                 };
-                localizations: components["schemas"]["ManifestV8Localization"][];
             };
             surfaces: {
                 surface_id: string;
@@ -2858,78 +2879,24 @@ export interface components {
                     height: number;
                 };
             }[];
-            capability_bindings?: {
-                binding_id: string;
-                contract: components["schemas"]["HostCapabilityPinV1"];
-            }[];
-            methods?: ({
-                method: string;
-                /** @enum {unknown} */
-                effect?: "read" | "write" | "delete" | "execute" | "admin";
-                /** @enum {unknown} */
-                execution?: "sync" | "operation" | "subscription";
-                dangerous?: boolean;
-                preflight_only?: boolean;
-                broker_access?: {
-                    storage?: {
-                        store_id: string;
-                        operations: ("read" | "write" | "delete" | "list" | "get" | "put" | "query" | "exec")[];
-                    }[];
-                    network?: ({
-                        connector_id: string;
-                        /** @enum {unknown} */
-                        transport: "http" | "websocket" | "tcp" | "udp";
-                        operations: ("http" | "http_stream" | "websocket_round_trip" | "tcp_round_trip" | "udp_round_trip")[];
-                        http_methods?: ("GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS")[];
-                    } & unknown)[];
-                };
-                route: {
-                    /** @enum {unknown} */
-                    kind: "capability" | "worker" | "core_action";
-                    binding_id?: string;
-                    target_method?: string;
-                    worker_id?: string;
-                    action_id?: string;
-                } & (unknown & unknown & unknown);
-                confirmation?: {
-                    /** @enum {unknown} */
-                    mode: "none" | "required" | "risk_based";
-                    preflight_method?: string | null;
-                    request_hash_fields?: string[];
-                    plan_hash_required?: boolean;
-                };
-                cancel_policy?: {
-                    cancelable: boolean;
-                    /** @enum {unknown} */
-                    disable_behavior?: "cancel" | "orphan" | "wait";
-                    /** @enum {unknown} */
-                    uninstall_behavior?: "cancel_then_block_delete" | "force_cleanup_allowed";
-                    ack_timeout_ms?: number;
-                } & (unknown & unknown);
-                request_schema?: components["schemas"]["ManifestV8MethodSchema"] & {
-                    /** @constant */
-                    type: "object";
-                    /** @constant */
-                    additionalProperties: false;
-                };
-                response_schema?: components["schemas"]["ManifestV8MethodSchema"] & {
-                    /** @constant */
-                    type: "object";
-                    /** @constant */
-                    additionalProperties: false;
-                };
-            } & (unknown & unknown & unknown & unknown))[];
-            workers?: {
+            workers: {
                 worker_id: string;
                 artifact: string;
-                /** @constant */
-                abi: "redevplugin-wasm-worker-v2";
                 /** @constant */
                 mode: "job";
                 /** @enum {unknown} */
                 scope: "user" | "environment";
                 memory_limit_bytes: number;
-                idle_timeout_ms?: number;
+            }[];
+            methods: {
+                method: string;
+                worker_id: string;
+                /** @enum {unknown} */
+                effect: "read" | "write" | "execute" | "delete" | "admin";
+                /** @enum {unknown} */
+                execution: "sync" | "operation" | "subscription";
+                request_schema: components["schemas"]["ManifestV9MethodSchema"];
+                response_schema: components["schemas"]["ManifestV9MethodSchema"];
             }[];
             storage?: {
                 stores?: {
@@ -2943,115 +2910,13 @@ export interface components {
                     schema_version: number;
                 }[];
             };
-            network_access?: {
-                connectors?: {
-                    connector_id: string;
-                    /** @enum {unknown} */
-                    transport: "http" | "websocket" | "tcp" | "udp";
-                    /** @enum {unknown} */
-                    scope: "user" | "environment";
-                    destinations: string[];
-                    auth?: Record<string, never>;
-                    tls?: Record<string, never>;
-                }[];
-            };
-            settings?: {
-                schema_version: number;
-                fields?: {
-                    key: string;
-                    type: string;
-                    /** @enum {unknown} */
-                    scope: "user" | "environment";
-                    label: string;
-                    default?: unknown;
-                    secret_ref?: string;
-                    options?: components["schemas"]["ManifestV8SettingOption"][];
-                    validation?: Record<string, never>;
-                }[];
-            };
-            intents?: {
-                intent_id: string;
-                method: string;
-                payload_schema?: Record<string, never>;
-            }[];
+            settings?: Record<string, never>;
         };
-        ManifestV8Locale: string;
-        ManifestV8Summary: string;
-        ManifestV8Description: string[];
-        ManifestV8Highlights: string[];
-        ManifestV8Keywords: string[];
-        ManifestV8SettingOption: {
-            value: string;
-            label: string;
-        };
-        ManifestV8LocalizedSurface: {
-            surface_id: string;
-            label: string;
-        };
-        ManifestV8LocalizedSetting: {
-            key: string;
-            label: string;
-            options: components["schemas"]["ManifestV8SettingOption"][];
-        };
-        ManifestV8Localization: {
-            locale: components["schemas"]["ManifestV8Locale"];
-            plugin_name: string;
-            publisher_name?: string;
-            summary: components["schemas"]["ManifestV8Summary"];
-            description: components["schemas"]["ManifestV8Description"];
-            highlights: components["schemas"]["ManifestV8Highlights"];
-            keywords: components["schemas"]["ManifestV8Keywords"];
-            surfaces: components["schemas"]["ManifestV8LocalizedSurface"][];
-            settings: components["schemas"]["ManifestV8LocalizedSetting"][];
-        };
-        ManifestV8Semver: string;
-        ManifestV8MethodSchema: false | (({
-            description?: string;
-            readOnly?: boolean;
-            writeOnly?: boolean;
-            $ref?: string;
-            type?: ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string") | ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string")[];
-            properties?: {
-                [key: string]: components["schemas"]["ManifestV8MethodSchema"];
-            };
-            patternProperties?: {
-                [key: string]: components["schemas"]["ManifestV8MethodSchema"];
-            };
-            required?: string[];
-            /** @constant */
-            additionalProperties?: false;
-            items?: components["schemas"]["ManifestV8MethodSchema"];
-            allOf?: components["schemas"]["ManifestV8MethodSchema"][];
-            anyOf?: components["schemas"]["ManifestV8MethodSchema"][];
-            oneOf?: components["schemas"]["ManifestV8MethodSchema"][];
-            enum?: unknown[];
-            const?: unknown;
-            default?: unknown;
-            examples?: unknown[];
-            minimum?: number;
-            maximum?: number;
-            exclusiveMinimum?: number;
-            exclusiveMaximum?: number;
-            multipleOf?: number;
-            minLength?: number;
-            maxLength?: number;
-            pattern?: string;
-            format?: string;
-            minItems?: number;
-            maxItems?: number;
-            uniqueItems?: boolean;
-            minProperties?: number;
-            maxProperties?: number;
-        } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        HostCapabilityPinV1: {
-            publisher_id: components["schemas"]["HostCapabilityPinV1Id"];
-            contract_id: components["schemas"]["HostCapabilityPinV1Id"];
-            contract_version: components["schemas"]["HostCapabilityPinV1Semver"];
-            artifact_sha256: components["schemas"]["HostCapabilityPinV1Sha256"];
-        };
-        HostCapabilityPinV1Id: string;
-        HostCapabilityPinV1Semver: string;
-        HostCapabilityPinV1Sha256: string;
+        ManifestV9Semver: string;
+        ManifestV9Locale: string;
+        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1")[];
+        ManifestV9OptionalFeatures: string[];
+        ManifestV9MethodSchema: false | Record<string, never>;
         OpaqueSurfaceDocumentV3: {
             /** @constant */
             schema_version: "redevplugin.opaque_surface_document.v3";
@@ -3088,6 +2953,15 @@ export interface components {
             size: number;
             content_type: string;
         };
+        HostCapabilityPinV1: {
+            publisher_id: components["schemas"]["HostCapabilityPinV1Id"];
+            contract_id: components["schemas"]["HostCapabilityPinV1Id"];
+            contract_version: components["schemas"]["HostCapabilityPinV1Semver"];
+            artifact_sha256: components["schemas"]["HostCapabilityPinV1Sha256"];
+        };
+        HostCapabilityPinV1Id: string;
+        HostCapabilityPinV1Semver: string;
+        HostCapabilityPinV1Sha256: string;
     };
     responses: {
         /** @description Closed non-success response for read-only platform operations. */

@@ -102,15 +102,15 @@ function validPublication(packageSet) {
   };
 }
 
-test("the active compatibility surface is the atomic v19 contract set", () => {
+test("the active compatibility surface is the atomic v20 contract set", () => {
   const activeRegistry = readJSON("spec/plugin/contract-registry-v2.json");
-  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v19.schema.json");
+  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v20.schema.json");
   const generatedGo = read("pkg/version/contracts_gen.go").toString("utf8");
   const generatedTypeScript = read("packages/redevplugin-ui/src/contracts.gen.ts").toString("utf8");
 
   assert.equal(activeRegistry.schema_version, "redevplugin.contract_registry.v2");
   assert.equal(activeRegistry.registry_version, "contract-registry-v2");
-  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v19");
+  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v20");
   assert.match(generatedGo, /ContractRegistryVersion\s+= "contract-registry-v2"/);
   assert.match(generatedTypeScript, /"contract_registry_version": "contract-registry-v2"/);
   assert.equal(activeRegistry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
@@ -126,7 +126,7 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
 
   assert.equal(registryBytes.toString("utf8"), `${JSON.stringify(registry, null, 2)}\n`);
   assert.deepEqual(registry.artifacts.map(({ id }) => id), expectedIDs);
-  assert.equal(registry.artifacts.length, 44);
+  assert.equal(registry.artifacts.length, 45);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-metadata-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "source-policy-schema"), false);

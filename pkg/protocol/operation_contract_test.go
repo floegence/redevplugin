@@ -9,7 +9,7 @@ import (
 
 func TestExecutionAndEventDTOsAreTheOnlyPublicAsyncEnvelopes(t *testing.T) {
 	root := repoRoot(t)
-	openAPI, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v16.yaml"))
+	openAPI, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v17.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

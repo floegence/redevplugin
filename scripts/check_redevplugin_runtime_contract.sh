@@ -41,19 +41,19 @@ done
 
 echo "==> active contract inventory"
 for required in \
-  spec/openapi/plugin-platform-v16.yaml \
-  spec/plugin/compatibility-manifest-v19.schema.json \
+  spec/openapi/plugin-platform-v17.yaml \
+  spec/plugin/compatibility-manifest-v20.schema.json \
   spec/plugin/error-codes-v8.schema.json \
-  spec/plugin/ipc-v6.schema.json \
+  spec/plugin/ipc-v7.schema.json \
   spec/plugin/performance-contract-v4.json \
   spec/plugin/performance-evidence-v4.schema.json \
   spec/plugin/platform-package-set-v3.schema.json \
   spec/plugin/platform-package-publication-v2.schema.json \
   spec/plugin/process-containment-v1.schema.json \
-  spec/plugin/manifest-v8.schema.json \
+  spec/plugin/manifest-v9.schema.json \
   spec/plugin/release-metadata-v8.schema.json \
   spec/plugin/runtime-admission-v1.schema.json \
-  spec/plugin/runtime-descriptor-v2.schema.json \
+  spec/plugin/runtime-descriptor-v3.schema.json \
   spec/plugin/runtime-exec-journal-v1.schema.json; do
   test -f "$required"
 done

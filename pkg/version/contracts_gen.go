@@ -5,9 +5,9 @@ package version
 const (
 	PluginUIProtocolVersion                 = "plugin-ui-v7"
 	PluginHostProtocolVersion               = "plugin-host-v11"
-	RustIPCVersion                          = "rust-ipc-v6"
+	RustIPCVersion                          = "rust-ipc-v7"
 	WASMABIVersion                          = "redevplugin-wasm-worker-v2"
-	ManifestSchemaVersion                   = "manifest-v8"
+	ManifestSchemaVersion                   = "manifest-v9"
 	PackageSignatureSchemaVersion           = "package-signature-v1"
 	ReleaseMetadataSchemaVersion            = "release-metadata-v8"
 	ReleaseRootDelegationSchemaVersion      = "release-root-delegation-v1"
@@ -23,9 +23,10 @@ const (
 	NetworkGrantSchemaVersion               = "network-grant-v2"
 	ResourceScopeSchemaVersion              = "resource-scope-v1"
 	SessionScopeSchemaVersion               = "session-scope-v1"
-	PluginPlatformOpenAPIVersion            = "plugin-platform-v16"
-	CompatibilityManifestVersion            = "redevplugin.compatibility.v19"
-	CompatibilitySchemaVersion              = "compatibility-manifest-v19"
+	PluginPlatformOpenAPIVersion            = "plugin-platform-v17"
+	PublicAPICatalogVersion                 = "public-api-v1"
+	CompatibilityManifestVersion            = "redevplugin.compatibility.v20"
+	CompatibilitySchemaVersion              = "compatibility-manifest-v20"
 	WorkerInvocationSchemaVersion           = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion     = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion          = "host-capability-pin-v1"
@@ -36,7 +37,7 @@ const (
 	PlatformPackageSetSchemaVersion         = "platform-package-set-v3"
 	PlatformPackagePublicationSchemaVersion = "platform-package-publication-v2"
 	RuntimeAdmissionSchemaVersion           = "runtime-admission-v1"
-	RuntimeDescriptorSchemaVersion          = "runtime-descriptor-v2"
+	RuntimeDescriptorSchemaVersion          = "runtime-descriptor-v3"
 	OwnerScopeInventoryRegistryVersion      = "owner-scope-inventory-registry-v1"
 	OwnerScopeInventorySchemaVersion        = "owner-scope-inventory-v1"
 	OwnerScopeMigrationSchemaVersion        = "owner-scope-migration-v1"
@@ -49,9 +50,9 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v19.schema.json",
-		Version: "compatibility-manifest-v19",
-		SHA256:  "c871e24cb88386dbddaae0bd37bcc9177e54b3c02fb957de4b46ddb329d8bb5b",
+		Path:    "spec/plugin/compatibility-manifest-v20.schema.json",
+		Version: "compatibility-manifest-v20",
+		SHA256:  "8ace15ee3f0bb05e5cdd3449385dd498e37f5fb2e22a67302efb5efeaee1aa02",
 	},
 	{
 		ID:      "contract-registry-schema",
@@ -97,9 +98,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "manifest-schema",
-		Path:    "spec/plugin/manifest-v8.schema.json",
-		Version: "manifest-v8",
-		SHA256:  "dfe5e9ea5f15d4f9c0272427ca8650d475e2fa8aacc4fb6be3a945a3069a26fb",
+		Path:    "spec/plugin/manifest-v9.schema.json",
+		Version: "manifest-v9",
+		SHA256:  "d8b0fc348179a1a9af81f152897bad1891b1f8b7a7a4448c0a4e54e9883f1322",
 	},
 	{
 		ID:      "network-grant-schema",
@@ -175,9 +176,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "plugin-platform-openapi",
-		Path:    "spec/openapi/plugin-platform-v16.yaml",
-		Version: "plugin-platform-v16",
-		SHA256:  "a85c284d1a6d677039bf9ec59e5bf80e93bc707d6ea7b1a7a967bf9daacdd5c0",
+		Path:    "spec/openapi/plugin-platform-v17.yaml",
+		Version: "plugin-platform-v17",
+		SHA256:  "1a043991f4d87ddfabdf614364e1bec42400f4bc19b7856c4c774b9f282fcda3",
 	},
 	{
 		ID:      "presentation-icon-evidence-schema",
@@ -196,6 +197,12 @@ var generatedContractArtifacts = []ContractArtifact{
 		Path:    "spec/plugin/process-containment-v1.schema.json",
 		Version: "process-containment-v1",
 		SHA256:  "930ea44b1f62361706e994649e84f62af0a6418b77a661ae9bf9c10f1398e3fc",
+	},
+	{
+		ID:      "public-api-catalog",
+		Path:    "spec/plugin/public-api-v1.json",
+		Version: "public-api-v1",
+		SHA256:  "fec900c56ce6eb2ad5ee1f229d62918726c23af48eb6cbe52bb0aff7599e06cc",
 	},
 	{
 		ID:      "publisher-release-ref-schema",
@@ -265,9 +272,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "runtime-descriptor-schema",
-		Path:    "spec/plugin/runtime-descriptor-v2.schema.json",
-		Version: "runtime-descriptor-v2",
-		SHA256:  "2ba59f6fb70d4ad757f60aca5541f4a44886542525e5bf76c393cd2368188351",
+		Path:    "spec/plugin/runtime-descriptor-v3.schema.json",
+		Version: "runtime-descriptor-v3",
+		SHA256:  "c95c9126c0bbb4b5f697114d4e11d7107d1bebea56d700d3549d00812e7c3e97",
 	},
 	{
 		ID:      "runtime-exec-journal-schema",
@@ -277,9 +284,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "rust-ipc-schema",
-		Path:    "spec/plugin/ipc-v6.schema.json",
-		Version: "rust-ipc-v6",
-		SHA256:  "75d7fb83d4502be726e986025f7ec14fac592bcaeb7add6b28dff42a7360c5dc",
+		Path:    "spec/plugin/ipc-v7.schema.json",
+		Version: "rust-ipc-v7",
+		SHA256:  "1e1c5b6414030a0c7ffa6f4356f95e2f78f339b9b4dff45bb3691931316d9502",
 	},
 	{
 		ID:      "session-scope-schema",

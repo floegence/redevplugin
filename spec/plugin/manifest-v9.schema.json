@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/manifest-v9.schema.json",
+  "title": "ReDevPlugin manifest v9",
+  "type": "object",
+  "required": ["schema_version", "publisher", "plugin", "api", "permissions", "presentation", "surfaces", "workers", "methods"],
+  "properties": {
+    "schema_version": { "const": "redevplugin.manifest.v9" },
+    "publisher": {
+      "type": "object",
+      "required": ["publisher_id"],
+      "properties": {
+        "publisher_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "display_name": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "plugin": {
+      "type": "object",
+      "required": ["plugin_id", "display_name", "version"],
+      "properties": {
+        "plugin_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "display_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "$ref": "#/$defs/semver" }
+      }
+    },
+    "api": {
+      "type": "object",
+      "required": ["surface", "worker"],
+      "properties": {
+        "surface": { "const": 1 },
+        "worker": { "const": 1 },
+        "required_features": { "$ref": "#/$defs/required_features" },
+        "optional_features": { "$ref": "#/$defs/optional_features" }
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "fs.workspace.read", "fs.workspace.write", "fs.home.read", "fs.home.write",
+          "fs.environment.read", "fs.environment.write", "network.client", "network.listen"
+        ]
+      }
+    },
+    "presentation": {
+      "type": "object",
+      "required": ["locales"],
+      "properties": {
+        "locales": {
+          "type": "object",
+          "required": ["default"],
+          "properties": {
+            "default": { "$ref": "#/$defs/locale" }
+          }
+        },
+        "icon": {
+          "type": "object",
+          "required": ["path"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1, "maxLength": 512 }
+          }
+        }
+      }
+    },
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["surface_id", "kind", "label", "entry"],
+        "properties": {
+          "surface_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "kind": { "enum": ["view", "command", "background"] },
+          "intent": { "enum": ["primary", "secondary", "utility"] },
+          "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "entry": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "icon": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "default_size": {
+            "type": "object",
+            "required": ["width", "height"],
+            "properties": {
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "workers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["worker_id", "artifact", "mode", "scope", "memory_limit_bytes"],
+        "properties": {
+          "worker_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "artifact": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "mode": { "const": "job" },
+          "scope": { "enum": ["user", "environment"] },
+          "memory_limit_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456 }
+        }
+      }
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["method", "worker_id", "effect", "execution", "request_schema", "response_schema"],
+        "properties": {
+          "method": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "worker_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
+          "execution": { "enum": ["sync", "operation", "subscription"] },
+          "request_schema": { "$ref": "#/$defs/method_schema" },
+          "response_schema": { "$ref": "#/$defs/method_schema" }
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "stores": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["store_id", "kind", "scope", "quota_bytes", "schema_version"],
+            "properties": {
+              "store_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "kind": { "enum": ["kv", "files", "sqlite"] },
+              "scope": { "enum": ["user", "environment"] },
+              "quota_bytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
+              "quota_files": { "type": "integer", "minimum": 1, "maximum": 100000 },
+              "schema_version": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "settings": { "type": "object" }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "locale": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$"
+    },
+    "required_features": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "io.stream.v1", "fs.workspace.v1", "fs.home.v1", "fs.environment.v1", "fs.watch.v1",
+          "net.http.v1", "net.websocket.v1", "net.tcp.v1", "net.udp.v1"
+        ]
+      }
+    },
+    "optional_features": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$",
+        "maxLength": 128
+      }
+    },
+    "method_schema": {
+      "oneOf": [
+        { "const": false },
+        { "type": "object" }
+      ]
+    }
+  }
+}

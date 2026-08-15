@@ -1170,7 +1170,7 @@ mod tests {
         let sibling = scope("session-a", "user-a", "env-a", "channel-b");
         let template = Arc::new(
             redevplugin_ipc::parse_worker_invocation(
-                r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"template","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"plugin_instance_id":"plugin","method":"worker.echo"}}}"#,
+                r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"template","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"plugin_instance_id":"plugin","method":"worker.echo"}}}"#,
             )
             .unwrap(),
         );
@@ -1248,7 +1248,7 @@ mod tests {
 
     #[test]
     fn invocation_job_builder_returns_typed_error_without_panicking() {
-        let frame = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"missing-plugin","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"method":"worker.echo"}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"missing-plugin","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"method":"worker.echo"}}}"#;
         let invocation = redevplugin_ipc::parse_worker_invocation(frame).unwrap();
         let result = std::panic::catch_unwind(|| InvocationJob::new(invocation));
         assert_eq!(
@@ -1261,7 +1261,7 @@ mod tests {
 
     fn job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
         );
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }
@@ -1287,7 +1287,7 @@ mod tests {
         scope: &redevplugin_ipc::SessionScope,
     ) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
+            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
             scope.owner_session_hash,
             scope.owner_user_hash,
             scope.owner_env_hash,
@@ -1382,7 +1382,7 @@ mod property_gates {
 
     fn property_job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
         );
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }
@@ -1398,7 +1398,7 @@ mod property_gates {
         scope: &redevplugin_ipc::SessionScope,
     ) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
+            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
             scope.owner_session_hash,
             scope.owner_user_hash,
             scope.owner_env_hash,

@@ -12,9 +12,9 @@ export const redevPluginContractVersions = {
   "supported_plugin_ui_protocol_versions": ["plugin-ui-v7"],
   "plugin_ui_transport_mappings": [{"plugin_ui_protocol_version":"plugin-ui-v7","opaque_surface_transport_schema_version":"opaque-surface-transport-v6","bridge_schema_version":"bridge-v7"}],
   "plugin_host_protocol_version": "plugin-host-v11",
-  "rust_ipc_version": "rust-ipc-v6",
+  "rust_ipc_version": "rust-ipc-v7",
   "wasm_abi_version": "redevplugin-wasm-worker-v2",
-  "manifest_schema_version": "manifest-v8",
+  "manifest_schema_version": "manifest-v9",
   "package_signature_schema_version": "package-signature-v1",
   "release_metadata_schema_version": "release-metadata-v8",
   "release_root_delegation_schema_version": "release-root-delegation-v1",
@@ -30,9 +30,10 @@ export const redevPluginContractVersions = {
   "network_grant_schema_version": "network-grant-v2",
   "resource_scope_schema_version": "resource-scope-v1",
   "session_scope_schema_version": "session-scope-v1",
-  "plugin_platform_openapi_version": "plugin-platform-v16",
-  "compatibility_manifest_version": "redevplugin.compatibility.v19",
-  "compatibility_schema_version": "compatibility-manifest-v19",
+  "plugin_platform_openapi_version": "plugin-platform-v17",
+  "public_api_catalog_version": "public-api-v1",
+  "compatibility_manifest_version": "redevplugin.compatibility.v20",
+  "compatibility_schema_version": "compatibility-manifest-v20",
   "worker_invocation_schema_version": "worker-invocation-v3",
   "host_capability_contract_schema_version": "host-capability-contract-v1",
   "host_capability_pin_schema_version": "host-capability-pin-v1",
@@ -43,7 +44,7 @@ export const redevPluginContractVersions = {
   "platform_package_set_schema_version": "platform-package-set-v3",
   "platform_package_publication_schema_version": "platform-package-publication-v2",
   "runtime_admission_schema_version": "runtime-admission-v1",
-  "runtime_descriptor_schema_version": "runtime-descriptor-v2",
+  "runtime_descriptor_schema_version": "runtime-descriptor-v3",
   "owner_scope_inventory_registry_version": "owner-scope-inventory-registry-v1",
   "owner_scope_inventory_schema_version": "owner-scope-inventory-v1",
   "owner_scope_migration_schema_version": "owner-scope-migration-v1",
@@ -63,9 +64,9 @@ export type ReDevPluginContractArtifact = {
 export const redevPluginContractArtifacts = [
   {
     id: "compatibility-manifest-schema",
-    path: "spec/plugin/compatibility-manifest-v19.schema.json",
-    version: "compatibility-manifest-v19",
-    sha256: "c871e24cb88386dbddaae0bd37bcc9177e54b3c02fb957de4b46ddb329d8bb5b",
+    path: "spec/plugin/compatibility-manifest-v20.schema.json",
+    version: "compatibility-manifest-v20",
+    sha256: "8ace15ee3f0bb05e5cdd3449385dd498e37f5fb2e22a67302efb5efeaee1aa02",
   },
   {
     id: "contract-registry-schema",
@@ -111,9 +112,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "manifest-schema",
-    path: "spec/plugin/manifest-v8.schema.json",
-    version: "manifest-v8",
-    sha256: "dfe5e9ea5f15d4f9c0272427ca8650d475e2fa8aacc4fb6be3a945a3069a26fb",
+    path: "spec/plugin/manifest-v9.schema.json",
+    version: "manifest-v9",
+    sha256: "d8b0fc348179a1a9af81f152897bad1891b1f8b7a7a4448c0a4e54e9883f1322",
   },
   {
     id: "network-grant-schema",
@@ -189,9 +190,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "plugin-platform-openapi",
-    path: "spec/openapi/plugin-platform-v16.yaml",
-    version: "plugin-platform-v16",
-    sha256: "a85c284d1a6d677039bf9ec59e5bf80e93bc707d6ea7b1a7a967bf9daacdd5c0",
+    path: "spec/openapi/plugin-platform-v17.yaml",
+    version: "plugin-platform-v17",
+    sha256: "1a043991f4d87ddfabdf614364e1bec42400f4bc19b7856c4c774b9f282fcda3",
   },
   {
     id: "presentation-icon-evidence-schema",
@@ -210,6 +211,12 @@ export const redevPluginContractArtifacts = [
     path: "spec/plugin/process-containment-v1.schema.json",
     version: "process-containment-v1",
     sha256: "930ea44b1f62361706e994649e84f62af0a6418b77a661ae9bf9c10f1398e3fc",
+  },
+  {
+    id: "public-api-catalog",
+    path: "spec/plugin/public-api-v1.json",
+    version: "public-api-v1",
+    sha256: "fec900c56ce6eb2ad5ee1f229d62918726c23af48eb6cbe52bb0aff7599e06cc",
   },
   {
     id: "publisher-release-ref-schema",
@@ -279,9 +286,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "runtime-descriptor-schema",
-    path: "spec/plugin/runtime-descriptor-v2.schema.json",
-    version: "runtime-descriptor-v2",
-    sha256: "2ba59f6fb70d4ad757f60aca5541f4a44886542525e5bf76c393cd2368188351",
+    path: "spec/plugin/runtime-descriptor-v3.schema.json",
+    version: "runtime-descriptor-v3",
+    sha256: "c95c9126c0bbb4b5f697114d4e11d7107d1bebea56d700d3549d00812e7c3e97",
   },
   {
     id: "runtime-exec-journal-schema",
@@ -291,9 +298,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "rust-ipc-schema",
-    path: "spec/plugin/ipc-v6.schema.json",
-    version: "rust-ipc-v6",
-    sha256: "75d7fb83d4502be726e986025f7ec14fac592bcaeb7add6b28dff42a7360c5dc",
+    path: "spec/plugin/ipc-v7.schema.json",
+    version: "rust-ipc-v7",
+    sha256: "1e1c5b6414030a0c7ffa6f4356f95e2f78f339b9b4dff45bb3691931316d9502",
   },
   {
     id: "session-scope-schema",

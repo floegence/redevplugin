@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/runtime-descriptor-v3.schema.json",
+  "title": "ReDevPlugin runtime descriptor v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "platform_version", "target", "internal", "public_api", "binary_sha256"],
+  "properties": {
+    "schema_version": {"const": "runtime-descriptor-v3"},
+    "platform_version": {"$ref": "#/$defs/semver"},
+    "target": {"type": "string", "enum": ["linux/amd64", "linux/arm64"]},
+    "internal": {"$ref": "#/$defs/internal"},
+    "public_api": {"$ref": "#/$defs/public_api"},
+    "binary_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "semver": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "internal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rust_ipc", "contract_set_sha256"],
+      "properties": {
+        "rust_ipc": {"const": "rust-ipc-v7"},
+        "contract_set_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "public_api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker_majors", "features"],
+      "properties": {
+        "worker_majors": {"const": [1]},
+        "features": {"const": ["fs.environment.v1", "fs.home.v1", "fs.watch.v1", "fs.workspace.v1", "io.stream.v1", "net.http.v1", "net.tcp.v1", "net.udp.v1", "net.websocket.v1"]}
+      }
+    }
+  }
+}

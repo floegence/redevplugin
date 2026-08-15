@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	platformversion "github.com/floegence/redevplugin/pkg/version"
 )
 
-const runtimeDescriptorSchemaVersion = "runtime-descriptor-v2"
+const runtimeDescriptorSchemaVersion = "runtime-descriptor-v3"
 
 var (
 	ErrRuntimeDescriptorInvalid  = errors.New("runtime descriptor is invalid")
@@ -40,14 +41,23 @@ type RuntimeDescriptor struct {
 	binarySHA256      string
 }
 
-type runtimeDescriptorJSON struct {
-	SchemaVersion     string `json:"schema_version"`
-	PlatformVersion   string `json:"platform_version"`
-	Target            string `json:"target"`
-	RustIPCVersion    string `json:"rust_ipc_version"`
-	WASMABIVersion    string `json:"wasm_abi_version"`
+type runtimeDescriptorInternalJSON struct {
+	RustIPCVersion    string `json:"rust_ipc"`
 	ContractSetSHA256 string `json:"contract_set_sha256"`
-	BinarySHA256      string `json:"binary_sha256"`
+}
+
+type runtimeDescriptorPublicAPIJSON struct {
+	WorkerMajors []uint16 `json:"worker_majors"`
+	Features     []string `json:"features"`
+}
+
+type runtimeDescriptorJSON struct {
+	SchemaVersion   string                         `json:"schema_version"`
+	PlatformVersion string                         `json:"platform_version"`
+	Target          string                         `json:"target"`
+	Internal        runtimeDescriptorInternalJSON  `json:"internal"`
+	PublicAPI       runtimeDescriptorPublicAPIJSON `json:"public_api"`
+	BinarySHA256    string                         `json:"binary_sha256"`
 }
 
 func NewRuntimeDescriptor(options RuntimeDescriptorOptions) (RuntimeDescriptor, error) {
@@ -96,14 +106,19 @@ func (d RuntimeDescriptor) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	catalog := platformversion.CurrentPublicAPICatalog()
 	return json.Marshal(runtimeDescriptorJSON{
-		SchemaVersion:     runtimeDescriptorSchemaVersion,
-		PlatformVersion:   d.platformVersion.String(),
-		Target:            target,
-		RustIPCVersion:    d.rustIPCVersion,
-		WASMABIVersion:    d.wasmABIVersion,
-		ContractSetSHA256: d.contractSetSHA256,
-		BinarySHA256:      d.binarySHA256,
+		SchemaVersion:   runtimeDescriptorSchemaVersion,
+		PlatformVersion: d.platformVersion.String(),
+		Target:          target,
+		Internal: runtimeDescriptorInternalJSON{
+			RustIPCVersion: d.rustIPCVersion, ContractSetSHA256: d.contractSetSHA256,
+		},
+		PublicAPI: runtimeDescriptorPublicAPIJSON{
+			WorkerMajors: append([]uint16(nil), catalog.WorkerAPIMajors...),
+			Features:     append([]string(nil), catalog.Features...),
+		},
+		BinarySHA256: d.binarySHA256,
 	})
 }
 
@@ -137,12 +152,17 @@ func (d *RuntimeDescriptor) UnmarshalJSON(raw []byte) error {
 	if err != nil {
 		return err
 	}
+	catalog := platformversion.CurrentPublicAPICatalog()
+	if !slices.Equal(wire.PublicAPI.WorkerMajors, catalog.WorkerAPIMajors) ||
+		!slices.Equal(wire.PublicAPI.Features, catalog.Features) {
+		return fmt.Errorf("%w: public_api", ErrRuntimeDescriptorInvalid)
+	}
 	parsed, err := NewRuntimeDescriptor(RuntimeDescriptorOptions{
 		PlatformVersion:   parsedVersion,
 		Target:            target,
-		RustIPCVersion:    wire.RustIPCVersion,
-		WASMABIVersion:    wire.WASMABIVersion,
-		ContractSetSHA256: wire.ContractSetSHA256,
+		RustIPCVersion:    wire.Internal.RustIPCVersion,
+		WASMABIVersion:    platformversion.WASMABIVersion,
+		ContractSetSHA256: wire.Internal.ContractSetSHA256,
 		BinarySHA256:      wire.BinarySHA256,
 	})
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 )
 
 func TestExternalPackageFeatureIsPublishedByTheOpenAPIContract(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v16.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestExternalPackageFeatureIsPublishedByTheOpenAPIContract(t *testing.T) {
 }
 
 func TestExternalPackageRoutesExposeClosedInspectAndInstallFlow(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v16.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestExternalPackageRoutesExposeClosedInspectAndInstallFlow(t *testing.T) {
 }
 
 func TestExternalPackageDurableCommitAndQueryRoutesAreRetired(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v16.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestExternalPackageDurableCommitAndQueryRoutesAreRetired(t *testing.T) {
 }
 
 func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v16.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 }
 
 func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v16.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
 }
 
 func TestExternalPackageProjectionPreservesLegacyTrustFields(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v16.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestExternalPackageProjectionPreservesLegacyTrustFields(t *testing.T) {
 }
 
 func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v16.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

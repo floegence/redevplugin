@@ -6600,7 +6600,7 @@ mod tests {
     fn session_revoke_handler_emits_terminal_ack_after_containment() {
         let shared = RuntimeSharedState::default();
         let status = runtime_status_for_test();
-        let frame = r#"{"ipc_version":"rust-ipc-v6","frame_type":"session_revoke","request_id":"revoke-1","runtime_generation_id":"g1","payload":{"session_revoke_sequence":1,"owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash"}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v7","frame_type":"session_revoke","request_id":"revoke-1","runtime_generation_id":"g1","payload":{"session_revoke_sequence":1,"owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash"}}"#;
         let response = handle_session_revoke(&shared, "g1", frame, &status).unwrap();
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(response["frame_type"], "session_revoke_ack");
@@ -6633,7 +6633,7 @@ mod tests {
             )
             .unwrap();
         let running = status.scheduler.take().unwrap();
-        let request = r#"{"ipc_version":"rust-ipc-v6","frame_type":"session_revoke","request_id":"revoke-1","runtime_generation_id":"g1","payload":{"session_revoke_sequence":1,"owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash"}}"#;
+        let request = r#"{"ipc_version":"rust-ipc-v7","frame_type":"session_revoke","request_id":"revoke-1","runtime_generation_id":"g1","payload":{"session_revoke_sequence":1,"owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash"}}"#;
 
         let response = handle_session_revoke(&shared, "g1", request, &status).unwrap();
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
@@ -6798,7 +6798,7 @@ mod tests {
             .unwrap();
 
         let cancel = redevplugin_ipc::decode_runtime_input_frame(
-            r#"{"ipc_version":"rust-ipc-v6","frame_type":"cancel_invoke","request_id":"cancel-r1","runtime_generation_id":"g1","payload":{"invocation_request_id":"r1"}}"#,
+            r#"{"ipc_version":"rust-ipc-v7","frame_type":"cancel_invoke","request_id":"cancel-r1","runtime_generation_id":"g1","payload":{"invocation_request_id":"r1"}}"#,
         )
         .unwrap();
         dispatch_runtime_input(cancel, "g1", &scheduler, &execution, &writer).unwrap();
@@ -6806,7 +6806,7 @@ mod tests {
         scheduler.finish(&running.request_id);
 
         let late_response = redevplugin_ipc::decode_runtime_input_frame(
-            r#"{"ipc_version":"rust-ipc-v6","frame_type":"storage_file","request_id":"r1:storage_file","parent_request_id":"r1","runtime_generation_id":"g1","payload":{}}"#,
+            r#"{"ipc_version":"rust-ipc-v7","frame_type":"storage_file","request_id":"r1:storage_file","parent_request_id":"r1","runtime_generation_id":"g1","payload":{}}"#,
         )
         .unwrap();
         dispatch_runtime_input(late_response, "g1", &scheduler, &execution, &writer)
@@ -6906,7 +6906,7 @@ mod tests {
                 &job,
                 &execution,
                 "r1:artifact",
-                r#"{"ipc_version":"rust-ipc-v6","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{}}"#.to_string(),
+                r#"{"ipc_version":"rust-ipc-v7","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{}}"#.to_string(),
                 SessionHostcallKind::Storage,
             )
             .unwrap(),
@@ -6963,7 +6963,7 @@ mod tests {
             io_routes: Arc::new(PendingIORoutes::new(2, 4)),
         });
         let input = redevplugin_ipc::decode_runtime_input_frame(
-            r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#,
+            r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#,
         )
         .expect("outer IPC frame decodes");
 
@@ -7409,7 +7409,7 @@ mod tests {
             &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v6","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
+            r#"{"ipc_version":"rust-ipc-v7","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
         )
         .expect("revoke epoch response");
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
@@ -7453,7 +7453,7 @@ mod tests {
         let frame = redevplugin_ipc::storage_file_frame("r1:storage_file", "g1", &request)
             .expect("valid storage file frame");
         assert!(frame.contains(r#""frame_type":"storage_file""#), "{frame}");
-        let response = r#"{"ipc_version":"rust-ipc-v6","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":34,"quota_bytes":4096,"usage_files":1,"quota_files":64}}}"#;
+        let response = r#"{"ipc_version":"rust-ipc-v7","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":34,"quota_bytes":4096,"usage_files":1,"quota_files":64}}}"#;
         redevplugin_ipc::validate_storage_file_response(
             response,
             "r1:storage_file",
@@ -7553,7 +7553,7 @@ mod tests {
             &control,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v6","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
+            r#"{"ipc_version":"rust-ipc-v7","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
             &status,
         )
         .expect("heartbeat response");
@@ -7575,7 +7575,7 @@ mod tests {
             &control,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v6","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
+            r#"{"ipc_version":"rust-ipc-v7","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
             &status,
         )
         .expect("invalid heartbeat error response");
@@ -7590,7 +7590,7 @@ mod tests {
             &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v6","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":0}}"#,
+            r#"{"ipc_version":"rust-ipc-v7","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":0}}"#,
         )
         .expect("invalid revoke epoch error response");
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
@@ -8325,7 +8325,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_inherits_stream_audience_from_invocation() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["POST"]}]},"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["POST"]}]},"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","query":{"format":["json"],"timezone":["auto"]},"max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -8353,7 +8353,7 @@ mod tests {
 
     #[test]
     fn storage_request_uses_host_only_grant_map() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"owner_user_hash":"user_hash","owner_env_hash":"env_hash","storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["query"]}]},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"owner_user_hash":"user_hash","owner_env_hash":"env_hash","storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["query"]}]},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
         let request = r#"{"store_id":"notes","operation":"query","database":"notes.sqlite","sql":"SELECT id FROM notes","args":[]}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -8370,7 +8370,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_owned_audience_overrides() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
         for field in [
@@ -8398,7 +8398,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_selected_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","execution_id":"execution_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","execution_id":"execution_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","stream_id":"stream_plugin_selected"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -8433,7 +8433,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_missing_host_owned_execution_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["GET"]}]},"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["GET"]}]},"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -8527,7 +8527,7 @@ mod tests {
 
     fn broker_invocation_frame(plugin_instance_id: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed","execution_id":"execution_1","policy_revision":1,"management_revision":1,"revoke_epoch":1}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","scope":"user","operations":["read","write","delete","list"]}},{{"store_id":"notes","scope":"user","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","scope":"user","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","execution_id":"execution_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed","execution_id":"execution_1","policy_revision":1,"management_revision":1,"revoke_epoch":1}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","scope":"user","operations":["read","write","delete","list"]}},{{"store_id":"notes","scope":"user","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","scope":"user","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","execution_id":"execution_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
         )
     }
 
@@ -8574,7 +8574,7 @@ mod tests {
         owner_env_hash: &str,
     ) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
         )
     }
 

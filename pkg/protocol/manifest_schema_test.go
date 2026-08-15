@@ -278,6 +278,42 @@ func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
 	}
 }
 
+func TestManifestV9MachineSchemaAllowsIgnorableNestedExtensions(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v9.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	if err := compiler.AddResource("urn:redevplugin:manifest-v9", bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("urn:redevplugin:manifest-v9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := map[string]any{
+		"schema_version": "redevplugin.manifest.v9",
+		"publisher":      map[string]any{"publisher_id": "example", "future": true},
+		"plugin":         map[string]any{"plugin_id": "com.example.v9", "display_name": "V9", "version": "1.0.0", "future": true},
+		"api":            map[string]any{"surface": 1, "worker": 1, "optional_features": []any{"future.optional.v1"}, "future": true},
+		"permissions":    []any{},
+		"presentation":   map[string]any{"locales": map[string]any{"default": "en-US", "future": true}, "future": true},
+		"surfaces":       []any{},
+		"workers":        []any{},
+		"methods":        []any{},
+		"future":         map[string]any{"opaque": true},
+	}
+	if err := schema.Validate(document); err != nil {
+		t.Fatalf("forward-compatible v9 document rejected: %v", err)
+	}
+	document["api"].(map[string]any)["required_features"] = []any{"future.required.v1"}
+	if err := schema.Validate(document); err == nil {
+		t.Fatal("unknown required feature must be rejected")
+	}
+}
+
 func firstManifestMethod(t *testing.T, document map[string]any) map[string]any {
 	t.Helper()
 	methods, ok := document["methods"].([]any)

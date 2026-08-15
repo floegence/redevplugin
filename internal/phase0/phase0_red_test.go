@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,5 +81,42 @@ func TestPhase0UnknownRequiredFeatureIsRejected(t *testing.T) {
 	_, err := manifest.Decode(bytes.NewReader(raw))
 	if err == nil || !strings.Contains(strings.ToUpper(err.Error()), "UNSUPPORTED_FEATURE") {
 		t.Fatalf("unknown required feature error = %v, want stable UNSUPPORTED_FEATURE", err)
+	}
+}
+
+func TestPhase0PublishedContractsNameOnlyStableExtensionAPIsAndIPCV7(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "contracts", "active-contracts.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source struct {
+		Matrix    map[string]any `json:"matrix"`
+		Artifacts []struct {
+			ID      string `json:"id"`
+			Path    string `json:"path"`
+			Version string `json:"version"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(raw, &source); err != nil {
+		t.Fatal(err)
+	}
+	if got := source.Matrix["manifest_schema_version"]; got != "manifest-v9" {
+		t.Fatalf("manifest schema = %v, want manifest-v9", got)
+	}
+	if got := source.Matrix["rust_ipc_version"]; got != "rust-ipc-v7" {
+		t.Fatalf("Rust IPC = %v, want rust-ipc-v7", got)
+	}
+	want := map[string]string{
+		"manifest-schema":    "spec/plugin/manifest-v9.schema.json",
+		"public-api-catalog": "spec/plugin/public-api-v1.json",
+		"rust-ipc-schema":    "spec/plugin/ipc-v7.schema.json",
+	}
+	for _, artifact := range source.Artifacts {
+		if path, ok := want[artifact.ID]; ok && artifact.Path == path {
+			delete(want, artifact.ID)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("stable extension contract artifacts missing or stale: %v", want)
 	}
 }
