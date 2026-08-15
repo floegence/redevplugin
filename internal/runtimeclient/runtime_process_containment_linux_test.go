@@ -85,6 +85,7 @@ func TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement
 		RuntimeExecutionRoot:  executionRoot,
 		Descriptor:            testRuntimeDescriptor(target, hex.EncodeToString(hasher.Sum(nil))),
 		StreamSink:            &recordingRuntimeStreamSink{},
+		IOBroker:              testRuntimeIOBroker{},
 		HandshakeTimeout:      10 * time.Second,
 		HeartbeatInterval:     500 * time.Millisecond,
 		MaxHeartbeatStaleness: 2 * time.Second,

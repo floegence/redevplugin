@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { verifyPlatformPackageBuild, verifyRustPublishMetadata } from "./platform_package_build.mjs";
 
-const version = "2.0.0";
+const version = "2.0.1";
 const sourceCommit = "1".repeat(40);
 const contractSetSHA256 = JSON.parse(readFileSync(
   join(import.meta.dirname, "../spec/plugin/platform-package-set-v3.json"),

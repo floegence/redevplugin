@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.0.1
+
+- Publish the coordinated stable extension API and Host-owned resource I/O
+  package set after repairing the Linux release-containment fixture to bind the
+  required I/O broker. The failed `v2.0.0` release published no registry or
+  GitHub Release artifacts.
+
 ## v2.0.0
 
 - Add Surface API 1 and Worker API 1 as the plugin-observable compatibility

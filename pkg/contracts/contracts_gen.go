@@ -163,15 +163,15 @@ var generatedContractByID = map[ID]Contract{
 
 var generatedPackageSet = PackageSetSnapshot{
 	SchemaVersion:   "redevplugin.platform_package_set.v3",
-	PlatformVersion: "2.0.0",
-	GoModule:        GoModuleCoordinate{Module: "github.com/floegence/redevplugin/v2", Version: "v2.0.0"},
+	PlatformVersion: "2.0.1",
+	GoModule:        GoModuleCoordinate{Module: "github.com/floegence/redevplugin/v2", Version: "v2.0.1"},
 	NPMPackages: []NPMPackageCoordinate{
-		{Name: "@floegence/redevplugin-contracts", Version: "2.0.0"},
-		{Name: "@floegence/redevplugin-ui", Version: "2.0.0"},
+		{Name: "@floegence/redevplugin-contracts", Version: "2.0.1"},
+		{Name: "@floegence/redevplugin-ui", Version: "2.0.1"},
 	},
 	RustCrates: []RustCrateCoordinate{
-		{Name: "redevplugin-runtime", Version: "2.0.0", Role: "runtime"},
-		{Name: "redevplugin-worker-sdk", Version: "2.0.0", Role: "worker_sdk"},
+		{Name: "redevplugin-runtime", Version: "2.0.1", Role: "runtime"},
+		{Name: "redevplugin-worker-sdk", Version: "2.0.1", Role: "worker_sdk"},
 	},
 	ContractRegistryVersion: "contract-registry-v2",
 	ContractSetSHA256:       "ad1898db7bb7d8a309b72d8998af8585ea365c7238864b35ab16300b7bbcfe9f",
