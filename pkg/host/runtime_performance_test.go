@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/v2/pkg/observability"
 	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
@@ -182,7 +183,7 @@ func TestPerformanceRuntimeIsolationAndCancellation(t *testing.T) {
 	blocking := installPerformanceBlockingArtifact(t, assets, broker)
 
 	blockedDone := invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), "isolation")
-	blockedRequest := <-executor.started
+	blockedRequest := waitForPerformanceBlockingRequest(t, blockedDone, executor.started, "isolation")
 	errs, durations := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 16, performanceRuntimeAdmissionCapacity(limits))
 	if len(errs) > 0 {
 		t.Fatalf("isolated invocations failed: %v", errs[0])
@@ -208,8 +209,9 @@ func TestPerformanceRuntimeIsolationAndCancellation(t *testing.T) {
 	blockers := make([]<-chan error, 0, limits.PerPluginConcurrency)
 	requests := make([]*performanceBlockingRequest, 0, limits.PerPluginConcurrency)
 	for index := 0; index < limits.PerPluginConcurrency; index++ {
-		blockers = append(blockers, invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), fmt.Sprintf("queue-blocker-%d", index)))
-		requests = append(requests, <-executor.started)
+		done := invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), fmt.Sprintf("queue-blocker-%d", index))
+		blockers = append(blockers, done)
+		requests = append(requests, waitForPerformanceBlockingRequest(t, done, executor.started, "queue blocker"))
 	}
 	queuedDurations := make([]time.Duration, 0, 20)
 	for index := 0; index < 20; index++ {
@@ -249,7 +251,7 @@ func TestPerformanceRuntimeIsolationAndCancellation(t *testing.T) {
 	for index := 0; index < 20; index++ {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := invokePerformanceBlockingWorker(supervisor, blocking, ctx, fmt.Sprintf("running-%d", index))
-		<-executor.started
+		waitForPerformanceBlockingRequest(t, done, executor.started, "running cancellation")
 		started := time.Now()
 		cancel()
 		err := <-done
@@ -298,8 +300,9 @@ func TestPerformanceRuntimeSaturatedPluginPreservesOtherPluginCapacity(t *testin
 	active := make([]<-chan error, 0, limits.PerPluginConcurrency)
 	activeRequests := make([]*performanceBlockingRequest, 0, limits.PerPluginConcurrency)
 	for index := 0; index < limits.PerPluginConcurrency; index++ {
-		active = append(active, invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), fmt.Sprintf("saturation-active-%d", index)))
-		activeRequests = append(activeRequests, <-executor.started)
+		done := invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), fmt.Sprintf("saturation-active-%d", index))
+		active = append(active, done)
+		activeRequests = append(activeRequests, waitForPerformanceBlockingRequest(t, done, executor.started, "saturation active"))
 	}
 	queued := make([]<-chan error, 0, limits.PerPluginConcurrency)
 	queuedCancels := make([]context.CancelFunc, 0, limits.PerPluginConcurrency)
@@ -695,6 +698,7 @@ func invokePerformanceBlockingWorker(supervisor *runtimeclient.ProcessSupervisor
 			TokenID:    "token_" + suffix,
 			LeaseNonce: "nonce_" + suffix + "_1234567890", PluginID: artifact.pluginID,
 			PluginVersion: "1.0.0", ActiveFingerprint: artifact.activeFingerprint,
+			InvocationID: "invoke_" + suffix, ScopeKind: sessionctx.ScopeUser,
 			PluginInstanceID: artifact.pluginInstanceID, SurfaceInstanceID: payload.SurfaceInstanceID,
 			OwnerSessionHash: payload.OwnerSessionHash, OwnerUserHash: payload.OwnerUserHash, OwnerEnvHash: payload.OwnerEnvHash,
 			SessionChannelIDHash: payload.SessionChannelIDHash, BridgeChannelID: payload.BridgeChannelID,
@@ -709,6 +713,24 @@ func invokePerformanceBlockingWorker(supervisor *runtimeclient.ProcessSupervisor
 		done <- err
 	}()
 	return done
+}
+
+func waitForPerformanceBlockingRequest(
+	t *testing.T,
+	done <-chan error,
+	started <-chan *performanceBlockingRequest,
+	label string,
+) *performanceBlockingRequest {
+	t.Helper()
+	select {
+	case request := <-started:
+		return request
+	case err := <-done:
+		t.Fatalf("%s invocation failed before network execution: %v", label, err)
+	case <-time.After(time.Second):
+		t.Fatalf("%s invocation did not reach network execution", label)
+	}
+	return nil
 }
 
 func waitForRuntimeQueue(t *testing.T, supervisor *runtimeclient.ProcessSupervisor, minimum int) {
