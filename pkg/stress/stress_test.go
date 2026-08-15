@@ -1,7 +1,6 @@
 package stress_test
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -153,6 +152,7 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 		HeartbeatInterval:     250 * time.Millisecond,
 		MaxHeartbeatStaleness: time.Second,
 		StreamSink:            stressRuntimeStreamSink{},
+		IOBroker:              stressRuntimeIOBroker{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -218,6 +218,28 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 }
 
 type stressRuntimeStreamSink struct{}
+
+type stressRuntimeIOBroker struct{}
+
+func (stressRuntimeIOBroker) Control(context.Context, string, []byte) ([]byte, error) {
+	return nil, errors.New("stress revoke fixture does not expose resource I/O")
+}
+
+func (stressRuntimeIOBroker) Read(context.Context, string, uint64, []byte) (int, uint32, error) {
+	return 0, 0, errors.New("stress revoke fixture does not expose resource I/O")
+}
+
+func (stressRuntimeIOBroker) Write(context.Context, string, uint64, []byte, uint32) (int, error) {
+	return 0, errors.New("stress revoke fixture does not expose resource I/O")
+}
+
+func (stressRuntimeIOBroker) Seek(context.Context, string, uint64, int64, int) (int64, error) {
+	return 0, errors.New("stress revoke fixture does not expose resource I/O")
+}
+
+func (stressRuntimeIOBroker) Close(context.Context, string, uint64) error {
+	return errors.New("stress revoke fixture does not expose resource I/O")
+}
 
 func (stressRuntimeStreamSink) AppendRuntimeStream(context.Context, string, string, []byte) error {
 	return nil
@@ -817,16 +839,12 @@ type stressRuntimeResponsePayload struct {
 }
 
 func runStressRuntimeHelper() {
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadBytes('\n')
+	wireFrame, frame, err := readStressRuntimeFrame(os.Stdin)
 	if err != nil {
 		os.Exit(2)
 	}
-	var frame stressIPCFrame
-	if err := json.Unmarshal(line, &frame); err != nil {
-		os.Exit(3)
-	}
-	if frame.IPCVersion != version.RustIPCVersion ||
+	if wireFrame.Type != runtimeclient.IPCFrameHello ||
+		frame.IPCVersion != version.RustIPCVersion ||
 		frame.FrameType != "hello" ||
 		strings.TrimSpace(frame.RequestID) == "" ||
 		strings.TrimSpace(frame.RuntimeGenerationID) == "" {
@@ -836,8 +854,7 @@ func runStressRuntimeHelper() {
 	if err := json.Unmarshal(frame.Payload, &hello); err != nil || strings.TrimSpace(hello.ChannelNonce) == "" {
 		os.Exit(5)
 	}
-	encoder := json.NewEncoder(os.Stdout)
-	if err := encoder.Encode(stressIPCFrame{
+	if err := writeStressRuntimeFrame(os.Stdout, runtimeclient.IPCFrameHelloAck, wireFrame.RequestID, stressIPCFrame{
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           "hello_ack",
 		RequestID:           frame.RequestID,
@@ -861,22 +878,19 @@ func runStressRuntimeHelper() {
 	}
 	defer controlRead.Close()
 	defer controlWrite.Close()
-	reader = bufio.NewReader(controlRead)
-	encoder = json.NewEncoder(controlWrite)
 	for {
-		line, err := reader.ReadBytes('\n')
+		wireRequest, request, err := readStressRuntimeFrame(controlRead)
 		if err != nil {
 			return
 		}
-		var request stressIPCFrame
-		if err := json.Unmarshal(line, &request); err != nil {
-			os.Exit(8)
-		}
 		switch request.FrameType {
 		case "heartbeat":
+			if wireRequest.Type != runtimeclient.IPCFrameHeartbeat {
+				os.Exit(8)
+			}
 			var heartbeat stressHeartbeatPayload
 			_ = json.Unmarshal(request.Payload, &heartbeat)
-			respondStressRuntime(encoder, request, "heartbeat", stressRawJSON(stressRuntimeResponsePayload{
+			respondStressRuntime(controlWrite, wireRequest.RequestID, runtimeclient.IPCFrameHeartbeat, request, "heartbeat", stressRawJSON(stressRuntimeResponsePayload{
 				OK: true,
 				Result: stressRawJSON(map[string]any{
 					"runtime_generation_id": request.RuntimeGenerationID,
@@ -890,9 +904,12 @@ func runStressRuntimeHelper() {
 				}),
 			}))
 		case "revoke_epoch":
+			if wireRequest.Type != runtimeclient.IPCFrameRevokePlugin {
+				os.Exit(8)
+			}
 			var revoke stressRevokePayload
 			_ = json.Unmarshal(request.Payload, &revoke)
-			respondStressRuntime(encoder, request, "revoke_epoch_ack", stressRawJSON(stressRuntimeResponsePayload{
+			respondStressRuntime(controlWrite, wireRequest.RequestID, runtimeclient.IPCFrameRevokePlugin, request, "revoke_epoch_ack", stressRawJSON(stressRuntimeResponsePayload{
 				OK: true,
 				Result: stressRawJSON(map[string]any{
 					"resource_scope":              revoke.ResourceScope,
@@ -904,13 +921,40 @@ func runStressRuntimeHelper() {
 				}),
 			}))
 		default:
-			respondStressRuntime(encoder, request, "diagnostic", stressRawJSON(stressRuntimeResponsePayload{
+			respondStressRuntime(controlWrite, wireRequest.RequestID, runtimeclient.IPCFrameDiagnostic, request, "diagnostic", stressRawJSON(stressRuntimeResponsePayload{
 				OK:    false,
 				Code:  "UNSUPPORTED_FRAME",
 				Error: "unsupported stress runtime frame",
 			}))
 		}
 	}
+}
+
+func readStressRuntimeFrame(reader io.Reader) (runtimeclient.IPCFrame, stressIPCFrame, error) {
+	wireFrame, err := runtimeclient.ReadIPCFrameV7(reader)
+	if err != nil {
+		return runtimeclient.IPCFrame{}, stressIPCFrame{}, err
+	}
+	if wireFrame.Flags != 0 || wireFrame.ResourceID != 0 || len(wireFrame.Metadata) == 0 || len(wireFrame.Body) != 0 {
+		return runtimeclient.IPCFrame{}, stressIPCFrame{}, errors.New("invalid stress runtime semantic frame placement")
+	}
+	var frame stressIPCFrame
+	if err := json.Unmarshal(wireFrame.Metadata, &frame); err != nil {
+		return runtimeclient.IPCFrame{}, stressIPCFrame{}, err
+	}
+	return wireFrame, frame, nil
+}
+
+func writeStressRuntimeFrame(writer io.Writer, wireType runtimeclient.IPCFrameType, requestID uint64, frame stressIPCFrame) error {
+	metadata, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	return runtimeclient.WriteIPCFrameV7(writer, runtimeclient.IPCFrame{
+		Type:      wireType,
+		RequestID: requestID,
+		Metadata:  metadata,
+	})
 }
 
 func stressRuntimeControlFile(environmentVariable string, name string) *os.File {
@@ -921,8 +965,8 @@ func stressRuntimeControlFile(environmentVariable string, name string) *os.File 
 	return os.NewFile(uintptr(fileDescriptor), name)
 }
 
-func respondStressRuntime(encoder *json.Encoder, request stressIPCFrame, frameType string, payload json.RawMessage) {
-	if err := encoder.Encode(stressIPCFrame{
+func respondStressRuntime(writer io.Writer, requestID uint64, wireType runtimeclient.IPCFrameType, request stressIPCFrame, frameType string, payload json.RawMessage) {
+	if err := writeStressRuntimeFrame(writer, wireType, requestID, stressIPCFrame{
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           frameType,
 		RequestID:           request.RequestID,
