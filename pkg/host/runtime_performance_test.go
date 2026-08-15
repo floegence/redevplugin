@@ -489,6 +489,10 @@ func (m performanceRuntimeManager) InvokeWorker(ctx context.Context, _ runtimecl
 	return m.supervisor.InvokeWorker(ctx, lease, method, payload)
 }
 
+func (m performanceRuntimeManager) PrewarmWorker(ctx context.Context, req runtimeclient.PrewarmWorkerRequest) error {
+	return m.supervisor.PrewarmWorker(ctx, req)
+}
+
 func (m performanceRuntimeManager) Revoke(ctx context.Context, req runtimeclient.RevokeRequest) (runtimeclient.RevokeResult, error) {
 	return m.supervisor.Revoke(ctx, req)
 }

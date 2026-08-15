@@ -231,6 +231,12 @@ type ArtifactRequest struct {
 	ArtifactSHA256 string `json:"artifact_sha256"`
 }
 
+type PrewarmWorkerRequest struct {
+	PluginInstanceID string
+	WorkerID         string
+	Artifact         ArtifactRequest
+}
+
 type ArtifactResult struct {
 	Content []byte `json:"-"`
 	SHA256  string `json:"sha256"`
@@ -239,6 +245,7 @@ type ArtifactResult struct {
 type workerInvocationContext struct {
 	InvocationID string
 	Artifact     ArtifactRequest
+	Prewarm      bool
 	BrokerAccess workerBrokerAccess
 	identity     workerInvocationIdentity
 }
@@ -1198,6 +1205,67 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	return append([]byte(nil), response.Result...), nil
 }
 
+func (s *ProcessSupervisor) PrewarmWorker(ctx context.Context, req PrewarmWorkerRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || !s.isReady() {
+		return ErrRuntimeNotReady
+	}
+	if err := validatePrewarmWorkerRequest(req); err != nil {
+		return err
+	}
+	health := s.healthSnapshot()
+	invocation, err := json.Marshal(map[string]any{
+		"plugin_instance_id":    req.PluginInstanceID,
+		"runtime_generation_id": health.RuntimeGenerationID,
+		"package_hash":          req.Artifact.PackageHash,
+		"worker_id":             req.WorkerID,
+		"worker_mode":           "job",
+		"worker_scope":          "environment",
+		"artifact":              req.Artifact.Artifact,
+		"artifact_sha256":       req.Artifact.ArtifactSHA256,
+		"abi":                   version.WASMABIVersion,
+		"method":                "platform.prewarm",
+	})
+	if err != nil {
+		return err
+	}
+	rawPayload, err := json.Marshal(invokeWorkerRequestPayload{
+		Prewarm:    true,
+		Method:     "platform.prewarm",
+		Invocation: invocation,
+	})
+	if err != nil {
+		return err
+	}
+	frame, err := s.callIPC(ctx, ipcFrameTypeInvokeWorker, ipcFrameTypeInvokeWorkerResult, rawPayload, &workerInvocationContext{
+		Artifact: req.Artifact,
+		Prewarm:  true,
+	})
+	if err != nil {
+		return err
+	}
+	response, err := decodeRuntimeResponse(frame)
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		return response.workerExecutionError()
+	}
+	return nil
+}
+
+func validatePrewarmWorkerRequest(req PrewarmWorkerRequest) error {
+	if strings.TrimSpace(req.PluginInstanceID) == "" || strings.TrimSpace(req.WorkerID) == "" {
+		return fmt.Errorf("%w: prewarm worker identity is required", ErrRuntimeRequestFailed)
+	}
+	if !isSHA256Ref(req.Artifact.PackageHash) || !isSHA256Ref(req.Artifact.ArtifactSHA256) || !isWorkerArtifactPath(req.Artifact.Artifact) {
+		return fmt.Errorf("%w: prewarm artifact identity is invalid", ErrRuntimeRequestFailed)
+	}
+	return nil
+}
+
 func (s *ProcessSupervisor) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, error) {
 	if err := ctx.Err(); err != nil {
 		return RevokeResult{}, err
@@ -1787,6 +1855,7 @@ type heartbeatResultPayload struct {
 }
 
 type invokeWorkerRequestPayload struct {
+	Prewarm    bool            `json:"prewarm,omitempty"`
 	Lease      Lease           `json:"lease"`
 	Method     string          `json:"method"`
 	Invocation json.RawMessage `json:"invocation"`
@@ -2338,7 +2407,7 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 	var compileFlight *pendingCompileFlight
 	if allowedInvocation != nil {
 		invocationID := strings.TrimSpace(allowedInvocation.InvocationID)
-		if invocationID == "" || s.pendingInvocations[invocationID] != nil {
+		if !allowedInvocation.Prewarm && (invocationID == "" || s.pendingInvocations[invocationID] != nil) {
 			s.pendingMu.Unlock()
 			return ipcFrame{}, fmt.Errorf("%w: duplicate or empty invocation_id", ErrRuntimeIPCUnavailable)
 		}
@@ -2363,7 +2432,9 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 			wasmABIVersion:    version.WASMABIVersion,
 		}
 		s.compileFlights[artifactRequestID] = compileFlight
-		s.pendingInvocations[invocationID] = pending
+		if !allowedInvocation.Prewarm {
+			s.pendingInvocations[invocationID] = pending
+		}
 	}
 	s.pending[requestID] = pending
 	s.pendingMu.Unlock()
@@ -2372,7 +2443,7 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 		if s.pending[requestID] == pending {
 			delete(s.pending, requestID)
 		}
-		if allowedInvocation != nil && s.pendingInvocations[allowedInvocation.InvocationID] == pending {
+		if allowedInvocation != nil && !allowedInvocation.Prewarm && s.pendingInvocations[allowedInvocation.InvocationID] == pending {
 			delete(s.pendingInvocations, allowedInvocation.InvocationID)
 		}
 		s.pendingMu.Unlock()

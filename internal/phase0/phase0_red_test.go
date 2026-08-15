@@ -82,17 +82,3 @@ func TestPhase0UnknownRequiredFeatureIsRejected(t *testing.T) {
 		t.Fatalf("unknown required feature error = %v, want stable UNSUPPORTED_FEATURE", err)
 	}
 }
-
-func TestPhase0StartupPublishesInventoryBeforeRuntimeReady(t *testing.T) {
-	assertContractGap(t, "startup inventory projection", "prewarm", "readiness future", "RUNTIME_UNAVAILABLE")
-}
-
-func assertContractGap(t *testing.T, contract string, required ...string) {
-	t.Helper()
-	// This is deliberately red in Phase 0. Each gap is replaced by a focused
-	// behavioral test when its owning phase lands.
-	if contract == "" || len(required) == 0 {
-		t.Fatal("invalid Phase 0 contract gap")
-	}
-	t.Fatalf("RED: %s is not implemented; required evidence: %s", contract, strings.Join(required, ", "))
-}

@@ -569,6 +569,30 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
+	record, err := h.getPluginRecord(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerEntry, ok := packageEntryByPath(record.PackageEntries, "workers/echo.wasm")
+	if !ok {
+		t.Fatal("worker artifact metadata is missing")
+	}
+	if err := supervisor.PrewarmWorker(ctx, runtimeclient.PrewarmWorkerRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		WorkerID:         "echo_worker",
+		Artifact: runtimeclient.ArtifactRequest{
+			PackageHash: record.PackageHash, Artifact: "workers/echo.wasm", ArtifactSHA256: workerEntry.SHA256,
+		},
+	}); err != nil {
+		t.Fatalf("PrewarmWorker() error = %v", err)
+	}
+	prewarmed, err := supervisor.Health(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prewarmed.ModuleCache.Compiles != 1 || prewarmed.ModuleCache.Entries != 1 {
+		t.Fatalf("module cache after prewarm = %#v", prewarmed.ModuleCache)
+	}
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
@@ -591,6 +615,13 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 		data["method"] != "worker.echo" ||
 		data["worker_id"] != "echo_worker" {
 		t.Fatalf("built Rust runtime result mismatch: %#v", data)
+	}
+	warm, err := supervisor.Health(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warm.ModuleCache.Compiles != 1 || warm.ModuleCache.Entries != 1 || warm.ModuleCache.Hits == 0 {
+		t.Fatalf("module cache after warm invocation = %#v", warm.ModuleCache)
 	}
 }
 

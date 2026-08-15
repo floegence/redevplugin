@@ -17,6 +17,7 @@ pub use contract_set_gen::CONTRACT_SET_SHA256;
 
 pub const RUST_IPC_VERSION: &str = "rust-ipc-v6";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
+pub const WORKER_API_MAJOR: &str = "1";
 pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v2";
 
 pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
@@ -554,6 +555,8 @@ struct RuntimeLeasePublicKeyPayload {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct WorkerFramePayload {
+    #[serde(default)]
+    prewarm: bool,
     lease: WorkerLeasePayload,
     method: String,
     invocation: WorkerInvocationPayload,
@@ -678,6 +681,7 @@ struct ClosedWorkerFrame {
     request_id: String,
     runtime_generation_id: String,
     method: String,
+    prewarm: bool,
     lease: WorkerLeasePayload,
     invocation: WorkerInvocationPayload,
 }
@@ -705,6 +709,7 @@ pub struct ParsedWorkerInvocation {
     request_id: String,
     runtime_generation_id: String,
     method: String,
+    prewarm: bool,
     lease: WorkerLeasePayload,
     invocation: WorkerInvocationPayload,
     params_json: Option<String>,
@@ -914,6 +919,7 @@ fn parse_closed_worker_frame(
         request_id: identity.request_id.clone(),
         runtime_generation_id: identity.runtime_generation_id.clone(),
         method: payload.method,
+        prewarm: payload.prewarm,
         lease: payload.lease,
         invocation: payload.invocation,
     })
@@ -942,6 +948,7 @@ fn parsed_worker_invocation(
         request_id: parsed.request_id,
         runtime_generation_id: parsed.runtime_generation_id,
         method: parsed.method,
+        prewarm: parsed.prewarm,
         lease: parsed.lease,
         invocation: parsed.invocation,
         params_json,
@@ -991,6 +998,10 @@ impl ParsedWorkerInvocation {
 
     pub fn runtime_generation_id(&self) -> &str {
         &self.runtime_generation_id
+    }
+
+    pub fn is_prewarm(&self) -> bool {
+        self.prewarm
     }
 
     pub fn invocation_id(&self) -> IpcResult<String> {

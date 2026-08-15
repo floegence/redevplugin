@@ -54,6 +54,38 @@ func TestProcessManagerStartsEveryShardAndBindsDeterministically(t *testing.T) {
 	}
 }
 
+func TestProcessManagerPrewarmsOnThePluginShard(t *testing.T) {
+	shards := []*fakeProcessShard{
+		{health: testShardHealth("a")},
+		{health: testShardHealth("b")},
+		{health: testShardHealth("c")},
+	}
+	manager := testProcessManager(t, shards)
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatal(err)
+	}
+	pluginInstanceID := pluginForShard(t, len(shards), 1)
+	request := PrewarmWorkerRequest{
+		PluginInstanceID: pluginInstanceID,
+		WorkerID:         "worker_1",
+		Artifact: ArtifactRequest{
+			PackageHash: "sha256:" + strings.Repeat("a", 64), Artifact: "workers/backend.wasm", ArtifactSHA256: "sha256:" + strings.Repeat("b", 64),
+		},
+	}
+	if err := manager.PrewarmWorker(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	for index, shard := range shards {
+		want := int64(0)
+		if index == 1 {
+			want = 1
+		}
+		if got := shard.prewarmCalls.Load(); got != want {
+			t.Fatalf("shard %d prewarm calls = %d, want %d", index, got, want)
+		}
+	}
+}
+
 func TestProcessManagerStartRollsBackStartedShards(t *testing.T) {
 	startFailure := errors.New("start failed")
 	shards := []*fakeProcessShard{
@@ -91,6 +123,47 @@ func TestProcessManagerStartReportsUnknownWhenRollbackFails(t *testing.T) {
 	_, err := manager.Start(context.Background(), testRuntimeTarget)
 	if !errors.Is(err, startFailure) || !errors.Is(err, rollbackFailure) || !errors.Is(err, ErrManagerLifecycleOutcomeUnknown) {
 		t.Fatalf("Start() error = %v, want start, rollback, and unknown outcome errors", err)
+	}
+}
+
+func TestProcessManagerBindingWaitsForTheSingleStartupTransition(t *testing.T) {
+	startEntered := make(chan struct{})
+	startRelease := make(chan struct{})
+	shard := &fakeProcessShard{
+		health: testShardHealth("a"),
+		start: func(ctx context.Context) error {
+			close(startEntered)
+			select {
+			case <-startRelease:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	manager := testProcessManager(t, []*fakeProcessShard{shard})
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Start(context.Background(), testRuntimeTarget)
+		startDone <- err
+	}()
+	<-startEntered
+	bindDone := make(chan error, 1)
+	go func() {
+		_, err := manager.BindPlugin(context.Background(), "plugini_waiting")
+		bindDone <- err
+	}()
+	select {
+	case err := <-bindDone:
+		t.Fatalf("BindPlugin returned before startup completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(startRelease)
+	if err := <-startDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-bindDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -732,6 +805,7 @@ type fakeProcessShard struct {
 	descriptor          RuntimeDescriptor
 	preflightErr        error
 	startErr            error
+	start               func(context.Context) error
 	stopErr             error
 	revokeErr           error
 	sessionRevokeErr    error
@@ -741,6 +815,7 @@ type fakeProcessShard struct {
 	startCalls          atomic.Int64
 	stopCalls           atomic.Int64
 	invokeCalls         atomic.Int64
+	prewarmCalls        atomic.Int64
 	revokeCalls         atomic.Int64
 	sessionRevokeCalls  atomic.Int64
 }
@@ -759,10 +834,15 @@ func (*recordingRuntimeStreamSink) FailRuntimeStream(context.Context, string, ca
 	return nil
 }
 
-func (s *fakeProcessShard) Start(context.Context, runtimetarget.Target) error {
+func (s *fakeProcessShard) Start(ctx context.Context, _ runtimetarget.Target) error {
 	s.startCalls.Add(1)
 	if s.startErr != nil {
 		return s.startErr
+	}
+	if s.start != nil {
+		if err := s.start(ctx); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	s.health.Ready = true
@@ -806,6 +886,11 @@ func (s *fakeProcessShard) InvokeWorker(ctx context.Context, _ Lease, _ string, 
 		return s.invoke(ctx)
 	}
 	return []byte("ok"), nil
+}
+
+func (s *fakeProcessShard) PrewarmWorker(context.Context, PrewarmWorkerRequest) error {
+	s.prewarmCalls.Add(1)
+	return nil
 }
 
 func (s *fakeProcessShard) Revoke(context.Context, RevokeRequest) (RevokeResult, error) {

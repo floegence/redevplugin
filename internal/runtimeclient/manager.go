@@ -86,6 +86,7 @@ type Manager interface {
 	Stop(ctx context.Context) error
 	Health(ctx context.Context) (ManagerHealth, error)
 	BindPlugin(ctx context.Context, pluginInstanceID string) (RuntimeBinding, error)
+	PrewarmWorker(ctx context.Context, req PrewarmWorkerRequest) error
 	InvokeWorker(ctx context.Context, binding RuntimeBinding, lease Lease, method string, payload []byte) ([]byte, error)
 	// Revoke never starts or preflights a shard. A non-ready shard is stopped
 	// idempotently and contributes zero closed-resource counts.
@@ -109,6 +110,7 @@ type processShard interface {
 	Start(context.Context, runtimetarget.Target) error
 	Stop(context.Context) error
 	Health(context.Context) (Health, error)
+	PrewarmWorker(context.Context, PrewarmWorkerRequest) error
 	InvokeWorker(context.Context, Lease, string, []byte) ([]byte, error)
 	Revoke(context.Context, RevokeRequest) (RevokeResult, error)
 	RevokeSession(context.Context, SessionRevokeRequest) (SessionRevokeShardResult, error)
@@ -374,6 +376,22 @@ func (m *ProcessManager) BindPlugin(ctx context.Context, pluginInstanceID string
 		return RuntimeBinding{}, fmt.Errorf("bind plugin to runtime shard %s: %w", shard.id, err)
 	}
 	return runtimeBinding(shard.id, health), nil
+}
+
+func (m *ProcessManager) PrewarmWorker(ctx context.Context, req PrewarmWorkerRequest) error {
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	shards, err := m.boundShards()
+	if err != nil {
+		return err
+	}
+	if pluginInstanceID == "" {
+		return fmt.Errorf("%w: plugin_instance_id is required", ErrRuntimeBindingInvalid)
+	}
+	shard := shards[processShardIndex(pluginInstanceID, len(shards))]
+	if err := shard.process.PrewarmWorker(ctx, req); err != nil {
+		return fmt.Errorf("prewarm plugin on runtime shard %s: %w", shard.id, err)
+	}
+	return nil
 }
 
 func (m *ProcessManager) InvokeWorker(ctx context.Context, binding RuntimeBinding, lease Lease, method string, payload []byte) ([]byte, error) {

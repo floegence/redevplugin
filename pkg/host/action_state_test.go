@@ -161,6 +161,44 @@ func TestHostStartupPublishesInventoryBeforeBackgroundRuntimeRecovery(t *testing
 	}
 }
 
+func TestHostStartupPrewarmsPersistedWorkerArtifact(t *testing.T) {
+	stateRoot := filepath.Join(t.TempDir(), "control-state")
+	first, _, _ := newTestHostWithOptions(t, testHostOptions{
+		stateRoot: stateRoot, developerMode: true, localGenerated: true,
+	})
+	installed := installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
+	record, err := first.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := newRecordingRuntimeManager()
+	runtime.prewarmStarted = make(chan runtimeclient.PrewarmWorkerRequest, 1)
+	second, _, _ := newTestHostWithOptions(t, testHostOptions{
+		stateRoot: stateRoot, developerMode: true, localGenerated: true,
+		runtimeManager: runtime,
+	})
+	defer func() { _ = second }()
+
+	select {
+	case request := <-runtime.prewarmStarted:
+		entry, ok := packageEntryByPath(record.PackageEntries, "workers/echo.wasm")
+		if !ok {
+			t.Fatal("worker artifact metadata is missing from persisted record")
+		}
+		if request.PluginInstanceID != installed.PluginInstanceID || request.WorkerID != "echo_worker" ||
+			request.Artifact.PackageHash != record.PackageHash || request.Artifact.Artifact != "workers/echo.wasm" ||
+			request.Artifact.ArtifactSHA256 != entry.SHA256 {
+			t.Fatalf("startup prewarm request = %#v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("startup recovery did not prewarm the persisted worker artifact")
+	}
+}
+
 func TestHostStartupStartsUnreadyRuntimeAfterInventoryAndCloseCancelsRecovery(t *testing.T) {
 	stateRoot := filepath.Join(t.TempDir(), "control-state")
 	first, _, _ := newTestHostWithOptions(t, testHostOptions{

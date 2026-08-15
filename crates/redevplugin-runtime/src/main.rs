@@ -1632,6 +1632,7 @@ fn start_ipc_writer(
     )
 }
 
+#[cfg(test)]
 fn start_ipc_writer_with_runner<F>(
     limits: redevplugin_ipc::RuntimeLimits,
     failures: IpcWriterFailurePublisher,
@@ -2050,27 +2051,37 @@ fn handle_scheduled_worker_invocation(
             &err,
         );
     }
-    if let Err(err) = execution.shared.validate_parsed_invocation(invocation) {
-        return invocation_error_frame(
-            request_id,
-            runtime_generation_id,
-            err.code(),
-            err.to_string(),
-        );
-    }
-    if let Err(err) =
-        invocation.verify_runtime_lease_signature(&execution.runtime_lease_public_keys)
-    {
-        return invocation_error_frame(
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID,
-            &err,
-        );
-    }
-    let invocation_now = match execution.now_unix_millis() {
-        Ok(now) => now,
-        Err(err) => {
+    if !invocation.is_prewarm() {
+        if let Err(err) = execution.shared.validate_parsed_invocation(invocation) {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                err.code(),
+                err.to_string(),
+            );
+        }
+        if let Err(err) =
+            invocation.verify_runtime_lease_signature(&execution.runtime_lease_public_keys)
+        {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID,
+                &err,
+            );
+        }
+        let invocation_now = match execution.now_unix_millis() {
+            Ok(now) => now,
+            Err(err) => {
+                return invocation_error_frame(
+                    request_id,
+                    runtime_generation_id,
+                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                    &err,
+                );
+            }
+        };
+        if let Err(err) = invocation.validate_runtime_lease(invocation_now) {
             return invocation_error_frame(
                 request_id,
                 runtime_generation_id,
@@ -2078,38 +2089,30 @@ fn handle_scheduled_worker_invocation(
                 &err,
             );
         }
-    };
-    if let Err(err) = invocation.validate_runtime_lease(invocation_now) {
-        return invocation_error_frame(
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
-            &err,
-        );
-    }
-    let replay_key = match invocation.replay_key() {
-        Ok(key) => key,
-        Err(err) => {
+        let replay_key = match invocation.replay_key() {
+            Ok(key) => key,
+            Err(err) => {
+                return invocation_error_frame(
+                    request_id,
+                    runtime_generation_id,
+                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                    err,
+                );
+            }
+        };
+        if let Err(err) = execution
+            .lease_replays
+            .lock()
+            .expect("runtime lease replay mutex poisoned")
+            .consume_key(replay_key, invocation_now)
+        {
             return invocation_error_frame(
                 request_id,
                 runtime_generation_id,
-                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
-                err,
+                err.code(),
+                err.to_string(),
             );
         }
-    };
-    if let Err(err) = execution
-        .lease_replays
-        .lock()
-        .expect("runtime lease replay mutex poisoned")
-        .consume_key(replay_key, invocation_now)
-    {
-        return invocation_error_frame(
-            request_id,
-            runtime_generation_id,
-            err.code(),
-            err.to_string(),
-        );
     }
     let artifact_execution = Arc::clone(execution);
     let artifact_parent_request_id = job.request_id.clone();
@@ -2172,7 +2175,7 @@ fn handle_scheduled_worker_invocation(
     );
     let compiled = match execution.module_cache.get_or_compile_with_hooks(
         &identity.artifact_sha256,
-        redevplugin_ipc::WASM_ABI_VERSION,
+        redevplugin_ipc::WORKER_API_MAJOR,
         &job.cancellation,
         flight_hooks,
         move || {
@@ -2208,6 +2211,14 @@ fn handle_scheduled_worker_invocation(
             );
         }
     };
+    if invocation.is_prewarm() {
+        return ipc_frame(redevplugin_ipc::success_response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            "{}",
+        ));
+    }
     let post_artifact_now = match execution.now_unix_millis() {
         Ok(now) => now,
         Err(err) => {
@@ -2780,6 +2791,7 @@ fn perform_multiplexed_hostcall(
     }
 }
 
+#[cfg(test)]
 fn read_bounded_line<R: BufRead>(
     reader: &mut R,
     max_bytes: usize,
@@ -6692,7 +6704,7 @@ mod tests {
             std::thread::spawn(move || {
                 cache.get_or_compile_with_hooks(
                     "sha256:shared-route",
-                    redevplugin_ipc::WASM_ABI_VERSION,
+                    redevplugin_ipc::WORKER_API_MAJOR,
                     &cancellation,
                     module_cache::CompileFlightHooks::new(
                         move || {
@@ -6725,7 +6737,7 @@ mod tests {
             std::thread::spawn(move || {
                 cache.get_or_compile_with_hooks(
                     "sha256:shared-route",
-                    redevplugin_ipc::WASM_ABI_VERSION,
+                    redevplugin_ipc::WORKER_API_MAJOR,
                     &cancellation,
                     module_cache::CompileFlightHooks::new(
                         || panic!("follower must not register a second compile flight"),
@@ -6980,7 +6992,7 @@ mod tests {
         module_cache
             .get_or_compile(
                 &identity.artifact_sha256,
-                redevplugin_ipc::WASM_ABI_VERSION,
+                redevplugin_ipc::WORKER_API_MAJOR,
                 &scheduler::Cancellation::new(),
                 move || Ok(source),
             )
@@ -7014,6 +7026,54 @@ mod tests {
         assert!(response.contains("test clock unavailable"));
         assert!(!response.contains(r#""ok":true"#));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn production_prewarm_compiles_without_executing_or_consuming_a_runtime_lease() {
+        let mut frame: serde_json::Value =
+            serde_json::from_str(signed_worker_invocation_fixture()).expect("fixture JSON");
+        frame["payload"]["prewarm"] = serde_json::Value::Bool(true);
+        let frame = serde_json::to_string(&frame).expect("encode prewarm fixture");
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(&frame).expect("prewarm worker invocation");
+        assert!(invocation.is_prewarm());
+        let identity = invocation.identity().expect("prewarm worker identity");
+        let job = scheduler::InvocationJob::new(invocation).expect("prewarm invocation job");
+        let module_cache = Arc::new(module_cache::ModuleCache::new(
+            worker_engine(),
+            1,
+            1024 * 1024,
+        ));
+        let source = response_worker_wasm(r#"{"ok":true,"data":{"unexpected":"execution"}}"#);
+        module_cache
+            .get_or_compile(
+                &identity.artifact_sha256,
+                redevplugin_ipc::WORKER_API_MAJOR,
+                &scheduler::Cancellation::new(),
+                move || Ok(source),
+            )
+            .expect("seed prewarm module cache");
+        let (writer, _outbound) = frame_channel(64);
+        let execution = Arc::new(ConcurrentExecutionState {
+            shared: Arc::new(RuntimeSharedState::default()),
+            lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
+            runtime_lease_public_keys: Vec::new(),
+            module_cache: Arc::clone(&module_cache),
+            clock: Arc::new(|| Err("prewarm must not inspect the invocation clock".to_string())),
+            writer,
+            runtime_generation_id: "g1".to_string(),
+            pending_artifacts: PendingArtifactRoutes::new(2),
+            hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
+            io_routes: Arc::new(PendingIORoutes::new(2, 4)),
+        });
+
+        let response = handle_scheduled_worker_invocation(&job, &execution)
+            .expect("prewarm returns a success response");
+        assert!(response.contains(r#""ok":true"#));
+        assert!(!response.contains("unexpected"));
+        let metrics = module_cache.metrics();
+        assert_eq!(metrics.compiles, 1);
+        assert_eq!(metrics.hits, 1);
     }
     use std::sync::OnceLock;
 
@@ -7050,7 +7110,7 @@ mod tests {
         let compiled = cache
             .get_or_compile(
                 "sha256:test-artifact",
-                redevplugin_ipc::WASM_ABI_VERSION,
+                redevplugin_ipc::WORKER_API_MAJOR,
                 &scheduler::Cancellation::new(),
                 move || Ok(source),
             )
@@ -7078,7 +7138,7 @@ mod tests {
         let compiled = cache
             .get_or_compile(
                 "sha256:test-artifact",
-                redevplugin_ipc::WASM_ABI_VERSION,
+                redevplugin_ipc::WORKER_API_MAJOR,
                 &scheduler::Cancellation::new(),
                 move || Ok(source),
             )

@@ -7310,6 +7310,9 @@ type recordingRuntimeManager struct {
 	calls               int
 	preflightCalls      int
 	startCalls          int
+	prewarmCalls        int
+	prewarmRequests     []runtimeclient.PrewarmWorkerRequest
+	prewarmStarted      chan runtimeclient.PrewarmWorkerRequest
 	stopCalls           int
 	revokeCalls         int
 	startedTarget       runtimetarget.Target
@@ -7595,6 +7598,18 @@ func (r *recordingRuntimeManager) BindPlugin(context.Context, string) (runtimecl
 		ConnectionNonce:     r.health.ConnectionNonce,
 		Descriptor:          descriptor,
 	}, nil
+}
+
+func (r *recordingRuntimeManager) PrewarmWorker(_ context.Context, req runtimeclient.PrewarmWorkerRequest) error {
+	r.prewarmCalls++
+	r.prewarmRequests = append(r.prewarmRequests, req)
+	if r.prewarmStarted != nil {
+		select {
+		case r.prewarmStarted <- req:
+		default:
+		}
+	}
+	return nil
 }
 
 func (r *recordingRuntimeManager) InvokeWorker(ctx context.Context, _ runtimeclient.RuntimeBinding, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {

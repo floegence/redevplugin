@@ -4705,8 +4705,32 @@ func (h *Host) recoverEnabledRuntimeState(ctx context.Context, record registry.P
 		if _, err := h.bindCompatibleWorkerRuntime(ctx, record); err != nil {
 			return err
 		}
+		if err := h.prewarmWorkerModules(ctx, record); err != nil {
+			return err
+		}
 	}
 	return h.prepareEnabledRuntimeState(ctx, record)
+}
+
+func (h *Host) prewarmWorkerModules(ctx context.Context, record registry.PluginRecord) error {
+	for _, worker := range record.Manifest.Workers {
+		entry, ok := packageEntryByPath(record.PackageEntries, worker.Artifact)
+		if !ok || strings.TrimSpace(entry.SHA256) == "" {
+			return fmt.Errorf("worker artifact %q metadata is unavailable", worker.Artifact)
+		}
+		if err := h.adapters.RuntimeManager.PrewarmWorker(ctx, runtimeclient.PrewarmWorkerRequest{
+			PluginInstanceID: record.PluginInstanceID,
+			WorkerID:         worker.WorkerID,
+			Artifact: runtimeclient.ArtifactRequest{
+				PackageHash:    record.PackageHash,
+				Artifact:       worker.Artifact,
+				ArtifactSHA256: entry.SHA256,
+			},
+		}); err != nil {
+			return fmt.Errorf("prewarm worker %q: %w", worker.WorkerID, err)
+		}
+	}
+	return nil
 }
 
 func (h *Host) prepareEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {

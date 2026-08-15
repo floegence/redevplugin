@@ -4,6 +4,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
+const WASMI_ENGINE_VERSION: &str = "2.0.0-beta.9";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModuleCacheMetrics {
     pub hits: u64,
@@ -92,7 +94,8 @@ struct ModuleCacheState {
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct ModuleKey {
     artifact_sha256: String,
-    wasm_abi_version: String,
+    wasmi_version: &'static str,
+    worker_api_major: String,
 }
 
 struct CacheEntry {
@@ -167,13 +170,13 @@ impl ModuleCache {
     pub fn get_or_compile(
         &self,
         artifact_sha256: &str,
-        wasm_abi_version: &str,
+        worker_api_major: &str,
         cancellation: &Arc<Cancellation>,
         load: impl FnOnce() -> Result<Vec<u8>, ModuleCacheError> + Send + 'static,
     ) -> Result<CompiledModule, ModuleCacheError> {
         self.get_or_compile_with_hooks(
             artifact_sha256,
-            wasm_abi_version,
+            worker_api_major,
             cancellation,
             CompileFlightHooks::noop(),
             load,
@@ -183,7 +186,7 @@ impl ModuleCache {
     pub fn get_or_compile_with_hooks(
         &self,
         artifact_sha256: &str,
-        wasm_abi_version: &str,
+        worker_api_major: &str,
         cancellation: &Arc<Cancellation>,
         hooks: CompileFlightHooks,
         load: impl FnOnce() -> Result<Vec<u8>, ModuleCacheError> + Send + 'static,
@@ -193,7 +196,8 @@ impl ModuleCache {
         }
         let key = ModuleKey {
             artifact_sha256: artifact_sha256.to_string(),
-            wasm_abi_version: wasm_abi_version.to_string(),
+            wasmi_version: WASMI_ENGINE_VERSION,
+            worker_api_major: worker_api_major.to_string(),
         };
         let (flight, leader) = {
             let mut state = self.state.lock().expect("module cache mutex poisoned");
@@ -809,7 +813,8 @@ mod tests {
         for index in 0..ENTRY_COUNT {
             let key = ModuleKey {
                 artifact_sha256: format!("sha256:{index:064x}"),
-                wasm_abi_version: ABI_VERSION.to_string(),
+                wasmi_version: WASMI_ENGINE_VERSION,
+                worker_api_major: ABI_VERSION.to_string(),
             };
             let last_used = index as u64 + 1;
             state.entries.insert(
