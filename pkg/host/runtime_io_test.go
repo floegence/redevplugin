@@ -12,7 +12,7 @@ import (
 )
 
 type recordingHostMountAdapter struct {
-	list MountListRequest
+	list       MountListRequest
 	resolveErr error
 }
 

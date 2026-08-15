@@ -16,6 +16,7 @@ var (
 	ErrCrossDevice      = errors.New("cross-device operation is not allowed")
 	ErrUnsafeFile       = errors.New("filesystem object is unsafe")
 	ErrInvalidOptions   = errors.New("file open options are invalid")
+	ErrMountUnavailable = errors.New("filesystem mount is unavailable")
 	ErrWatchUnsupported = errors.New("filesystem watch is unavailable")
 )
 

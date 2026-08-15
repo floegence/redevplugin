@@ -189,7 +189,10 @@ func (resolver hostMountResolver) ResolveMount(ctx context.Context, invocation r
 		Plugin:  resourceInvocationPlugin(invocation),
 		MountID: mountID,
 	})
-	return resourceio.MountSpec{ID: mount.ID, Path: mount.Path, ReadOnly: mount.ReadOnly}, err
+	if err != nil {
+		return resourceio.MountSpec{}, mapMountAdapterError(err)
+	}
+	return resourceio.MountSpec{ID: mount.ID, Path: mount.Path, ReadOnly: mount.ReadOnly}, nil
 }
 
 func (resolver hostMountResolver) ListMounts(ctx context.Context, invocation resourceio.Invocation) ([]resourceio.MountSpec, error) {
@@ -198,13 +201,20 @@ func (resolver hostMountResolver) ListMounts(ctx context.Context, invocation res
 		Plugin:  resourceInvocationPlugin(invocation),
 	})
 	if err != nil {
-		return nil, err
+		return nil, mapMountAdapterError(err)
 	}
 	result := make([]resourceio.MountSpec, len(mounts))
 	for index, mount := range mounts {
 		result[index] = resourceio.MountSpec{ID: mount.ID, Path: mount.Path, ReadOnly: mount.ReadOnly}
 	}
 	return result, nil
+}
+
+func mapMountAdapterError(err error) error {
+	if errors.Is(err, ErrMountUnavailable) {
+		return resourceio.ErrMountUnavailable
+	}
+	return err
 }
 
 type hostNetworkAuthorizer struct {

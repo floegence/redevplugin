@@ -202,7 +202,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "public-api-catalog",
 		Path:    "spec/plugin/public-api-v1.json",
 		Version: "public-api-v1",
-		SHA256:  "fec900c56ce6eb2ad5ee1f229d62918726c23af48eb6cbe52bb0aff7599e06cc",
+		SHA256:  "562a80933bb079abf082dc354e4ff206c8a00b6670be5d17ef5d191a9c52fc75",
 	},
 	{
 		ID:      "publisher-release-ref-schema",

@@ -156,7 +156,7 @@
       "id": "public-api-catalog",
       "path": "spec/plugin/public-api-v1.json",
       "version": "public-api-v1",
-      "sha256": "fec900c56ce6eb2ad5ee1f229d62918726c23af48eb6cbe52bb0aff7599e06cc"
+      "sha256": "562a80933bb079abf082dc354e4ff206c8a00b6670be5d17ef5d191a9c52fc75"
     },
     {
       "id": "publisher-release-ref-schema",

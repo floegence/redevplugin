@@ -30,6 +30,7 @@
     "INTERNAL",
     "INVALID_ARGUMENT",
     "IO_ERROR",
+    "MOUNT_UNAVAILABLE",
     "NETWORK_ERROR",
     "NOT_EMPTY",
     "NOT_FOUND",

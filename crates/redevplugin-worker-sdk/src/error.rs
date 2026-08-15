@@ -14,6 +14,7 @@ pub enum ErrorCode {
     Timeout,
     WouldBlock,
     IoError,
+    MountUnavailable,
     NetworkError,
     ResourceLimit,
     Internal,
@@ -59,6 +60,7 @@ impl Error {
             -12 => ErrorCode::Internal,
             -13 => ErrorCode::RuntimeUnavailable,
             -14 => ErrorCode::RedirectRequiresReplay,
+            -15 => ErrorCode::MountUnavailable,
             _ => ErrorCode::Unknown,
         };
         Self {
@@ -86,6 +88,9 @@ mod tests {
 
     #[test]
     fn preserves_mount_unavailable_abi_status() {
-        assert_eq!(Error::from_abi_status(-15).code, ErrorCode::MountUnavailable);
+        assert_eq!(
+            Error::from_abi_status(-15).code,
+            ErrorCode::MountUnavailable
+        );
     }
 }

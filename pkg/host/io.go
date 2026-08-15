@@ -2,9 +2,14 @@ package host
 
 import (
 	"context"
+	"errors"
 
 	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
+
+// ErrMountUnavailable tells ReDevPlugin that a valid mount class is not
+// present in the authenticated Host session.
+var ErrMountUnavailable = errors.New("filesystem mount is unavailable")
 
 // MountRequest identifies one Host-owned filesystem mount for a trusted
 // plugin invocation. Path resolution remains entirely inside the adapter.
@@ -28,6 +33,8 @@ type Mount struct {
 }
 
 type FileSystemAdapter interface {
+	// ResolveMount returns ErrMountUnavailable when the requested mount does
+	// not exist in the authenticated Host context.
 	ResolveMount(context.Context, MountRequest) (Mount, error)
 	ListMounts(context.Context, MountListRequest) ([]Mount, error)
 }

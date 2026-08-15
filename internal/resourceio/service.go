@@ -833,6 +833,8 @@ func stableServiceError(err error) (string, bool) {
 		return "PERMISSION_DENIED", false
 	case errors.Is(err, ErrRedirectRequiresReplay):
 		return "REDIRECT_REQUIRES_REPLAY", false
+	case errors.Is(err, ErrMountUnavailable):
+		return "MOUNT_UNAVAILABLE", false
 	case errors.Is(err, ErrWatchUnsupported):
 		return "RUNTIME_UNAVAILABLE", false
 	case errors.Is(err, ErrInvalidHandle), errors.Is(err, ErrInvalidURI), errors.Is(err, ErrInvalidOptions):

@@ -47,6 +47,7 @@ const ABI_STATUS_RESOURCE_LIMIT: i32 = -11;
 const ABI_STATUS_INTERNAL: i32 = -12;
 const ABI_STATUS_RUNTIME_UNAVAILABLE: i32 = -13;
 const ABI_STATUS_REDIRECT_REQUIRES_REPLAY: i32 = -14;
+const ABI_STATUS_MOUNT_UNAVAILABLE: i32 = -15;
 const MAX_WASM_TABLE_ELEMENTS: usize = 65_536;
 const MAX_BROKER_RESPONSE_FRAME_BYTES: usize = 1024 * 1024;
 const DEFAULT_CONTROL_MAX_STALENESS: Duration = Duration::from_millis(5_000);
@@ -4126,6 +4127,7 @@ fn abi_error_code(status: i32) -> &'static str {
         ABI_STATUS_INTERNAL => "INTERNAL",
         ABI_STATUS_RUNTIME_UNAVAILABLE => "RUNTIME_UNAVAILABLE",
         ABI_STATUS_REDIRECT_REQUIRES_REPLAY => "REDIRECT_REQUIRES_REPLAY",
+        ABI_STATUS_MOUNT_UNAVAILABLE => "MOUNT_UNAVAILABLE",
         _ => "INTERNAL",
     }
 }
@@ -4150,6 +4152,7 @@ fn abi_status_for_error(error: &str) -> i32 {
         "RESOURCE_LIMIT" => ABI_STATUS_RESOURCE_LIMIT,
         "RUNTIME_UNAVAILABLE" => ABI_STATUS_RUNTIME_UNAVAILABLE,
         "REDIRECT_REQUIRES_REPLAY" => ABI_STATUS_REDIRECT_REQUIRES_REPLAY,
+        "MOUNT_UNAVAILABLE" => ABI_STATUS_MOUNT_UNAVAILABLE,
         _ => ABI_STATUS_INTERNAL,
     }
 }
@@ -4160,7 +4163,10 @@ mod mount_unavailable_contract_tests {
 
     #[test]
     fn preserves_mount_unavailable_across_worker_abi() {
-        assert_eq!(abi_status_for_error("MOUNT_UNAVAILABLE: workspace is absent"), -15);
+        assert_eq!(
+            abi_status_for_error("MOUNT_UNAVAILABLE: workspace is absent"),
+            -15
+        );
         assert_eq!(abi_error_code(-15), "MOUNT_UNAVAILABLE");
     }
 }
