@@ -2280,6 +2280,9 @@ func (h *Host) revokeAuthenticatedSessionScope(
 	for _, lease := range liveExecutions {
 		lease.requestCancel(capability.ErrExecutionRevoked)
 	}
+	if err := h.runtimeIO.revokeSession(scope); err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
 	runtimeCounts := runtimeclient.SessionRevokeCounts{}
 	if h.adapters.RuntimeManager != nil {
 		runtimeResult, runtimeErr := h.adapters.RuntimeManager.RevokeSession(teardownCtx, runtimeclient.SessionRevokeRequest{
@@ -7999,6 +8002,9 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	}
 	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
 	var resultErr error
+	if err := h.runtimeIO.revokePlugin(ownerEnvHash, record.PluginInstanceID); err != nil {
+		resultErr = errors.Join(resultErr, err)
+	}
 	revokedTokens := 0
 	if h.surfaceTokens != nil {
 		var err error

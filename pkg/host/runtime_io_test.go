@@ -101,3 +101,54 @@ func assertProjectedIOContext(t *testing.T, session sessionctx.Context, plugin P
 		t.Fatalf("plugin projection = %#v", plugin)
 	}
 }
+
+func TestHostRuntimeIOBrokerRevokesExactSessionThenPlugin(t *testing.T) {
+	broker, err := newHostRuntimeIOBroker(normalizedAdapters{FileSystem: &recordingHostMountAdapter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = broker.closeAll() })
+	first := runtimeIOTestInvocation("invocation-first", "session-first", "channel-first")
+	second := runtimeIOTestInvocation("invocation-second", "session-second", "channel-second")
+	if err := broker.register(first.Owner.InvocationID, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.register(second.Owner.InvocationID, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.revokeSession(first.Owner.Session); err != nil {
+		t.Fatal(err)
+	}
+	request := []byte(`{"api":1,"operation":"fs.mounts","arguments":{}}`)
+	if _, err := broker.Control(context.Background(), first.Owner.InvocationID, request); !errors.Is(err, errRuntimeIOInvocationUnknown) {
+		t.Fatalf("first session Control() error = %v", err)
+	}
+	if response, err := broker.Control(context.Background(), second.Owner.InvocationID, request); err != nil || !json.Valid(response) {
+		t.Fatalf("sibling session Control() = %s, %v", response, err)
+	}
+	if err := broker.revokePlugin(second.Owner.Scope.OwnerEnvHash, second.Owner.PluginInstanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Control(context.Background(), second.Owner.InvocationID, request); !errors.Is(err, errRuntimeIOInvocationUnknown) {
+		t.Fatalf("plugin-revoked Control() error = %v", err)
+	}
+}
+
+func runtimeIOTestInvocation(invocationID, ownerSessionHash, channelHash string) resourceio.Invocation {
+	return resourceio.Invocation{
+		Owner: resourceio.Owner{
+			PluginInstanceID:   "plugini_revoke",
+			ActiveFingerprint:  "sha256:revoke",
+			Scope:              sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env-revoke", OwnerUserHash: "user-revoke"},
+			Session:            sessionctx.SessionScope{OwnerSessionHash: ownerSessionHash, OwnerUserHash: "user-revoke", OwnerEnvHash: "env-revoke", SessionChannelIDHash: channelHash},
+			RuntimeGeneration:  "generation-revoke",
+			ManagementRevision: 1,
+			RevokeEpoch:        1,
+			InvocationID:       invocationID,
+			Lifetime:           resourceio.LifetimeInvocation,
+		},
+		Plugin:      resourceio.Plugin{ID: "com.example.revoke", InstanceID: "plugini_revoke", Version: "9.0.0"},
+		Permissions: map[string]bool{resourceio.PermissionFSWorkspaceRead: true},
+		CanRead:     true,
+	}
+}

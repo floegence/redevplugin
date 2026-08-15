@@ -59,9 +59,9 @@ func (broker *hostRuntimeIOBroker) release(invocationID string) error {
 		return nil
 	}
 	broker.mu.Lock()
+	defer broker.mu.Unlock()
 	invocation, exists := broker.invocations[invocationID]
 	delete(broker.invocations, invocationID)
-	broker.mu.Unlock()
 	if !exists {
 		return nil
 	}
@@ -70,13 +70,11 @@ func (broker *hostRuntimeIOBroker) release(invocationID string) error {
 	})
 }
 
-func (broker *hostRuntimeIOBroker) invocation(invocationID string) (resourceio.Invocation, error) {
+func (broker *hostRuntimeIOBroker) invocationLocked(invocationID string) (resourceio.Invocation, error) {
 	if broker == nil || broker.service == nil || strings.TrimSpace(invocationID) == "" {
 		return resourceio.Invocation{}, errRuntimeIOInvocationUnknown
 	}
-	broker.mu.RLock()
 	invocation, ok := broker.invocations[invocationID]
-	broker.mu.RUnlock()
 	if !ok {
 		return resourceio.Invocation{}, errRuntimeIOInvocationUnknown
 	}
@@ -84,7 +82,9 @@ func (broker *hostRuntimeIOBroker) invocation(invocationID string) (resourceio.I
 }
 
 func (broker *hostRuntimeIOBroker) Control(ctx context.Context, invocationID string, raw []byte) ([]byte, error) {
-	invocation, err := broker.invocation(invocationID)
+	broker.mu.RLock()
+	defer broker.mu.RUnlock()
+	invocation, err := broker.invocationLocked(invocationID)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,9 @@ func (broker *hostRuntimeIOBroker) Control(ctx context.Context, invocationID str
 }
 
 func (broker *hostRuntimeIOBroker) Read(ctx context.Context, invocationID string, handle uint64, destination []byte) (int, uint32, error) {
-	invocation, err := broker.invocation(invocationID)
+	broker.mu.RLock()
+	defer broker.mu.RUnlock()
+	invocation, err := broker.invocationLocked(invocationID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -100,7 +102,9 @@ func (broker *hostRuntimeIOBroker) Read(ctx context.Context, invocationID string
 }
 
 func (broker *hostRuntimeIOBroker) Write(ctx context.Context, invocationID string, handle uint64, source []byte, flags uint32) (int, error) {
-	invocation, err := broker.invocation(invocationID)
+	broker.mu.RLock()
+	defer broker.mu.RUnlock()
+	invocation, err := broker.invocationLocked(invocationID)
 	if err != nil {
 		return 0, err
 	}
@@ -108,7 +112,9 @@ func (broker *hostRuntimeIOBroker) Write(ctx context.Context, invocationID strin
 }
 
 func (broker *hostRuntimeIOBroker) Seek(_ context.Context, invocationID string, handle uint64, offset int64, whence int) (int64, error) {
-	invocation, err := broker.invocation(invocationID)
+	broker.mu.RLock()
+	defer broker.mu.RUnlock()
+	invocation, err := broker.invocationLocked(invocationID)
 	if err != nil {
 		return 0, err
 	}
@@ -116,7 +122,9 @@ func (broker *hostRuntimeIOBroker) Seek(_ context.Context, invocationID string, 
 }
 
 func (broker *hostRuntimeIOBroker) Close(_ context.Context, invocationID string, handle uint64) error {
-	invocation, err := broker.invocation(invocationID)
+	broker.mu.RLock()
+	defer broker.mu.RUnlock()
+	invocation, err := broker.invocationLocked(invocationID)
 	if err != nil {
 		return err
 	}
@@ -128,9 +136,47 @@ func (broker *hostRuntimeIOBroker) closeAll() error {
 		return nil
 	}
 	broker.mu.Lock()
+	defer broker.mu.Unlock()
 	clear(broker.invocations)
-	broker.mu.Unlock()
 	return broker.service.Revoke(func(resourceio.Owner) bool { return true })
+}
+
+func (broker *hostRuntimeIOBroker) revokePlugin(ownerEnvHash, pluginInstanceID string) error {
+	if broker == nil || broker.service == nil {
+		return nil
+	}
+	ownerEnvHash = strings.TrimSpace(ownerEnvHash)
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if ownerEnvHash == "" || pluginInstanceID == "" {
+		return errRuntimeIOInvocationUnknown
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	for invocationID, invocation := range broker.invocations {
+		if invocation.Owner.PluginInstanceID == pluginInstanceID && invocation.Owner.Scope.OwnerEnvHash == ownerEnvHash {
+			delete(broker.invocations, invocationID)
+		}
+	}
+	return broker.service.Revoke(func(owner resourceio.Owner) bool {
+		return owner.PluginInstanceID == pluginInstanceID && owner.Scope.OwnerEnvHash == ownerEnvHash
+	})
+}
+
+func (broker *hostRuntimeIOBroker) revokeSession(scope sessionctx.SessionScope) error {
+	if broker == nil || broker.service == nil {
+		return nil
+	}
+	if !scope.Valid() {
+		return errRuntimeIOInvocationUnknown
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	for invocationID, invocation := range broker.invocations {
+		if invocation.Owner.Session.Matches(scope) {
+			delete(broker.invocations, invocationID)
+		}
+	}
+	return broker.service.Revoke(func(owner resourceio.Owner) bool { return owner.Session.Matches(scope) })
 }
 
 type hostMountResolver struct {
