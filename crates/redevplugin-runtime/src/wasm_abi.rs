@@ -15,6 +15,7 @@ pub const EXPORT_WORKER_INVOKE: &str = "redevplugin_worker_invoke";
 pub const REQUIRED_EXPORT_INVOKE: &str = EXPORT_WORKER_INVOKE;
 pub const IMPORT_STORAGE: &str = "redevplugin.storage";
 pub const IMPORT_NETWORK: &str = "redevplugin.network";
+pub const IMPORT_IO: &str = "redevplugin.io";
 pub const MAX_TABLE_ELEMENTS: u64 = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,18 +282,51 @@ fn require_hostcall(
     name: &str,
     function_type: &FuncType,
 ) -> Result<(), ValidationError> {
-    let allowed = matches!(
-        (module, name),
-        (IMPORT_STORAGE, "files" | "kv" | "sqlite") | (IMPORT_NETWORK, "execute")
-    );
-    if !allowed {
-        return Err(ValidationError::new(
-            ValidationErrorCategory::UnsupportedImport,
-            format!("worker import {module}/{name} is unsupported"),
-        ));
-    }
+    let expected = match (module, name) {
+        (IMPORT_STORAGE, "files" | "kv" | "sqlite") | (IMPORT_NETWORK, "execute") => (
+            &[
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+            ][..],
+            &[ValueType::I32][..],
+        ),
+        (IMPORT_IO, "rdp_call_v1") => (
+            &[
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+            ][..],
+            &[ValueType::I32][..],
+        ),
+        (IMPORT_IO, "rdp_read_v1" | "rdp_write_v1") => (
+            &[
+                ValueType::I64,
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+            ][..],
+            &[ValueType::I32][..],
+        ),
+        (IMPORT_IO, "rdp_seek_v1") => (
+            &[ValueType::I64, ValueType::I64, ValueType::I32][..],
+            &[ValueType::I64][..],
+        ),
+        (IMPORT_IO, "rdp_close_v1") => (&[ValueType::I64][..], &[ValueType::I32][..]),
+        (IMPORT_IO, "rdp_last_error_v1") => {
+            (&[ValueType::I32, ValueType::I32][..], &[ValueType::I32][..])
+        }
+        _ => {
+            return Err(ValidationError::new(
+                ValidationErrorCategory::UnsupportedImport,
+                format!("worker import {module}/{name} is unsupported"),
+            ));
+        }
+    };
     let (params, results) = function_contract_types(function_type)?;
-    if params != [ValueType::I32; 4] || results != [ValueType::I32] {
+    if params != expected.0 || results != expected.1 {
         return Err(ValidationError::new(
             ValidationErrorCategory::InvalidSignature,
             format!("worker import {module}/{name} has an invalid function signature"),
@@ -455,6 +489,33 @@ mod tests {
                 "accepted {import}"
             );
         }
+    }
+
+    #[test]
+    fn validates_worker_api_v1_io_import_table() {
+        let source = r#"(module
+            (import "redevplugin.io" "rdp_call_v1" (func (param i32 i32 i32 i32) (result i32)))
+            (import "redevplugin.io" "rdp_read_v1" (func (param i64 i32 i32 i32) (result i32)))
+            (import "redevplugin.io" "rdp_write_v1" (func (param i64 i32 i32 i32) (result i32)))
+            (import "redevplugin.io" "rdp_seek_v1" (func (param i64 i64 i32) (result i64)))
+            (import "redevplugin.io" "rdp_close_v1" (func (param i64) (result i32)))
+            (import "redevplugin.io" "rdp_last_error_v1" (func (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 0)
+            (func (export "redevplugin_worker_dealloc") (param i32 i32))
+            (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64) i64.const 0)
+        )"#;
+        let module = wat::parse_str(source).expect("compile Worker API v1 module");
+        let validated = validate_worker_module(&module).expect("validate Worker API v1 module");
+        assert_eq!(validated.imports.len(), 6);
+
+        let invalid = source.replace(
+            "(param i64 i64 i32) (result i64)",
+            "(param i64 i32 i32) (result i64)",
+        );
+        let module = wat::parse_str(invalid).expect("compile invalid Worker API v1 module");
+        let error = validate_worker_module(&module).expect_err("reject invalid seek signature");
+        assert_eq!(error.category(), ValidationErrorCategory::InvalidSignature);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod codec_v7;
 mod ipc;
 #[cfg(test)]
 mod ipc_session_revoke_tests;
@@ -27,6 +28,22 @@ const MAX_WASM_WORKER_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_WASM_WORKER_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_WASM_HOSTCALL_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_WASM_HOSTCALL_RESPONSE_BYTES: usize = 512 * 1024;
+const MAX_WASM_IO_CONTROL_BYTES: usize = 64 * 1024;
+const MAX_WASM_IO_CHUNK_BYTES: usize = 64 * 1024;
+const ABI_STATUS_INVALID_ARGUMENT: i32 = -1;
+const ABI_STATUS_PERMISSION_DENIED: i32 = -2;
+const ABI_STATUS_NOT_FOUND: i32 = -3;
+const ABI_STATUS_ALREADY_EXISTS: i32 = -4;
+const ABI_STATUS_RESOURCE_CLOSED: i32 = -5;
+const ABI_STATUS_CANCELED: i32 = -6;
+const ABI_STATUS_TIMEOUT: i32 = -7;
+const ABI_STATUS_WOULD_BLOCK: i32 = -8;
+const ABI_STATUS_IO_ERROR: i32 = -9;
+const ABI_STATUS_NETWORK_ERROR: i32 = -10;
+const ABI_STATUS_RESOURCE_LIMIT: i32 = -11;
+const ABI_STATUS_INTERNAL: i32 = -12;
+const ABI_STATUS_RUNTIME_UNAVAILABLE: i32 = -13;
+const ABI_STATUS_REDIRECT_REQUIRES_REPLAY: i32 = -14;
 const MAX_WASM_TABLE_ELEMENTS: usize = 65_536;
 const MAX_IPC_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CONTROL_FRAME_BYTES: usize = 1024 * 1024;
@@ -1924,7 +1941,18 @@ fn handle_scheduled_worker_invocation(
             execution
                 .shared
                 .validate_parsed_hostcall(invocation, execution.now_unix_millis()?)?;
-            perform_multiplexed_hostcall(job, execution, invocation, request)
+            match request {
+                WorkerHostcallRequest::StorageFile(_)
+                | WorkerHostcallRequest::StorageKV(_)
+                | WorkerHostcallRequest::StorageSQLite(_)
+                | WorkerHostcallRequest::NetworkExecute(_) => {
+                    perform_multiplexed_hostcall(job, execution, invocation, request)
+                        .map(WorkerHostcallResponse::Json)
+                }
+                _ => Err(
+                    "RUNTIME_UNAVAILABLE: Worker API v1 I/O dispatcher is unavailable".to_string(),
+                ),
+            }
         },
     );
     if job.cancellation.is_canceled() {
@@ -2149,6 +2177,7 @@ fn perform_multiplexed_hostcall(
             .map_err(ipc_contract_error)?;
             redevplugin_ipc::network_execute_payload_json(&response).map_err(ipc_contract_error)
         }
+        _ => Err("Worker API v1 I/O request reached the legacy dispatcher".to_string()),
     }
 }
 
@@ -2853,19 +2882,48 @@ enum WorkerHostcallRequest {
     StorageKV(String),
     StorageSQLite(String),
     NetworkExecute(String),
+    Control(String),
+    Read {
+        handle: u64,
+        capacity: usize,
+    },
+    Write {
+        handle: u64,
+        body: Vec<u8>,
+        flags: u32,
+    },
+    Seek {
+        handle: u64,
+        offset: i64,
+        whence: u32,
+    },
+    Close {
+        handle: u64,
+    },
 }
 
-type WorkerBrokerHostcall<'a> = dyn FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a;
+enum WorkerHostcallResponse {
+    Json(String),
+    Read { body: Vec<u8>, flags: u32 },
+    Written(usize),
+    Seeked(i64),
+    Closed,
+}
+
+type WorkerBrokerHostcall<'a> =
+    dyn FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String> + 'a;
 
 struct WorkerHostState<'a> {
     broker_hostcall: Box<WorkerBrokerHostcall<'a>>,
     limits: StoreLimits,
     hostcall_failures: Vec<TrustedWorkerFailure>,
+    last_error: Option<Vec<u8>>,
 }
 
 impl<'a> WorkerHostState<'a> {
     fn new(
-        broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
+        broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String>
+        + 'a,
         memory_limit_bytes: usize,
     ) -> Self {
         Self {
@@ -2879,6 +2937,7 @@ impl<'a> WorkerHostState<'a> {
                 .trap_on_grow_failure(true)
                 .build(),
             hostcall_failures: Vec::new(),
+            last_error: None,
         }
     }
 }
@@ -2889,7 +2948,7 @@ fn execute_compiled_worker_module_v2<'a>(
     contract: &redevplugin_wasm_abi::ValidatedWorkerModule,
     request_json: &[u8],
     memory_limit_bytes: usize,
-    broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
+    broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String> + 'a,
 ) -> Result<WorkerExecutionV2, String> {
     if request_json.is_empty() || request_json.len() > MAX_WASM_WORKER_REQUEST_BYTES {
         return Err("worker request exceeds the ABI v2 size limit".to_string());
@@ -3072,7 +3131,544 @@ fn define_v2_worker_hostcalls<'a>(
             },
         )
         .map_err(|err| format!("define network execute hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.io",
+            "rdp_call_v1",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             request_ptr: i32,
+             request_len: i32,
+             response_ptr: i32,
+             response_capacity: i32|
+             -> i32 {
+                perform_io_control_hostcall(
+                    &mut caller,
+                    request_ptr,
+                    request_len,
+                    response_ptr,
+                    response_capacity,
+                )
+            },
+        )
+        .map_err(|err| format!("define Worker API v1 control hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.io",
+            "rdp_read_v1",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             handle: i64,
+             destination_ptr: i32,
+             destination_capacity: i32,
+             flags_ptr: i32|
+             -> i32 {
+                perform_io_read_hostcall(
+                    &mut caller,
+                    handle as u64,
+                    destination_ptr,
+                    destination_capacity,
+                    flags_ptr,
+                )
+            },
+        )
+        .map_err(|err| format!("define Worker API v1 read hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.io",
+            "rdp_write_v1",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             handle: i64,
+             source_ptr: i32,
+             source_len: i32,
+             flags: i32|
+             -> i32 {
+                perform_io_write_hostcall(
+                    &mut caller,
+                    handle as u64,
+                    source_ptr,
+                    source_len,
+                    flags as u32,
+                )
+            },
+        )
+        .map_err(|err| format!("define Worker API v1 write hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.io",
+            "rdp_seek_v1",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             handle: i64,
+             offset: i64,
+             whence: i32|
+             -> i64 {
+                perform_io_seek_hostcall(&mut caller, handle as u64, offset, whence)
+            },
+        )
+        .map_err(|err| format!("define Worker API v1 seek hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.io",
+            "rdp_close_v1",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>, handle: i64| -> i32 {
+                perform_io_close_hostcall(&mut caller, handle as u64)
+            },
+        )
+        .map_err(|err| format!("define Worker API v1 close hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.io",
+            "rdp_last_error_v1",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             response_ptr: i32,
+             response_capacity: i32|
+             -> i32 {
+                perform_io_last_error_hostcall(&mut caller, response_ptr, response_capacity)
+            },
+        )
+        .map_err(|err| format!("define Worker API v1 last-error hostcall import: {err}"))?;
     Ok(())
+}
+
+fn worker_memory(caller: &wasmi::Caller<'_, WorkerHostState<'_>>) -> Result<wasmi::Memory, i32> {
+    caller
+        .get_export("memory")
+        .and_then(wasmi::Extern::into_memory)
+        .ok_or(ABI_STATUS_INVALID_ARGUMENT)
+}
+
+fn checked_worker_region(
+    caller: &wasmi::Caller<'_, WorkerHostState<'_>>,
+    pointer: i32,
+    length: usize,
+) -> Result<(wasmi::Memory, usize), i32> {
+    let offset = usize::try_from(pointer).map_err(|_| ABI_STATUS_INVALID_ARGUMENT)?;
+    let end = offset
+        .checked_add(length)
+        .ok_or(ABI_STATUS_INVALID_ARGUMENT)?;
+    let memory = worker_memory(caller)?;
+    if end > memory.data(caller.as_context()).len() {
+        return Err(ABI_STATUS_INVALID_ARGUMENT);
+    }
+    Ok((memory, offset))
+}
+
+fn abi_error_code(status: i32) -> &'static str {
+    match status {
+        ABI_STATUS_INVALID_ARGUMENT => "INVALID_ARGUMENT",
+        ABI_STATUS_PERMISSION_DENIED => "PERMISSION_DENIED",
+        ABI_STATUS_NOT_FOUND => "NOT_FOUND",
+        ABI_STATUS_ALREADY_EXISTS => "ALREADY_EXISTS",
+        ABI_STATUS_RESOURCE_CLOSED => "RESOURCE_CLOSED",
+        ABI_STATUS_CANCELED => "CANCELED",
+        ABI_STATUS_TIMEOUT => "TIMEOUT",
+        ABI_STATUS_WOULD_BLOCK => "WOULD_BLOCK",
+        ABI_STATUS_IO_ERROR => "IO_ERROR",
+        ABI_STATUS_NETWORK_ERROR => "NETWORK_ERROR",
+        ABI_STATUS_RESOURCE_LIMIT => "RESOURCE_LIMIT",
+        ABI_STATUS_INTERNAL => "INTERNAL",
+        ABI_STATUS_RUNTIME_UNAVAILABLE => "RUNTIME_UNAVAILABLE",
+        ABI_STATUS_REDIRECT_REQUIRES_REPLAY => "REDIRECT_REQUIRES_REPLAY",
+        _ => "INTERNAL",
+    }
+}
+
+fn abi_status_for_error(error: &str) -> i32 {
+    let code = error
+        .split_once(':')
+        .map(|(code, _)| code)
+        .unwrap_or(error)
+        .trim();
+    match code {
+        "INVALID_ARGUMENT" => ABI_STATUS_INVALID_ARGUMENT,
+        "PERMISSION_DENIED" => ABI_STATUS_PERMISSION_DENIED,
+        "NOT_FOUND" => ABI_STATUS_NOT_FOUND,
+        "ALREADY_EXISTS" => ABI_STATUS_ALREADY_EXISTS,
+        "RESOURCE_CLOSED" => ABI_STATUS_RESOURCE_CLOSED,
+        "CANCELED" => ABI_STATUS_CANCELED,
+        "TIMEOUT" => ABI_STATUS_TIMEOUT,
+        "WOULD_BLOCK" => ABI_STATUS_WOULD_BLOCK,
+        "IO_ERROR" => ABI_STATUS_IO_ERROR,
+        "NETWORK_ERROR" => ABI_STATUS_NETWORK_ERROR,
+        "RESOURCE_LIMIT" => ABI_STATUS_RESOURCE_LIMIT,
+        "RUNTIME_UNAVAILABLE" => ABI_STATUS_RUNTIME_UNAVAILABLE,
+        "REDIRECT_REQUIRES_REPLAY" => ABI_STATUS_REDIRECT_REQUIRES_REPLAY,
+        _ => ABI_STATUS_INTERNAL,
+    }
+}
+
+fn record_io_error(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    status: i32,
+    message: impl AsRef<str>,
+) -> i32 {
+    let message = message.as_ref().trim();
+    let message = if message.is_empty() {
+        abi_error_code(status).to_string()
+    } else {
+        message.chars().take(4096).collect()
+    };
+    caller.data_mut().last_error = Some(
+        serde_json::json!({
+            "code": abi_error_code(status),
+            "message": message,
+            "retryable": matches!(status, ABI_STATUS_TIMEOUT | ABI_STATUS_WOULD_BLOCK | ABI_STATUS_RUNTIME_UNAVAILABLE),
+            "details": {},
+        })
+        .to_string()
+        .into_bytes(),
+    );
+    status
+}
+
+fn clear_io_error(caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>) {
+    caller.data_mut().last_error = None;
+}
+
+fn callback_io_error(caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>, error: String) -> i32 {
+    let status = abi_status_for_error(&error);
+    record_io_error(caller, status, error)
+}
+
+fn perform_io_control_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    request_ptr: i32,
+    request_len: i32,
+    response_ptr: i32,
+    response_capacity: i32,
+) -> i32 {
+    let Ok(request_len) = usize::try_from(request_len) else {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "request length is invalid",
+        );
+    };
+    let Ok(response_capacity) = usize::try_from(response_capacity) else {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "response capacity is invalid",
+        );
+    };
+    if request_len == 0
+        || request_len > MAX_WASM_IO_CONTROL_BYTES
+        || response_capacity == 0
+        || response_capacity > MAX_WASM_IO_CONTROL_BYTES
+    {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "control buffer size is invalid",
+        );
+    }
+    let (memory, request_offset) = match checked_worker_region(caller, request_ptr, request_len) {
+        Ok(value) => value,
+        Err(status) => return record_io_error(caller, status, "request buffer is out of bounds"),
+    };
+    let (_, response_offset) = match checked_worker_region(caller, response_ptr, response_capacity)
+    {
+        Ok(value) => value,
+        Err(status) => return record_io_error(caller, status, "response buffer is out of bounds"),
+    };
+    let mut request = vec![0_u8; request_len];
+    if memory
+        .read(caller.as_context(), request_offset, &mut request)
+        .is_err()
+    {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "request buffer is unreadable",
+        );
+    }
+    let request = match String::from_utf8(request) {
+        Ok(value) => value,
+        Err(_) => {
+            return record_io_error(
+                caller,
+                ABI_STATUS_INVALID_ARGUMENT,
+                "control request is not UTF-8",
+            );
+        }
+    };
+    let response =
+        match (caller.data_mut().broker_hostcall)(WorkerHostcallRequest::Control(request)) {
+            Ok(WorkerHostcallResponse::Json(response)) => response,
+            Ok(_) => {
+                return record_io_error(
+                    caller,
+                    ABI_STATUS_INTERNAL,
+                    "control hostcall returned an invalid response kind",
+                );
+            }
+            Err(error) => return callback_io_error(caller, error),
+        };
+    if response.len() > response_capacity || response.len() > MAX_WASM_IO_CONTROL_BYTES {
+        return record_io_error(
+            caller,
+            ABI_STATUS_RESOURCE_LIMIT,
+            "control response exceeds capacity",
+        );
+    }
+    if memory
+        .write(
+            caller.as_context_mut(),
+            response_offset,
+            response.as_bytes(),
+        )
+        .is_err()
+    {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "response buffer is unwritable",
+        );
+    }
+    let written = match i32::try_from(response.len()) {
+        Ok(value) => value,
+        Err(_) => {
+            return record_io_error(
+                caller,
+                ABI_STATUS_RESOURCE_LIMIT,
+                "control response length overflows",
+            );
+        }
+    };
+    clear_io_error(caller);
+    written
+}
+
+fn perform_io_read_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    handle: u64,
+    destination_ptr: i32,
+    destination_capacity: i32,
+    flags_ptr: i32,
+) -> i32 {
+    let Ok(capacity) = usize::try_from(destination_capacity) else {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "read capacity is invalid",
+        );
+    };
+    if handle == 0 || capacity == 0 || capacity > MAX_WASM_IO_CHUNK_BYTES {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "read arguments are invalid",
+        );
+    }
+    let (memory, destination_offset) =
+        match checked_worker_region(caller, destination_ptr, capacity) {
+            Ok(value) => value,
+            Err(status) => {
+                return record_io_error(caller, status, "read destination is out of bounds");
+            }
+        };
+    let (_, flags_offset) = match checked_worker_region(caller, flags_ptr, 4) {
+        Ok(value) => value,
+        Err(status) => return record_io_error(caller, status, "read flags are out of bounds"),
+    };
+    let (body, flags) =
+        match (caller.data_mut().broker_hostcall)(WorkerHostcallRequest::Read { handle, capacity })
+        {
+            Ok(WorkerHostcallResponse::Read { body, flags }) => (body, flags),
+            Ok(_) => {
+                return record_io_error(
+                    caller,
+                    ABI_STATUS_INTERNAL,
+                    "read hostcall returned an invalid response kind",
+                );
+            }
+            Err(error) => return callback_io_error(caller, error),
+        };
+    if body.len() > capacity || body.len() > MAX_WASM_IO_CHUNK_BYTES {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INTERNAL,
+            "read hostcall exceeded requested capacity",
+        );
+    }
+    if memory
+        .write(caller.as_context_mut(), destination_offset, &body)
+        .is_err()
+        || memory
+            .write(caller.as_context_mut(), flags_offset, &flags.to_le_bytes())
+            .is_err()
+    {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "read result buffer is unwritable",
+        );
+    }
+    let read = match i32::try_from(body.len()) {
+        Ok(value) => value,
+        Err(_) => return record_io_error(caller, ABI_STATUS_INTERNAL, "read length overflows"),
+    };
+    clear_io_error(caller);
+    read
+}
+
+fn perform_io_write_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    handle: u64,
+    source_ptr: i32,
+    source_len: i32,
+    flags: u32,
+) -> i32 {
+    let Ok(source_len) = usize::try_from(source_len) else {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "write length is invalid",
+        );
+    };
+    if handle == 0 || source_len > MAX_WASM_IO_CHUNK_BYTES {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "write arguments are invalid",
+        );
+    }
+    let (memory, source_offset) = match checked_worker_region(caller, source_ptr, source_len) {
+        Ok(value) => value,
+        Err(status) => return record_io_error(caller, status, "write source is out of bounds"),
+    };
+    let mut body = vec![0_u8; source_len];
+    if memory
+        .read(caller.as_context(), source_offset, &mut body)
+        .is_err()
+    {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "write source is unreadable",
+        );
+    }
+    let written = match (caller.data_mut().broker_hostcall)(WorkerHostcallRequest::Write {
+        handle,
+        body,
+        flags,
+    }) {
+        Ok(WorkerHostcallResponse::Written(written)) => written,
+        Ok(_) => {
+            return record_io_error(
+                caller,
+                ABI_STATUS_INTERNAL,
+                "write hostcall returned an invalid response kind",
+            );
+        }
+        Err(error) => return callback_io_error(caller, error),
+    };
+    if written != source_len {
+        return record_io_error(
+            caller,
+            ABI_STATUS_IO_ERROR,
+            "write hostcall returned a partial write",
+        );
+    }
+    let written = match i32::try_from(written) {
+        Ok(value) => value,
+        Err(_) => return record_io_error(caller, ABI_STATUS_INTERNAL, "write length overflows"),
+    };
+    clear_io_error(caller);
+    written
+}
+
+fn perform_io_seek_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    handle: u64,
+    offset: i64,
+    whence: i32,
+) -> i64 {
+    if handle == 0 || !(0..=2).contains(&whence) {
+        return i64::from(record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "seek arguments are invalid",
+        ));
+    }
+    let position = match (caller.data_mut().broker_hostcall)(WorkerHostcallRequest::Seek {
+        handle,
+        offset,
+        whence: whence as u32,
+    }) {
+        Ok(WorkerHostcallResponse::Seeked(position)) if position >= 0 => position,
+        Ok(WorkerHostcallResponse::Seeked(_)) => {
+            return i64::from(record_io_error(
+                caller,
+                ABI_STATUS_INTERNAL,
+                "seek hostcall returned a negative position",
+            ));
+        }
+        Ok(_) => {
+            return i64::from(record_io_error(
+                caller,
+                ABI_STATUS_INTERNAL,
+                "seek hostcall returned an invalid response kind",
+            ));
+        }
+        Err(error) => return i64::from(callback_io_error(caller, error)),
+    };
+    clear_io_error(caller);
+    position
+}
+
+fn perform_io_close_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    handle: u64,
+) -> i32 {
+    if handle == 0 {
+        return record_io_error(
+            caller,
+            ABI_STATUS_INVALID_ARGUMENT,
+            "close handle is invalid",
+        );
+    }
+    match (caller.data_mut().broker_hostcall)(WorkerHostcallRequest::Close { handle }) {
+        Ok(WorkerHostcallResponse::Closed) => {
+            clear_io_error(caller);
+            0
+        }
+        Ok(_) => record_io_error(
+            caller,
+            ABI_STATUS_INTERNAL,
+            "close hostcall returned an invalid response kind",
+        ),
+        Err(error) => callback_io_error(caller, error),
+    }
+}
+
+fn perform_io_last_error_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    response_ptr: i32,
+    response_capacity: i32,
+) -> i32 {
+    let Some(snapshot) = caller.data().last_error.clone() else {
+        return 0;
+    };
+    let Ok(capacity) = usize::try_from(response_capacity) else {
+        return ABI_STATUS_INVALID_ARGUMENT;
+    };
+    if capacity == 0 || capacity > MAX_WASM_IO_CONTROL_BYTES {
+        return ABI_STATUS_INVALID_ARGUMENT;
+    }
+    if snapshot.len() > capacity {
+        return ABI_STATUS_RESOURCE_LIMIT;
+    }
+    let (memory, response_offset) = match checked_worker_region(caller, response_ptr, capacity) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    if memory
+        .write(caller.as_context_mut(), response_offset, &snapshot)
+        .is_err()
+    {
+        return ABI_STATUS_INVALID_ARGUMENT;
+    }
+    caller.data_mut().last_error = None;
+    i32::try_from(snapshot.len()).unwrap_or(ABI_STATUS_RESOURCE_LIMIT)
 }
 
 fn worker_hostcall_error_json(error: &str) -> String {
@@ -3154,6 +3750,19 @@ fn stable_worker_error_code(value: &str) -> bool {
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
+fn perform_legacy_json_hostcall(
+    state: &mut WorkerHostState<'_>,
+    request: WorkerHostcallRequest,
+) -> String {
+    match (state.broker_hostcall)(request) {
+        Ok(WorkerHostcallResponse::Json(response)) => response,
+        Ok(_) => worker_hostcall_error_json(
+            "INTERNAL: legacy hostcall returned an invalid response kind",
+        ),
+        Err(error) => worker_hostcall_error_json(&error),
+    }
+}
+
 fn perform_storage_file_request_hostcall(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     request_ptr: i32,
@@ -3201,11 +3810,10 @@ fn perform_storage_file_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_storage_hostcall_error(caller, -5),
     };
-    let response_json = {
-        let state = caller.data_mut();
-        (state.broker_hostcall)(WorkerHostcallRequest::StorageFile(request_json.to_string()))
-    };
-    let response_json = response_json.unwrap_or_else(|err| worker_hostcall_error_json(&err));
+    let response_json = perform_legacy_json_hostcall(
+        caller.data_mut(),
+        WorkerHostcallRequest::StorageFile(request_json.to_string()),
+    );
     record_hostcall_response(caller, &response_json);
     let response = response_json.as_bytes();
     if response.len() > response_len {
@@ -3277,11 +3885,10 @@ fn perform_storage_kv_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_storage_kv_hostcall_error(caller, -5),
     };
-    let response_json = {
-        let state = caller.data_mut();
-        (state.broker_hostcall)(WorkerHostcallRequest::StorageKV(request_json.to_string()))
-    };
-    let response_json = response_json.unwrap_or_else(|err| worker_hostcall_error_json(&err));
+    let response_json = perform_legacy_json_hostcall(
+        caller.data_mut(),
+        WorkerHostcallRequest::StorageKV(request_json.to_string()),
+    );
     record_hostcall_response(caller, &response_json);
     let response = response_json.as_bytes();
     if response.len() > response_len {
@@ -3353,13 +3960,10 @@ fn perform_storage_sqlite_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_storage_sqlite_hostcall_error(caller, -5),
     };
-    let response_json = {
-        let state = caller.data_mut();
-        (state.broker_hostcall)(WorkerHostcallRequest::StorageSQLite(
-            request_json.to_string(),
-        ))
-    };
-    let response_json = response_json.unwrap_or_else(|err| worker_hostcall_error_json(&err));
+    let response_json = perform_legacy_json_hostcall(
+        caller.data_mut(),
+        WorkerHostcallRequest::StorageSQLite(request_json.to_string()),
+    );
     record_hostcall_response(caller, &response_json);
     let response = response_json.as_bytes();
     if response.len() > response_len {
@@ -3431,13 +4035,10 @@ fn perform_network_execute_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_network_hostcall_error(caller, -5),
     };
-    let response_json = {
-        let state = caller.data_mut();
-        (state.broker_hostcall)(WorkerHostcallRequest::NetworkExecute(
-            request_json.to_string(),
-        ))
-    };
-    let response_json = response_json.unwrap_or_else(|err| worker_hostcall_error_json(&err));
+    let response_json = perform_legacy_json_hostcall(
+        caller.data_mut(),
+        WorkerHostcallRequest::NetworkExecute(request_json.to_string()),
+    );
     record_hostcall_response(caller, &response_json);
     let response = response_json.as_bytes();
     if response.len() > response_len {
@@ -5509,7 +6110,35 @@ mod tests {
         wasm_bytes: &[u8],
         request_json: &[u8],
         memory_limit_bytes: usize,
-        broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
+        mut broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
+    ) -> Result<WorkerExecutionV2, String> {
+        let cache =
+            module_cache::ModuleCache::new(worker_engine(), 1, wasm_bytes.len().saturating_add(1));
+        let source = wasm_bytes.to_vec();
+        let compiled = cache
+            .get_or_compile(
+                "sha256:test-artifact",
+                redevplugin_ipc::WASM_ABI_VERSION,
+                &scheduler::Cancellation::new(),
+                move || Ok(source),
+            )
+            .map_err(|err| err.to_string())?;
+        execute_compiled_worker_module_v2(
+            cache.engine(),
+            &compiled.module,
+            &compiled.contract,
+            request_json,
+            memory_limit_bytes,
+            move |request| broker_hostcall(request).map(WorkerHostcallResponse::Json),
+        )
+    }
+
+    fn execute_worker_module_with_io_for_test<'a>(
+        wasm_bytes: &[u8],
+        request_json: &[u8],
+        memory_limit_bytes: usize,
+        broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String>
+        + 'a,
     ) -> Result<WorkerExecutionV2, String> {
         let cache =
             module_cache::ModuleCache::new(worker_engine(), 1, wasm_bytes.len().saturating_add(1));
@@ -6017,6 +6646,145 @@ mod tests {
         .expect("v2 worker executes");
 
         assert_eq!(execution.response_json, response);
+    }
+
+    #[test]
+    fn executes_worker_api_v1_control_and_raw_io_with_last_error_snapshot() {
+        let request = r#"{"api":1,"operation":"platform.capabilities","arguments":{}}"#;
+        let response = r#"{"ok":true,"data":{"io":true}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (import "redevplugin.io" "rdp_call_v1" (func $call (param i32 i32 i32 i32) (result i32)))
+                (import "redevplugin.io" "rdp_read_v1" (func $read (param i64 i32 i32 i32) (result i32)))
+                (import "redevplugin.io" "rdp_write_v1" (func $write (param i64 i32 i32 i32) (result i32)))
+                (import "redevplugin.io" "rdp_seek_v1" (func $seek (param i64 i64 i32) (result i64)))
+                (import "redevplugin.io" "rdp_close_v1" (func $close (param i64) (result i32)))
+                (import "redevplugin.io" "rdp_last_error_v1" (func $last_error (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 3000) {request:?})
+                (data (i32.const 4000) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i32.const 3000 i32.const {request_len} i32.const 3100 i32.const 256 call $call
+                    i32.const 0 i32.le_s if unreachable end
+                    i64.const 7 i32.const 3300 i32.const 64 i32.const 3400 call $read
+                    i32.const 5 i32.ne if unreachable end
+                    i32.const 3300 i32.load8_u i32.const 104 i32.ne if unreachable end
+                    i32.const 3304 i32.load8_u i32.const 111 i32.ne if unreachable end
+                    i64.const 7 i32.const 3300 i32.const 5 i32.const 5 call $write
+                    i32.const 5 i32.ne if unreachable end
+                    i64.const 7 i64.const 0 i32.const 0 call $seek
+                    i64.const 12 i64.ne if unreachable end
+                    i64.const 7 call $close i32.const 0 i32.ne if unreachable end
+                    i64.const 7 call $close i32.const 0 i32.ne if unreachable end
+                    i64.const 8 i32.const 3300 i32.const 64 i32.const 3400 call $read
+                    i32.const -2 i32.ne if unreachable end
+                    i32.const 3500 i32.const 1 call $last_error
+                    i32.const -11 i32.ne if unreachable end
+                    i32.const 3500 i32.const 512 call $last_error
+                    i32.const 0 i32.le_s if unreachable end
+                    i32.const 3500 i32.const 512 call $last_error
+                    i32.const 0 i32.ne if unreachable end
+                    i64.const {packed})
+            )"#,
+            request_len = request.len(),
+            packed = ((4000_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile Worker API v1 hostcall fixture");
+
+        let mut close_count = 0;
+        let execution = execute_worker_module_with_io_for_test(
+            &module,
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"io.test","params":{}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            |hostcall| match hostcall {
+                WorkerHostcallRequest::Control(raw) => {
+                    assert_eq!(raw, request);
+                    Ok(WorkerHostcallResponse::Json(
+                        r#"{"ok":true,"result":{"worker_api":1}}"#.to_string(),
+                    ))
+                }
+                WorkerHostcallRequest::Read {
+                    handle: 7,
+                    capacity,
+                } => {
+                    assert_eq!(capacity, 64);
+                    Ok(WorkerHostcallResponse::Read {
+                        body: b"hello".to_vec(),
+                        flags: 5,
+                    })
+                }
+                WorkerHostcallRequest::Read { handle: 8, .. } => {
+                    Err("PERMISSION_DENIED: denied by test policy".to_string())
+                }
+                WorkerHostcallRequest::Write {
+                    handle: 7,
+                    body,
+                    flags,
+                } => {
+                    assert_eq!(body, b"hello");
+                    assert_eq!(flags, 5);
+                    Ok(WorkerHostcallResponse::Written(body.len()))
+                }
+                WorkerHostcallRequest::Seek {
+                    handle: 7,
+                    offset: 0,
+                    whence: 0,
+                } => Ok(WorkerHostcallResponse::Seeked(12)),
+                WorkerHostcallRequest::Close { handle: 7 } => {
+                    close_count += 1;
+                    Ok(WorkerHostcallResponse::Closed)
+                }
+                _ => Err("unexpected Worker API v1 hostcall".to_string()),
+            },
+        )
+        .expect("execute Worker API v1 hostcall fixture");
+        assert_eq!(execution.response_json, response);
+        assert_eq!(close_count, 2);
+    }
+
+    #[test]
+    fn worker_api_v1_read_rejects_out_of_bounds_before_host_io_or_memory_writes() {
+        let response = r#"{"ok":true,"data":{"checked":true}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (import "redevplugin.io" "rdp_read_v1" (func $read (param i64 i32 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 3000) "\aa\bb\cc\dd")
+                (data (i32.const 4000) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    ;; The destination crosses the end of the 64 KiB memory.
+                    i64.const 7 i32.const 65530 i32.const 16 i32.const 3000 call $read
+                    i32.const -1 i32.ne if unreachable end
+                    i32.const 3000 i32.load i32.const 0xddccbbaa i32.ne if unreachable end
+
+                    ;; The flags word crosses the end. A valid destination must remain untouched.
+                    i64.const 7 i32.const 3000 i32.const 4 i32.const 65534 call $read
+                    i32.const -1 i32.ne if unreachable end
+                    i32.const 3000 i32.load i32.const 0xddccbbaa i32.ne if unreachable end
+                    i64.const {packed})
+            )"#,
+            packed = ((4000_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile out-of-bounds Worker API v1 fixture");
+
+        let mut hostcall_count = 0;
+        let execution = execute_worker_module_with_io_for_test(
+            &module,
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"io.bounds","params":{}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            |_| {
+                hostcall_count += 1;
+                Err("Host I/O must not run for invalid memory".to_string())
+            },
+        )
+        .expect("execute out-of-bounds Worker API v1 fixture");
+
+        assert_eq!(execution.response_json, response);
+        assert_eq!(hostcall_count, 0);
     }
 
     #[test]
@@ -6570,6 +7338,7 @@ mod tests {
                 Err("unexpected storage sqlite call".to_string())
             }
             WorkerHostcallRequest::NetworkExecute(_) => Err("unexpected network call".to_string()),
+            _ => Err("unexpected Worker API v1 I/O call".to_string()),
         }
     }
 

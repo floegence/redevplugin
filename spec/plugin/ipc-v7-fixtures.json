@@ -1,0 +1,15 @@
+{
+  "schema_version": "redevplugin.rust_ipc_v7_fixtures.v1",
+  "frames": [
+    {
+      "name": "raw-io-write",
+      "encoded_hex": "0000002c070c0005000000000000002a0000000000000063000000020000000e7b7d00ff01026e6f742d626173653634",
+      "frame_type": 12,
+      "flags": 5,
+      "request_id": 42,
+      "resource_id": 99,
+      "metadata_hex": "7b7d",
+      "body_hex": "00ff01026e6f742d626173653634"
+    }
+  ]
+}
