@@ -180,6 +180,18 @@ func TestReadBoundedIPCLineRejectsOversizedFrame(t *testing.T) {
 	}
 }
 
+func readSemanticJSONTestFrame(reader *bufio.Reader) (ipcFrame, error) {
+	line, err := readBoundedIPCLine(reader, maxIPCFrameBytes)
+	if err != nil {
+		return ipcFrame{}, err
+	}
+	var frame ipcFrame
+	if err := decodeStrictJSON(line, &frame); err != nil {
+		return ipcFrame{}, err
+	}
+	return frame, nil
+}
+
 func TestReadIPCFrameRejectsNonCanonicalJSON(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -360,7 +372,7 @@ func TestHostcallHandlersRejectNonCanonicalRequests(t *testing.T) {
 				if err := test.call(&ProcessSupervisor{}, &output, frame); err != nil {
 					t.Fatalf("handler error = %v", err)
 				}
-				response, err := readIPCFrame(bufio.NewReader(&output))
+				response, err := readSemanticJSONTestFrame(bufio.NewReader(&output))
 				if err != nil {
 					t.Fatalf("read response: %v", err)
 				}
@@ -881,6 +893,7 @@ func TestProcessSupervisorTimingMustBeExplicitAndValid(t *testing.T) {
 		RuntimePath:           os.Args[0],
 		Limits:                DefaultRuntimeLimits(),
 		StreamSink:            &recordingRuntimeStreamSink{},
+		IOBroker:              testRuntimeIOBroker{},
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
@@ -931,6 +944,7 @@ func TestProcessSupervisorRejectsDigestMismatchBeforeStartingProcess(t *testing.
 		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_START_MARKER="+markerPath),
 		Limits:                DefaultRuntimeLimits(),
 		StreamSink:            &recordingRuntimeStreamSink{},
+		IOBroker:              testRuntimeIOBroker{},
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
@@ -1071,13 +1085,13 @@ func TestProcessSupervisorMultiplexesSameShardInvocations(t *testing.T) {
 
 	slowDone := make(chan error, 1)
 	go func() {
-		_, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_multiplex_slow"}, "worker.echo", workerInvocationFixture())
+		_, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_multiplex_slow", InvocationID: "invoke_multiplex_slow"}, "worker.echo", workerInvocationFixture())
 		slowDone <- err
 	}()
 	waitForSustainedIPCLock(t, supervisor, 20*time.Millisecond)
 	fastDone := make(chan error, 1)
 	go func() {
-		_, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_multiplex_fast"}, "worker.echo", workerInvocationFixture())
+		_, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_multiplex_fast", InvocationID: "invoke_multiplex_fast"}, "worker.echo", workerInvocationFixture())
 		fastDone <- err
 	}()
 	select {
@@ -1116,13 +1130,13 @@ func TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFul
 
 	activeDone := make(chan error, 1)
 	go func() {
-		_, invokeErr := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_control_active"}, "worker.echo", workerInvocationFixture())
+		_, invokeErr := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_control_active", InvocationID: "invoke_control_active"}, "worker.echo", workerInvocationFixture())
 		activeDone <- invokeErr
 	}()
 	waitForSustainedIPCLock(t, supervisor, 20*time.Millisecond)
 	pendingDone := make(chan error, 1)
 	go func() {
-		_, invokeErr := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_control_pending"}, "worker.echo", workerInvocationFixture())
+		_, invokeErr := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_control_pending", InvocationID: "invoke_control_pending"}, "worker.echo", workerInvocationFixture())
 		pendingDone <- invokeErr
 	}()
 	waitForInvocationAdmissionCount(t, supervisor, 2)
@@ -1920,7 +1934,7 @@ func TestStorageHostcallIdentityMismatchStopsBeforeGrantAndBroker(t *testing.T) 
 			if validator.calls != 0 || files.readCalls != 0 || files.writeCalls != 0 || files.deleteCalls != 0 || files.listCalls != 0 {
 				t.Fatalf("identity mismatch reached adapters: validator=%d files=%#v", validator.calls, files)
 			}
-			response, err := readIPCFrame(bufio.NewReader(&output))
+			response, err := readSemanticJSONTestFrame(bufio.NewReader(&output))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2003,7 +2017,7 @@ func TestNetworkHostcallIdentityMismatchStopsBeforeBrokerAndExecutor(t *testing.
 			if validator.calls != 0 || broker.calls != 0 || executor.httpCalls != 0 || executor.streamCalls != 0 || executor.websocketCalls != 0 || executor.tcpCalls != 0 || executor.udpCalls != 0 {
 				t.Fatalf("identity mismatch reached adapters: validator=%d broker=%d executor=%#v", validator.calls, broker.calls, executor)
 			}
-			response, err := readIPCFrame(bufio.NewReader(&output))
+			response, err := readSemanticJSONTestFrame(bufio.NewReader(&output))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2113,7 +2127,7 @@ func TestProcessSupervisorArtifactHostcallIsInvocationIndependentAndGenerationBo
 	if newWriter.Len() != 0 {
 		t.Fatal("old generation artifact response was written to the current transport")
 	}
-	frame, err := readIPCFrame(bufio.NewReader(bytes.NewReader(oldWriter.Bytes())))
+	frame, err := readSemanticJSONTestFrame(bufio.NewReader(bytes.NewReader(oldWriter.Bytes())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4062,7 +4076,9 @@ func TestRuntimeHostcallContextCapsRequestedTimeout(t *testing.T) {
 }
 
 func runRuntimeClientHelper() {
-	reader := bufio.NewReader(os.Stdin)
+	reader := bufio.NewReader(&testHostSemanticIPCReaderV7{reader: os.Stdin})
+	runtimeOutput := newRuntimeSemanticIPCWriteCloserV7(os.Stdout)
+	encoder := json.NewEncoder(runtimeOutput)
 	line, err := reader.ReadBytes('\n')
 	if err != nil {
 		os.Exit(2)
@@ -4107,7 +4123,7 @@ func runRuntimeClientHelper() {
 		ChannelNonce:      channelNonce,
 		Limits:            hello.Limits,
 	})
-	_ = json.NewEncoder(os.Stdout).Encode(ipcFrame{
+	_ = encoder.Encode(ipcFrame{
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeHelloAck,
 		RequestID:           frame.RequestID,
@@ -4139,14 +4155,13 @@ func runRuntimeClientHelper() {
 	var revokeOnce sync.Once
 	var heartbeatCount atomic.Int64
 	go runRuntimeClientControlHelper(
-		bufio.NewReader(controlReadFile),
-		json.NewEncoder(controlWriteFile),
+		bufio.NewReader(&testHostSemanticIPCReaderV7{reader: controlReadFile}),
+		json.NewEncoder(newRuntimeSemanticIPCWriteCloserV7(controlWriteFile)),
 		revoked,
 		&revokeOnce,
 		&heartbeatCount,
 		hello.Limits,
 	)
-	encoder := json.NewEncoder(os.Stdout)
 	var multiplexInvocations atomic.Int64
 	var lateArtifactInvocation *ipcFrame
 	var lateArtifactInvocationCount int

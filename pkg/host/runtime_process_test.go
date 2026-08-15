@@ -488,7 +488,7 @@ func TestProcessManagerRevokesExactSessionAcrossTwoBuiltRustRuntimeShards(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.BindHostServices(runtimeclient.RuntimeHostServices{StreamSink: hostRuntimeStreamSink{executions: h.executions}}); err != nil {
+	if err := manager.BindHostServices(runtimeclient.RuntimeHostServices{StreamSink: hostRuntimeStreamSink{executions: h.executions}, IOBroker: h.runtimeIO}); err != nil {
 		t.Fatal(err)
 	}
 	target, err := runtimetarget.Current()

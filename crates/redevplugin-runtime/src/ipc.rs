@@ -993,6 +993,10 @@ impl ParsedWorkerInvocation {
         &self.runtime_generation_id
     }
 
+    pub fn invocation_id(&self) -> IpcResult<String> {
+        required_string(&self.lease.invocation_id, "invocation_id")
+    }
+
     pub fn plugin_instance_id(&self) -> IpcResult<&str> {
         self.invocation
             .plugin_instance_id

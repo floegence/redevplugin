@@ -344,7 +344,7 @@ func TestProcessManagerRevokeNeverStartedDoesNotAccessRuntimeArtifact(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}}); err != nil {
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}, IOBroker: testRuntimeIOBroker{}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -570,6 +570,7 @@ func TestProcessManagerRequiresExplicitShardCount(t *testing.T) {
 
 func TestProcessManagerBindsRequiredHostServicesBeforeCreatingShards(t *testing.T) {
 	streamSink := &recordingRuntimeStreamSink{}
+	ioBroker := testRuntimeIOBroker{}
 	var captured []ProcessSupervisorOptions
 	manager, err := newProcessManager(ProcessManagerOptions{
 		ShardCount: 2,
@@ -594,7 +595,10 @@ func TestProcessManagerBindsRequiredHostServicesBeforeCreatingShards(t *testing.
 	if err := manager.BindHostServices(RuntimeHostServices{}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
 		t.Fatalf("BindHostServices(empty) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
 	}
-	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: streamSink}); err != nil {
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: streamSink}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
+		t.Fatalf("BindHostServices(without I/O broker) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
+	}
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: streamSink, IOBroker: ioBroker}); err != nil {
 		t.Fatalf("BindHostServices() error = %v", err)
 	}
 	if len(captured) != 2 {
@@ -604,8 +608,11 @@ func TestProcessManagerBindsRequiredHostServicesBeforeCreatingShards(t *testing.
 		if options.StreamSink != streamSink {
 			t.Fatalf("shard %d stream sink = %#v, want exact host sink %#v", index, options.StreamSink, streamSink)
 		}
+		if options.IOBroker != ioBroker {
+			t.Fatalf("shard %d I/O broker = %#v, want exact host broker %#v", index, options.IOBroker, ioBroker)
+		}
 	}
-	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: streamSink}); !errors.Is(err, ErrRuntimeHostServicesBound) {
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: streamSink, IOBroker: ioBroker}); !errors.Is(err, ErrRuntimeHostServicesBound) {
 		t.Fatalf("BindHostServices(second) error = %v, want %v", err, ErrRuntimeHostServicesBound)
 	}
 }
@@ -630,13 +637,20 @@ func TestProcessManagerRejectsTypedNilHostStreamSinkAndAllowsRetry(t *testing.T)
 		t.Fatal(err)
 	}
 	var typedNil *recordingRuntimeStreamSink
-	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: typedNil}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: typedNil, IOBroker: testRuntimeIOBroker{}}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
 		t.Fatalf("BindHostServices(typed nil) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
 	}
 	if created != 0 {
 		t.Fatalf("typed-nil binding created %d shards, want 0", created)
 	}
-	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}}); err != nil {
+	var typedNilIOBroker *testRuntimeIOBroker
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}, IOBroker: typedNilIOBroker}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
+		t.Fatalf("BindHostServices(typed nil I/O broker) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
+	}
+	if created != 0 {
+		t.Fatalf("typed-nil I/O broker binding created %d shards, want 0", created)
+	}
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}, IOBroker: testRuntimeIOBroker{}}); err != nil {
 		t.Fatalf("BindHostServices() after rejected typed nil: %v", err)
 	}
 	if created != 1 {
@@ -674,7 +688,7 @@ func testProcessManager(t *testing.T, shards []*fakeProcessShard) *ProcessManage
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}}); err != nil {
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}, IOBroker: testRuntimeIOBroker{}}); err != nil {
 		t.Fatal(err)
 	}
 	return manager

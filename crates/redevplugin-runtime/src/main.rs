@@ -11,7 +11,8 @@ mod wasm_abi;
 
 use crate::ipc as redevplugin_ipc;
 use crate::wasm_abi as redevplugin_wasm_abi;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::fs::File;
@@ -24,6 +25,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wasmi::{AsContext, AsContextMut, Config, StoreLimits, StoreLimitsBuilder};
 
 const DEFAULT_WASM_WORKER_FUEL: u64 = 5_000_000;
+const SEMANTIC_IPC_CHUNKED_FLAG: u16 = 1 << 15;
+const SEMANTIC_IPC_MORE_FLAG: u16 = 1 << 14;
 const MAX_WASM_WORKER_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_WASM_WORKER_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_WASM_HOSTCALL_REQUEST_BYTES: usize = 64 * 1024;
@@ -45,8 +48,6 @@ const ABI_STATUS_INTERNAL: i32 = -12;
 const ABI_STATUS_RUNTIME_UNAVAILABLE: i32 = -13;
 const ABI_STATUS_REDIRECT_REQUIRES_REPLAY: i32 = -14;
 const MAX_WASM_TABLE_ELEMENTS: usize = 65_536;
-const MAX_IPC_FRAME_BYTES: usize = 64 * 1024 * 1024;
-const MAX_CONTROL_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_BROKER_RESPONSE_FRAME_BYTES: usize = 1024 * 1024;
 const DEFAULT_CONTROL_MAX_STALENESS: Duration = Duration::from_millis(5_000);
 const DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY: usize = 16_384;
@@ -58,6 +59,7 @@ const IPC_WRITER_CAPACITY_OVERHEAD: usize = 8;
 const IPC_WRITER_MAX_QUEUE_CAPACITY: usize = 136;
 const IPC_WRITER_MAX_BATCH_FRAMES: usize = 64;
 const IPC_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024;
+const IO_ROUTE_CANCELED_CAPACITY_MULTIPLIER: usize = 2;
 const RUNTIME_PROCESS_EXIT_GENERAL: i32 = 1;
 const RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_OVERFLOW: i32 = 80;
 const RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_LIMIT_EXCEEDED: i32 = 81;
@@ -112,7 +114,7 @@ fn run() -> Result<(), RuntimeProcessError> {
         control_write,
     } = inherited_runtime_channels()?;
     let mut reader = io::BufReader::new(ipc_read);
-    let line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "hello frame")?;
+    let line = read_semantic_ipc_frame_v7(&mut reader, "hello frame")?;
     if line.is_empty() {
         return Err("hello frame is empty".to_string().into());
     }
@@ -161,6 +163,13 @@ fn run() -> Result<(), RuntimeProcessError> {
             .hostcall_canceled_route_capacity()
             .map_err(ipc_contract_error)?,
     ));
+    let io_routes = Arc::new(PendingIORoutes::new(
+        limits.worker_count,
+        limits
+            .worker_count
+            .checked_mul(IO_ROUTE_CANCELED_CAPACITY_MULTIPLIER)
+            .ok_or_else(|| "runtime I/O canceled route capacity overflows usize".to_string())?,
+    ));
     let execution = Arc::new(ConcurrentExecutionState {
         shared: Arc::clone(&shared),
         lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
@@ -171,12 +180,14 @@ fn run() -> Result<(), RuntimeProcessError> {
         runtime_generation_id: runtime_generation_id.clone(),
         pending_artifacts: PendingArtifactRoutes::new(limits.compile_flight_route_capacity()),
         hostcall_routes: Arc::clone(&hostcall_routes),
+        io_routes: Arc::clone(&io_routes),
     });
     let status = Arc::new(RuntimeStatus {
         limits,
         scheduler: Arc::clone(&scheduler),
         module_cache: Arc::clone(&module_cache),
         hostcall_routes,
+        io_routes,
         session_revoke: SessionRevokeController::default(),
     });
     start_control_channel(
@@ -218,6 +229,7 @@ fn run() -> Result<(), RuntimeProcessError> {
     }
     execution.pending_artifacts.shutdown();
     execution.hostcall_routes.shutdown();
+    execution.io_routes.shutdown();
     for worker in workers {
         worker
             .join()
@@ -263,18 +275,18 @@ where
 
 fn run_runtime_input_reader<R: BufRead>(reader: &mut R, events: &SyncSender<RuntimeEvent>) {
     loop {
-        let input = read_bounded_line(reader, MAX_IPC_FRAME_BYTES, "ipc frame");
-        let terminal = !matches!(&input, Ok(line) if !line.is_empty());
+        let input = read_runtime_input_v7(reader);
+        let terminal = !matches!(&input, Ok(Some(_)));
         if events.send(RuntimeEvent::Input(input)).is_err() || terminal {
             return;
         }
     }
 }
 
-fn next_runtime_input_line(
+fn next_runtime_input(
     events: &Receiver<RuntimeEvent>,
     failures: &IpcWriterFailurePublisher,
-) -> Result<Option<String>, RuntimeLoopError> {
+) -> Result<Option<RuntimeInputV7>, RuntimeLoopError> {
     if let Some(err) = failures.current() {
         return Err(RuntimeLoopError::Writer(err));
     }
@@ -285,8 +297,7 @@ fn next_runtime_input_line(
         return Err(RuntimeLoopError::Writer(err));
     }
     match event {
-        RuntimeEvent::Input(Ok(line)) if line.is_empty() => Ok(None),
-        RuntimeEvent::Input(Ok(line)) => Ok(Some(line)),
+        RuntimeEvent::Input(Ok(input)) => Ok(input),
         RuntimeEvent::Input(Err(err)) => Err(RuntimeLoopError::Runtime(err)),
         RuntimeEvent::WriterFailed(err) => Err(RuntimeLoopError::Writer(err)),
     }
@@ -299,10 +310,15 @@ fn run_runtime_input_loop(
     execution: &ConcurrentExecutionState,
     writer: &FrameSender,
 ) -> Result<(), RuntimeLoopError> {
-    while let Some(line) = next_runtime_input_line(events, &writer.failures)? {
-        let input =
-            redevplugin_ipc::decode_runtime_input_frame(&line).map_err(ipc_contract_error)?;
-        dispatch_runtime_input(input, runtime_generation_id, scheduler, execution, writer)?;
+    while let Some(input) = next_runtime_input(events, &writer.failures)? {
+        match input {
+            RuntimeInputV7::Semantic(line) => {
+                let input = redevplugin_ipc::decode_runtime_input_frame(&line)
+                    .map_err(ipc_contract_error)?;
+                dispatch_runtime_input(input, runtime_generation_id, scheduler, execution, writer)?;
+            }
+            RuntimeInputV7::IOResult(frame) => execution.io_routes.consume(frame)?,
+        }
     }
     Ok(())
 }
@@ -396,6 +412,9 @@ fn dispatch_runtime_input(
                 }
                 scheduler::CancelDisposition::Running => {
                     execution
+                        .io_routes
+                        .cancel_parent(&cancel.invocation_request_id, runtime_generation_id)?;
+                    execution
                         .hostcall_routes
                         .cancel_parent(&cancel.invocation_request_id, runtime_generation_id)?;
                     "running"
@@ -468,9 +487,15 @@ fn dispatch_runtime_input(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeInputV7 {
+    Semantic(String),
+    IOResult(codec_v7::Frame),
+}
+
 #[derive(Debug)]
 enum RuntimeEvent {
-    Input(Result<String, String>),
+    Input(Result<Option<RuntimeInputV7>, String>),
     WriterFailed(IpcWriterError),
 }
 
@@ -670,16 +695,52 @@ impl IpcWriterFailurePublisher {
 
 #[derive(Clone)]
 struct FrameSender {
-    sender: SyncSender<String>,
+    sender: SyncSender<QueuedFrame>,
     failures: IpcWriterFailurePublisher,
+    encoding: FrameEncoding,
 }
 
 impl FrameSender {
-    fn new(sender: SyncSender<String>, failures: IpcWriterFailurePublisher) -> Self {
-        Self { sender, failures }
+    fn new(sender: SyncSender<QueuedFrame>, failures: IpcWriterFailurePublisher) -> Self {
+        Self {
+            sender,
+            failures,
+            encoding: FrameEncoding::SemanticLines,
+        }
+    }
+
+    fn new_v7(sender: SyncSender<QueuedFrame>, failures: IpcWriterFailurePublisher) -> Self {
+        Self {
+            sender,
+            failures,
+            encoding: FrameEncoding::FramedV7,
+        }
     }
 
     fn send(&self, frame: String) -> Result<(), IpcWriterError> {
+        let frame = match self.encoding {
+            FrameEncoding::SemanticLines => {
+                let mut bytes = frame.into_bytes();
+                bytes.push(b'\n');
+                QueuedFrame(bytes)
+            }
+            FrameEncoding::FramedV7 => {
+                let mut bytes = Vec::new();
+                write_semantic_ipc_frame_v7(&mut bytes, &frame)
+                    .map_err(|_| IpcWriterError::WriteFailed)?;
+                QueuedFrame(bytes)
+            }
+        };
+        self.send_queued(frame)
+    }
+
+    fn send_raw(&self, frame: codec_v7::Frame) -> Result<(), IpcWriterError> {
+        let mut bytes = Vec::new();
+        codec_v7::write_frame(&mut bytes, &frame).map_err(|_| IpcWriterError::WriteFailed)?;
+        self.send_queued(QueuedFrame(bytes))
+    }
+
+    fn send_queued(&self, frame: QueuedFrame) -> Result<(), IpcWriterError> {
         let result = match self.sender.try_send(frame) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(frame)) => {
@@ -695,6 +756,9 @@ impl FrameSender {
 
     #[cfg(test)]
     fn try_send(&self, frame: String) -> Result<(), FrameTrySendError> {
+        let mut bytes = frame.into_bytes();
+        bytes.push(b'\n');
+        let frame = QueuedFrame(bytes);
         let result = match self.sender.try_send(frame) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(FrameTrySendError::WouldBlock),
@@ -705,6 +769,15 @@ impl FrameSender {
         }
         result
     }
+}
+
+#[derive(Debug)]
+struct QueuedFrame(Vec<u8>);
+
+#[derive(Clone, Copy)]
+enum FrameEncoding {
+    SemanticLines,
+    FramedV7,
 }
 
 #[cfg(test)]
@@ -719,6 +792,7 @@ struct RuntimeStatus {
     scheduler: Arc<scheduler::InvocationScheduler>,
     module_cache: Arc<module_cache::ModuleCache>,
     hostcall_routes: Arc<OutstandingHostcallRoutes>,
+    io_routes: Arc<PendingIORoutes>,
     session_revoke: SessionRevokeController,
 }
 
@@ -788,6 +862,7 @@ impl SessionRevokeController {
         shared: &RuntimeSharedState,
         scheduler: &scheduler::InvocationScheduler,
         hostcall_routes: &OutstandingHostcallRoutes,
+        io_routes: Option<&PendingIORoutes>,
     ) -> Result<SessionContainment, SessionRevokeControlError> {
         let mut state = self.state.lock().expect("session revoke mutex poisoned");
         let scope = request.session_scope();
@@ -817,6 +892,11 @@ impl SessionRevokeController {
         let hostcall_counts = hostcall_routes
             .revoke_session(&scope)
             .map_err(SessionRevokeControlError::Containment)?;
+        if let Some(io_routes) = io_routes {
+            io_routes
+                .cancel_session(&scope)
+                .map_err(SessionRevokeControlError::Containment)?;
+        }
         shared
             .revocations
             .lock()
@@ -868,6 +948,239 @@ struct ConcurrentExecutionState {
     runtime_generation_id: String,
     pending_artifacts: PendingArtifactRoutes,
     hostcall_routes: Arc<OutstandingHostcallRoutes>,
+    io_routes: Arc<PendingIORoutes>,
+}
+
+struct PendingIORoute {
+    parent_request_id: String,
+    invocation_id: String,
+    runtime_generation_id: String,
+    session_scope: Option<redevplugin_ipc::SessionScope>,
+    response_type: codec_v7::FrameType,
+    resource_id: u64,
+    sender: Sender<Result<codec_v7::Frame, String>>,
+}
+
+struct CanceledIORoute {
+    invocation_id: String,
+    response_type: codec_v7::FrameType,
+    resource_id: u64,
+}
+
+struct PendingIORouteState {
+    next_request_id: u64,
+    active: HashMap<u64, PendingIORoute>,
+    canceled: HashMap<u64, CanceledIORoute>,
+    shutdown: bool,
+}
+
+struct PendingIORoutes {
+    active_capacity: usize,
+    canceled_capacity: usize,
+    state: Mutex<PendingIORouteState>,
+}
+
+impl PendingIORoutes {
+    fn new(active_capacity: usize, canceled_capacity: usize) -> Self {
+        assert!(
+            active_capacity > 0,
+            "active I/O route capacity must be positive"
+        );
+        assert!(
+            canceled_capacity > 0,
+            "canceled I/O route capacity must be positive"
+        );
+        Self {
+            active_capacity,
+            canceled_capacity,
+            state: Mutex::new(PendingIORouteState {
+                next_request_id: 1,
+                active: HashMap::new(),
+                canceled: HashMap::new(),
+                shutdown: false,
+            }),
+        }
+    }
+
+    fn register(
+        &self,
+        parent_request_id: &str,
+        invocation_id: &str,
+        runtime_generation_id: &str,
+        session_scope: Option<&redevplugin_ipc::SessionScope>,
+        response_type: codec_v7::FrameType,
+        resource_id: u64,
+    ) -> Result<(u64, Receiver<Result<codec_v7::Frame, String>>), String> {
+        if parent_request_id.trim().is_empty()
+            || invocation_id.trim().is_empty()
+            || runtime_generation_id.trim().is_empty()
+        {
+            return Err("runtime I/O route identity is incomplete".to_string());
+        }
+        let mut state = self.state.lock().expect("runtime I/O route mutex poisoned");
+        if state.shutdown {
+            return Err("runtime is shutting down".to_string());
+        }
+        if state.active.len() >= self.active_capacity {
+            return Err("active runtime I/O route capacity is exhausted".to_string());
+        }
+        let request_id = state.next_request_id;
+        if request_id == 0 || request_id == u64::MAX {
+            return Err("runtime I/O request_id space is exhausted".to_string());
+        }
+        state.next_request_id += 1;
+        let (sender, receiver) = mpsc::channel();
+        state.active.insert(
+            request_id,
+            PendingIORoute {
+                parent_request_id: parent_request_id.to_string(),
+                invocation_id: invocation_id.to_string(),
+                runtime_generation_id: runtime_generation_id.to_string(),
+                session_scope: session_scope.cloned(),
+                response_type,
+                resource_id,
+                sender,
+            },
+        );
+        Ok((request_id, receiver))
+    }
+
+    fn remove(&self, request_id: u64) {
+        self.state
+            .lock()
+            .expect("runtime I/O route mutex poisoned")
+            .active
+            .remove(&request_id);
+    }
+
+    fn consume(&self, frame: codec_v7::Frame) -> Result<(), String> {
+        let invocation_id = io_result_invocation_id(&frame.metadata)?;
+        let sender = {
+            let mut state = self.state.lock().expect("runtime I/O route mutex poisoned");
+            if let Some(route) = state.active.get(&frame.request_id) {
+                validate_io_result_route(route, &frame, &invocation_id)?;
+                state
+                    .active
+                    .remove(&frame.request_id)
+                    .expect("validated runtime I/O route exists")
+                    .sender
+            } else if let Some(route) = state.canceled.get(&frame.request_id) {
+                if route.invocation_id != invocation_id
+                    || route.response_type != frame.frame_type
+                    || route.resource_id != frame.resource_id
+                {
+                    return Err("canceled runtime I/O result identity mismatch".to_string());
+                }
+                state.canceled.remove(&frame.request_id);
+                return Ok(());
+            } else {
+                return Err("runtime I/O result request_id is not outstanding".to_string());
+            }
+        };
+        sender
+            .send(Ok(frame))
+            .map_err(|_| "runtime I/O response route closed".to_string())
+    }
+
+    fn cancel_parent(
+        &self,
+        parent_request_id: &str,
+        runtime_generation_id: &str,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().expect("runtime I/O route mutex poisoned");
+        let request_ids = state
+            .active
+            .iter()
+            .filter(|(_, route)| {
+                route.parent_request_id == parent_request_id
+                    && route.runtime_generation_id == runtime_generation_id
+            })
+            .map(|(request_id, _)| *request_id)
+            .collect::<Vec<_>>();
+        if state.canceled.len().saturating_add(request_ids.len()) > self.canceled_capacity {
+            return Err("canceled runtime I/O route capacity is exhausted".to_string());
+        }
+        for request_id in request_ids {
+            let route = state
+                .active
+                .remove(&request_id)
+                .expect("selected I/O route exists");
+            let _ = route.sender.send(Err(format!(
+                "{}: runtime invocation was canceled",
+                redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED
+            )));
+            state.canceled.insert(
+                request_id,
+                CanceledIORoute {
+                    invocation_id: route.invocation_id,
+                    response_type: route.response_type,
+                    resource_id: route.resource_id,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn cancel_session(&self, scope: &redevplugin_ipc::SessionScope) -> Result<(), String> {
+        let parents = {
+            let state = self.state.lock().expect("runtime I/O route mutex poisoned");
+            state
+                .active
+                .values()
+                .filter(|route| route.session_scope.as_ref() == Some(scope))
+                .map(|route| {
+                    (
+                        route.parent_request_id.clone(),
+                        route.runtime_generation_id.clone(),
+                    )
+                })
+                .collect::<std::collections::HashSet<_>>()
+        };
+        for (parent_request_id, runtime_generation_id) in parents {
+            self.cancel_parent(&parent_request_id, &runtime_generation_id)?;
+        }
+        Ok(())
+    }
+
+    fn shutdown(&self) {
+        let mut state = self.state.lock().expect("runtime I/O route mutex poisoned");
+        state.shutdown = true;
+        for (_, route) in state.active.drain() {
+            let _ = route
+                .sender
+                .send(Err("runtime is shutting down".to_string()));
+        }
+        state.canceled.clear();
+    }
+}
+
+fn validate_io_result_route(
+    route: &PendingIORoute,
+    frame: &codec_v7::Frame,
+    invocation_id: &str,
+) -> Result<(), String> {
+    if route.invocation_id != invocation_id
+        || route.response_type != frame.frame_type
+        || route.resource_id != frame.resource_id
+    {
+        return Err("runtime I/O result identity mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn io_result_invocation_id(metadata: &[u8]) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Identity {
+        invocation_id: String,
+    }
+    let identity: Identity = serde_json::from_slice(metadata)
+        .map_err(|_| "runtime I/O result metadata is invalid".to_string())?;
+    if identity.invocation_id.trim().is_empty()
+        || identity.invocation_id.trim() != identity.invocation_id
+    {
+        return Err("runtime I/O result invocation_id is invalid".to_string());
+    }
+    Ok(identity.invocation_id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1311,9 +1624,12 @@ fn start_ipc_writer(
     failures: IpcWriterFailurePublisher,
     ipc_write: File,
 ) -> Result<(FrameSender, thread::JoinHandle<Result<(), IpcWriterError>>), IpcWriterError> {
-    start_ipc_writer_with_runner(limits, failures, |receiver, thread_failures| {
-        run_ipc_writer(receiver, ipc_write, thread_failures)
-    })
+    start_ipc_writer_with_runner_encoding(
+        limits,
+        failures,
+        FrameEncoding::FramedV7,
+        |receiver, thread_failures| run_ipc_writer(receiver, ipc_write, thread_failures),
+    )
 }
 
 fn start_ipc_writer_with_runner<F>(
@@ -1322,11 +1638,25 @@ fn start_ipc_writer_with_runner<F>(
     runner: F,
 ) -> Result<(FrameSender, thread::JoinHandle<Result<(), IpcWriterError>>), IpcWriterError>
 where
-    F: FnOnce(Receiver<String>, &IpcWriterFailurePublisher) -> Result<(), IpcWriterError>
+    F: FnOnce(Receiver<QueuedFrame>, &IpcWriterFailurePublisher) -> Result<(), IpcWriterError>
         + Send
         + 'static,
 {
-    let (sender, receiver) = mpsc::sync_channel::<String>(ipc_writer_capacity(limits)?);
+    start_ipc_writer_with_runner_encoding(limits, failures, FrameEncoding::SemanticLines, runner)
+}
+
+fn start_ipc_writer_with_runner_encoding<F>(
+    limits: redevplugin_ipc::RuntimeLimits,
+    failures: IpcWriterFailurePublisher,
+    encoding: FrameEncoding,
+    runner: F,
+) -> Result<(FrameSender, thread::JoinHandle<Result<(), IpcWriterError>>), IpcWriterError>
+where
+    F: FnOnce(Receiver<QueuedFrame>, &IpcWriterFailurePublisher) -> Result<(), IpcWriterError>
+        + Send
+        + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel::<QueuedFrame>(ipc_writer_capacity(limits)?);
     let thread_failures = failures.clone();
     let handle = thread::Builder::new()
         .name("redevplugin-ipc-writer".to_string())
@@ -1339,7 +1669,11 @@ where
             }
         })
         .map_err(|_| IpcWriterError::StartFailed)?;
-    Ok((FrameSender::new(sender, failures), handle))
+    let sender = match encoding {
+        FrameEncoding::SemanticLines => FrameSender::new(sender, failures),
+        FrameEncoding::FramedV7 => FrameSender::new_v7(sender, failures),
+    };
+    Ok((sender, handle))
 }
 
 fn initial_writer_failure(
@@ -1366,7 +1700,7 @@ fn ipc_writer_capacity(limits: redevplugin_ipc::RuntimeLimits) -> Result<usize, 
 }
 
 fn run_ipc_writer<W: Write>(
-    receiver: Receiver<String>,
+    receiver: Receiver<QueuedFrame>,
     output: W,
     failures: &IpcWriterFailurePublisher,
 ) -> Result<(), IpcWriterError> {
@@ -1384,10 +1718,7 @@ fn run_ipc_writer<W: Write>(
         let mut byte_count = 0usize;
         let mut frame = first_frame;
         loop {
-            let frame_bytes = frame
-                .len()
-                .checked_add(1)
-                .ok_or_else(|| failures.publish(IpcWriterError::BatchSizeOverflow))?;
+            let frame_bytes = frame.0.len();
             let next_byte_count = byte_count
                 .checked_add(frame_bytes)
                 .ok_or_else(|| failures.publish(IpcWriterError::BatchSizeOverflow))?;
@@ -1397,8 +1728,7 @@ fn run_ipc_writer<W: Write>(
                 break;
             }
             output
-                .write_all(frame.as_bytes())
-                .and_then(|_| output.write_all(b"\n"))
+                .write_all(&frame.0)
                 .map_err(|_| failures.publish(IpcWriterError::WriteFailed))?;
             frame_count += 1;
             byte_count = next_byte_count;
@@ -1949,9 +2279,13 @@ fn handle_scheduled_worker_invocation(
                     perform_multiplexed_hostcall(job, execution, invocation, request)
                         .map(WorkerHostcallResponse::Json)
                 }
-                _ => Err(
-                    "RUNTIME_UNAVAILABLE: Worker API v1 I/O dispatcher is unavailable".to_string(),
-                ),
+                WorkerHostcallRequest::Control(_)
+                | WorkerHostcallRequest::Read { .. }
+                | WorkerHostcallRequest::Write { .. }
+                | WorkerHostcallRequest::Seek { .. }
+                | WorkerHostcallRequest::Close { .. } => {
+                    perform_raw_io_hostcall(job, execution, invocation, request)
+                }
             }
         },
     );
@@ -2020,6 +2354,271 @@ fn handle_scheduled_worker_invocation(
             &err,
         ),
     }
+}
+
+#[derive(Serialize)]
+struct RawIOControlRequestMetadata {
+    invocation_id: String,
+    request: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct RawIORequestMetadata {
+    invocation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flags: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    whence: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIOControlResultMetadata {
+    invocation_id: String,
+    ok: bool,
+    response: Option<serde_json::Value>,
+    code: Option<String>,
+    message: Option<String>,
+    retryable: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIOResultMetadata {
+    invocation_id: String,
+    ok: bool,
+    bytes_read: Option<usize>,
+    bytes_written: Option<usize>,
+    flags: Option<u32>,
+    offset: Option<i64>,
+    code: Option<String>,
+    message: Option<String>,
+    retryable: Option<bool>,
+}
+
+fn perform_raw_io_hostcall(
+    job: &scheduler::InvocationJob,
+    execution: &ConcurrentExecutionState,
+    invocation: &redevplugin_ipc::ParsedWorkerInvocation,
+    request: WorkerHostcallRequest,
+) -> Result<WorkerHostcallResponse, String> {
+    let invocation_id = invocation.invocation_id().map_err(ipc_contract_error)?;
+    let (frame_type, response_type, resource_id, metadata, body, expected_write) = match request {
+        WorkerHostcallRequest::Control(raw) => {
+            if raw.len() > MAX_WASM_IO_CONTROL_BYTES {
+                return Err("RESOURCE_LIMIT: control request exceeds 64 KiB".to_string());
+            }
+            let request = serde_json::from_str(&raw)
+                .map_err(|_| "INVALID_ARGUMENT: control request JSON is invalid".to_string())?;
+            let metadata = serde_json::to_vec(&RawIOControlRequestMetadata {
+                invocation_id: invocation_id.clone(),
+                request,
+            })
+            .map_err(|_| "INTERNAL: encode control request metadata".to_string())?;
+            (
+                codec_v7::FrameType::Hostcall,
+                codec_v7::FrameType::HostcallResult,
+                0,
+                metadata,
+                Vec::new(),
+                None,
+            )
+        }
+        WorkerHostcallRequest::Read { handle, capacity } => {
+            let max_bytes = u32::try_from(capacity)
+                .map_err(|_| "RESOURCE_LIMIT: read capacity exceeds 64 KiB".to_string())?;
+            let metadata = serde_json::to_vec(&RawIORequestMetadata {
+                invocation_id: invocation_id.clone(),
+                max_bytes: Some(max_bytes),
+                flags: None,
+                offset: None,
+                whence: None,
+            })
+            .map_err(|_| "INTERNAL: encode read request metadata".to_string())?;
+            (
+                codec_v7::FrameType::IoRead,
+                codec_v7::FrameType::IoReadResult,
+                handle,
+                metadata,
+                Vec::new(),
+                None,
+            )
+        }
+        WorkerHostcallRequest::Write {
+            handle,
+            body,
+            flags,
+        } => {
+            let expected = body.len();
+            let metadata = serde_json::to_vec(&RawIORequestMetadata {
+                invocation_id: invocation_id.clone(),
+                max_bytes: None,
+                flags: Some(flags),
+                offset: None,
+                whence: None,
+            })
+            .map_err(|_| "INTERNAL: encode write request metadata".to_string())?;
+            (
+                codec_v7::FrameType::IoWrite,
+                codec_v7::FrameType::IoWriteResult,
+                handle,
+                metadata,
+                body,
+                Some(expected),
+            )
+        }
+        WorkerHostcallRequest::Seek {
+            handle,
+            offset,
+            whence,
+        } => {
+            let metadata = serde_json::to_vec(&RawIORequestMetadata {
+                invocation_id: invocation_id.clone(),
+                max_bytes: None,
+                flags: None,
+                offset: Some(offset),
+                whence: Some(whence),
+            })
+            .map_err(|_| "INTERNAL: encode seek request metadata".to_string())?;
+            (
+                codec_v7::FrameType::IoSeek,
+                codec_v7::FrameType::IoSeekResult,
+                handle,
+                metadata,
+                Vec::new(),
+                None,
+            )
+        }
+        WorkerHostcallRequest::Close { handle } => {
+            let metadata = serde_json::to_vec(&RawIORequestMetadata {
+                invocation_id: invocation_id.clone(),
+                max_bytes: None,
+                flags: None,
+                offset: None,
+                whence: None,
+            })
+            .map_err(|_| "INTERNAL: encode close request metadata".to_string())?;
+            (
+                codec_v7::FrameType::IoClose,
+                codec_v7::FrameType::IoCloseResult,
+                handle,
+                metadata,
+                Vec::new(),
+                None,
+            )
+        }
+        _ => return Err("INTERNAL: invalid raw I/O hostcall kind".to_string()),
+    };
+    let (request_id, receiver) = execution.io_routes.register(
+        &job.request_id,
+        &invocation_id,
+        &execution.runtime_generation_id,
+        job.session_scope.as_ref(),
+        response_type,
+        resource_id,
+    )?;
+    if job.cancellation.is_canceled() {
+        execution
+            .io_routes
+            .cancel_parent(&job.request_id, &execution.runtime_generation_id)?;
+        return Err(format!(
+            "{}: runtime invocation was canceled",
+            redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED
+        ));
+    }
+    if let Err(error) = execution.writer.send_raw(codec_v7::Frame {
+        frame_type,
+        flags: 0,
+        request_id,
+        resource_id,
+        metadata,
+        body,
+    }) {
+        execution.io_routes.remove(request_id);
+        return Err(error.into());
+    }
+    let frame = receiver
+        .recv()
+        .map_err(|_| "runtime I/O response route closed".to_string())??;
+    if response_type == codec_v7::FrameType::HostcallResult {
+        let result: RawIOControlResultMetadata = serde_json::from_slice(&frame.metadata)
+            .map_err(|_| "INTERNAL: invalid control response metadata".to_string())?;
+        if result.invocation_id != invocation_id {
+            return Err("INTERNAL: control response invocation mismatch".to_string());
+        }
+        if !result.ok {
+            return Err(raw_io_failure(
+                result.code,
+                result.message,
+                result.retryable,
+            ));
+        }
+        let response = result
+            .response
+            .ok_or_else(|| "INTERNAL: control response is missing response".to_string())?;
+        return serde_json::to_string(&response)
+            .map(WorkerHostcallResponse::Json)
+            .map_err(|_| "INTERNAL: encode control response".to_string());
+    }
+    let result: RawIOResultMetadata = serde_json::from_slice(&frame.metadata)
+        .map_err(|_| "INTERNAL: invalid I/O response metadata".to_string())?;
+    if result.invocation_id != invocation_id {
+        return Err("INTERNAL: I/O response invocation mismatch".to_string());
+    }
+    if !result.ok {
+        return Err(raw_io_failure(
+            result.code,
+            result.message,
+            result.retryable,
+        ));
+    }
+    match response_type {
+        codec_v7::FrameType::IoReadResult => {
+            let bytes_read = result
+                .bytes_read
+                .ok_or_else(|| "INTERNAL: read result is missing bytes_read".to_string())?;
+            if bytes_read != frame.body.len() || bytes_read > MAX_WASM_IO_CHUNK_BYTES {
+                return Err("INTERNAL: read result length mismatch".to_string());
+            }
+            Ok(WorkerHostcallResponse::Read {
+                body: frame.body,
+                flags: result.flags.unwrap_or(0),
+            })
+        }
+        codec_v7::FrameType::IoWriteResult => {
+            let written = result
+                .bytes_written
+                .ok_or_else(|| "INTERNAL: write result is missing bytes_written".to_string())?;
+            if Some(written) != expected_write {
+                return Err("INTERNAL: partial write result is forbidden".to_string());
+            }
+            Ok(WorkerHostcallResponse::Written(written))
+        }
+        codec_v7::FrameType::IoSeekResult => result
+            .offset
+            .map(WorkerHostcallResponse::Seeked)
+            .ok_or_else(|| "INTERNAL: seek result is missing offset".to_string()),
+        codec_v7::FrameType::IoCloseResult => Ok(WorkerHostcallResponse::Closed),
+        _ => Err("INTERNAL: invalid I/O response kind".to_string()),
+    }
+}
+
+fn raw_io_failure(
+    code: Option<String>,
+    message: Option<String>,
+    _retryable: Option<bool>,
+) -> String {
+    let code = code
+        .filter(|value| stable_worker_error_code(value))
+        .unwrap_or_else(|| "INTERNAL".to_string());
+    let message = message
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "runtime I/O request failed".to_string());
+    format!("{code}: {message}")
 }
 
 fn runtime_validation_code(error: &str) -> &'static str {
@@ -2203,6 +2802,254 @@ fn read_bounded_line<R: BufRead>(
     String::from_utf8(bytes).map_err(|_| format!("{label} must be UTF-8"))
 }
 
+fn semantic_ipc_request_id(request_id: &str) -> u64 {
+    let digest = Sha256::digest(request_id.as_bytes());
+    let value = u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 prefix"));
+    if value == 0 { 1 } else { value }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticIPCChunkEnvelope {
+    compatibility: String,
+    index: u32,
+}
+
+fn host_semantic_frame_type_v7(frame_type: &str) -> Result<codec_v7::FrameType, String> {
+    match frame_type {
+        redevplugin_ipc::FRAME_TYPE_HELLO => Ok(codec_v7::FrameType::Hello),
+        redevplugin_ipc::FRAME_TYPE_HEARTBEAT => Ok(codec_v7::FrameType::Heartbeat),
+        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => Ok(codec_v7::FrameType::Invoke),
+        redevplugin_ipc::FRAME_TYPE_CANCEL_INVOKE => Ok(codec_v7::FrameType::CancelInvoke),
+        redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => Ok(codec_v7::FrameType::RevokePlugin),
+        redevplugin_ipc::FRAME_TYPE_SESSION_REVOKE => Ok(codec_v7::FrameType::RevokeSession),
+        redevplugin_ipc::FRAME_TYPE_OPEN_HANDLE
+        | redevplugin_ipc::FRAME_TYPE_VALIDATE_HANDLE_GRANT
+        | redevplugin_ipc::FRAME_TYPE_STORAGE_FILE
+        | redevplugin_ipc::FRAME_TYPE_STORAGE_KV
+        | redevplugin_ipc::FRAME_TYPE_STORAGE_SQLITE
+        | redevplugin_ipc::FRAME_TYPE_NETWORK_GRANT
+        | redevplugin_ipc::FRAME_TYPE_NETWORK_EXECUTE => Ok(codec_v7::FrameType::HostcallResult),
+        _ => Err(format!("unsupported Host semantic frame type {frame_type}")),
+    }
+}
+
+fn runtime_semantic_frame_type_v7(frame_type: &str) -> Result<codec_v7::FrameType, String> {
+    match frame_type {
+        redevplugin_ipc::FRAME_TYPE_HELLO_ACK => Ok(codec_v7::FrameType::HelloAck),
+        redevplugin_ipc::FRAME_TYPE_HEARTBEAT => Ok(codec_v7::FrameType::Heartbeat),
+        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT => Ok(codec_v7::FrameType::InvokeResult),
+        redevplugin_ipc::FRAME_TYPE_CANCEL_INVOKE_ACK => Ok(codec_v7::FrameType::CancelAck),
+        redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK => Ok(codec_v7::FrameType::RevokePlugin),
+        redevplugin_ipc::FRAME_TYPE_SESSION_REVOKE_ACK => Ok(codec_v7::FrameType::RevokeSession),
+        redevplugin_ipc::FRAME_TYPE_COMPILE_FLIGHT_REGISTER
+        | redevplugin_ipc::FRAME_TYPE_COMPILE_FLIGHT_COMPLETE
+        | redevplugin_ipc::FRAME_TYPE_OPEN_HANDLE
+        | redevplugin_ipc::FRAME_TYPE_VALIDATE_HANDLE_GRANT
+        | redevplugin_ipc::FRAME_TYPE_STORAGE_FILE
+        | redevplugin_ipc::FRAME_TYPE_STORAGE_KV
+        | redevplugin_ipc::FRAME_TYPE_STORAGE_SQLITE
+        | redevplugin_ipc::FRAME_TYPE_NETWORK_GRANT
+        | redevplugin_ipc::FRAME_TYPE_NETWORK_EXECUTE => Ok(codec_v7::FrameType::Hostcall),
+        _ => Err(format!(
+            "unsupported runtime semantic frame type {frame_type}"
+        )),
+    }
+}
+
+fn read_semantic_ipc_frame_v7(reader: &mut impl Read, label: &str) -> Result<String, String> {
+    let frame = match codec_v7::read_frame(reader) {
+        Ok(frame) => frame,
+        Err(codec_v7::CodecError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
+            return Ok(String::new());
+        }
+        Err(error) => return Err(format!("read {label}: {error}")),
+    };
+    decode_semantic_ipc_frame_v7(reader, frame, label)
+}
+
+fn read_runtime_input_v7(reader: &mut impl Read) -> Result<Option<RuntimeInputV7>, String> {
+    let frame = match codec_v7::read_frame(reader) {
+        Ok(frame) => frame,
+        Err(codec_v7::CodecError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
+            return Ok(None);
+        }
+        Err(error) => return Err(format!("read ipc frame: {error}")),
+    };
+    if matches!(
+        frame.frame_type,
+        codec_v7::FrameType::HostcallResult
+            | codec_v7::FrameType::IoReadResult
+            | codec_v7::FrameType::IoWriteResult
+            | codec_v7::FrameType::IoSeekResult
+            | codec_v7::FrameType::IoCloseResult
+    ) && frame.resource_id != 0
+        || frame.frame_type == codec_v7::FrameType::HostcallResult
+            && frame.resource_id == 0
+            && raw_io_result_metadata_probe(&frame.metadata)
+    {
+        return Ok(Some(RuntimeInputV7::IOResult(frame)));
+    }
+    decode_semantic_ipc_frame_v7(reader, frame, "ipc frame")
+        .map(RuntimeInputV7::Semantic)
+        .map(Some)
+}
+
+fn raw_io_result_metadata_probe(metadata: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(metadata)
+        .ok()
+        .and_then(|value| value.get("invocation_id").cloned())
+        .is_some()
+}
+
+fn decode_semantic_ipc_frame_v7(
+    reader: &mut impl Read,
+    frame: codec_v7::Frame,
+    label: &str,
+) -> Result<String, String> {
+    let frame_type = frame.frame_type;
+    let request_id = frame.request_id;
+    let semantic_bytes = read_semantic_ipc_bytes_v7(reader, frame, label)?;
+    let semantic = String::from_utf8(semantic_bytes)
+        .map_err(|_| format!("{label} semantic metadata must be UTF-8"))?;
+    let identity = redevplugin_ipc::parse_frame_identity(&semantic)
+        .map_err(|error| format!("decode {label} identity: {error}"))?;
+    let expected_type = host_semantic_frame_type_v7(&identity.frame_type)?;
+    if frame_type != expected_type || request_id != semantic_ipc_request_id(&identity.request_id) {
+        return Err(format!("{label} header and semantic identity mismatch"));
+    }
+    Ok(semantic)
+}
+
+fn write_semantic_ipc_frame_v7(writer: &mut impl Write, semantic: &str) -> Result<(), String> {
+    let identity = redevplugin_ipc::parse_frame_identity(semantic)
+        .map_err(|error| format!("decode runtime semantic frame identity: {error}"))?;
+    let frame_type = runtime_semantic_frame_type_v7(&identity.frame_type)?;
+    write_semantic_ipc_bytes_v7(
+        writer,
+        frame_type,
+        semantic_ipc_request_id(&identity.request_id),
+        semantic.as_bytes(),
+    )
+}
+
+fn semantic_ipc_metadata_limit(frame_type: codec_v7::FrameType) -> usize {
+    if matches!(
+        frame_type,
+        codec_v7::FrameType::Invoke | codec_v7::FrameType::InvokeResult
+    ) {
+        codec_v7::INVOKE_METADATA_MAX as usize
+    } else {
+        codec_v7::CONTROL_METADATA_MAX as usize
+    }
+}
+
+fn write_semantic_ipc_bytes_v7(
+    writer: &mut impl Write,
+    frame_type: codec_v7::FrameType,
+    request_id: u64,
+    semantic: &[u8],
+) -> Result<(), String> {
+    if semantic.len() <= semantic_ipc_metadata_limit(frame_type) {
+        return codec_v7::write_frame(
+            writer,
+            &codec_v7::Frame {
+                frame_type,
+                flags: 0,
+                request_id,
+                resource_id: 0,
+                metadata: semantic.to_vec(),
+                body: Vec::new(),
+            },
+        )
+        .map_err(|error| error.to_string());
+    }
+    if semantic.len() > codec_v7::INVOKE_METADATA_MAX as usize {
+        return Err("semantic IPC compatibility payload exceeds limit".to_string());
+    }
+    for (index, chunk) in semantic.chunks(codec_v7::BODY_MAX as usize).enumerate() {
+        let index =
+            u32::try_from(index).map_err(|_| "semantic chunk index overflow".to_string())?;
+        let metadata = serde_json::to_vec(&SemanticIPCChunkEnvelope {
+            compatibility: "v8_semantic_json".to_string(),
+            index,
+        })
+        .map_err(|_| "encode semantic chunk envelope".to_string())?;
+        let offset = usize::try_from(index)
+            .ok()
+            .and_then(|value| value.checked_mul(codec_v7::BODY_MAX as usize))
+            .ok_or_else(|| "semantic chunk offset overflow".to_string())?;
+        let more = offset
+            .checked_add(chunk.len())
+            .is_some_and(|end| end < semantic.len());
+        codec_v7::write_frame(
+            writer,
+            &codec_v7::Frame {
+                frame_type,
+                flags: SEMANTIC_IPC_CHUNKED_FLAG | if more { SEMANTIC_IPC_MORE_FLAG } else { 0 },
+                request_id,
+                resource_id: 0,
+                metadata,
+                body: chunk.to_vec(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn read_semantic_ipc_bytes_v7(
+    reader: &mut impl Read,
+    first: codec_v7::Frame,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    if first.flags & SEMANTIC_IPC_CHUNKED_FLAG == 0 {
+        if first.flags != 0 || !first.body.is_empty() || first.metadata.is_empty() {
+            return Err(format!("{label} has invalid semantic frame placement"));
+        }
+        return Ok(first.metadata);
+    }
+    let first_type = first.frame_type;
+    let first_request_id = first.request_id;
+    let mut frame = first;
+    let mut result = Vec::new();
+    let mut index = 0_u32;
+    loop {
+        if frame.flags & !(SEMANTIC_IPC_CHUNKED_FLAG | SEMANTIC_IPC_MORE_FLAG) != 0
+            || frame.body.is_empty()
+        {
+            return Err(format!("{label} has invalid semantic chunk flags"));
+        }
+        let envelope: SemanticIPCChunkEnvelope = serde_json::from_slice(&frame.metadata)
+            .map_err(|_| format!("{label} has invalid semantic chunk envelope"))?;
+        if envelope.compatibility != "v8_semantic_json" || envelope.index != index {
+            return Err(format!("{label} has invalid semantic chunk sequence"));
+        }
+        if result.len() > codec_v7::INVOKE_METADATA_MAX as usize - frame.body.len() {
+            return Err(format!(
+                "{label} semantic compatibility payload exceeds limit"
+            ));
+        }
+        result.extend_from_slice(&frame.body);
+        if frame.flags & SEMANTIC_IPC_MORE_FLAG == 0 {
+            return Ok(result);
+        }
+        let next = codec_v7::read_frame(reader)
+            .map_err(|error| format!("read {label} semantic chunk: {error}"))?;
+        if next.frame_type != first_type
+            || next.request_id != first_request_id
+            || next.resource_id != 0
+            || next.flags & SEMANTIC_IPC_CHUNKED_FLAG == 0
+        {
+            return Err(format!("{label} semantic chunk identity mismatch"));
+        }
+        frame = next;
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| format!("{label} semantic chunk index overflow"))?;
+    }
+}
+
 fn start_control_channel(
     shared: Arc<RuntimeSharedState>,
     runtime_generation_id: String,
@@ -2237,7 +3084,7 @@ fn run_control_channel(
 ) -> Result<(), String> {
     let mut reader = io::BufReader::new(read_file);
     loop {
-        let line = read_bounded_line(&mut reader, MAX_CONTROL_FRAME_BYTES, "control frame")?;
+        let line = read_semantic_ipc_frame_v7(&mut reader, "control frame")?;
         if line.is_empty() {
             return Ok(());
         }
@@ -2268,10 +3115,9 @@ fn run_control_channel(
                 "runtime control frame type is not supported",
             ),
         }?;
+        write_semantic_ipc_frame_v7(&mut write_file, &response)?;
         write_file
-            .write_all(response.as_bytes())
-            .and_then(|_| write_file.write_all(b"\n"))
-            .and_then(|_| write_file.flush())
+            .flush()
             .map_err(|err| format!("write control response: {err}"))?;
     }
 }
@@ -2820,6 +3666,7 @@ fn handle_session_revoke(
         shared,
         &status.scheduler,
         &status.hostcall_routes,
+        Some(&status.io_routes),
     ) {
         Ok(containment) => containment,
         Err(err) => {
@@ -4482,10 +5329,42 @@ mod tests {
         (IpcWriterFailurePublisher::new(events_sender), events)
     }
 
-    fn frame_channel(capacity: usize) -> (FrameSender, Receiver<String>) {
+    struct TestFrameReceiver(Receiver<QueuedFrame>);
+
+    impl TestFrameReceiver {
+        fn recv(&self) -> Result<String, mpsc::RecvError> {
+            self.0.recv().map(test_semantic_frame)
+        }
+
+        fn recv_timeout(&self, timeout: Duration) -> Result<String, mpsc::RecvTimeoutError> {
+            self.0.recv_timeout(timeout).map(test_semantic_frame)
+        }
+
+        fn try_recv(&self) -> Result<String, TryRecvError> {
+            self.0.try_recv().map(test_semantic_frame)
+        }
+    }
+
+    fn test_semantic_frame(frame: QueuedFrame) -> String {
+        String::from_utf8(frame.0)
+            .expect("test semantic frame is UTF-8")
+            .trim_end_matches('\n')
+            .to_string()
+    }
+
+    fn queued(frame: impl Into<String>) -> QueuedFrame {
+        let mut bytes = frame.into().into_bytes();
+        bytes.push(b'\n');
+        QueuedFrame(bytes)
+    }
+
+    fn frame_channel(capacity: usize) -> (FrameSender, TestFrameReceiver) {
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let (failures, _events) = writer_failure_channel();
-        (FrameSender::new(sender, failures), receiver)
+        (
+            FrameSender::new(sender, failures),
+            TestFrameReceiver(receiver),
+        )
     }
 
     #[derive(Default)]
@@ -4765,8 +5644,8 @@ mod tests {
     #[test]
     fn ipc_writer_batches_queued_frames_without_reordering() {
         let (sender, receiver) = mpsc::sync_channel(8);
-        sender.send("one".to_string()).unwrap();
-        sender.send("two".to_string()).unwrap();
+        sender.send(queued("one")).unwrap();
+        sender.send(queued("two")).unwrap();
         drop(sender);
         let (failures, _events) = writer_failure_channel();
         let mut output = FlushCountingWriter::default();
@@ -4779,7 +5658,7 @@ mod tests {
     fn ipc_writer_flushes_at_the_frame_batch_limit() {
         let (sender, receiver) = mpsc::sync_channel(IPC_WRITER_MAX_BATCH_FRAMES + 1);
         for index in 0..=IPC_WRITER_MAX_BATCH_FRAMES {
-            sender.send(format!("frame-{index}")).unwrap();
+            sender.send(queued(format!("frame-{index}"))).unwrap();
         }
         drop(sender);
         let (failures, _events) = writer_failure_channel();
@@ -4798,9 +5677,9 @@ mod tests {
         let first = "a".repeat(IPC_WRITER_MAX_BATCH_BYTES / 2 - 1);
         let second = "b".repeat(IPC_WRITER_MAX_BATCH_BYTES / 2 - 1);
         let third = "c".repeat(31);
-        sender.send(first).unwrap();
-        sender.send(second).unwrap();
-        sender.send(third).unwrap();
+        sender.send(queued(first)).unwrap();
+        sender.send(queued(second)).unwrap();
+        sender.send(queued(third)).unwrap();
         drop(sender);
         let (failures, _events) = writer_failure_channel();
         let mut output = FlushCountingWriter::default();
@@ -4818,8 +5697,10 @@ mod tests {
     fn ipc_writer_flushes_a_single_oversized_frame_without_batching_another_frame() {
         let (sender, receiver) = mpsc::sync_channel(2);
         let oversized_frame_bytes = IPC_WRITER_MAX_BATCH_BYTES + 18;
-        sender.send("x".repeat(oversized_frame_bytes - 1)).unwrap();
-        sender.send("next".to_string()).unwrap();
+        sender
+            .send(queued("x".repeat(oversized_frame_bytes - 1)))
+            .unwrap();
+        sender.send(queued("next")).unwrap();
         drop(sender);
         let (failures, _events) = writer_failure_channel();
         let mut output = FlushCountingWriter::default();
@@ -4830,7 +5711,9 @@ mod tests {
     #[test]
     fn ipc_writer_reports_redacted_write_failure_without_panicking() {
         let (sender, receiver) = mpsc::sync_channel(1);
-        sender.send("x".repeat(IPC_WRITER_MAX_BATCH_BYTES)).unwrap();
+        sender
+            .send(queued("x".repeat(IPC_WRITER_MAX_BATCH_BYTES)))
+            .unwrap();
         drop(sender);
         let (failures, events) = writer_failure_channel();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4841,7 +5724,7 @@ mod tests {
         assert_eq!(error.code(), "IPC_WRITER_WRITE_FAILED");
         assert!(!error.to_string().contains("bearer"));
         assert_eq!(
-            next_runtime_input_line(&events, &failures),
+            next_runtime_input(&events, &failures),
             Err(RuntimeLoopError::Writer(IpcWriterError::WriteFailed))
         );
     }
@@ -4849,7 +5732,7 @@ mod tests {
     #[test]
     fn ipc_writer_reports_redacted_flush_failure_without_panicking() {
         let (sender, receiver) = mpsc::sync_channel(1);
-        sender.send("frame".to_string()).unwrap();
+        sender.send(queued("frame")).unwrap();
         drop(sender);
         let (failures, events) = writer_failure_channel();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4860,7 +5743,7 @@ mod tests {
         assert_eq!(error.code(), "IPC_WRITER_FLUSH_FAILED");
         assert!(!error.to_string().contains("absolute path"));
         assert_eq!(
-            next_runtime_input_line(&events, &failures),
+            next_runtime_input(&events, &failures),
             Err(RuntimeLoopError::Writer(IpcWriterError::FlushFailed))
         );
     }
@@ -5077,12 +5960,12 @@ mod tests {
             done_receiver.recv_timeout(Duration::from_millis(20)),
             Err(mpsc::RecvTimeoutError::Timeout)
         ));
-        assert_eq!(receiver.recv().unwrap(), "first");
+        assert_eq!(test_semantic_frame(receiver.recv().unwrap()), "first");
         done_receiver
             .recv_timeout(Duration::from_secs(1))
             .unwrap()
             .unwrap();
-        assert_eq!(receiver.recv().unwrap(), "second");
+        assert_eq!(test_semantic_frame(receiver.recv().unwrap()), "second");
         producer.join().unwrap();
     }
 
@@ -5096,7 +5979,7 @@ mod tests {
             sender.try_send("second".to_string()),
             Err(FrameTrySendError::WouldBlock)
         );
-        assert_eq!(receiver.recv().unwrap(), "first");
+        assert_eq!(test_semantic_frame(receiver.recv().unwrap()), "first");
     }
 
     #[test]
@@ -5110,7 +5993,7 @@ mod tests {
             Err(IpcWriterError::Closed)
         );
         assert_eq!(
-            next_runtime_input_line(&events, &sender.failures),
+            next_runtime_input(&events, &sender.failures),
             Err(RuntimeLoopError::Writer(IpcWriterError::Closed))
         );
     }
@@ -5129,7 +6012,7 @@ mod tests {
         );
         assert_eq!(sender.failures.current(), Some(IpcWriterError::WriteFailed));
         assert_eq!(
-            next_runtime_input_line(&events, &sender.failures),
+            next_runtime_input(&events, &sender.failures),
             Err(RuntimeLoopError::Writer(IpcWriterError::WriteFailed))
         );
         assert!(matches!(
@@ -5144,7 +6027,9 @@ mod tests {
         let (failures, events) = writer_failure_channel();
         failures
             .events
-            .send(RuntimeEvent::Input(Ok("queued\n".to_string())))
+            .send(RuntimeEvent::Input(Ok(Some(RuntimeInputV7::Semantic(
+                "queued\n".to_string(),
+            )))))
             .unwrap();
         let thread_failures = failures.clone();
         let (done_sender, done_receiver) = mpsc::channel();
@@ -5158,12 +6043,12 @@ mod tests {
             IpcWriterError::FlushFailed
         );
         assert_eq!(
-            next_runtime_input_line(&events, &failures),
+            next_runtime_input(&events, &failures),
             Err(RuntimeLoopError::Writer(IpcWriterError::FlushFailed))
         );
         assert!(matches!(
             events.try_recv(),
-            Ok(RuntimeEvent::Input(Ok(line))) if line == "queued\n"
+            Ok(RuntimeEvent::Input(Ok(Some(RuntimeInputV7::Semantic(line))))) if line == "queued\n"
         ));
         publisher.join().unwrap();
     }
@@ -5429,6 +6314,7 @@ mod tests {
                     &contain_shared,
                     &contain_scheduler,
                     &contain_routes,
+                    None,
                 ))
                 .unwrap();
         });
@@ -5451,19 +6337,19 @@ mod tests {
         assert_eq!(first.counts.storage_hostcalls, 1);
 
         let replay = controller
-            .contain(&request, &shared, &scheduler, &routes)
+            .contain(&request, &shared, &scheduler, &routes, None)
             .unwrap();
         assert_eq!(replay.counts, first.counts);
         let stale = session_revoke_request(6, &exact);
         assert_eq!(
             controller
-                .contain(&stale, &shared, &scheduler, &routes)
+                .contain(&stale, &shared, &scheduler, &routes, None)
                 .unwrap_err(),
             SessionRevokeControlError::Stale
         );
         let independent = session_revoke_request(7, &session_scope("other-channel"));
         controller
-            .contain(&independent, &shared, &scheduler, &routes)
+            .contain(&independent, &shared, &scheduler, &routes, None)
             .unwrap();
         assert!(matches!(
             scheduler.enqueue(
@@ -5523,6 +6409,7 @@ mod tests {
                     &contain_shared,
                     &contain_scheduler,
                     &contain_routes,
+                    None,
                 ))
                 .unwrap();
         });
@@ -5574,6 +6461,7 @@ mod tests {
                 &shared,
                 &scheduler,
                 &routes,
+                None,
             )
             .unwrap();
         controller
@@ -5582,6 +6470,7 @@ mod tests {
                 &shared,
                 &scheduler,
                 &routes,
+                None,
             )
             .expect("another exact scope does not share sequence ordering");
         controller
@@ -5590,6 +6479,7 @@ mod tests {
                 &shared,
                 &scheduler,
                 &routes,
+                None,
             )
             .expect("same-scope duplicate is idempotent");
         assert_eq!(
@@ -5599,6 +6489,7 @@ mod tests {
                     &shared,
                     &scheduler,
                     &routes,
+                    None,
                 )
                 .unwrap_err(),
             SessionRevokeControlError::Stale
@@ -5628,7 +6519,7 @@ mod tests {
 
         assert_eq!(
             controller
-                .contain(&request, &shared, &scheduler, &routes)
+                .contain(&request, &shared, &scheduler, &routes, None)
                 .unwrap_err(),
             SessionRevokeControlError::DrainTimeout
         );
@@ -5638,7 +6529,7 @@ mod tests {
 
         scheduler.finish(&running.request_id);
         let completed = controller
-            .contain(&request, &shared, &scheduler, &routes)
+            .contain(&request, &shared, &scheduler, &routes, None)
             .unwrap();
         assert_eq!(completed.counts.running_invocations, 1);
         assert!(
@@ -5666,6 +6557,7 @@ mod tests {
                     &shared,
                     &scheduler,
                     &routes,
+                    None,
                 )
                 .unwrap();
         }
@@ -5677,6 +6569,7 @@ mod tests {
                     &shared,
                     &scheduler,
                     &routes,
+                    None,
                 )
                 .unwrap_err(),
             SessionRevokeControlError::Capacity
@@ -5885,6 +6778,7 @@ mod tests {
             runtime_generation_id: "g1".to_string(),
             pending_artifacts: PendingArtifactRoutes::new(2),
             hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
+            io_routes: Arc::new(PendingIORoutes::new(2, 4)),
         };
         execution
             .hostcall_routes
@@ -5908,6 +6802,40 @@ mod tests {
         assert_eq!(execution.hostcall_routes.len(), 0);
     }
 
+    #[test]
+    fn session_cancel_wakes_raw_io_and_consumes_one_exact_late_result() {
+        let routes = PendingIORoutes::new(2, 4);
+        let scope = session_scope("channel-raw-io");
+        let (request_id, receiver) = routes
+            .register(
+                "parent-1",
+                "invocation-1",
+                "generation-1",
+                Some(&scope),
+                codec_v7::FrameType::IoReadResult,
+                77,
+            )
+            .expect("register raw I/O route");
+        routes.cancel_session(&scope).expect("cancel exact session");
+        let canceled = receiver.recv().expect("cancellation result").unwrap_err();
+        assert!(canceled.contains(redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED));
+        let late = codec_v7::Frame {
+            frame_type: codec_v7::FrameType::IoReadResult,
+            flags: 0,
+            request_id,
+            resource_id: 77,
+            metadata: br#"{"invocation_id":"invocation-1","ok":false,"code":"CANCELED","message":"canceled"}"#.to_vec(),
+            body: Vec::new(),
+        };
+        routes
+            .consume(late.clone())
+            .expect("discard exact late result");
+        assert!(
+            routes.consume(late).is_err(),
+            "duplicate late result must fail closed"
+        );
+    }
+
     fn runtime_status_for_test() -> RuntimeStatus {
         let limits = redevplugin_ipc::RuntimeLimits {
             worker_count: 2,
@@ -5928,6 +6856,7 @@ mod tests {
                 limits.module_cache_source_bytes,
             )),
             hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 6)),
+            io_routes: Arc::new(PendingIORoutes::new(2, 4)),
             session_revoke: SessionRevokeController::default(),
         }
     }
@@ -5953,6 +6882,7 @@ mod tests {
             runtime_generation_id: "g1".to_string(),
             pending_artifacts: PendingArtifactRoutes::new(2),
             hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
+            io_routes: Arc::new(PendingIORoutes::new(2, 4)),
         };
         job.signal_sender
             .send(scheduler::InvocationSignal::HostcallResponse(
@@ -6018,6 +6948,7 @@ mod tests {
             runtime_generation_id: "g1".to_string(),
             pending_artifacts: PendingArtifactRoutes::new(2),
             hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
+            io_routes: Arc::new(PendingIORoutes::new(2, 4)),
         });
         let input = redevplugin_ipc::decode_runtime_input_frame(
             r#"{"ipc_version":"rust-ipc-v6","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#,
@@ -6073,6 +7004,7 @@ mod tests {
             runtime_generation_id: "rtgen_fixture_v1".to_string(),
             pending_artifacts: PendingArtifactRoutes::new(2),
             hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
+            io_routes: Arc::new(PendingIORoutes::new(2, 4)),
         });
 
         let response = handle_scheduled_worker_invocation(&job, &execution)
@@ -6742,6 +7674,140 @@ mod tests {
         .expect("execute Worker API v1 hostcall fixture");
         assert_eq!(execution.response_json, response);
         assert_eq!(close_count, 2);
+    }
+
+    #[test]
+    fn compiled_worker_api_v1_round_trips_over_raw_v7_routes() {
+        let control =
+            r#"{"api":1,"operation":"fs.open","arguments":{"uri":"redevfs://workspace/data.bin"}}"#;
+        let response = r#"{"ok":true,"data":{"raw_v7":true}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (import "redevplugin.io" "rdp_call_v1" (func $call (param i32 i32 i32 i32) (result i32)))
+                (import "redevplugin.io" "rdp_read_v1" (func $read (param i64 i32 i32 i32) (result i32)))
+                (import "redevplugin.io" "rdp_write_v1" (func $write (param i64 i32 i32 i32) (result i32)))
+                (import "redevplugin.io" "rdp_seek_v1" (func $seek (param i64 i64 i32) (result i64)))
+                (import "redevplugin.io" "rdp_close_v1" (func $close (param i64) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 3000) {control:?})
+                (data (i32.const 4000) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i32.const 3000 i32.const {control_len} i32.const 3100 i32.const 512 call $call
+                    i32.const 0 i32.le_s if unreachable end
+                    i64.const 77 i32.const 3300 i32.const 64 i32.const 3400 call $read
+                    i32.const 5 i32.ne if unreachable end
+                    i64.const 77 i32.const 3300 i32.const 5 i32.const 4 call $write
+                    i32.const 5 i32.ne if unreachable end
+                    i64.const 77 i64.const 9 i32.const 0 call $seek
+                    i64.const 9 i64.ne if unreachable end
+                    i64.const 77 call $close i32.const 0 i32.ne if unreachable end
+                    i64.const {packed})
+            )"#,
+            control_len = control.len(),
+            packed = ((4000_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile raw v7 Worker API fixture");
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(signed_worker_invocation_fixture())
+                .expect("signed worker invocation");
+        let invocation_id = invocation.invocation_id().expect("invocation ID");
+        let job = scheduler::InvocationJob::new(invocation).expect("invocation job");
+        let (queued_sender, queued_receiver) = mpsc::sync_channel(8);
+        let (failures, _events) = writer_failure_channel();
+        let execution = Arc::new(ConcurrentExecutionState {
+            shared: Arc::new(RuntimeSharedState::default()),
+            lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
+            runtime_lease_public_keys: Vec::new(),
+            module_cache: Arc::new(module_cache::ModuleCache::new(
+                worker_engine(),
+                1,
+                1024 * 1024,
+            )),
+            clock: Arc::new(current_unix_millis),
+            writer: FrameSender::new_v7(queued_sender, failures),
+            runtime_generation_id: job.invocation.runtime_generation_id().to_string(),
+            pending_artifacts: PendingArtifactRoutes::new(2),
+            hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
+            io_routes: Arc::new(PendingIORoutes::new(2, 4)),
+        });
+        let worker_execution = Arc::clone(&execution);
+        let worker = thread::spawn(move || {
+            execute_worker_module_with_io_for_test(
+                &module,
+                br#"{"schema_version":"redevplugin.worker_request.v2","method":"worker.echo","params":{}}"#,
+                TEST_WORKER_MEMORY_LIMIT_BYTES,
+                |request| perform_raw_io_hostcall(&job, &worker_execution, job.invocation.as_ref(), request),
+            )
+        });
+
+        for expected_type in [
+            codec_v7::FrameType::Hostcall,
+            codec_v7::FrameType::IoRead,
+            codec_v7::FrameType::IoWrite,
+            codec_v7::FrameType::IoSeek,
+            codec_v7::FrameType::IoClose,
+        ] {
+            let queued = queued_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("raw v7 request frame");
+            let frame = codec_v7::read_frame(&mut io::Cursor::new(queued.0))
+                .expect("decode raw v7 request");
+            assert_eq!(frame.frame_type, expected_type);
+            let (frame_type, metadata, body) = match expected_type {
+                codec_v7::FrameType::Hostcall => (
+                    codec_v7::FrameType::HostcallResult,
+                    serde_json::to_vec(&serde_json::json!({
+                        "invocation_id": invocation_id,
+                        "ok": true,
+                        "response": {"ok": true, "result": {"handle": 77}}
+                    }))
+                    .unwrap(),
+                    Vec::new(),
+                ),
+                codec_v7::FrameType::IoRead => (
+                    codec_v7::FrameType::IoReadResult,
+                    serde_json::to_vec(&serde_json::json!({"invocation_id": invocation_id, "ok": true, "bytes_read": 5, "flags": 4})).unwrap(),
+                    b"hello".to_vec(),
+                ),
+                codec_v7::FrameType::IoWrite => {
+                    assert_eq!(frame.body, b"hello");
+                    (
+                        codec_v7::FrameType::IoWriteResult,
+                        serde_json::to_vec(&serde_json::json!({"invocation_id": invocation_id, "ok": true, "bytes_written": 5})).unwrap(),
+                        Vec::new(),
+                    )
+                }
+                codec_v7::FrameType::IoSeek => (
+                    codec_v7::FrameType::IoSeekResult,
+                    serde_json::to_vec(&serde_json::json!({"invocation_id": invocation_id, "ok": true, "offset": 9})).unwrap(),
+                    Vec::new(),
+                ),
+                codec_v7::FrameType::IoClose => (
+                    codec_v7::FrameType::IoCloseResult,
+                    serde_json::to_vec(&serde_json::json!({"invocation_id": invocation_id, "ok": true})).unwrap(),
+                    Vec::new(),
+                ),
+                _ => unreachable!(),
+            };
+            execution
+                .io_routes
+                .consume(codec_v7::Frame {
+                    frame_type,
+                    flags: 0,
+                    request_id: frame.request_id,
+                    resource_id: frame.resource_id,
+                    metadata,
+                    body,
+                })
+                .expect("deliver raw v7 result");
+        }
+        let result = worker
+            .join()
+            .expect("Worker API thread")
+            .expect("execute Worker API");
+        assert_eq!(result.response_json, response);
     }
 
     #[test]

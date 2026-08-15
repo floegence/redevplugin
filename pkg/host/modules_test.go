@@ -25,6 +25,7 @@ func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {
 		"Release",
 		"Runtime",
 		"Capability",
+		"IO",
 		"Connectivity",
 		"Secrets",
 		"CoreAction",

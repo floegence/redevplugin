@@ -66,6 +66,10 @@ type Context struct {
 	OwnerUserHash        string `json:"-"`
 	OwnerEnvHash         string `json:"-"`
 	SessionChannelIDHash string `json:"-"`
+	// CanRead and CanWrite are Host-authenticated filesystem ceilings. They are
+	// deliberately excluded from durable ownership scopes and serialized APIs.
+	CanRead  bool `json:"-"`
+	CanWrite bool `json:"-"`
 }
 
 func (s Context) Valid() bool {
@@ -111,7 +115,12 @@ func (s Context) SessionScope() (SessionScope, error) {
 	if !s.Valid() {
 		return SessionScope{}, ErrSessionRequired
 	}
-	scope := SessionScope(s)
+	scope := SessionScope{
+		OwnerSessionHash:     s.OwnerSessionHash,
+		OwnerUserHash:        s.OwnerUserHash,
+		OwnerEnvHash:         s.OwnerEnvHash,
+		SessionChannelIDHash: s.SessionChannelIDHash,
+	}
 	if err := scope.Validate(); err != nil {
 		return SessionScope{}, err
 	}

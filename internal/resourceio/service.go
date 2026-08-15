@@ -771,6 +771,11 @@ func stableServiceError(err error) (string, bool) {
 	}
 }
 
+// StableError projects broker failures onto the closed Worker API error set.
+func StableError(err error) (string, bool) {
+	return stableServiceError(err)
+}
+
 func isNetworkError(err error) bool {
 	var networkError net.Error
 	var dnsError *net.DNSError

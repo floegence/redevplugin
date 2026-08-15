@@ -237,6 +237,7 @@ type ArtifactResult struct {
 }
 
 type workerInvocationContext struct {
+	InvocationID string
 	Artifact     ArtifactRequest
 	BrokerAccess workerBrokerAccess
 	identity     workerInvocationIdentity
@@ -385,6 +386,7 @@ type ProcessSupervisorOptions struct {
 	Connectivity          connectivity.Broker
 	NetworkExecutor       connectivity.NetworkExecutor
 	StreamSink            RuntimeStreamSink
+	IOBroker              RuntimeIOBroker
 	Now                   func() time.Time
 	HandshakeTimeout      time.Duration
 	HeartbeatInterval     time.Duration
@@ -398,6 +400,17 @@ type RuntimeStreamSink interface {
 	AppendRuntimeStream(ctx context.Context, streamID, kind string, data []byte) error
 	CloseRuntimeStream(ctx context.Context, streamID string) error
 	FailRuntimeStream(ctx context.Context, streamID string, code capability.ExecutionFailureCode, cause error) error
+}
+
+// RuntimeIOBroker is the Host-owned authority for Worker API resource I/O.
+// Runtime frames provide only a signed invocation ID and opaque handle; owner
+// hashes, permissions, revisions, epochs, paths, and policy remain in Host.
+type RuntimeIOBroker interface {
+	Control(context.Context, string, []byte) ([]byte, error)
+	Read(context.Context, string, uint64, []byte) (int, uint32, error)
+	Write(context.Context, string, uint64, []byte, uint32) (int, error)
+	Seek(context.Context, string, uint64, int64, int) (int64, error)
+	Close(context.Context, string, uint64) error
 }
 
 type ProcessSupervisor struct {
@@ -426,6 +439,7 @@ type ProcessSupervisor struct {
 	connectivity           connectivity.Broker
 	networkExecutor        connectivity.NetworkExecutor
 	streamSink             RuntimeStreamSink
+	ioBroker               RuntimeIOBroker
 	now                    func() time.Time
 	handshakeTimeout       time.Duration
 	heartbeatInterval      time.Duration
@@ -435,7 +449,9 @@ type ProcessSupervisor struct {
 	limits                 RuntimeLimits
 	admission              *runtimeAdmissionController
 	pending                map[string]*pendingIPCRequest
+	pendingInvocations     map[string]*pendingIPCRequest
 	compileFlights         map[string]*pendingCompileFlight
+	ioRouteSlots           chan struct{}
 
 	process          *runtimeProcess
 	cancel           context.CancelFunc
@@ -489,9 +505,10 @@ type pendingCompileFlight struct {
 }
 
 type runtimeGeneration struct {
-	id    string
-	ctx   context.Context
-	stdin io.Writer
+	id          string
+	ctx         context.Context
+	stdin       io.Writer
+	framedStdin *semanticIPCWriteCloserV7
 }
 
 func (e *processExit) finishIPCReader() {
@@ -583,6 +600,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		connectivity:           options.Connectivity,
 		networkExecutor:        options.NetworkExecutor,
 		streamSink:             options.StreamSink,
+		ioBroker:               options.IOBroker,
 		now:                    now,
 		handshakeTimeout:       options.HandshakeTimeout,
 		heartbeatInterval:      options.HeartbeatInterval,
@@ -590,7 +608,9 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		limits:                 options.Limits,
 		admission:              newRuntimeAdmissionController(options.Limits),
 		pending:                map[string]*pendingIPCRequest{},
+		pendingInvocations:     map[string]*pendingIPCRequest{},
 		compileFlights:         map[string]*pendingCompileFlight{},
+		ioRouteSlots:           make(chan struct{}, options.Limits.WorkerCount),
 		health: Health{
 			Descriptor: options.Descriptor,
 			Limits:     options.Limits,
@@ -628,6 +648,9 @@ func validateProcessSupervisorOptions(options ProcessSupervisorOptions, requireH
 	}
 	if requireHostServices && isNilInterfaceValue(options.StreamSink) {
 		return fmt.Errorf("%w: stream sink is required", ErrRuntimeHostServicesInvalid)
+	}
+	if requireHostServices && isNilInterfaceValue(options.IOBroker) {
+		return fmt.Errorf("%w: I/O broker is required", ErrRuntimeHostServicesInvalid)
 	}
 	return nil
 }
@@ -737,11 +760,12 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 	s.process = process
 	s.cancel = cancel
 	s.exit = exit
-	serializedStdin := &serializedWriteCloser{WriteCloser: process.ipcIn}
-	generation := &runtimeGeneration{id: generationID, ctx: runtimeCtx, stdin: serializedStdin}
-	s.ipcIn = serializedStdin
+	semanticStdin := newSemanticIPCWriteCloserV7(process.ipcIn)
+	semanticControlStdin := newSemanticIPCWriteCloserV7(process.controlIn)
+	generation := &runtimeGeneration{id: generationID, ctx: runtimeCtx, stdin: semanticStdin, framedStdin: semanticStdin}
+	s.ipcIn = semanticStdin
 	s.ipcOut = stdoutReader
-	s.controlIn = process.controlIn
+	s.controlIn = semanticControlStdin
 	s.controlOut = controlReader
 	s.controlOutCloser = process.controlOut
 	s.generation = generation
@@ -764,7 +788,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 	}
 	go s.wait(process, exit, cancel, generation, health)
 
-	ack, err := s.performHandshake(ctx, serializedStdin, stdoutReader, health, target, process.containmentRequired)
+	ack, err := s.performHandshake(ctx, semanticStdin, stdoutReader, health, target, process.containmentRequired)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
 			exit.markTerminationIntent(runtimeProcessTerminationHandshakeCleanup)
@@ -2313,6 +2337,11 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 	}
 	var compileFlight *pendingCompileFlight
 	if allowedInvocation != nil {
+		invocationID := strings.TrimSpace(allowedInvocation.InvocationID)
+		if invocationID == "" || s.pendingInvocations[invocationID] != nil {
+			s.pendingMu.Unlock()
+			return ipcFrame{}, fmt.Errorf("%w: duplicate or empty invocation_id", ErrRuntimeIPCUnavailable)
+		}
 		artifactRequestID := requestID + ":artifact"
 		if s.compileFlights == nil {
 			s.compileFlights = map[string]*pendingCompileFlight{}
@@ -2334,6 +2363,7 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 			wasmABIVersion:    version.WASMABIVersion,
 		}
 		s.compileFlights[artifactRequestID] = compileFlight
+		s.pendingInvocations[invocationID] = pending
 	}
 	s.pending[requestID] = pending
 	s.pendingMu.Unlock()
@@ -2341,6 +2371,9 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 		s.pendingMu.Lock()
 		if s.pending[requestID] == pending {
 			delete(s.pending, requestID)
+		}
+		if allowedInvocation != nil && s.pendingInvocations[allowedInvocation.InvocationID] == pending {
+			delete(s.pendingInvocations, allowedInvocation.InvocationID)
 		}
 		s.pendingMu.Unlock()
 	}
@@ -2428,7 +2461,7 @@ func (s *ProcessSupervisor) runtimeGenerationCurrent(generation *runtimeGenerati
 
 func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtimeGeneration, health Health) {
 	for {
-		frame, err := readIPCFrame(stdout)
+		framed, err := ReadIPCFrameV7(stdout)
 		if err != nil {
 			wrapped := fmt.Errorf("%w: read ipc frame: %v", ErrRuntimeIPCUnavailable, err)
 			if errors.Is(err, io.EOF) {
@@ -2437,6 +2470,18 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 			} else {
 				s.invalidateAndFailPending(generation, health, wrapped)
 			}
+			return
+		}
+		if isRuntimeIORequestFrame(framed.Type) || isRuntimeIOControlRequestFrame(framed) {
+			if err := s.dispatchRuntimeIOFrame(generation, framed); err != nil {
+				s.invalidateAndFailPending(generation, health, err)
+				return
+			}
+			continue
+		}
+		frame, err := readRuntimeSemanticIPCFrameFromV7(stdout, framed)
+		if err != nil {
+			s.invalidateAndFailPending(generation, health, fmt.Errorf("%w: read semantic ipc frame: %v", ErrRuntimeIPCUnavailable, err))
 			return
 		}
 		if frame.IPCVersion != version.RustIPCVersion || frame.RuntimeGenerationID != health.RuntimeGenerationID {
@@ -2658,6 +2703,9 @@ func (s *ProcessSupervisor) failPendingGeneration(generation *runtimeGeneration,
 			continue
 		}
 		delete(s.pending, requestID)
+		if request.invocation != nil && s.pendingInvocations[request.invocation.InvocationID] == request {
+			delete(s.pendingInvocations, request.invocation.InvocationID)
+		}
 		pending = append(pending, request)
 	}
 	for artifactRequestID, flight := range s.compileFlights {
@@ -4584,6 +4632,7 @@ func workerInvocationContextFromInvocation(lease Lease, invocation json.RawMessa
 		return workerInvocationContext{}, fmt.Errorf("%w: worker broker access hash mismatch", ErrRuntimeRequestFailed)
 	}
 	return workerInvocationContext{
+		InvocationID: strings.TrimSpace(lease.InvocationID),
 		Artifact:     artifact,
 		BrokerAccess: access,
 		identity: workerInvocationIdentity{
@@ -4707,15 +4756,7 @@ func isWorkerArtifactPath(value string) bool {
 }
 
 func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {
-	line, err := readBoundedIPCLine(reader, maxIPCFrameBytes)
-	if err != nil {
-		return ipcFrame{}, err
-	}
-	var frame ipcFrame
-	if err := decodeStrictJSON(line, &frame); err != nil {
-		return ipcFrame{}, err
-	}
-	return frame, nil
+	return readSemanticIPCFrameV7(reader)
 }
 
 func readBoundedIPCLine(reader *bufio.Reader, maxBytes int) ([]byte, error) {

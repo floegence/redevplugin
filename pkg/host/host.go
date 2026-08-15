@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/internal/controlstore"
+	"github.com/floegence/redevplugin/internal/resourceio"
 	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
@@ -151,6 +152,7 @@ var (
 	ErrReleaseModuleRequired         = errors.New("release module is required")
 	ErrRuntimeModuleRequired         = errors.New("runtime module is required")
 	ErrCapabilityModuleRequired      = errors.New("capability module is required")
+	ErrIOModuleRequired              = errors.New("I/O module is required")
 	ErrConnectivityModuleRequired    = errors.New("connectivity module is required")
 	ErrSecretsModuleRequired         = errors.New("secrets module is required")
 	ErrCoreActionModuleRequired      = errors.New("core action module is required")
@@ -205,6 +207,7 @@ const (
 	FeatureRelease         Feature = "release"
 	FeatureRuntime         Feature = "runtime"
 	FeatureCapability      Feature = "capability"
+	FeatureIO              Feature = "io"
 	FeatureConnectivity    Feature = "connectivity"
 	FeatureSecrets         Feature = "secrets"
 	FeatureCoreAction      Feature = "core_action"
@@ -535,6 +538,7 @@ type Config struct {
 	Release         *ReleaseModule
 	Runtime         *RuntimeModule
 	Capability      *CapabilityModule
+	IO              *IOModule
 	Connectivity    *ConnectivityModule
 	Secrets         *SecretsModule
 	CoreAction      *CoreActionModule
@@ -562,6 +566,8 @@ type normalizedAdapters struct {
 	SurfaceCatalog                   SurfaceCatalogSink
 	Assets                           pluginpkg.AssetStore
 	Capabilities                     *capability.Registry
+	FileSystem                       FileSystemAdapter
+	NetworkPolicy                    NetworkPolicyAdapter
 	CoreActions                      CoreActionAdapter
 	SurfaceTokens                    *bridge.SurfaceTokenService
 	PluginData                       PluginData
@@ -616,6 +622,7 @@ type Host struct {
 	recoveryMu           sync.Mutex
 	recoveryRevision     int64
 	recoverySnapshot     *RecoverySnapshot
+	runtimeIO            *hostRuntimeIOBroker
 }
 
 type ImportLocalPackageRequest struct {
@@ -1092,6 +1099,11 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 		adapters.Capabilities = module.Registry
 		features[FeatureCapability] = struct{}{}
 	}
+	if module := config.IO; module != nil {
+		adapters.FileSystem = module.FileSystem
+		adapters.NetworkPolicy = module.NetworkPolicy
+		features[FeatureIO] = struct{}{}
+	}
 	if module := config.Connectivity; module != nil {
 		adapters.Connectivity = module.Broker
 		adapters.NetworkExecutor = module.NetworkExecutor
@@ -1169,6 +1181,14 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 	}
 	if module := config.Capability; module != nil && isNilInterfaceValue(module.Registry) {
 		return &HostConfigError{Module: string(FeatureCapability), Adapter: "registry", Cause: ErrCapabilityModuleRequired}
+	}
+	if module := config.IO; module != nil {
+		if isNilInterfaceValue(module.FileSystem) {
+			return &HostConfigError{Module: string(FeatureIO), Adapter: "filesystem", Cause: ErrIOModuleRequired}
+		}
+		if module.NetworkPolicy != nil && isNilInterfaceValue(module.NetworkPolicy) {
+			return &HostConfigError{Module: string(FeatureIO), Adapter: "network policy", Cause: ErrIOModuleRequired}
+		}
 	}
 	if module := config.Connectivity; module != nil {
 		if isNilInterfaceValue(module.Broker) {
@@ -1519,6 +1539,11 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		return nil, err
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	runtimeIO, err := newHostRuntimeIOBroker(adapters)
+	if err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("open runtime I/O broker: %w", err)
+	}
 	host := &Host{
 		controlStore:         control,
 		adapters:             adapters,
@@ -1540,6 +1565,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		externalStage:        externalStage,
 		refreshPluginTimeout: refreshEnabledPluginTimeout,
 		recoveryRevision:     1,
+		runtimeIO:            runtimeIO,
 	}
 	if host.securityJournal != nil {
 		if err := host.securityJournal.ReconcilePendingSecurityAudits(ctx); err != nil {
@@ -1557,6 +1583,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	if host.adapters.RuntimeManager != nil {
 		if err := host.adapters.RuntimeManager.BindHostServices(runtimeclient.RuntimeHostServices{
 			StreamSink: hostRuntimeStreamSink{executions: host.executions},
+			IOBroker:   host.runtimeIO,
 		}); err != nil {
 			lifecycleCancel()
 			return nil, fmt.Errorf("bind runtime manager host services: %w", err)
@@ -1636,7 +1663,11 @@ func (h *Host) Close() error {
 		if h.controlStore != nil {
 			controlStoreCloseErr = h.controlStore.Close()
 		}
-		h.closeErr = errors.Join(runtimeCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr)
+		var runtimeIOCloseErr error
+		if h.runtimeIO != nil {
+			runtimeIOCloseErr = h.runtimeIO.closeAll()
+		}
+		h.closeErr = errors.Join(runtimeCloseErr, runtimeIOCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr)
 	})
 	return h.closeErr
 }
@@ -1645,7 +1676,7 @@ func (h *Host) configuredFeatures() []Feature {
 	if h == nil || len(h.features) == 0 {
 		return []Feature{}
 	}
-	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage}
+	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage}
 	result := make([]Feature, 0, len(h.features))
 	for _, feature := range ordered {
 		if _, ok := h.features[feature]; ok {
@@ -1677,7 +1708,7 @@ func (h *Host) requireFeature(feature Feature) error {
 
 func (h *Host) requireFeatures(required []Feature) error {
 	missing := make([]Feature, 0, len(required))
-	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage} {
+	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage} {
 		if slices.Contains(required, candidate) && !h.featureConfigured(candidate) {
 			missing = append(missing, candidate)
 		}
@@ -1703,6 +1734,8 @@ func (h *Host) featureConfigured(feature Feature) bool {
 		return h.adapters.RuntimeManager != nil
 	case FeatureCapability:
 		return h.adapters.Capabilities != nil
+	case FeatureIO:
+		return h.adapters.FileSystem != nil
 	case FeatureConnectivity:
 		return h.adapters.Connectivity != nil && h.adapters.NetworkExecutor != nil
 	case FeatureSecrets:
@@ -7186,6 +7219,40 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
+	sessionScope, err := req.session.SessionScope()
+	if err != nil {
+		return dispatch, err
+	}
+	grantedPermissions := make(map[string]bool, len(record.ManifestModel.Permissions))
+	for _, permissionID := range record.ManifestModel.PermissionIDs() {
+		grantedPermissions[string(permissionID)] = true
+	}
+	if err := h.runtimeIO.register(invocationID, resourceio.Invocation{
+		Owner: resourceio.Owner{
+			PluginInstanceID:   record.PluginInstanceID,
+			ActiveFingerprint:  record.ActiveFingerprint,
+			Scope:              resourceScope,
+			Session:            sessionScope,
+			RuntimeGeneration:  runtimeBinding.RuntimeGenerationID,
+			ManagementRevision: record.ManagementRevision,
+			RevokeEpoch:        record.RevokeEpoch,
+			InvocationID:       invocationID,
+			Lifetime:           resourceio.LifetimeInvocation,
+		},
+		Plugin: resourceio.Plugin{
+			ID:         record.PluginID,
+			InstanceID: record.PluginInstanceID,
+			Version:    record.Version,
+		},
+		Permissions: grantedPermissions,
+		CanRead:     req.session.CanRead,
+		CanWrite:    req.session.CanWrite,
+	}); err != nil {
+		return dispatch, err
+	}
+	defer func() {
+		responseErr = errors.Join(responseErr, h.runtimeIO.release(invocationID))
+	}()
 	dispatch.dispatched = true
 	executionID := strings.TrimSpace(lease.ExecutionID)
 	rawResult, err := h.adapters.RuntimeManager.InvokeWorker(executionCtx, runtimeBinding, runtimeclient.Lease{

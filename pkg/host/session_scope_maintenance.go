@@ -316,7 +316,12 @@ func (h *Host) reconcileSessionScopeMaintenance(ctx context.Context) error {
 		return err
 	}
 	for _, fence := range retained {
-		session := sessionctx.Context(fence.SessionScope)
+		session := sessionctx.Context{
+			OwnerSessionHash:     fence.SessionScope.OwnerSessionHash,
+			OwnerUserHash:        fence.SessionScope.OwnerUserHash,
+			OwnerEnvHash:         fence.SessionScope.OwnerEnvHash,
+			SessionChannelIDHash: fence.SessionScope.SessionChannelIDHash,
+		}
 		if err := h.reconcileOneSessionScopeMaintenance(ctx, session); err != nil {
 			return err
 		}

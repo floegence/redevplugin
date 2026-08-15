@@ -158,7 +158,7 @@ func newNeverStartedProcessManager(t *testing.T) *runtimeclient.ProcessManager {
 func newNeverStartedProcessManagerForHost(t *testing.T, h *Host) *runtimeclient.ProcessManager {
 	t.Helper()
 	manager := newNeverStartedProcessManager(t)
-	if err := manager.BindHostServices(runtimeclient.RuntimeHostServices{StreamSink: hostRuntimeStreamSink{executions: h.executions}}); err != nil {
+	if err := manager.BindHostServices(runtimeclient.RuntimeHostServices{StreamSink: hostRuntimeStreamSink{executions: h.executions}, IOBroker: h.runtimeIO}); err != nil {
 		t.Fatal(err)
 	}
 	return manager

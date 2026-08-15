@@ -48,6 +48,7 @@ var (
 // captures these interface values for the lifetime of the manager.
 type RuntimeHostServices struct {
 	StreamSink RuntimeStreamSink
+	IOBroker   RuntimeIOBroker
 }
 
 type RuntimeBinding struct {
@@ -147,8 +148,8 @@ func newProcessManager(options ProcessManagerOptions, factory processShardFactor
 	if factory == nil {
 		return nil, errors.New("runtime shard factory is required")
 	}
-	if options.Supervisor.StreamSink != nil {
-		return nil, fmt.Errorf("%w: stream sink must be supplied by BindHostServices", ErrRuntimeHostServicesInvalid)
+	if options.Supervisor.StreamSink != nil || options.Supervisor.IOBroker != nil {
+		return nil, fmt.Errorf("%w: Host services must be supplied by BindHostServices", ErrRuntimeHostServicesInvalid)
 	}
 	if err := validateProcessSupervisorOptions(options.Supervisor, false); err != nil {
 		return nil, err
@@ -173,6 +174,9 @@ func (m *ProcessManager) BindHostServices(services RuntimeHostServices) error {
 	if isNilInterfaceValue(services.StreamSink) {
 		return fmt.Errorf("%w: stream sink is required", ErrRuntimeHostServicesInvalid)
 	}
+	if isNilInterfaceValue(services.IOBroker) {
+		return fmt.Errorf("%w: I/O broker is required", ErrRuntimeHostServicesInvalid)
+	}
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	if m.bound {
@@ -180,6 +184,7 @@ func (m *ProcessManager) BindHostServices(services RuntimeHostServices) error {
 	}
 	options := m.supervisor
 	options.StreamSink = services.StreamSink
+	options.IOBroker = services.IOBroker
 	shards := make([]processManagerShard, 0, m.shardCount)
 	for index := 0; index < m.shardCount; index++ {
 		process, err := m.factory(options)
