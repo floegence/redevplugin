@@ -5,13 +5,13 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
   "source_files": {
-    "Cargo.lock": "15027e710cb670b57f84556d7b3fd30c96b80e661fec84acbaa7065e77924c6f",
-    "Cargo.toml": "a18a3bbec5c8ef2eab594dc1cca3dda6152b2938527e6ea3fe5454354e5054ea",
+    "Cargo.lock": "eed29466c69106f438bad4c895fa2b48c29380db65c73b24f3ce67b9dcbd0072",
+    "Cargo.toml": "2deeac05d5435c9888efe8544e021b28030288b290acf4ce00ad40b0a75c26a5",
     "crates/redevplugin-worker-sdk/Cargo.toml": "4d8339ce666aac26510ba48ceff4edc9d18b4f89f07d9f673fd2ffd3ccff802e",
     "crates/redevplugin-worker-sdk/LICENSE": "68a062bc10a32bc2478ece12a1792f878f72d0033164fb0e4a4c565bab5c8478",
-    "crates/redevplugin-worker-sdk/README.md": "ccf9acb9347f8a5cc761189d09eecee91394c11c2c48045d4a2dc47b71c9305f",
+    "crates/redevplugin-worker-sdk/README.md": "d5eb15800fa816395f7ec6cd11342b0df593f76b7067de28e4ad3235c73e20df",
     "crates/redevplugin-worker-sdk/src/api.rs": "69e6e01dc44fef04ad2b032bcaee4e130b9417b5bef9848f79a9c8f4805ec4f7",
-    "crates/redevplugin-worker-sdk/src/error.rs": "0bfd86dde18762de5944365b908a70befe9e6bc0ffa70f47794540ceaebf2586",
+    "crates/redevplugin-worker-sdk/src/error.rs": "f88fc35b2f7d0d946ed614539c51d8abd798d2da98b05b669c11e7fc1c0a4bb0",
     "crates/redevplugin-worker-sdk/src/fs.rs": "40a61b780c0d3bb9bfc32155c9d4e15755601dfb85eb90c4d364539a5a4e7ee2",
     "crates/redevplugin-worker-sdk/src/hostcalls.rs": "67ffaf86a27df801e13c3174d15d4536a84730c7bcd03930b1f8d64e1f4709af",
     "crates/redevplugin-worker-sdk/src/http.rs": "13821651ba4ffb2bcddeef2a77207407f72ffc77a75fe9977f7abc0d4e541e06",
@@ -27,6 +27,6 @@
     "scripts/canonical_wasm_builder.mjs": "b37f56c2ca9322aefce98073e918e42e4cdf480639d4d82e90ff6117d2419540"
   },
   "artifacts": {
-    "cmd/redevplugin/scaffold_assets/backend.wasm": "3c75156d916d3ef152cf00bf579475afcabd5c2d14336c067c055cc881a4b27b"
+    "cmd/redevplugin/scaffold_assets/backend.wasm": "863f892688bf9efc45cbee32da20dd9390b7fa98ea5d7464f6139add27d30276"
   }
 }
