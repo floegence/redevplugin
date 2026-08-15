@@ -402,7 +402,7 @@ func TestWorkerInvocationRejectsStaleBindingDescriptorBeforeDispatch(t *testing.
 	}
 }
 
-func TestWorkerOpenSurfaceRejectsIncompatibleRuntimeHealth(t *testing.T) {
+func TestWorkerOpenSurfaceIgnoresIncompatibleRuntimeHealth(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
@@ -422,12 +422,13 @@ func TestWorkerOpenSurfaceRejectsIncompatibleRuntimeHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+	bootstrap, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID),
 		SurfaceID:                  "worker.view",
-	}); !errors.Is(err, ErrPluginRuntimeIncompatible) {
-		t.Fatalf("OpenSurface() error = %v, want ErrPluginRuntimeIncompatible", err)
+	})
+	if err != nil || bootstrap.RuntimeGenerationID != h.surfaceGenerationID {
+		t.Fatalf("OpenSurface() with incompatible runtime = %#v, %v", bootstrap, err)
 	}
 }
 

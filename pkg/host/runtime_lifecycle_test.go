@@ -192,7 +192,7 @@ func TestHostRuntimeLifecycleRejectsCallsAfterClose(t *testing.T) {
 	}
 }
 
-func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
+func TestStopRuntimePreservesSurfacesWhenManagerStopFails(t *testing.T) {
 	stopFailure := errors.New("runtime stop failed at /Users/secret/runtime with vault-token-super-secret")
 	manager := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	manager.stopErr = stopFailure
@@ -212,7 +212,7 @@ func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing runtime stopped audit: %#v", audits.events)
 	}
-	assertAuditDetail(t, stopAudit, "revoked_surface_count", 1)
+	assertAuditDetail(t, stopAudit, "revoked_surface_count", 0)
 	assertAuditDetail(t, stopAudit, "mutation_outcome", string(mutation.OutcomeUnknown))
 	auditFailure, ok := stopAudit.Details["failure"].(map[string]any)
 	if !ok || auditFailure["code"] != string(observability.FailureAction) || auditFailure["component"] != string(observability.FailureComponentSecurity) || auditFailure["operation"] != "security_mutation.complete" || strings.Contains(fmt.Sprint(stopAudit.Details), stopFailure.Error()) {
@@ -239,8 +239,8 @@ func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 		Method:            "worker.echo",
 		Params:            map[string]any{"message": "hello"},
 	})
-	if !errors.Is(callErr, bridge.ErrTokenRevoked) {
-		t.Fatalf("CallPluginMethod() after failed stop error = %v, want %v", callErr, bridge.ErrTokenRevoked)
+	if callErr == nil || errors.Is(callErr, bridge.ErrTokenRevoked) {
+		t.Fatalf("CallPluginMethod() after failed stop error = %v, want runtime failure without surface revocation", callErr)
 	}
 }
 

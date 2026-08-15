@@ -954,7 +954,7 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 	}
 }
 
-func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
+func TestOpenSurfaceDoesNotWaitForWorkerRuntime(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_surface",
@@ -977,6 +977,8 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
+	runtime.healthErr = runtimeclient.ErrRuntimeNotReady
+	runtime.bindErr = runtimeclient.ErrRuntimeNotReady
 
 	bootstrap, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
@@ -989,15 +991,15 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}
-	if bootstrap.RuntimeGenerationID != "runtime_generation_surface" {
-		t.Fatalf("runtime generation = %q, want runtime_generation_surface", bootstrap.RuntimeGenerationID)
+	if bootstrap.RuntimeGenerationID != h.surfaceGenerationID {
+		t.Fatalf("surface generation = %q, want Host generation %q", bootstrap.RuntimeGenerationID, h.surfaceGenerationID)
 	}
 	if !audits.hasEvent("plugin.surface.opened") {
 		t.Fatalf("missing surface opened audit event: %#v", audits.events)
 	}
 }
 
-func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T) {
+func TestMintBridgeTokenSurvivesRuntimeGenerationChanges(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_1",
@@ -1038,15 +1040,15 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
-	_, err = h.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
+	gateway, err := h.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_runtime_restart",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_runtime_restart"),
 
 		Now: now.Add(3 * time.Second),
 	})
-	if !errors.Is(err, bridge.ErrTokenRevoked) {
-		t.Fatalf("MintBridgeToken() after runtime restart error = %v, want %v", err, bridge.ErrTokenRevoked)
+	if err != nil || gateway.GatewayToken == "" {
+		t.Fatalf("MintBridgeToken() after runtime restart = %#v, %v", gateway, err)
 	}
 }
 
@@ -1342,7 +1344,7 @@ func TestCapabilityTargetProjectorMayAddHostDerivedFields(t *testing.T) {
 	}
 }
 
-func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T) {
+func TestCallPluginMethodBindsCurrentRuntimeAfterGenerationChanges(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_1",
@@ -1360,8 +1362,9 @@ func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	runtime.health.RuntimeGenerationID = "runtime_generation_2"
+	runtime.result = capability.Result{Data: map[string]any{}}
 
-	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceInstanceID: "surface_rpc",
 
@@ -1369,12 +1372,11 @@ func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.
 		GatewayToken:    gateway.GatewayToken,
 		Method:          "worker.echo",
 		Params:          map[string]any{"message": "hello"},
-	})
-	if !errors.Is(err, bridge.ErrTokenRevoked) {
-		t.Fatalf("CallPluginMethod() after runtime restart error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}); err != nil {
+		t.Fatalf("CallPluginMethod() after runtime restart error = %v", err)
 	}
-	if runtime.calls != 0 {
-		t.Fatalf("runtime calls = %d, want 0", runtime.calls)
+	if runtime.calls != 1 || runtime.lastLease.RuntimeGenerationID != "runtime_generation_2" {
+		t.Fatalf("runtime dispatch after restart = calls %d lease %#v", runtime.calls, runtime.lastLease)
 	}
 }
 
@@ -4269,17 +4271,6 @@ func TestRecoverEnabledRestoresRuntimeState(t *testing.T) {
 			t.Errorf("restarted.Close() error = %v", err)
 		}
 	})
-
-	if _, err := restarted.MintConnectionGrant(ctx, MintConnectionGrantRequest{
-		PluginInstanceID:    enabled.PluginInstanceID,
-		ConnectorID:         "mysql",
-		Transport:           connectivity.TransportTCP,
-		Destination:         "db.example.com:3306",
-		RuntimeGenerationID: "runtime_gen_1",
-		TTL:                 time.Minute,
-	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
-		t.Fatalf("MintConnectionGrant(before refresh) error = %v, want ErrConnectorDenied", err)
-	}
 
 	recovered, err := restarted.RecoverEnabled(ctx)
 	if err != nil {

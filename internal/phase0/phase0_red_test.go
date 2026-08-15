@@ -21,11 +21,13 @@ func compatPath(t *testing.T, name string) string {
 
 func TestPhase0FrozenV114ArtifactsAreImmutable(t *testing.T) {
 	for _, fixture := range []struct {
-		name string
-		sha  string
+		name       string
+		sha        string
+		workerPath string
+		workerSHA  string
 	}{
 		{name: "ui-only.redevplugin", sha: "e9d5e320fb92a2df27fc8573470dfa17e14845711f78b87acc8c27155e86cfd9"},
-		{name: "worker.redevplugin", sha: "fec2d584d9a48744d6b0df2cde59c61671af878780308388c806c4f7fd444e71"},
+		{name: "worker.redevplugin", sha: "fec2d584d9a48744d6b0df2cde59c61671af878780308388c806c4f7fd444e71", workerPath: "workers/memos.wasm", workerSHA: "b62b6e23a39c7bd43de9aadee055695f5586939349e2eee1e8218c81f3b4401f"},
 	} {
 		raw, err := os.ReadFile(compatPath(t, fixture.name))
 		if err != nil {
@@ -41,6 +43,20 @@ func TestPhase0FrozenV114ArtifactsAreImmutable(t *testing.T) {
 		}
 		if pkg.Manifest.SchemaVersion != "redevplugin.manifest.v8" {
 			t.Fatalf("%s schema = %q, want frozen v8", fixture.name, pkg.Manifest.SchemaVersion)
+		}
+		if fixture.workerPath != "" {
+			worker := pkg.Files[fixture.workerPath]
+			workerDigest := sha256.Sum256(worker)
+			if got := hex.EncodeToString(workerDigest[:]); got != fixture.workerSHA {
+				t.Fatalf("%s changed: got %s want %s", fixture.workerPath, got, fixture.workerSHA)
+			}
+			runtimeFixture, err := os.ReadFile(filepath.Join("..", "..", "crates", "redevplugin-runtime", "testdata", "memos.wasm"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(worker, runtimeFixture) {
+				t.Fatal("frozen v1.1.4 worker differs from the byte-identical runtime execution fixture")
+			}
 		}
 	}
 }
@@ -67,48 +83,8 @@ func TestPhase0UnknownRequiredFeatureIsRejected(t *testing.T) {
 	}
 }
 
-func TestPhase0LargeBinaryReadUsesRawChunkedDataPlane(t *testing.T) {
-	assertContractGap(t, "worker ABI v1 raw data plane", "rdp_read_v1", "rdp_write_v1", "body_base64")
-}
-
-func TestPhase0WebSocketSupportsRepeatedMessages(t *testing.T) {
-	assertContractGap(t, "WebSocket long connection", "net.websocket.open", "MESSAGE_END", "WebSocketRoundTrip")
-}
-
-func TestPhase0TCPSupportsRepeatedReadWrite(t *testing.T) {
-	assertContractGap(t, "TCP stream handle", "net.tcp.connect", "rdp_read_v1", "TCPRoundTrip")
-}
-
-func TestPhase0BlockingReadDoesNotStarveAnotherPlugin(t *testing.T) {
-	assertContractGap(t, "per-invocation cancellable scheduler", "IO_READ", "per_plugin_concurrency", "detached")
-}
-
-func TestPhase0ResourceScopeSeparatesUsers(t *testing.T) {
-	assertContractGap(t, "resource handle owner binding", "OwnerUserHash", "RuntimeGeneration", "handle table")
-}
-
-func TestPhase0PanelOpenDoesNotWaitForRuntime(t *testing.T) {
-	assertContractGap(t, "immediate surface open", "catalog projection", "runtime spawn", "compatibility scan")
-}
-
 func TestPhase0StartupPublishesInventoryBeforeRuntimeReady(t *testing.T) {
 	assertContractGap(t, "startup inventory projection", "prewarm", "readiness future", "RUNTIME_UNAVAILABLE")
-}
-
-func TestPhase0FrozenWorkerRunsWithoutRebuild(t *testing.T) {
-	assertContractGap(t, "frozen worker execution", "artifact_sha256", "module cache", "cargo build")
-}
-
-func TestPhase0HTTPUsesStreamingBodyHandles(t *testing.T) {
-	assertContractGap(t, "HTTP upload and response handles", "net.http.begin", "net.http.finish", "rdp_read_v1")
-}
-
-func TestPhase0RevocationClosesAllResourceKinds(t *testing.T) {
-	assertContractGap(t, "unified resource revoke", "REVOKE_PLUGIN", "RESOURCE_CLOSED", "KindWebSocket")
-}
-
-func TestPhase0InstallConfirmationEnablesByDefault(t *testing.T) {
-	assertContractGap(t, "install enabled transaction", "DesiredEnabled", "needs_attention", "enabled")
 }
 
 func assertContractGap(t *testing.T, contract string, required ...string) {

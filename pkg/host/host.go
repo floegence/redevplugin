@@ -1605,7 +1605,24 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	if host.executions.beginTerminalMaintenance(maintenanceNow) {
 		host.executions.finishTerminalMaintenance()
 	}
+	hasEnabledStartupPlugins, err := host.publishStartupInventory(ctx)
+	if err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("publish startup plugin inventory: %w", err)
+	}
 	host.startSecurityAuditExporter()
+	if hasEnabledStartupPlugins {
+		startupContext := context.WithoutCancel(ctx)
+		host.startLifecycleJob(func(lifecycleContext context.Context) {
+			recoveryContext, cancel := context.WithCancel(startupContext)
+			stopCancellation := context.AfterFunc(lifecycleContext, cancel)
+			defer func() {
+				stopCancellation()
+				cancel()
+			}()
+			_, _ = host.recoverEnabled(recoveryContext)
+		})
+	}
 	openedHost = host
 	return openedHost, nil
 }
@@ -1868,14 +1885,6 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	if !ok || strings.TrimSpace(entry.SHA256) == "" {
 		return bridge.SurfaceBootstrap{}, fmt.Errorf("surface %q entry metadata is unavailable", req.SurfaceID)
 	}
-	runtimeGenerationID := h.surfaceGenerationID
-	if pluginHasWorkers(record.Manifest) {
-		binding, err := h.bindCompatibleWorkerRuntime(ctx, record)
-		if err != nil {
-			return bridge.SurfaceBootstrap{}, err
-		}
-		runtimeGenerationID = binding.RuntimeGenerationID
-	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.surface.opened", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
@@ -1892,7 +1901,7 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 		EntryPath:            surface.Entry,
 		EntrySHA256:          entry.SHA256,
 		RouteRole:            bridge.RouteRoleTrustedParent,
-		RuntimeGenerationID:  runtimeGenerationID,
+		RuntimeGenerationID:  h.surfaceGenerationID,
 		OwnerSessionHash:     session.OwnerSessionHash,
 		OwnerUserHash:        session.OwnerUserHash,
 		OwnerEnvHash:         session.OwnerEnvHash,
@@ -2439,7 +2448,7 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 		validation.Session.SessionChannelIDHash != session.SessionChannelIDHash {
 		return bridge.GatewayTokenResult{}, bridge.ErrTokenAudience
 	}
-	if err := h.requireSurfaceRuntimeGeneration(ctx, validation.Session.PluginInstanceID, validation.Session.SurfaceInstanceID, validation.Session.RuntimeGenerationID, req.Now); err != nil {
+	if err := h.requireSurfaceGeneration(validation.Session.SurfaceInstanceID, validation.Session.RuntimeGenerationID, req.Now); err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
 	record, err := h.getPluginRecord(ctx, validation.Session.PluginInstanceID)
@@ -3023,7 +3032,7 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 		return resolvedMethodCall{}, err
 	}
 	audience := token.Audience
-	if err := h.requireSurfaceRuntimeGeneration(ctx, audience.PluginInstanceID, audience.SurfaceInstanceID, audience.RuntimeGenerationID, req.Now); err != nil {
+	if err := h.requireSurfaceGeneration(audience.SurfaceInstanceID, audience.RuntimeGenerationID, req.Now); err != nil {
 		return resolvedMethodCall{}, err
 	}
 	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, req.session, pluginRefFromRecord(record), method)
@@ -4679,6 +4688,13 @@ func (h *Host) validateEnabledRuntimeState(ctx context.Context, record registry.
 }
 
 func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
+	if err := h.recoverEnabledRuntimeState(ctx, record); err != nil {
+		return err
+	}
+	return h.publishEnabledSurfaces(ctx, record)
+}
+
+func (h *Host) recoverEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
 	if record.EnableState != registry.EnableEnabled {
 		return nil
 	}
@@ -4690,10 +4706,7 @@ func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.P
 			return err
 		}
 	}
-	if err := h.prepareEnabledRuntimeState(ctx, record); err != nil {
-		return err
-	}
-	return h.publishEnabledSurfaces(ctx, record)
+	return h.prepareEnabledRuntimeState(ctx, record)
 }
 
 func (h *Host) prepareEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
@@ -5102,7 +5115,7 @@ func (h *Host) refreshEnabledPlugins(ctx context.Context) ([]refreshEnabledPlugi
 			for index := range jobs {
 				record := enabled[index]
 				pluginCtx, cancel := context.WithTimeout(ctx, h.refreshPluginTimeout)
-				err := h.refreshEnabledRuntimeState(pluginCtx, record)
+				err := h.recoverEnabledRuntimeState(pluginCtx, record)
 				cancel()
 				if err != nil {
 					h.reportLifecycleDiagnostic(
@@ -5714,20 +5727,8 @@ func (h *Host) RuntimeHealth(ctx context.Context) (RuntimeHealth, error) {
 	return publicRuntimeHealth(health), nil
 }
 
-func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, pluginInstanceID, surfaceInstanceID, boundGenerationID string, now time.Time) error {
-	record, err := h.getPluginRecord(ctx, pluginInstanceID)
-	if err != nil {
-		return err
-	}
-	currentGenerationID := h.surfaceGenerationID
-	if pluginHasWorkers(record.Manifest) {
-		binding, err := h.bindCompatibleWorkerRuntime(ctx, record)
-		if err != nil {
-			return err
-		}
-		currentGenerationID = binding.RuntimeGenerationID
-	}
-	if strings.TrimSpace(boundGenerationID) == currentGenerationID {
+func (h *Host) requireSurfaceGeneration(surfaceInstanceID, boundGenerationID string, now time.Time) error {
+	if strings.TrimSpace(boundGenerationID) == h.surfaceGenerationID {
 		return nil
 	}
 	h.surfaceTokens.DisposeSurface(surfaceInstanceID, now)

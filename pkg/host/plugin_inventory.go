@@ -2,14 +2,16 @@ package host
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 // PluginActionBlockedReason is the closed set of reasons an installed plugin
@@ -80,6 +82,29 @@ func (h *Host) ListPluginInventory(ctx context.Context) ([]PluginInventoryRecord
 	return result, nil
 }
 
+func (h *Host) publishStartupInventory(ctx context.Context) (bool, error) {
+	if _, ok := sessionctx.FromContext(ctx); !ok {
+		return false, nil
+	}
+	records, err := h.listPluginRecords(ctx)
+	if err != nil {
+		return false, err
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].PluginInstanceID < records[j].PluginInstanceID
+	})
+	hasEnabled := false
+	for _, record := range records {
+		if record.EnableState == registry.EnableEnabled {
+			hasEnabled = true
+			if err := h.publishEnabledSurfaces(ctx, record); err != nil {
+				return false, err
+			}
+		}
+	}
+	return hasEnabled, nil
+}
+
 func (h *Host) pluginActionState(ctx context.Context, record registry.PluginRecord) PluginActionState {
 	state := PluginActionState{CanUninstall: true}
 	if record.DeletedAt != nil {
@@ -105,21 +130,6 @@ func (h *Host) pluginActionState(ctx context.Context, record registry.PluginReco
 	}
 	if state.BlockedReason == "" && !registry.RunnablePluginRecord(record) {
 		state.BlockedReason = PluginActionBlockedPackageInvalid
-	}
-	if state.BlockedReason == "" && record.EnableState == registry.EnableEnabled && pluginHasWorkers(record.Manifest) {
-		if h.adapters.RuntimeManager == nil {
-			state.BlockedReason = PluginActionBlockedRuntimeUnavailable
-		} else if health, err := h.adapters.RuntimeManager.Health(ctx); err != nil {
-			state.BlockedReason = PluginActionBlockedRuntimeUnavailable
-		} else if err := validateRuntimeManagerHealth(health, health.Descriptor); err != nil {
-			if errors.Is(err, ErrPluginRuntimeIncompatible) {
-				state.BlockedReason = PluginActionBlockedIncompatible
-			} else {
-				state.BlockedReason = PluginActionBlockedRuntimeUnavailable
-			}
-		} else if err := validateWorkerRuntimeDescriptor(record, health.Descriptor, health.Descriptor.Target()); err != nil {
-			state.BlockedReason = PluginActionBlockedIncompatible
-		}
 	}
 	if state.BlockedReason == "" && record.EnableState == registry.EnableEnabled {
 		state.BlockedReason = h.pluginAuthorizationBlockedReason(ctx, record)
@@ -217,11 +227,19 @@ func (h *Host) RecoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	if _, err := h.authorizeManagement(ctx, ManagementActionRecoverEnabledPlugins, authorizationCollectionTarget(ResourceRuntime)); err != nil {
 		return RecoverySnapshot{}, err
 	}
+	return h.recoverEnabled(ctx)
+}
+
+func (h *Host) recoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	h.recoveryMu.Lock()
 	defer h.recoveryMu.Unlock()
 	if h.recoverySnapshot != nil {
 		return cloneRecoverySnapshot(*h.recoverySnapshot), nil
 	}
+	// Runtime startup is an in-memory prerequisite of recovery, not a durable
+	// plugin state transition. A failed start is projected by the per-plugin
+	// recovery below and never rewrites the persisted enabled intent.
+	_ = h.startEnabledWorkerRuntime(ctx)
 	results, err := h.refreshEnabledPlugins(ctx)
 	if err != nil {
 		return RecoverySnapshot{}, err
@@ -244,6 +262,45 @@ func (h *Host) RecoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	copy := cloneRecoverySnapshot(snapshot)
 	h.recoverySnapshot = &copy
 	return cloneRecoverySnapshot(*h.recoverySnapshot), nil
+}
+
+func (h *Host) startEnabledWorkerRuntime(ctx context.Context) error {
+	if h.adapters.RuntimeManager == nil {
+		return nil
+	}
+	records, err := h.listPluginRecords(ctx)
+	if err != nil {
+		return err
+	}
+	hasEnabledWorker := false
+	for _, record := range records {
+		if record.EnableState == registry.EnableEnabled && pluginHasWorkers(record.Manifest) {
+			hasEnabledWorker = true
+			break
+		}
+	}
+	if !hasEnabledWorker {
+		return nil
+	}
+
+	health, healthErr := h.adapters.RuntimeManager.Health(ctx)
+	if healthErr == nil && validateRuntimeManagerHealth(health, health.Descriptor) == nil {
+		return nil
+	}
+	target := health.Descriptor.Target()
+	if h.runtimeModule != nil {
+		if moduleDescriptor := h.runtimeModule.Descriptor(); moduleDescriptor.PlatformVersion().String() != "" {
+			target = moduleDescriptor.Target().classifierTarget()
+		}
+	}
+	if err := runtimetarget.Validate(target); err != nil {
+		if healthErr != nil {
+			return healthErr
+		}
+		return err
+	}
+	_, err = h.StartRuntime(ctx, StartRuntimeRequest{Target: target})
+	return err
 }
 
 func (h *Host) RetryPluginRecovery(ctx context.Context, pluginInstanceID string) (PluginRecoveryResult, error) {
