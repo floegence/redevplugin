@@ -186,6 +186,12 @@ func TestStableServiceErrorDistinguishesNotEmptyAndNetworkFailures(t *testing.T)
 	}
 }
 
+func TestStableServiceErrorPreservesMountUnavailable(t *testing.T) {
+	if code, retryable := stableServiceError(ErrMountUnavailable); code != "MOUNT_UNAVAILABLE" || retryable {
+		t.Fatalf("mount unavailable mapping = (%q, %t), want (MOUNT_UNAVAILABLE, false)", code, retryable)
+	}
+}
+
 func TestServiceWebSocketCloseUsesRequestedCodeAndReason(t *testing.T) {
 	closed := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

@@ -79,3 +79,13 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, ErrorCode};
+
+    #[test]
+    fn preserves_mount_unavailable_abi_status() {
+        assert_eq!(Error::from_abi_status(-15).code, ErrorCode::MountUnavailable);
+    }
+}

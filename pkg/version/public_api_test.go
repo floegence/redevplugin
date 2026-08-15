@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -16,6 +17,9 @@ func TestPublicAPICatalogDoesNotExposeInternalContractVersions(t *testing.T) {
 	limits := catalog.MinimumResources
 	if limits.ControlResponseBytes != 64<<10 || limits.IOChunkBytes != 64<<10 || limits.OpenFiles < 64 || limits.OpenConnections < 32 || limits.OpenWatches < 8 {
 		t.Fatalf("public resource guarantees regressed: %#v", catalog)
+	}
+	if !slices.Contains(catalog.StableErrorCodes, "MOUNT_UNAVAILABLE") {
+		t.Fatal("public API catalog does not expose MOUNT_UNAVAILABLE")
 	}
 }
 

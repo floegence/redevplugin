@@ -4154,6 +4154,17 @@ fn abi_status_for_error(error: &str) -> i32 {
     }
 }
 
+#[cfg(test)]
+mod mount_unavailable_contract_tests {
+    use super::{abi_error_code, abi_status_for_error};
+
+    #[test]
+    fn preserves_mount_unavailable_across_worker_abi() {
+        assert_eq!(abi_status_for_error("MOUNT_UNAVAILABLE: workspace is absent"), -15);
+        assert_eq!(abi_error_code(-15), "MOUNT_UNAVAILABLE");
+    }
+}
+
 fn record_io_error(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     status: i32,

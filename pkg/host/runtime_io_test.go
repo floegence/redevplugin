@@ -13,10 +13,22 @@ import (
 
 type recordingHostMountAdapter struct {
 	list MountListRequest
+	resolveErr error
 }
 
-func (*recordingHostMountAdapter) ResolveMount(context.Context, MountRequest) (Mount, error) {
+func (adapter *recordingHostMountAdapter) ResolveMount(context.Context, MountRequest) (Mount, error) {
+	if adapter.resolveErr != nil {
+		return Mount{}, adapter.resolveErr
+	}
 	return Mount{}, errors.New("unexpected ResolveMount")
+}
+
+func TestHostMountResolverPreservesMountUnavailable(t *testing.T) {
+	resolver := hostMountResolver{adapter: &recordingHostMountAdapter{resolveErr: ErrMountUnavailable}}
+	_, err := resolver.ResolveMount(context.Background(), runtimeIOTestInvocation("invocation-mount", "session-mount", "channel-mount"), "workspace")
+	if !errors.Is(err, resourceio.ErrMountUnavailable) {
+		t.Fatalf("ResolveMount() error = %v, want resourceio.ErrMountUnavailable", err)
+	}
 }
 
 func (adapter *recordingHostMountAdapter) ListMounts(_ context.Context, request MountListRequest) ([]Mount, error) {
