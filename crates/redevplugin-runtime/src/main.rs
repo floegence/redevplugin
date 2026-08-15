@@ -6103,7 +6103,7 @@ mod tests {
     }
 
     fn signed_worker_invocation_fixture() -> &'static str {
-        include_str!("../testdata/runtime-lease-signature-v1-invocation.json")
+        include_str!("../testdata/runtime-lease-signature-v2-invocation.json")
     }
 
     fn execute_worker_module_for_test<'a>(

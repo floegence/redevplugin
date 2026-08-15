@@ -80,7 +80,7 @@ test("Rust source package metadata matches the closed platform topology", () => 
 
 test("crate-local fixtures remain exact copies of their canonical repository inputs", () => {
   for (const [canonical, local] of [
-    ["testdata/contracts/runtime-lease-signature-v1.json", "crates/redevplugin-runtime/testdata/runtime-lease-signature-v1.json"],
+    ["testdata/contracts/runtime-lease-signature-v2.json", "crates/redevplugin-runtime/testdata/runtime-lease-signature-v2.json"],
     ["testdata/contracts/ipc/missing_required.json", "crates/redevplugin-runtime/testdata/ipc/missing_required.json"],
     ["testdata/contracts/ipc/replay_frame.json", "crates/redevplugin-runtime/testdata/ipc/replay_frame.json"],
     ["testdata/contracts/ipc/runtime_generation_mismatch.json", "crates/redevplugin-runtime/testdata/ipc/runtime_generation_mismatch.json"],
@@ -90,7 +90,7 @@ test("crate-local fixtures remain exact copies of their canonical repository inp
     ["testdata/contracts/ipc/valid_validate_handle_grant.json", "crates/redevplugin-runtime/testdata/ipc/valid_validate_handle_grant.json"],
     ["testdata/contracts/wasm/invalid-final-opcode.hex", "crates/redevplugin-runtime/testdata/wasm/invalid-final-opcode.hex"],
     ["testdata/contracts/wasm/table-maximum-exceeds-limit.hex", "crates/redevplugin-runtime/testdata/wasm/table-maximum-exceeds-limit.hex"],
-    ["testdata/contracts/runtime-lease-signature-v1-invocation.json", "crates/redevplugin-runtime/testdata/runtime-lease-signature-v1-invocation.json"],
+    ["testdata/contracts/runtime-lease-signature-v2-invocation.json", "crates/redevplugin-runtime/testdata/runtime-lease-signature-v2-invocation.json"],
     ["examples/plugins/memos/workers/memos.wasm", "crates/redevplugin-runtime/testdata/memos.wasm"],
   ]) {
     assert.equal(readFileSync(canonical).compare(readFileSync(local)), 0, local);

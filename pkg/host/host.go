@@ -7103,6 +7103,10 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
+	resourceScope, err := req.session.ResourceScope(sessionctx.ScopeKind(worker.Scope))
+	if err != nil {
+		return dispatch, err
+	}
 	payload.StorageHandleGrants, err = h.mintWorkerStorageHandleGrants(ctx, record, method, runtimeBinding, now)
 	if err != nil {
 		return dispatch, err
@@ -7191,10 +7195,12 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		PluginID:               lease.PluginID,
 		PluginVersion:          lease.PluginVersion,
 		ActiveFingerprint:      lease.ActiveFingerprint,
+		InvocationID:           invocationID,
+		ScopeKind:              resourceScope.Kind,
 		SurfaceInstanceID:      lease.SurfaceInstanceID,
 		OwnerSessionHash:       lease.OwnerSessionHash,
-		OwnerUserHash:          lease.OwnerUserHash,
-		OwnerEnvHash:           lease.OwnerEnvHash,
+		OwnerUserHash:          resourceScope.OwnerUserHash,
+		OwnerEnvHash:           resourceScope.OwnerEnvHash,
 		SessionChannelIDHash:   lease.SessionChannelIDHash,
 		BridgeChannelID:        lease.BridgeChannelID,
 		RuntimeGenerationID:    lease.RuntimeGenerationID,

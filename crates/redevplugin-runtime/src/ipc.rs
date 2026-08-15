@@ -17,7 +17,7 @@ pub use contract_set_gen::CONTRACT_SET_SHA256;
 
 pub const RUST_IPC_VERSION: &str = "rust-ipc-v6";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
-pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";
+pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v2";
 
 pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
 pub const RUNTIME_LEASE_SIGNATURE_ALGORITHM: &str = "ed25519";
@@ -384,7 +384,7 @@ mod property_gates {
         ) {
             let nonce = nonce.into_iter().map(|byte| format!("{byte:02x}")).collect::<String>();
             let fixture: serde_json::Value = serde_json::from_str(include_str!(
-                "../testdata/runtime-lease-signature-v1.json"
+                "../testdata/runtime-lease-signature-v2.json"
             ))
             .unwrap();
             let mut lease = fixture.get("lease").cloned().unwrap();
@@ -569,6 +569,8 @@ struct WorkerLeasePayload {
     plugin_id: Option<String>,
     plugin_version: Option<String>,
     active_fingerprint: Option<String>,
+    invocation_id: Option<String>,
+    scope_kind: Option<String>,
     surface_instance_id: Option<String>,
     owner_session_hash: Option<String>,
     owner_user_hash: Option<String>,
@@ -1533,6 +1535,24 @@ impl ParsedWorkerInvocation {
         ] {
             validate_runtime_lease_string_binding(lease_value, invocation_value, field, true)?;
         }
+        let scope_kind = required_string(&lease.scope_kind, "scope_kind")?;
+        validate_runtime_lease_string_binding(
+            &lease.scope_kind,
+            &invocation.worker_scope,
+            "scope_kind",
+            true,
+        )?;
+        required_string(&lease.invocation_id, "invocation_id")?;
+        match scope_kind.as_str() {
+            "user" => validate_runtime_lease_string_binding(
+                &lease.owner_user_hash,
+                &invocation.owner_user_hash,
+                "owner_user_hash",
+                true,
+            )?,
+            "environment" if optional_string_ref(&lease.owner_user_hash).is_none() => {}
+            _ => return Err(invalid_field("runtime lease resource scope")),
+        }
         for (lease_value, invocation_value, field) in [
             (
                 &lease.surface_instance_id,
@@ -1543,11 +1563,6 @@ impl ParsedWorkerInvocation {
                 &lease.owner_session_hash,
                 &invocation.owner_session_hash,
                 "owner_session_hash",
-            ),
-            (
-                &lease.owner_user_hash,
-                &invocation.owner_user_hash,
-                "owner_user_hash",
             ),
             (
                 &lease.owner_env_hash,
@@ -1787,6 +1802,17 @@ fn runtime_lease_signature_payload_json(
         &required_string(&lease.active_fingerprint, "active_fingerprint")?,
         true,
     );
+    append_json_string_field(
+        &mut out,
+        "invocation_id",
+        &required_string(&lease.invocation_id, "invocation_id")?,
+        true,
+    );
+    let scope_kind = required_string(&lease.scope_kind, "scope_kind")?;
+    if !matches!(scope_kind.as_str(), "user" | "environment") {
+        return Err(invalid_field("runtime lease scope_kind"));
+    }
+    append_json_string_field(&mut out, "scope_kind", &scope_kind, true);
     append_json_i64_field(&mut out, "issued_at_unix_ms", issued_at_unix_ms);
     append_json_string_field(&mut out, "method", method.trim(), true);
     let effect = required_string(&lease.effect, "effect")?;
@@ -1803,6 +1829,13 @@ fn runtime_lease_signature_payload_json(
         &required_string(&lease.execution, "execution")?,
         true,
     );
+    match scope_kind.as_str() {
+        "user" => {
+            required_string(&lease.owner_user_hash, "owner_user_hash")?;
+        }
+        "environment" if optional_string_ref(&lease.owner_user_hash).is_none() => {}
+        _ => return Err(invalid_field("runtime lease resource scope")),
+    }
     validate_runtime_execution_binding(&lease.execution, &lease.execution_id)?;
     let execution_id = optional_string(&lease.execution_id);
     append_json_optional_string_field(&mut out, "execution_id", Some(&execution_id));
@@ -4801,6 +4834,8 @@ mod tests {
             "plugin_id",
             "plugin_version",
             "active_fingerprint",
+            "invocation_id",
+            "scope_kind",
             "owner_env_hash",
             "target_descriptor_hashes",
             "limits",
@@ -4978,6 +5013,8 @@ mod tests {
             "plugin_id": "com.example.worker",
             "plugin_version": "1.2.3",
             "active_fingerprint": "sha256:active",
+            "invocation_id": "invoke_lease_signature",
+            "scope_kind": "user",
             "issued_at_unix_ms": 1783161900000_i64,
             "method": "worker.echo",
             "effect": "read",
@@ -5015,7 +5052,7 @@ mod tests {
                 .expect("payload");
         assert_eq!(
             payload,
-            r#"{"schema_version":"redevplugin.runtime_execution_lease.v1","token_kind":"runtime_execution_lease","lease_id":"rel_lease_signature","token_id":"rel_token_signature","lease_nonce":"nonce_1234567890","plugin_instance_id":"plugini_1","plugin_id":"com.example.worker","plugin_version":"1.2.3","active_fingerprint":"sha256:active","issued_at_unix_ms":1783161900000,"method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_lease_signature","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","target_descriptor_hashes":["method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"limits":{"timeout_ms":2000,"memory_bytes":65536,"max_payload_bytes":4096,"max_stream_bytes_per_sec":1024},"policy_revision":11,"management_revision":12,"revoke_epoch":13,"expires_at_unix_ms":1783161930000,"runtime_shard_id":"rtshard_1","runtime_instance_id":"rtinst_1","runtime_generation_id":"rtgen_1","ipc_channel_id":"ipc_1","connection_nonce":"connection_nonce_1234567890","key_id":"host_ephemeral_key_1"}"#
+            r#"{"schema_version":"redevplugin.runtime_execution_lease.v2","token_kind":"runtime_execution_lease","lease_id":"rel_lease_signature","token_id":"rel_token_signature","lease_nonce":"nonce_1234567890","plugin_instance_id":"plugini_1","plugin_id":"com.example.worker","plugin_version":"1.2.3","active_fingerprint":"sha256:active","invocation_id":"invoke_lease_signature","scope_kind":"user","issued_at_unix_ms":1783161900000,"method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_lease_signature","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","target_descriptor_hashes":["method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"limits":{"timeout_ms":2000,"memory_bytes":65536,"max_payload_bytes":4096,"max_stream_bytes_per_sec":1024},"policy_revision":11,"management_revision":12,"revoke_epoch":13,"expires_at_unix_ms":1783161930000,"runtime_shard_id":"rtshard_1","runtime_instance_id":"rtinst_1","runtime_generation_id":"rtgen_1","ipc_channel_id":"ipc_1","connection_nonce":"connection_nonce_1234567890","key_id":"host_ephemeral_key_1"}"#
         );
         assert!(!payload.contains("not-part-of-the-payload"));
     }
@@ -5023,7 +5060,7 @@ mod tests {
     #[test]
     fn runtime_lease_signature_shared_fixture_matches_go() {
         let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../testdata/runtime-lease-signature-v1.json"))
+            serde_json::from_str(include_str!("../testdata/runtime-lease-signature-v2.json"))
                 .expect("shared runtime lease fixture");
         let lease = fixture
             .get("lease")
@@ -6413,7 +6450,7 @@ mod tests {
     }
 
     fn runtime_lease_invocation_fixture() -> &'static str {
-        include_str!("../testdata/runtime-lease-signature-v1-invocation.json")
+        include_str!("../testdata/runtime-lease-signature-v2-invocation.json")
     }
 
     fn signed_runtime_lease_invocation_for_test(
@@ -6429,6 +6466,8 @@ mod tests {
             "plugin_id": "com.example.worker",
             "plugin_version": "1.2.3",
             "active_fingerprint": "sha256:active",
+            "invocation_id": "invoke_lease_signature",
+            "scope_kind": "user",
             "issued_at_unix_ms": 1783161900000_i64,
             "method": "worker.echo",
             "effect": "read",

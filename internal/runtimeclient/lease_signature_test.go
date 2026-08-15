@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSignature(t *testing.T) {
@@ -44,6 +46,8 @@ func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSignature(t *testing.T) {
 		decoded["plugin_id"] != lease.PluginID ||
 		decoded["plugin_version"] != lease.PluginVersion ||
 		decoded["active_fingerprint"] != lease.ActiveFingerprint ||
+		decoded["invocation_id"] != lease.InvocationID ||
+		decoded["scope_kind"] != string(lease.ScopeKind) ||
 		decoded["issued_at_unix_ms"] != float64(lease.IssuedAtUnixMillis) ||
 		decoded["key_id"] != lease.KeyID ||
 		decoded["method"] != "worker.echo" ||
@@ -117,6 +121,9 @@ func TestRuntimeLeaseSignerRequiresClosedLeaseContract(t *testing.T) {
 		{name: "plugin id", mutate: func(lease *Lease) { lease.PluginID = "" }},
 		{name: "plugin version", mutate: func(lease *Lease) { lease.PluginVersion = "" }},
 		{name: "active fingerprint", mutate: func(lease *Lease) { lease.ActiveFingerprint = "" }},
+		{name: "invocation id", mutate: func(lease *Lease) { lease.InvocationID = "" }},
+		{name: "scope kind", mutate: func(lease *Lease) { lease.ScopeKind = "" }},
+		{name: "environment scope with user", mutate: func(lease *Lease) { lease.ScopeKind = sessionctx.ScopeEnvironment; lease.OwnerUserHash = "unexpected" }},
 		{name: "owner environment", mutate: func(lease *Lease) { lease.OwnerEnvHash = "" }},
 		{name: "target descriptors", mutate: func(lease *Lease) { lease.TargetDescriptorHashes = nil }},
 		{name: "duplicate target descriptor", mutate: func(lease *Lease) { lease.TargetDescriptorHashes = []string{"same", "same"} }},
@@ -140,7 +147,7 @@ func TestRuntimeLeaseSignerRequiresClosedLeaseContract(t *testing.T) {
 }
 
 func TestRuntimeLeaseSignatureSharedFixture(t *testing.T) {
-	raw, err := os.ReadFile("../../testdata/contracts/runtime-lease-signature-v1.json")
+	raw, err := os.ReadFile("../../testdata/contracts/runtime-lease-signature-v2.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,6 +323,8 @@ func runtimeLeaseSignatureTestLease(now time.Time) Lease {
 		PluginID:             "com.example.worker",
 		PluginVersion:        "1.2.3",
 		ActiveFingerprint:    "sha256:active",
+		InvocationID:         "invoke_lease_signature",
+		ScopeKind:            sessionctx.ScopeUser,
 		SurfaceInstanceID:    "surface_runtime",
 		OwnerSessionHash:     "session_hash",
 		OwnerUserHash:        "user_hash",

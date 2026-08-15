@@ -5695,6 +5695,8 @@ func workerInvocationLeaseFixture() Lease {
 		PluginID:             "com.example.worker",
 		PluginInstanceID:     "plugini_1",
 		ActiveFingerprint:    "sha256:active",
+		InvocationID:         "invoke_runtime_1",
+		ScopeKind:            sessionctx.ScopeUser,
 		RuntimeInstanceID:    "runtime_1",
 		RuntimeGenerationID:  "runtime_gen_test",
 		RuntimeShardID:       "runtime_shard_1",
@@ -5730,7 +5732,7 @@ func workerInvocationFixtureWithAccess(access workerBrokerAccess) []byte {
 	}
 	accessSum := sha256.Sum256(rawAccess)
 	accessHash := "sha256:" + hex.EncodeToString(accessSum[:])
-	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"default","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","execution_id":"execution_runtime_1","audit_correlation_id":"audit_runtime_1","broker_access":%s,"broker_access_sha256":%q,"params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA, rawAccess, accessHash))
+	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"user","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","execution_id":"execution_runtime_1","audit_correlation_id":"audit_runtime_1","broker_access":%s,"broker_access_sha256":%q,"params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA, rawAccess, accessHash))
 }
 
 func (s *ProcessSupervisor) invokeWorkerForTest(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error) {
@@ -5753,6 +5755,12 @@ func (s *ProcessSupervisor) invokeWorkerForTest(ctx context.Context, lease Lease
 	}
 	if lease.ActiveFingerprint == "" {
 		lease.ActiveFingerprint = "sha256:active"
+	}
+	if lease.InvocationID == "" {
+		lease.InvocationID = "invoke_runtime_1"
+	}
+	if lease.ScopeKind == "" {
+		lease.ScopeKind = sessionctx.ScopeUser
 	}
 	if lease.PluginInstanceID == "" {
 		lease.PluginInstanceID = "plugini_1"
@@ -5845,6 +5853,7 @@ func bindWorkerInvocationFixtureToLease(payload []byte, lease Lease) []byte {
 		"plugin_id":               lease.PluginID,
 		"plugin_instance_id":      lease.PluginInstanceID,
 		"active_fingerprint":      lease.ActiveFingerprint,
+		"worker_scope":            string(lease.ScopeKind),
 		"runtime_instance_id":     lease.RuntimeInstanceID,
 		"runtime_generation_id":   lease.RuntimeGenerationID,
 		"method":                  lease.Method,

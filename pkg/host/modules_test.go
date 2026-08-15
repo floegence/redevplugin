@@ -200,9 +200,9 @@ func TestFeaturesReturnsClosedConfiguredSet(t *testing.T) {
 func TestInstallPreflightReportsEveryMissingManifestFeatureBeforeSideEffects(t *testing.T) {
 	h, assets := newModulePreflightTestHost(t)
 	pkg := readTestPackage(t, buildWorkerNetworkFixturePackage(t))
-	pkg.Manifest.CapabilityBindings = []manifest.CapabilityBinding{{Contract: capabilitycontract.Pin{ContractID: "test"}}}
-	pkg.Manifest.Methods = append(pkg.Manifest.Methods, manifest.MethodSpec{Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteCoreAction}})
-	pkg.Manifest.Settings = &manifest.SettingsSpec{Fields: []manifest.SettingFieldSpec{{Type: "secret", SecretRef: "token"}}}
+	pkg.ManifestModel.CapabilityBindings = []manifest.CapabilityBinding{{Contract: capabilitycontract.Pin{ContractID: "test"}}}
+	pkg.ManifestModel.Methods = append(pkg.ManifestModel.Methods, manifest.MethodSpec{Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteCoreAction}})
+	pkg.ManifestModel.Settings = &manifest.SettingsSpec{Fields: []manifest.SettingFieldSpec{{Type: "secret", SecretRef: "token"}}}
 	disableModuleFeatures(h, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction)
 
 	_, err := h.installResolvedPackage(hostTestContext(), pkg, "plugini_module_preflight", packageTrustInput{LocalImport: true}, time.Time{}, nil)

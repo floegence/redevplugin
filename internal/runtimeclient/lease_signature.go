@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/internal/jsonvalue"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 const (
-	RuntimeLeaseSignatureSchemaVersion = "redevplugin.runtime_execution_lease.v1"
+	RuntimeLeaseSignatureSchemaVersion = "redevplugin.runtime_execution_lease.v2"
 	RuntimeLeaseKind                   = "runtime_execution_lease"
 	RuntimeLeaseSignatureAlgorithm     = "ed25519"
 	runtimeLeaseSignaturePrefix        = RuntimeLeaseSignatureAlgorithm + ":"
@@ -215,39 +216,41 @@ func SignRuntimeLease(lease Lease, method string, keyID string, privateKey ed255
 }
 
 type runtimeLeaseSignaturePayload struct {
-	SchemaVersion          string      `json:"schema_version"`
-	TokenKind              string      `json:"token_kind"`
-	LeaseID                string      `json:"lease_id"`
-	TokenID                string      `json:"token_id"`
-	LeaseNonce             string      `json:"lease_nonce"`
-	PluginInstanceID       string      `json:"plugin_instance_id"`
-	PluginID               string      `json:"plugin_id"`
-	PluginVersion          string      `json:"plugin_version"`
-	ActiveFingerprint      string      `json:"active_fingerprint"`
-	IssuedAtUnixMillis     int64       `json:"issued_at_unix_ms"`
-	Method                 string      `json:"method"`
-	Effect                 string      `json:"effect"`
-	Execution              string      `json:"execution"`
-	ExecutionID            string      `json:"execution_id,omitempty"`
-	AuditCorrelationID     string      `json:"audit_correlation_id"`
-	SurfaceInstanceID      string      `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash       string      `json:"owner_session_hash,omitempty"`
-	OwnerUserHash          string      `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash           string      `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash   string      `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID        string      `json:"bridge_channel_id,omitempty"`
-	TargetDescriptorHashes []string    `json:"target_descriptor_hashes"`
-	Limits                 LeaseLimits `json:"limits"`
-	PolicyRevision         uint64      `json:"policy_revision"`
-	ManagementRevision     uint64      `json:"management_revision"`
-	RevokeEpoch            uint64      `json:"revoke_epoch"`
-	ExpiresAtUnixMillis    int64       `json:"expires_at_unix_ms"`
-	RuntimeShardID         string      `json:"runtime_shard_id"`
-	RuntimeInstanceID      string      `json:"runtime_instance_id"`
-	RuntimeGenerationID    string      `json:"runtime_generation_id"`
-	IPCChannelID           string      `json:"ipc_channel_id"`
-	ConnectionNonce        string      `json:"connection_nonce"`
-	KeyID                  string      `json:"key_id"`
+	SchemaVersion          string               `json:"schema_version"`
+	TokenKind              string               `json:"token_kind"`
+	LeaseID                string               `json:"lease_id"`
+	TokenID                string               `json:"token_id"`
+	LeaseNonce             string               `json:"lease_nonce"`
+	PluginInstanceID       string               `json:"plugin_instance_id"`
+	PluginID               string               `json:"plugin_id"`
+	PluginVersion          string               `json:"plugin_version"`
+	ActiveFingerprint      string               `json:"active_fingerprint"`
+	InvocationID           string               `json:"invocation_id"`
+	ScopeKind              sessionctx.ScopeKind `json:"scope_kind"`
+	IssuedAtUnixMillis     int64                `json:"issued_at_unix_ms"`
+	Method                 string               `json:"method"`
+	Effect                 string               `json:"effect"`
+	Execution              string               `json:"execution"`
+	ExecutionID            string               `json:"execution_id,omitempty"`
+	AuditCorrelationID     string               `json:"audit_correlation_id"`
+	SurfaceInstanceID      string               `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash       string               `json:"owner_session_hash,omitempty"`
+	OwnerUserHash          string               `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash           string               `json:"owner_env_hash,omitempty"`
+	SessionChannelIDHash   string               `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID        string               `json:"bridge_channel_id,omitempty"`
+	TargetDescriptorHashes []string             `json:"target_descriptor_hashes"`
+	Limits                 LeaseLimits          `json:"limits"`
+	PolicyRevision         uint64               `json:"policy_revision"`
+	ManagementRevision     uint64               `json:"management_revision"`
+	RevokeEpoch            uint64               `json:"revoke_epoch"`
+	ExpiresAtUnixMillis    int64                `json:"expires_at_unix_ms"`
+	RuntimeShardID         string               `json:"runtime_shard_id"`
+	RuntimeInstanceID      string               `json:"runtime_instance_id"`
+	RuntimeGenerationID    string               `json:"runtime_generation_id"`
+	IPCChannelID           string               `json:"ipc_channel_id"`
+	ConnectionNonce        string               `json:"connection_nonce"`
+	KeyID                  string               `json:"key_id"`
 }
 
 func CanonicalRuntimeLeaseSignaturePayload(lease Lease, method string) ([]byte, error) {
@@ -268,6 +271,8 @@ func CanonicalRuntimeLeaseSignaturePayload(lease Lease, method string) ([]byte, 
 		PluginID:               strings.TrimSpace(lease.PluginID),
 		PluginVersion:          strings.TrimSpace(lease.PluginVersion),
 		ActiveFingerprint:      strings.TrimSpace(lease.ActiveFingerprint),
+		InvocationID:           strings.TrimSpace(lease.InvocationID),
+		ScopeKind:              lease.ScopeKind,
 		IssuedAtUnixMillis:     lease.IssuedAtUnixMillis,
 		Method:                 resolvedMethod,
 		Effect:                 strings.TrimSpace(lease.Effect),
@@ -319,6 +324,7 @@ func validateRuntimeLeaseCanonicalFields(lease Lease, resolvedMethod string) err
 		lease.PluginID,
 		lease.PluginVersion,
 		lease.ActiveFingerprint,
+		lease.InvocationID,
 		lease.PluginInstanceID,
 		resolvedMethod,
 		lease.Effect,
@@ -335,6 +341,10 @@ func validateRuntimeLeaseCanonicalFields(lease Lease, resolvedMethod string) err
 		if strings.TrimSpace(value) == "" {
 			return ErrRuntimeLeaseInvalid
 		}
+	}
+	resourceScope := sessionctx.ResourceScope{Kind: lease.ScopeKind, OwnerEnvHash: strings.TrimSpace(lease.OwnerEnvHash), OwnerUserHash: strings.TrimSpace(lease.OwnerUserHash)}
+	if !resourceScope.Valid() {
+		return ErrRuntimeLeaseInvalid
 	}
 	if len(leaseNonce) < 16 || len(connectionNonce) < 16 {
 		return ErrRuntimeLeaseInvalid
