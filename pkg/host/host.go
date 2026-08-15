@@ -3167,7 +3167,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	if pluginInstanceID == "" {
 		return registry.PluginRecord{}, errors.New("plugin_instance_id is required")
 	}
-	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
+	if err := h.preflightPackageFeatures(pkg.ManifestModel, trustInput); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if existing, err := h.getPluginRecord(ctx, pluginInstanceID); err == nil {
@@ -3311,7 +3311,7 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 			retErr = errors.Join(retErr, fmt.Errorf("restore release activation after failed update: %w", err))
 		}
 	}()
-	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
+	if err := h.preflightPackageFeatures(pkg.ManifestModel, trustInput); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, trustInput)
@@ -3997,11 +3997,14 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	next := recordFromVersionSnapshot(current, snapshot)
+	next, err := recordFromVersionSnapshot(current, snapshot)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := h.preflightPackageFeatures(next.Manifest, packageTrustInput{}); err != nil {
+	if err := h.preflightPackageFeatures(next.ManifestModel, packageTrustInput{}); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if err := h.preflightWorkerRuntime(ctx, next); err != nil {
@@ -4141,6 +4144,8 @@ func packageRecord(pkg pluginpkg.Package, trust registry.TrustAssessment, instan
 		TrustAssessment:     trust,
 		EnableState:         registry.EnableDisabled,
 		Manifest:            pkg.Manifest,
+		ManifestModel:       pkg.ManifestModel,
+		ManifestSource:      pkg.ManifestSource,
 		PackageEntries:      pkg.Entries,
 		CapabilityContracts: append([]capabilitycontract.Pin(nil), capabilityPins...),
 		Metadata:            cloneStringMap(metadata),
@@ -4251,6 +4256,10 @@ func versionSnapshot(record registry.PluginRecord, now time.Time) registry.Plugi
 		LocalImportProvenance:     cloneLocalImportProvenance(record.LocalImportProvenance),
 		CapabilityContracts:       append([]capabilitycontract.Pin(nil), record.CapabilityContracts...),
 		Manifest:                  record.Manifest,
+		ManifestModel:             record.ManifestModel,
+		ManifestSource:            record.ManifestSource,
+		ManifestAPI:               record.ManifestModel.API,
+		ManifestPermissions:       append([]manifest.PermissionID(nil), record.ManifestModel.Permissions...),
 		PackageEntries:            cloneEntries(record.PackageEntries),
 		RuntimeRequirement:        cloneRuntimeRequirement(record.RuntimeRequirement),
 		ActivatedAt:               now,
@@ -4258,7 +4267,7 @@ func versionSnapshot(record registry.PluginRecord, now time.Time) registry.Plugi
 	}
 }
 
-func recordFromVersionSnapshot(current registry.PluginRecord, snapshot registry.PluginVersion) registry.PluginRecord {
+func recordFromVersionSnapshot(current registry.PluginRecord, snapshot registry.PluginVersion) (registry.PluginRecord, error) {
 	next := current
 	next.Version = snapshot.Version
 	next.ActiveFingerprint = snapshot.ActiveFingerprint
@@ -4276,10 +4285,19 @@ func recordFromVersionSnapshot(current registry.PluginRecord, snapshot registry.
 	next.LocalImportProvenance = cloneLocalImportProvenance(snapshot.LocalImportProvenance)
 	next.CapabilityContracts = append([]capabilitycontract.Pin(nil), snapshot.CapabilityContracts...)
 	next.Manifest = snapshot.Manifest
+	next.ManifestModel = snapshot.ManifestModel
+	next.ManifestSource = snapshot.ManifestSource
+	if next.ManifestModel.PluginID() == "" {
+		var err error
+		next.ManifestModel, err = manifest.RestoreModel(snapshot.Manifest, snapshot.ManifestSource, snapshot.ManifestAPI, snapshot.ManifestPermissions)
+		if err != nil {
+			return registry.PluginRecord{}, err
+		}
+	}
 	next.PackageEntries = cloneEntries(snapshot.PackageEntries)
 	next.RuntimeRequirement = cloneRuntimeRequirement(snapshot.RuntimeRequirement)
 	next.Metadata = cloneStringMap(snapshot.Metadata)
-	return next
+	return next, nil
 }
 
 func cloneLocalImportProvenance(provenance *registry.LocalImportProvenance) *registry.LocalImportProvenance {
@@ -4308,11 +4326,11 @@ func cloneRuntimeRequirement(requirement *registry.RuntimeRequirement) *registry
 	}
 }
 
-func (h *Host) preflightPackageFeatures(pluginManifest manifest.Manifest, input packageTrustInput) error {
+func (h *Host) preflightPackageFeatures(pluginManifest manifest.Model, input packageTrustInput) error {
 	return h.requireFeatures(requiredPackageFeatures(pluginManifest, input))
 }
 
-func requiredPackageFeatures(pluginManifest manifest.Manifest, input packageTrustInput) []Feature {
+func requiredPackageFeatures(pluginManifest manifest.Model, input packageTrustInput) []Feature {
 	required := make([]Feature, 0, 6)
 	if input.ReleaseRef != nil || input.Release != nil {
 		required = append(required, FeatureRelease)
@@ -4323,10 +4341,10 @@ func requiredPackageFeatures(pluginManifest manifest.Manifest, input packageTrus
 	if len(pluginManifest.CapabilityBindings) > 0 || releaseRequiresCapabilities(input.Release) {
 		required = append(required, FeatureCapability)
 	}
-	if manifestRequiresConnectivity(pluginManifest) {
+	if modelRequiresConnectivity(pluginManifest) {
 		required = append(required, FeatureConnectivity)
 	}
-	if manifestRequiresSecrets(pluginManifest) {
+	if manifestRequiresSecrets(pluginManifest.Manifest) {
 		required = append(required, FeatureSecrets)
 	}
 	for _, method := range pluginManifest.Methods {
@@ -4348,6 +4366,16 @@ func releaseRequiresCapabilities(release *PluginPackageRelease) bool {
 		}
 	}
 	return false
+}
+
+func modelRequiresConnectivity(pluginManifest manifest.Model) bool {
+	for _, feature := range pluginManifest.API.RequiredFeatures {
+		switch feature {
+		case manifest.FeatureNetHTTP, manifest.FeatureNetWebSocket, manifest.FeatureNetTCP, manifest.FeatureNetUDP:
+			return true
+		}
+	}
+	return manifestRequiresConnectivity(pluginManifest.Manifest)
 }
 
 func manifestRequiresConnectivity(pluginManifest manifest.Manifest) bool {

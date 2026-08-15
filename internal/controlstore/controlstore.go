@@ -300,7 +300,7 @@ func canonicalizeSources(ctx context.Context, sources []Source, root string) ([]
 			if err := store.Close(); err != nil {
 				return nil, err
 			}
-			canonical.Version = 6
+			canonical.Version = registry.SQLiteSchemaVersion
 		case "session":
 			store, err := sessionscope.NewSQLiteStore(ctx, target, sessionscope.StoreOptions{})
 			if err != nil {
@@ -722,7 +722,7 @@ func inspectSources(sources []Source) error {
 func supportedSourceVersion(kind string, version int) bool {
 	switch kind {
 	case "registry":
-		return version >= 0 && version <= 6
+		return version >= 0 && version <= registry.SQLiteSchemaVersion
 	case "operation":
 		return version == 0 || version == 1
 	case "stream":

@@ -371,7 +371,7 @@ func (h *Host) inspectStagedExternalPackage(
 		return ExternalPackageInspection{}, err
 	}
 	intent.PluginInstanceID = instanceID
-	if err := h.preflightPackageFeatures(pkg.Manifest, packageTrustInput{}); err != nil {
+	if err := h.preflightPackageFeatures(pkg.ManifestModel, packageTrustInput{}); err != nil {
 		return ExternalPackageInspection{}, err
 	}
 	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, packageTrustInput{})

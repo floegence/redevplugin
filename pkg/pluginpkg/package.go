@@ -58,13 +58,16 @@ type PresentationIconAsset struct {
 }
 
 type Package struct {
-	Manifest          manifest.Manifest `json:"manifest"`
-	PackageHash       string            `json:"package_hash"`
-	ManifestHash      string            `json:"manifest_hash"`
-	CanonicalManifest string            `json:"canonical_manifest"`
-	Entries           []Entry           `json:"entries"`
-	EntriesHash       string            `json:"entries_hash"`
-	PackageSignature  *PackageSignature `json:"package_signature,omitempty"`
+	Manifest               manifest.Manifest `json:"manifest"`
+	ManifestModel          manifest.Model    `json:"-"`
+	ManifestSource         string            `json:"manifest_source,omitempty"`
+	PackageHash            string            `json:"package_hash"`
+	ManifestHash           string            `json:"manifest_hash"`
+	CanonicalManifest      string            `json:"canonical_manifest"`
+	CanonicalManifestBytes []byte            `json:"-"`
+	Entries                []Entry           `json:"entries"`
+	EntriesHash            string            `json:"entries_hash"`
+	PackageSignature       *PackageSignature `json:"package_signature,omitempty"`
 	// Files and SignatureFiles are owned materialized bytes. Borrowing APIs do
 	// not mutate them; AssetStore.PutOwnedPackage transfers and clears them.
 	Files          map[string][]byte `json:"-"`
@@ -464,6 +467,10 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 	if err != nil {
 		return Package{}, manifestDecodeValidationError(err)
 	}
+	normalizedManifest, err := manifest.DecodeModel(bytes.NewReader(manifestBytes))
+	if err != nil {
+		return Package{}, manifestDecodeValidationError(err)
+	}
 	if err := validatePackageArtifactBoundary(files); err != nil {
 		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_artifact_boundary")
 	}
@@ -482,7 +489,7 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 		entries = append(entries, entry)
 	}
 	sortEntries(entries)
-	canonicalManifest, err := canonicalJSON(decodedManifest)
+	canonicalManifest, err := manifest.CanonicalJSON(manifestBytes)
 	if err != nil {
 		return Package{}, wrapValidationError(ValidationCodeManifestInvalid, "manifest_canonical_json", "manifest.json", "", err)
 	}
@@ -496,13 +503,16 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_signature")
 	}
 	return Package{
-		Manifest:          decodedManifest,
-		PackageHash:       packageHash,
-		ManifestHash:      manifestHash,
-		CanonicalManifest: string(canonicalManifest),
-		Entries:           entries,
-		EntriesHash:       entriesHash,
-		PackageSignature:  packageSignature,
+		Manifest:               decodedManifest,
+		ManifestModel:          normalizedManifest,
+		ManifestSource:         normalizedManifest.SchemaSource,
+		PackageHash:            packageHash,
+		ManifestHash:           manifestHash,
+		CanonicalManifest:      string(canonicalManifest),
+		CanonicalManifestBytes: append([]byte(nil), canonicalManifest...),
+		Entries:                entries,
+		EntriesHash:            entriesHash,
+		PackageSignature:       packageSignature,
 	}, nil
 }
 

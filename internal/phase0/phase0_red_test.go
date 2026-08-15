@@ -46,7 +46,7 @@ func TestPhase0FrozenV114ArtifactsAreImmutable(t *testing.T) {
 }
 
 func TestPhase0V9UnknownOptionalFieldPreservesManifestHash(t *testing.T) {
-	raw := []byte(`{"schema_version":"redevplugin.manifest.v9","publisher":{"publisher_id":"example","display_name":"Example"},"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},"api":{"surface":1,"worker":1,"optional_features":[]},"permissions":[],"surfaces":[],"workers":[],"methods":[],"storage":{"stores":[]},"future":{"opaque":true}}`)
+	raw := []byte(`{"schema_version":"redevplugin.manifest.v9","publisher":{"publisher_id":"example","display_name":"Example"},"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},"api":{"surface":1,"worker":1,"optional_features":[]},"permissions":[],"presentation":{"locales":{"default":"en-US"}},"surfaces":[],"workers":[],"methods":[],"storage":{"stores":[]},"future":{"opaque":true}}`)
 	if _, err := manifest.Decode(bytes.NewReader(raw)); err != nil {
 		t.Fatalf("v9 optional field must be tolerated and normalized: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestPhase0V9UnknownOptionalFieldPreservesManifestHash(t *testing.T) {
 }
 
 func TestPhase0UnknownRequiredFeatureIsRejected(t *testing.T) {
-	raw := []byte(`{"schema_version":"redevplugin.manifest.v9","publisher":{"publisher_id":"example","display_name":"Example"},"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},"api":{"surface":1,"worker":1,"required_features":["io.future.v9"]},"permissions":[],"surfaces":[],"workers":[],"methods":[],"storage":{"stores":[]}}`)
+	raw := []byte(`{"schema_version":"redevplugin.manifest.v9","publisher":{"publisher_id":"example","display_name":"Example"},"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},"api":{"surface":1,"worker":1,"required_features":["io.future.v9"]},"permissions":[],"presentation":{"locales":{"default":"en-US"}},"surfaces":[],"workers":[],"methods":[],"storage":{"stores":[]}}`)
 	_, err := manifest.Decode(bytes.NewReader(raw))
 	if err == nil || !strings.Contains(strings.ToUpper(err.Error()), "UNSUPPORTED_FEATURE") {
 		t.Fatalf("unknown required feature error = %v, want stable UNSUPPORTED_FEATURE", err)

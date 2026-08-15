@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,189 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 )
+
+func TestSQLiteStorePersistsV9NormalizedManifestProjection(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	model, err := manifest.DecodeModel(strings.NewReader(`{
+		"schema_version":"redevplugin.manifest.v9",
+		"publisher":{"publisher_id":"example","display_name":"Example"},
+		"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},
+		"api":{"surface":1,"worker":1,"required_features":["fs.workspace.v1"],"optional_features":["fs.watch.v1","future.optional"]},
+		"permissions":["fs.workspace.read"],
+		"presentation":{"locales":{"default":"en-US"}},
+		"surfaces":[{"surface_id":"v9.view","kind":"view","label":"V9","entry":"ui/index.html"}],
+		"workers":[],"methods":[]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.PutPlugin(ctx, PluginRecord{
+		PluginInstanceID: "plugini_v9_projection", PublisherID: "example", PluginID: "com.example.v9", Version: "1.0.0",
+		ActiveFingerprint: "sha256:v9", TrustState: TrustVerified, EnableState: EnableEnabled,
+		Manifest: model.Manifest, ManifestModel: model, ManifestSource: model.SchemaSource,
+	}, PutOptions{Now: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, err := reopened.GetPlugin(ctx, stored.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ManifestSource != manifest.SchemaVersionV9 || got.ManifestModel.SchemaSource != manifest.SchemaVersionV9 ||
+		len(got.ManifestModel.API.RequiredFeatures) != 1 || got.ManifestModel.API.RequiredFeatures[0] != manifest.FeatureFSWorkspace ||
+		len(got.ManifestModel.API.OptionalFeatures) != 1 || got.ManifestModel.API.OptionalFeatures[0] != manifest.FeatureFSWatch ||
+		len(got.ManifestModel.Permissions) != 1 || got.ManifestModel.Permissions[0] != manifest.PermissionFSWorkspaceRead {
+		t.Fatalf("persisted v9 projection mismatch: %#v", got.ManifestModel)
+	}
+}
+
+func TestSQLiteStoreMigratesV6ManifestProjectionWithoutChangingAuthority(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.PutPlugin(ctx, PluginRecord{
+		PluginInstanceID: "plugini_v6_projection", PublisherID: "example", PluginID: "com.example.v8", Version: "1.0.0",
+		ActiveFingerprint: "sha256:frozen", PackageHash: "sha256:package", ManifestHash: "sha256:manifest", EntriesHash: "sha256:entries",
+		TrustState: TrustVerified, EnableState: EnableEnabled,
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.v8", Version: "1.0.0"},
+			NetworkAccess: &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{{ConnectorID: "api", Transport: "http"}}}},
+	}, PutOptions{Now: time.Date(2026, 8, 15, 1, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GrantPermission(ctx, permissions.GrantRequest{PluginInstanceID: record.PluginInstanceID, PermissionID: "legacy.permission", Now: time.Now()}, AuthorizationRevisionsFromRecord(record)); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"permissions_json", "optional_features_json", "required_features_json", "worker_api_major", "surface_api_major", "manifest_schema_source"} {
+		if _, err := store.db.ExecContext(context.Background(), `ALTER TABLE plugin_records DROP COLUMN `+column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 6`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	got, err := migrated.GetPlugin(ctx, record.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ActiveFingerprint != record.ActiveFingerprint || got.EnableState != EnableEnabled || got.ManifestSource != manifest.SchemaVersionV8 ||
+		len(got.ManifestModel.API.RequiredFeatures) != 1 || got.ManifestModel.API.RequiredFeatures[0] != manifest.FeatureNetHTTP ||
+		len(got.ManifestModel.Permissions) != 1 || got.ManifestModel.Permissions[0] != manifest.PermissionNetworkClient {
+		t.Fatalf("v6 migration changed authority or projection: %#v", got)
+	}
+	authorization, err := migrated.GetAuthorization(ctx, record.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authorization.Grants) != 1 || authorization.Grants[0].PermissionID != "legacy.permission" {
+		t.Fatalf("v6 migration lost permission grants: %#v", authorization.Grants)
+	}
+}
+
+func TestSQLiteStoreV6ManifestProjectionMigrationRollsBackOnInvalidRecord(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.PutPlugin(ctx, PluginRecord{
+		PluginInstanceID: "plugini_v6_invalid", PublisherID: "example", PluginID: "com.example.invalid", Version: "1.0.0",
+		TrustState: TrustVerified, EnableState: EnableDisabled,
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.invalid", Version: "1.0.0"}},
+	}, PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidManifest := `{"schema_version":"redevplugin.manifest.v9","plugin":{"plugin_id":"com.example.invalid","version":"1.0.0"}}`
+	if _, err := store.db.ExecContext(ctx, `UPDATE plugin_records SET manifest_json = ? WHERE owner_env_hash = ? AND plugin_instance_id = ?`, invalidManifest, record.OwnerEnvHash, record.PluginInstanceID); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"permissions_json", "optional_features_json", "required_features_json", "worker_api_major", "surface_api_major", "manifest_schema_source"} {
+		if _, err := store.db.ExecContext(ctx, `ALTER TABLE plugin_records DROP COLUMN `+column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 6`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSQLiteStore(ctx, path)
+	if reopened != nil {
+		_ = reopened.Close()
+	}
+	if !errors.Is(err, ErrIncompatiblePersistedManifest) {
+		t.Fatalf("migration error = %v, want %v", err, ErrIncompatiblePersistedManifest)
+	}
+	dsn, err := registrySQLiteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 6 {
+		t.Fatalf("failed migration changed schema version to %d", version)
+	}
+	var persisted string
+	if err := db.QueryRowContext(ctx, `SELECT manifest_json FROM plugin_records WHERE owner_env_hash = ? AND plugin_instance_id = ?`, record.OwnerEnvHash, record.PluginInstanceID).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != invalidManifest {
+		t.Fatalf("failed migration changed manifest: %s", persisted)
+	}
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(plugin_records)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typeName string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatal(err)
+		}
+		if name == "manifest_schema_source" {
+			t.Fatal("failed migration committed normalized manifest columns")
+		}
+	}
+}
 
 func TestSQLiteStoreRejectsRetiredPersistedManifestWithoutMutation(t *testing.T) {
 	for _, test := range []struct {

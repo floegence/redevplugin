@@ -23,7 +23,8 @@ import (
 )
 
 const maxRegistrySQLiteConnections = 8
-const registrySQLiteSchemaVersion = 6
+const SQLiteSchemaVersion = 7
+const registrySQLiteSchemaVersion = SQLiteSchemaVersion
 
 var ErrIncompatiblePersistedManifest = errors.New("persisted plugin manifest is incompatible")
 
@@ -167,7 +168,8 @@ func (s *SQLiteStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
-		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
+		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json,
+		manifest_schema_source, surface_api_major, worker_api_major, required_features_json, optional_features_json, permissions_json
 FROM plugin_records
 WHERE owner_env_hash = ? AND deleted_at IS NULL
 ORDER BY plugin_id ASC, plugin_instance_id ASC`, ownerEnvHash)
@@ -364,6 +366,14 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	if schemaVersion >= 1 {
+		if _, err := ensureNormalizedManifestColumns(ctx, tx, schemaVersion < 7); err != nil {
+			return err
+		}
+		if schemaVersion < 7 {
+			if err := migrateNormalizedManifestProjection(ctx, tx); err != nil {
+				return err
+			}
+		}
 		if err := validateCurrentRegistrySQLiteSchema(ctx, tx); err != nil {
 			return err
 		}
@@ -440,6 +450,12 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	updated_at INTEGER NOT NULL,
 	deleted_at INTEGER,
 		metadata_json TEXT NOT NULL,
+		manifest_schema_source TEXT NOT NULL DEFAULT 'redevplugin.manifest.v8',
+		surface_api_major INTEGER,
+		worker_api_major INTEGER,
+		required_features_json TEXT NOT NULL DEFAULT '[]',
+		optional_features_json TEXT NOT NULL DEFAULT '[]',
+		permissions_json TEXT NOT NULL DEFAULT '[]',
 		PRIMARY KEY(owner_env_hash, plugin_instance_id)
 	)`); err != nil {
 		return err
@@ -1012,7 +1028,11 @@ func validateCurrentRegistrySQLiteSchema(ctx context.Context, tx *sql.Tx) error 
 			"manifest_json": sqliteColumn("TEXT", 1, 0), "package_entries_json": sqliteColumn("TEXT", 1, 0), "version_history_json": sqliteColumn("TEXT", 1, 0),
 			"runtime_requirement_json": sqliteColumnDefault("TEXT", 1, 0, "'null'"), "installed_at": sqliteColumn("INTEGER", 1, 0),
 			"enabled_at": sqliteColumn("INTEGER", 0, 0), "updated_at": sqliteColumn("INTEGER", 1, 0), "deleted_at": sqliteColumn("INTEGER", 0, 0),
-			"metadata_json": sqliteColumn("TEXT", 1, 0),
+			"metadata_json":          sqliteColumn("TEXT", 1, 0),
+			"manifest_schema_source": sqliteColumnDefault("TEXT", 1, 0, "'redevplugin.manifest.v8'"),
+			"surface_api_major":      sqliteColumn("INTEGER", 0, 0), "worker_api_major": sqliteColumn("INTEGER", 0, 0),
+			"required_features_json": sqliteColumnDefault("TEXT", 1, 0, "'[]'"), "optional_features_json": sqliteColumnDefault("TEXT", 1, 0, "'[]'"),
+			"permissions_json": sqliteColumnDefault("TEXT", 1, 0, "'[]'"),
 		},
 		"plugin_permission_grants": {
 			"owner_env_hash": sqliteColumn("TEXT", 1, 1), "plugin_instance_id": sqliteColumn("TEXT", 1, 2), "permission_id": sqliteColumn("TEXT", 1, 3),
@@ -1266,6 +1286,164 @@ func ensureExternalPackageFactsColumns(ctx context.Context, tx *sql.Tx, allowMig
 	return added, nil
 }
 
+func ensureNormalizedManifestColumns(ctx context.Context, tx *sql.Tx, allowMigration bool) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_records)`)
+	if err != nil {
+		return false, err
+	}
+	found := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typeName string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
+			return false, err
+		}
+		found[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	specs := []struct {
+		name, definition string
+	}{
+		{"manifest_schema_source", "TEXT NOT NULL DEFAULT 'redevplugin.manifest.v8'"},
+		{"surface_api_major", "INTEGER"},
+		{"worker_api_major", "INTEGER"},
+		{"required_features_json", "TEXT NOT NULL DEFAULT '[]'"},
+		{"optional_features_json", "TEXT NOT NULL DEFAULT '[]'"},
+		{"permissions_json", "TEXT NOT NULL DEFAULT '[]'"},
+	}
+	added := false
+	for _, spec := range specs {
+		if found[spec.name] {
+			continue
+		}
+		if !allowMigration {
+			return false, fmt.Errorf("plugin_records.%s is missing from the current schema", spec.name)
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN `+spec.name+` `+spec.definition); err != nil {
+			return false, err
+		}
+		added = true
+	}
+	return added, nil
+}
+
+func migrateNormalizedManifestProjection(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+	SELECT owner_env_hash, plugin_instance_id, manifest_json, manifest_schema_source,
+	       surface_api_major, worker_api_major, required_features_json, optional_features_json, permissions_json
+FROM plugin_records`)
+	if err != nil {
+		return err
+	}
+	type projection struct {
+		owner, instance, manifestJSON   string
+		source                          sql.NullString
+		surface, worker                 sql.NullInt64
+		required, optional, permissions string
+	}
+	type update struct {
+		owner, instance, source         string
+		surface, worker                 any
+		required, optional, permissions string
+	}
+	var updates []update
+	for rows.Next() {
+		var item projection
+		if err := rows.Scan(&item.owner, &item.instance, &item.manifestJSON, &item.source, &item.surface, &item.worker, &item.required, &item.optional, &item.permissions); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var stored manifest.Manifest
+		if err := decodeRegistryJSON(item.manifestJSON, &stored); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if stored.SchemaVersion != manifest.SchemaVersionV8 {
+			_ = rows.Close()
+			return fmt.Errorf("%w: plugin %q uses %q; required %q", ErrIncompatiblePersistedManifest, item.instance, stored.SchemaVersion, manifest.SchemaVersionV8)
+		}
+		source := strings.TrimSpace(item.source.String)
+		if source == "" {
+			source = manifest.SchemaVersionV8
+		}
+		var api manifest.PublicAPIRequirement
+		if item.surface.Valid {
+			value := uint16(item.surface.Int64)
+			api.Surface = &value
+		}
+		if item.worker.Valid {
+			value := uint16(item.worker.Int64)
+			api.Worker = &value
+		}
+		var required, optional []manifest.FeatureID
+		if strings.TrimSpace(item.required) != "" {
+			if err := decodeRegistryJSON(item.required, &required); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("decode required features for plugin %q: %w", item.instance, err)
+			}
+		}
+		if strings.TrimSpace(item.optional) != "" {
+			if err := decodeRegistryJSON(item.optional, &optional); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("decode optional features for plugin %q: %w", item.instance, err)
+			}
+		}
+		var permissions []manifest.PermissionID
+		if strings.TrimSpace(item.permissions) != "" {
+			if err := decodeRegistryJSON(item.permissions, &permissions); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("decode permissions for plugin %q: %w", item.instance, err)
+			}
+		}
+		api.RequiredFeatures, api.OptionalFeatures = required, optional
+		model, err := manifest.RestoreModel(stored, source, api, permissions)
+		if err != nil {
+			return fmt.Errorf("normalize manifest for plugin %q: %w", item.instance, err)
+		}
+		requiredJSON, err := encodeRegistryJSON(model.API.RequiredFeatures)
+		if err != nil {
+			return err
+		}
+		optionalJSON, err := encodeRegistryJSON(model.API.OptionalFeatures)
+		if err != nil {
+			return err
+		}
+		permissionsJSON, err := encodeRegistryJSON(model.Permissions)
+		if err != nil {
+			return err
+		}
+		var surface, worker any
+		if model.API.Surface != nil {
+			surface = int64(*model.API.Surface)
+		}
+		if model.API.Worker != nil {
+			worker = int64(*model.API.Worker)
+		}
+		updates = append(updates, update{owner: item.owner, instance: item.instance, source: model.SchemaSource, surface: surface, worker: worker, required: requiredJSON, optional: optionalJSON, permissions: permissionsJSON})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE plugin_records
+SET manifest_schema_source = ?, surface_api_major = ?, worker_api_major = ?,
+    required_features_json = ?, optional_features_json = ?, permissions_json = ?
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`, item.source, item.surface, item.worker, item.required, item.optional, item.permissions, item.owner, item.instance); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateSQLitePluginSecurityFacts(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `
 SELECT
@@ -1276,7 +1454,8 @@ SELECT
     source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
     disabled_reason, policy_revision, management_revision,
     revoke_epoch, manifest_json, package_entries_json, version_history_json,
-    runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
+    runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json,
+    manifest_schema_source, surface_api_major, worker_api_major, required_features_json, optional_features_json, permissions_json
 FROM plugin_records`)
 	if err != nil {
 		return err
@@ -1510,7 +1689,8 @@ SELECT
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
-		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
+		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json,
+		manifest_schema_source, surface_api_major, worker_api_major, required_features_json, optional_features_json, permissions_json
 FROM plugin_records
 WHERE owner_env_hash = ? AND plugin_instance_id = ?`
 	if !includeDeleted {
@@ -1528,6 +1708,30 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`
 }
 
 func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) error {
+	if record.ManifestModel.PluginID() == "" {
+		normalized, err := manifest.Normalize(record.Manifest)
+		if err != nil {
+			return err
+		}
+		record.ManifestModel = normalized
+	}
+	if record.ManifestSource == "" {
+		record.ManifestSource = record.ManifestModel.SchemaSource
+	}
+	for index := range record.VersionHistory {
+		if record.VersionHistory[index].ManifestModel.PluginID() == "" {
+			normalized, err := manifest.Normalize(record.VersionHistory[index].Manifest)
+			if err != nil {
+				return err
+			}
+			record.VersionHistory[index].ManifestModel = normalized
+		}
+		if record.VersionHistory[index].ManifestSource == "" {
+			record.VersionHistory[index].ManifestSource = record.VersionHistory[index].ManifestModel.SchemaSource
+		}
+		record.VersionHistory[index].ManifestAPI = record.VersionHistory[index].ManifestModel.API
+		record.VersionHistory[index].ManifestPermissions = append([]manifest.PermissionID(nil), record.VersionHistory[index].ManifestModel.Permissions...)
+	}
 	record = normalizePluginSecurityFacts(record)
 	if err := validatePersistedPluginSecurityFacts(record); err != nil {
 		return err
@@ -1584,6 +1788,25 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	if err != nil {
 		return err
 	}
+	requiredFeaturesJSON, err := encodeRegistryJSON(record.ManifestModel.API.RequiredFeatures)
+	if err != nil {
+		return err
+	}
+	optionalFeaturesJSON, err := encodeRegistryJSON(record.ManifestModel.API.OptionalFeatures)
+	if err != nil {
+		return err
+	}
+	permissionsJSON, err := encodeRegistryJSON(record.ManifestModel.Permissions)
+	if err != nil {
+		return err
+	}
+	var surfaceAPIMajor, workerAPIMajor any
+	if record.ManifestModel.API.Surface != nil {
+		surfaceAPIMajor = int64(*record.ManifestModel.API.Surface)
+	}
+	if record.ManifestModel.API.Worker != nil {
+		workerAPIMajor = int64(*record.ManifestModel.API.Worker)
+	}
 	_, err = tx.ExecContext(ctx, `
 	INSERT INTO plugin_records (
 		owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
@@ -1593,8 +1816,9 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
-		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json,
+		manifest_schema_source, surface_api_major, worker_api_major, required_features_json, optional_features_json, permissions_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(owner_env_hash, plugin_instance_id) DO UPDATE SET
 	publisher_id = excluded.publisher_id,
 	plugin_id = excluded.plugin_id,
@@ -1627,7 +1851,13 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	enabled_at = excluded.enabled_at,
 	updated_at = excluded.updated_at,
 	deleted_at = excluded.deleted_at,
-	metadata_json = excluded.metadata_json`,
+	metadata_json = excluded.metadata_json,
+	manifest_schema_source = excluded.manifest_schema_source,
+	surface_api_major = excluded.surface_api_major,
+	worker_api_major = excluded.worker_api_major,
+	required_features_json = excluded.required_features_json,
+	optional_features_json = excluded.optional_features_json,
+	permissions_json = excluded.permissions_json`,
 		record.OwnerEnvHash,
 		record.PluginInstanceID,
 		record.PublisherID,
@@ -1662,6 +1892,12 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		timeToNullableUnix(record.UpdatedAt),
 		timePtrToNullableUnix(record.DeletedAt),
 		metadataJSON,
+		record.ManifestSource,
+		surfaceAPIMajor,
+		workerAPIMajor,
+		requiredFeaturesJSON,
+		optionalFeaturesJSON,
+		permissionsJSON,
 	)
 	return err
 }
@@ -1693,6 +1929,9 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var versionHistoryJSON string
 	var runtimeRequirementJSON string
 	var metadataJSON string
+	var manifestSchemaSource string
+	var surfaceAPIMajor, workerAPIMajor sql.NullInt64
+	var requiredFeaturesJSON, optionalFeaturesJSON, permissionsJSON string
 	var installedAt int64
 	var enabledAt sql.NullInt64
 	var updatedAt int64
@@ -1732,6 +1971,12 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		&updatedAt,
 		&deletedAt,
 		&metadataJSON,
+		&manifestSchemaSource,
+		&surfaceAPIMajor,
+		&workerAPIMajor,
+		&requiredFeaturesJSON,
+		&optionalFeaturesJSON,
+		&permissionsJSON,
 	); err != nil {
 		return PluginRecord{}, err
 	}
@@ -1744,6 +1989,37 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	if record.Manifest.SchemaVersion != manifest.SchemaVersionV8 {
 		return PluginRecord{}, fmt.Errorf("%w: plugin %q uses %q; required %q", ErrIncompatiblePersistedManifest, record.PluginInstanceID, record.Manifest.SchemaVersion, manifest.SchemaVersionV8)
 	}
+	var api manifest.PublicAPIRequirement
+	if surfaceAPIMajor.Valid {
+		value := uint16(surfaceAPIMajor.Int64)
+		api.Surface = &value
+	}
+	if workerAPIMajor.Valid {
+		value := uint16(workerAPIMajor.Int64)
+		api.Worker = &value
+	}
+	if strings.TrimSpace(requiredFeaturesJSON) != "" {
+		if err := decodeRegistryJSON(requiredFeaturesJSON, &api.RequiredFeatures); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	if strings.TrimSpace(optionalFeaturesJSON) != "" {
+		if err := decodeRegistryJSON(optionalFeaturesJSON, &api.OptionalFeatures); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	var permissions []manifest.PermissionID
+	if strings.TrimSpace(permissionsJSON) != "" {
+		if err := decodeRegistryJSON(permissionsJSON, &permissions); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	model, err := manifest.RestoreModel(record.Manifest, manifestSchemaSource, api, permissions)
+	if err != nil {
+		return PluginRecord{}, fmt.Errorf("%w: plugin %q: %v", ErrIncompatiblePersistedManifest, record.PluginInstanceID, err)
+	}
+	record.ManifestModel = model
+	record.ManifestSource = model.SchemaSource
 	if err := decodeRegistryJSON(packageEntriesJSON, &record.PackageEntries); err != nil {
 		return PluginRecord{}, err
 	}
@@ -1754,6 +2030,12 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		if version.Manifest.SchemaVersion != manifest.SchemaVersionV8 {
 			return PluginRecord{}, fmt.Errorf("%w: plugin %q version history[%d] uses %q; required %q", ErrIncompatiblePersistedManifest, record.PluginInstanceID, index, version.Manifest.SchemaVersion, manifest.SchemaVersionV8)
 		}
+		versionModel, restoreErr := manifest.RestoreModel(version.Manifest, version.ManifestSource, version.ManifestAPI, version.ManifestPermissions)
+		if restoreErr != nil {
+			return PluginRecord{}, fmt.Errorf("%w: plugin %q version history[%d]: %v", ErrIncompatiblePersistedManifest, record.PluginInstanceID, index, restoreErr)
+		}
+		record.VersionHistory[index].ManifestModel = versionModel
+		record.VersionHistory[index].ManifestSource = versionModel.SchemaSource
 	}
 	if runtimeRequirementJSON != "null" {
 		var requirement RuntimeRequirement

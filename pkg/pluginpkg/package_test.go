@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -94,6 +95,44 @@ func TestBuildPackageIsDeterministic(t *testing.T) {
 	}
 	if !bytes.Equal(first.Bytes(), second.Bytes()) {
 		t.Fatal("zip bytes are not deterministic")
+	}
+}
+
+func TestV9UnknownFieldChangesSignedManifestHashWithoutChangingBehavior(t *testing.T) {
+	base := `{
+		"schema_version":"redevplugin.manifest.v9",
+		"publisher":{"publisher_id":"example","display_name":"Example"},
+		"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},
+		"api":{"surface":1,"worker":1},
+		"permissions":[],
+		"presentation":{"locales":{"default":"en-US"}},
+		"surfaces":[{"surface_id":"v9.view","kind":"view","label":"V9","entry":"ui/index.html"}],
+		"workers":[],
+		"methods":[]%s
+	}`
+	build := func(suffix string) Package {
+		t.Helper()
+		dir := t.TempDir()
+		mustWrite(t, filepath.Join(dir, "manifest.json"), fmt.Sprintf(base, suffix))
+		mustWrite(t, filepath.Join(dir, "ui", "index.html"), fixtureSurfaceHTML)
+		mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), fixtureWorkerJS)
+		var output bytes.Buffer
+		pkg, err := BuildFromDir(context.Background(), dir, &output, DefaultReadLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pkg
+	}
+
+	withoutExtension := build("")
+	withExtension := build(`,"future":{"opaque":true}`)
+	if withoutExtension.ManifestHash == withExtension.ManifestHash || withoutExtension.PackageHash == withExtension.PackageHash {
+		t.Fatal("v9 unknown field was omitted from signed hash input")
+	}
+	if withoutExtension.ManifestModel.SchemaSource != "redevplugin.manifest.v9" ||
+		withExtension.ManifestModel.SchemaSource != withoutExtension.ManifestModel.SchemaSource ||
+		withExtension.ManifestModel.Plugin != withoutExtension.ManifestModel.Plugin {
+		t.Fatalf("v9 unknown field changed normalized behavior: before=%#v after=%#v", withoutExtension.ManifestModel, withExtension.ManifestModel)
 	}
 }
 

@@ -76,7 +76,7 @@ func (h *Host) InspectReleasePackage(ctx context.Context, req InspectReleasePack
 	trustInput := packageTrustInput{
 		ReleaseRef: &req.ReleaseRef, Release: &release, SourcePolicy: &sourcePolicy, VerifiedRelease: &verifiedRelease,
 	}
-	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
+	if err := h.preflightPackageFeatures(pkg.ManifestModel, trustInput); err != nil {
 		return ReleasePackageInspection{}, err
 	}
 	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, trustInput)

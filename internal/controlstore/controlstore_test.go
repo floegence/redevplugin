@@ -562,7 +562,7 @@ func TestMigratePublishesOnlyAfterVerificationAndPreservesSourceOnFault(t *testi
 }
 
 func TestMigratePopulatedRegistryEverySupportedVersion(t *testing.T) {
-	for version := 0; version <= 6; version++ {
+	for version := 0; version <= registry.SQLiteSchemaVersion; version++ {
 		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
 			dir := t.TempDir()
 			source := filepath.Join(dir, "registry.sqlite")
@@ -652,7 +652,7 @@ func TestMigrateRegistryReleaseInstallOperationFailsClosedWithoutExactSessionOwn
 }
 
 func TestMigrateRegistryReleaseInstallOperationFailsClosedForEveryJournalVersion(t *testing.T) {
-	for version := 3; version <= 6; version++ {
+	for version := 3; version <= registry.SQLiteSchemaVersion; version++ {
 		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
 			dir := t.TempDir()
 			source := filepath.Join(dir, "registry.sqlite")

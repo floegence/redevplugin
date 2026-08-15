@@ -101,6 +101,8 @@ type PluginRecord struct {
 	ManagementRevision        uint64                    `json:"management_revision"`
 	RevokeEpoch               uint64                    `json:"revoke_epoch"`
 	Manifest                  manifest.Manifest         `json:"manifest"`
+	ManifestModel             manifest.Model            `json:"-"`
+	ManifestSource            string                    `json:"manifest_source,omitempty"`
 	PackageEntries            []pluginpkg.Entry         `json:"package_entries"`
 	RuntimeRequirement        *RuntimeRequirement       `json:"runtime_requirement,omitempty"`
 	VersionHistory            []PluginVersion           `json:"version_history,omitempty"`
@@ -112,26 +114,30 @@ type PluginRecord struct {
 }
 
 type PluginVersion struct {
-	Version                   string                    `json:"version"`
-	ActiveFingerprint         string                    `json:"active_fingerprint"`
-	PackageHash               string                    `json:"package_hash"`
-	ManifestHash              string                    `json:"manifest_hash"`
-	EntriesHash               string                    `json:"entries_hash"`
-	TrustState                TrustState                `json:"trust_state"`
-	TrustAssessment           TrustAssessment           `json:"trust_assessment"`
-	SignatureAssessment       SignatureAssessment       `json:"signature_assessment"`
-	PackageSourceProvenance   PackageSourceProvenance   `json:"source_provenance"`
-	ExecutionApproval         ExecutionApproval         `json:"execution_approval"`
-	UpdateEligibility         UpdateEligibility         `json:"update_eligibility"`
-	SecurityCapabilitySummary SecurityCapabilitySummary `json:"security_summary"`
-	ReleaseTrustBinding       *ReleaseTrustBinding      `json:"release_trust_binding,omitempty"`
-	LocalImportProvenance     *LocalImportProvenance    `json:"local_import_provenance,omitempty"`
-	CapabilityContracts       []capabilitycontract.Pin  `json:"capability_contracts,omitempty"`
-	Manifest                  manifest.Manifest         `json:"manifest"`
-	PackageEntries            []pluginpkg.Entry         `json:"package_entries"`
-	RuntimeRequirement        *RuntimeRequirement       `json:"runtime_requirement,omitempty"`
-	ActivatedAt               time.Time                 `json:"activated_at"`
-	Metadata                  map[string]string         `json:"metadata,omitempty"`
+	Version                   string                        `json:"version"`
+	ActiveFingerprint         string                        `json:"active_fingerprint"`
+	PackageHash               string                        `json:"package_hash"`
+	ManifestHash              string                        `json:"manifest_hash"`
+	EntriesHash               string                        `json:"entries_hash"`
+	TrustState                TrustState                    `json:"trust_state"`
+	TrustAssessment           TrustAssessment               `json:"trust_assessment"`
+	SignatureAssessment       SignatureAssessment           `json:"signature_assessment"`
+	PackageSourceProvenance   PackageSourceProvenance       `json:"source_provenance"`
+	ExecutionApproval         ExecutionApproval             `json:"execution_approval"`
+	UpdateEligibility         UpdateEligibility             `json:"update_eligibility"`
+	SecurityCapabilitySummary SecurityCapabilitySummary     `json:"security_summary"`
+	ReleaseTrustBinding       *ReleaseTrustBinding          `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance     *LocalImportProvenance        `json:"local_import_provenance,omitempty"`
+	CapabilityContracts       []capabilitycontract.Pin      `json:"capability_contracts,omitempty"`
+	Manifest                  manifest.Manifest             `json:"manifest"`
+	ManifestModel             manifest.Model                `json:"-"`
+	ManifestSource            string                        `json:"manifest_source,omitempty"`
+	ManifestAPI               manifest.PublicAPIRequirement `json:"manifest_api,omitempty"`
+	ManifestPermissions       []manifest.PermissionID       `json:"manifest_permissions,omitempty"`
+	PackageEntries            []pluginpkg.Entry             `json:"package_entries"`
+	RuntimeRequirement        *RuntimeRequirement           `json:"runtime_requirement,omitempty"`
+	ActivatedAt               time.Time                     `json:"activated_at"`
+	Metadata                  map[string]string             `json:"metadata,omitempty"`
 }
 
 // RuntimeRequirement is the exact worker-runtime compatibility contract that
@@ -240,6 +246,14 @@ func PreparePluginPut(ownerEnvHash string, record PluginRecord, existing *Plugin
 	}
 	record = cloned
 	record.OwnerEnvHash = ownerEnvHash
+	if record.ManifestModel.PluginID() == "" && record.Manifest.PluginID() != "" {
+		normalized, normalizeErr := manifest.Normalize(record.Manifest)
+		if normalizeErr != nil {
+			return PluginRecord{}, normalizeErr
+		}
+		record.ManifestModel = normalized
+		record.ManifestSource = normalized.SchemaSource
+	}
 	if existing != nil {
 		record.InstalledAt = existing.InstalledAt
 		record.ManagementRevision = existing.ManagementRevision + 1
@@ -427,6 +441,18 @@ func normalizeTrustAssessment(record PluginRecord) PluginRecord {
 
 func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
 	ownerEnvHash := record.OwnerEnvHash
+	manifestModel := record.ManifestModel
+	manifestSource := record.ManifestSource
+	versionModels := make([]manifest.Model, len(record.VersionHistory))
+	versionSources := make([]string, len(record.VersionHistory))
+	versionAPIs := make([]manifest.PublicAPIRequirement, len(record.VersionHistory))
+	versionPermissions := make([][]manifest.PermissionID, len(record.VersionHistory))
+	for i, version := range record.VersionHistory {
+		versionModels[i] = version.ManifestModel
+		versionSources[i] = version.ManifestSource
+		versionAPIs[i] = version.ManifestAPI
+		versionPermissions[i] = append([]manifest.PermissionID(nil), version.ManifestPermissions...)
+	}
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return PluginRecord{}, err
@@ -436,6 +462,22 @@ func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
 		return PluginRecord{}, err
 	}
 	cloned.OwnerEnvHash = ownerEnvHash
+	cloned.ManifestModel = manifestModel
+	cloned.ManifestSource = manifestSource
+	for i := range cloned.VersionHistory {
+		if i < len(versionModels) {
+			cloned.VersionHistory[i].ManifestModel = versionModels[i]
+			cloned.VersionHistory[i].ManifestSource = versionSources[i]
+			cloned.VersionHistory[i].ManifestAPI = versionAPIs[i]
+			cloned.VersionHistory[i].ManifestPermissions = append([]manifest.PermissionID(nil), versionPermissions[i]...)
+		}
+	}
+	if cloned.ManifestModel.PluginID() == "" && cloned.Manifest.PluginID() != "" {
+		if normalized, normalizeErr := manifest.Normalize(cloned.Manifest); normalizeErr == nil {
+			cloned.ManifestModel = normalized
+			cloned.ManifestSource = normalized.SchemaSource
+		}
+	}
 	return cloned, nil
 }
 

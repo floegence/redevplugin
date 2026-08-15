@@ -43,6 +43,25 @@ func canonicalJSON(value any) ([]byte, error) {
 	return out, nil
 }
 
+// CanonicalJSON validates and canonicalizes an arbitrary JSON document while
+// retaining every field. It is used by forward-compatible package formats;
+// closed typed contracts should continue to use their typed canonicalizers.
+func CanonicalJSON(raw []byte) ([]byte, error) {
+	if len(raw) == 0 || len(raw) > maxDocumentBytes || !utf8.Valid(raw) {
+		return nil, fmt.Errorf("%w: document size or encoding", ErrInvalidDocument)
+	}
+	if err := validateJSONStructure(raw); err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("%w: decode JSON value", ErrInvalidDocument)
+	}
+	return canonicalJSON(value)
+}
+
 func appendCanonicalJSON(out []byte, value any, depth int) ([]byte, error) {
 	if depth > maxJSONDepth {
 		return nil, fmt.Errorf("%w: JSON nesting limit exceeded", ErrInvalidDocument)

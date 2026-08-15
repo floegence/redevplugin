@@ -76,6 +76,47 @@ type scaffoldSummary struct {
 	VersionInfo version.Matrix `json:"version_matrix"`
 }
 
+type scaffoldManifestV9 struct {
+	SchemaVersion string                        `json:"schema_version"`
+	Publisher     manifest.Publisher            `json:"publisher"`
+	Plugin        scaffoldPluginV9              `json:"plugin"`
+	API           manifest.PublicAPIRequirement `json:"api"`
+	Permissions   []manifest.PermissionID       `json:"permissions"`
+	Presentation  scaffoldPresentationV9        `json:"presentation"`
+	Surfaces      []manifest.SurfaceSpec        `json:"surfaces"`
+	Workers       []scaffoldWorkerV9            `json:"workers"`
+	Methods       []scaffoldMethodV9            `json:"methods"`
+}
+
+type scaffoldPluginV9 struct {
+	PluginID    string `json:"plugin_id"`
+	DisplayName string `json:"display_name"`
+	Version     string `json:"version"`
+}
+
+type scaffoldPresentationV9 struct {
+	Locales map[string]string `json:"locales"`
+}
+
+type scaffoldWorkerV9 struct {
+	WorkerID         string              `json:"worker_id"`
+	Artifact         string              `json:"artifact"`
+	Mode             manifest.WorkerMode `json:"mode"`
+	Scope            string              `json:"scope"`
+	MemoryLimitBytes int64               `json:"memory_limit_bytes"`
+}
+
+type scaffoldMethodV9 struct {
+	Method         string                       `json:"method"`
+	WorkerID       string                       `json:"worker_id"`
+	Effect         manifest.MethodEffect        `json:"effect"`
+	Execution      manifest.MethodExecutionMode `json:"execution"`
+	RequestSchema  map[string]any               `json:"request_schema"`
+	ResponseSchema map[string]any               `json:"response_schema"`
+}
+
+func uint16Ptr(value uint16) *uint16 { return &value }
+
 //go:embed scaffold_assets/plugin-worker.js
 var scaffoldPluginWorkerJS []byte
 
@@ -475,28 +516,16 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		return scaffoldSummary{}, fmt.Errorf("output directory is required")
 	}
 	platformVersion := version.CurrentCompatibilityVersion()
-	manifestDoc := manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersionV8,
+	manifestDoc := scaffoldManifestV9{
+		SchemaVersion: manifest.SchemaVersionV9,
 		Publisher: manifest.Publisher{
 			PublisherID: "local.generated",
 			DisplayName: "Local Generated",
 		},
-		Plugin: manifest.Plugin{
-			PluginID:          pluginID,
-			DisplayName:       displayName,
-			Version:           "0.1.0",
-			APIVersion:        "plugin-v1",
-			MinRuntimeVersion: platformVersion,
-			UIProtocolVersion: version.PluginUIProtocolVersion,
-		},
-		Presentation: manifest.PresentationSpec{
-			DefaultLocale: "en-US",
-			Summary:       displayName + " extends the host through a generated ReDevPlugin package.",
-			Description:   []string{displayName + " was generated from the current ReDevPlugin scaffold and is verified before installation."},
-			Highlights:    []string{},
-			Keywords:      []string{displayName},
-			Localizations: []manifest.PresentationLocalizationSpec{},
-		},
+		Plugin:       scaffoldPluginV9{PluginID: pluginID, DisplayName: displayName, Version: "0.1.0"},
+		API:          manifest.PublicAPIRequirement{Surface: uint16Ptr(1), Worker: uint16Ptr(1), OptionalFeatures: []manifest.FeatureID{manifest.FeatureIOStream}},
+		Permissions:  []manifest.PermissionID{},
+		Presentation: scaffoldPresentationV9{Locales: map[string]string{"default": "en-US"}},
 		Surfaces: []manifest.SurfaceSpec{{
 			SurfaceID: pluginID + ".view",
 			Kind:      manifest.SurfaceView,
@@ -504,19 +533,10 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Label:     displayName,
 			Entry:     "ui/index.html",
 		}},
-		Workers: []manifest.WorkerSpec{{
-			WorkerID:         "backend",
-			Artifact:         "workers/backend.wasm",
-			ABI:              "redevplugin-wasm-worker-v2",
-			Mode:             manifest.WorkerModeJob,
-			Scope:            "user",
-			MemoryLimitBytes: 16 << 20,
-		}},
-		Methods: []manifest.MethodSpec{{
-			Method:    "worker.echo",
-			Effect:    manifest.MethodEffectRead,
-			Execution: manifest.MethodExecutionSync,
-			Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend"},
+		Workers: []scaffoldWorkerV9{{WorkerID: "backend", Artifact: "workers/backend.wasm", Mode: manifest.WorkerModeJob, Scope: "user", MemoryLimitBytes: 16 << 20}},
+		Methods: []scaffoldMethodV9{{
+			Method: "worker.echo", WorkerID: "backend",
+			Effect: manifest.MethodEffectRead, Execution: manifest.MethodExecutionSync,
 			RequestSchema: closedRequiredMethodObjectSchema(map[string]any{
 				"message": map[string]any{"type": "string"},
 			}, []string{"message"}),

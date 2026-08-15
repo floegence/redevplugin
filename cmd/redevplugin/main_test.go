@@ -185,7 +185,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"schema_version": "redevplugin.manifest.v8"`, `"ui_protocol_version": "plugin-ui-v7"`, `"presentation": {`} {
+	for _, want := range []string{`"schema_version": "redevplugin.manifest.v9"`, `"api": {`, `"presentation": {`} {
 		if !bytes.Contains(manifestRaw, []byte(want)) {
 			t.Fatalf("scaffold manifest missing current protocol %q: %s", want, manifestRaw)
 		}
@@ -1409,7 +1409,7 @@ func makeScaffoldUIOnly(t *testing.T, filename string) {
 			t.Fatalf("manifest method has unexpected shape: %#v", item)
 		}
 		route, _ := method["route"].(map[string]any)
-		if route["kind"] == "worker" {
+		if route["kind"] == "worker" || strings.TrimSpace(fmt.Sprint(method["worker_id"])) != "" {
 			continue
 		}
 		uiMethods = append(uiMethods, method)

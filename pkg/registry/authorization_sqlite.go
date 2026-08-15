@@ -1093,4 +1093,5 @@ SELECT
 	source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 	disabled_reason, policy_revision, management_revision,
 	revoke_epoch, manifest_json, package_entries_json, version_history_json,
-	runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json`
+	runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json,
+	manifest_schema_source, surface_api_major, worker_api_major, required_features_json, optional_features_json, permissions_json`

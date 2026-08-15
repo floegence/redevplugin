@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,21 +276,24 @@ func (e ValidationError) Error() string {
 }
 
 func Decode(r io.Reader) (Manifest, error) {
-	decoder := json.NewDecoder(r)
-	decoder.DisallowUnknownFields()
-
-	var m Manifest
-	if err := decoder.Decode(&m); err != nil {
+	raw, err := io.ReadAll(r)
+	if err != nil {
 		return Manifest{}, err
 	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+	var header struct {
+		SchemaVersion string `json:"schema_version"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return Manifest{}, err
+	}
+	if header.SchemaVersion == SchemaVersionV9 {
+		model, err := DecodeModel(bytes.NewReader(raw))
 		if err != nil {
 			return Manifest{}, err
 		}
-		return Manifest{}, errors.New("manifest contains trailing JSON values")
+		return model.Manifest, nil
 	}
-	return m, Validate(m)
+	return decodeV8(bytes.NewReader(raw))
 }
 
 func Validate(m Manifest) error {
