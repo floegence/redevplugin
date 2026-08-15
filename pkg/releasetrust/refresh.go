@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
 )
 
 func (service *ReleaseTrustService) RefreshSource(ctx context.Context, key SourceTrustKey) (VerifiedSourceSnapshot, error) {

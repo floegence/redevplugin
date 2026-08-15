@@ -52,7 +52,7 @@ navigation, workspace, settings, or command UI.
 
 ## Core Go Packages
 
-The Go module `github.com/floegence/redevplugin` exposes the embeddable Host
+The Go module `github.com/floegence/redevplugin/v2` exposes the embeddable Host
 library and platform contracts.
 
 `pkg/bridge` owns token/ticket audiences, MessageChannel handshake state,

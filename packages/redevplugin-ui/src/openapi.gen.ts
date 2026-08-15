@@ -2803,7 +2803,7 @@ export interface components {
         PlatformPackageSetV3Sha256: string;
         PlatformPackageSetV3GoModule: {
             /** @constant */
-            module: "github.com/floegence/redevplugin";
+            module: "github.com/floegence/redevplugin/v2";
             version: string;
         };
         PlatformPackageSetV3NpmPackage: {

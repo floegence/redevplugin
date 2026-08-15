@@ -3,7 +3,7 @@ package host
 import (
 	"context"
 
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 // MountRequest identifies one Host-owned filesystem mount for a trusted

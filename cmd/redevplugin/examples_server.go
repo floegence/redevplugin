@@ -15,17 +15,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/connectivity"
-	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/httpadapter"
-	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/pkg/secrets"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/trust"
-	"github.com/floegence/redevplugin/pkg/websecurity"
+	"github.com/floegence/redevplugin/v2/pkg/connectivity"
+	"github.com/floegence/redevplugin/v2/pkg/host"
+	"github.com/floegence/redevplugin/v2/pkg/httpadapter"
+	"github.com/floegence/redevplugin/v2/pkg/observability"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/pkg/secrets"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/trust"
+	"github.com/floegence/redevplugin/v2/pkg/websecurity"
 )
 
 const (

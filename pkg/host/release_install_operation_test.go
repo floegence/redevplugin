@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/pkg/execution"
-	"github.com/floegence/redevplugin/pkg/externalsource"
-	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/releasecontract"
-	"github.com/floegence/redevplugin/pkg/releasetrust"
-	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/v2/internal/testsupport/releasetrustfixture"
+	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v2/pkg/execution"
+	"github.com/floegence/redevplugin/v2/pkg/externalsource"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasetrust"
+	"github.com/floegence/redevplugin/v2/pkg/security"
 )
 
 func TestStartReleaseInstallExecutionReturnsUnifiedExecution(t *testing.T) {

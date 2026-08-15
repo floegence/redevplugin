@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 // ControlRecord is the complete durable session fence representation shared

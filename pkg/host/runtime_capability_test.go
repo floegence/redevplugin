@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	platformversion "github.com/floegence/redevplugin/pkg/version"
+	platformversion "github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 func TestRuntimeDescriptorV2UsesClosedValidatedIdentity(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
 )
 
 type wireProjectionError struct {

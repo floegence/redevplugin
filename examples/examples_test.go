@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
 )
 
 func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {

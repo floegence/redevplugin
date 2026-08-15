@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/sessionscope"
+	"github.com/floegence/redevplugin/v2/pkg/observability"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionscope"
 )
 
 func TestCoreAdaptersDoNotExposeSessionLifecycleOwners(t *testing.T) {

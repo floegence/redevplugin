@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
 )
 
 const (

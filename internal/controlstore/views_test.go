@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/execution"
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/execution"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
 )
 
 func TestSessionIdentityIsStablePerExactScopeAndPersistsAcrossReopen(t *testing.T) {

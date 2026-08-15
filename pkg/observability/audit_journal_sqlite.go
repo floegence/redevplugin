@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
 )
 
 func (s *SQLiteStore) BeginSecurityAudit(ctx context.Context, event AuditEvent) (SecurityAuditRecord, error) {

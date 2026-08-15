@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
 )
 
 const MaxArtifactBytes int64 = 256 << 20

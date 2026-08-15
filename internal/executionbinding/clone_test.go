@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/capability"
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v2/pkg/capability"
+	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
 )
 
 func TestCloneTrustedOwnsExecutionBindingContainers(t *testing.T) {

@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/pkg/releasecontract"
-	"github.com/floegence/redevplugin/pkg/releasetrust"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasetrust"
 )
 
 const (

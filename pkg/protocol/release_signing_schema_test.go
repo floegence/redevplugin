@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
 )
 
 func TestReleaseSigningSchemasValidateSharedClosedDocuments(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/permissions"
-	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/permissions"
+	"github.com/floegence/redevplugin/v2/pkg/security"
 )
 
 func (s *SQLiteStore) GrantPermission(ctx context.Context, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {

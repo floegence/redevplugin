@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
 )
 
 var (

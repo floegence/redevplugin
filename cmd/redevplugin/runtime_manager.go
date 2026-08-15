@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/pkg/host"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
 )
 
 func loadCommandRuntimeDescriptor(path string, target runtimetarget.Target) (host.RuntimeDescriptor, error) {

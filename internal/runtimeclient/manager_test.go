@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/capability"
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/capability"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 func TestProcessManagerStartsEveryShardAndBindsDeterministically(t *testing.T) {

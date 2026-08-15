@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
 )
 
 func TestNewBusinessErrorOwnsCanonicalAdapterDetails(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
 )
 
 func TestFixtureVerifiesRelease(t *testing.T) {

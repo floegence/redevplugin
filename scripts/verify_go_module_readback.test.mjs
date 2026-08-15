@@ -94,7 +94,7 @@ test("immutable module and checksum failures are terminal", async () => {
     GoModSum: "h1:valid=",
   }, "direct", "v9.8.7"), /module identity mismatch/);
   assert.throws(() => validateModuleIdentity({
-    Path: "github.com/floegence/redevplugin",
+    Path: "github.com/floegence/redevplugin/v2",
     Version: "v9.8.7",
     Sum: "tampered",
     GoModSum: "h1:valid=",

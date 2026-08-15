@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/plugindata"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/plugindata"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 func TestCatalogManagementMutationsAreAtomic(t *testing.T) {

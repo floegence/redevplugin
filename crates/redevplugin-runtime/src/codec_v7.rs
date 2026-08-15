@@ -456,8 +456,7 @@ mod tests {
     #[test]
     fn matches_cross_language_fixtures() {
         let catalog: FixtureCatalog =
-            serde_json::from_str(include_str!("../../../spec/plugin/ipc-v7-fixtures.json"))
-                .unwrap();
+            serde_json::from_str(include_str!("../testdata/ipc-v7-fixtures.json")).unwrap();
         assert_eq!(
             catalog.schema_version,
             "redevplugin.rust_ipc_v7_fixtures.v1"

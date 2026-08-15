@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.0.0
 
 - Add Surface API 1 and Worker API 1 as the plugin-observable compatibility
   boundary, with manifest v9 as the only new scaffold while preserving frozen

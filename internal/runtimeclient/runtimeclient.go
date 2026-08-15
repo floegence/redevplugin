@@ -23,15 +23,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/jsonvalue"
-	"github.com/floegence/redevplugin/pkg/capability"
-	"github.com/floegence/redevplugin/pkg/connectivity"
-	"github.com/floegence/redevplugin/pkg/execution"
-	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/storage"
-	"github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v2/pkg/capability"
+	"github.com/floegence/redevplugin/v2/pkg/connectivity"
+	"github.com/floegence/redevplugin/v2/pkg/execution"
+	"github.com/floegence/redevplugin/v2/pkg/observability"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/storage"
+	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 type Lease struct {

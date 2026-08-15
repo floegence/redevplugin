@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
-	platformversion "github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	platformversion "github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 func validRuntimeDescriptorOptions(t *testing.T) RuntimeDescriptorOptions {

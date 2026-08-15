@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/redevplugin/internal/jsonvalue"
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
 )
 
 type Effect string

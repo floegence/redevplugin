@@ -321,11 +321,11 @@
   function isPlatformResponse(value, mutation) {
     if (!isRecord(value) || typeof value.ok !== "boolean") return false;
     if (value.ok) {
-      return hasExactKeys(value, ["ok", "data"]);
+      return hasRequiredKeys(value, ["ok", "data"]);
     }
-    if (!hasExactKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
+    if (!hasRequiredKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
     const errorKeys = mutation ? ["code", "message", "details", "mutation_outcome"] : ["code", "message", "details"];
-    if (!hasExactKeys(value.error, errorKeys) || !isPluginPlatformErrorCode(value.error.code) || typeof value.error.message !== "string" || value.error.message.trim().length === 0 || Array.from(value.error.message).length > 4096 || !isPlatformErrorDetails(value.error.code, value.error.details)) return false;
+    if (!hasRequiredKeys(value.error, errorKeys) || !isPluginPlatformErrorCode(value.error.code) || typeof value.error.message !== "string" || value.error.message.trim().length === 0 || Array.from(value.error.message).length > 4096 || !isPlatformErrorDetails(value.error.code, value.error.details)) return false;
     return !mutation || value.error.mutation_outcome === "committed" || value.error.mutation_outcome === "not_committed" || value.error.mutation_outcome === "unknown";
   }
   var packageValidationErrorCodes = [
@@ -4139,10 +4139,10 @@
     return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
   }
   function isPluginExecutionEventList(value, executionID, afterCursor) {
-    if (!hasExactKeys(value, ["execution_id", "events", "cursor"]) || value.execution_id !== executionID || !Array.isArray(value.events) || !Number.isSafeInteger(value.cursor) || Number(value.cursor) < afterCursor) return false;
+    if (!isRecord(value) || !hasRequiredKeys(value, ["execution_id", "events", "cursor"]) || value.execution_id !== executionID || !Array.isArray(value.events) || !Number.isSafeInteger(value.cursor) || Number(value.cursor) < afterCursor) return false;
     let cursor = afterCursor;
     for (const event of value.events) {
-      if (!isRecord(event) || !hasAllowedKeys(event, ["execution_id", "sequence", "kind", "payload", "error"]) || event.execution_id !== executionID || !Number.isSafeInteger(event.sequence) || Number(event.sequence) <= cursor || !["progress", "data", "diagnostic", "terminal"].includes(String(event.kind)) || event.payload !== void 0 && !isRecord(event.payload) || event.error !== void 0 && (!hasExactKeys(event.error, ["code", "message"]) || typeof event.error.code !== "string" || typeof event.error.message !== "string")) return false;
+      if (!isRecord(event) || !hasRequiredKeys(event, ["execution_id", "sequence", "kind"]) || event.execution_id !== executionID || !Number.isSafeInteger(event.sequence) || Number(event.sequence) <= cursor || !["progress", "data", "diagnostic", "terminal"].includes(String(event.kind)) || event.payload !== void 0 && !isRecord(event.payload) || event.error !== void 0 && (!isRecord(event.error) || !hasRequiredKeys(event.error, ["code", "message"]) || typeof event.error.code !== "string" || typeof event.error.message !== "string")) return false;
       cursor = Number(event.sequence);
     }
     return Number(value.cursor) === cursor;

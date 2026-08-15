@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
 )
 
 const (

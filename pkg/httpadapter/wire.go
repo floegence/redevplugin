@@ -4,14 +4,14 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/permissions"
-	"github.com/floegence/redevplugin/pkg/plugindata"
-	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/pkg/bridge"
+	"github.com/floegence/redevplugin/v2/pkg/host"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/observability"
+	"github.com/floegence/redevplugin/v2/pkg/permissions"
+	"github.com/floegence/redevplugin/v2/pkg/plugindata"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 // HTTP wire DTOs are deliberately separate from Host and persistence DTOs.

@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/redevplugin/internal/resourceio"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/internal/resourceio"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 type recordingHostMountAdapter struct {

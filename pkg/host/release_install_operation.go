@@ -8,14 +8,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/controlstore"
-	"github.com/floegence/redevplugin/pkg/execution"
-	"github.com/floegence/redevplugin/pkg/externalsource"
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/security"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/internal/controlstore"
+	"github.com/floegence/redevplugin/v2/pkg/execution"
+	"github.com/floegence/redevplugin/v2/pkg/externalsource"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/security"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 const releaseInstallOperationTimeout = 5 * time.Minute

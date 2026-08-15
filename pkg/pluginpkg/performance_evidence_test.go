@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/floegence/redevplugin/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
 )
 
 func TestPerformanceWASMInspectionCache(t *testing.T) {

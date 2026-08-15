@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 func TestWASMWorkerSchemaMatchesExecutableRuntimeContract(t *testing.T) {

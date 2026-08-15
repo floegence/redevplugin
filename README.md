@@ -12,7 +12,7 @@ capabilities.
 
 ## Current Platform Snapshot
 
-- Go module: `github.com/floegence/redevplugin`
+- Go module: `github.com/floegence/redevplugin/v2`
 - TypeScript packages: the opt-in raw contract body package
   `@floegence/redevplugin-contracts` and the sandbox/runtime SDK
   `@floegence/redevplugin-ui`

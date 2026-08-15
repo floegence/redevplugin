@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 // ConfirmationIntentControlStore is the atomic persistence boundary used by

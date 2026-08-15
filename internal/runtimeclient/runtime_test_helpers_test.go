@@ -10,8 +10,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 type testHostSemanticIPCReaderV7 struct {

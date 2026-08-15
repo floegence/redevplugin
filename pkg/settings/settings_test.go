@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
 )
 
 func TestCanonicalSchemaExcludesUIAndSecrets(t *testing.T) {

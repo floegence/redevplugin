@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/internal/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v2/pkg/observability"
+	"github.com/floegence/redevplugin/v2/pkg/security"
 )
 
 func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {

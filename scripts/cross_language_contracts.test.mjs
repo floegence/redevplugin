@@ -166,7 +166,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
   try {
     const tarball = run("node", [
       "scripts/build_redevplugin_contracts_package.mjs",
-      "1.1.4",
+      "2.0.0",
       outputDirectory,
     ]).split("\n").at(-1);
     assert.ok(tarball);
@@ -201,7 +201,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
       "version",
     ]);
     assert.equal(manifest.name, "@floegence/redevplugin-contracts");
-    assert.equal(manifest.version, "1.1.4");
+    assert.equal(manifest.version, "2.0.0");
     assert.deepEqual(manifest.files, ["dist"]);
     assert.equal(manifest.sideEffects, false);
     assert.deepEqual(Object.keys(manifest.exports), ["."]);
@@ -276,7 +276,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
     run(process.execPath, ["--input-type=module", "--eval", `
       await import("@floegence/redevplugin-ui");
       const contracts = await import("@floegence/redevplugin-contracts");
-      if (contracts.contractArtifacts.length !== 44) throw new Error("contracts package is incomplete");
+      if (contracts.contractArtifacts.length !== 45) throw new Error("contracts package is incomplete");
     `], { cwd: consumerDirectory });
 
     const browserBundle = await build({

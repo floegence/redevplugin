@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/plugindata"
-	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/settings"
-	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/plugindata"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/settings"
+	"github.com/floegence/redevplugin/v2/pkg/storage"
 )
 
 func pluginDataTestContext() context.Context {

@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/performanceevidence"
-	"github.com/floegence/redevplugin/internal/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/connectivity"
-	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v2/pkg/connectivity"
+	"github.com/floegence/redevplugin/v2/pkg/observability"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 const performanceRuntimePathEnv = "REDEVPLUGIN_PERFORMANCE_RUNTIME"

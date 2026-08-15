@@ -47,7 +47,7 @@
       "additionalProperties": false,
       "required": ["module", "version"],
       "properties": {
-        "module": {"const": "github.com/floegence/redevplugin"},
+        "module": {"const": "github.com/floegence/redevplugin/v2"},
         "version": {"type": "string", "minLength": 6, "maxLength": 65, "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"}
       }
     },

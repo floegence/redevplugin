@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const modulePath = "github.com/floegence/redevplugin";
+const modulePath = "github.com/floegence/redevplugin/v2";
 const defaultRetryDelaysMs = Object.freeze([0, 1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 30_000]);
 
 export async function verifyGoModuleReadback({

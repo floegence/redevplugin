@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/observability"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
 )
 
 func TestEnablePluginDoesNotMutateWhenSecurityAuditBeginFails(t *testing.T) {

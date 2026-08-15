@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/redevplugin/internal/resourceio"
+	"github.com/floegence/redevplugin/v2/internal/resourceio"
 )
 
 type runtimeIORequestMetadata struct {

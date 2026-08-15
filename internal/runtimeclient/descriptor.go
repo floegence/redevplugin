@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
-	platformversion "github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	platformversion "github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 const runtimeDescriptorSchemaVersion = "runtime-descriptor-v3"

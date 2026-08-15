@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/permissions"
-	"github.com/floegence/redevplugin/pkg/plugindata"
-	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/permissions"
+	"github.com/floegence/redevplugin/v2/pkg/plugindata"
+	"github.com/floegence/redevplugin/v2/pkg/security"
 )
 
 func TestAuthorizationStoreContract(t *testing.T) {

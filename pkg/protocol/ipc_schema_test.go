@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/internal/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 

@@ -12,7 +12,7 @@ import {
   verifyPlatformReleaseDirectory,
 } from "./platform_package_publication.mjs";
 
-const version = "1.1.4";
+const version = "2.0.0";
 const sourceCommit = "1".repeat(40);
 const h1 = `h1:${Buffer.alloc(32, 1).toString("base64")}`;
 const npmNames = ["@floegence/redevplugin-contracts", "@floegence/redevplugin-ui"];
@@ -75,7 +75,7 @@ function validReadbacks() {
   return {
     sourceCommit,
     goReadback: {
-      module: "github.com/floegence/redevplugin",
+      module: "github.com/floegence/redevplugin/v2",
       version: `v${version}`,
       h1,
       go_mod_h1: h1,

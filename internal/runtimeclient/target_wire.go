@@ -1,6 +1,6 @@
 package runtimeclient
 
-import "github.com/floegence/redevplugin/pkg/runtimetarget"
+import "github.com/floegence/redevplugin/v2/pkg/runtimetarget"
 
 type targetWire struct {
 	OS   string `json:"os"`

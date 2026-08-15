@@ -19,6 +19,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { checkOnly, forceCanonical } = parseCanonicalWasmGeneratorArgs(process.argv.slice(2));
 const workerArtifactLockPath = "cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json";
 const workerOutputPath = "cmd/redevplugin/scaffold_assets/backend.wasm";
+const runtimeFixturePath = "crates/redevplugin-runtime/testdata/scaffold-backend.wasm";
 const result = await build({
   entryPoints: [resolve(root, "internal/scaffoldtemplate/plugin-worker.tsx")],
   alias: {
@@ -71,7 +72,9 @@ if (!checkOnly || forceCanonical || isCanonicalBuildHost()) {
     targets: [{ packageName: "redevplugin-scaffold-worker", artifact }],
     forceDocker: forceCanonical,
   });
-  await verifyOrWrite(workerOutputPath, builtArtifacts.get(artifact));
+  const content = builtArtifacts.get(artifact);
+  await verifyOrWrite(workerOutputPath, content);
+  await verifyOrWrite(runtimeFixturePath, content);
 }
 
 const sourceSnapshotAfter = await snapshotCanonicalCargoSources(sourceSnapshotOptions);

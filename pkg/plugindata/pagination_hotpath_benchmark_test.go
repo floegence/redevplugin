@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
-	"github.com/floegence/redevplugin/pkg/storage"
+	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
+	"github.com/floegence/redevplugin/v2/pkg/storage"
 )
 
 const paginationBenchmarkPageSize = 100

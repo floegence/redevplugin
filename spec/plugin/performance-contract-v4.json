@@ -40,7 +40,7 @@
       },
       "candidate_probe": {
         "path": "pkg/httpadapter/route_authorization_performance_test.go",
-        "sha256": "113eb3f0cf1d7383a6f14b8d7406e42c655c018c1455b47f0afd44869a354ff3"
+        "sha256": "5d8e01aa7086f6c2675787010d7bc89be74d11ed1fddc7a79c5e2bb94369202f"
       },
       "shared_probe": {
         "path": "internal/performanceevidence/route_authorization.go",

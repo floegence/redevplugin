@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 var ErrOwnerScopeMismatch = errors.New("plugin registry owner scope mismatch")

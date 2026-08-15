@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 var ErrActionDenied = errors.New("host platform action is denied")

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
 )
 
 func TestPrepareExternalPackageInstallBindsOwnerAndRevision(t *testing.T) {

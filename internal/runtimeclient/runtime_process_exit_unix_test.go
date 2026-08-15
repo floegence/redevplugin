@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/v2/pkg/observability"
 )
 
 func TestRuntimeProcessSignalExitIsClassifiedWithoutStatusGuessing(t *testing.T) {

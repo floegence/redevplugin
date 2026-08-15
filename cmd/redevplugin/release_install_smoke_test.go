@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
-	"github.com/floegence/redevplugin/pkg/execution"
-	"github.com/floegence/redevplugin/pkg/externalsource"
-	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/remoterelease"
+	"github.com/floegence/redevplugin/v2/internal/testsupport/releasetrustfixture"
+	"github.com/floegence/redevplugin/v2/pkg/execution"
+	"github.com/floegence/redevplugin/v2/pkg/externalsource"
+	"github.com/floegence/redevplugin/v2/pkg/host"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/remoterelease"
 )
 
 type smokeAssetFetcher struct {

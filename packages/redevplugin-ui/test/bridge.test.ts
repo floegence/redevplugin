@@ -580,15 +580,15 @@ test("platform client reads compatibility manifest through host API", async () =
       schema_version: "redevplugin.compatibility.v20",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v3",
-        platform_version: "1.1.0",
-        go_module: { module: "github.com/floegence/redevplugin", version: "v1.1.0" },
+        platform_version: "2.0.0",
+        go_module: { module: "github.com/floegence/redevplugin/v2", version: "v2.0.0" },
         npm_packages: [
-          { name: "@floegence/redevplugin-contracts", version: "1.1.0" },
-          { name: "@floegence/redevplugin-ui", version: "1.1.0" },
+          { name: "@floegence/redevplugin-contracts", version: "2.0.0" },
+          { name: "@floegence/redevplugin-ui", version: "2.0.0" },
         ],
         rust_crates: [
-          { name: "redevplugin-runtime", version: "1.1.0", role: "runtime" },
-          { name: "redevplugin-worker-sdk", version: "1.1.0", role: "worker_sdk" },
+          { name: "redevplugin-runtime", version: "2.0.0", role: "runtime" },
+          { name: "redevplugin-worker-sdk", version: "2.0.0", role: "worker_sdk" },
         ],
         contract_registry_version: "contract-registry-v2",
         contract_set_sha256: contractSetSHA256,
@@ -1147,7 +1147,7 @@ test("platform client reads and patches plugin settings through host API", async
 test("platform client manages plugin lifecycle routes", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled", disabled_reason: "admin" } });
@@ -1169,7 +1169,7 @@ test("platform client manages plugin lifecycle routes", async () => {
   const uninstalled = await client.uninstallPlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 5, delete_data: true });
 
   assert.equal(installed.enable_state, "disabled");
-  assert.equal(updated.version, "1.1.0");
+  assert.equal(updated.version, "2.0.0");
   assert.equal(downgraded.version, "1.0.0");
   assert.equal(enabled.enable_state, "enabled");
   assert.equal(disabled.disabled_reason, "admin");
@@ -1194,7 +1194,7 @@ test("platform client manages plugin lifecycle routes", async () => {
 
 test("local import update canonicalizes identity for transport and teardown", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
   const scope = createPluginSurfaceScope();
   let disposed = 0;
   registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
@@ -1432,7 +1432,7 @@ test("platform cleanup failures preserve the original unknown mutation outcome",
 test("platform client installs and updates plugin release refs without package bytes", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const releaseRef = {
     source_id: "official",
@@ -1450,12 +1450,12 @@ test("platform client installs and updates plugin release refs without package b
   };
 
 	await client.installReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: releaseRef });
-  await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
+  await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "2.0.0" }, expected_management_revision: 1 });
 
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/install-release-ref");
 	assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: releaseRef });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update-release-ref");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "2.0.0" }, expected_management_revision: 1 });
 });
 
 test("platform client inspects an exact release package before confirmation", async () => {

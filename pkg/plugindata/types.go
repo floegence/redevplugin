@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
 )
 
 var (

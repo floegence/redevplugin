@@ -1,6 +1,6 @@
 package host
 
-import "github.com/floegence/redevplugin/internal/runtimeclient"
+import "github.com/floegence/redevplugin/v2/internal/runtimeclient"
 
 // RuntimeModuleCacheMetrics reports the bounded runtime module cache state.
 type RuntimeModuleCacheMetrics struct {

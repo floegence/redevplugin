@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/permissions"
-	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/v2/pkg/permissions"
+	"github.com/floegence/redevplugin/v2/pkg/security"
 )
 
 func BenchmarkAuthorizationCrossPlugin(b *testing.B) {

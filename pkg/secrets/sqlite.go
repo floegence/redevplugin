@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 	_ "modernc.org/sqlite"
 )
 

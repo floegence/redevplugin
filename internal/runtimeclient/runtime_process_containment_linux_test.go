@@ -14,7 +14,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
 	"golang.org/x/sys/unix"
 )
 

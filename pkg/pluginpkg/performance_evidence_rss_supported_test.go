@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/floegence/redevplugin/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
 )
 
 const packagePerformanceProbeMode = "REDEVPLUGIN_PACKAGE_PERFORMANCE_PROBE"

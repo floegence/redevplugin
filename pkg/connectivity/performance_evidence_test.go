@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
 )
 
 func TestPerformanceHTTPKeepAliveRelativeP95(t *testing.T) {

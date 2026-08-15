@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/releasetrust"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/releasetrust"
 )
 
 type verifiedReleaseRegistry struct {

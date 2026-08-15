@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/redevplugin/internal/resourceio"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/internal/resourceio"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 var errRuntimeIOInvocationUnknown = errors.New("runtime I/O invocation is unknown")

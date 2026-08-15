@@ -168,7 +168,7 @@ export const redevPluginContractArtifacts = [
     id: "performance-contract",
     path: "spec/plugin/performance-contract-v4.json",
     version: "performance-contract-v4",
-    sha256: "75bd7955383cf77711c7df9b624d62b1eda3275ddc558500f206be4ea876f858",
+    sha256: "08830053b38f0f8466c4e9e608fd7f21e24175063ec02307543fbd8adfb5692e",
   },
   {
     id: "performance-evidence-schema",
@@ -180,13 +180,13 @@ export const redevPluginContractArtifacts = [
     id: "platform-package-publication-schema",
     path: "spec/plugin/platform-package-publication-v2.schema.json",
     version: "platform-package-publication-v2",
-    sha256: "f506ef7838757a05d5742fd3f223eb80cec99710972c517860cebd61c517012b",
+    sha256: "1cc7a342b7dda8533324764c7f29fa7a3ca24a93f6015e7a18a17539febd538a",
   },
   {
     id: "platform-package-set-schema",
     path: "spec/plugin/platform-package-set-v3.schema.json",
     version: "platform-package-set-v3",
-    sha256: "2ac6e9a520e21a3294bec0059e0fabb6ee5d285fe6efe08a6bb6cbf2c7aea2bb",
+    sha256: "8acba305f9df90be10cca516b98a598efc9a4bffd0e3c2915d78385e18397b88",
   },
   {
     id: "plugin-platform-openapi",

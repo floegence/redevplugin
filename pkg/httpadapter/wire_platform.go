@@ -1,8 +1,8 @@
 package httpadapter
 
 import (
-	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/pkg/host"
+	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 func publicFeatures(features []host.Feature) []string {
@@ -37,7 +37,7 @@ type compatibilityMatrixResponse struct {
 	ResourceScopeSchemaVersion         string                             `json:"resource_scope_schema_version"`
 	SessionScopeSchemaVersion          string                             `json:"session_scope_schema_version"`
 	PluginPlatformOpenAPIVersion       string                             `json:"plugin_platform_openapi_version"`
-	PublicAPICatalogVersion             string                             `json:"public_api_catalog_version"`
+	PublicAPICatalogVersion            string                             `json:"public_api_catalog_version"`
 	CompatibilitySchemaVersion         string                             `json:"compatibility_schema_version"`
 	WorkerInvocationSchemaVersion      string                             `json:"worker_invocation_schema_version"`
 	HostCapabilityContractVersion      string                             `json:"host_capability_contract_schema_version"`

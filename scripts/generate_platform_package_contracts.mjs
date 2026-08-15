@@ -18,6 +18,7 @@ const goContractsOutputPath = join(root, "pkg/contracts/contracts_gen.go");
 const goDigestOutputPath = join(root, "pkg/version/contract_set_gen.go");
 const typeScriptContractsOutputPath = join(root, "packages/redevplugin-contracts/src/contracts.gen.ts");
 const rustIPCDigestOutputPath = join(root, "crates/redevplugin-runtime/src/ipc/contract_set_gen.rs");
+const rustIPCV7FixturePath = join(root, "crates/redevplugin-runtime/testdata/ipc-v7-fixtures.json");
 const canonicalHelloAckFixturePath = join(root, "testdata/contracts/ipc/valid_hello_ack.json");
 const rustHelloAckFixturePath = join(root, "crates/redevplugin-runtime/testdata/ipc/valid_hello_ack.json");
 const checkOnly = process.argv.slice(2).includes("--check");
@@ -121,7 +122,7 @@ export async function generatePlatformPackageContracts() {
     schema_version: "redevplugin.platform_package_set.v3",
     platform_version: version,
     go_module: {
-      module: "github.com/floegence/redevplugin",
+      module: "github.com/floegence/redevplugin/v2",
       version: `v${version}`,
     },
     npm_packages: npmPackages.map((name) => ({ name, version })),
@@ -142,6 +143,7 @@ export async function generatePlatformPackageContracts() {
     parseStrictJSON(await readFile(canonicalHelloAckFixturePath), "valid hello ack fixture"),
     contractSetSHA256,
   );
+  const ipcV7FixtureBytes = await readFile(join(root, "spec/plugin/ipc-v7-fixtures.json"));
 
   return new Map([
     [registryOutputPath, registryBytes],
@@ -150,6 +152,7 @@ export async function generatePlatformPackageContracts() {
     [goDigestOutputPath, formatGo(renderGoContractSetDigest(contractSetSHA256))],
     [typeScriptContractsOutputPath, renderTypeScriptContracts(registry, packageSet, embeddedArtifacts, registryContract)],
     [rustIPCDigestOutputPath, formatRust(renderRustContractSetDigest(contractSetSHA256))],
+    [rustIPCV7FixturePath, ipcV7FixtureBytes],
     [canonicalHelloAckFixturePath, helloAckFixtureBytes],
     [rustHelloAckFixturePath, helloAckFixtureBytes],
   ]);
@@ -489,7 +492,7 @@ function validateGoModuleCoordinate(value, version, published) {
   if (!isRecord(value)) throw new Error("Go module coordinate must be an object");
   const keys = published ? ["module", "version", "h1", "go_mod_h1"] : ["module", "version"];
   exactKeys(value, keys, "Go module coordinate");
-  if (value.module !== "github.com/floegence/redevplugin" || value.version !== `v${version}`) {
+  if (value.module !== "github.com/floegence/redevplugin/v2" || value.version !== `v${version}`) {
     throw new Error("Go module coordinate mismatch");
   }
   if (published) {

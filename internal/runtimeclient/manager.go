@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/jsonvalue"
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
 )
 
 const (

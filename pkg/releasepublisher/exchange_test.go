@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
 )
 
 func TestExternalSignerSchemasMatchCurrentExchange(t *testing.T) {

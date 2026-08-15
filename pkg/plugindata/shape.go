@@ -3,8 +3,8 @@ package plugindata
 import (
 	"fmt"
 
-	"github.com/floegence/redevplugin/pkg/manifest"
-	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
 )
 
 func ShapeFromManifest(value manifest.Manifest) (Shape, error) {

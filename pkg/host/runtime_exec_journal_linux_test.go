@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
 )
 
 func TestRuntimeExecJournalDurablyTransitionsAndReconciles(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/jsonvalue"
-	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
 )
 
 func TestMemorySecurityAuditJournalRequiresCompleteBeforeExport(t *testing.T) {

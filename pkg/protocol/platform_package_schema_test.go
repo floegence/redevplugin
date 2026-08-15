@@ -223,7 +223,7 @@ func validPlatformPackagePublication(t *testing.T, packageSet map[string]any) ma
 			"sha":        commit,
 		},
 		"go_module": map[string]any{
-			"module":    "github.com/floegence/redevplugin",
+			"module":    "github.com/floegence/redevplugin/v2",
 			"version":   "v" + version,
 			"h1":        "h1:" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32)),
 			"go_mod_h1": "h1:" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)),

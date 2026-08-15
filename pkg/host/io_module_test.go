@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 type ioTestFileSystemAdapter struct{}

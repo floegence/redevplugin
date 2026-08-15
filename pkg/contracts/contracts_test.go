@@ -15,7 +15,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/contracts"
+	"github.com/floegence/redevplugin/v2/pkg/contracts"
 )
 
 func TestContractInventoryIncludesSyntheticRegistry(t *testing.T) {
@@ -133,8 +133,8 @@ func TestContractSnapshotsAndBytesAreOwned(t *testing.T) {
 	packageSet.ContractRegistryVersion = "mutated"
 	packageSet.ContractSetSHA256 = "mutated"
 	if got := contracts.PackageSet(); got.SchemaVersion != "redevplugin.platform_package_set.v3" ||
-		got.PlatformVersion != "1.1.4" ||
-		got.GoModule.Module != "github.com/floegence/redevplugin" ||
+		got.PlatformVersion != "2.0.0" ||
+		got.GoModule.Module != "github.com/floegence/redevplugin/v2" ||
 		got.NPMPackages[0].Name != wantNPMName || got.RustCrates[0].Role != "runtime" ||
 		got.ContractRegistryVersion != "contract-registry-v2" || len(got.ContractSetSHA256) != 64 {
 		t.Fatal("package set snapshot shares mutable coordinate storage")
@@ -156,7 +156,7 @@ func TestHostDoesNotEmbedContractsPackageTransitively(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, dependency := range strings.Fields(string(output)) {
-			if dependency == "github.com/floegence/redevplugin/pkg/contracts" {
+			if dependency == "github.com/floegence/redevplugin/v2/pkg/contracts" {
 				t.Fatalf("%s transitively embeds the full contract body package", packagePath)
 			}
 		}

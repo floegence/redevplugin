@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/plugindata"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/plugindata"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 var ErrManagementRevisionConflict = errors.New("management revision conflict")

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/releasecontract"
-	"github.com/floegence/redevplugin/pkg/releasepublisher"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasepublisher"
 )
 
 func TestReleasePublisherSchemasMatchGoWireDTOs(t *testing.T) {

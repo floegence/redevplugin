@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
 )
 
 func TestExternalPackageSourceProvenanceJSONMatchesOpenAPIUnion(t *testing.T) {

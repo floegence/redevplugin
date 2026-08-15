@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/performanceevidence"
-	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v2/pkg/permissions"
 )
 
 func TestPerformanceSQLiteAuthorizationGrantScaling(t *testing.T) {

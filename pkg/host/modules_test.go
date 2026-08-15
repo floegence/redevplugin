@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/secrets"
+	"github.com/floegence/redevplugin/v2/internal/testsupport/releasetrustfixture"
+	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v2/pkg/secrets"
 )
 
 func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {

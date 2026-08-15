@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/httpadapter"
+	"github.com/floegence/redevplugin/v2/pkg/httpadapter"
 )
 
 type routeFixture struct {

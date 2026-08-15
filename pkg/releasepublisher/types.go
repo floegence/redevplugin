@@ -1,8 +1,8 @@
 package releasepublisher
 
 import (
-	"github.com/floegence/redevplugin/pkg/manifest"
-	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
 )
 
 const (

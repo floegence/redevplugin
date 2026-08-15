@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
 )
 
 func DecodeModel(r io.Reader) (Model, error) {

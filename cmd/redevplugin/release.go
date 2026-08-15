@@ -4,8 +4,8 @@ import (
 	"context"
 	"os"
 
-	"github.com/floegence/redevplugin/pkg/releasepublisher"
-	"github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/v2/pkg/releasepublisher"
+	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 func runRelease(ctx context.Context, args []string) error {

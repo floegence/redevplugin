@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
 )
 
 func buildCompleteAssembly(

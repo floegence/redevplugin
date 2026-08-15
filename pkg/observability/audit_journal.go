@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/jsonvalue"
-	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
 )
 
 // SecurityAuditState describes the durable state of a security mutation

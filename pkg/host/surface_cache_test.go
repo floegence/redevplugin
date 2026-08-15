@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
 )
 
 func TestSurfaceDocumentCachePreservesRequiredEmptyCollections(t *testing.T) {

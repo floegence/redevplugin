@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/internal/controlstore"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/sessionscope"
+	"github.com/floegence/redevplugin/v2/internal/controlstore"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/sessionscope"
 )
 
 func TestControlStorePreservesFencePhaseIdentityAndFinalization(t *testing.T) {

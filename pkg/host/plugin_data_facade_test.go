@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/redevplugin/pkg/plugindata"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/plugindata"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
 )
 
 func TestPluginDataFileFacadeDerivesExactSessionResourceScope(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/floegence/redevplugin/internal/performanceevidence"
-	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/websecurity"
+	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v2/pkg/websecurity"
 )
 
 const (

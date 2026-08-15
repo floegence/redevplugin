@@ -12,7 +12,7 @@ import (
 	"regexp"
 	"sync"
 
-	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
 	"golang.org/x/sys/unix"
 )
 

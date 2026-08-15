@@ -24,7 +24,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
 	"github.com/tetratelabs/wazero"
 	_ "golang.org/x/image/webp"
 	"golang.org/x/net/html"
@@ -1563,10 +1563,6 @@ func canonicalHashes(entries []Entry, manifestHash string) (entriesHash string, 
 func sha256String(content []byte) string {
 	sum := sha256.Sum256(content)
 	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-func canonicalJSON(v any) ([]byte, error) {
-	return json.Marshal(v)
 }
 
 func parsePackageSignature(signatureFiles map[string][]byte, m manifest.Manifest, manifestHash string, entriesHash string, packageHash string) (*PackageSignature, error) {

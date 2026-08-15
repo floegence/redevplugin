@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn validates_generated_scaffold_worker_api_v1_imports() {
-        let module = include_bytes!("../../../cmd/redevplugin/scaffold_assets/backend.wasm");
+        let module = include_bytes!("../testdata/scaffold-backend.wasm");
         let validated = validate_worker_module(module).expect("validate generated scaffold worker");
         let imports = validated
             .imports

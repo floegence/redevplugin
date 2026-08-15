@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v2/pkg/storage"
 	_ "modernc.org/sqlite"
 )
 

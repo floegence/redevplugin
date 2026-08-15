@@ -12,7 +12,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/v2/pkg/storage"
 )
 
 const (

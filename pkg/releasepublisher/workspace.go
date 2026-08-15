@@ -16,7 +16,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
 )
 
 const (
