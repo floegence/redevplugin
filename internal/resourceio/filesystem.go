@@ -1,6 +1,7 @@
 package resourceio
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -12,9 +13,10 @@ import (
 )
 
 var (
-	ErrCrossDevice    = errors.New("cross-device operation is not allowed")
-	ErrUnsafeFile     = errors.New("filesystem object is unsafe")
-	ErrInvalidOptions = errors.New("file open options are invalid")
+	ErrCrossDevice      = errors.New("cross-device operation is not allowed")
+	ErrUnsafeFile       = errors.New("filesystem object is unsafe")
+	ErrInvalidOptions   = errors.New("file open options are invalid")
+	ErrWatchUnsupported = errors.New("filesystem watch is unavailable")
 )
 
 type Mount struct {
@@ -61,6 +63,46 @@ type DirectoryEntry struct {
 type DirectoryPage struct {
 	Entries []DirectoryEntry `json:"entries"`
 	EOF     bool             `json:"eof"`
+}
+
+type WatchKind string
+
+const (
+	WatchKindCreate   WatchKind = "create"
+	WatchKindChange   WatchKind = "change"
+	WatchKindDelete   WatchKind = "delete"
+	WatchKindRename   WatchKind = "rename"
+	WatchKindOverflow WatchKind = "overflow"
+)
+
+type WatchEvent struct {
+	Sequence    uint64    `json:"sequence"`
+	Kind        WatchKind `json:"kind"`
+	URI         string    `json:"uri"`
+	PreviousURI string    `json:"previous_uri,omitempty"`
+}
+
+type watchImplementation interface {
+	Next(context.Context, time.Duration) (WatchEvent, error)
+	Close() error
+}
+
+type WatchStream struct {
+	implementation watchImplementation
+}
+
+func (stream *WatchStream) Next(ctx context.Context, timeout time.Duration) (WatchEvent, error) {
+	if stream == nil || stream.implementation == nil {
+		return WatchEvent{}, ErrResourceClosed
+	}
+	return stream.implementation.Next(ctx, timeout)
+}
+
+func (stream *WatchStream) Close() error {
+	if stream == nil || stream.implementation == nil {
+		return nil
+	}
+	return stream.implementation.Close()
 }
 
 type DirectoryStream struct {
@@ -152,7 +194,7 @@ func (mount Mount) OpenFile(uri URI, options OpenOptions) (*os.File, error) {
 		return nil, err
 	}
 	info, err := file.Stat()
-	if err != nil || !safeRegularFile(info) {
+	if err != nil || !safeRegularFile(file, info) {
 		_ = file.Close()
 		if err != nil {
 			return nil, err
@@ -304,6 +346,31 @@ func (mount Mount) OpenDirectory(uri URI) (*DirectoryStream, error) {
 		return nil, ErrUnsafeFile
 	}
 	return &DirectoryStream{file: file, mountID: mount.ID, path: path}, nil
+}
+
+func (mount Mount) OpenWatch(uri URI) (*WatchStream, error) {
+	path, err := mount.relative(uri)
+	if err != nil {
+		return nil, err
+	}
+	target, err := mount.Root.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := target.Stat()
+	if err != nil || !(info.IsDir() || safeRegularFile(target, info)) {
+		_ = target.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, ErrUnsafeFile
+	}
+	implementation, err := openWatchImplementation(target, uri)
+	if err != nil {
+		_ = target.Close()
+		return nil, err
+	}
+	return &WatchStream{implementation: implementation}, nil
 }
 
 func (stream *DirectoryStream) Next(limit int) (DirectoryPage, error) {

@@ -257,6 +257,48 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 			_ = service.table.Close(HandleID(args.Handle), invocation.Owner)
 		}
 		return page, err
+	case "fs.watch":
+		var args struct {
+			URI       string `json:"uri"`
+			Recursive bool   `json:"recursive"`
+		}
+		if err := decodeClosedJSON(arguments, &args); err != nil || args.Recursive {
+			return nil, ErrInvalidOptions
+		}
+		uri, mount, err := service.resolveMount(ctx, invocation, args.URI, false)
+		if err != nil {
+			return nil, err
+		}
+		defer mount.Close()
+		watch, err := mount.OpenWatch(uri)
+		if err != nil {
+			return nil, err
+		}
+		handle, err := service.table.Open(invocation.Owner, KindWatch, watch)
+		if err != nil {
+			_ = watch.Close()
+			return nil, err
+		}
+		return map[string]any{"handle": uint64(handle)}, nil
+	case "fs.watch_next":
+		var args struct {
+			Handle    uint64 `json:"handle"`
+			TimeoutMS uint32 `json:"timeout_ms"`
+		}
+		if err := decodeClosedJSON(arguments, &args); err != nil || args.Handle == 0 || args.TimeoutMS == 0 || args.TimeoutMS > 60_000 {
+			return nil, ErrInvalidOptions
+		}
+		var event WatchEvent
+		err := service.table.Use(HandleID(args.Handle), invocation.Owner, KindWatch, func(resource io.Closer) error {
+			watch, ok := resource.(*WatchStream)
+			if !ok {
+				return ErrInvalidHandle
+			}
+			var nextErr error
+			event, nextErr = watch.Next(ctx, time.Duration(args.TimeoutMS)*time.Millisecond)
+			return nextErr
+		})
+		return event, err
 	case "fs.sync":
 		var args struct {
 			Handle uint64 `json:"handle"`
@@ -762,6 +804,8 @@ func stableServiceError(err error) (string, bool) {
 		return "PERMISSION_DENIED", false
 	case errors.Is(err, ErrRedirectRequiresReplay):
 		return "REDIRECT_REQUIRES_REPLAY", false
+	case errors.Is(err, ErrWatchUnsupported):
+		return "RUNTIME_UNAVAILABLE", false
 	case errors.Is(err, ErrInvalidHandle), errors.Is(err, ErrInvalidURI), errors.Is(err, ErrInvalidOptions):
 		return "INVALID_ARGUMENT", false
 	case isNetworkError(err):

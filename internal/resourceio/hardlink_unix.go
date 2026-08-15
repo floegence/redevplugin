@@ -4,10 +4,11 @@ package resourceio
 
 import (
 	"io/fs"
+	"os"
 	"syscall"
 )
 
-func safeRegularFile(info fs.FileInfo) bool {
+func safeRegularFile(_ *os.File, info fs.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && info.Mode().IsRegular() && stat.Nlink == 1
 }
