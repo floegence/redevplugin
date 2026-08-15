@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.2
+
+- Preserve `MOUNT_UNAVAILABLE` from Host filesystem adapters through the Go
+  resource broker and Worker API 1, including the appended `-15` WASM ABI
+  status and Rust SDK error variant.
+
 ## v2.0.1
 
 - Publish the coordinated stable extension API and Host-owned resource I/O
