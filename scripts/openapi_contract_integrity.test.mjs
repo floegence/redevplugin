@@ -8,7 +8,7 @@ import { parse as parseYAML } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 
 async function readOpenAPI() {
-  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v15.yaml"), "utf8"));
+  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v16.yaml"), "utf8"));
 }
 
 async function readIPCSchema() {
@@ -20,7 +20,7 @@ async function readSessionScopeSchema() {
 }
 
 async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v18.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v19.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
@@ -173,7 +173,7 @@ test("Rust IPC v6 carries closed session revoke request and acknowledgement fram
   assert.equal(schema.$defs.session_revoke_count.maximum, Number.MAX_SAFE_INTEGER);
 });
 
-test("compatibility v17 publishes the complete session revoke and UI transport matrix", async () => {
+test("current compatibility manifest publishes the complete session revoke and UI transport matrix", async () => {
   const schema = await readCompatibilitySchema();
   const matrix = schema.properties.matrix;
   assert.ok(matrix.required.includes("session_scope_schema_version"));

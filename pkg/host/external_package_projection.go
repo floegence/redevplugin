@@ -288,6 +288,7 @@ type ExternalPackageInspection struct {
 
 type InstalledExternalPackage struct {
 	Plugin              *registry.PluginRecord              `json:"plugin"`
+	Activation          registry.ReleaseInstallActivation   `json:"activation"`
 	SignatureAssessment *ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
 	SourceProvenance    *ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
 	ExecutionApproval   *ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`

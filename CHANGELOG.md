@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.1.4
+
+- Advance the current-only HTTP and compatibility contracts to
+  `plugin-platform-v16` and `compatibility-manifest-v19` for the unified
+  install review and activation lifecycle.
+
+- Enable newly confirmed release and external-package installs by default when
+  required permissions and runtime policy allow activation, while preserving a
+  user's disabled intent across updates.
+- Add exact release-package inspection for one-step permission review and
+  reconcile a release committed before activation after Host restart.
+
 ## v1.1.3
 
 - Preserve the exact immutable bytes of published capability-contract artifacts

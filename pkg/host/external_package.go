@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/controlstore"
 	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
@@ -99,6 +100,8 @@ type InspectUploadedExternalPackageRequest struct {
 type InstallInspectedPackageRequest struct {
 	InspectionID          string    `json:"inspection_id"`
 	ExpectedPackageSHA256 string    `json:"expected_package_sha256"`
+	ActivateAfterInstall  *bool     `json:"activate_after_install,omitempty"`
+	ApprovedPermissionIDs []string  `json:"approved_permission_ids,omitempty"`
 	Now                   time.Time `json:"-"`
 }
 
@@ -480,6 +483,24 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	if err != nil {
 		return InstalledExternalPackage{}, err
 	}
+	req.ApprovedPermissionIDs = normalizeStringSet(req.ApprovedPermissionIDs)
+	if req.ActivateAfterInstall != nil && !*req.ActivateAfterInstall && len(req.ApprovedPermissionIDs) != 0 {
+		return InstalledExternalPackage{}, fmt.Errorf("%w: approved permissions require activation", ErrExternalPackageRequestInvalid)
+	}
+	activationRequest := externalPackageActivationRequest(req, preview)
+	if activationRequest.Mode != registry.ReleaseInstallActivationDisabled {
+		if _, err := h.authorizeManagementSession(ctx, session, ManagementActionEnablePlugin,
+			scopedAuthorizationTarget(ResourcePlugin, preview.Record.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
+			return InstalledExternalPackage{}, err
+		}
+		for _, permissionID := range activationRequest.ApprovedPermissionIDs {
+			if _, err := h.authorizeManagementSession(ctx, session, ManagementActionGrantPermission,
+				scopedAuthorizationTarget(ResourcePermission, permissionID, sessionctx.ScopeEnvironment),
+				scopedAuthorizationTarget(ResourcePlugin, preview.Record.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
+				return InstalledExternalPackage{}, err
+			}
+		}
+	}
 	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallInspectedPackage,
 		scopedAuthorizationTarget(ResourcePlugin, preview.Record.PluginInstanceID, sessionctx.ScopeEnvironment))
 	if err != nil {
@@ -541,11 +562,6 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	record.ExecutionApproval.ReasonCodes = []string{"explicit_user_confirmation"}
 	record.ExecutionApproval.ApprovedAt = now
 	record.ExecutionApproval.AssessedAt = now
-	if record.SignatureAssessment.Status != registry.SignatureVerified {
-		record.EnableState = registry.EnableDisabled
-		record.DisabledReason = "external package signature is not verified; explicit permission review and enable are required"
-		record.EnabledAt = nil
-	}
 	if record.EnableState == registry.EnableEnabled {
 		if err := h.validateEnabledRuntimeState(ctx, record); err != nil {
 			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
@@ -563,18 +579,35 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
 		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
 	}
-	stored, err := h.installExternalPackageRecord(ctx, scope.OwnerEnvHash, registry.InstallExternalPackageRequest{
+	stored, pendingActivation, err := h.installExternalPackageRecord(ctx, session, registry.InstallExternalPackageRequest{
 		Intent:                     registry.ExternalPackageInstallIntent(pending.Inspection.Intent.Action),
 		ExpectedManagementRevision: pending.Inspection.Intent.ExpectedManagementRevision,
 		Record:                     record, Now: now,
-	})
+	}, activationRequest)
 	if err != nil {
 		auditDetails["status"] = "failed"
 		assetRollbackErr := h.adapters.Assets.DeletePackage(context.WithoutCancel(ctx), record.PackageHash)
 		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, errors.Join(managementMutationError(record, err), assetRollbackErr))
 	}
+	activation := registry.ReleaseInstallActivation{Status: registry.ReleaseInstallActivationNotRequested}
+	if activationRequest.Mode != registry.ReleaseInstallActivationDisabled {
+		activation, stored, err = h.activatePluginInstall(ctx, stored, activationRequest, now)
+		if err != nil {
+			auditDetails["status"] = "activation_failed"
+			activation = registry.ReleaseInstallActivation{
+				Status: registry.ReleaseInstallActivationNeedsAttention, NextAction: registry.ReleaseInstallNextActionRetryActivation,
+			}
+			result = installedExternalPackage(stored, activation, now)
+			return result, mutation.Committed(err)
+		}
+		if err := h.completeExternalInstallActivation(context.WithoutCancel(ctx), *pendingActivation, activation, now); err != nil {
+			auditDetails["status"] = "activation_completion_failed"
+			result = installedExternalPackage(stored, activation, now)
+			return result, mutation.Committed(err)
+		}
+	}
 	auditDetails["status"] = "committed"
-	result = installedExternalPackage(stored, now)
+	result = installedExternalPackage(stored, activation, now)
 	var postCommitErr error
 	if previous != nil {
 		revokeRecord := stored
@@ -597,15 +630,47 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	return result, nil
 }
 
-func (h *Host) installExternalPackageRecord(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
+func (h *Host) installExternalPackageRecord(ctx context.Context, session sessionctx.Context, req registry.InstallExternalPackageRequest, activation registry.ReleaseInstallActivationRequest) (registry.PluginRecord, *controlstore.ExternalInstallActivation, error) {
 	if h.controlStore == nil {
-		return registry.PluginRecord{}, ErrControlStoreRequired
+		return registry.PluginRecord{}, nil, ErrControlStoreRequired
 	}
-	return h.controlStore.Registry().InstallExternalPackage(ctx, ownerEnvHash, req)
+	if activation.Mode == registry.ReleaseInstallActivationDisabled {
+		record, err := h.controlStore.Registry().InstallExternalPackage(ctx, session.OwnerEnvHash, req)
+		return record, nil, err
+	}
+	executionID, err := newExternalPackageID("external_install")
+	if err != nil {
+		return registry.PluginRecord{}, nil, err
+	}
+	record, pending, err := h.controlStore.Registry().InstallExternalPackageWithActivation(ctx, session.OwnerEnvHash, req, controlstore.ExternalInstallActivationRequest{
+		ExecutionID: executionID, Owner: releaseInstallOwner(session), Activation: activation, Now: req.Now,
+	})
+	if err != nil {
+		return registry.PluginRecord{}, nil, err
+	}
+	return record, &pending, nil
 }
 
-func installedExternalPackage(record registry.PluginRecord, now time.Time) InstalledExternalPackage {
-	result := InstalledExternalPackage{Plugin: &record}
+func externalPackageActivationRequest(req InstallInspectedPackageRequest, pending externalPackagePendingInspection) registry.ReleaseInstallActivationRequest {
+	mode := registry.ReleaseInstallActivationAutomatic
+	if pending.Inspection.Intent.Action == string(registry.ExternalPackageUpdate) {
+		if pending.Record.EnableState != registry.EnableEnabled {
+			mode = registry.ReleaseInstallActivationDisabled
+		} else {
+			mode = registry.ReleaseInstallActivationRequested
+		}
+	} else if req.ActivateAfterInstall != nil {
+		if *req.ActivateAfterInstall {
+			mode = registry.ReleaseInstallActivationRequested
+		} else {
+			mode = registry.ReleaseInstallActivationDisabled
+		}
+	}
+	return registry.ReleaseInstallActivationRequest{Mode: mode, ApprovedPermissionIDs: append([]string(nil), req.ApprovedPermissionIDs...)}
+}
+
+func installedExternalPackage(record registry.PluginRecord, activation registry.ReleaseInstallActivation, now time.Time) InstalledExternalPackage {
+	result := InstalledExternalPackage{Plugin: &record, Activation: activation}
 	signature := publicExternalSignatureAssessment(record.SignatureAssessment)
 	provenance := publicExternalSourceProvenance(record.PackageSourceProvenance)
 	approval := publicExternalExecutionApproval(record.ExecutionApproval)

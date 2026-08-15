@@ -18,7 +18,7 @@ import (
 const (
 	modulePath                      = "github.com/floegence/redevplugin"
 	devVersion                      = "0.0.0-dev"
-	developmentCompatibilityVersion = "1.1.3"
+	developmentCompatibilityVersion = "1.1.4"
 )
 
 var (

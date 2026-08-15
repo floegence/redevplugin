@@ -14,9 +14,19 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/externalsource"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 )
+
+type failCommitEnablePluginData struct {
+	PluginData
+	err error
+}
+
+func (p *failCommitEnablePluginData) CommitEnable(context.Context, plugindata.CommitEnableRequest) (plugindata.Dataset, error) {
+	return plugindata.Dataset{}, p.err
+}
 
 type externalPackageTestStage struct {
 	mu                 sync.Mutex
@@ -157,7 +167,7 @@ func (a *mutableExternalPackageTestAssessor) freshnessCallCount() int {
 	return a.freshnessCalls
 }
 
-func TestExternalPackageUnsignedInspectInstallInstallsDisabledWithoutGrants(t *testing.T) {
+func TestExternalPackageUnsignedInspectInstallEnablesWithoutGrants(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	pkg := readTestPackage(t, buildFixturePackage(t))
 	stage := &externalPackageTestStage{pkg: pkg}
@@ -181,6 +191,12 @@ func TestExternalPackageUnsignedInspectInstallInstallsDisabledWithoutGrants(t *t
 	if inspection.Intent.PluginInstanceID == "" || inspection.InspectedHashes.PackageSHA256 == "" {
 		t.Fatalf("inspection identity is incomplete: %#v", inspection)
 	}
+	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
+		ActivateAfterInstall: new(false), ApprovedPermissionIDs: []string{"read"}, Now: now.Add(30 * time.Second),
+	}); !errors.Is(err, ErrExternalPackageRequestInvalid) {
+		t.Fatalf("disabled activation with approvals error = %v", err)
+	}
 
 	committed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, Now: now.Add(time.Minute),
@@ -188,7 +204,7 @@ func TestExternalPackageUnsignedInspectInstallInstallsDisabledWithoutGrants(t *t
 	if err != nil {
 		t.Fatalf("InstallInspectedPackage() error = %v", err)
 	}
-	if committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableDisabled {
+	if committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableEnabled {
 		t.Fatalf("commit result = %#v", committed)
 	}
 	if committed.Plugin.ExecutionApproval.Status != registry.ExecutionApprovalUserApproved || committed.Plugin.UpdateEligibility != registry.UpdateManualOnly {
@@ -248,7 +264,7 @@ func TestStateRootExternalInstallNeedsNoCallerRegistryOrInstallStages(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if installed.Plugin == nil || installed.Plugin.EnableState != registry.EnableDisabled {
+	if installed.Plugin == nil || installed.Plugin.EnableState != registry.EnableEnabled {
 		t.Fatalf("installed plugin = %#v", installed.Plugin)
 	}
 	records, err := h.ListPlugins(hostTestContext())
@@ -280,7 +296,8 @@ func TestSQLiteExternalPackageCallPluginMethodKeepsExecutionAuthorized(t *testin
 		t.Fatalf("InspectExternalPackage() error = %v", err)
 	}
 	committed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
-		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, Now: now.Add(time.Second),
+		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
+		ApprovedPermissionIDs: []string{"read"}, Now: now.Add(time.Second),
 	})
 	if err != nil {
 		t.Fatalf("InstallInspectedPackage() error = %v", err)
@@ -288,20 +305,20 @@ func TestSQLiteExternalPackageCallPluginMethodKeepsExecutionAuthorized(t *testin
 	if committed.Plugin == nil {
 		t.Fatal("InstallInspectedPackage() returned no plugin")
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{
-		PluginInstanceID: committed.Plugin.PluginInstanceID,
-		Now:              now.Add(2 * time.Second),
-		ExpectedManagementRevision: mustManagementRevision(t, h,
-			committed.Plugin.PluginInstanceID),
-	})
-	if err != nil {
-		t.Fatalf("EnablePlugin() error = %v", err)
+	if committed.Plugin.EnableState != registry.EnableEnabled || committed.Activation.Status != registry.ReleaseInstallActivationEnabled {
+		t.Fatalf("external install did not grant and enable in one confirmation: %#v", committed)
 	}
-	grantDeclaredPermissions(t, h, enabled)
-	_, gateway := openSurfaceAndMintGateway(t, h, enabled.PluginInstanceID, "rpc.view")
+	grants, err := h.ListPermissionGrants(ctx, ListPermissionGrantsRequest{PluginInstanceID: committed.Plugin.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].PermissionID != "read" {
+		t.Fatalf("permission grants = %#v, want approved read grant", grants)
+	}
+	_, gateway := openSurfaceAndMintGateway(t, h, committed.Plugin.PluginInstanceID, "rpc.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID: enabled.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		PluginInstanceID: committed.Plugin.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
 		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "echo.ping", Params: map[string]any{"message": "hello"},
 		Now: stableRecentTestNow(),
@@ -312,6 +329,70 @@ func TestSQLiteExternalPackageCallPluginMethodKeepsExecutionAuthorized(t *testin
 	data, ok := result.Data.(map[string]any)
 	if !ok || data["ok"] != true || adapter.calls != 1 {
 		t.Fatalf("CallPluginMethod() result = %#v, adapter calls = %d", result, adapter.calls)
+	}
+}
+
+func TestExternalPackageInstallNeedsAttentionWithoutRequiredPermissionApproval(t *testing.T) {
+	ctx := hostTestContext()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true,
+		capabilityID: "example.capability.echo", capabilityAdapter: &recordingCapabilityAdapter{},
+	})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildRPCFixturePackage(t))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/permission-review.redevplugin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
+		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableDisabled ||
+		committed.Activation.Status != registry.ReleaseInstallActivationNeedsAttention ||
+		len(committed.Activation.MissingPermissionIDs) != 1 || committed.Activation.MissingPermissionIDs[0] != "read" {
+		t.Fatalf("external install activation = %#v, plugin = %#v", committed.Activation, committed.Plugin)
+	}
+}
+
+func TestExternalPackageInstallRecoversCommittedActivationAfterHostRestart(t *testing.T) {
+	ctx := hostTestContext()
+	stateRoot := filepath.Join(t.TempDir(), "control-state")
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: stateRoot, developerMode: true, localGenerated: true})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	h.adapters.PluginData = &failCommitEnablePluginData{PluginData: h.adapters.PluginData, err: errors.New("simulated activation interruption")}
+	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/recovery.redevplugin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
+		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
+	})
+	if err == nil || committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableDisabled {
+		t.Fatalf("interrupted external install = %#v, err = %v", committed, err)
+	}
+	pluginInstanceID := committed.Plugin.PluginInstanceID
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: stateRoot, developerMode: true, localGenerated: true})
+	defer restarted.Close()
+	recovered, err := restarted.getPluginRecord(ctx, pluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.EnableState != registry.EnableEnabled {
+		t.Fatalf("recovered external install = %#v, want enabled", recovered)
 	}
 }
 
@@ -349,7 +430,7 @@ func TestUploadedExternalPackageUsesOwnerScopedStageAndPersistsManualOnlyProvena
 	}
 	if committed.Plugin == nil || committed.Plugin.PackageSourceProvenance.Kind != registry.PackageSourcePackageUpload ||
 		committed.Plugin.PackageSourceProvenance.UploadID != inspection.SourceProvenance.UploadID ||
-		committed.Plugin.UpdateEligibility != registry.UpdateManualOnly || committed.Plugin.EnableState != registry.EnableDisabled {
+		committed.Plugin.UpdateEligibility != registry.UpdateManualOnly || committed.Plugin.EnableState != registry.EnableEnabled {
 		t.Fatalf("committed upload = %#v", committed.Plugin)
 	}
 	stage.setPackage(readTestPackage(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")))
@@ -753,7 +834,7 @@ func TestExternalPackageHostCloseReturnsStageCleanupFailure(t *testing.T) {
 	}
 }
 
-func TestExternalPackageUnverifiedUpdateDisablesWithoutRefreshingNewBytes(t *testing.T) {
+func TestExternalPackageUpdatePreservesEnabledIntent(t *testing.T) {
 	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
 	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
@@ -770,20 +851,12 @@ func TestExternalPackageUnverifiedUpdateDisablesWithoutRefreshingNewBytes(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(hostTestContext(), EnableRequest{
-		PluginInstanceID:           installed.Plugin.PluginInstanceID,
-		ExpectedManagementRevision: installed.Plugin.ManagementRevision,
-		Now:                        time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	beforeSnapshots := len(surfaces.snapshots)
 	stage.setPackage(readTestPackage(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")))
 	updateInspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{
-			Action: "update", PluginInstanceID: enabled.PluginInstanceID,
-			ExpectedManagementRevision: enabled.ManagementRevision,
+			Action: "update", PluginInstanceID: installed.Plugin.PluginInstanceID,
+			ExpectedManagementRevision: installed.Plugin.ManagementRevision,
 		},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/lifecycle-v2.redevplugin"},
 	})
@@ -796,11 +869,11 @@ func TestExternalPackageUnverifiedUpdateDisablesWithoutRefreshingNewBytes(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Plugin == nil || updated.Plugin.Version != "2.0.0" || updated.Plugin.EnableState != registry.EnableDisabled || updated.Plugin.UpdateEligibility != registry.UpdateManualOnly {
+	if updated.Plugin == nil || updated.Plugin.Version != "2.0.0" || updated.Plugin.EnableState != registry.EnableEnabled || updated.Plugin.UpdateEligibility != registry.UpdateManualOnly {
 		t.Fatalf("updated plugin = %#v", updated.Plugin)
 	}
-	if len(surfaces.snapshots) != beforeSnapshots {
-		t.Fatalf("unverified update refreshed new package bytes: snapshots before=%d after=%d", beforeSnapshots, len(surfaces.snapshots))
+	if len(surfaces.snapshots) <= beforeSnapshots {
+		t.Fatalf("enabled update did not refresh new package bytes: snapshots before=%d after=%d", beforeSnapshots, len(surfaces.snapshots))
 	}
 	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
 		t.Fatal("external update did not revoke old runtime capabilities")
@@ -811,6 +884,52 @@ func TestExternalPackageUnverifiedUpdateDisablesWithoutRefreshingNewBytes(t *tes
 	}
 	if len(authorization.Grants) != 0 {
 		t.Fatalf("unverified update retained grants: %#v", authorization.Grants)
+	}
+}
+
+func TestExternalPackageUpdatePreservesUserDisabledIntent(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	ctx := hostTestContext()
+	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/disabled-v1.redevplugin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
+		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := h.DisablePlugin(ctx, DisableRequest{
+		PluginInstanceID:           installed.Plugin.PluginInstanceID,
+		ExpectedManagementRevision: installed.Plugin.ManagementRevision,
+		Reason:                     "user_requested",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.setPackage(readTestPackage(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")))
+	updateInspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "update", PluginInstanceID: disabled.PluginInstanceID, ExpectedManagementRevision: disabled.ManagementRevision},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/disabled-v2.redevplugin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
+		InspectionID: updateInspection.InspectionID, ExpectedPackageSHA256: updateInspection.InspectedHashes.PackageSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Plugin == nil || updated.Plugin.Version != "2.0.0" || updated.Plugin.EnableState != registry.EnableDisabled ||
+		updated.Activation.Status != registry.ReleaseInstallActivationNotRequested {
+		t.Fatalf("user-disabled update = %#v", updated)
 	}
 }
 

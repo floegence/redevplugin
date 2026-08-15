@@ -374,7 +374,7 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v15.yaml`;
+- `spec/openapi/plugin-platform-v16.yaml`;
 - `spec/plugin/manifest-v8.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
 - `spec/plugin/release-metadata-v8.schema.json`;
@@ -391,7 +391,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/bridge-v7.schema.json`;
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
 - `spec/plugin/opaque-surface-transport-v6.schema.json`;
-- `spec/plugin/compatibility-manifest-v18.schema.json`;
+- `spec/plugin/compatibility-manifest-v19.schema.json`;
 - `spec/plugin/owner-scope-root-recovery-v1.schema.json`;
 - `spec/plugin/platform-package-set-v3.schema.json`;
 - `spec/plugin/platform-package-publication-v2.schema.json`;

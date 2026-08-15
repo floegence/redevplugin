@@ -53,12 +53,40 @@ type ExecutionPruneRequest struct {
 type ExecutionPruneResult struct{ Deleted int }
 
 const releaseInstallPayloadKind = "release_install_v1"
+const externalInstallActivationPayloadKind = "external_install_activation_v1"
 
 type releaseInstallPayload struct {
 	Kind              string                                   `json:"kind"`
 	Operation         registry.ReleaseInstallOperation         `json:"operation"`
 	Release           registry.ReleaseInstallIdentity          `json:"release"`
 	ActivationRequest registry.ReleaseInstallActivationRequest `json:"activation_request"`
+}
+
+type ExternalInstallActivation struct {
+	Execution                   execution.Execution                      `json:"execution"`
+	PluginInstanceID            string                                   `json:"plugin_instance_id"`
+	PackageSHA256               string                                   `json:"package_sha256"`
+	ManifestSHA256              string                                   `json:"manifest_sha256"`
+	EntriesSHA256               string                                   `json:"entries_sha256"`
+	InstalledManagementRevision uint64                                   `json:"installed_management_revision"`
+	ActivationRequest           registry.ReleaseInstallActivationRequest `json:"activation_request"`
+}
+
+type ExternalInstallActivationRequest struct {
+	ExecutionID string
+	Owner       ExecutionOwner
+	Activation  registry.ReleaseInstallActivationRequest
+	Now         time.Time
+}
+
+type externalInstallActivationPayload struct {
+	Kind                        string                                   `json:"kind"`
+	PluginInstanceID            string                                   `json:"plugin_instance_id"`
+	PackageSHA256               string                                   `json:"package_sha256"`
+	ManifestSHA256              string                                   `json:"manifest_sha256"`
+	EntriesSHA256               string                                   `json:"entries_sha256"`
+	InstalledManagementRevision uint64                                   `json:"installed_management_revision"`
+	ActivationRequest           registry.ReleaseInstallActivationRequest `json:"activation_request"`
 }
 
 func encodeReleaseInstallOperation(operation registry.ReleaseInstallOperation) ([]byte, error) {
@@ -131,12 +159,31 @@ type PluginSnapshot struct {
 // previous grants and policy in the same control-DB transaction. Inspection
 // identifiers and receipts never enter this store.
 func (v RegistryView) InstallExternalPackage(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
+	record, _, err := v.installExternalPackage(ctx, ownerEnvHash, req, nil)
+	return record, err
+}
+
+// InstallExternalPackageWithActivation atomically commits the package and its
+// Host-owned activation intent. The execution is completed after activation or
+// recovered on the next Host startup if the process exits in between.
+func (v RegistryView) InstallExternalPackageWithActivation(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest, activation ExternalInstallActivationRequest) (registry.PluginRecord, ExternalInstallActivation, error) {
+	record, pending, err := v.installExternalPackage(ctx, ownerEnvHash, req, &activation)
+	if err != nil {
+		return registry.PluginRecord{}, ExternalInstallActivation{}, err
+	}
+	return record, *pending, nil
+}
+
+func (v RegistryView) installExternalPackage(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest, activation *ExternalInstallActivationRequest) (registry.PluginRecord, *ExternalInstallActivation, error) {
 	if err := v.ready(); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
+	}
+	if activation != nil && (activation.ExecutionID == "" || !activation.Owner.Valid() || activation.Owner.OwnerEnvHash != ownerEnvHash || !validExternalInstallActivationRequest(activation.Activation)) {
+		return registry.PluginRecord{}, nil, errors.New("external install activation request is invalid")
 	}
 	tx, err := v.store.db.BeginTx(ctx, nil)
 	if err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
 	}
 	defer tx.Rollback()
 	var existing *registry.PluginRecord
@@ -145,34 +192,80 @@ func (v RegistryView) InstallExternalPackage(ctx context.Context, ownerEnvHash s
 	if err == nil {
 		var current registry.PluginRecord
 		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return registry.PluginRecord{}, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
+			return registry.PluginRecord{}, nil, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
 		}
 		existing = &current
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
 	}
 	record, err := registry.PrepareExternalPackageInstall(ownerEnvHash, req, existing)
 	if err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
 	}
 	controlRecord := controlPluginRecord(record, recordJSON)
 	if err := upsertControlPlugin(ctx, tx, controlRecord); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM permission_grants WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM security_policies WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
+	}
+	var pending *ExternalInstallActivation
+	if activation != nil {
+		now := activation.Now.UTC()
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		control, err := execution.New(execution.Execution{
+			ID: activation.ExecutionID, PluginInstanceID: record.PluginInstanceID,
+			Kind: execution.KindSync, Status: execution.StatusRunning, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			return registry.PluginRecord{}, nil, err
+		}
+		value := ExternalInstallActivation{
+			Execution: control, PluginInstanceID: record.PluginInstanceID,
+			PackageSHA256: record.PackageHash, ManifestSHA256: record.ManifestHash, EntriesSHA256: record.EntriesHash,
+			InstalledManagementRevision: record.ManagementRevision, ActivationRequest: activation.Activation,
+		}
+		encoded, err := json.Marshal(externalInstallActivationPayload{
+			Kind: externalInstallActivationPayloadKind, PluginInstanceID: value.PluginInstanceID,
+			PackageSHA256: value.PackageSHA256, ManifestSHA256: value.ManifestSHA256, EntriesSHA256: value.EntriesSHA256,
+			InstalledManagementRevision: value.InstalledManagementRevision, ActivationRequest: value.ActivationRequest,
+		})
+		if err != nil {
+			return registry.PluginRecord{}, nil, err
+		}
+		owner := activation.Owner
+		if _, err := tx.ExecContext(ctx, `INSERT INTO execution(execution_id,plugin_instance_id,owner_session_hash,owner_user_hash,owner_env_hash,session_channel_id_hash,kind,status,cursor,failure_code,cancelable,created_at,updated_at,cancel_requested_at,terminal_at,operation_json,stream_json) VALUES(?,?,?,?,?,?,?,?,0,'',0,?,?,NULL,NULL,?,'null')`, control.ID, control.PluginInstanceID, owner.OwnerSessionHash, owner.OwnerUserHash, owner.OwnerEnvHash, owner.SessionChannelIDHash, control.Kind, control.Status, control.CreatedAt.UnixNano(), control.UpdatedAt.UnixNano(), string(encoded)); err != nil {
+			return registry.PluginRecord{}, nil, err
+		}
+		pending = &value
 	}
 	if err := tx.Commit(); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, nil, err
 	}
-	return record, nil
+	return record, pending, nil
+}
+
+func validExternalInstallActivationRequest(request registry.ReleaseInstallActivationRequest) bool {
+	if request.Mode != registry.ReleaseInstallActivationAutomatic && request.Mode != registry.ReleaseInstallActivationRequested {
+		return false
+	}
+	previous := ""
+	for _, permissionID := range request.ApprovedPermissionIDs {
+		if permissionID == "" || permissionID != strings.TrimSpace(permissionID) || permissionID <= previous {
+			return false
+		}
+		previous = permissionID
+	}
+	return true
 }
 
 func (v RegistryView) GetPlugin(ctx context.Context, ownerEnvHash, pluginInstanceID string) (registry.PluginRecord, error) {
@@ -655,6 +748,56 @@ func (v ExecutionView) ListReleaseInstalls(ctx context.Context, ownerEnvHash str
 		result = append(result, operation)
 	}
 	return result, rows.Err()
+}
+
+func (v ExecutionView) ListPendingExternalInstallActivations(ctx context.Context, owner ExecutionOwner) ([]ExternalInstallActivation, error) {
+	if err := v.ready(); err != nil {
+		return nil, err
+	}
+	if !owner.Valid() {
+		return nil, errors.New("execution owner is invalid")
+	}
+	rows, err := v.store.db.QueryContext(ctx, releaseInstallSelect+` WHERE owner_session_hash=? AND owner_user_hash=? AND owner_env_hash=? AND session_channel_id_hash=? AND kind=? AND status=? ORDER BY created_at,execution_id`,
+		owner.OwnerSessionHash, owner.OwnerUserHash, owner.OwnerEnvHash, owner.SessionChannelIDHash, execution.KindSync, execution.StatusRunning)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ExternalInstallActivation
+	for rows.Next() {
+		var control execution.Execution
+		var raw string
+		var createdAt, updatedAt int64
+		var cancelRequestedAt, terminalAt sql.NullInt64
+		if err := rows.Scan(&control.ID, &control.PluginInstanceID, &control.Kind, &control.Status, &control.Cursor, &control.FailureCode, &control.Cancelable, &createdAt, &updatedAt, &cancelRequestedAt, &terminalAt, &raw); err != nil {
+			return nil, err
+		}
+		control.CreatedAt = time.Unix(0, createdAt).UTC()
+		control.UpdatedAt = time.Unix(0, updatedAt).UTC()
+		control.CancelRequestedAt = nullTimePointer(cancelRequestedAt)
+		control.TerminalAt = nullTimePointer(terminalAt)
+		var payload externalInstallActivationPayload
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload.Kind != externalInstallActivationPayloadKind {
+			continue
+		}
+		value := ExternalInstallActivation{
+			Execution: control, PluginInstanceID: payload.PluginInstanceID,
+			PackageSHA256: payload.PackageSHA256, ManifestSHA256: payload.ManifestSHA256, EntriesSHA256: payload.EntriesSHA256,
+			InstalledManagementRevision: payload.InstalledManagementRevision, ActivationRequest: payload.ActivationRequest,
+		}
+		if !validExternalInstallActivation(value) {
+			return nil, fmt.Errorf("%w: external install activation payload", ErrIncompatible)
+		}
+		result = append(result, value)
+	}
+	return result, rows.Err()
+}
+
+func validExternalInstallActivation(value ExternalInstallActivation) bool {
+	return value.Execution.Kind == execution.KindSync && value.Execution.Status == execution.StatusRunning &&
+		value.PluginInstanceID == value.Execution.PluginInstanceID && value.PluginInstanceID != "" &&
+		value.PackageSHA256 != "" && value.ManifestSHA256 != "" && value.EntriesSHA256 != "" &&
+		value.InstalledManagementRevision > 0 && validExternalInstallActivationRequest(value.ActivationRequest)
 }
 
 func (v ExecutionView) UpdateReleaseInstall(ctx context.Context, ownerEnvHash string, req registry.UpdateReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {

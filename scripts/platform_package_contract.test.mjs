@@ -102,15 +102,15 @@ function validPublication(packageSet) {
   };
 }
 
-test("the active compatibility surface is the atomic v18 contract set", () => {
+test("the active compatibility surface is the atomic v19 contract set", () => {
   const activeRegistry = readJSON("spec/plugin/contract-registry-v2.json");
-  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v18.schema.json");
+  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v19.schema.json");
   const generatedGo = read("pkg/version/contracts_gen.go").toString("utf8");
   const generatedTypeScript = read("packages/redevplugin-ui/src/contracts.gen.ts").toString("utf8");
 
   assert.equal(activeRegistry.schema_version, "redevplugin.contract_registry.v2");
   assert.equal(activeRegistry.registry_version, "contract-registry-v2");
-  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v18");
+  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v19");
   assert.match(generatedGo, /ContractRegistryVersion\s+= "contract-registry-v2"/);
   assert.match(generatedTypeScript, /"contract_registry_version": "contract-registry-v2"/);
   assert.equal(activeRegistry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
@@ -234,20 +234,20 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
 
   assert.deepEqual(platformVersion, {
     schema_version: "redevplugin.platform_version.v1",
-    platform_version: "1.1.3",
+    platform_version: "1.1.4",
   });
   assert.equal(packageSet.platform_version, platformVersion.platform_version);
   assert.deepEqual(packageSet.go_module, {
     module: "github.com/floegence/redevplugin",
-    version: "v1.1.3",
+    version: "v1.1.4",
   });
   assert.deepEqual(packageSet.npm_packages, [
-    { name: "@floegence/redevplugin-contracts", version: "1.1.3" },
-    { name: "@floegence/redevplugin-ui", version: "1.1.3" },
+    { name: "@floegence/redevplugin-contracts", version: "1.1.4" },
+    { name: "@floegence/redevplugin-ui", version: "1.1.4" },
   ]);
   assert.deepEqual(packageSet.rust_crates, [
-    { name: "redevplugin-runtime", version: "1.1.3", role: "runtime" },
-    { name: "redevplugin-worker-sdk", version: "1.1.3", role: "worker_sdk" },
+    { name: "redevplugin-runtime", version: "1.1.4", role: "runtime" },
+    { name: "redevplugin-worker-sdk", version: "1.1.4", role: "worker_sdk" },
   ]);
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
@@ -338,8 +338,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   }
   assert.throws(() => decodePlatformPackageSet(Buffer.from(`${raw.toString("utf8")} null`, "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
-    '"platform_version": "1.1.3",',
-    '"platform_version": "1.1.3",\n  "platform_version": "1.1.3",',
+    '"platform_version": "1.1.4",',
+    '"platform_version": "1.1.4",\n  "platform_version": "1.1.4",',
   ), "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
     '"name": "@floegence/redevplugin-contracts",',

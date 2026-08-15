@@ -432,14 +432,21 @@ type startReleaseInstallExecutionRequest struct {
 	ApprovedPermissionIDs []string          `json:"approved_permission_ids,omitempty"`
 }
 
+type inspectReleasePackageRequest struct {
+	PluginInstanceID string            `json:"plugin_instance_id"`
+	ReleaseRef       releaseRefRequest `json:"release_ref"`
+}
+
 type inspectExternalPackageRequest struct {
 	Intent host.ExternalPackageIntent `json:"intent"`
 	Source host.ExternalPackageSource `json:"source"`
 }
 
 type installInspectedPackageRequest struct {
-	InspectionID          string `json:"inspection_id"`
-	ExpectedPackageSHA256 string `json:"expected_package_sha256"`
+	InspectionID          string   `json:"inspection_id"`
+	ExpectedPackageSHA256 string   `json:"expected_package_sha256"`
+	ActivateAfterInstall  *bool    `json:"activate_after_install,omitempty"`
+	ApprovedPermissionIDs []string `json:"approved_permission_ids,omitempty"`
 }
 
 type updateReleaseRefRequest struct {
@@ -889,6 +896,7 @@ func (e *jsonLimitError) status() int {
 var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/release-packages/inspect", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInspectReleasePackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/executions/release-installs", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleStartReleaseInstallExecution }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectExternalPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackage }),
@@ -1325,6 +1333,23 @@ func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request)
 	h.writePluginMutationSuccess(w, r, "release.install.response", record)
 }
 
+func (h Handler) handleInspectReleasePackage(w http.ResponseWriter, r *http.Request) {
+	var req inspectReleasePackageRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	inspection, err := h.host.InspectReleasePackage(r.Context(), host.InspectReleasePackageRequest{
+		PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef.domain(),
+	})
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "release.inspect", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, publicReleasePackageInspection(inspection))
+}
+
 func (h Handler) handleStartReleaseInstallExecution(w http.ResponseWriter, r *http.Request) {
 	var req startReleaseInstallExecutionRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1420,6 +1445,7 @@ func (h Handler) handleInstallInspectedPackage(w http.ResponseWriter, r *http.Re
 	}
 	result, err := h.host.InstallInspectedPackage(r.Context(), host.InstallInspectedPackageRequest{
 		InspectionID: req.InspectionID, ExpectedPackageSHA256: req.ExpectedPackageSHA256,
+		ActivateAfterInstall: req.ActivateAfterInstall, ApprovedPermissionIDs: req.ApprovedPermissionIDs,
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)

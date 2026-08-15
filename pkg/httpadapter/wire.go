@@ -202,6 +202,7 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 
 type installedExternalPackageResponse struct {
 	Plugin              *pluginRecordResponse                    `json:"plugin,omitempty"`
+	Activation          registry.ReleaseInstallActivation        `json:"activation"`
 	SignatureAssessment *host.ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
 	SourceProvenance    *host.ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
 	ExecutionApproval   *host.ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
@@ -209,8 +210,26 @@ type installedExternalPackageResponse struct {
 	SecuritySummary     *host.ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
 }
 
+type releasePackageInspectionResponse struct {
+	PluginInstanceID   string                              `json:"plugin_instance_id"`
+	ReleaseRef         host.PluginReleaseRef               `json:"release_ref"`
+	InspectedHashes    host.PackageHashSet                 `json:"inspected_hashes"`
+	Presentation       presentationCatalogResponse         `json:"presentation"`
+	PresentationSHA256 string                              `json:"presentation_sha256"`
+	SecuritySummary    host.ExternalPackageSecuritySummary `json:"security_summary"`
+}
+
+func publicReleasePackageInspection(value host.ReleasePackageInspection) releasePackageInspectionResponse {
+	return releasePackageInspectionResponse{
+		PluginInstanceID: value.PluginInstanceID, ReleaseRef: value.ReleaseRef,
+		InspectedHashes: value.InspectedHashes, Presentation: publicPresentationCatalog(value.Presentation),
+		PresentationSHA256: value.PresentationSHA256, SecuritySummary: value.SecuritySummary,
+	}
+}
+
 func publicInstalledExternalPackage(result host.InstalledExternalPackage) (installedExternalPackageResponse, error) {
 	response := installedExternalPackageResponse{
+		Activation:          result.Activation,
 		SignatureAssessment: result.SignatureAssessment,
 		SourceProvenance:    result.SourceProvenance, ExecutionApproval: result.ExecutionApproval,
 		UpdateEligibility: result.UpdateEligibility, SecuritySummary: result.SecuritySummary,

@@ -116,7 +116,7 @@ func TestReleaseInstallOperationHonorsExplicitDisabledActivation(t *testing.T) {
 	}
 }
 
-func TestReleaseInstallOperationDoesNotAutomaticallyActivateNonOfficialRelease(t *testing.T) {
+func TestReleaseInstallOperationAutomaticallyActivatesConfirmedNonOfficialRelease(t *testing.T) {
 	fixture, err := releasetrustfixture.New(buildHostReleasePackage(t), releasetrustfixture.Options{SourceClass: "community"})
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestReleaseInstallOperationDoesNotAutomaticallyActivateNonOfficialRelease(t
 	})
 	ctx := hostTestContext()
 	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
-		RequestID: "request_keep_community_release_disabled", PluginInstanceID: nextTestPluginInstanceID(t),
+		RequestID: "request_activate_community_release", PluginInstanceID: nextTestPluginInstanceID(t),
 		ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
 	})
 	if err != nil {
@@ -138,8 +138,8 @@ func TestReleaseInstallOperationDoesNotAutomaticallyActivateNonOfficialRelease(t
 
 	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
 	if terminal.Execution.Status != execution.StatusCompleted || terminal.PluginRecord == nil ||
-		terminal.PluginRecord.EnableState != registry.EnableDisabled ||
-		terminal.Activation.Status != registry.ReleaseInstallActivationNotRequested {
+		terminal.PluginRecord.EnableState != registry.EnableEnabled ||
+		terminal.Activation.Status != registry.ReleaseInstallActivationEnabled {
 		t.Fatalf("terminal operation = %#v", terminal)
 	}
 }
@@ -200,6 +200,66 @@ func TestReleaseInstallOperationTerminalActivationSurvivesHostRestart(t *testing
 	}
 }
 
+func TestReleaseInstallOperationRecoversCommittedActivationAfterHostRestart(t *testing.T) {
+	fixture, verified := newReleaseInstallCapabilityFixture(t)
+	ctx := hostTestContext()
+	stateRoot := filepath.Join(t.TempDir(), "control-state")
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		stateRoot: stateRoot, releaseTrust: fixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
+		capabilityContract:      &verified,
+		capabilityAdapter:       &recordingCapabilityAdapter{},
+	})
+	pluginInstanceID := nextTestPluginInstanceID(t)
+	ref := releaseTrustFixtureRef(fixture)
+	operation, _, err := h.controlStore.Executions().StartReleaseInstall(ctx, executionOwnerScope(ctx), registry.StartReleaseInstallOperationRequest{
+		RequestID: "request_recover_committed_activation", ExecutionID: "release_install_recover_committed",
+		PluginInstanceID: pluginInstanceID, Release: releaseInstallIdentity(ref),
+		Activation: registry.ReleaseInstallActivationRequest{Mode: registry.ReleaseInstallActivationAutomatic, ApprovedPermissionIDs: []string{"read"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, release, sourcePolicy, verifiedRelease, metadata, err := h.resolveReleasePackage(
+		ctx, PackageTrustActionInstall, ref, nil, pluginInstanceID, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := h.installResolvedPackage(ctx, pkg, pluginInstanceID, packageTrustInput{
+		ReleaseRef: &ref, Release: &release, SourcePolicy: &sourcePolicy, VerifiedRelease: &verifiedRelease,
+	}, time.Now().UTC(), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.EnableState != registry.EnableDisabled || operation.Execution.Status != execution.StatusRunning {
+		t.Fatalf("crash-window state: operation=%#v record=%#v", operation, record)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{
+		stateRoot: stateRoot, capabilityContract: &verified, capabilityAdapter: &recordingCapabilityAdapter{},
+	})
+	defer restarted.Close()
+	recovered, err := restarted.controlStore.Executions().GetReleaseInstall(ctx, executionOwnerScope(ctx).OwnerEnvHash, operation.Execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Execution.Status != execution.StatusCompleted || recovered.Activation.Status != registry.ReleaseInstallActivationEnabled ||
+		recovered.PluginRecord == nil || recovered.PluginRecord.EnableState != registry.EnableEnabled {
+		t.Fatalf("recovered operation = %#v", recovered)
+	}
+	grants, err := restarted.ListPermissionGrants(ctx, ListPermissionGrantsRequest{PluginInstanceID: pluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].PermissionID != "read" {
+		t.Fatalf("recovered grants = %#v", grants)
+	}
+}
+
 func TestReleaseInstallOperationRequiresExplicitPermissionApprovalBeforeActivation(t *testing.T) {
 	fixture, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -257,6 +317,7 @@ func TestReleaseInstallOperationGrantsApprovedRequiredPermissionAndActivates(t *
 		RequestID:             "request_official_release_approved",
 		PluginInstanceID:      nextTestPluginInstanceID(t),
 		ReleaseRef:            releaseTrustFixtureRef(fixture),
+		ActivateAfterInstall:  new(true),
 		ApprovedPermissionIDs: []string{"read"},
 		Now:                   time.Now().UTC(),
 	})
@@ -277,6 +338,35 @@ func TestReleaseInstallOperationGrantsApprovedRequiredPermissionAndActivates(t *
 	}
 	if len(grants) != 1 || grants[0].PermissionID != "read" {
 		t.Fatalf("permission grants = %#v", grants)
+	}
+}
+
+func TestInspectReleasePackageReturnsVerifiedPermissionsWithoutInstalling(t *testing.T) {
+	fixture, verified := newReleaseInstallCapabilityFixture(t)
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: fixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{
+			artifact: resolvedReleaseTrustFixture(fixture),
+		},
+		capabilityContract: &verified,
+		capabilityAdapter:  &recordingCapabilityAdapter{},
+	})
+	ctx := hostTestContext()
+	pluginInstanceID := nextTestPluginInstanceID(t)
+	inspection, err := h.InspectReleasePackage(ctx, InspectReleasePackageRequest{
+		PluginInstanceID: pluginInstanceID,
+		ReleaseRef:       releaseTrustFixtureRef(fixture),
+		Now:              time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.PluginInstanceID != pluginInstanceID || inspection.InspectedHashes.PackageSHA256 != fixture.Package.PackageHash ||
+		len(inspection.SecuritySummary.Permissions) != 1 || inspection.SecuritySummary.Permissions[0].PermissionID != "read" {
+		t.Fatalf("release inspection = %#v", inspection)
+	}
+	if _, err := h.getPluginRecord(ctx, pluginInstanceID); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("release inspection persisted plugin record: %v", err)
 	}
 }
 

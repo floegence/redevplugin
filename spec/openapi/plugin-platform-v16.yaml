@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: plugin-platform-v15
+  version: plugin-platform-v16
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -91,7 +91,7 @@ paths:
     post:
       operationId: installInspectedPackage
       x-redevplugin-route-effect: mutation
-      description: Reopens and installs one unexpired process-local inspection after the user confirms its exact package digest. The inspection is bound to the exact authenticated session. Invalid or revoked signatures fail closed; absent or unknown signatures install disabled, with no grants and manual updates only.
+      description: Reopens and installs one unexpired process-local inspection after the user confirms its exact package digest and permission selection. The inspection is bound to the exact authenticated session. Invalid or revoked signatures fail closed; absent or unknown signatures remain manual-update-only but enable by default when required permissions are approved and runtime policy allows activation.
       requestBody:
         $ref: "#/components/requestBodies/InstallInspectedPackageRequest"
       responses:
@@ -105,6 +105,16 @@ paths:
         $ref: "#/components/requestBodies/InstallReleaseRefRequest"
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/release-packages/inspect:
+    post:
+      operationId: inspectReleasePackage
+      x-redevplugin-route-effect: mutation
+      description: Resolves and fully verifies an exact release reference before installation so one user confirmation can review the Host-derived permissions and package identity. The inspection does not install a plugin, and installation re-verifies the exact release and hashes.
+      requestBody:
+        $ref: "#/components/requestBodies/InspectReleasePackageRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ReleasePackageInspectionResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/enable:
     post:
@@ -912,6 +922,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/SettingsSnapshotSuccessResponse"
+    ReleasePackageInspectionResponse:
+      description: Verified release package facts for the installation review.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReleasePackageInspectionSuccessResponse"
   requestBodies:
     InspectExternalPackageRequest:
       required: true
@@ -931,6 +947,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/InstallReleaseRefRequest"
+    InspectReleasePackageRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InspectReleasePackageRequest"
     UpdateReleaseRefRequest:
       required: true
       content:
@@ -1264,6 +1286,13 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/InstalledExternalPackage" }
+    ReleasePackageInspectionSuccessResponse:
+      type: object
+      required: [ok, data]
+      additionalProperties: false
+      properties:
+        ok: { const: true }
+        data: { $ref: "#/components/schemas/ReleasePackageInspection" }
     PluginCatalogSuccessResponse:
       type: object
       required: [ok, data]
@@ -1904,7 +1933,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PluginCatalogRecord" }
     PluginCompatibilityManifest:
-      $ref: "../plugin/compatibility-manifest-v18.schema.json"
+      $ref: "../plugin/compatibility-manifest-v19.schema.json"
     ExecutionList:
       type: object
       required: [executions]
@@ -2405,12 +2434,25 @@ components:
         source: { $ref: "#/components/schemas/ExternalPackageSource" }
     InstallInspectedPackageRequest:
       type: object
-      description: Confirms an unexpired process-local inspection by its exact package digest. The digest cannot override any inspected fact.
+      description: Confirms an unexpired process-local inspection by its exact package digest and carries the single Host-owned activation intent. New installs activate by default; updates preserve their pre-install enable intent.
       required: [inspection_id, expected_package_sha256]
       additionalProperties: false
       properties:
         inspection_id: { type: string, minLength: 1 }
         expected_package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        activate_after_install: { type: boolean }
+        approved_permission_ids:
+          type: array
+          maxItems: 256
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
+    InspectReleasePackageRequest:
+      type: object
+      required: [plugin_instance_id, release_ref]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        release_ref: { $ref: "#/components/schemas/PluginReleaseRef" }
     ExternalPackageSignatureAssessment:
       type: object
       description: Cryptographic signature fact computed over the inspected artifact. The absent state is installable and affects trust classification and automatic-update eligibility only.
@@ -2832,14 +2874,41 @@ components:
         security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
     InstalledExternalPackage:
       type: object
-      required: [plugin, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
+      required: [plugin, activation, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
       additionalProperties: false
       properties:
         plugin: { $ref: "#/components/schemas/PluginRecord" }
+        activation: { $ref: "#/components/schemas/PluginInstallActivation" }
         signature_assessment: { $ref: "#/components/schemas/ExternalPackageSignatureAssessment" }
         source_provenance: { $ref: "#/components/schemas/ExternalPackageSourceProvenance" }
         execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
         update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
+        security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
+    PluginInstallActivation:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [not_requested, enabled, needs_attention]
+        missing_permission_ids:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        next_action:
+          type: string
+          enum: [approve_permissions, retry_activation]
+    ReleasePackageInspection:
+      type: object
+      required: [plugin_instance_id, release_ref, inspected_hashes, presentation, presentation_sha256, security_summary]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        release_ref: { $ref: "#/components/schemas/PluginReleaseRef" }
+        inspected_hashes: { $ref: "#/components/schemas/TrustHashSet" }
+        presentation: { $ref: "#/components/schemas/PresentationCatalog" }
+        presentation_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
         security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
     TrustState:
       type: string

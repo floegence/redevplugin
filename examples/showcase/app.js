@@ -4428,6 +4428,9 @@
     installReleaseRef(request2, options = {}) {
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request2, options);
     }
+    inspectReleasePackage(request2, options = {}) {
+      return this.#requestMutation("POST", "/_redevplugin/api/plugins/release-packages/inspect", request2, options);
+    }
     async inspectExternalPackage(request2, options = {}) {
       const inspection = await this.#requestMutation(
         "POST",

@@ -80,7 +80,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Reopens and installs one unexpired process-local inspection after the user confirms its exact package digest. The inspection is bound to the exact authenticated session. Invalid or revoked signatures fail closed; absent or unknown signatures install disabled, with no grants and manual updates only. */
+        /** @description Reopens and installs one unexpired process-local inspection after the user confirms its exact package digest and permission selection. The inspection is bound to the exact authenticated session. Invalid or revoked signatures fail closed; absent or unknown signatures remain manual-update-only but enable by default when required permissions are approved and runtime policy allows activation. */
         post: operations["installInspectedPackage"];
         delete?: never;
         options?: never;
@@ -98,6 +98,23 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["installReleaseRef"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/release-packages/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Resolves and fully verifies an exact release reference before installation so one user confirmation can review the Host-derived permissions and package identity. The inspection does not install a plugin, and installation re-verifies the exact release and hashes. */
+        post: operations["inspectReleasePackage"];
         delete?: never;
         options?: never;
         head?: never;
@@ -996,6 +1013,11 @@ export interface components {
             ok: true;
             data: components["schemas"]["InstalledExternalPackage"];
         };
+        ReleasePackageInspectionSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["ReleasePackageInspection"];
+        };
         PluginCatalogSuccessResponse: {
             /** @constant */
             ok: true;
@@ -1361,7 +1383,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginCatalogRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV18"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV19"];
         ExecutionList: {
             executions: components["schemas"]["Execution"][];
             next_cursor?: number;
@@ -1713,10 +1735,16 @@ export interface components {
             intent: components["schemas"]["ExternalPackageIntentRequest"];
             source: components["schemas"]["ExternalPackageSource"];
         };
-        /** @description Confirms an unexpired process-local inspection by its exact package digest. The digest cannot override any inspected fact. */
+        /** @description Confirms an unexpired process-local inspection by its exact package digest and carries the single Host-owned activation intent. New installs activate by default; updates preserve their pre-install enable intent. */
         InstallInspectedPackageRequest: {
             inspection_id: string;
             expected_package_sha256: string;
+            activate_after_install?: boolean;
+            approved_permission_ids?: string[];
+        };
+        InspectReleasePackageRequest: {
+            plugin_instance_id: string;
+            release_ref: components["schemas"]["PluginReleaseRef"];
         };
         /** @description Cryptographic signature fact computed over the inspected artifact. The absent state is installable and affects trust classification and automatic-update eligibility only. */
         ExternalPackageSignatureAssessment: {
@@ -1977,10 +2005,26 @@ export interface components {
         };
         InstalledExternalPackage: {
             plugin: components["schemas"]["PluginRecord"];
+            activation: components["schemas"]["PluginInstallActivation"];
             signature_assessment: components["schemas"]["ExternalPackageSignatureAssessment"];
             source_provenance: components["schemas"]["ExternalPackageSourceProvenance"];
             execution_approval: components["schemas"]["ExternalPackageExecutionApproval"];
             update_eligibility: components["schemas"]["ExternalPackageUpdateEligibility"];
+            security_summary: components["schemas"]["ExternalPackageSecuritySummary"];
+        };
+        PluginInstallActivation: {
+            /** @enum {string} */
+            status: "not_requested" | "enabled" | "needs_attention";
+            missing_permission_ids?: string[];
+            /** @enum {string} */
+            next_action?: "approve_permissions" | "retry_activation";
+        };
+        ReleasePackageInspection: {
+            plugin_instance_id: string;
+            release_ref: components["schemas"]["PluginReleaseRef"];
+            inspected_hashes: components["schemas"]["TrustHashSet"];
+            presentation: components["schemas"]["PresentationCatalog"];
+            presentation_sha256: string;
             security_summary: components["schemas"]["ExternalPackageSecuritySummary"];
         };
         /** @enum {string} */
@@ -2611,9 +2655,9 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV18: {
+        CompatibilityManifestV19: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v18";
+            schema_version: "redevplugin.compatibility.v19";
             package_set: components["schemas"]["PlatformPackageSetV3"];
             matrix: {
                 /** @constant */
@@ -2669,9 +2713,9 @@ export interface components {
                 /** @constant */
                 session_scope_schema_version: "session-scope-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v15";
+                plugin_platform_openapi_version: "plugin-platform-v16";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v18";
+                compatibility_schema_version: "compatibility-manifest-v19";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -2710,9 +2754,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV18Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV19Contract"][];
         };
-        CompatibilityManifestV18Contract: {
+        CompatibilityManifestV19Contract: {
             id: string;
             path: string;
             version: string;
@@ -3433,6 +3477,15 @@ export interface components {
                 "application/json": components["schemas"]["SettingsSnapshotSuccessResponse"];
             };
         };
+        /** @description Verified release package facts for the installation review. */
+        ReleasePackageInspectionResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ReleasePackageInspectionSuccessResponse"];
+            };
+        };
     };
     parameters: {
         ExecutionID: string;
@@ -3455,6 +3508,11 @@ export interface components {
         InstallReleaseRefRequest: {
             content: {
                 "application/json": components["schemas"]["InstallReleaseRefRequest"];
+            };
+        };
+        InspectReleasePackageRequest: {
+            content: {
+                "application/json": components["schemas"]["InspectReleasePackageRequest"];
             };
         };
         UpdateReleaseRefRequest: {
@@ -3784,6 +3842,19 @@ export interface operations {
         requestBody: components["requestBodies"]["InstallReleaseRefRequest"];
         responses: {
             200: components["responses"]["PluginRecordResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    inspectReleasePackage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["InspectReleasePackageRequest"];
+        responses: {
+            200: components["responses"]["ReleasePackageInspectionResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
         };
     };

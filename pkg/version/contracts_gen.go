@@ -23,9 +23,9 @@ const (
 	NetworkGrantSchemaVersion               = "network-grant-v2"
 	ResourceScopeSchemaVersion              = "resource-scope-v1"
 	SessionScopeSchemaVersion               = "session-scope-v1"
-	PluginPlatformOpenAPIVersion            = "plugin-platform-v15"
-	CompatibilityManifestVersion            = "redevplugin.compatibility.v18"
-	CompatibilitySchemaVersion              = "compatibility-manifest-v18"
+	PluginPlatformOpenAPIVersion            = "plugin-platform-v16"
+	CompatibilityManifestVersion            = "redevplugin.compatibility.v19"
+	CompatibilitySchemaVersion              = "compatibility-manifest-v19"
 	WorkerInvocationSchemaVersion           = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion     = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion          = "host-capability-pin-v1"
@@ -49,9 +49,9 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v18.schema.json",
-		Version: "compatibility-manifest-v18",
-		SHA256:  "48889bd7ddd936b9757a56b1b154244abc6904bd8e55e177e80ae4509d15ce06",
+		Path:    "spec/plugin/compatibility-manifest-v19.schema.json",
+		Version: "compatibility-manifest-v19",
+		SHA256:  "c871e24cb88386dbddaae0bd37bcc9177e54b3c02fb957de4b46ddb329d8bb5b",
 	},
 	{
 		ID:      "contract-registry-schema",
@@ -175,9 +175,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "plugin-platform-openapi",
-		Path:    "spec/openapi/plugin-platform-v15.yaml",
-		Version: "plugin-platform-v15",
-		SHA256:  "2e52294ca38c568df62297b2092f0dea91288c3692903760bf8504821e1809e1",
+		Path:    "spec/openapi/plugin-platform-v16.yaml",
+		Version: "plugin-platform-v16",
+		SHA256:  "a85c284d1a6d677039bf9ec59e5bf80e93bc707d6ea7b1a7a967bf9daacdd5c0",
 	},
 	{
 		ID:      "presentation-icon-evidence-schema",

@@ -1,32 +1,32 @@
 {
   "schema_version": "redevplugin.platform_package_set.v3",
-  "platform_version": "1.1.3",
+  "platform_version": "1.1.4",
   "go_module": {
     "module": "github.com/floegence/redevplugin",
-    "version": "v1.1.3"
+    "version": "v1.1.4"
   },
   "npm_packages": [
     {
       "name": "@floegence/redevplugin-contracts",
-      "version": "1.1.3"
+      "version": "1.1.4"
     },
     {
       "name": "@floegence/redevplugin-ui",
-      "version": "1.1.3"
+      "version": "1.1.4"
     }
   ],
   "rust_crates": [
     {
       "name": "redevplugin-runtime",
-      "version": "1.1.3",
+      "version": "1.1.4",
       "role": "runtime"
     },
     {
       "name": "redevplugin-worker-sdk",
-      "version": "1.1.3",
+      "version": "1.1.4",
       "role": "worker_sdk"
     }
   ],
   "contract_registry_version": "contract-registry-v2",
-  "contract_set_sha256": "66902d15b794f9f5c49299c1112d0648394df66f417a78254a91d1b999f43a0a"
+  "contract_set_sha256": "a17fd29f24bf6742e50657103830f4040725a64482a17b03146c376667d4e95e"
 }

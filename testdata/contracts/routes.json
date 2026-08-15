@@ -166,6 +166,11 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/release-packages/inspect",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/retained-data/bind",
     "effect": "mutation"
   },

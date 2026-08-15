@@ -235,9 +235,12 @@ update eligibility as independent security facts. A host may allow a user to
 inspect and explicitly install a package from any supported public HTTPS package
 URL or GitHub repository even when the package is unsigned, the signer is
 unknown, or signature assessment is temporarily unavailable. Those outcomes do
-not grant trust: the committed plugin starts disabled with no permission grants
-and remains manual-update-only. An invalid signature or a signature from a
-revoked key is an integrity failure and must block commit and execution.
+not grant trust or automatic-update eligibility. After the user confirms the
+exact inspected bytes and explicitly approves every required permission, a new
+plugin activates through the same Host lifecycle by default; missing approvals
+produce `needs_attention` without silent grants. An invalid signature or a
+signature from a revoked key is an integrity failure and must block commit and
+execution.
 
 The platform owns the process-local `inspect -> install` transaction, immutable
 package and source evidence, exact owner/session binding before installation,
@@ -858,8 +861,10 @@ Core invariants:
   automatic-update entitlement;
 - invalid or revoked signatures fail closed, while absent, unknown-signer, and
   temporarily unavailable signature assessments may proceed only through
-  explicit user confirmation into disabled, zero-grant, manual-update-only
-  state.
+  explicit user confirmation and remain manual-update-only. New installs
+  activate by default only after all required permission IDs are explicitly
+  approved; otherwise they remain disabled with `needs_attention` and zero
+  unapproved grants.
 
 ## First-Principles And Occam Review
 

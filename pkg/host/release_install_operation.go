@@ -14,7 +14,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/releasecontract"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
@@ -34,6 +33,87 @@ type StartReleaseInstallExecutionRequest struct {
 	ActivateAfterInstall  *bool            `json:"activate_after_install,omitempty"`
 	ApprovedPermissionIDs []string         `json:"approved_permission_ids,omitempty"`
 	Now                   time.Time        `json:"-"`
+}
+
+type InspectReleasePackageRequest struct {
+	PluginInstanceID string           `json:"plugin_instance_id"`
+	ReleaseRef       PluginReleaseRef `json:"release_ref"`
+	Now              time.Time        `json:"-"`
+}
+
+type ReleasePackageInspection struct {
+	PluginInstanceID   string                         `json:"plugin_instance_id"`
+	ReleaseRef         PluginReleaseRef               `json:"release_ref"`
+	InspectedHashes    PackageHashSet                 `json:"inspected_hashes"`
+	Presentation       manifest.PresentationCatalog   `json:"presentation"`
+	PresentationSHA256 string                         `json:"presentation_sha256"`
+	SecuritySummary    ExternalPackageSecuritySummary `json:"security_summary"`
+}
+
+func (h *Host) InspectReleasePackage(ctx context.Context, req InspectReleasePackageRequest) (ReleasePackageInspection, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallReleaseRef,
+		scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	if req.PluginInstanceID == "" {
+		return ReleasePackageInspection{}, errors.New("plugin_instance_id is required")
+	}
+	now := req.Now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	pkg, release, sourcePolicy, verifiedRelease, _, err := h.resolveReleasePackage(
+		ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, now,
+	)
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	trustInput := packageTrustInput{
+		ReleaseRef: &req.ReleaseRef, Release: &release, SourcePolicy: &sourcePolicy, VerifiedRelease: &verifiedRelease,
+	}
+	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, trustInput)
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest, RuntimeRequirement: runtimeRequirement}); err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	trustAssessment, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, trustInput, nil, req.PluginInstanceID, now)
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	pins, err := h.resolvePackageCapabilityPins(ctx, pkg.Manifest, trustInput)
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	record := packageRecord(pkg, trustAssessment, req.PluginInstanceID, nil, pins)
+	record.RuntimeRequirement = runtimeRequirement
+	effectiveManifest, required, err := h.externalPackageEffectiveManifest(record)
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	securitySummary, err := buildExternalPackageSecuritySummary(effectiveManifest, pins, required)
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	presentation := pkg.Manifest.PresentationCatalog()
+	presentationSHA256, err := manifest.PresentationCatalogSHA256(presentation)
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	return ReleasePackageInspection{
+		PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef,
+		InspectedHashes: packageHashSetForPackage(pkg), Presentation: presentation,
+		PresentationSHA256: presentationSHA256, SecuritySummary: securitySummary,
+	}, nil
 }
 
 func (h *Host) StartReleaseInstallExecution(ctx context.Context, req StartReleaseInstallExecutionRequest) (execution.Execution, error) {
@@ -148,7 +228,7 @@ func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registr
 				h.finishFailedReleaseInstall(ctx, running, err)
 				return
 			}
-			running, err = h.activateInstalledRelease(ctx, running, record, sourcePolicy, time.Now().UTC())
+			running, err = h.activateInstalledRelease(ctx, running, record, time.Now().UTC())
 			if err != nil {
 				h.finishFailedReleaseInstall(ctx, running, err)
 				return
@@ -166,10 +246,9 @@ func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registr
 	h.finishFailedReleaseInstall(ctx, running, err)
 }
 
-func (h *Host) activateInstalledRelease(ctx context.Context, operation registry.ReleaseInstallOperation, record registry.PluginRecord, sourcePolicy releasecontract.SourcePolicyV2, now time.Time) (registry.ReleaseInstallOperation, error) {
+func (h *Host) activateInstalledRelease(ctx context.Context, operation registry.ReleaseInstallOperation, record registry.PluginRecord, now time.Time) (registry.ReleaseInstallOperation, error) {
 	request := operation.ActivationRequest
-	shouldActivate := request.Mode == registry.ReleaseInstallActivationRequested ||
-		(request.Mode == registry.ReleaseInstallActivationAutomatic && sourcePolicy.SourceClass == "official")
+	shouldActivate := request.Mode != registry.ReleaseInstallActivationDisabled
 	if !shouldActivate {
 		operation.Activation = registry.ReleaseInstallActivation{Status: registry.ReleaseInstallActivationNotRequested}
 		operation.PluginRecord = &record
@@ -181,9 +260,23 @@ func (h *Host) activateInstalledRelease(ctx context.Context, operation registry.
 	if err != nil {
 		return operation, err
 	}
-	required, err := h.releaseInstallRequiredPermissions(record)
+	activation, activated, err := h.activatePluginInstall(ctx, record, request, now)
 	if err != nil {
 		return running, err
+	}
+	running.Activation = activation
+	running.PluginRecord = &activated
+	return running, nil
+}
+
+func (h *Host) activatePluginInstall(ctx context.Context, record registry.PluginRecord, request registry.ReleaseInstallActivationRequest, now time.Time) (registry.ReleaseInstallActivation, registry.PluginRecord, error) {
+	required, err := h.releaseInstallRequiredPermissions(record)
+	if err != nil {
+		return registry.ReleaseInstallActivation{}, record, err
+	}
+	authorization, err := h.getAuthorizationSnapshot(ctx, record.PluginInstanceID)
+	if err != nil {
+		return registry.ReleaseInstallActivation{}, record, err
 	}
 	approved := make(map[string]struct{}, len(request.ApprovedPermissionIDs))
 	for _, permissionID := range request.ApprovedPermissionIDs {
@@ -195,36 +288,147 @@ func (h *Host) activateInstalledRelease(ctx context.Context, operation registry.
 			missing = append(missing, permissionID)
 			continue
 		}
+		if authorizationHasActivePermission(authorization, permissionID, now) {
+			continue
+		}
 		revisions := registry.AuthorizationRevisionsFromRecord(record)
 		if _, err := h.GrantPermission(ctx, GrantPermissionRequest{
 			PluginInstanceID: record.PluginInstanceID, PermissionID: permissionID,
 			ExpectedPolicyRevision: revisions.PolicyRevision, ExpectedManagementRevision: revisions.ManagementRevision,
 			ExpectedRevokeEpoch: revisions.RevokeEpoch, Now: now,
 		}); err != nil {
-			return running, err
+			return registry.ReleaseInstallActivation{}, record, err
 		}
 		record, err = h.getPluginRecord(ctx, record.PluginInstanceID)
 		if err != nil {
-			return running, err
+			return registry.ReleaseInstallActivation{}, record, err
+		}
+		authorization, err = h.getAuthorizationSnapshot(ctx, record.PluginInstanceID)
+		if err != nil {
+			return registry.ReleaseInstallActivation{}, record, err
 		}
 	}
 	if len(missing) > 0 {
-		running.Activation = registry.ReleaseInstallActivation{
+		return registry.ReleaseInstallActivation{
 			Status:               registry.ReleaseInstallActivationNeedsAttention,
 			MissingPermissionIDs: missing,
 			NextAction:           registry.ReleaseInstallNextActionApprovePermissions,
-		}
-		running.PluginRecord = &record
-		return running, nil
+		}, record, nil
 	}
 
 	enabled, err := h.enablePluginLocked(ctx, record, now)
 	if err != nil {
-		return running, err
+		return registry.ReleaseInstallActivation{}, record, err
 	}
-	running.Activation = registry.ReleaseInstallActivation{Status: registry.ReleaseInstallActivationEnabled}
-	running.PluginRecord = &enabled
-	return running, nil
+	return registry.ReleaseInstallActivation{Status: registry.ReleaseInstallActivationEnabled}, enabled, nil
+}
+
+func authorizationHasActivePermission(snapshot registry.AuthorizationSnapshot, permissionID string, now time.Time) bool {
+	for _, grant := range snapshot.Grants {
+		if grant.PermissionID == permissionID && activePermissionGrant(grant, now) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Host) completeExternalInstallActivation(ctx context.Context, pending controlstore.ExternalInstallActivation, activation registry.ReleaseInstallActivation, now time.Time) error {
+	event := execution.Event{
+		ExecutionID: pending.Execution.ID, Sequence: pending.Execution.Cursor + 1, Kind: execution.EventTerminal,
+		Payload: map[string]any{"status": execution.StatusCompleted, "activation": activation},
+	}
+	return h.controlStore.Executions().Finish(ctx, pending.Execution.ID, execution.StatusCompleted, "", event, now)
+}
+
+func (h *Host) reconcileCommittedExternalInstallActivations(ctx context.Context) error {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return nil
+	}
+	pending, err := h.controlStore.Executions().ListPendingExternalInstallActivations(ctx, releaseInstallOwner(session))
+	if err != nil {
+		return err
+	}
+	for _, activationIntent := range pending {
+		record, err := h.getPluginRecord(ctx, activationIntent.PluginInstanceID)
+		if err != nil || !externalInstallActivationMatchesRecord(activationIntent, record) {
+			continue
+		}
+		unlock, err := h.lifecycleLocks.acquireWrite(ctx, activationIntent.PluginInstanceID)
+		if err != nil {
+			return err
+		}
+		activation := registry.ReleaseInstallActivation{Status: registry.ReleaseInstallActivationEnabled}
+		if record.EnableState != registry.EnableEnabled {
+			activation, record, err = h.activatePluginInstall(ctx, record, activationIntent.ActivationRequest, time.Now().UTC())
+			if err != nil {
+				activation = registry.ReleaseInstallActivation{
+					Status: registry.ReleaseInstallActivationNeedsAttention, NextAction: registry.ReleaseInstallNextActionRetryActivation,
+				}
+			}
+		}
+		finishErr := h.completeExternalInstallActivation(context.WithoutCancel(ctx), activationIntent, activation, time.Now().UTC())
+		unlock()
+		if finishErr != nil {
+			return errors.Join(err, finishErr)
+		}
+	}
+	return nil
+}
+
+func externalInstallActivationMatchesRecord(pending controlstore.ExternalInstallActivation, record registry.PluginRecord) bool {
+	if record.PluginInstanceID != pending.PluginInstanceID || record.PackageHash != pending.PackageSHA256 ||
+		record.ManifestHash != pending.ManifestSHA256 || record.EntriesHash != pending.EntriesSHA256 {
+		return false
+	}
+	if record.ManagementRevision == pending.InstalledManagementRevision {
+		return true
+	}
+	return record.EnableState == registry.EnableEnabled && record.ManagementRevision == pending.InstalledManagementRevision+1
+}
+
+func (h *Host) reconcileCommittedReleaseInstallActivations(ctx context.Context) error {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return nil
+	}
+	operations, err := h.controlStore.Executions().ListReleaseInstalls(ctx, session.OwnerEnvHash)
+	if err != nil {
+		return err
+	}
+	for _, operation := range operations {
+		if operation.Execution.Status != execution.StatusRunning {
+			continue
+		}
+		record, err := h.getPluginRecord(ctx, operation.PluginInstanceID)
+		if err != nil || !releaseInstallRecordMatches(operation, record) {
+			continue
+		}
+		unlock, err := h.lifecycleLocks.acquireWrite(ctx, operation.PluginInstanceID)
+		if err != nil {
+			return err
+		}
+		running, activationErr := h.activateInstalledRelease(ctx, operation, record, time.Now().UTC())
+		if activationErr != nil {
+			if latest, readErr := h.getPluginRecord(context.WithoutCancel(ctx), operation.PluginInstanceID); readErr == nil {
+				record = latest
+			}
+			running.Activation = reconciledReleaseInstallActivation(running, record)
+			running.PluginRecord = &record
+		}
+		finalRecord := record
+		if running.PluginRecord != nil {
+			finalRecord = *running.PluginRecord
+		}
+		_, updateErr := h.updateReleaseInstallOperation(context.WithoutCancel(ctx), running, execution.StatusCompleted, "complete",
+			registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressItems, Completed: 1, Total: 1},
+			mutation.OutcomeCommitted, nil, &finalRecord)
+		unlock()
+		if updateErr != nil {
+			return errors.Join(activationErr, updateErr)
+		}
+	}
+	return nil
 }
 
 func (h *Host) releaseInstallRequiredPermissions(record registry.PluginRecord) ([]string, error) {

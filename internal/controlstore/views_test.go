@@ -110,6 +110,57 @@ func TestRegistryExternalInstallUsesOneTransactionAndNoDurableInspectionState(t 
 	}
 }
 
+func TestRegistryExternalInstallCommitsActivationExecutionAtomically(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Unix(100, 0).UTC()
+	owner := ExecutionOwner{OwnerSessionHash: "session", OwnerUserHash: "user", OwnerEnvHash: "env", SessionChannelIDHash: "channel"}
+	record, pending, err := store.Registry().InstallExternalPackageWithActivation(ctx, "env", registry.InstallExternalPackageRequest{
+		Intent: registry.ExternalPackageInstall, Record: externalControlRecord("plugin", "1.0.0", now), Now: now,
+	}, ExternalInstallActivationRequest{
+		ExecutionID: "external_install", Owner: owner, Now: now,
+		Activation: registry.ReleaseInstallActivationRequest{Mode: registry.ReleaseInstallActivationAutomatic, ApprovedPermissionIDs: []string{"read"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Execution.Status != execution.StatusRunning || pending.PackageSHA256 != record.PackageHash ||
+		pending.InstalledManagementRevision != record.ManagementRevision {
+		t.Fatalf("pending activation = %#v, record = %#v", pending, record)
+	}
+	listed, err := store.Executions().ListPendingExternalInstallActivations(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Execution.ID != pending.Execution.ID || listed[0].ActivationRequest.ApprovedPermissionIDs[0] != "read" {
+		t.Fatalf("listed activations = %#v", listed)
+	}
+	var raw string
+	if err := store.db.QueryRowContext(ctx, `SELECT operation_json FROM execution WHERE execution_id=?`, pending.Execution.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, retired := range []string{"execution_id", "status", "cursor", "terminal_at", "created_at", "updated_at"} {
+		if strings.Contains(raw, `"`+retired+`"`) {
+			t.Errorf("external activation payload mirrors execution field %q: %s", retired, raw)
+		}
+	}
+
+	badRecord := externalControlRecord("rolled_back", "1.0.0", now)
+	_, _, err = store.Registry().InstallExternalPackageWithActivation(ctx, "env", registry.InstallExternalPackageRequest{
+		Intent: registry.ExternalPackageInstall, Record: badRecord, Now: now,
+	}, ExternalInstallActivationRequest{ExecutionID: "invalid", Owner: owner, Activation: registry.ReleaseInstallActivationRequest{Mode: registry.ReleaseInstallActivationDisabled}})
+	if err == nil {
+		t.Fatal("invalid activation request was accepted")
+	}
+	if _, err := store.Registry().Get(ctx, "env", badRecord.PluginInstanceID); !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("failed atomic install left plugin state: %v", err)
+	}
+}
+
 func externalControlRecord(instanceID, version string, now time.Time) registry.PluginRecord {
 	return registry.PluginRecord{
 		PluginInstanceID: instanceID, PublisherID: "publisher", PluginID: "com.example", Version: version,

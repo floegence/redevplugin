@@ -137,6 +137,7 @@ function installedExternalPackageResult(inspection: ReturnType<typeof externalPa
     plugin: {
       plugin_instance_id: inspection.intent.plugin_instance_id,
     },
+    activation: { status: "enabled" },
     signature_assessment: inspection.signature_assessment,
     source_provenance: inspection.source_provenance,
     execution_approval: {
@@ -539,7 +540,7 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v18",
+      schema_version: "redevplugin.compatibility.v19",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v3",
         platform_version: "1.1.0",
@@ -560,8 +561,8 @@ test("platform client reads compatibility manifest through host API", async () =
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v15.yaml",
-          version: "plugin-platform-v15",
+          path: "spec/openapi/plugin-platform-v16.yaml",
+          version: "plugin-platform-v16",
           sha256: "sha256-openapi",
         },
         {
@@ -580,8 +581,8 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v18");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v15");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v19");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v16");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v8");
   assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v3");
   assert.equal(compatibility.matrix.release_source_policy_pointer_schema_version, "release-source-policy-pointer-v2");
@@ -889,6 +890,8 @@ test("installing an inspected external package binds the exact package hash and 
   const result = await client.installInspectedPackage({
     inspection_id: "inspection_install",
     expected_package_sha256: inspection.inspected_hashes.package_sha256,
+    activate_after_install: true,
+    approved_permission_ids: ["containers.read"],
   });
 
   assert.equal(result.plugin.plugin_instance_id, "plugin_instance_target");
@@ -898,6 +901,8 @@ test("installing an inspected external package binds the exact package hash and 
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
     inspection_id: "inspection_install",
     expected_package_sha256: inspection.inspected_hashes.package_sha256,
+    activate_after_install: true,
+    approved_permission_ids: ["containers.read"],
   });
   unregisterUnrelated();
 });
@@ -1414,6 +1419,34 @@ test("platform client installs and updates plugin release refs without package b
 	assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: releaseRef });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update-release-ref");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
+});
+
+test("platform client inspects an exact release package before confirmation", async () => {
+  const fetch = new FakeFetch();
+  const releaseRef = {
+    source_id: "official",
+    channel: "stable",
+    release_metadata_ref: "plugins/example/containers/4.4.4/release.json",
+    release_metadata_sha256: "sha256:" + "a".repeat(64),
+    publisher_id: "example",
+    plugin_id: "containers",
+    version: "4.4.4",
+    expected_hashes: {
+      package_sha256: "sha256:" + "b".repeat(64),
+      manifest_sha256: "sha256:" + "c".repeat(64),
+      entries_sha256: "sha256:" + "d".repeat(64),
+    },
+  } as const;
+  fetch.push({ ok: true, data: { plugin_instance_id: "catalog_example_containers" } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await client.inspectReleasePackage({ plugin_instance_id: "catalog_example_containers", release_ref: releaseRef });
+
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/release-packages/inspect");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
+    plugin_instance_id: "catalog_example_containers",
+    release_ref: releaseRef,
+  });
 });
 
 
