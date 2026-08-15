@@ -66,6 +66,22 @@ func TestTableRejectsPartialWriteAndSupportsIdempotentClose(t *testing.T) {
 	}
 }
 
+func TestTableProjectsEOFWithoutReturningAnError(t *testing.T) {
+	table, err := NewTable(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := testOwner("session")
+	handle, err := table.Open(owner, KindFile, &testResource{Reader: *strings.NewReader("")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, flags, err := table.ReadChunk(context.Background(), handle, owner, make([]byte, 1))
+	if err != nil || n != 0 || flags != IOFlagEOF {
+		t.Fatalf("EOF read = (%d, %d, %v)", n, flags, err)
+	}
+}
+
 type writeResource struct{}
 
 func (*writeResource) Write(value []byte) (int, error) { return len(value), nil }
@@ -159,6 +175,77 @@ func TestTableSerializesOperationsPerHandle(t *testing.T) {
 	}
 }
 
+func TestTableAllowsFullDuplexReadAndWriteWhileKeepingEachDirectionSerialized(t *testing.T) {
+	table, err := NewTable(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := testOwner("session")
+	resource := &duplexResource{readStarted: make(chan struct{}), releaseRead: make(chan struct{}), wrote: make(chan struct{})}
+	handle, err := table.Open(owner, KindTCP, resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readResult := make(chan error, 1)
+	go func() {
+		_, readErr := table.Read(context.Background(), handle, owner, make([]byte, 1))
+		readResult <- readErr
+	}()
+	<-resource.readStarted
+	writeResult := make(chan error, 1)
+	go func() {
+		_, writeErr := table.Write(context.Background(), handle, owner, []byte{1})
+		writeResult <- writeErr
+	}()
+	select {
+	case <-resource.wrote:
+	case <-time.After(time.Second):
+		t.Fatal("full-duplex write was blocked behind read")
+	}
+	close(resource.releaseRead)
+	if err := <-readResult; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-writeResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTableAllowsFullDuplexControlWhileReadIsBlocked(t *testing.T) {
+	table, err := NewTable(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := testOwner("session")
+	resource := &duplexResource{readStarted: make(chan struct{}), releaseRead: make(chan struct{}), wrote: make(chan struct{})}
+	handle, err := table.Open(owner, KindTCP, resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readResult := make(chan error, 1)
+	go func() {
+		_, readErr := table.Read(context.Background(), handle, owner, make([]byte, 1))
+		readResult <- readErr
+	}()
+	<-resource.readStarted
+	controlResult := make(chan error, 1)
+	go func() {
+		controlResult <- table.UseControl(handle, owner, KindTCP, func(io.Closer) error { return nil })
+	}()
+	select {
+	case err := <-controlResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("full-duplex control was blocked behind read")
+	}
+	close(resource.releaseRead)
+	if err := <-readResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTableClosesHandleWhenTrustedAuthorityChanges(t *testing.T) {
 	table, err := NewTable(2)
 	if err != nil {
@@ -227,3 +314,22 @@ func (resource *serialResource) Read(destination []byte) (int, error) {
 }
 
 func (*serialResource) Close() error { return nil }
+
+type duplexResource struct {
+	readStarted chan struct{}
+	releaseRead chan struct{}
+	wrote       chan struct{}
+}
+
+func (*duplexResource) FullDuplexResource() {}
+func (resource *duplexResource) Read(destination []byte) (int, error) {
+	close(resource.readStarted)
+	<-resource.releaseRead
+	destination[0] = 1
+	return 1, nil
+}
+func (resource *duplexResource) Write(source []byte) (int, error) {
+	close(resource.wrote)
+	return len(source), nil
+}
+func (*duplexResource) Close() error { return nil }

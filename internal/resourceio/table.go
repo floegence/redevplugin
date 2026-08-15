@@ -20,6 +20,32 @@ var (
 	ErrResourceLimit  = errors.New("resource limit exceeded")
 )
 
+const (
+	IOFlagEOF         uint32 = 1 << 0
+	IOFlagText        uint32 = 1 << 1
+	IOFlagBinary      uint32 = 1 << 2
+	IOFlagMessageEnd  uint32 = 1 << 3
+	IOFlagDatagramEnd uint32 = 1 << 4
+)
+
+const knownIOFlags = IOFlagEOF | IOFlagText | IOFlagBinary | IOFlagMessageEnd | IOFlagDatagramEnd
+
+type ChunkReader interface {
+	ReadChunk(context.Context, []byte) (int, uint32, error)
+}
+
+type ChunkWriter interface {
+	WriteChunk(context.Context, []byte, uint32) (int, error)
+}
+
+type OwnedChunkWriter interface {
+	WriteOwnedChunk(context.Context, Owner, []byte, uint32) (int, error)
+}
+
+type FullDuplexResource interface {
+	FullDuplexResource()
+}
+
 type Kind string
 
 const (
@@ -110,6 +136,9 @@ type Entry struct {
 	Resource io.Closer
 
 	operationMu sync.Mutex
+	readMu      sync.Mutex
+	writeMu     sync.Mutex
+	controlMu   sync.Mutex
 	stateMu     sync.Mutex
 	closed      bool
 }
@@ -249,39 +278,87 @@ func (table *Table) Close(id HandleID, owner Owner) error {
 }
 
 func (table *Table) Read(ctx context.Context, id HandleID, owner Owner, destination []byte) (int, error) {
+	n, _, err := table.ReadChunk(ctx, id, owner, destination)
+	return n, err
+}
+
+func (table *Table) ReadChunk(ctx context.Context, id HandleID, owner Owner, destination []byte) (int, uint32, error) {
 	if len(destination) == 0 || len(destination) > 64<<10 {
-		return 0, ErrResourceLimit
+		return 0, 0, ErrResourceLimit
 	}
-	entry, err := table.acquire(id, owner)
+	entry, release, err := table.acquire(id, owner, false)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	defer entry.operationMu.Unlock()
+	defer release()
+	if reader, ok := entry.Resource.(ChunkReader); ok {
+		n, flags, err := reader.ReadChunk(ctx, destination)
+		if entry.isClosed() {
+			return 0, 0, ErrResourceClosed
+		}
+		if n < 0 || n > len(destination) || flags&^knownIOFlags != 0 {
+			return 0, 0, ErrInvalidHandle
+		}
+		return n, flags, err
+	}
 	reader, ok := entry.Resource.(io.Reader)
 	if !ok {
-		return 0, ErrInvalidHandle
+		return 0, 0, ErrInvalidHandle
 	}
 	select {
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return 0, 0, ctx.Err()
 	default:
 	}
 	n, err := reader.Read(destination)
 	if entry.isClosed() {
-		return 0, ErrResourceClosed
+		return 0, 0, ErrResourceClosed
 	}
-	return n, err
+	if errors.Is(err, io.EOF) {
+		return n, IOFlagEOF, nil
+	}
+	return n, 0, err
 }
 
 func (table *Table) Write(ctx context.Context, id HandleID, owner Owner, source []byte) (int, error) {
+	return table.WriteChunk(ctx, id, owner, source, 0)
+}
+
+func (table *Table) WriteChunk(ctx context.Context, id HandleID, owner Owner, source []byte, flags uint32) (int, error) {
 	if len(source) > 64<<10 {
 		return 0, ErrResourceLimit
 	}
-	entry, err := table.acquire(id, owner)
+	if flags&^knownIOFlags != 0 {
+		return 0, ErrInvalidHandle
+	}
+	entry, release, err := table.acquire(id, owner, true)
 	if err != nil {
 		return 0, err
 	}
-	defer entry.operationMu.Unlock()
+	defer release()
+	if writer, ok := entry.Resource.(OwnedChunkWriter); ok {
+		n, err := writer.WriteOwnedChunk(ctx, owner, source, flags)
+		if entry.isClosed() {
+			return 0, ErrResourceClosed
+		}
+		if n < 0 || n > len(source) || err == nil && n != len(source) {
+			return 0, io.ErrShortWrite
+		}
+		return n, err
+	}
+	if writer, ok := entry.Resource.(ChunkWriter); ok {
+		n, err := writer.WriteChunk(ctx, source, flags)
+		if entry.isClosed() {
+			return 0, ErrResourceClosed
+		}
+		if n < 0 || n > len(source) || err == nil && n != len(source) {
+			return 0, io.ErrShortWrite
+		}
+		return n, err
+	}
+	if flags != 0 {
+		return 0, ErrInvalidHandle
+	}
 	writer, ok := entry.Resource.(io.Writer)
 	if !ok {
 		return 0, ErrInvalidHandle
@@ -302,11 +379,11 @@ func (table *Table) Write(ctx context.Context, id HandleID, owner Owner, source 
 }
 
 func (table *Table) Seek(id HandleID, owner Owner, offset int64, whence int) (int64, error) {
-	entry, err := table.acquire(id, owner)
+	entry, release, err := table.acquire(id, owner, false)
 	if err != nil {
 		return 0, err
 	}
-	defer entry.operationMu.Unlock()
+	defer release()
 	seeker, ok := entry.Resource.(io.Seeker)
 	if !ok {
 		return 0, ErrInvalidHandle
@@ -316,6 +393,35 @@ func (table *Table) Seek(id HandleID, owner Owner, offset int64, whence int) (in
 		return 0, ErrResourceClosed
 	}
 	return position, err
+}
+
+func (table *Table) Use(id HandleID, owner Owner, kind Kind, use func(io.Closer) error) error {
+	return table.use(id, owner, kind, false, use)
+}
+
+// UseControl serializes control operations without waiting for a blocked read
+// or write on a full-duplex resource.
+func (table *Table) UseControl(id HandleID, owner Owner, kind Kind, use func(io.Closer) error) error {
+	return table.use(id, owner, kind, true, use)
+}
+
+func (table *Table) use(id HandleID, owner Owner, kind Kind, control bool, use func(io.Closer) error) error {
+	if use == nil {
+		return ErrInvalidHandle
+	}
+	entry, release, err := table.acquireMode(id, owner, operationRead, control)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if entry.Kind != kind {
+		return ErrInvalidHandle
+	}
+	err = use(entry.Resource)
+	if entry.isClosed() {
+		return ErrResourceClosed
+	}
+	return err
 }
 
 func (table *Table) Revoke(predicate func(Owner) bool) error {
@@ -338,33 +444,52 @@ func (table *Table) Revoke(predicate func(Owner) bool) error {
 	return joined
 }
 
-func (table *Table) acquire(id HandleID, owner Owner) (*Entry, error) {
+func (table *Table) acquire(id HandleID, owner Owner, write bool) (*Entry, func(), error) {
+	mode := operationRead
+	if write {
+		mode = operationWrite
+	}
+	return table.acquireMode(id, owner, mode, false)
+}
+
+type operationMode uint8
+
+const (
+	operationRead operationMode = iota + 1
+	operationWrite
+	operationControl
+)
+
+func (table *Table) acquireMode(id HandleID, owner Owner, mode operationMode, control bool) (*Entry, func(), error) {
 	if table == nil {
-		return nil, ErrResourceClosed
+		return nil, nil, ErrResourceClosed
 	}
 	table.mu.Lock()
 	entry, ok := table.entries[id]
 	if !ok {
 		table.mu.Unlock()
-		return nil, ErrResourceClosed
+		return nil, nil, ErrResourceClosed
 	}
 	if !entry.Owner.matches(owner) {
 		if entry.Owner.samePrincipal(owner) {
 			delete(table.entries, id)
 			table.mu.Unlock()
 			_ = entry.close()
-			return nil, ErrResourceClosed
+			return nil, nil, ErrResourceClosed
 		}
 		table.mu.Unlock()
-		return nil, ErrOwnerMismatch
+		return nil, nil, ErrOwnerMismatch
 	}
-	entry.operationMu.Lock()
 	table.mu.Unlock()
-	if entry.isClosed() {
-		entry.operationMu.Unlock()
-		return nil, ErrResourceClosed
+	if control {
+		mode = operationControl
 	}
-	return entry, nil
+	release := entry.lockOperation(mode)
+	if entry.isClosed() {
+		release()
+		return nil, nil, ErrResourceClosed
+	}
+	return entry, release, nil
 }
 
 func (entry *Entry) close() error {
@@ -378,7 +503,31 @@ func (entry *Entry) close() error {
 	err := entry.Resource.Close()
 	entry.operationMu.Lock()
 	entry.operationMu.Unlock()
+	entry.readMu.Lock()
+	entry.readMu.Unlock()
+	entry.writeMu.Lock()
+	entry.writeMu.Unlock()
+	entry.controlMu.Lock()
+	entry.controlMu.Unlock()
 	return err
+}
+
+func (entry *Entry) lockOperation(mode operationMode) func() {
+	if _, fullDuplex := entry.Resource.(FullDuplexResource); !fullDuplex {
+		entry.operationMu.Lock()
+		return entry.operationMu.Unlock
+	}
+	switch mode {
+	case operationWrite:
+		entry.writeMu.Lock()
+		return entry.writeMu.Unlock
+	case operationControl:
+		entry.controlMu.Lock()
+		return entry.controlMu.Unlock
+	default:
+		entry.readMu.Lock()
+		return entry.readMu.Unlock
+	}
 }
 
 func (entry *Entry) isClosed() bool {
