@@ -407,6 +407,7 @@ func newPerformanceRuntimeHost(
 		Connectivity:          broker,
 		NetworkExecutor:       executor,
 		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
+		IOBroker:              h.runtimeIO,
 		Limits:                limits,
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -434,7 +435,7 @@ type performanceRuntimeManager struct {
 }
 
 func (performanceRuntimeManager) BindHostServices(services runtimeclient.RuntimeHostServices) error {
-	if services.StreamSink == nil {
+	if services.StreamSink == nil || services.IOBroker == nil {
 		return runtimeclient.ErrRuntimeHostServicesInvalid
 	}
 	return nil
