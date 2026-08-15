@@ -581,7 +581,13 @@ test("plugin bridge client exposes only a public handle and its private port", a
     type: "redevplugin.bridge.call",
     request: { id: "rpc_1", method: "echo.ping", params: { value: 1 } },
   });
-  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "rpc_1", ok: true, data: { pong: true } });
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "rpc_1",
+    ok: true,
+    data: { pong: true },
+    future_trace: "trace_1",
+  });
   assert.deepEqual(await callPromise, { pong: true });
 
   const readyTree: PluginUIElementVNode = { type: "element", key: "root", tag: "main", children: [uiText("ready-text", "Ready")] };
@@ -610,6 +616,7 @@ test("plugin bridge client exposes only a public handle and its private port", a
       business_error_code: "DOCUMENT_NOT_FOUND",
       business_error_details: { document_id: "missing" },
     },
+    future_trace: "trace_2",
   });
   await assert.rejects(businessErrorPromise, (error: unknown) =>
     error instanceof PluginBridgeError &&
@@ -2129,8 +2136,15 @@ test("trusted parent routes current execution cancellation, snapshot, and events
   fetch.push(execution);
   fetch.push({
     execution_id: execution.execution_id,
-    events: [{ execution_id: execution.execution_id, sequence: 1, kind: "data", payload: { event_type: "LogsEvent", data: "e30=" } }],
+    events: [{
+      execution_id: execution.execution_id,
+      sequence: 1,
+      kind: "data",
+      payload: { event_type: "LogsEvent", data: "e30=" },
+      future_metadata: { source: "runtime" },
+    }],
     cursor: 1,
+    future_trace: "trace_1",
   });
   channel.port2.postMessage({ type: "redevplugin.bridge.execution.cancel", id: "execution_1", execution_id: execution.execution_id, reason: "user canceled" });
   await waitFor(() => channel.port1.sent.some((value) => (value as { id?: string }).id === "execution_1"));
@@ -2150,6 +2164,47 @@ test("trusted parent routes current execution cancellation, snapshot, and events
   const eventsResponse = channel.port1.sent.find((value) => (value as { id?: string }).id === "execution_3") as { ok: boolean; data: { cursor: number } };
   assert.equal(eventsResponse.ok, true);
   assert.equal(eventsResponse.data.cursor, 1);
+  host.dispose();
+});
+
+test("execution event reader rejects unknown event kinds", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap,
+    bridgeChannelId: "bridge_12345678",
+    testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+  });
+  const opening = host.open();
+  frame.load();
+  await waitFor(() => frame.transferred.length === 1);
+  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+  await opening;
+
+  fetch.push({
+    execution_id: "execution_12345678",
+    events: [{ execution_id: "execution_12345678", sequence: 1, kind: "future_kind" }],
+    cursor: 1,
+  });
+  channel.port2.postMessage({
+    type: "redevplugin.bridge.execution.events",
+    id: "execution_1",
+    execution_id: "execution_12345678",
+    after_cursor: 0,
+  });
+  await waitFor(() => channel.port1.sent.some((value) => (value as { id?: string }).id === "execution_1"));
+
+  const response = channel.port1.sent.find((value) => (value as { id?: string }).id === "execution_1") as {
+    ok: boolean;
+    error_code?: string;
+  };
+  assert.equal(response.ok, false);
+  assert.equal(response.error_code, "PLUGIN_CONTRACT_MISMATCH");
   host.dispose();
 });
 

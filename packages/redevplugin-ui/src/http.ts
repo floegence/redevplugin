@@ -177,11 +177,11 @@ export function hasAllowedKeys(value: unknown, keys: readonly string[]): value i
 function isPlatformResponse<T>(value: unknown, mutation: boolean): value is PlatformResponse<T> | MutationPlatformResponse<T> {
   if (!isRecord(value) || typeof value.ok !== "boolean") return false;
   if (value.ok) {
-    return hasExactKeys(value, ["ok", "data"]);
+    return hasRequiredKeys(value, ["ok", "data"]);
   }
-  if (!hasExactKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
+  if (!hasRequiredKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
   const errorKeys = mutation ? ["code", "message", "details", "mutation_outcome"] : ["code", "message", "details"];
-  if (!hasExactKeys(value.error, errorKeys) ||
+  if (!hasRequiredKeys(value.error, errorKeys) ||
       !isPluginPlatformErrorCode(value.error.code) ||
       typeof value.error.message !== "string" || value.error.message.trim().length === 0 ||
       Array.from(value.error.message).length > 4096 ||
@@ -299,6 +299,6 @@ function isIncompleteSessionScopeResult(value: unknown): boolean {
     Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0);
 }
 
-function hasRequiredKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+export function hasRequiredKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return keys.every((key) => Object.hasOwn(value, key));
 }

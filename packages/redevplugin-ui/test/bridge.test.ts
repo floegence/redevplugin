@@ -397,9 +397,9 @@ test("session revoke result validation is exact and JavaScript-safe", async () =
   }
 });
 
-test("invalid session revoke envelope is unknown and invalidates local surfaces", async () => {
+test("platform response reader ignores unknown optional envelope fields", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: sessionScopeRevokeResult(), unexpected: true });
+  fetch.push({ ok: true, data: sessionScopeRevokeResult(), future_trace: "trace_1" });
   let invalidated = 0;
   let unknown = 0;
   const scope = createPluginSurfaceScope();
@@ -410,11 +410,48 @@ test("invalid session revoke envelope is unknown and invalidates local surfaces"
     onMutationOutcomeUnknown: () => { unknown += 1; },
   });
 
-  await assert.rejects(client.revokeSessionScope(), (error: unknown) =>
-    error instanceof PluginTransportError && error.mutationOutcome === "unknown"
-  );
+  const result = await client.revokeSessionScope();
+
+  assert.equal(result.state, "complete");
   assert.equal(invalidated, 1);
-  assert.equal(unknown, 1);
+  assert.equal(unknown, 0);
+});
+
+test("platform error reader ignores unknown envelope fields but keeps typed details closed", async () => {
+  const forwardCompatible = new FakeFetch();
+  forwardCompatible.push({
+    ok: false,
+    future_trace: "trace_1",
+    error: {
+      code: "PLUGIN_RUNTIME_UNAVAILABLE",
+      message: "runtime unavailable",
+      details: {},
+      future_retry_hint: "later",
+    },
+  });
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: forwardCompatible.fetch }).catalog(),
+    (error: unknown) => error instanceof PluginPlatformRequestError && error.errorCode === "PLUGIN_RUNTIME_UNAVAILABLE",
+  );
+
+  const unsafeDetails = new FakeFetch();
+  unsafeDetails.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
+      message: "revision changed",
+      details: {
+        plugin_instance_id: "plugin_instance_1",
+        expected_management_revision: 1,
+        actual_management_revision: 2,
+        future_authority_input: true,
+      },
+    },
+  });
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: unsafeDetails.fetch }).catalog(),
+    (error: unknown) => error instanceof PluginTransportError,
+  );
 });
 
 test("concurrent session revokes invalidate each local surface exactly once", async () => {

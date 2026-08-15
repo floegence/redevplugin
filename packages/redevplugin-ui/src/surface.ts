@@ -21,6 +21,7 @@ import {
   defaultFetch,
   hasAllowedKeys,
   hasExactKeys,
+  hasRequiredKeys,
   isRecord,
   readMutationPlatformResponse,
   readPlatformResponse,
@@ -4892,15 +4893,16 @@ function validDateTime(value: unknown): value is string {
 }
 
 function isPluginExecutionEventList(value: unknown, executionID: string, afterCursor: number): value is PluginExecutionEventList {
-  if (!hasExactKeys(value, ["execution_id", "events", "cursor"]) || value.execution_id !== executionID ||
+  if (!isRecord(value) || !hasRequiredKeys(value, ["execution_id", "events", "cursor"]) || value.execution_id !== executionID ||
       !Array.isArray(value.events) || !Number.isSafeInteger(value.cursor) || Number(value.cursor) < afterCursor) return false;
   let cursor = afterCursor;
   for (const event of value.events) {
-    if (!isRecord(event) || !hasAllowedKeys(event, ["execution_id", "sequence", "kind", "payload", "error"]) ||
+    if (!isRecord(event) || !hasRequiredKeys(event, ["execution_id", "sequence", "kind"]) ||
         event.execution_id !== executionID || !Number.isSafeInteger(event.sequence) || Number(event.sequence) <= cursor ||
         !["progress", "data", "diagnostic", "terminal"].includes(String(event.kind)) ||
         (event.payload !== undefined && !isRecord(event.payload)) ||
-        (event.error !== undefined && (!hasExactKeys(event.error, ["code", "message"]) || typeof event.error.code !== "string" || typeof event.error.message !== "string"))) return false;
+        (event.error !== undefined && (!isRecord(event.error) || !hasRequiredKeys(event.error, ["code", "message"]) ||
+          typeof event.error.code !== "string" || typeof event.error.message !== "string"))) return false;
     cursor = Number(event.sequence);
   }
   return Number(value.cursor) === cursor;
@@ -4927,10 +4929,9 @@ function isBridgeResponseCandidate(value: unknown): value is Record<string, unkn
 
 function isBridgeResponse(value: unknown): value is PluginBridgeResponse {
   if (!isBridgeResponseCandidate(value) || !validBridgeRequestID(value.id)) return false;
-  if (value.ok === true) return Object.keys(value).every((key) => ["type", "id", "ok", "data"].includes(key));
+  if (value.ok === true) return true;
   if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) ||
       typeof value.error !== "string" || value.error.length > 4096 ||
-      !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details", "mutation_outcome"].includes(key)) ||
       (value.mutation_outcome !== undefined && value.mutation_outcome !== "committed" &&
         value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown")) {
     return false;

@@ -1,5 +1,6 @@
 export { PluginBridgeClient } from "./surface.js";
 export { PluginBridgeError } from "./errors.js";
+export { surfaceAPIMajor } from "./contracts.gen.js";
 export {
   callCapabilityOperation,
   callCapabilityStream,
