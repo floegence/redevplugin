@@ -519,6 +519,19 @@ mod tests {
     }
 
     #[test]
+    fn validates_generated_scaffold_worker_api_v1_imports() {
+        let module = include_bytes!("../../../cmd/redevplugin/scaffold_assets/backend.wasm");
+        let validated = validate_worker_module(module).expect("validate generated scaffold worker");
+        let imports = validated
+            .imports
+            .iter()
+            .map(|import| (import.module.as_str(), import.name.as_str()))
+            .collect::<Vec<_>>();
+        assert!(imports.contains(&(IMPORT_IO, "rdp_call_v1")));
+        assert!(imports.contains(&(IMPORT_IO, "rdp_last_error_v1")));
+    }
+
+    #[test]
     fn rejects_invalid_memory_and_table_contracts() {
         for replacement in [
             "(memory (export \"memory\") i64 1)",

@@ -1,3 +1,5 @@
+#[cfg(target_arch = "wasm32")]
+use redevplugin_worker_sdk::api;
 use redevplugin_worker_sdk::{
     WORKER_ABI_VERSION, WorkerError, WorkerRequest, WorkerResult, export_worker,
 };
@@ -13,6 +15,7 @@ fn handle(request: WorkerRequest) -> WorkerResult {
 }
 
 fn echo(params: Value) -> WorkerResult {
+    require_worker_api_v1()?;
     let message = params
         .get("message")
         .and_then(Value::as_str)
@@ -31,6 +34,21 @@ fn echo(params: Value) -> WorkerResult {
         "wasm_abi": WORKER_ABI_VERSION,
         "message": message
     }))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn require_worker_api_v1() -> Result<(), WorkerError> {
+    let capabilities = api::capabilities()
+        .map_err(|error| WorkerError::hostcall(format!("discover Worker API: {error}")))?;
+    if capabilities.worker_api != 1 {
+        return Err(WorkerError::hostcall("Worker API 1 is unavailable"));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn require_worker_api_v1() -> Result<(), WorkerError> {
+    Ok(())
 }
 
 export_worker!(handle);

@@ -10,15 +10,23 @@
     "crates/redevplugin-worker-sdk/Cargo.toml": "4d8339ce666aac26510ba48ceff4edc9d18b4f89f07d9f673fd2ffd3ccff802e",
     "crates/redevplugin-worker-sdk/LICENSE": "68a062bc10a32bc2478ece12a1792f878f72d0033164fb0e4a4c565bab5c8478",
     "crates/redevplugin-worker-sdk/README.md": "334ff780f993706221e449fd1d63edbb3193fd6018da93aa3ef242d2dd4df44d",
+    "crates/redevplugin-worker-sdk/src/api.rs": "69e6e01dc44fef04ad2b032bcaee4e130b9417b5bef9848f79a9c8f4805ec4f7",
+    "crates/redevplugin-worker-sdk/src/error.rs": "0bfd86dde18762de5944365b908a70befe9e6bc0ffa70f47794540ceaebf2586",
+    "crates/redevplugin-worker-sdk/src/fs.rs": "40a61b780c0d3bb9bfc32155c9d4e15755601dfb85eb90c4d364539a5a4e7ee2",
     "crates/redevplugin-worker-sdk/src/hostcalls.rs": "67ffaf86a27df801e13c3174d15d4536a84730c7bcd03930b1f8d64e1f4709af",
-    "crates/redevplugin-worker-sdk/src/lib.rs": "15dcf96fa0ff0fe862df759edd32b21310098604aed1edb16c9c973b8abb89e6",
+    "crates/redevplugin-worker-sdk/src/http.rs": "13821651ba4ffb2bcddeef2a77207407f72ffc77a75fe9977f7abc0d4e541e06",
+    "crates/redevplugin-worker-sdk/src/lib.rs": "7f745a15021dbd1d5693e666771a15aa9c8e2cccb1ac56db173c5858513d57c5",
+    "crates/redevplugin-worker-sdk/src/resource.rs": "13d187fae401fcdde8f89fc1e25ba99c1989286d80de23512aaa74e0e913bae2",
+    "crates/redevplugin-worker-sdk/src/tcp.rs": "3479058e7fb1f74b922f79417bc0f607f9b5ea57a9cf839238a4a20854ddc7a8",
+    "crates/redevplugin-worker-sdk/src/udp.rs": "7d65f00e0dfb61039c4f0e73148f3248512569be590f218c11eea2029b7f6d19",
+    "crates/redevplugin-worker-sdk/src/websocket.rs": "343d18f50a4096fb3b20566c88cda8835b8312e68661e3da961a672eba4a8ec4",
     "internal/scaffoldworker/Cargo.toml": "3822629b509f6490816a177bdb73be54bc128a72dbfd890ca9f971028155a5c0",
-    "internal/scaffoldworker/src/lib.rs": "666b37e759b8b28534d4c74e40e9ea9753aabb40f7a8ead44fc31dbf1b409773",
+    "internal/scaffoldworker/src/lib.rs": "e1dd539bdf991f082a6b5a2815a05abc8ead168017b6d6e3e4c3a7f678e93a7d",
     "rust-toolchain.toml": "6c04f2e2d44428d94d3b65cc72041c5ed03d97eac18d6cdc13e95d21355a6869",
     "scripts/build_scaffold_assets.mjs": "267ad01a63b938df2b50d95b263fc936e24b056ee341ecb0788bf94443d2c11a",
     "scripts/canonical_wasm_builder.mjs": "b37f56c2ca9322aefce98073e918e42e4cdf480639d4d82e90ff6117d2419540"
   },
   "artifacts": {
-    "cmd/redevplugin/scaffold_assets/backend.wasm": "4571cd039bca546fb8e35db7f95e31c53ae5bca2d6cbeb302885e9576647e889"
+    "cmd/redevplugin/scaffold_assets/backend.wasm": "03ef9f0bf408adf739c099fbc29de2c515a1cd26e32fa995c45b17123b28bf88"
   }
 }

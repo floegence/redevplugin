@@ -5,7 +5,22 @@ use std::ptr;
 
 mod hostcalls;
 
+pub mod api;
+pub mod error;
+pub mod fs;
+pub mod http;
+mod resource;
+pub mod tcp;
+pub mod udp;
+pub mod websocket;
+
+pub use error::{Error, ErrorCode};
+pub type PlatformResult<T> = error::Result<T>;
 pub use hostcalls::{network, storage};
+pub use resource::{
+    IO_FLAG_BINARY, IO_FLAG_DATAGRAM_END, IO_FLAG_EOF, IO_FLAG_MESSAGE_END, IO_FLAG_TEXT,
+    MAX_IO_CHUNK_BYTES,
+};
 
 pub const WORKER_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const WORKER_REQUEST_SCHEMA_VERSION: &str = "redevplugin.worker_request.v2";

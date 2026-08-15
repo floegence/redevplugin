@@ -1236,20 +1236,30 @@ func validateWASMWorkerContract(contract wasmModuleContract, memoryLimitBytes in
 			return fmt.Errorf("worker export %q has an invalid function signature", name)
 		}
 	}
-	allowedHostcalls := map[string]map[string]struct{}{
-		"redevplugin.storage": {"files": {}, "kv": {}, "sqlite": {}},
-		"redevplugin.network": {"execute": {}},
+	i32, i64 := byte(0x7f), byte(0x7e)
+	legacyHostcall := wasmFunctionType{Params: []byte{i32, i32, i32, i32}, Results: []byte{i32}}
+	allowedHostcalls := map[string]map[string]wasmFunctionType{
+		"redevplugin.storage": {"files": legacyHostcall, "kv": legacyHostcall, "sqlite": legacyHostcall},
+		"redevplugin.network": {"execute": legacyHostcall},
+		"redevplugin.io": {
+			"rdp_call_v1":       {Params: []byte{i32, i32, i32, i32}, Results: []byte{i32}},
+			"rdp_read_v1":       {Params: []byte{i64, i32, i32, i32}, Results: []byte{i32}},
+			"rdp_write_v1":      {Params: []byte{i64, i32, i32, i32}, Results: []byte{i32}},
+			"rdp_seek_v1":       {Params: []byte{i64, i64, i32}, Results: []byte{i64}},
+			"rdp_close_v1":      {Params: []byte{i64}, Results: []byte{i32}},
+			"rdp_last_error_v1": {Params: []byte{i32, i32}, Results: []byte{i32}},
+		},
 	}
-	hostcallSignature := wasmFunctionType{Params: []byte{0x7f, 0x7f, 0x7f, 0x7f}, Results: []byte{0x7f}}
 	for _, imported := range contract.Imports {
 		functions, ok := allowedHostcalls[imported.Module]
 		if !ok {
 			return fmt.Errorf("worker import module %q is unsupported", imported.Module)
 		}
-		if _, ok := functions[imported.Name]; !ok {
+		signature, ok := functions[imported.Name]
+		if !ok {
 			return fmt.Errorf("worker import %s/%s is unsupported", imported.Module, imported.Name)
 		}
-		if !sameWASMFunctionType(contract.Types[imported.TypeIndex], hostcallSignature) {
+		if !sameWASMFunctionType(contract.Types[imported.TypeIndex], signature) {
 			return fmt.Errorf("worker import %s/%s has an invalid function signature", imported.Module, imported.Name)
 		}
 	}

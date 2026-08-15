@@ -257,6 +257,9 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if len(wasmRaw) < 8 || !bytes.Equal(wasmRaw[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
 		t.Fatalf("scaffold wasm artifact is invalid: %x", wasmRaw[:prefixLen(len(wasmRaw), 8)])
 	}
+	if !bytes.Contains(wasmRaw, []byte("redevplugin.io")) || !bytes.Contains(wasmRaw, []byte("rdp_call_v1")) {
+		t.Fatal("scaffold wasm artifact does not exercise the Worker API 1 imports")
+	}
 	packageFile := filepath.Join(dir, "generated.redevplugin")
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package scaffold error = %v", err)

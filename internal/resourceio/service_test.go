@@ -114,6 +114,27 @@ func TestServiceFileControlAndRawDataPlane(t *testing.T) {
 	}
 }
 
+func TestServicePlatformDiscoveryDoesNotExposeAuthorityFacts(t *testing.T) {
+	table, _ := NewTableWithLimits(DefaultLimits())
+	service, _ := NewService(table, nil, nil)
+	invocation := fixtureInvocation("session-discovery")
+	capabilities := callControl(t, service, invocation, "platform.capabilities", `{}`)
+	if capabilities["ok"] != true {
+		t.Fatalf("platform.capabilities = %#v", capabilities)
+	}
+	contextResponse := callControl(t, service, invocation, "platform.context", `{}`)
+	raw, _ := json.Marshal(contextResponse)
+	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "runtime_generation", "management_revision", "revoke_epoch", "invocation_id", "permissions"} {
+		if bytes.Contains(raw, []byte(forbidden)) {
+			t.Fatalf("platform.context leaked %q: %s", forbidden, raw)
+		}
+	}
+	result, ok := contextResponse["result"].(map[string]any)
+	if contextResponse["ok"] != true || !ok || result["plugin_id"] != invocation.Plugin.ID || result["plugin_version"] != invocation.Plugin.Version || result["scope_kind"] != string(invocation.Owner.Scope.Kind) {
+		t.Fatalf("platform.context = %#v", contextResponse)
+	}
+}
+
 func TestServiceRejectsPermissionAndSessionCapsBeforeMountIO(t *testing.T) {
 	resolver := &fixtureMountResolver{path: t.TempDir()}
 	table, _ := NewTableWithLimits(DefaultLimits())

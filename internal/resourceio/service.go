@@ -120,6 +120,30 @@ func marshalControlFailure(code, message string, retryable bool) []byte {
 
 func (service *Service) dispatch(ctx context.Context, invocation Invocation, operation string, arguments json.RawMessage) (any, error) {
 	switch operation {
+	case "platform.capabilities":
+		if err := requireEmptyArguments(arguments); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"worker_api": 1,
+			"features":   []string{"fs.environment.v1", "fs.home.v1", "fs.watch.v1", "fs.workspace.v1", "io.stream.v1", "net.http.v1", "net.tcp.v1", "net.udp.v1", "net.websocket.v1"},
+			"limits": map[string]any{
+				"control_response_bytes": 64 << 10,
+				"io_chunk_bytes":         MaxIOChunkBytes,
+				"open_files_min":         MinimumFileHandles,
+				"open_connections_min":   MinimumConnections,
+				"open_watches_min":       MinimumWatchesListeners,
+			},
+		}, nil
+	case "platform.context":
+		if err := requireEmptyArguments(arguments); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"plugin_id":      invocation.Plugin.ID,
+			"plugin_version": invocation.Plugin.Version,
+			"scope_kind":     invocation.Owner.Scope.Kind,
+		}, nil
 	case "fs.mounts":
 		return service.listMounts(ctx, invocation)
 	case "fs.stat":
@@ -349,6 +373,11 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 	default:
 		return nil, ErrInvalidHandle
 	}
+}
+
+func requireEmptyArguments(raw json.RawMessage) error {
+	var arguments struct{}
+	return decodeClosedJSON(raw, &arguments)
 }
 
 func (service *Service) listMounts(ctx context.Context, invocation Invocation) (any, error) {
