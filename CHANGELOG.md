@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.5
+
+- Preserve the authenticated session owner in environment-scoped runtime
+  execution leases so the Host's signed lease and worker invocation payload
+  pass the pre-IPC audience check without weakening environment ResourceScope.
+
 ## v2.0.4
 
 - Preserve normalized manifest v9 API, feature, and permission facts across
