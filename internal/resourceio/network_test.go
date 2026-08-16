@@ -67,6 +67,25 @@ func TestHTTPStreamsUploadResponseAndPreservesRepeatedHeaders(t *testing.T) {
 	}
 }
 
+func TestHTTPUploadWritePreservesCompletedNetworkFailure(t *testing.T) {
+	reader, writer := io.Pipe()
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	networkErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	result := make(chan httpResult, 1)
+	result <- httpResult{err: networkErr}
+	upload := &HTTPUpload{writer: writer, result: result, cancel: func() {}}
+
+	_, err := upload.WriteChunk(context.Background(), []byte("payload"), 0)
+	if !errors.Is(err, networkErr) {
+		t.Fatalf("upload write error = %v, want completed network error %v", err, networkErr)
+	}
+	if code, _ := StableError(err); code != "NETWORK_ERROR" {
+		t.Fatalf("upload write error code = %q, want NETWORK_ERROR", code)
+	}
+}
+
 func TestHTTPRedirectReauthorizesAndRefusesStreamingReplay(t *testing.T) {
 	final := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = response.Write([]byte("done"))

@@ -49,11 +49,13 @@ type HTTPResponse struct {
 }
 
 type HTTPUpload struct {
-	mu     sync.Mutex
-	writer *io.PipeWriter
-	result <-chan httpResult
-	cancel context.CancelFunc
-	closed bool
+	mu         sync.Mutex
+	writer     *io.PipeWriter
+	result     <-chan httpResult
+	resultOnce sync.Once
+	terminal   httpResult
+	cancel     context.CancelFunc
+	closed     bool
 }
 
 type httpResult struct {
@@ -213,7 +215,14 @@ func (upload *HTTPUpload) WriteChunk(ctx context.Context, value []byte, flags ui
 		return 0, ctx.Err()
 	default:
 	}
-	return writer.Write(value)
+	written, err := writer.Write(value)
+	if err == nil {
+		return written, nil
+	}
+	if terminal := upload.awaitResult(); terminal.err != nil {
+		return written, terminal.err
+	}
+	return written, err
 }
 
 func (upload *HTTPUpload) Finish() (*HTTPResponse, error) {
@@ -227,17 +236,27 @@ func (upload *HTTPUpload) Finish() (*HTTPResponse, error) {
 	}
 	upload.closed = true
 	writer := upload.writer
-	resultChannel := upload.result
 	upload.mu.Unlock()
 	if err := writer.Close(); err != nil {
+		result := upload.awaitResult()
 		upload.cancel()
+		if result.err != nil {
+			return nil, result.err
+		}
 		return nil, err
 	}
-	result := <-resultChannel
+	result := upload.awaitResult()
 	if result.err != nil {
 		upload.cancel()
 	}
 	return result.response, result.err
+}
+
+func (upload *HTTPUpload) awaitResult() httpResult {
+	upload.resultOnce.Do(func() {
+		upload.terminal = <-upload.result
+	})
+	return upload.terminal
 }
 
 func (upload *HTTPUpload) Abort(cause error) error {
