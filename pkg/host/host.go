@@ -7389,7 +7389,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		ScopeKind:              resourceScope.Kind,
 		SurfaceInstanceID:      lease.SurfaceInstanceID,
 		OwnerSessionHash:       lease.OwnerSessionHash,
-		OwnerUserHash:          resourceScope.OwnerUserHash,
+		OwnerUserHash:          req.session.OwnerUserHash,
 		OwnerEnvHash:           resourceScope.OwnerEnvHash,
 		SessionChannelIDHash:   lease.SessionChannelIDHash,
 		BridgeChannelID:        lease.BridgeChannelID,
