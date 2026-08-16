@@ -3,7 +3,6 @@ package host
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -434,22 +433,11 @@ func (h *Host) reconcileCommittedReleaseInstallActivations(ctx context.Context) 
 func (h *Host) releaseInstallRequiredPermissions(record registry.PluginRecord) ([]string, error) {
 	permissions := make([]string, 0)
 	for _, method := range record.Manifest.Methods {
-		if method.Route.Kind != manifest.MethodRouteCapability {
-			continue
-		}
-		binding, ok := manifestBinding(record.Manifest, method.Route.BindingID)
-		if !ok {
-			return nil, fmt.Errorf("capability binding %q is not declared", method.Route.BindingID)
-		}
-		verified, err := h.adapters.Capabilities.RequireContract(binding.Contract)
+		required, err := h.declaredRequiredPermissions(record, method)
 		if err != nil {
 			return nil, err
 		}
-		target, ok := contractMethod(verified.Contract, method.Route.TargetMethod)
-		if !ok {
-			return nil, fmt.Errorf("capability target method %q is not published", method.Route.TargetMethod)
-		}
-		permissions = append(permissions, target.RequiredPermissions...)
+		permissions = append(permissions, required...)
 	}
 	return normalizeStringSet(permissions), nil
 }

@@ -121,18 +121,23 @@ func TestRegistryViewPreservesV9ManifestModelAcrossDurableMutations(t *testing.T
 
 	now := time.Unix(100, 0).UTC()
 	record := externalControlRecord("plugin", "9.0.0", now)
-	surface, worker := uint16(1), uint16(1)
-	record.ManifestSource = manifest.SchemaVersionV9
-	record.ManifestModel = manifest.Model{
-		Manifest:     record.Manifest,
-		SchemaSource: manifest.SchemaVersionV9,
-		API: manifest.PublicAPIRequirement{
-			Surface:          &surface,
-			Worker:           &worker,
-			RequiredFeatures: []manifest.FeatureID{manifest.FeatureFSEnvironment, manifest.FeatureNetHTTP},
-		},
-		Permissions: []manifest.PermissionID{manifest.PermissionFSEnvironmentRead, manifest.PermissionNetworkClient},
+	model, err := manifest.DecodeModel(strings.NewReader(`{
+  "schema_version": "redevplugin.manifest.v9",
+  "publisher": {"publisher_id": "publisher", "display_name": "Publisher"},
+  "plugin": {"plugin_id": "com.example", "display_name": "Example", "version": "9.0.0"},
+  "api": {"surface": 1, "worker": 1, "required_features": ["fs.environment.v1", "net.http.v1"]},
+  "permissions": ["fs.environment.read", "network.client"],
+  "presentation": {"locales": {"default": "en-US"}},
+  "surfaces": [{"surface_id": "main", "kind": "view", "label": "Main", "entry": "ui/index.html"}],
+  "workers": [{"worker_id": "worker", "artifact": "workers/main.wasm", "mode": "job", "scope": "environment", "memory_limit_bytes": 16777216}],
+  "methods": [{"method": "io.run", "worker_id": "worker", "effect": "execute", "execution": "sync", "request_schema": {"type": "object", "additionalProperties": false}, "response_schema": {"type": "object", "additionalProperties": false}}]
+}`))
+	if err != nil {
+		t.Fatal(err)
 	}
+	record.Manifest = model.Manifest
+	record.ManifestSource = model.SchemaSource
+	record.ManifestModel = model
 	wantModel := record.ManifestModel
 
 	record, err = store.Registry().PutPlugin(ctx, "env", record, now)

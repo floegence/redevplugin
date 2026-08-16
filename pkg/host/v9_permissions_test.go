@@ -104,6 +104,13 @@ func TestV9WorkerMethodRequiresGrantedPackagePermissions(t *testing.T) {
 	if !reflect.DeepEqual(required, wantRequired) {
 		t.Fatalf("persisted v9 worker required permissions = %#v source=%q model=%#v, want %#v", required, record.ManifestModel.SchemaSource, record.ManifestModel.Permissions, wantRequired)
 	}
+	requirements, err := h.GetPermissionRequirements(hostTestContext(), GetPermissionRequirementsRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(requirements.RequiredPermissions, wantRequired) {
+		t.Fatalf("v9 permission requirements = %#v, want %#v", requirements.RequiredPermissions, wantRequired)
+	}
 	for _, permissionID := range wantRequired {
 		revisions := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
 		if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
@@ -186,6 +193,38 @@ func TestV9LegacyControlRecordRejectsTamperedManifestAsset(t *testing.T) {
 	defer func() { h.adapters.Assets = original }()
 	if _, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID); err == nil {
 		t.Fatal("getPluginRecord() accepted a tampered v9 manifest recovery asset")
+	}
+}
+
+func TestV9LegacyControlRecordRejectsMissingManifestAsset(t *testing.T) {
+	stateRoot := filepath.Join(t.TempDir(), "control-state")
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		stateRoot: stateRoot, developerMode: true, localGenerated: true,
+	})
+	installed := installAndEnablePlugin(t, h, buildV9IOPermissionFixturePackage(t))
+	stripControlManifestModel(t, filepath.Join(stateRoot, "control.sqlite"), installed.PluginInstanceID)
+	if err := h.adapters.Assets.DeletePackage(hostTestContext(), installed.PackageHash); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID); err == nil {
+		t.Fatal("getPluginRecord() accepted a missing v9 manifest recovery asset")
+	}
+}
+
+func TestV8WorkerPermissionBehaviorRemainsFrozen(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	pkg := readTestPackage(t, buildWorkerNetworkFixturePackage(t))
+	record := packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUnsignedLocal}, "plugini_v8_frozen", nil, nil)
+	method, ok := manifestMethod(record.Manifest, "worker.echo")
+	if !ok {
+		t.Fatal("v8 worker method is missing")
+	}
+	required, err := h.requiredPermissionsForMethod(record, method)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(required) != 0 {
+		t.Fatalf("v8 worker required permissions changed to %#v", required)
 	}
 }
 

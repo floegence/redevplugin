@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
 	"github.com/floegence/redevplugin/v2/pkg/permissions"
 	"github.com/floegence/redevplugin/v2/pkg/registry"
 	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
@@ -172,22 +171,13 @@ func (h *Host) pluginAuthorizationBlockedReason(ctx context.Context, record regi
 	methods := make([]methodRequirement, 0, len(record.Manifest.Methods))
 	requiredPermissions := make([]string, 0)
 	for _, declared := range record.Manifest.Methods {
-		if declared.Route.Kind != manifest.MethodRouteCapability {
-			continue
-		}
-		binding, ok := manifestBinding(record.Manifest, declared.Route.BindingID)
-		if !ok {
-			return PluginActionBlockedIncompatible
-		}
-		contract, err := h.resolvePinnedCapabilityContract(record.CapabilityContracts, binding)
+		required, err := h.declaredRequiredPermissions(record, declared)
 		if err != nil {
 			return PluginActionBlockedIncompatible
 		}
-		effectiveMethod, ok := contractMethod(contract.Contract, declared.Route.TargetMethod)
-		if !ok {
-			return PluginActionBlockedIncompatible
+		if len(required) == 0 {
+			continue
 		}
-		required := normalizeStringSet(effectiveMethod.RequiredPermissions)
 		methods = append(methods, methodRequirement{method: declared.Method, permissions: required})
 		requiredPermissions = append(requiredPermissions, required...)
 	}

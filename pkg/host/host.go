@@ -623,6 +623,13 @@ type Host struct {
 	recoveryRevision     int64
 	recoverySnapshot     *RecoverySnapshot
 	runtimeIO            *hostRuntimeIOBroker
+	manifestModelMu      sync.Mutex
+	manifestModelCache   map[string]manifestModelProjection
+}
+
+type manifestModelProjection struct {
+	API         manifest.PublicAPIRequirement
+	Permissions []manifest.PermissionID
 }
 
 type ImportLocalPackageRequest struct {
@@ -4814,7 +4821,11 @@ func (h *Host) getPluginRecord(ctx context.Context, pluginInstanceID string) (re
 	if h.controlStore == nil {
 		return registry.PluginRecord{}, ErrControlStoreRequired
 	}
-	return h.controlStore.Registry().GetPlugin(ctx, session.OwnerEnvHash, pluginInstanceID)
+	record, err := h.controlStore.Registry().GetPlugin(ctx, session.OwnerEnvHash, pluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	return h.hydratePluginManifestModel(ctx, record)
 }
 
 func (h *Host) listPluginRecords(ctx context.Context) ([]registry.PluginRecord, error) {
@@ -4825,7 +4836,17 @@ func (h *Host) listPluginRecords(ctx context.Context) ([]registry.PluginRecord, 
 	if h.controlStore == nil {
 		return nil, ErrControlStoreRequired
 	}
-	return h.controlStore.Registry().ListPlugins(ctx, session.OwnerEnvHash)
+	records, err := h.controlStore.Registry().ListPlugins(ctx, session.OwnerEnvHash)
+	if err != nil {
+		return nil, err
+	}
+	for index := range records {
+		records[index], err = h.hydratePluginManifestModel(ctx, records[index])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return records, nil
 }
 
 func (h *Host) putPluginRecord(ctx context.Context, record registry.PluginRecord, now time.Time) (registry.PluginRecord, error) {
@@ -4847,7 +4868,11 @@ func (h *Host) setPluginEnableState(ctx context.Context, pluginInstanceID string
 	if h.controlStore == nil {
 		return registry.PluginRecord{}, ErrControlStoreRequired
 	}
-	return h.controlStore.Registry().SetEnableState(ctx, session.OwnerEnvHash, pluginInstanceID, state, reason, now)
+	record, err := h.controlStore.Registry().SetEnableState(ctx, session.OwnerEnvHash, pluginInstanceID, state, reason, now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	return h.hydratePluginManifestModel(ctx, record)
 }
 
 func (h *Host) getAuthorizationSnapshot(ctx context.Context, pluginInstanceID string) (registry.AuthorizationSnapshot, error) {
@@ -4855,7 +4880,12 @@ func (h *Host) getAuthorizationSnapshot(ctx context.Context, pluginInstanceID st
 	if err != nil {
 		return registry.AuthorizationSnapshot{}, err
 	}
-	return h.controlStore.Registry().GetAuthorization(ctx, session.OwnerEnvHash, pluginInstanceID)
+	snapshot, err := h.controlStore.Registry().GetAuthorization(ctx, session.OwnerEnvHash, pluginInstanceID)
+	if err != nil {
+		return registry.AuthorizationSnapshot{}, err
+	}
+	snapshot.Plugin, err = h.hydratePluginManifestModel(ctx, snapshot.Plugin)
+	return snapshot, err
 }
 
 func (h *Host) listAuthorizationSnapshots(ctx context.Context) ([]registry.AuthorizationSnapshot, error) {
@@ -4863,7 +4893,67 @@ func (h *Host) listAuthorizationSnapshots(ctx context.Context) ([]registry.Autho
 	if err != nil {
 		return nil, err
 	}
-	return h.controlStore.Registry().ListAuthorization(ctx, session.OwnerEnvHash)
+	snapshots, err := h.controlStore.Registry().ListAuthorization(ctx, session.OwnerEnvHash)
+	if err != nil {
+		return nil, err
+	}
+	for index := range snapshots {
+		snapshots[index].Plugin, err = h.hydratePluginManifestModel(ctx, snapshots[index].Plugin)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return snapshots, nil
+}
+
+func (h *Host) hydratePluginManifestModel(ctx context.Context, record registry.PluginRecord) (registry.PluginRecord, error) {
+	if record.ManifestModel.PluginID() != "" || record.ManifestSource != manifest.SchemaVersionV9 {
+		return record, nil
+	}
+	cacheKey := record.PackageHash + "\x00" + record.ManifestHash
+	h.manifestModelMu.Lock()
+	defer h.manifestModelMu.Unlock()
+	if cached, ok := h.manifestModelCache[cacheKey]; ok {
+		model, err := manifest.RestoreModel(record.Manifest, manifest.SchemaVersionV9, cached.API, cached.Permissions)
+		if err != nil {
+			return registry.PluginRecord{}, fmt.Errorf("%w: restore cached v9 manifest model: %v", controlstore.ErrIncompatible, err)
+		}
+		record.ManifestModel = model
+		return record, nil
+	}
+	asset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, "manifest.json")
+	if err != nil {
+		return registry.PluginRecord{}, fmt.Errorf("%w: read v9 manifest recovery asset for plugin %q: %v", controlstore.ErrIncompatible, record.PluginInstanceID, err)
+	}
+	assetSum := sha256.Sum256(asset.Content)
+	if asset.Entry.Path != "manifest.json" || asset.Entry.Size != int64(len(asset.Content)) || !hashEqual(asset.Entry.SHA256, "sha256:"+hex.EncodeToString(assetSum[:])) {
+		return registry.PluginRecord{}, fmt.Errorf("%w: v9 manifest recovery asset evidence mismatch for plugin %q", controlstore.ErrIncompatible, record.PluginInstanceID)
+	}
+	canonical, err := manifest.CanonicalJSON(asset.Content)
+	if err != nil {
+		return registry.PluginRecord{}, fmt.Errorf("%w: canonicalize v9 manifest recovery asset for plugin %q: %v", controlstore.ErrIncompatible, record.PluginInstanceID, err)
+	}
+	manifestSum := sha256.Sum256(canonical)
+	if !hashEqual(record.ManifestHash, "sha256:"+hex.EncodeToString(manifestSum[:])) {
+		return registry.PluginRecord{}, fmt.Errorf("%w: v9 manifest recovery hash mismatch for plugin %q", controlstore.ErrIncompatible, record.PluginInstanceID)
+	}
+	model, err := manifest.DecodeModel(bytes.NewReader(asset.Content))
+	if err != nil {
+		return registry.PluginRecord{}, fmt.Errorf("%w: decode v9 manifest recovery asset for plugin %q: %v", controlstore.ErrIncompatible, record.PluginInstanceID, err)
+	}
+	if model.SchemaSource != manifest.SchemaVersionV9 || model.Publisher.PublisherID != record.PublisherID ||
+		model.PluginID() != record.PluginID || model.Plugin.Version != record.Version || !reflect.DeepEqual(model.Manifest, record.Manifest) {
+		return registry.PluginRecord{}, fmt.Errorf("%w: v9 manifest recovery identity mismatch for plugin %q", controlstore.ErrIncompatible, record.PluginInstanceID)
+	}
+	if h.manifestModelCache == nil {
+		h.manifestModelCache = make(map[string]manifestModelProjection)
+	}
+	h.manifestModelCache[cacheKey] = manifestModelProjection{
+		API:         model.API,
+		Permissions: append([]manifest.PermissionID(nil), model.Permissions...),
+	}
+	record.ManifestModel = model
+	return record, nil
 }
 
 func (h *Host) replaceAuthorizationSnapshot(ctx context.Context, snapshot registry.AuthorizationSnapshot, expected registry.AuthorizationRevisions) error {
@@ -5306,6 +5396,11 @@ func (h *Host) GetPermissionRequirements(ctx context.Context, req GetPermissionR
 	allPermissions := []string{}
 	for _, declared := range record.Manifest.Methods {
 		if declared.Route.Kind != manifest.MethodRouteCapability {
+			required, err := h.requiredPermissionsForMethod(record, declared)
+			if err != nil {
+				return PermissionRequirementsResult{}, err
+			}
+			allPermissions = append(allPermissions, required...)
 			continue
 		}
 		binding, ok := manifestBinding(record.Manifest, declared.Route.BindingID)
@@ -5320,6 +5415,8 @@ func (h *Host) GetPermissionRequirements(ctx context.Context, req GetPermissionR
 		if !ok {
 			return PermissionRequirementsResult{}, fmt.Errorf("capability target method %q is not published", declared.Route.TargetMethod)
 		}
+		required := normalizeStringSet(effectiveMethod.RequiredPermissions)
+		allPermissions = append(allPermissions, required...)
 		key := verified.Pin.ContractID + "\x00" + verified.Pin.ContractVersion + "\x00" + verified.Pin.ArtifactSHA256
 		projection := contractsByID[key]
 		if projection == nil {
@@ -5330,9 +5427,7 @@ func (h *Host) GetPermissionRequirements(ctx context.Context, req GetPermissionR
 			}
 			contractsByID[key] = projection
 		}
-		required := normalizeStringSet(effectiveMethod.RequiredPermissions)
 		projection.Methods = append(projection.Methods, PermissionRequirementMethod{Method: declared.Method, RequiredPermissions: required})
-		allPermissions = append(allPermissions, required...)
 	}
 	contracts := make([]PermissionRequirementContract, 0, len(contractsByID))
 	for _, contract := range contractsByID {
@@ -7616,14 +7711,48 @@ func manifestIntent(m manifest.Manifest, intentID string) (manifest.IntentSpec, 
 }
 
 func (h *Host) requiredPermissionsForMethod(record registry.PluginRecord, method manifest.MethodSpec) ([]string, error) {
-	if method.Route.Kind != manifest.MethodRouteCapability {
+	switch method.Route.Kind {
+	case manifest.MethodRouteWorker:
+		return h.declaredRequiredPermissions(record, method)
+	case manifest.MethodRouteCapability:
+		resolved, err := h.resolveCapabilityMethod(record, method)
+		if err != nil {
+			return nil, err
+		}
+		return normalizeStringSet(resolved.method.RequiredPermissions), nil
+	default:
 		return nil, nil
 	}
-	resolved, err := h.resolveCapabilityMethod(record, method)
-	if err != nil {
-		return nil, err
+}
+
+func (h *Host) declaredRequiredPermissions(record registry.PluginRecord, method manifest.MethodSpec) ([]string, error) {
+	switch method.Route.Kind {
+	case manifest.MethodRouteWorker:
+		if record.ManifestModel.SchemaSource != manifest.SchemaVersionV9 {
+			return nil, nil
+		}
+		permissions := make([]string, 0, len(record.ManifestModel.Permissions))
+		for _, permissionID := range record.ManifestModel.PermissionIDs() {
+			permissions = append(permissions, string(permissionID))
+		}
+		return normalizeStringSet(permissions), nil
+	case manifest.MethodRouteCapability:
+		binding, ok := manifestBinding(record.Manifest, method.Route.BindingID)
+		if !ok {
+			return nil, fmt.Errorf("capability binding %q is not declared", method.Route.BindingID)
+		}
+		verified, err := h.resolvePinnedCapabilityContract(record.CapabilityContracts, binding)
+		if err != nil {
+			return nil, err
+		}
+		target, ok := contractMethod(verified.Contract, method.Route.TargetMethod)
+		if !ok {
+			return nil, fmt.Errorf("capability target method %q is not published", method.Route.TargetMethod)
+		}
+		return normalizeStringSet(target.RequiredPermissions), nil
+	default:
+		return nil, nil
 	}
-	return normalizeStringSet(resolved.method.RequiredPermissions), nil
 }
 
 func authorizationDecisionError(decision registry.AuthorizationDecision, method string) error {

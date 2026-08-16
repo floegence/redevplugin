@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -503,16 +502,16 @@ func getControlPluginRecord(ctx context.Context, q controlDataQuerier, owner, pl
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	var record registry.PluginRecord
-	if err := json.Unmarshal([]byte(raw), &record); err != nil {
-		return registry.PluginRecord{}, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
+	record, err := decodeRegistryPluginRecord([]byte(raw))
+	if err != nil {
+		return registry.PluginRecord{}, err
 	}
 	record.OwnerEnvHash = owner
 	return record, nil
 }
 
 func persistControlPluginRecord(ctx context.Context, tx *sql.Tx, record registry.PluginRecord) error {
-	raw, err := json.Marshal(record)
+	raw, err := encodeRegistryPluginRecord(record)
 	if err != nil {
 		return err
 	}

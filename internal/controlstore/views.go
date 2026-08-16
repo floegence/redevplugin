@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v2/pkg/execution"
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
 	"github.com/floegence/redevplugin/v2/pkg/permissions"
 	"github.com/floegence/redevplugin/v2/pkg/registry"
 	"github.com/floegence/redevplugin/v2/pkg/security"
@@ -87,6 +88,78 @@ type externalInstallActivationPayload struct {
 	EntriesSHA256               string                                   `json:"entries_sha256"`
 	InstalledManagementRevision uint64                                   `json:"installed_management_revision"`
 	ActivationRequest           registry.ReleaseInstallActivationRequest `json:"activation_request"`
+}
+
+type durableManifestModel struct {
+	SchemaSource string                        `json:"schema_source"`
+	API          manifest.PublicAPIRequirement `json:"api"`
+	Permissions  []manifest.PermissionID       `json:"permissions,omitempty"`
+}
+
+type durableRegistryPluginRecord struct {
+	registry.PluginRecord
+	ManifestModel *durableManifestModel `json:"_control_manifest_model_v1,omitempty"`
+}
+
+func encodeRegistryPluginRecord(record registry.PluginRecord) ([]byte, error) {
+	durable := durableRegistryPluginRecord{PluginRecord: record}
+	if record.ManifestModel.PluginID() != "" {
+		source := record.ManifestModel.SchemaSource
+		if source == "" {
+			source = record.ManifestSource
+		}
+		model, err := manifest.RestoreModel(record.Manifest, source, record.ManifestModel.API, record.ManifestModel.Permissions)
+		if err != nil {
+			return nil, fmt.Errorf("persist plugin manifest model: %w", err)
+		}
+		if err := validateV9ManifestModelIdentity(record, model); err != nil {
+			return nil, err
+		}
+		durable.ManifestModel = &durableManifestModel{
+			SchemaSource: model.SchemaSource,
+			API:          model.API,
+			Permissions:  append([]manifest.PermissionID(nil), model.Permissions...),
+		}
+	}
+	return json.Marshal(durable)
+}
+
+func decodeRegistryPluginRecord(raw []byte) (registry.PluginRecord, error) {
+	var durable durableRegistryPluginRecord
+	if err := json.Unmarshal(raw, &durable); err != nil {
+		return registry.PluginRecord{}, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
+	}
+	record := durable.PluginRecord
+	if durable.ManifestModel != nil {
+		model, err := manifest.RestoreModel(record.Manifest, durable.ManifestModel.SchemaSource, durable.ManifestModel.API, durable.ManifestModel.Permissions)
+		if err != nil {
+			return registry.PluginRecord{}, fmt.Errorf("%w: plugin manifest model: %v", ErrIncompatible, err)
+		}
+		if err := validateV9ManifestModelIdentity(record, model); err != nil {
+			return registry.PluginRecord{}, err
+		}
+		record.ManifestModel = model
+		record.ManifestSource = model.SchemaSource
+	} else if record.ManifestSource != manifest.SchemaVersionV9 && record.Manifest.PluginID() != "" {
+		model, err := manifest.RestoreModel(record.Manifest, record.ManifestSource, manifest.PublicAPIRequirement{}, nil)
+		if err != nil {
+			return registry.PluginRecord{}, fmt.Errorf("%w: plugin manifest model: %v", ErrIncompatible, err)
+		}
+		record.ManifestModel = model
+		record.ManifestSource = model.SchemaSource
+	}
+	return record, nil
+}
+
+func validateV9ManifestModelIdentity(record registry.PluginRecord, model manifest.Model) error {
+	if model.SchemaSource != manifest.SchemaVersionV9 {
+		return nil
+	}
+	if (record.ManifestSource != "" && record.ManifestSource != model.SchemaSource) ||
+		model.Publisher.PublisherID != record.PublisherID || model.PluginID() != record.PluginID || model.Plugin.Version != record.Version {
+		return fmt.Errorf("%w: v9 plugin manifest model identity mismatch", ErrIncompatible)
+	}
+	return nil
 }
 
 func encodeReleaseInstallOperation(operation registry.ReleaseInstallOperation) ([]byte, error) {
@@ -190,9 +263,9 @@ func (v RegistryView) installExternalPackage(ctx context.Context, ownerEnvHash s
 	var raw string
 	err = tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, req.Record.PluginInstanceID).Scan(&raw)
 	if err == nil {
-		var current registry.PluginRecord
-		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return registry.PluginRecord{}, nil, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
+		current, decodeErr := decodeRegistryPluginRecord([]byte(raw))
+		if decodeErr != nil {
+			return registry.PluginRecord{}, nil, decodeErr
 		}
 		existing = &current
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -202,7 +275,7 @@ func (v RegistryView) installExternalPackage(ctx context.Context, ownerEnvHash s
 	if err != nil {
 		return registry.PluginRecord{}, nil, err
 	}
-	recordJSON, err := json.Marshal(record)
+	recordJSON, err := encodeRegistryPluginRecord(record)
 	if err != nil {
 		return registry.PluginRecord{}, nil, err
 	}
@@ -276,9 +349,9 @@ func (v RegistryView) GetPlugin(ctx context.Context, ownerEnvHash, pluginInstanc
 		}
 		return registry.PluginRecord{}, err
 	}
-	var record registry.PluginRecord
-	if err := json.Unmarshal(snapshot.Record.RawJSON, &record); err != nil {
-		return registry.PluginRecord{}, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
+	record, err := decodeRegistryPluginRecord(snapshot.Record.RawJSON)
+	if err != nil {
+		return registry.PluginRecord{}, err
 	}
 	record.OwnerEnvHash = snapshot.Record.OwnerEnvHash
 	return record, nil
@@ -313,9 +386,11 @@ func (v RegistryView) ListAuthorization(ctx context.Context, ownerEnvHash string
 
 func decodeAuthorizationSnapshot(snapshot PluginSnapshot) (registry.AuthorizationSnapshot, error) {
 	var result registry.AuthorizationSnapshot
-	if err := json.Unmarshal(snapshot.Record.RawJSON, &result.Plugin); err != nil {
-		return result, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
+	plugin, err := decodeRegistryPluginRecord(snapshot.Record.RawJSON)
+	if err != nil {
+		return result, err
 	}
+	result.Plugin = plugin
 	result.Plugin.OwnerEnvHash = snapshot.Record.OwnerEnvHash
 	result.Grants = make([]permissions.Record, len(snapshot.Grants))
 	for index, grant := range snapshot.Grants {
@@ -334,7 +409,7 @@ func decodeAuthorizationSnapshot(snapshot PluginSnapshot) (registry.Authorizatio
 }
 
 func (v RegistryView) ReplaceAuthorizationSnapshot(ctx context.Context, snapshot registry.AuthorizationSnapshot, expected registry.AuthorizationRevisions) error {
-	recordRaw, err := json.Marshal(snapshot.Plugin)
+	recordRaw, err := encodeRegistryPluginRecord(snapshot.Plugin)
 	if err != nil {
 		return err
 	}
@@ -373,9 +448,9 @@ func (v RegistryView) ListPlugins(ctx context.Context, ownerEnvHash string) ([]r
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		var record registry.PluginRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
-			return nil, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
+		record, err := decodeRegistryPluginRecord([]byte(raw))
+		if err != nil {
+			return nil, err
 		}
 		record.OwnerEnvHash = ownerEnvHash
 		result = append(result, record)
@@ -396,9 +471,9 @@ func (v RegistryView) PutPlugin(ctx context.Context, ownerEnvHash string, record
 	var raw string
 	err = tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID).Scan(&raw)
 	if err == nil {
-		var current registry.PluginRecord
-		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return registry.PluginRecord{}, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
+		current, decodeErr := decodeRegistryPluginRecord([]byte(raw))
+		if decodeErr != nil {
+			return registry.PluginRecord{}, decodeErr
 		}
 		existing = &current
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -408,7 +483,7 @@ func (v RegistryView) PutPlugin(ctx context.Context, ownerEnvHash string, record
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	recordJSON, err := json.Marshal(record)
+	recordJSON, err := encodeRegistryPluginRecord(record)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -427,7 +502,7 @@ func (v RegistryView) SetEnableState(ctx context.Context, ownerEnvHash, pluginIn
 		return registry.PluginRecord{}, err
 	}
 	record = registry.PrepareEnableState(record, state, reason, now)
-	raw, err := json.Marshal(record)
+	raw, err := encodeRegistryPluginRecord(record)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
