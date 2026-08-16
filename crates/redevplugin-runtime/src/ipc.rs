@@ -1559,13 +1559,12 @@ impl ParsedWorkerInvocation {
         )?;
         required_string(&lease.invocation_id, "invocation_id")?;
         match scope_kind.as_str() {
-            "user" => validate_runtime_lease_string_binding(
+            "user" | "environment" => validate_runtime_lease_string_binding(
                 &lease.owner_user_hash,
                 &invocation.owner_user_hash,
                 "owner_user_hash",
                 true,
             )?,
-            "environment" if optional_string_ref(&lease.owner_user_hash).is_none() => {}
             _ => return Err(invalid_field("runtime lease resource scope")),
         }
         for (lease_value, invocation_value, field) in [
@@ -1844,13 +1843,7 @@ fn runtime_lease_signature_payload_json(
         &required_string(&lease.execution, "execution")?,
         true,
     );
-    match scope_kind.as_str() {
-        "user" => {
-            required_string(&lease.owner_user_hash, "owner_user_hash")?;
-        }
-        "environment" if optional_string_ref(&lease.owner_user_hash).is_none() => {}
-        _ => return Err(invalid_field("runtime lease resource scope")),
-    }
+    required_string(&lease.owner_user_hash, "owner_user_hash")?;
     validate_runtime_execution_binding(&lease.execution, &lease.execution_id)?;
     let execution_id = optional_string(&lease.execution_id);
     append_json_optional_string_field(&mut out, "execution_id", Some(&execution_id));
@@ -5021,11 +5014,14 @@ mod tests {
     fn environment_runtime_lease_keeps_session_user_audience() {
         let mut frame: Value =
             serde_json::from_str(runtime_lease_invocation_fixture()).expect("invocation fixture");
-        frame["payload"]["lease"]["scope_kind"] =
-            Value::String("environment".to_string());
-        frame["payload"]["invocation"]["worker_scope"] =
-            Value::String("environment".to_string());
-        let frame = serde_json::to_string(&frame).expect("environment invocation");
+        frame["payload"]["lease"]["scope_kind"] = Value::String("environment".to_string());
+        frame["payload"]["invocation"]["worker_scope"] = Value::String("environment".to_string());
+        let target_hash = worker_invocation_target_hash(
+            &serde_json::to_string(&frame).expect("unbound environment invocation"),
+        )
+        .expect("environment invocation target hash");
+        frame["payload"]["lease"]["target_descriptor_hashes"][0] = Value::String(target_hash);
+        let frame = serde_json::to_string(&frame).expect("bound environment invocation");
         let parsed = parse_worker_invocation(&frame).expect("typed environment invocation");
 
         let canonical = runtime_lease_signature_payload_json(&parsed.lease, &parsed.method)
