@@ -580,15 +580,15 @@ test("platform client reads compatibility manifest through host API", async () =
       schema_version: "redevplugin.compatibility.v20",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v3",
-        platform_version: "2.0.2",
-        go_module: { module: "github.com/floegence/redevplugin/v2", version: "v2.0.2" },
+        platform_version: "2.0.3",
+        go_module: { module: "github.com/floegence/redevplugin/v2", version: "v2.0.3" },
         npm_packages: [
-          { name: "@floegence/redevplugin-contracts", version: "2.0.2" },
-          { name: "@floegence/redevplugin-ui", version: "2.0.2" },
+          { name: "@floegence/redevplugin-contracts", version: "2.0.3" },
+          { name: "@floegence/redevplugin-ui", version: "2.0.3" },
         ],
         rust_crates: [
-          { name: "redevplugin-runtime", version: "2.0.2", role: "runtime" },
-          { name: "redevplugin-worker-sdk", version: "2.0.2", role: "worker_sdk" },
+          { name: "redevplugin-runtime", version: "2.0.3", role: "runtime" },
+          { name: "redevplugin-worker-sdk", version: "2.0.3", role: "worker_sdk" },
         ],
         contract_registry_version: "contract-registry-v2",
         contract_set_sha256: contractSetSHA256,

@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.3
+
+- Encode empty required presentation arrays as JSON arrays in Host manifest and
+  catalog responses so published TypeScript clients can consume valid plugin
+  presentation metadata without a render-time type failure.
+
 ## v2.0.2
 
 - Preserve `MOUNT_UNAVAILABLE` from Host filesystem adapters through the Go
