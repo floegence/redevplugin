@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.7
+
+- Align Rust runtime lease canonicalization and invocation binding with the Go
+  signer by retaining the authenticated session-user audience on
+  environment-scoped worker leases.
+
 ## v2.0.6
 
 - Keep authenticated session-user identity in signed environment-scoped worker
