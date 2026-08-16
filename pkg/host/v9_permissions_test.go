@@ -77,13 +77,55 @@ func TestV9ExternalPackagePermissionConfirmationCoversWorkerIO(t *testing.T) {
 
 func TestV9WorkerMethodRequiresGrantedPackagePermissions(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, buildV9IOPermissionFixturePackage(t), "io.view")
+	installed := installAndEnablePlugin(t, h, buildV9IOPermissionFixturePackage(t))
+	grants, err := h.ListPermissionGrants(hostTestContext(), ListPermissionGrantsRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("local import silently granted v9 permissions: %#v", grants)
+	}
+	record, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	method, ok := manifestMethod(record.Manifest, "io.run")
+	if !ok {
+		t.Fatal("persisted v9 worker method is missing")
+	}
+	required, err := h.requiredPermissionsForMethod(record, method)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRequired := []string{"fs.environment.read", "fs.environment.write", "network.client"}
+	if !reflect.DeepEqual(required, wantRequired) {
+		t.Fatalf("persisted v9 worker required permissions = %#v source=%q model=%#v, want %#v", required, record.ManifestModel.SchemaSource, record.ManifestModel.Permissions, wantRequired)
+	}
+	for _, permissionID := range wantRequired {
+		revisions := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+		if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
+			PluginInstanceID: installed.PluginInstanceID, PermissionID: permissionID,
+			ExpectedPolicyRevision: revisions.PolicyRevision, ExpectedManagementRevision: revisions.ManagementRevision,
+			ExpectedRevokeEpoch: revisions.RevokeEpoch,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	revisions := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	if _, err := h.RevokePermission(hostTestContext(), RevokePermissionRequest{
+		PluginInstanceID: installed.PluginInstanceID, PermissionID: "network.client",
+		ExpectedPolicyRevision: revisions.PolicyRevision, ExpectedManagementRevision: revisions.ManagementRevision,
+		ExpectedRevokeEpoch: revisions.RevokeEpoch,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "io.view")
 	call := CallMethodRequest{
 		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
 		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "io.run", Params: map[string]any{},
 	}
 	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
-		t.Fatalf("CallPluginMethod() without v9 package grants error = %v, want %v", err, permissions.ErrPermissionDenied)
+		t.Fatalf("CallPluginMethod() after v9 package grant revoke error = %v, want %v", err, permissions.ErrPermissionDenied)
 	}
 }
 

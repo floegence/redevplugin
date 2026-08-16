@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,62 @@ func TestRegistryExternalInstallUsesOneTransactionAndNoDurableInspectionState(t 
 	}
 	if transientTables != 0 {
 		t.Fatalf("transient external-package state became durable: %d tables", transientTables)
+	}
+}
+
+func TestRegistryViewPreservesV9ManifestModelAcrossDurableMutations(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Unix(100, 0).UTC()
+	record := externalControlRecord("plugin", "9.0.0", now)
+	surface, worker := uint16(1), uint16(1)
+	record.ManifestSource = manifest.SchemaVersionV9
+	record.ManifestModel = manifest.Model{
+		Manifest:     record.Manifest,
+		SchemaSource: manifest.SchemaVersionV9,
+		API: manifest.PublicAPIRequirement{
+			Surface:          &surface,
+			Worker:           &worker,
+			RequiredFeatures: []manifest.FeatureID{manifest.FeatureFSEnvironment, manifest.FeatureNetHTTP},
+		},
+		Permissions: []manifest.PermissionID{manifest.PermissionFSEnvironmentRead, manifest.PermissionNetworkClient},
+	}
+	wantModel := record.ManifestModel
+
+	record, err = store.Registry().PutPlugin(ctx, "env", record, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertManifestModelEqual(t, record.ManifestModel, wantModel)
+
+	record, err = store.Registry().GetPlugin(ctx, "env", record.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertManifestModelEqual(t, record.ManifestModel, wantModel)
+
+	record, err = store.Registry().SetEnableState(ctx, "env", record.PluginInstanceID, registry.EnableEnabled, "", now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertManifestModelEqual(t, record.ManifestModel, wantModel)
+
+	authorization, err := store.Registry().GetAuthorization(ctx, "env", record.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertManifestModelEqual(t, authorization.Plugin.ManifestModel, wantModel)
+}
+
+func assertManifestModelEqual(t *testing.T, got, want manifest.Model) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("manifest model = %#v, want %#v", got, want)
 	}
 }
 
