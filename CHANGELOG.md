@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.0.9
+
+- Preserve the required `bytes_read` field on successful zero-byte runtime I/O
+  responses so EOF reads remain valid across the Go Host and Rust runtime wire.
+- Admit bounded 64 MiB file and HTTP streaming workloads within the per-invocation
+  WASM fuel budget while continuing to terminate runaway workers.
+- Carry the exact Node toolchain authority in the immutable platform package
+  artifact consumed by privileged npm publication jobs.
+- Supersede the incomplete v2.0.8 publication attempt. v2.0.8 published only
+  the Rust source crates and is not a consumable ReDevPlugin package set.
+
 ## v2.0.8
 
 - Preserve the required `bytes_read` field on successful zero-byte runtime I/O
