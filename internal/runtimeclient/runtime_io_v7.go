@@ -34,7 +34,7 @@ type runtimeIOControlResultMetadata struct {
 type runtimeIOResultMetadata struct {
 	InvocationID string `json:"invocation_id"`
 	OK           bool   `json:"ok"`
-	BytesRead    int    `json:"bytes_read,omitempty"`
+	BytesRead    int    `json:"bytes_read"`
 	BytesWritten int    `json:"bytes_written,omitempty"`
 	Flags        uint32 `json:"flags,omitempty"`
 	Offset       int64  `json:"offset,omitempty"`

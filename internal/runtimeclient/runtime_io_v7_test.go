@@ -125,6 +125,34 @@ func TestRuntimeIOV7ReadUsesRawBodyAndExactInvocation(t *testing.T) {
 	}
 }
 
+func TestRuntimeIOV7ReadPreservesZeroByteEOFOnWire(t *testing.T) {
+	broker := &recordingRuntimeIOBroker{read: func(_ context.Context, _ string, _ uint64, _ []byte) (int, uint32, error) {
+		return 0, 1, nil
+	}}
+	supervisor, generation, reader, cleanup := runtimeIOV7TestHarness(t, broker, map[string]context.Context{"invoke_a": context.Background()}, 1)
+	defer cleanup()
+	metadata, _ := json.Marshal(runtimeIORequestMetadata{InvocationID: "invoke_a", MaxBytes: 4})
+	if err := supervisor.dispatchRuntimeIOFrame(generation, IPCFrame{
+		Type: IPCFrameIORead, RequestID: 92, ResourceID: 41, Metadata: metadata,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := ReadIPCFrameV7(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := decodeStrictJSON(response.Metadata, &result); err != nil {
+		t.Fatal(err)
+	}
+	if got, exists := result["bytes_read"]; !exists || got != float64(0) {
+		t.Fatalf("EOF bytes_read = %#v, present = %t; metadata = %s", got, exists, response.Metadata)
+	}
+	if result["flags"] != float64(1) || len(response.Body) != 0 {
+		t.Fatalf("EOF response = metadata %s body %q", response.Metadata, response.Body)
+	}
+}
+
 func TestRuntimeIOV7BlockingReadDoesNotStarveAnotherInvocation(t *testing.T) {
 	blocked := make(chan struct{})
 	broker := &recordingRuntimeIOBroker{read: func(ctx context.Context, invocationID string, _ uint64, destination []byte) (int, uint32, error) {
