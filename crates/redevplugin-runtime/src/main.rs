@@ -24,7 +24,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wasmi::{AsContext, AsContextMut, Config, StoreLimits, StoreLimitsBuilder};
 
-const DEFAULT_WASM_WORKER_FUEL: u64 = 5_000_000;
+const WASM_WORKER_FUEL_PER_INVOCATION: u64 = 50_000_000;
 const SEMANTIC_IPC_CHUNKED_FLAG: u16 = 1 << 15;
 const SEMANTIC_IPC_MORE_FLAG: u16 = 1 << 14;
 const MAX_WASM_WORKER_REQUEST_BYTES: usize = 256 * 1024;
@@ -3834,7 +3834,7 @@ fn execute_compiled_worker_module_v2<'a>(
     );
     store.limiter(|state| &mut state.limits);
     store
-        .set_fuel(DEFAULT_WASM_WORKER_FUEL)
+        .set_fuel(WASM_WORKER_FUEL_PER_INVOCATION)
         .map_err(|err| format!("configure wasm worker fuel: {err}"))?;
     let instance = linker
         .instantiate_and_start(&mut store, module)
@@ -7655,6 +7655,79 @@ mod tests {
         .expect("v2 worker executes");
 
         assert_eq!(execution.response_json, response);
+    }
+
+    #[test]
+    fn admits_bounded_64_mib_file_and_http_streaming_workload() {
+        const STREAM_CHUNKS: u32 = 6 * 1024;
+
+        let response = r#"{"ok":true,"data":{"streamed":true}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 3)
+                (data (i32.const 65536) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32)
+                    i32.const 131072)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    (local $remaining i32)
+                    i32.const {stream_chunks}
+                    local.set $remaining
+                    loop $stream
+                        i32.const 0
+                        i32.const 0
+                        i32.const 65536
+                        memory.fill
+                        local.get $remaining
+                        i32.const 1
+                        i32.sub
+                        local.tee $remaining
+                        br_if $stream
+                    end
+                    i64.const {packed})
+            )"#,
+            stream_chunks = STREAM_CHUNKS,
+            packed = ((65_536_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile bounded streaming worker fixture");
+
+        let execution = execute_worker_module_for_test(
+            &module,
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"io.stream","params":{}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            unexpected_hostcall,
+        )
+        .expect("bounded file and HTTP streaming workload executes");
+
+        assert_eq!(execution.response_json, response);
+    }
+
+    #[test]
+    fn rejects_runaway_worker_when_fuel_is_exhausted() {
+        let module = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32)
+                    i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    loop $runaway
+                        br $runaway
+                    end
+                    i64.const 0)
+            )"#,
+        )
+        .expect("compile runaway worker fixture");
+
+        let error = execute_worker_module_for_test(
+            &module,
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"runaway","params":{}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            unexpected_hostcall,
+        )
+        .expect_err("runaway worker must exhaust its invocation fuel");
+
+        assert!(error.contains("fuel consumed"), "{error}");
     }
 
     #[test]

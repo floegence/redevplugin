@@ -4,6 +4,8 @@
 
 - Preserve the required `bytes_read` field on successful zero-byte runtime I/O
   responses so EOF reads remain valid across the Go Host and Rust runtime wire.
+- Admit bounded 64 MiB file and HTTP streaming workloads within the per-invocation
+  WASM fuel budget while continuing to terminate runaway workers.
 
 ## v2.0.7
 
