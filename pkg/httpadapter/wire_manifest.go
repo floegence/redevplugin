@@ -423,20 +423,20 @@ func publicManifestPresentation(source manifest.PresentationSpec) manifestPresen
 		settings := make([]manifestLocalizedSettingResponse, len(localization.Settings))
 		for settingIndex, setting := range localization.Settings {
 			settings[settingIndex] = manifestLocalizedSettingResponse{
-				Key: setting.Key, Label: setting.Label, Options: append([]manifest.SettingOptionSpec(nil), setting.Options...),
+				Key: setting.Key, Label: setting.Label, Options: cloneRequiredWireArray(setting.Options),
 			}
 		}
 		localizations[index] = manifestPresentationLocalizationResponse{
 			Locale: localization.Locale, PluginName: localization.PluginName, PublisherName: localization.PublisherName,
-			Summary: localization.Summary, Description: append([]string(nil), localization.Description...),
-			Highlights: append([]string(nil), localization.Highlights...), Keywords: append([]string(nil), localization.Keywords...),
+			Summary: localization.Summary, Description: cloneRequiredWireArray(localization.Description),
+			Highlights: cloneRequiredWireArray(localization.Highlights), Keywords: cloneRequiredWireArray(localization.Keywords),
 			Surfaces: surfaces, Settings: settings,
 		}
 	}
 	return manifestPresentationResponse{
 		DefaultLocale: source.DefaultLocale, Summary: source.Summary,
-		Description: append([]string(nil), source.Description...), Highlights: append([]string(nil), source.Highlights...),
-		Keywords: append([]string(nil), source.Keywords...), Icon: publicPresentationIcon(source.Icon), Localizations: localizations,
+		Description: cloneRequiredWireArray(source.Description), Highlights: cloneRequiredWireArray(source.Highlights),
+		Keywords: cloneRequiredWireArray(source.Keywords), Icon: publicPresentationIcon(source.Icon), Localizations: localizations,
 	}
 }
 
@@ -457,17 +457,23 @@ func publicPresentationCatalog(source manifest.PresentationCatalog) presentation
 		settings := make([]manifestLocalizedSettingResponse, len(locale.Settings))
 		for settingIndex, setting := range locale.Settings {
 			settings[settingIndex] = manifestLocalizedSettingResponse{
-				Key: setting.Key, Label: setting.Label, Options: append([]manifest.SettingOptionSpec(nil), setting.Options...),
+				Key: setting.Key, Label: setting.Label, Options: cloneRequiredWireArray(setting.Options),
 			}
 		}
 		locales[index] = presentationLocaleResponse{
 			Locale: locale.Locale, PluginName: locale.PluginName, PublisherName: locale.PublisherName,
-			Summary: locale.Summary, Description: append([]string(nil), locale.Description...),
-			Highlights: append([]string(nil), locale.Highlights...), Keywords: append([]string(nil), locale.Keywords...),
+			Summary: locale.Summary, Description: cloneRequiredWireArray(locale.Description),
+			Highlights: cloneRequiredWireArray(locale.Highlights), Keywords: cloneRequiredWireArray(locale.Keywords),
 			Surfaces: surfaces, Settings: settings,
 		}
 	}
 	return presentationCatalogResponse{DefaultLocale: source.DefaultLocale, Locales: locales, Icon: publicPresentationIcon(source.Icon)}
+}
+
+func cloneRequiredWireArray[T any](source []T) []T {
+	result := make([]T, len(source))
+	copy(result, source)
+	return result
 }
 
 type opaqueSurfaceStyleResponse struct {
