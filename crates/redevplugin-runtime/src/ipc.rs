@@ -5018,6 +5018,24 @@ mod tests {
     }
 
     #[test]
+    fn environment_runtime_lease_keeps_session_user_audience() {
+        let mut frame: Value =
+            serde_json::from_str(runtime_lease_invocation_fixture()).expect("invocation fixture");
+        frame["payload"]["lease"]["scope_kind"] =
+            Value::String("environment".to_string());
+        frame["payload"]["invocation"]["worker_scope"] =
+            Value::String("environment".to_string());
+        let frame = serde_json::to_string(&frame).expect("environment invocation");
+        let parsed = parse_worker_invocation(&frame).expect("typed environment invocation");
+
+        let canonical = runtime_lease_signature_payload_json(&parsed.lease, &parsed.method)
+            .expect("environment lease signature payload");
+        assert!(canonical.contains(r#""owner_user_hash":"owner_user_fixture_v1""#));
+        validate_worker_runtime_lease(&frame, 1_783_161_901_000)
+            .expect("environment lease retains its authenticated session audience");
+    }
+
+    #[test]
     fn runtime_lease_signature_payload_matches_go_canonical_order() {
         let lease = serde_json::json!({
             "lease_id": "rel_lease_signature",
