@@ -223,7 +223,7 @@ func validPerformanceEvidence() map[string]any {
 			"arch":             "arm64",
 			"logical_cpus":     10,
 			"go_version":       "go version go1.24.0 darwin/arm64",
-			"node_version":     "v24.0.0",
+			"node_version":     "v26.7.0",
 			"rustc_version":    "rustc 1.88.0",
 			"chromium_version": "Chromium 138.0.0.0",
 		},

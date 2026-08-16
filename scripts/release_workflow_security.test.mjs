@@ -196,16 +196,28 @@ test("final public verification can read the completion attestation", () => {
 
 test("release readback jobs install their required runtime and output directories", () => {
   const rustSteps = workflow.jobs["verify-rust"].steps;
-  assert.ok(rustSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version"] === 24));
+  assert.ok(rustSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version-file"] === ".node-version"));
   assert.ok(rustSteps.some((step) => step.run === "npm ci"));
   const goSource = workflow.jobs["verify-go"].steps.map((step) => step.run ?? "").join("\n");
   assert.match(goSource, /mkdir -p dist/);
   const publicationSteps = workflow.jobs["create-publication"].steps;
-  assert.ok(publicationSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version"] === 24));
+  assert.ok(publicationSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version-file"] === ".node-version"));
   assert.ok(publicationSteps.some((step) => step.run === "npm ci"));
   const releaseSteps = workflow.jobs["verify-release"].steps;
-  assert.ok(releaseSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version"] === 24));
+  assert.ok(releaseSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version-file"] === ".node-version"));
   assert.ok(releaseSteps.some((step) => step.run === "npm ci"));
+});
+
+test("privileged npm publication reads the package-build Node authority before setup", () => {
+  const packageBuildSource = workflow.jobs["package-build"].steps.map((step) => step.run ?? "").join("\n");
+  assert.match(packageBuildSource, /install -m 0644 \.node-version dist\/platform-packages\/\.node-version/);
+  for (const jobName of ["publish-npm-contracts", "publish-npm-ui"]) {
+    const steps = workflow.jobs[jobName].steps;
+    const downloadIndex = steps.findIndex((step) => step.uses?.startsWith("actions/download-artifact@"));
+    const setupIndex = steps.findIndex((step) => step.uses?.startsWith("actions/setup-node@"));
+    assert.ok(downloadIndex >= 0 && downloadIndex < setupIndex, `${jobName} must download the authority before setup-node`);
+    assert.equal(steps[setupIndex].with["node-version-file"], "dist/platform-packages/.node-version");
+  }
 });
 
 test("npm readbacks delegate bounded retry classification to the verifier", () => {

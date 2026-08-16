@@ -898,6 +898,10 @@ The cloud workflow verifies source formatting and script syntax but must not
 install browsers, run Docker, compile release packages, execute stress or
 performance gates, or invoke the complete pre-push gate.
 
+`.node-version` is the single source of truth for the first-party Node.js toolchain.
+GitHub workflows and local gates must read that exact version instead of carrying
+independent Node major or fallback ranges.
+
 Before pushing `main`, configure the tracked hook with:
 
 ```bash

@@ -57,8 +57,9 @@ if [[ "$(go env GOVERSION)" != "go${REQUIRED_GO_VERSION}" ]]; then
   echo "Go ${REQUIRED_GO_VERSION} is required; found $(go env GOVERSION)" >&2
   exit 1
 fi
-if [[ "$(node -p 'process.versions.node.split(".")[0]')" != "24" ]]; then
-  echo "Node.js 24 is required; found $(node --version)" >&2
+REQUIRED_NODE_VERSION=$(tr -d '\r\n' < .node-version)
+if [[ "$(node -p 'process.versions.node')" != "$REQUIRED_NODE_VERSION" ]]; then
+  echo "Node.js ${REQUIRED_NODE_VERSION} is required; found $(node --version)" >&2
   exit 1
 fi
 
@@ -77,6 +78,7 @@ for script in scripts/*.mjs; do
   node --check "$script"
 done
 ./scripts/test_redevplugin_pre_push_hook.sh
+node --test scripts/node_toolchain_contract.test.mjs
 node --test scripts/stress_platform_policy.test.mjs
 
 echo "==> npm dependencies"

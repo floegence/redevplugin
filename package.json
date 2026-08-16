@@ -3,6 +3,9 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=26.0.0 <27"
+  },
   "workspaces": [
     "packages/redevplugin-contracts",
     "packages/redevplugin-ui"
@@ -26,6 +29,7 @@
     "contracts-package:test": "npm --workspace @floegence/redevplugin-contracts run test",
     "contracts-package:cross-language": "npm run contracts-package:build && node --test scripts/cross_language_contracts.test.mjs",
     "release-metadata:check": "node scripts/check_redevplugin_release_metadata.mjs --source && node scripts/test_redevplugin_release_metadata.mjs",
+    "node-toolchain-contract:test": "node --test scripts/node_toolchain_contract.test.mjs",
     "repository-boundary:test": "node --test scripts/repository_boundary.test.mjs",
     "platform-package-contract:test": "node --test scripts/platform_package_contract.test.mjs",
     "release-workflow-security:test": "node --test scripts/release_workflow_security.test.mjs scripts/release_workflow_state_machine.test.mjs scripts/verify_quick_ci_evidence.test.mjs",
@@ -60,7 +64,7 @@
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",
     "stress-platform:test": "node --test scripts/stress_platform_policy.test.mjs",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && mkdir -p dist/examples-state && node scripts/create_runtime_descriptor.mjs target/debug/redevplugin-runtime linux/$(node -p 'process.arch === \"x64\" ? \"amd64\" : process.arch') dist/examples-state/runtime-descriptor.json && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime dist/examples-state/runtime-descriptor.json",
-    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run ui-bridge-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run owner-scope-inventories:check && npm run owner-scope-inventories:test && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run release-workflow-security:test && npm run release-audit-retry:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
+    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run ui-bridge-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run owner-scope-inventories:check && npm run owner-scope-inventories:test && npm run release-metadata:check && npm run node-toolchain-contract:test && npm run repository-boundary:test && npm run platform-package-contract:test && npm run release-workflow-security:test && npm run release-audit-retry:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
   },
   "devDependencies": {
     "ajv": "8.20.0",

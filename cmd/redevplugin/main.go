@@ -732,7 +732,7 @@ workers/backend.wasm, so it can be validated and packaged immediately.
 
 ## Build
 
-Requirements: Node.js 24, npm, Rust, and the wasm32-unknown-unknown target.
+Requirements: Node.js 26, npm, Rust, and the wasm32-unknown-unknown target.
 
     npm install
     rustup target add wasm32-unknown-unknown

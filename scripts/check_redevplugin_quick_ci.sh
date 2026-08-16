@@ -20,5 +20,6 @@ done
 
 echo "==> quick CI policy"
 node --test scripts/quick_ci_policy.test.mjs
+node --test scripts/node_toolchain_contract.test.mjs
 
 echo "ReDevPlugin quick CI passed"
