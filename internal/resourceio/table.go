@@ -168,11 +168,15 @@ func randomHandle() (HandleID, error) {
 	if _, err := rand.Read(raw[:]); err != nil {
 		return 0, err
 	}
-	id := HandleID(binary.BigEndian.Uint64(raw[:]))
+	id := resourceHandleFromEntropy(raw)
 	if id == 0 {
 		return randomHandle()
 	}
 	return id, nil
+}
+
+func resourceHandleFromEntropy(raw [8]byte) HandleID {
+	return HandleID(binary.BigEndian.Uint64(raw[:]) & (1<<63 - 1))
 }
 
 func (table *Table) Open(owner Owner, kind Kind, resource io.Closer) (HandleID, error) {

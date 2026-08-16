@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,13 @@ func testOwner(session string) Owner {
 	scope := sessionctx.SessionScope{OwnerSessionHash: session, OwnerUserHash: "user", OwnerEnvHash: "env", SessionChannelIDHash: "channel-" + session}
 	resourceScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env", OwnerUserHash: "user"}
 	return Owner{PluginInstanceID: "plugin", ActiveFingerprint: "fingerprint", Scope: resourceScope, Session: scope, RuntimeGeneration: "generation", Lifetime: LifetimeSession}
+}
+
+func TestResourceHandleFitsSignedWASMABI(t *testing.T) {
+	handle := resourceHandleFromEntropy([8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	if handle == 0 || uint64(handle) > math.MaxInt64 {
+		t.Fatalf("resource handle = %d, want 1..%d", handle, uint64(math.MaxInt64))
+	}
 }
 
 func TestTableBindsExactSessionAndClosesOnRevoke(t *testing.T) {
