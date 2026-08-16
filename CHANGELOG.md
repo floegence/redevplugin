@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.0.6
+
+- Keep authenticated session-user identity in signed environment-scoped worker
+  leases while continuing to omit user identity from environment ResourceScope.
+
 ## v2.0.5
 
 - Preserve the authenticated session owner in environment-scoped runtime
