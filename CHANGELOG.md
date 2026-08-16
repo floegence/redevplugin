@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.0.8
+
+- Preserve the required `bytes_read` field on successful zero-byte runtime I/O
+  responses so EOF reads remain valid across the Go Host and Rust runtime wire.
+
 ## v2.0.7
 
 - Align Rust runtime lease canonicalization and invocation binding with the Go
