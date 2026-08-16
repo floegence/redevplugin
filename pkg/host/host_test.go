@@ -1970,6 +1970,34 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	assertAuditDetail(t, leaseAudit, "target_descriptor_hashes", runtime.lastLease.TargetDescriptorHashes)
 }
 
+func TestCallPluginMethodEnvironmentWorkerLeaseKeepsSessionOwnerUser(t *testing.T) {
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
+		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1",
+		IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true,
+	})
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: runtime,
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildEnvironmentWorkerFixturePackage(t), "worker.view")
+
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "worker.echo", Params: map[string]any{"message": "hello"},
+	}); err != nil {
+		t.Fatalf("CallPluginMethod() worker error = %v", err)
+	}
+	var payload workerInvocationPayload
+	if err := json.Unmarshal(runtime.lastPayload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.lastLease.OwnerUserHash != "user_hash" || payload.OwnerUserHash != runtime.lastLease.OwnerUserHash {
+		t.Fatalf("environment worker owner_user_hash lease=%q payload=%q, want session owner %q", runtime.lastLease.OwnerUserHash, payload.OwnerUserHash, "user_hash")
+	}
+}
+
 func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
@@ -5547,6 +5575,20 @@ func buildWorkerFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerFixtureManifestJSON())
+	writeSurfaceFixture(t, dir, "Worker")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildEnvironmentWorkerFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"scope": "user"`, `"scope": "environment"`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
