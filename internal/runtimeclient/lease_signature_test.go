@@ -146,6 +146,28 @@ func TestRuntimeLeaseSignerRequiresClosedLeaseContract(t *testing.T) {
 	}
 }
 
+func TestRuntimeLeaseSignerKeepsSessionUserForEnvironmentScope(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	privateKey := runtimeLeaseSignatureTestPrivateKey(7)
+	lease := runtimeLeaseSignatureTestLease(now)
+	lease.ScopeKind = sessionctx.ScopeEnvironment
+
+	signed, err := SignRuntimeLease(lease, lease.Method, lease.KeyID, privateKey)
+	if err != nil {
+		t.Fatalf("SignRuntimeLease(environment scope with session user) error = %v", err)
+	}
+	verifier := Ed25519RuntimeLeaseVerifier{
+		Keyring: StaticRuntimeLeaseSigningKeyring{Keys: []RuntimeLeaseSigningKey{{
+			KeyID: signed.KeyID, PublicKey: privateKey.Public().(ed25519.PublicKey),
+		}}},
+	}
+	if err := verifier.VerifyRuntimeLease(context.Background(), RuntimeLeaseVerificationRequest{
+		Lease: signed, Method: signed.Method, Now: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("VerifyRuntimeLease(environment scope with session user) error = %v", err)
+	}
+}
+
 func TestRuntimeLeaseSignatureSharedFixture(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/contracts/runtime-lease-signature-v2.json")
 	if err != nil {
