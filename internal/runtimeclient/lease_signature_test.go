@@ -123,7 +123,7 @@ func TestRuntimeLeaseSignerRequiresClosedLeaseContract(t *testing.T) {
 		{name: "active fingerprint", mutate: func(lease *Lease) { lease.ActiveFingerprint = "" }},
 		{name: "invocation id", mutate: func(lease *Lease) { lease.InvocationID = "" }},
 		{name: "scope kind", mutate: func(lease *Lease) { lease.ScopeKind = "" }},
-		{name: "environment scope with user", mutate: func(lease *Lease) { lease.ScopeKind = sessionctx.ScopeEnvironment; lease.OwnerUserHash = "unexpected" }},
+		{name: "environment scope without session user", mutate: func(lease *Lease) { lease.ScopeKind = sessionctx.ScopeEnvironment; lease.OwnerUserHash = "" }},
 		{name: "owner environment", mutate: func(lease *Lease) { lease.OwnerEnvHash = "" }},
 		{name: "target descriptors", mutate: func(lease *Lease) { lease.TargetDescriptorHashes = nil }},
 		{name: "duplicate target descriptor", mutate: func(lease *Lease) { lease.TargetDescriptorHashes = []string{"same", "same"} }},

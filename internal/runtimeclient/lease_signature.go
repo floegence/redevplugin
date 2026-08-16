@@ -342,8 +342,10 @@ func validateRuntimeLeaseCanonicalFields(lease Lease, resolvedMethod string) err
 			return ErrRuntimeLeaseInvalid
 		}
 	}
-	resourceScope := sessionctx.ResourceScope{Kind: lease.ScopeKind, OwnerEnvHash: strings.TrimSpace(lease.OwnerEnvHash), OwnerUserHash: strings.TrimSpace(lease.OwnerUserHash)}
-	if !resourceScope.Valid() {
+	if lease.ScopeKind != sessionctx.ScopeUser && lease.ScopeKind != sessionctx.ScopeEnvironment {
+		return ErrRuntimeLeaseInvalid
+	}
+	if strings.TrimSpace(lease.OwnerUserHash) == "" {
 		return ErrRuntimeLeaseInvalid
 	}
 	if len(leaseNonce) < 16 || len(connectionNonce) < 16 {
