@@ -4749,6 +4749,7 @@ func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, 
 
 type testHostOptions struct {
 	stateRoot               string
+	assets                  pluginpkg.AssetStore
 	developerMode           bool
 	localGenerated          bool
 	policyDecision          PolicyDecision
@@ -4882,7 +4883,10 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if surfaceTokens == nil {
 		surfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
 	}
-	assetStore := pluginpkg.NewMemoryAssetStore()
+	assetStore := opts.assets
+	if assetStore == nil {
+		assetStore = pluginpkg.NewMemoryAssetStore()
+	}
 	surfaceCatalog := opts.surfaceCatalog
 	if surfaceCatalog == nil {
 		surfaceCatalog = surfaces

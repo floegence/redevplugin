@@ -2,11 +2,14 @@ package host
 
 import (
 	"bytes"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/floegence/redevplugin/v2/pkg/manifest"
 	"github.com/floegence/redevplugin/v2/pkg/permissions"
 	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v2/pkg/registry"
@@ -126,6 +129,91 @@ func TestV9WorkerMethodRequiresGrantedPackagePermissions(t *testing.T) {
 	}
 	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
 		t.Fatalf("CallPluginMethod() after v9 package grant revoke error = %v, want %v", err, permissions.ErrPermissionDenied)
+	}
+}
+
+func TestV9LegacyControlRecordRehydratesManifestModelAfterRestart(t *testing.T) {
+	stateRoot := filepath.Join(t.TempDir(), "control-state")
+	assetRoot := filepath.Join(t.TempDir(), "package-assets")
+	assets, err := pluginpkg.NewFileAssetStore(assetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		stateRoot: stateRoot, assets: assets, developerMode: true, localGenerated: true,
+	})
+	installed := installAndEnablePlugin(t, h, buildV9IOPermissionFixturePackage(t))
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stripControlManifestModel(t, filepath.Join(stateRoot, "control.sqlite"), installed.PluginInstanceID)
+
+	reopenedAssets, err := pluginpkg.NewFileAssetStore(assetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, _ := newTestHostWithOptions(t, testHostOptions{
+		stateRoot: stateRoot, assets: reopenedAssets, developerMode: true, localGenerated: true,
+	})
+	record, err := reopened.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []manifest.PermissionID{
+		manifest.PermissionFSEnvironmentRead,
+		manifest.PermissionFSEnvironmentWrite,
+		manifest.PermissionNetworkClient,
+	}
+	if record.ManifestModel.SchemaSource != manifest.SchemaVersionV9 || !reflect.DeepEqual(record.ManifestModel.Permissions, want) {
+		t.Fatalf("rehydrated manifest model = %#v, want source %q permissions %#v", record.ManifestModel, manifest.SchemaVersionV9, want)
+	}
+}
+
+func TestV9LegacyControlRecordRejectsTamperedManifestAsset(t *testing.T) {
+	stateRoot := filepath.Join(t.TempDir(), "control-state")
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		stateRoot: stateRoot, developerMode: true, localGenerated: true,
+	})
+	installed := installAndEnablePlugin(t, h, buildV9IOPermissionFixturePackage(t))
+	stripControlManifestModel(t, filepath.Join(stateRoot, "control.sqlite"), installed.PluginInstanceID)
+	original := h.adapters.Assets
+	h.adapters.Assets = mutatingAssetStore{AssetStore: original, mutate: func(asset pluginpkg.Asset) pluginpkg.Asset {
+		if asset.Entry.Path == "manifest.json" {
+			asset.Content = append(asset.Content, ' ')
+		}
+		return asset
+	}}
+	defer func() { h.adapters.Assets = original }()
+	if _, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID); err == nil {
+		t.Fatal("getPluginRecord() accepted a tampered v9 manifest recovery asset")
+	}
+}
+
+func stripControlManifestModel(t *testing.T, path, pluginInstanceID string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var raw []byte
+	if err := db.QueryRow(`SELECT record_json FROM plugin_records WHERE plugin_instance_id=?`, pluginInstanceID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var durable map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &durable); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := durable["_control_manifest_model_v1"]; !ok {
+		t.Fatal("control record does not contain a v9 manifest model envelope")
+	}
+	delete(durable, "_control_manifest_model_v1")
+	raw, err = json.Marshal(durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE plugin_records SET record_json=? WHERE plugin_instance_id=?`, raw, pluginInstanceID); err != nil {
+		t.Fatal(err)
 	}
 }
 
