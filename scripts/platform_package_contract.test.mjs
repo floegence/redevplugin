@@ -234,20 +234,20 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
 
   assert.deepEqual(platformVersion, {
     schema_version: "redevplugin.platform_version.v1",
-    platform_version: "2.0.3",
+    platform_version: "2.0.4",
   });
   assert.equal(packageSet.platform_version, platformVersion.platform_version);
   assert.deepEqual(packageSet.go_module, {
     module: "github.com/floegence/redevplugin/v2",
-    version: "v2.0.3",
+    version: "v2.0.4",
   });
   assert.deepEqual(packageSet.npm_packages, [
-    { name: "@floegence/redevplugin-contracts", version: "2.0.3" },
-    { name: "@floegence/redevplugin-ui", version: "2.0.3" },
+    { name: "@floegence/redevplugin-contracts", version: "2.0.4" },
+    { name: "@floegence/redevplugin-ui", version: "2.0.4" },
   ]);
   assert.deepEqual(packageSet.rust_crates, [
-    { name: "redevplugin-runtime", version: "2.0.3", role: "runtime" },
-    { name: "redevplugin-worker-sdk", version: "2.0.3", role: "worker_sdk" },
+    { name: "redevplugin-runtime", version: "2.0.4", role: "runtime" },
+    { name: "redevplugin-worker-sdk", version: "2.0.4", role: "worker_sdk" },
   ]);
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
@@ -338,8 +338,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   }
   assert.throws(() => decodePlatformPackageSet(Buffer.from(`${raw.toString("utf8")} null`, "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
-    '"platform_version": "2.0.3",',
-    '"platform_version": "2.0.3",\n  "platform_version": "2.0.3",',
+    '"platform_version": "2.0.4",',
+    '"platform_version": "2.0.4",\n  "platform_version": "2.0.4",',
   ), "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
     '"name": "@floegence/redevplugin-contracts",',

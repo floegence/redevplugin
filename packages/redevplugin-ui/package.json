@@ -1,6 +1,6 @@
 {
   "name": "@floegence/redevplugin-ui",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -38,7 +38,7 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "@floegence/redevplugin-contracts": "2.0.3"
+    "@floegence/redevplugin-contracts": "2.0.4"
   },
   "publishConfig": {
     "access": "public"

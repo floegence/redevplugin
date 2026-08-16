@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.0.4
+
+- Preserve normalized manifest v9 API, feature, and permission facts across
+  Host control-store lifecycle mutations, and recover v2.0.3 records from the
+  exact immutable manifest asset after an upgrade or cold restart.
+- Require explicitly approved manifest v9 worker I/O permissions during
+  external installation and runtime authorization while leaving frozen v8
+  worker permission behavior unchanged.
+
 ## v2.0.3
 
 - Encode empty required presentation arrays as JSON arrays in Host manifest and
