@@ -211,6 +211,8 @@ test("release readback jobs install their required runtime and output directorie
 test("privileged npm publication reads the package-build Node authority before setup", () => {
   const packageBuildSource = workflow.jobs["package-build"].steps.map((step) => step.run ?? "").join("\n");
   assert.match(packageBuildSource, /install -m 0644 \.node-version dist\/platform-packages\/\.node-version/);
+  const packageUpload = workflow.jobs["package-build"].steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"));
+  assert.equal(packageUpload?.with?.["include-hidden-files"], true);
   for (const jobName of ["publish-npm-contracts", "publish-npm-ui"]) {
     const steps = workflow.jobs[jobName].steps;
     const downloadIndex = steps.findIndex((step) => step.uses?.startsWith("actions/download-artifact@"));
