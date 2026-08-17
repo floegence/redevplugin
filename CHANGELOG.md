@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.2
+
+- Derive final public release-manifest verification from the canonical contract
+  artifact list so the complete signed release manifest is verified after
+  publication.
+
 ## v3.0.1
 
 - Publish the filesystem-path canonicalization security fix from the current

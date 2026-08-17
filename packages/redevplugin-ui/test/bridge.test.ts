@@ -1409,7 +1409,7 @@ test("platform client inspects an exact release package before confirmation", as
 test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();
   const artifactIdentity: PluginRuntimeHealth["artifact_identity"] = {
-    platform_version: "3.0.1",
+    platform_version: "3.0.2",
     target: "linux/arm64",
     binary_sha256: "a".repeat(64),
   };

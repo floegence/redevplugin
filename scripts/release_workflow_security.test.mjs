@@ -193,6 +193,16 @@ test("final public verification can read the completion attestation", () => {
   });
 });
 
+test("final public verification derives canonical contract names from the release manifest authority", () => {
+  const source = workflow.jobs["verify-release"].steps.find(
+    (step) => step.name === "Download and verify exact public bytes",
+  ).run;
+  assert.match(source, /listCanonicalContractArtifacts/);
+  assert.match(source, /\.\.\.\(await listCanonicalContractArtifacts\(\)\)\.map\(\(\{ name \}\) => name\)/);
+  assert.match(source, /\.\.\.packageNames/);
+  assert.match(source, /\]\.sort\(\)/);
+});
+
 test("release readback jobs install their required runtime and output directories", () => {
   const rustSteps = workflow.jobs["verify-rust"].steps;
   assert.ok(rustSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version-file"] === ".node-version"));

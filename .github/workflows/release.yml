@@ -1410,14 +1410,19 @@ jobs:
           test "$(find "$published" -maxdepth 1 -type f | wc -l | tr -d ' ')" = 1
           node --input-type=module - "$published/platform-release-manifest.json" <<'NODE'
           import { readFileSync } from "node:fs";
+          import { listCanonicalContractArtifacts } from "./scripts/generate_platform_release_manifest.mjs";
           const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          const expectedNames = [
+          const packageNames = [
             "crate:redevplugin-runtime",
             "crate:redevplugin-worker-sdk",
             "go:github.com/floegence/redevplugin/v3",
             "npm:@floegence/redevplugin-contracts",
             "npm:@floegence/redevplugin-ui",
           ];
+          const expectedNames = [
+            ...(await listCanonicalContractArtifacts()).map(({ name }) => name),
+            ...packageNames,
+          ].sort();
           if (manifest.platform_version !== process.env.VERSION
               || manifest.plugin_api !== 1 || manifest.internal_wire !== 1
               || JSON.stringify(Object.keys(manifest).sort()) !== JSON.stringify(["artifacts", "internal_wire", "platform_version", "plugin_api"])

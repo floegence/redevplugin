@@ -11,7 +11,7 @@
     "runtime_generation_id": "runtime_gen_fixture",
     "payload": {
       "internal_wire": 1,
-      "platform_version": "3.0.1",
+      "platform_version": "3.0.2",
       "runtime_artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "connection_nonce": "nonce_fixture_1234",
       "actual_target": "linux/amd64",

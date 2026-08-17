@@ -296,11 +296,11 @@ func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 		RuntimeGenerationID: "g1",
 	}
 	for _, payload := range []string{
-		`{"internal_wire":1,"platform_version":"3.0.1","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456","future":true}`,
-		`{"internal_wire":1,"platform_version":"3.0.1","platform_version":"3.0.2","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
-		`{"internal_wire":1,"platform_version":"3.0.1","PLATFORM_VERSION":"3.0.2","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
-		`{"internal_wire":1,"PLATFORM_VERSION":"3.0.1","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
-		`{"internal_wire":1,"platform_version":"3.0.1","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"} {}`,
+		`{"internal_wire":1,"platform_version":"3.0.2","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456","future":true}`,
+		`{"internal_wire":1,"platform_version":"3.0.2","platform_version":"3.0.3","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
+		`{"internal_wire":1,"platform_version":"3.0.2","PLATFORM_VERSION":"3.0.3","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
+		`{"internal_wire":1,"PLATFORM_VERSION":"3.0.2","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
+		`{"internal_wire":1,"platform_version":"3.0.2","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"} {}`,
 	} {
 		frame := baseFrame
 		frame.Payload = json.RawMessage(payload)
