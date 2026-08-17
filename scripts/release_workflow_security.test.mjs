@@ -73,7 +73,7 @@ test("privileged Rust verifiers pin a tomllib-capable Python", () => {
   const setupIndex = steps.findIndex((step) => step.uses?.startsWith("actions/setup-python@"));
   const verifyIndex = steps.findIndex((step) => step.name === "Verify immutable package artifact");
   assert.ok(setupIndex >= 0 && setupIndex < verifyIndex);
-  assert.equal(steps[setupIndex].uses, "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1");
+  assert.equal(steps[setupIndex].uses, "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97");
   assert.equal(steps[setupIndex].with["python-version"], "3.13");
 });
 
