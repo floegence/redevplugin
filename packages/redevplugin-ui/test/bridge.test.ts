@@ -100,7 +100,7 @@ function externalPackageInspectionResult(inspectionId: string, pluginInstanceId:
   };
   const securitySummary = {
     summary_sha256: `sha256:${"d".repeat(64)}`,
-    permissions: [],
+    permissions: [{ permission_id: "containers.read", methods: ["containers.list"], required: true, effects: ["read"] }],
     methods: [],
     capability_contracts: [],
     workers: [],
@@ -1474,16 +1474,24 @@ test("platform client inspects an exact release package before confirmation", as
       entries_sha256: "sha256:" + "d".repeat(64),
     },
   } as const;
-  fetch.push({ ok: true, data: { plugin_instance_id: "catalog_example_containers" } });
+  fetch.push({ ok: true, data: externalPackageInspectionResult("inspection_release_1", "catalog_example_containers") });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
-  await client.inspectReleasePackage({ plugin_instance_id: "catalog_example_containers", release_ref: releaseRef });
+  const inspection = await client.inspectReleasePackage({ plugin_instance_id: "catalog_example_containers", release_ref: releaseRef });
 
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/release-packages/inspect");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
     plugin_instance_id: "catalog_example_containers",
     release_ref: releaseRef,
   });
+  assert.deepEqual(inspection.security_summary.permissions[0], {
+    permission_id: "containers.read",
+    methods: ["containers.list"],
+    required: true,
+    effects: ["read"],
+  });
+  assert.equal(inspection.security_summary.permissions[0]?.required, true);
+  assert.deepEqual(inspection.security_summary.permissions[0]?.effects, ["read"]);
 });
 
 

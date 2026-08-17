@@ -141,6 +141,12 @@ func TestBuildExternalPackageSecuritySummaryProjectsCompleteManifest(t *testing.
 	if len(summary.Permissions) != 4 || summary.Permissions[0].PermissionID != "documents.read" || summary.Permissions[3].PermissionID != "storage.write" {
 		t.Fatalf("permissions = %#v", summary.Permissions)
 	}
+	if !summary.Permissions[0].Required || !reflect.DeepEqual(summary.Permissions[0].Effects, []string{"read"}) {
+		t.Fatalf("documents.read permission presentation = %#v", summary.Permissions[0])
+	}
+	if !summary.Permissions[1].Required || !reflect.DeepEqual(summary.Permissions[1].Effects, []string{"execute"}) {
+		t.Fatalf("jobs.execute permission presentation = %#v", summary.Permissions[1])
+	}
 	if len(summary.CapabilityContracts) != 2 || summary.CapabilityContracts[0].BindingID != "documents" ||
 		summary.CapabilityContracts[0].ContractSHA256 != "sha256:"+strings.Repeat("a", 64) {
 		t.Fatalf("capability contracts = %#v", summary.CapabilityContracts)
@@ -284,7 +290,7 @@ func TestExternalPackageSecuritySummaryJSONFieldsMatchOpenAPI(t *testing.T) {
 		value any
 		want  []string
 	}{
-		{value: ExternalPackagePermissionSummary{}, want: []string{"methods", "permission_id"}},
+		{value: ExternalPackagePermissionSummary{}, want: []string{"effects", "methods", "permission_id", "required"}},
 		{value: ExternalPackageMethodRouteSummary{}, want: []string{"action_id", "binding_id", "kind", "target_method", "worker_id"}},
 		{value: ExternalPackageConfirmationSummary{}, want: []string{"mode", "plan_hash_required", "preflight_method", "request_hash_fields"}},
 		{value: ExternalPackageCancelSummary{}, want: []string{"ack_timeout_ms", "cancelable", "disable_behavior", "uninstall_behavior"}},
@@ -372,8 +378,8 @@ func externalPackageProjectionFixture() (manifest.Manifest, []capabilitycontract
 				Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteCoreAction, ActionID: "files.reveal"},
 			},
 			{
-				Method: "documents.read",
-				Route:  manifest.MethodRouteSpec{Kind: manifest.MethodRouteCapability, BindingID: "documents", TargetMethod: "documents.read"},
+				Method: "documents.read", Effect: manifest.MethodEffectRead, Execution: manifest.MethodExecutionSync,
+				Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteCapability, BindingID: "documents", TargetMethod: "documents.read"},
 			},
 		},
 		Workers: []manifest.WorkerSpec{

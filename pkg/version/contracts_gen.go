@@ -178,7 +178,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v17.yaml",
 		Version: "plugin-platform-v17",
-		SHA256:  "1a043991f4d87ddfabdf614364e1bec42400f4bc19b7856c4c774b9f282fcda3",
+		SHA256:  "7c3f82c13737ad04882a1dd6ca4577f13f9a2249135c647c859e8c77059db131",
 	},
 	{
 		ID:      "presentation-icon-evidence-schema",

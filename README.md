@@ -166,7 +166,8 @@ an English fallback or mix locales within one resolved presentation.
   state requires a host-provided `PackageTrustVerifier`; unsigned local packages
   can be enabled only when host policy permits local generated plugins.
 - Release inspection verifies an exact release reference before confirmation
-  and returns Host-derived permission facts without installing a plugin.
+  and returns Host-derived permission IDs, activation requiredness, method
+  bindings, and effects without installing a plugin.
   Durable release-install executions then continue through the authoritative
   enable transaction by default for every accepted source. Required permissions
   are granted only when the request explicitly approves their signed IDs;

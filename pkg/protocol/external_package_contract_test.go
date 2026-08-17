@@ -209,7 +209,7 @@ func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) 
 		schema     string
 		properties []string
 	}{
-		{schema: "ExternalPackagePermissionSummary", properties: []string{"methods", "permission_id"}},
+		{schema: "ExternalPackagePermissionSummary", properties: []string{"effects", "methods", "permission_id", "required"}},
 		{schema: "ExternalPackageMethodRouteSummary", properties: []string{"action_id", "binding_id", "kind", "target_method", "worker_id"}},
 		{schema: "ExternalPackageConfirmationSummary", properties: []string{"mode", "plan_hash_required", "preflight_method", "request_hash_fields"}},
 		{schema: "ExternalPackageCancelSummary", properties: []string{"ack_timeout_ms", "cancelable", "disable_behavior", "uninstall_behavior"}},

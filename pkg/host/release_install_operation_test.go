@@ -362,7 +362,8 @@ func TestInspectReleasePackageReturnsVerifiedPermissionsWithoutInstalling(t *tes
 		t.Fatal(err)
 	}
 	if inspection.PluginInstanceID != pluginInstanceID || inspection.InspectedHashes.PackageSHA256 != fixture.Package.PackageHash ||
-		len(inspection.SecuritySummary.Permissions) != 1 || inspection.SecuritySummary.Permissions[0].PermissionID != "read" {
+		len(inspection.SecuritySummary.Permissions) != 1 || inspection.SecuritySummary.Permissions[0].PermissionID != "read" ||
+		!inspection.SecuritySummary.Permissions[0].Required || !reflect.DeepEqual(inspection.SecuritySummary.Permissions[0].Effects, []string{"read"}) {
 		t.Fatalf("release inspection = %#v", inspection)
 	}
 	if _, err := h.getPluginRecord(ctx, pluginInstanceID); !errors.Is(err, registry.ErrNotFound) {

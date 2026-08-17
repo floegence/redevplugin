@@ -139,6 +139,8 @@ type ExternalPackageUpdateEligibility struct {
 type ExternalPackagePermissionSummary struct {
 	PermissionID string   `json:"permission_id"`
 	Methods      []string `json:"methods"`
+	Required     bool     `json:"required"`
+	Effects      []string `json:"effects"`
 }
 
 type ExternalPackageMethodRouteSummary struct {
@@ -314,11 +316,13 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 	networkAccess := map[string][]ExternalPackageNetworkMethodAccessSummary{}
 	methods := make([]ExternalPackageMethodSummary, 0, len(m.Methods))
 	permissionMethods := map[string][]string{}
+	permissionEffects := map[string][]string{}
 	coreActions := make([]ExternalPackageCoreActionSummary, 0)
 	for _, method := range m.Methods {
 		permissions := canonicalExternalPackageStrings(required[method.Method])
 		for _, permission := range permissions {
 			permissionMethods[permission] = append(permissionMethods[permission], method.Method)
+			permissionEffects[permission] = append(permissionEffects[permission], string(method.Effect))
 		}
 		confirmation := ExternalPackageConfirmationSummary{Mode: string(manifest.ConfirmationNone), RequestHashFields: []string{}}
 		if method.Confirmation != nil {
@@ -383,7 +387,12 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 
 	permissions := make([]ExternalPackagePermissionSummary, 0, len(permissionMethods))
 	for permission, names := range permissionMethods {
-		permissions = append(permissions, ExternalPackagePermissionSummary{PermissionID: permission, Methods: canonicalExternalPackageStrings(names)})
+		permissions = append(permissions, ExternalPackagePermissionSummary{
+			PermissionID: permission,
+			Methods:      canonicalExternalPackageStrings(names),
+			Required:     true,
+			Effects:      canonicalExternalPackageStrings(permissionEffects[permission]),
+		})
 	}
 	sort.Slice(permissions, func(i, j int) bool { return permissions[i].PermissionID < permissions[j].PermissionID })
 

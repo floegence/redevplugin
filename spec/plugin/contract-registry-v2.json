@@ -132,7 +132,7 @@
       "id": "plugin-platform-openapi",
       "path": "spec/openapi/plugin-platform-v17.yaml",
       "version": "plugin-platform-v17",
-      "sha256": "1a043991f4d87ddfabdf614364e1bec42400f4bc19b7856c4c774b9f282fcda3"
+      "sha256": "7c3f82c13737ad04882a1dd6ca4577f13f9a2249135c647c859e8c77059db131"
     },
     {
       "id": "presentation-icon-evidence-schema",

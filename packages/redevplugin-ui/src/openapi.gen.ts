@@ -1841,9 +1841,13 @@ export interface components {
             /** Format: date-time */
             assessed_at: string;
         };
+        /** @description Host-derived permission presentation for the inspected package. Every listed permission is required for automatic activation; effects summarize the verified methods that require it. */
         ExternalPackagePermissionSummary: {
             permission_id: string;
             methods: string[];
+            /** @constant */
+            required: true;
+            effects: ("read" | "write" | "delete" | "execute" | "admin")[];
         };
         ExternalPackageMethodRouteSummary: {
             /** @enum {string} */

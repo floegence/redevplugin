@@ -2578,7 +2578,8 @@ components:
         assessed_at: { type: string, format: date-time }
     ExternalPackagePermissionSummary:
       type: object
-      required: [permission_id, methods]
+      description: Host-derived permission presentation for the inspected package. Every listed permission is required for automatic activation; effects summarize the verified methods that require it.
+      required: [permission_id, methods, required, effects]
       additionalProperties: false
       properties:
         permission_id: { type: string, minLength: 1 }
@@ -2586,6 +2587,12 @@ components:
           type: array
           uniqueItems: true
           items: { type: string, minLength: 1 }
+        required: { type: boolean, const: true }
+        effects:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [read, write, delete, execute, admin] }
     ExternalPackageMethodRouteSummary:
       type: object
       required: [kind]
