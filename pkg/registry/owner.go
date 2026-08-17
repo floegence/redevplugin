@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 var ErrOwnerScopeMismatch = errors.New("plugin registry owner scope mismatch")
@@ -32,19 +32,4 @@ func environmentRecordKey(ownerEnvHash, pluginInstanceID string) string {
 
 func scopedObjectKey(scope sessionctx.ResourceScope, pluginInstanceID, objectID string) string {
 	return string(scope.Kind) + "\x00" + scope.OwnerEnvHash + "\x00" + scope.OwnerUserHash + "\x00" + strings.TrimSpace(pluginInstanceID) + "\x00" + strings.TrimSpace(objectID)
-}
-
-func maintenanceCursor(parts ...string) string {
-	return strings.Join(parts, "\x00")
-}
-
-func parseMaintenanceCursor(cursor string, count int) []string {
-	if cursor == "" {
-		return make([]string, count)
-	}
-	parts := strings.Split(cursor, "\x00")
-	if len(parts) != count {
-		return make([]string, count)
-	}
-	return parts
 }

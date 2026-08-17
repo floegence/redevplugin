@@ -4,14 +4,14 @@ import (
 	"slices"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 type VerifiedSourceSnapshot struct {
 	key        SourceTrustKey
 	root       releasecontract.RootDelegationV1
-	policy     releasecontract.SourcePolicyV2
-	revocation releasecontract.RevocationV2
+	policy     releasecontract.SourcePolicyV3
+	revocation releasecontract.RevocationV3
 	verifiedAt time.Time
 	service    *ReleaseTrustService
 }
@@ -25,7 +25,7 @@ func (snapshot VerifiedSourceSnapshot) RootDelegation() releasecontract.RootDele
 	return value
 }
 
-func (snapshot VerifiedSourceSnapshot) SourcePolicy() releasecontract.SourcePolicyV2 {
+func (snapshot VerifiedSourceSnapshot) SourcePolicy() releasecontract.SourcePolicyV3 {
 	value := snapshot.policy
 	value.AllowedPublishers = slices.Clone(value.AllowedPublishers)
 	value.AllowedArtifactHosts = slices.Clone(value.AllowedArtifactHosts)
@@ -37,7 +37,7 @@ func (snapshot VerifiedSourceSnapshot) SourcePolicy() releasecontract.SourcePoli
 	return value
 }
 
-func (snapshot VerifiedSourceSnapshot) Revocation() releasecontract.RevocationV2 {
+func (snapshot VerifiedSourceSnapshot) Revocation() releasecontract.RevocationV3 {
 	value := snapshot.revocation
 	value.RevokedKeyIDs = slices.Clone(value.RevokedKeyIDs)
 	value.RevokedReleases = slices.Clone(value.RevokedReleases)

@@ -14,12 +14,12 @@ const admissionSource = workflow.jobs["release-admission"].steps.find((step) => 
 const preflightScript = join(repositoryRoot, "scripts/verify_github_release_reconciliation_candidate.sh");
 
 const repository = "floegence/redevplugin";
-const tag = "v0.7.0";
+const tag = "v3.0.0";
 const sourceCommit = "1".repeat(40);
 const otherCommit = "2".repeat(40);
-const contentType = "application/vnd.floegence.redevplugin-platform-publication.v2+json";
-const assetName = "platform-package-publication-v2.json";
-const manifestBytes = Buffer.from('{"schema_version":1,"platform_version":"0.7.0"}\n');
+const contentType = "application/json";
+const assetName = "platform-release-manifest.json";
+const manifestBytes = Buffer.from('{"platform_version":"3.0.0","plugin_api":1,"internal_wire":1,"artifacts":[{"name":"go:github.com/floegence/redevplugin/v3","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}\n');
 const marker = `<!-- redevplugin-release-transaction-v1 source_commit=${sourceCommit} -->`;
 
 
@@ -333,8 +333,8 @@ function createFixture(overrides = {}) {
   const runnerTemp = join(root, "runner-temp");
   mkdirSync(bin);
   mkdirSync(runnerTemp);
-  mkdirSync(join(root, "dist/publication"), { recursive: true });
-  writeFileSync(join(root, "dist/publication", assetName), manifestBytes);
+  mkdirSync(join(runnerTemp, "redevplugin-release-staging"), { recursive: true });
+  writeFileSync(join(runnerTemp, "redevplugin-release-staging", assetName), manifestBytes);
   for (const command of ["gh", "curl", "sleep"]) {
     const path = join(bin, command);
     writeFileSync(path, mockCommandSource);
@@ -395,7 +395,7 @@ function createFixture(overrides = {}) {
 }
 
 function executePublication(fixture) {
-  return spawnSync("bash", ["-c", 'export MOCK_WORKFLOW_PID=$$; exec bash "$@"', "state-machine", "-c", publicationSource], {
+  return spawnSync("bash", ["-c", `export MOCK_WORKFLOW_PID=$$\n${publicationSource}`], {
     cwd: fixture.root,
     env: fixture.env,
     encoding: "utf8",
@@ -578,11 +578,11 @@ test("durable state is adopted after SIGKILL at each mutation boundary", async (
 });
 
 test("publication shell fails closed without mutating authoritative public state", async (t) => {
-  const wrongBytes = Buffer.from('{"schema_version":9,"platform_version":"0.7.0"}\n');
+  const wrongBytes = Buffer.from('{"platform_version":"9.0.0"}\n');
   const cases = [
     ["PATCH did not apply", { release: release(), assets: [asset()], patchMode: "unchanged" }],
     ["published wrong bytes", { release: release(false), assets: [asset({ bytes: wrongBytes })] }],
-    ["published wrong metadata", { release: release(false), assets: [asset({ type: "application/json" })] }],
+    ["published wrong metadata", { release: release(false), assets: [asset({ type: "application/octet-stream" })] }],
     ["published multiple assets", { release: release(false), assets: [asset(), asset({ id: 202 })] }],
     ["multiple asset drafts", {
       release: release(),
@@ -659,7 +659,7 @@ test("verification failures never mutate a bound draft", async (t) => {
   await t.test("local manifest missing", () => {
     const fixture = createFixture({ release: release(), assets: [asset()] });
     try {
-      rmSync(join(fixture.root, "dist/publication", assetName));
+      rmSync(join(fixture.env.RUNNER_TEMP, "redevplugin-release-staging", assetName));
       const before = fixture.readState();
       const result = executePublication(fixture);
       assert.notEqual(result.status, 0);

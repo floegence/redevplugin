@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 var ErrActionDenied = errors.New("host platform action is denied")
@@ -37,7 +37,6 @@ const (
 	ManagementActionDowngradePlugin            ManagementAction = "plugin.downgrade"
 	ManagementActionListPlugins                ManagementAction = "plugin.list"
 	ManagementActionListFeatures               ManagementAction = "platform.list_features"
-	ManagementActionGetCompatibility           ManagementAction = "platform.get_compatibility"
 	ManagementActionRecoverEnabledPlugins      ManagementAction = "runtime.recover_enabled"
 	ManagementActionGrantPermission            ManagementAction = "permission.grant"
 	ManagementActionRevokePermission           ManagementAction = "permission.revoke"
@@ -63,7 +62,6 @@ const (
 	ManagementActionUninstallPlugin            ManagementAction = "plugin.uninstall"
 	ManagementActionListRetainedData           ManagementAction = "retained_data.list"
 	ManagementActionDeleteRetainedData         ManagementAction = "retained_data.delete"
-	ManagementActionBindRetainedData           ManagementAction = "retained_data.bind"
 	ManagementActionCleanupExpiredRetainedData ManagementAction = "retained_data.cleanup_expired"
 	ManagementActionExportPluginData           ManagementAction = "data.export"
 	ManagementActionDeleteExportedPluginData   ManagementAction = "data.delete_export"
@@ -104,7 +102,7 @@ func (action ManagementAction) Resource() ResourceRef {
 		ManagementActionEnablePlugin,
 		ManagementActionDisablePlugin, ManagementActionUninstallPlugin:
 		return ResourcePlugin
-	case ManagementActionListFeatures, ManagementActionGetCompatibility:
+	case ManagementActionListFeatures:
 		return ResourcePlatform
 	case ManagementActionGrantPermission, ManagementActionRevokePermission, ManagementActionListPermissionGrants, ManagementActionGetPermissionRequirements:
 		return ResourcePermission
@@ -123,7 +121,7 @@ func (action ManagementAction) Resource() ResourceRef {
 	case ManagementActionMintStorageHandleGrant:
 		return ResourceStore
 	case ManagementActionListRetainedData, ManagementActionDeleteRetainedData,
-		ManagementActionBindRetainedData, ManagementActionCleanupExpiredRetainedData:
+		ManagementActionCleanupExpiredRetainedData:
 		return ResourceRetainedData
 	case ManagementActionExportPluginData, ManagementActionImportPluginData,
 		ManagementActionInspectPluginData, ManagementActionReadPluginDataFile, ManagementActionWritePluginDataFile:

@@ -1,23 +1,20 @@
 package registry
 
 import (
-	"context"
-	"database/sql"
 	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/releasepublisher"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/releasepublisher"
 )
 
 func TestRegistrySourceHasNoReleaseInstallStoreAuthority(t *testing.T) {
@@ -54,7 +51,7 @@ func TestRegistrySourceHasNoReleaseInstallStoreAuthority(t *testing.T) {
 					receiver = pointer.X
 				}
 				ident, ok := receiver.(*ast.Ident)
-				if !ok || (ident.Name != "MemoryStore" && ident.Name != "SQLiteStore") {
+				if !ok || ident.Name != "MemoryStore" {
 					break
 				}
 				for _, retired := range []string{"StartReleaseInstallOperation", "UpdateReleaseInstallOperation", "GetReleaseInstallOperation", "GetReleaseInstallOperationByRequest", "ListReleaseInstallOperations"} {
@@ -77,41 +74,30 @@ func TestReleaseInstallPayloadHasNoMirroredExecutionState(t *testing.T) {
 	}
 }
 
-func TestSQLiteRegistryDoesNotOwnReleaseInstallLifecycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(registryTestContext(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, phase := range []string{"fresh", "reopened"} {
-		t.Run(phase, func(t *testing.T) {
-			db, err := sql.Open("sqlite", path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			var count int
-			if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='release_install_operations'`).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
-			if count != 0 {
-				t.Fatal("registry SQLite still owns release_install_operations; controlstore ExecutionView must be the only lifecycle authority")
-			}
-		})
-		if phase == "fresh" {
-			reopened, err := NewSQLiteStore(registryTestContext(), path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := reopened.Close(); err != nil {
-				t.Fatal(err)
+func TestReleaseInstallContractHasNoActivationState(t *testing.T) {
+	for name, typeOf := range map[string]reflect.Type{
+		"StartReleaseInstallOperationRequest":  reflect.TypeOf(StartReleaseInstallOperationRequest{}),
+		"UpdateReleaseInstallOperationRequest": reflect.TypeOf(UpdateReleaseInstallOperationRequest{}),
+		"ReleaseInstallOperation":              reflect.TypeOf(ReleaseInstallOperation{}),
+	} {
+		for _, retired := range []string{"Activation", "ActivationRequest"} {
+			if _, ok := typeOf.FieldByName(retired); ok {
+				t.Errorf("%s still exposes retired field %s", name, retired)
 			}
 		}
 	}
+
+	file, err := parser.ParseFile(token.NewFileSet(), "release_install_operation.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.TypeSpec)
+		if ok && strings.HasPrefix(spec.Name.Name, "ReleaseInstallActivation") {
+			t.Errorf("release-install contract still declares retired type %s", spec.Name.Name)
+		}
+		return true
+	})
 }
 
 func TestReleaseInstallExecutionPayloadProgressAndTerminalCAS(t *testing.T) {
@@ -128,7 +114,7 @@ func TestReleaseInstallExecutionPayloadProgressAndTerminalCAS(t *testing.T) {
 		Status: execution.StatusRunning, Phase: "download_package",
 		Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressBytes, Completed: 262144, Total: 524288},
 		Attempt:  2, RetryAfterMS: 250, MutationOutcome: mutation.OutcomeNotCommitted,
-		Activation: created.Activation, Now: req.Now.Add(time.Second),
+		Now: req.Now.Add(time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,36 +126,52 @@ func TestReleaseInstallExecutionPayloadProgressAndTerminalCAS(t *testing.T) {
 		ExecutionID: running.Execution.ID, ExpectedCursor: running.Execution.Cursor,
 		Status: execution.StatusFailed, Phase: "failed", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate},
 		Attempt: 2, MutationOutcome: mutation.OutcomeNotCommitted,
-		Failure: &ReleaseInstallFailure{Code: "PLUGIN_INSTALL_INTERRUPTED", Retryable: true}, Activation: running.Activation, Now: req.Now.Add(2 * time.Second),
+		Failure: &ReleaseInstallFailure{Code: "PLUGIN_INSTALL_INTERRUPTED", Retryable: true}, Now: req.Now.Add(2 * time.Second),
 	})
 	if err != nil || failed.Execution.TerminalAt != nil || failed.Failure == nil || !failed.Failure.Retryable {
 		t.Fatalf("failed payload = %#v, %v", failed, err)
 	}
 }
 
-func TestReleaseInstallExecutionPayloadRejectsActivationRecordMismatch(t *testing.T) {
+func TestReleaseInstallExecutionPayloadRequiresEnabledTerminalRecord(t *testing.T) {
 	req := releaseInstallExecutionRequest(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC))
 	created, err := PrepareReleaseInstallOperation(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	running, err := ApplyReleaseInstallOperationUpdate(created, UpdateReleaseInstallOperationRequest{
-		ExecutionID: created.Execution.ID, ExpectedCursor: created.Execution.Cursor, Status: execution.StatusRunning,
-		Phase: "enable", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, Attempt: 1,
-		MutationOutcome: mutation.OutcomeCommitted, Activation: created.Activation, Now: req.Now.Add(time.Second),
+	record := PluginRecord{PluginInstanceID: req.PluginInstanceID, EnableState: EnableDisabledByUser}
+	_, err = ApplyReleaseInstallOperationUpdate(created, UpdateReleaseInstallOperationRequest{
+		ExecutionID: created.Execution.ID, ExpectedCursor: created.Execution.Cursor, Status: execution.StatusCompleted,
+		Phase: "complete", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressItems, Completed: 1, Total: 1}, Attempt: 1,
+		MutationOutcome: mutation.OutcomeCommitted, PluginRecord: &record, Now: req.Now.Add(time.Second),
 	})
+	if !errors.Is(err, ErrInvalidReleaseInstallOperation) {
+		t.Fatalf("disabled terminal record error = %v, want %v", err, ErrInvalidReleaseInstallOperation)
+	}
+	record.EnableState = EnableEnabled
+	completed, err := ApplyReleaseInstallOperationUpdate(created, UpdateReleaseInstallOperationRequest{
+		ExecutionID: created.Execution.ID, ExpectedCursor: created.Execution.Cursor, Status: execution.StatusCompleted,
+		Phase: "complete", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressItems, Completed: 1, Total: 1}, Attempt: 1,
+		MutationOutcome: mutation.OutcomeCommitted, PluginRecord: &record, Now: req.Now.Add(time.Second),
+	})
+	if err != nil || completed.PluginRecord == nil || completed.PluginRecord.EnableState != EnableEnabled {
+		t.Fatalf("enabled terminal record = %#v, %v", completed, err)
+	}
+}
+
+func TestReleaseInstallExecutionPayloadRejectsRetiredEnablePhase(t *testing.T) {
+	req := releaseInstallExecutionRequest(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC))
+	created, err := PrepareReleaseInstallOperation(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := PluginRecord{PluginInstanceID: req.PluginInstanceID, EnableState: EnableDisabled}
-	_, err = ApplyReleaseInstallOperationUpdate(running, UpdateReleaseInstallOperationRequest{
-		ExecutionID: running.Execution.ID, ExpectedCursor: running.Execution.Cursor, Status: execution.StatusCompleted,
-		Phase: "complete", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressItems, Completed: 1, Total: 1}, Attempt: 1,
-		MutationOutcome: mutation.OutcomeCommitted, PluginRecord: &record,
-		Activation: ReleaseInstallActivation{Status: ReleaseInstallActivationEnabled}, Now: req.Now.Add(2 * time.Second),
+	_, err = ApplyReleaseInstallOperationUpdate(created, UpdateReleaseInstallOperationRequest{
+		ExecutionID: created.Execution.ID, ExpectedCursor: created.Execution.Cursor, Status: execution.StatusRunning,
+		Phase: "enable", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, Attempt: 1,
+		MutationOutcome: mutation.OutcomeCommitted, Now: req.Now.Add(time.Second),
 	})
 	if !errors.Is(err, ErrInvalidReleaseInstallOperation) {
-		t.Fatalf("ApplyReleaseInstallOperationUpdate() error = %v, want %v", err, ErrInvalidReleaseInstallOperation)
+		t.Fatalf("retired enable phase error = %v, want %v", err, ErrInvalidReleaseInstallOperation)
 	}
 }
 
@@ -204,8 +206,7 @@ func TestReleaseInstallExecutionPayloadAcceptsPublisherReleaseRefDigestShapes(t 
 			PluginID: reference.PluginID, Version: reference.Version,
 			PackageSHA256: reference.ExpectedHashes.PackageSHA256, ManifestSHA256: reference.ExpectedHashes.ManifestSHA256, EntriesSHA256: reference.ExpectedHashes.EntriesSHA256,
 		},
-		Activation: ReleaseInstallActivationRequest{Mode: ReleaseInstallActivationAutomatic},
-		Now:        time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
+		Now: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
 	}
 	if _, err := PrepareReleaseInstallOperation(req); err != nil {
 		t.Fatalf("publisher release ref payload error = %v", err)
@@ -223,7 +224,6 @@ func releaseInstallExecutionRequest(now time.Time) StartReleaseInstallOperationR
 			ManifestSHA256: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			EntriesSHA256:  "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		},
-		Activation: ReleaseInstallActivationRequest{Mode: ReleaseInstallActivationAutomatic},
-		Now:        now,
+		Now: now,
 	}
 }

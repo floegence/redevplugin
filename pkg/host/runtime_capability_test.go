@@ -2,98 +2,44 @@ package host
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
 
-	platformversion "github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	platformversion "github.com/floegence/redevplugin/v3/pkg/version"
 )
 
-func TestRuntimeDescriptorV2UsesClosedValidatedIdentity(t *testing.T) {
-	platform, err := platformversion.ParseSemVer(platformversion.CurrentCompatibilityVersion())
+func TestRuntimeArtifactIdentityContainsOnlyArtifactFacts(t *testing.T) {
+	platform, err := platformversion.ParseSemVer(platformversion.CurrentPlatformVersion())
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := ParseRuntimeAdmissionTarget("linux/amd64")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ipc, err := ParseRustIPCVersion(platformversion.RustIPCVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	abi, err := ParseWASMABIVersion(platformversion.WASMABIVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contractDigest, err := ParseSHA256Digest(platformversion.ContractSetSHA256)
-	if err != nil {
-		t.Fatal(err)
-	}
+	target := runtimetarget.LinuxAMD64
 	binaryDigest, err := ParseSHA256Digest(strings.Repeat("a", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	descriptor, err := NewRuntimeDescriptor(RuntimeDescriptorOptions{
-		PlatformVersion:   platform,
-		Target:            target,
-		RustIPCVersion:    ipc,
-		WASMABIVersion:    abi,
-		ContractSetSHA256: contractDigest,
-		BinarySHA256:      binaryDigest,
+	identity, err := NewRuntimeArtifactIdentity(RuntimeArtifactIdentityOptions{
+		PlatformVersion: platform,
+		Target:          target,
+		BinarySHA256:    binaryDigest,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if descriptor.PlatformVersion() != platform || descriptor.Target() != target ||
-		descriptor.RustIPCVersion() != ipc || descriptor.WASMABIVersion() != abi ||
-		descriptor.ContractSetSHA256() != contractDigest || descriptor.BinarySHA256() != binaryDigest {
-		t.Fatalf("descriptor projection = %#v", descriptor)
+	if identity.PlatformVersion() != platform || identity.Target() != target || identity.BinarySHA256() != binaryDigest {
+		t.Fatalf("runtime artifact identity = %#v", identity)
 	}
-	if err := descriptor.CompatibleWithPlatform(); err != nil {
+	if err := identity.CompatibleWithPlatform(); err != nil {
 		t.Fatalf("CompatibleWithPlatform() error = %v", err)
-	}
-
-	raw, err := MarshalRuntimeDescriptorJSON(descriptor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var projection map[string]any
-	if err := json.Unmarshal(raw, &projection); err != nil {
-		t.Fatal(err)
-	}
-	internal, internalOK := projection["internal"].(map[string]any)
-	_, publicAPIOK := projection["public_api"].(map[string]any)
-	if len(projection) != 6 || projection["schema_version"] != "runtime-descriptor-v3" ||
-		projection["target"] != "linux/amd64" || projection["binary_sha256"] != strings.Repeat("a", 64) ||
-		!internalOK || internal["rust_ipc"] != ipc.String() || internal["contract_set_sha256"] != contractDigest.String() ||
-		!publicAPIOK {
-		t.Fatalf("descriptor wire = %s", raw)
-	}
-	decoded, err := UnmarshalRuntimeDescriptorJSON(raw)
-	if err != nil || decoded != descriptor {
-		t.Fatalf("descriptor round trip = %#v, err=%v", decoded, err)
-	}
-	projection["unexpected"] = true
-	unknown, err := json.Marshal(projection)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := UnmarshalRuntimeDescriptorJSON(unknown); !errors.Is(err, ErrRuntimeDescriptorInvalid) {
-		t.Fatalf("unknown field error = %v", err)
 	}
 }
 
-func TestRuntimeAdmissionIdentityRejectsAliasesAndUnsupportedTargets(t *testing.T) {
-	for _, value := range []string{"", "linux/x86_64", "linux/AMD64", "darwin/arm64", "linux\\amd64", " linux/amd64"} {
-		if _, err := ParseRuntimeAdmissionTarget(value); !errors.Is(err, ErrRuntimeAdmissionTargetInvalid) {
-			t.Fatalf("ParseRuntimeAdmissionTarget(%q) error = %v", value, err)
-		}
-	}
+func TestRuntimeAdmissionIdentityRejectsInvalidBinaryNamesAndDigests(t *testing.T) {
 	for _, value := range []string{"", "redevplugin-runtime.exe", "./redevplugin-runtime", "../redevplugin-runtime", "/bin/redevplugin-runtime", "REDEVPLUGIN-RUNTIME"} {
 		if _, err := NewRuntimeBinaryName(value); !errors.Is(err, ErrRuntimeBinaryNameInvalid) {
 			t.Fatalf("NewRuntimeBinaryName(%q) error = %v", value, err)
@@ -111,8 +57,8 @@ func TestRuntimeAdmissionIdentityRejectsAliasesAndUnsupportedTargets(t *testing.
 }
 
 func TestOpenVerifiedExecutableIsSideEffectFreeWhenUnsupported(t *testing.T) {
-	if runtime.GOOS == "linux" {
-		t.Skip("non-Linux constructor contract")
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		t.Skip("unsupported-platform constructor contract")
 	}
 	rootPath := t.TempDir()
 	executionPath := t.TempDir()
@@ -130,13 +76,13 @@ func TestOpenVerifiedExecutableIsSideEffectFreeWhenUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor := testPublicRuntimeDescriptor(t, "linux/amd64", strings.Repeat("b", 64))
+	identity := testPublicRuntimeArtifactIdentity(t, "linux/amd64", strings.Repeat("b", 64))
 
 	result, err := OpenVerifiedExecutable(context.Background(), VerifiedExecutableOptions{
-		RootDir:            root,
-		ExecutionRoot:      executionRoot,
-		RelativeName:       name,
-		ExpectedDescriptor: descriptor,
+		RootDir:                  root,
+		ExecutionRoot:            executionRoot,
+		RelativeName:             name,
+		ExpectedArtifactIdentity: identity,
 	})
 	if result != nil || !errors.Is(err, ErrRuntimeAdmissionUnsupported) {
 		t.Fatalf("OpenVerifiedExecutable() = %#v, %v", result, err)
@@ -150,25 +96,13 @@ func TestOpenVerifiedExecutableIsSideEffectFreeWhenUnsupported(t *testing.T) {
 	}
 }
 
-func testPublicRuntimeDescriptor(t *testing.T, targetValue, binaryDigest string) RuntimeDescriptor {
+func testPublicRuntimeArtifactIdentity(t *testing.T, targetValue, binaryDigest string) RuntimeArtifactIdentity {
 	t.Helper()
-	platform, err := platformversion.ParseSemVer(platformversion.CurrentCompatibilityVersion())
+	platform, err := platformversion.ParseSemVer(platformversion.CurrentPlatformVersion())
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := ParseRuntimeAdmissionTarget(targetValue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ipc, err := ParseRustIPCVersion(platformversion.RustIPCVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	abi, err := ParseWASMABIVersion(platformversion.WASMABIVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contractDigest, err := ParseSHA256Digest(platformversion.ContractSetSHA256)
+	target, err := runtimetarget.Parse(targetValue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,16 +110,13 @@ func testPublicRuntimeDescriptor(t *testing.T, targetValue, binaryDigest string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := NewRuntimeDescriptor(RuntimeDescriptorOptions{
-		PlatformVersion:   platform,
-		Target:            target,
-		RustIPCVersion:    ipc,
-		WASMABIVersion:    abi,
-		ContractSetSHA256: contractDigest,
-		BinarySHA256:      binarySHA256,
+	identity, err := NewRuntimeArtifactIdentity(RuntimeArtifactIdentityOptions{
+		PlatformVersion: platform,
+		Target:          target,
+		BinarySHA256:    binarySHA256,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return descriptor
+	return identity
 }

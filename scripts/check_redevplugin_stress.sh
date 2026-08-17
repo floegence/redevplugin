@@ -114,7 +114,7 @@ render_summary() {
   fi
   categories='["go_race","execution_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota"]'
   if [[ "$MODE" != "fast" ]]; then
-    categories='["go_race","execution_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_harness","runtime_contract","platform_package_build","platform_publication_verifier"]'
+    categories='["go_race","execution_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_harness","runtime_contract","release_package_build","release_manifest_verifier"]'
   fi
   steps_json=$(IFS=,; echo "${STEPS[*]}")
   evidence_json=$(stress_evidence_json)
@@ -261,11 +261,11 @@ if [[ "$MODE" != "fast" ]]; then
     write_summary
     exit "$STATUS"
   }
-  run_step platform_package_build node --test scripts/platform_package_build.test.mjs || {
+	run_step release_package_build node --test scripts/build_release_packages.test.mjs || {
     write_summary
     exit "$STATUS"
   }
-  run_step platform_publication_verifier node --test scripts/platform_package_publication.test.mjs scripts/verify_rust_registry_release.test.mjs || {
+	run_step release_manifest_verifier node --test scripts/platform_release_manifest.test.mjs scripts/verify_rust_registry_release.test.mjs || {
     write_summary
     exit "$STATUS"
   }

@@ -7,13 +7,11 @@ import (
 	"regexp"
 	"sort"
 	"testing"
-
-	"github.com/floegence/redevplugin/v2/pkg/version"
 )
 
 func TestWASMWorkerSchemaMatchesExecutableRuntimeContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "wasm-worker-v2.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "wasm-abi.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,12 +23,12 @@ func TestWASMWorkerSchemaMatchesExecutableRuntimeContract(t *testing.T) {
 		t.Fatalf("wasm worker schema must be closed: %#v", schema["additionalProperties"])
 	}
 	assertStringSet(t, requireStringSlice(t, schema["required"], "wasm worker required"), []string{
-		"abi_version", "memory", "table", "exports", "imports",
+		"memory", "table", "exports", "imports",
 	}, "wasm worker required")
 
 	properties := requireNestedObject(t, schema, "properties")
-	if got := requireNestedObject(t, properties, "abi_version")["const"]; got != version.WASMABIVersion {
-		t.Fatalf("abi_version = %#v, want %q", got, version.WASMABIVersion)
+	if _, ok := properties["abi_version"]; ok {
+		t.Fatal("wasm ABI schema must not expose a second author version axis")
 	}
 	memory := requireNestedObject(t, properties, "memory", "properties")
 	for name, want := range map[string]any{
@@ -49,9 +47,6 @@ func TestWASMWorkerSchemaMatchesExecutableRuntimeContract(t *testing.T) {
 	}
 
 	constants := rustStringConstants(t, filepath.Join(root, "crates", "redevplugin-runtime", "src", "wasm_abi.rs"))
-	if constants["WASM_WORKER_ABI_VERSION"] != version.WASMABIVersion {
-		t.Fatalf("rust ABI version = %q", constants["WASM_WORKER_ABI_VERSION"])
-	}
 	definitions := requireNestedObject(t, schema, "$defs")
 	for definition, constant := range map[string]string{
 		"alloc_function":   "EXPORT_WORKER_ALLOC",
@@ -70,15 +65,30 @@ func TestWASMWorkerSchemaMatchesExecutableRuntimeContract(t *testing.T) {
 	assertJSONConst(t, definitions, "invoke_function", "params", []string{"i32", "i32"})
 	assertJSONConst(t, definitions, "invoke_function", "results", []string{"i64"})
 
-	hostcall := requireNestedObject(t, definitions, "hostcall_import", "properties")
-	assertStringEnum(t, requireNestedObject(t, hostcall, "module")["enum"], "hostcall modules", []string{
-		constants["IMPORT_STORAGE"], constants["IMPORT_NETWORK"],
-	})
-	assertStringEnum(t, requireNestedObject(t, hostcall, "name")["enum"], "hostcall names", []string{
-		"files", "kv", "sqlite", "execute",
-	})
-	assertJSONConst(t, definitions, "hostcall_import", "params", []string{"i32", "i32", "i32", "i32"})
-	assertJSONConst(t, definitions, "hostcall_import", "results", []string{"i32"})
+	imports := []struct {
+		definition string
+		name       string
+		params     []string
+		results    []string
+	}{
+		{"control_import", "rdp_call_v1", []string{"i32", "i32", "i32", "i32"}, []string{"i32"}},
+		{"read_import", "rdp_read_v1", []string{"i64", "i32", "i32", "i32"}, []string{"i32"}},
+		{"write_import", "rdp_write_v1", []string{"i64", "i32", "i32", "i32"}, []string{"i32"}},
+		{"seek_import", "rdp_seek_v1", []string{"i64", "i64", "i32"}, []string{"i64"}},
+		{"close_import", "rdp_close_v1", []string{"i64"}, []string{"i32"}},
+		{"last_error_import", "rdp_last_error_v1", []string{"i32", "i32"}, []string{"i32"}},
+	}
+	for _, item := range imports {
+		properties := requireNestedObject(t, definitions, item.definition, "properties")
+		if got := requireNestedObject(t, properties, "module")["const"]; got != constants["IMPORT_IO"] {
+			t.Fatalf("%s.module = %#v", item.definition, got)
+		}
+		if got := requireNestedObject(t, properties, "name")["const"]; got != item.name {
+			t.Fatalf("%s.name = %#v", item.definition, got)
+		}
+		assertJSONConst(t, definitions, item.definition, "params", item.params)
+		assertJSONConst(t, definitions, item.definition, "results", item.results)
+	}
 }
 
 func assertJSONConst(t *testing.T, definitions map[string]any, definition, property string, want []string) {
@@ -109,14 +119,23 @@ func rustStringConstants(t *testing.T, path string) map[string]string {
 		out[match[1]] = match[2]
 	}
 	for _, name := range []string{
-		"WASM_WORKER_ABI_VERSION", "EXPORT_MEMORY", "EXPORT_WORKER_ALLOC", "EXPORT_WORKER_DEALLOC",
-		"EXPORT_WORKER_INVOKE", "IMPORT_STORAGE", "IMPORT_NETWORK",
+		"EXPORT_MEMORY", "EXPORT_WORKER_ALLOC", "EXPORT_WORKER_DEALLOC",
+		"EXPORT_WORKER_INVOKE", "IMPORT_IO",
 	} {
 		if out[name] == "" {
 			t.Fatalf("missing rust wasm ABI constant %s", name)
 		}
 	}
 	return out
+}
+
+func TestWASMABISchemaHasNoVersionedPredecessor(t *testing.T) {
+	root := repoRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "spec", "plugin", "wasm-worker-v2.schema.json")); err == nil {
+		t.Fatal("retired versioned WASM ABI schema still exists")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 }
 
 func assertStringSet(t *testing.T, got []string, want []string, label string) {

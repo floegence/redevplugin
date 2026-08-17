@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
+	settingsdomain "github.com/floegence/redevplugin/v3/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
 )
 
 const paginationBenchmarkPageSize = 100
@@ -74,14 +74,7 @@ func newPaginationBenchmarkStore(b *testing.B, kind NamespaceKind, entries int) 
 			QuotaFiles:    int64(entries + 100),
 		}},
 	}
-	dataset, err := store.CommitEnable(internalTestContext(), CommitEnableRequest{
-		PluginInstanceID:           "plugini_bench",
-		Shape:                      shape,
-		ExpectedManagementRevision: 1,
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
+	dataset := installInternalStore(b, store, internalTestContext(), "plugini_bench", shape)
 	workspaceRoot := store.scopedWorkspacePath(internalEnvironmentScope(), dataset.Binding.GenerationID)
 	namespaceRoot := filepath.Join(workspaceNamespaceRoot(workspaceRoot, internalUserScope()), "data", namespaceDataName)
 	db, err := openNamespaceDatabase(internalTestContext(), namespaceRoot, false)

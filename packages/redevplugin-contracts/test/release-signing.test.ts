@@ -28,12 +28,16 @@ import {
   decodeSourcePolicyPointer,
   packageSigningPreimage,
   releaseMetadataSigningPreimage,
-  releaseMetadataSchemaVersionV8,
+  releaseMetadataSchemaVersion,
+  revocationPointerSchemaVersion,
+  revocationSchemaVersion,
   revocationPointerSigningPreimage,
   revocationSigningPreimage,
   rootDelegationSigningPreimage,
   signingUsages,
   sourcePolicyPointerSigningPreimage,
+  sourcePolicyPointerSchemaVersion,
+  sourcePolicySchemaVersion,
   sourcePolicySigningPreimage,
   verifyPackageSignature,
   verifyReleaseMetadata,
@@ -44,13 +48,13 @@ import {
   verifySourcePolicyPointer,
   type PackageSignatureV1,
   type PackageVerificationContext,
-  type ReleaseMetadataV8,
-  type RevocationPointerV1,
-  type RevocationV2,
+  type ReleaseMetadata,
+  type RevocationPointerV2,
+  type RevocationV3,
   type RootDelegationV1,
   type SigningUsage,
-  type SourcePolicyPointerV1,
-  type SourcePolicyV2,
+  type SourcePolicyPointerV2,
+  type SourcePolicyV3,
 } from "../src/index.js";
 
 type Fixture = Readonly<{
@@ -60,11 +64,11 @@ type Fixture = Readonly<{
   documents: Readonly<{
     root_delegation: RootDelegationV1;
     package_signature: PackageSignatureV1;
-    release_metadata: ReleaseMetadataV8;
-    source_policy: SourcePolicyV2;
-    source_policy_pointer: SourcePolicyPointerV1;
-    revocation: RevocationV2;
-    revocation_pointer: RevocationPointerV1;
+    release_metadata: ReleaseMetadata;
+    source_policy: SourcePolicyV3;
+    source_policy_pointer: SourcePolicyPointerV2;
+    revocation: RevocationV3;
+    revocation_pointer: RevocationPointerV2;
   }>;
   detached_signatures: Readonly<{ release_metadata: string }>;
   preimages: Readonly<Record<SigningUsage, string>>;
@@ -204,39 +208,43 @@ test("release signing builders and strict decoders preserve canonical documents"
   }
 });
 
-test("release metadata requires exact schema and UI protocol pairs", () => {
-  const metadata = fixture.documents.release_metadata;
-  buildReleaseMetadata(metadata);
-  assert.equal(metadata.schema_version, releaseMetadataSchemaVersionV8);
-  for (const [schema_version, ui_protocol_version] of [
-    ["redevplugin.release_metadata.v5", "plugin-ui-v5"],
-    ["redevplugin.release_metadata.v6", "plugin-ui-v6"],
-    ["redevplugin.release_metadata.v7", "plugin-ui-v7"],
-    ["redevplugin.release_metadata.v8", "plugin-ui-v6"],
+test("release security contracts expose only the current schema identities", () => {
+  assert.equal(sourcePolicySchemaVersion, "redevplugin.release_source_policy.v3");
+  assert.equal(sourcePolicyPointerSchemaVersion, "redevplugin.release_source_policy_pointer.v2");
+  assert.equal(revocationSchemaVersion, "redevplugin.release_revocation.v3");
+  assert.equal(revocationPointerSchemaVersion, "redevplugin.release_revocation_pointer.v2");
+
+  for (const [document, decode, legacySchema] of [
+    [fixture.documents.source_policy, decodeSourcePolicy, "redevplugin.release_source_policy.v2"],
+    [fixture.documents.source_policy_pointer, decodeSourcePolicyPointer, "redevplugin.release_source_policy_pointer.v1"],
+    [fixture.documents.revocation, decodeRevocation, "redevplugin.release_revocation.v2"],
+    [fixture.documents.revocation_pointer, decodeRevocationPointer, "redevplugin.release_revocation_pointer.v1"],
   ] as const) {
-    assert.throws(() => buildReleaseMetadata({
-      ...metadata,
-      schema_version: schema_version as typeof releaseMetadataSchemaVersionV8,
-      compatibility: { ...metadata.compatibility, ui_protocol_version } as typeof metadata.compatibility,
-    }), InvalidReleaseDocumentError);
+    assert.throws(
+      () => decode(JSON.stringify({ ...document, schema_version: legacySchema })),
+      InvalidReleaseDocumentError,
+    );
   }
 });
 
-test("release compatibility public type is current-only", () => {
-  const compatibility: import("../src/release-signing.js").ReleaseCompatibility = {
-    min_redevplugin_version: "1.0.0",
-    min_runtime_version: "1.0.0",
-    ui_protocol_version: "plugin-ui-v7",
-  };
-  assert.equal(compatibility.ui_protocol_version, "plugin-ui-v7");
-
-  const retired: import("../src/release-signing.js").ReleaseCompatibility = {
-    min_redevplugin_version: "1.0.0",
-    min_runtime_version: "1.0.0",
-    // @ts-expect-error retired protocols are not part of the public contract
-    ui_protocol_version: "plugin-ui-v6",
-  };
-  assert.equal(retired.ui_protocol_version, "plugin-ui-v6");
+test("release metadata rejects versioned schemas and compatibility projections", () => {
+  const metadata = fixture.documents.release_metadata;
+  buildReleaseMetadata(metadata);
+  assert.equal(metadata.schema_version, releaseMetadataSchemaVersion);
+  for (const schema_version of [
+    "redevplugin.release_metadata.v5",
+    "redevplugin.release_metadata.v6",
+    "redevplugin.release_metadata.v7",
+    "redevplugin.release_metadata.v8",
+  ] as const) {
+    assert.throws(() => buildReleaseMetadata({
+      ...metadata,
+      schema_version: schema_version as typeof releaseMetadataSchemaVersion,
+    }), InvalidReleaseDocumentError);
+  }
+  for (const retired of ["compatibility", "host_requirements", "ui_protocol_version"] as const) {
+    assert.throws(() => buildReleaseMetadata({ ...metadata, [retired]: {} } as never), InvalidReleaseDocumentError);
+  }
 });
 
 test("release metadata validates canonical semver without regex backtracking", () => {

@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/sessionscope"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionscope"
 )
 
 func TestRevokeSessionScopeFencesDrainsAndResumesIdempotently(t *testing.T) {
@@ -164,7 +164,7 @@ func TestRevokeSessionScopeRuntimeAckFailureIsCommittedIncomplete(t *testing.T) 
 func seedHostSessionScopeResources(t *testing.T, h *Host, session sessionctx.Context, now time.Time) *executionLease {
 	t.Helper()
 	_, err := h.surfaceTokens.OpenSurface(bridge.OpenSurfaceRequest{
-		PluginID: "com.example.scope", PluginInstanceID: "plugini_scope", PluginVersion: "1.0.0", UIProtocolVersion: "plugin-ui-v7",
+		PluginID: "com.example.scope", PluginInstanceID: "plugini_scope", PluginVersion: "1.0.0",
 		SurfaceID: "scope.view", SurfaceInstanceID: "surface_scope", ActiveFingerprint: "sha256:scope",
 		EntryPath: "ui/index.html", EntrySHA256: "sha256:entry", RouteRole: bridge.RouteRoleTrustedParent,
 		RuntimeGenerationID: "runtime_generation_scope",

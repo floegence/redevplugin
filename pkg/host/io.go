@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 // ErrMountUnavailable tells ReDevPlugin that a valid mount class is not

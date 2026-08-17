@@ -3,12 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ptr;
 
-mod hostcalls;
+mod broker;
 
 pub mod api;
 pub mod error;
 pub mod fs;
 pub mod http;
+mod platform_identity_gen;
 mod resource;
 pub mod tcp;
 pub mod udp;
@@ -16,20 +17,16 @@ pub mod websocket;
 
 pub use error::{Error, ErrorCode};
 pub type PlatformResult<T> = error::Result<T>;
-pub use hostcalls::{network, storage};
+pub use broker::storage;
+pub use platform_identity_gen::PLUGIN_API;
 pub use resource::{
     IO_FLAG_BINARY, IO_FLAG_DATAGRAM_END, IO_FLAG_EOF, IO_FLAG_MESSAGE_END, IO_FLAG_TEXT,
     MAX_IO_CHUNK_BYTES,
 };
 
-pub const WORKER_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
-pub const WORKER_REQUEST_SCHEMA_VERSION: &str = "redevplugin.worker_request.v2";
-const MAX_HOSTCALL_RESPONSE_BYTES: usize = 512 * 1024;
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerRequest {
-    pub schema_version: String,
     pub method: String,
     pub params: Value,
 }
@@ -54,6 +51,12 @@ impl WorkerError {
 
     pub fn hostcall(message: impl Into<String>) -> Self {
         Self::new("HOSTCALL_FAILED", message)
+    }
+}
+
+impl From<error::Error> for WorkerError {
+    fn from(error: error::Error) -> Self {
+        Self::new(error.code.as_str(), error.message)
     }
 }
 
@@ -111,11 +114,6 @@ pub unsafe fn invoke(pointer: u32, length: u32, handler: fn(WorkerRequest) -> Wo
     let result = serde_json::from_slice::<WorkerRequest>(request_bytes)
         .map_err(|err| WorkerError::invalid_request(format!("decode worker request: {err}")))
         .and_then(|request| {
-            if request.schema_version != WORKER_REQUEST_SCHEMA_VERSION {
-                return Err(WorkerError::invalid_request(
-                    "worker request schema version is unsupported",
-                ));
-            }
             if request.method.trim().is_empty() || !request.params.is_object() {
                 return Err(WorkerError::invalid_request(
                     "worker method and object params are required",
@@ -193,7 +191,6 @@ mod tests {
     #[test]
     fn request_shape_is_closed() {
         let valid: WorkerRequest = serde_json::from_value(json!({
-            "schema_version": WORKER_REQUEST_SCHEMA_VERSION,
             "method": "notes.list",
             "params": {}
         }))
@@ -201,10 +198,17 @@ mod tests {
         assert_eq!(valid.method, "notes.list");
         assert!(
             serde_json::from_value::<WorkerRequest>(json!({
-                "schema_version": WORKER_REQUEST_SCHEMA_VERSION,
                 "method": "notes.list",
                 "params": {},
                 "gateway_token": "secret"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<WorkerRequest>(json!({
+                "plugin_api": PLUGIN_API,
+                "method": "notes.list",
+                "params": {}
             }))
             .is_err()
         );

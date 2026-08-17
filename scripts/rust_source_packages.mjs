@@ -22,9 +22,7 @@ import { fileURLToPath } from "node:url";
 import { validateTarGzipArchive } from "./archive_contract.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const platformVersion = JSON.parse(
-  readFileSync(join(root, "spec/plugin/platform-version.json"), "utf8"),
-).platform_version;
+const platformVersion = readFileSync(join(root, "VERSION"), "utf8").trim();
 const rustToolchainSource = readFileSync(join(root, "rust-toolchain.toml"), "utf8");
 const rustToolchainMatch = rustToolchainSource.match(/^channel\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"$/m);
 if (!rustToolchainMatch) throw new Error("rust-toolchain.toml must pin an exact stable Rust version");
@@ -163,18 +161,6 @@ export function validateSourcePackageMetadata() {
     "1",
     "--no-deps",
   ], { cwd: root, env: cargoEnvironment(process.env.CARGO_HOME) }));
-  const packageSet = JSON.parse(
-    readFileSync(join(root, "spec/plugin/platform-package-set-v3.json"), "utf8"),
-  );
-  const expected = packageSet.rust_crates.map(({ name, version, role }) => ({ name, version, role }));
-  if (JSON.stringify(expected) !== JSON.stringify(rustSourcePackages.map(({ name, role }) => ({
-    name,
-    version: platformVersion,
-    role,
-  })))) {
-    throw new Error("Rust source package topology differs from the platform package set");
-  }
-
   for (const coordinate of rustSourcePackages) {
     const pkg = metadata.packages.find(({ name }) => name === coordinate.name);
     if (!pkg) throw new Error(`cargo metadata omitted ${coordinate.name}`);

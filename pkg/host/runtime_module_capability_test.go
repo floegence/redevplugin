@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 )
 
 func TestNewRuntimeModuleConsumesExecutableOnlyAfterValidation(t *testing.T) {
@@ -21,7 +21,7 @@ func TestNewRuntimeModuleConsumesExecutableOnlyAfterValidation(t *testing.T) {
 	}); !errors.Is(err, ErrRuntimeModuleOptionsInvalid) {
 		t.Fatalf("NewRuntimeModule() invalid options error = %v", err)
 	}
-	if executable.Descriptor().BinarySHA256().String() != strings.Repeat("c", 64) {
+	if executable.ArtifactIdentity().BinarySHA256().String() != strings.Repeat("c", 64) {
 		t.Fatal("failed module construction consumed the executable")
 	}
 	if outcome, err := executable.Close(); err != nil || outcome != MutationOutcomeCommitted {
@@ -35,8 +35,8 @@ func TestRuntimeModuleCloseAndTransferAreLinear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if module.Descriptor() != executable.descriptor {
-		t.Fatalf("module descriptor = %#v", module.Descriptor())
+	if module.ArtifactIdentity() != executable.descriptor {
+		t.Fatalf("module descriptor = %#v", module.ArtifactIdentity())
 	}
 	if outcome, err := executable.Close(); !errors.Is(err, ErrVerifiedExecutableClosed) || outcome != MutationOutcomeNotCommitted {
 		t.Fatalf("consumed executable Close() = %q, %v", outcome, err)
@@ -166,7 +166,7 @@ func TestHostConsumesAndClosesRuntimeModule(t *testing.T) {
 	if err := h.Close(); err != nil {
 		t.Fatalf("Host.Close() error = %v", err)
 	}
-	if executable.Descriptor() != (RuntimeDescriptor{}) {
+	if executable.ArtifactIdentity() != (RuntimeArtifactIdentity{}) {
 		t.Fatal("Host.Close() left the executable alias usable")
 	}
 	result, err := module.Close(context.Background())
@@ -188,7 +188,7 @@ func newRuntimeModuleTestExecutable(t *testing.T) *VerifiedExecutable {
 	}
 	return &VerifiedExecutable{
 		state:         verifiedExecutableOwned,
-		descriptor:    testPublicRuntimeDescriptor(t, "linux/amd64", strings.Repeat("c", 64)),
+		descriptor:    testPublicRuntimeArtifactIdentity(t, "linux/amd64", strings.Repeat("c", 64)),
 		executable:    executable,
 		executionRoot: executionRoot,
 	}

@@ -7,13 +7,13 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/security"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
 const maxRPCErrorGraphNodes = 256
@@ -469,7 +469,7 @@ func stableRPCSentinel(err error) error {
 		context.Canceled, context.DeadlineExceeded,
 		ErrPluginDataNotDeclared, ErrPluginStorageNotDeclared, ErrPluginSettingsNotDeclared,
 		ErrPluginDataContractChanged, ErrExecutionCancelDispatchFailed, ErrMethodRequestContract, ErrMethodResponseContract,
-		ErrMethodAdapterPanic, ErrManagementRevisionMismatch, ErrPluginAlreadyInstalled, ErrPluginUIProtocolUnsupported,
+		ErrMethodAdapterPanic, ErrManagementRevisionMismatch, ErrPluginAlreadyInstalled,
 		ErrPluginRuntimeNotConfigured, ErrPluginRuntimeIncompatible, ErrActionDenied,
 		ErrConfirmationRequired, ErrConfirmationInvalid, ErrConfirmationRejected, ErrSecurityEventPersistence,
 		ErrPluginTrustUnavailable, ErrPluginTrustDenied, ErrReleaseRefVerificationFailed, ErrHostClosed,

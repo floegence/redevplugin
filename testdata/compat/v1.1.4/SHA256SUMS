@@ -1,4 +1,0 @@
-e9d5e320fb92a2df27fc8573470dfa17e14845711f78b87acc8c27155e86cfd9  ui-only.redevplugin
-fec2d584d9a48744d6b0df2cde59c61671af878780308388c806c4f7fd444e71  worker.redevplugin
-4571cd039bca546fb8e35db7f95e31c53ae5bca2d6cbeb302885e9576647e889  ../../../cmd/redevplugin/scaffold_assets/backend.wasm
-b62b6e23a39c7bd43de9aadee055695f5586939349e2eee1e8218c81f3b4401f  ../../../examples/plugins/memos/workers/memos.wasm

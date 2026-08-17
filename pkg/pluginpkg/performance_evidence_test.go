@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v3/internal/performanceevidence"
 )
 
 func TestPerformanceWASMInspectionCache(t *testing.T) {
@@ -17,11 +17,11 @@ func TestPerformanceWASMInspectionCache(t *testing.T) {
 		inspectorCalls.Add(1)
 		return inspectWASMModule(module)
 	})
-	if _, err := cache.inspect(context.Background(), module, testWASMABI); err != nil {
+	if _, err := cache.inspect(context.Background(), module); err != nil {
 		t.Fatal(err)
 	}
 	warmAllocs := testing.AllocsPerRun(samples, func() {
-		if _, err := cache.inspect(context.Background(), module, testWASMABI); err != nil {
+		if _, err := cache.inspect(context.Background(), module); err != nil {
 			t.Fatal(err)
 		}
 	})

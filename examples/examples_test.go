@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
 
 func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {
@@ -112,7 +112,7 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 	}
 	packageBuildJob := release[packageBuildStart:publishRustStart]
 	if !strings.Contains(packageBuildJob, "rustup target add wasm32-unknown-unknown") ||
-		!strings.Contains(packageBuildJob, "scripts/platform_package_build.mjs build") {
+		!strings.Contains(packageBuildJob, "scripts/build_release_packages.mjs") {
 		t.Fatal("release package build must install the WASM target before building platform packages")
 	}
 
@@ -328,11 +328,6 @@ func TestExampleManifestsUseWorkerABIV2WithoutCallerOwnedStorageGrants(t *testin
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatal(err)
 		}
-		for _, worker := range doc.Workers {
-			if worker.ABI != "redevplugin-wasm-worker-v2" {
-				t.Fatalf("%s worker %s ABI = %q", entry.Name(), worker.WorkerID, worker.ABI)
-			}
-		}
 	}
 }
 
@@ -524,7 +519,7 @@ func TestWeatherHasAnImmediateForecastAndDesignedFailureRecovery(t *testing.T) {
 		`.weather-hero::before`,
 		`forecast-scroll`,
 		`min-height: 44px`,
-		`request.max_response_bytes = Some(393_216)`,
+		`body.len() > 393_216`,
 	} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("Weather complete-product flow is missing %q", required)

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 func TestReleaseSigningSchemasValidateSharedClosedDocuments(t *testing.T) {
@@ -24,12 +24,14 @@ func TestReleaseSigningSchemasValidateSharedClosedDocuments(t *testing.T) {
 	}
 
 	schemaVersions := map[string]string{
+		"release_metadata":      releasecontract.ReleaseMetadataSchemaVersion,
 		"source_policy":         releasecontract.SourcePolicySchemaVersion,
 		"source_policy_pointer": releasecontract.SourcePolicyPointerSchemaVersion,
 		"revocation":            releasecontract.RevocationSchemaVersion,
 		"revocation_pointer":    releasecontract.RevocationPointerSchemaVersion,
 	}
 	for document, schemaName := range map[string]string{
+		"release_metadata":      "release-metadata.schema.json",
 		"root_delegation":       "release-root-delegation-v1.schema.json",
 		"source_policy":         "release-source-policy-v3.schema.json",
 		"source_policy_pointer": "release-source-policy-pointer-v2.schema.json",
@@ -37,7 +39,7 @@ func TestReleaseSigningSchemasValidateSharedClosedDocuments(t *testing.T) {
 		"revocation_pointer":    "release-revocation-pointer-v2.schema.json",
 	} {
 		t.Run(document, func(t *testing.T) {
-			schema := compilePlatformPackageSchema(t, schemaName)
+			schema := compilePluginSchema(t, schemaName)
 			value := cloneReleaseSigningValue(t, fixture.Documents[document])
 			if schemaVersion := schemaVersions[document]; schemaVersion != "" {
 				value.(map[string]any)["schema_version"] = schemaVersion
@@ -144,7 +146,7 @@ func TestReleaseSigningSchemaFieldsMatchGoWireDTOs(t *testing.T) {
 		},
 		{
 			name:     "release-source-policy-v3.schema.json",
-			topLevel: reflect.TypeOf(releasecontract.SourcePolicyV2{}),
+			topLevel: reflect.TypeOf(releasecontract.SourcePolicyV3{}),
 			nestedDefs: map[string]reflect.Type{
 				"active_keys": reflect.TypeOf(releasecontract.SourcePolicyActiveKeys{}),
 				"limits":      reflect.TypeOf(releasecontract.SourcePolicyLimits{}),
@@ -152,7 +154,7 @@ func TestReleaseSigningSchemaFieldsMatchGoWireDTOs(t *testing.T) {
 		},
 		{
 			name:     "release-revocation-v3.schema.json",
-			topLevel: reflect.TypeOf(releasecontract.RevocationV2{}),
+			topLevel: reflect.TypeOf(releasecontract.RevocationV3{}),
 			nestedDefs: map[string]reflect.Type{
 				"revoked_release": reflect.TypeOf(releasecontract.RevokedRelease{}),
 			},

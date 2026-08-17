@@ -7,20 +7,28 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 func TestEnablePluginDoesNotMutateWhenSecurityAuditBeginFails(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	installed := installLifecycleFixture(t, h)
+	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "test audit failure",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cause := errors.New("journal unavailable")
 	h.securityJournal = &hostFailingSecurityJournal{beginErr: cause}
 
-	_, err := h.EnablePlugin(hostTestContext(), EnableRequest{
+	_, err = h.EnablePlugin(hostTestContext(), EnableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
-		ExpectedManagementRevision: installed.ManagementRevision,
+		ExpectedManagementRevision: disabled.ManagementRevision,
 	})
 	if !errors.Is(err, ErrSecurityEventPersistence) {
 		t.Fatalf("EnablePlugin() error = %v, want ErrSecurityEventPersistence", err)
@@ -29,7 +37,7 @@ func TestEnablePluginDoesNotMutateWhenSecurityAuditBeginFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.EnableState != registry.EnableDisabled || record.ManagementRevision != installed.ManagementRevision {
+	if record.EnableState != registry.EnableDisabledByUser || record.ManagementRevision != disabled.ManagementRevision {
 		t.Fatalf("record mutated after audit begin failure: %#v", record)
 	}
 }
@@ -37,11 +45,19 @@ func TestEnablePluginDoesNotMutateWhenSecurityAuditBeginFails(t *testing.T) {
 func TestEnablePluginReturnsUnknownWhenSecurityAuditCompletionFails(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	installed := installLifecycleFixture(t, h)
-	h.securityJournal = &hostFailingSecurityJournal{completeErr: errors.New("journal commit failed")}
-
-	_, err := h.EnablePlugin(hostTestContext(), EnableRequest{
+	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "test audit completion",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.securityJournal = &hostFailingSecurityJournal{completeErr: errors.New("journal commit failed")}
+
+	_, err = h.EnablePlugin(hostTestContext(), EnableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: disabled.ManagementRevision,
 	})
 	if outcome := mutation.ForError(err); outcome != mutation.OutcomeUnknown {
 		t.Fatalf("EnablePlugin() outcome = %q, want %q: %v", outcome, mutation.OutcomeUnknown, err)
@@ -58,12 +74,20 @@ func TestEnablePluginReturnsUnknownWhenSecurityAuditCompletionFails(t *testing.T
 func TestEnablePluginDoesNotDeliverSecurityAuditOutsideJournalExporter(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	installed := installLifecycleFixture(t, h)
+	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "test audit delivery",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	directSink := &auditSink{}
 	h.adapters.Audit = directSink
 
 	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
-		ExpectedManagementRevision: installed.ManagementRevision,
+		ExpectedManagementRevision: disabled.ManagementRevision,
 	}); err != nil {
 		t.Fatal(err)
 	}

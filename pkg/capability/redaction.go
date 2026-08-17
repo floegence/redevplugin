@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
 )
 
 // ResponseRedactedValue is the only wire value used to replace sensitive response data.

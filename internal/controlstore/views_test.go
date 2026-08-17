@@ -7,15 +7,22 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionscope"
 )
 
 func TestSessionIdentityIsStablePerExactScopeAndPersistsAcrossReopen(t *testing.T) {
@@ -89,7 +96,7 @@ func TestRegistryExternalInstallUsesOneTransactionAndNoDurableInspectionState(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if installed.ManagementRevision != 1 || installed.EnableState != registry.EnableDisabled {
+	if installed.ManagementRevision != 1 || installed.EnableState != registry.EnableEnabled {
 		t.Fatalf("installed = %#v", installed)
 	}
 	if _, err := view.InstallExternalPackage(ctx, "env", registry.InstallExternalPackageRequest{Intent: registry.ExternalPackageInstall, Record: record, Now: now.Add(time.Second)}); !errors.Is(err, registry.ErrManagementRevisionConflict) {
@@ -109,9 +116,16 @@ func TestRegistryExternalInstallUsesOneTransactionAndNoDurableInspectionState(t 
 	if transientTables != 0 {
 		t.Fatalf("transient external-package state became durable: %d tables", transientTables)
 	}
+	var executionRows int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM execution WHERE plugin_instance_id=?`, record.PluginInstanceID).Scan(&executionRows); err != nil {
+		t.Fatal(err)
+	}
+	if executionRows != 0 {
+		t.Fatalf("external install created a second activation execution: %d", executionRows)
+	}
 }
 
-func TestRegistryViewPreservesV9ManifestModelAcrossDurableMutations(t *testing.T) {
+func TestRegistryViewPreservesCanonicalManifestAcrossDurableMutations(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
 	if err != nil {
@@ -121,114 +135,166 @@ func TestRegistryViewPreservesV9ManifestModelAcrossDurableMutations(t *testing.T
 
 	now := time.Unix(100, 0).UTC()
 	record := externalControlRecord("plugin", "9.0.0", now)
-	model, err := manifest.DecodeModel(strings.NewReader(`{
+	manifestJSON := `{
   "schema_version": "redevplugin.manifest.v9",
   "publisher": {"publisher_id": "publisher", "display_name": "Publisher"},
   "plugin": {"plugin_id": "com.example", "display_name": "Example", "version": "9.0.0"},
-  "api": {"surface": 1, "worker": 1, "required_features": ["fs.environment.v1", "net.http.v1"]},
+  "api": {"major": 1, "required_features": ["fs.environment.v1", "net.http.v1"]},
   "permissions": ["fs.environment.read", "network.client"],
   "presentation": {"locales": {"default": "en-US"}},
   "surfaces": [{"surface_id": "main", "kind": "view", "label": "Main", "entry": "ui/index.html"}],
   "workers": [{"worker_id": "worker", "artifact": "workers/main.wasm", "mode": "job", "scope": "environment", "memory_limit_bytes": 16777216}],
-  "methods": [{"method": "io.run", "worker_id": "worker", "effect": "execute", "execution": "sync", "request_schema": {"type": "object", "additionalProperties": false}, "response_schema": {"type": "object", "additionalProperties": false}}]
-}`))
+  "methods": [{"method": "io.run", "route": {"kind": "worker", "worker_id": "worker"}, "effect": "execute", "execution": "sync", "request_schema": {"type": "object", "additionalProperties": false}, "response_schema": {"type": "object", "additionalProperties": false}}]
+}`
+	current, err := manifest.Decode(strings.NewReader(manifestJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
-	record.Manifest = model.Manifest
-	record.ManifestSource = model.SchemaSource
-	record.ManifestModel = model
-	wantModel := record.ManifestModel
+	canonical, err := manifest.CanonicalJSON([]byte(manifestJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Manifest = current
+	record.CanonicalManifest = string(canonical)
+	wantManifest := record.Manifest
+	wantCanonical := record.CanonicalManifest
 
-	record, err = store.Registry().PutPlugin(ctx, "env", record, now)
+	shape, err := plugindata.ShapeFromManifest(record.Manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertManifestModelEqual(t, record.ManifestModel, wantModel)
+	shapeHash, err := plugindata.HashShape(shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := plugindata.Binding{
+		PluginInstanceID: record.PluginInstanceID,
+		GenerationID:     "gen_manifest_projection",
+		State:            plugindata.BindingActive,
+		Revision:         1,
+		ShapeHash:        shapeHash,
+	}
+	record, err = store.InstallCommit(pluginDataCatalogContext("env", "user"), record, nil, binding, shape, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertManifestEqual(t, record, wantManifest, wantCanonical)
 
 	record, err = store.Registry().GetPlugin(ctx, "env", record.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertManifestModelEqual(t, record.ManifestModel, wantModel)
+	assertManifestEqual(t, record, wantManifest, wantCanonical)
+	var persisted string
+	if err := store.db.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=?`, "env", record.PluginInstanceID).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(persisted, `"manifest":`) != 1 || strings.Contains(persisted, `"canonical_manifest"`) || strings.Contains(persisted, `"version_canonical_manifests"`) {
+		t.Fatalf("record_json must persist one canonical manifest source: %s", persisted)
+	}
 
 	record, err = store.Registry().SetEnableState(ctx, "env", record.PluginInstanceID, registry.EnableEnabled, "", now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertManifestModelEqual(t, record.ManifestModel, wantModel)
+	assertManifestEqual(t, record, wantManifest, wantCanonical)
 
 	authorization, err := store.Registry().GetAuthorization(ctx, "env", record.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertManifestModelEqual(t, authorization.Plugin.ManifestModel, wantModel)
+	assertManifestEqual(t, authorization.Plugin, wantManifest, wantCanonical)
 }
 
-func assertManifestModelEqual(t *testing.T, got, want manifest.Model) {
+func TestDecodeRegistryPluginRecordRejectsUnknownCurrentFields(t *testing.T) {
+	record := externalControlRecord("plugin_strict", "1.0.0", time.Unix(100, 0).UTC())
+	raw, err := encodeRegistryPluginRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["legacy_activation"] = true
+	tampered, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeRegistryPluginRecord(tampered); err == nil || !strings.Contains(err.Error(), `unknown field "legacy_activation"`) {
+		t.Fatalf("decode unknown field error = %v", err)
+	}
+}
+
+func assertManifestEqual(t *testing.T, record registry.PluginRecord, want manifest.Manifest, wantCanonical string) {
 	t.Helper()
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("manifest model = %#v, want %#v", got, want)
+	if !reflect.DeepEqual(record.Manifest, want) {
+		t.Fatalf("manifest = %#v, want %#v", record.Manifest, want)
+	}
+	if record.CanonicalManifest != wantCanonical {
+		t.Fatalf("canonical manifest = %q, want %q", record.CanonicalManifest, wantCanonical)
 	}
 }
 
-func TestRegistryExternalInstallCommitsActivationExecutionAtomically(t *testing.T) {
-	ctx := context.Background()
-	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
+func TestControlStoreSourceHasNoExternalInstallActivationLifecycle(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "views.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	now := time.Unix(100, 0).UTC()
-	owner := ExecutionOwner{OwnerSessionHash: "session", OwnerUserHash: "user", OwnerEnvHash: "env", SessionChannelIDHash: "channel"}
-	record, pending, err := store.Registry().InstallExternalPackageWithActivation(ctx, "env", registry.InstallExternalPackageRequest{
-		Intent: registry.ExternalPackageInstall, Record: externalControlRecord("plugin", "1.0.0", now), Now: now,
-	}, ExternalInstallActivationRequest{
-		ExecutionID: "external_install", Owner: owner, Now: now,
-		Activation: registry.ReleaseInstallActivationRequest{Mode: registry.ReleaseInstallActivationAutomatic, ApprovedPermissionIDs: []string{"read"}},
-	})
-	if err != nil {
-		t.Fatal(err)
+	retiredTypes := map[string]bool{
+		"ExternalInstallActivation":        true,
+		"ExternalInstallActivationRequest": true,
+		"externalInstallActivationPayload": true,
 	}
-	if pending.Execution.Status != execution.StatusRunning || pending.PackageSHA256 != record.PackageHash ||
-		pending.InstalledManagementRevision != record.ManagementRevision {
-		t.Fatalf("pending activation = %#v, record = %#v", pending, record)
+	retiredMethods := map[string]bool{
+		"InstallExternalPackageWithActivation":  true,
+		"ListPendingExternalInstallActivations": true,
 	}
-	listed, err := store.Executions().ListPendingExternalInstallActivations(ctx, owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(listed) != 1 || listed[0].Execution.ID != pending.Execution.ID || listed[0].ActivationRequest.ApprovedPermissionIDs[0] != "read" {
-		t.Fatalf("listed activations = %#v", listed)
-	}
-	var raw string
-	if err := store.db.QueryRowContext(ctx, `SELECT operation_json FROM execution WHERE execution_id=?`, pending.Execution.ID).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	for _, retired := range []string{"execution_id", "status", "cursor", "terminal_at", "created_at", "updated_at"} {
-		if strings.Contains(raw, `"`+retired+`"`) {
-			t.Errorf("external activation payload mirrors execution field %q: %s", retired, raw)
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.TypeSpec:
+			if retiredTypes[value.Name.Name] {
+				t.Errorf("control store still declares retired type %s", value.Name.Name)
+			}
+		case *ast.FuncDecl:
+			if retiredMethods[value.Name.Name] {
+				t.Errorf("control store still declares retired method %s", value.Name.Name)
+			}
+		case *ast.BasicLit:
+			if value.Kind != token.STRING {
+				break
+			}
+			literal, unquoteErr := strconv.Unquote(value.Value)
+			if unquoteErr == nil && strings.Contains(literal, "external_install_activation") {
+				t.Errorf("control store still persists retired external activation payload %q", literal)
+			}
 		}
-	}
-
-	badRecord := externalControlRecord("rolled_back", "1.0.0", now)
-	_, _, err = store.Registry().InstallExternalPackageWithActivation(ctx, "env", registry.InstallExternalPackageRequest{
-		Intent: registry.ExternalPackageInstall, Record: badRecord, Now: now,
-	}, ExternalInstallActivationRequest{ExecutionID: "invalid", Owner: owner, Activation: registry.ReleaseInstallActivationRequest{Mode: registry.ReleaseInstallActivationDisabled}})
-	if err == nil {
-		t.Fatal("invalid activation request was accepted")
-	}
-	if _, err := store.Registry().Get(ctx, "env", badRecord.PluginInstanceID); !errors.Is(err, ErrRecordNotFound) {
-		t.Fatalf("failed atomic install left plugin state: %v", err)
-	}
+		return true
+	})
 }
 
 func externalControlRecord(instanceID, version string, now time.Time) registry.PluginRecord {
+	currentManifest := manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersionV9,
+		Publisher:     manifest.Publisher{PublisherID: "publisher", DisplayName: "Publisher"},
+		Plugin:        manifest.Plugin{PluginID: "com.example", DisplayName: "Example", Version: version},
+		API:           manifest.PublicAPIRequirement{Major: 1, RequiredFeatures: []manifest.FeatureID{}, OptionalFeatures: []manifest.FeatureID{}},
+		Permissions:   []manifest.PermissionID{},
+		Presentation: manifest.PresentationSpec{
+			DefaultLocale: "en-US", Summary: "Example", Description: []string{"Example plugin"},
+			Highlights: []string{}, Keywords: []string{"example"}, Localizations: []manifest.PresentationLocalizationSpec{},
+		},
+		Surfaces: []manifest.SurfaceSpec{{
+			SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Main", Entry: "ui/index.html",
+		}},
+		Workers: []manifest.WorkerSpec{},
+		Methods: []manifest.MethodSpec{},
+	}
 	return registry.PluginRecord{
 		PluginInstanceID: instanceID, PublisherID: "publisher", PluginID: "com.example", Version: version,
 		ActiveFingerprint: "sha256:fingerprint", PackageHash: "sha256:package", ManifestHash: "sha256:manifest", EntriesHash: "sha256:entries",
-		TrustState: registry.TrustUntrusted, EnableState: registry.EnableDisabled,
-		Manifest:                manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example", Version: version}},
+		TrustState: registry.TrustUntrusted, EnableState: registry.EnableEnabled,
+		Manifest:                currentManifest,
 		SignatureAssessment:     registry.SignatureAssessment{Status: registry.SignatureAbsent, PackageSHA256: "sha256:package", ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries", AssessedHashes: registry.TrustHashSet{PackageSHA256: "sha256:package", ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries"}},
 		PackageSourceProvenance: registry.PackageSourceProvenance{Kind: registry.PackageSourcePackageURL, SourceURL: "https://plugins.example.test/p", FinalURL: "https://plugins.example.test/p", PackageSHA256: "sha256:package", RetrievedAt: now},
 		ExecutionApproval:       registry.ExecutionApproval{Status: registry.ExecutionApprovalUserApproved, OwnerEnvHash: "env", PackageSHA256: "sha256:package", ApprovedAt: now, AssessedAt: now},
@@ -260,7 +326,7 @@ func TestRegistryInstallAndGrantsCommitAtomically(t *testing.T) {
 	defer store.Close()
 	view := store.Registry()
 	install := PluginInstall{
-		Record: PluginRecord{OwnerEnvHash: "env", PluginInstanceID: "plugin", PublisherID: "publisher", PluginID: "com.example", Version: "1.0.0", ActiveFingerprint: "sha256:fingerprint", PackageSHA256: "sha256:package", ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries", State: "enabled", PolicyRevision: 2, ManagementRevision: 3, RevokeEpoch: 4, InstalledAt: 10, UpdatedAt: 11, RawJSON: json.RawMessage(`{"manifest":{"schema_version":8},"management_revision":3}`)},
+		Record: PluginRecord{OwnerEnvHash: "env", PluginInstanceID: "plugin", PublisherID: "publisher", PluginID: "com.example", Version: "1.0.0", ActiveFingerprint: "sha256:fingerprint", PackageSHA256: "sha256:package", ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries", State: "enabled", PolicyRevision: 2, ManagementRevision: 3, RevokeEpoch: 4, InstalledAt: 10, UpdatedAt: 11, RawJSON: json.RawMessage(`{"manifest":{"schema_version":"redevplugin.manifest.v9"},"management_revision":3}`)},
 		Grants: []Grant{{CapabilityID: "documents.read", Revision: 2, RawJSON: json.RawMessage(`{"permission_id":"documents.read","effect":"allow"}`)}},
 	}
 	if err := view.Install(context.Background(), install); err != nil {
@@ -413,7 +479,7 @@ func TestReleaseInstallPayloadDefersIdentityStateAndCursorToExecution(t *testing
 			ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0",
 			PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64),
 		},
-		Activation: registry.ReleaseInstallActivationRequest{Mode: registry.ReleaseInstallActivationDisabled}, Now: now,
+		Now: now,
 	}
 	owner := ExecutionOwner{OwnerSessionHash: "session", OwnerUserHash: "user", OwnerEnvHash: "env", SessionChannelIDHash: "channel"}
 	started, created, err := view.StartReleaseInstall(ctx, owner, request)
@@ -430,6 +496,9 @@ func TestReleaseInstallPayloadDefersIdentityStateAndCursorToExecution(t *testing
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(raw, `"activation"`) || strings.Contains(raw, `"activation_request"`) {
+		t.Errorf("release-install payload still persists activation state: %s", raw)
+	}
 	for _, retired := range []string{"execution_id", "operation_id", "status", "cursor", "terminal_at", "revision", "created_at", "updated_at"} {
 		if _, exists := payload.Operation[retired]; exists {
 			t.Errorf("release-install domain payload mirrors execution field %q: %s", retired, raw)
@@ -438,7 +507,7 @@ func TestReleaseInstallPayloadDefersIdentityStateAndCursorToExecution(t *testing
 	updated, err := view.UpdateReleaseInstall(ctx, owner.OwnerEnvHash, registry.UpdateReleaseInstallOperationRequest{
 		ExecutionID: request.ExecutionID, ExpectedCursor: started.Execution.Cursor, Status: execution.StatusRunning,
 		Phase: "download_package", Progress: registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressBytes, Completed: 1, Total: 2},
-		Attempt: 1, MutationOutcome: "not_committed", Activation: started.Activation, Now: now.Add(time.Second),
+		Attempt: 1, MutationOutcome: "not_committed", Now: now.Add(time.Second),
 	})
 	if err != nil || updated.Execution.Cursor != 1 {
 		t.Fatalf("UpdateReleaseInstall() = %#v, %v", updated, err)
@@ -446,10 +515,26 @@ func TestReleaseInstallPayloadDefersIdentityStateAndCursorToExecution(t *testing
 	_, err = view.UpdateReleaseInstall(ctx, owner.OwnerEnvHash, registry.UpdateReleaseInstallOperationRequest{
 		ExecutionID: request.ExecutionID, ExpectedCursor: 0, Status: execution.StatusRunning,
 		Phase: "verify_hashes", Progress: registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate},
-		Attempt: 1, MutationOutcome: "not_committed", Activation: updated.Activation, Now: now.Add(2 * time.Second),
+		Attempt: 1, MutationOutcome: "not_committed", Now: now.Add(2 * time.Second),
 	})
 	if !errors.Is(err, registry.ErrReleaseInstallOperationConflict) {
 		t.Fatalf("stale cursor update error = %v", err)
+	}
+	record := registry.PluginRecord{PluginInstanceID: request.PluginInstanceID, EnableState: registry.EnableEnabled}
+	completed, err := view.UpdateReleaseInstall(ctx, owner.OwnerEnvHash, registry.UpdateReleaseInstallOperationRequest{
+		ExecutionID: request.ExecutionID, ExpectedCursor: updated.Execution.Cursor, Status: execution.StatusCompleted,
+		Phase: "complete", Progress: registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressItems, Completed: 1, Total: 1},
+		Attempt: 1, MutationOutcome: "committed", PluginRecord: &record, Now: now.Add(3 * time.Second),
+	})
+	if err != nil || completed.Execution.Status != execution.StatusCompleted || completed.PluginRecord == nil || completed.PluginRecord.EnableState != registry.EnableEnabled {
+		t.Fatalf("completed release install = %#v, %v", completed, err)
+	}
+	events, err := view.EventsAfter(ctx, request.ExecutionID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Kind != execution.EventProgress || events[1].Kind != execution.EventTerminal {
+		t.Fatalf("release-install event envelope = %#v", events)
 	}
 }
 
@@ -699,4 +784,65 @@ func TestConfirmationAndSessionViewsRoundTripCanonicalJSON(t *testing.T) {
 		t.Fatalf("phases = %#v", phases)
 	}
 	assertJSONEqual(t, string(phases[0].RawJSON), string(phase.RawJSON))
+}
+
+func TestCurrentConfirmationViewRejectsLegacyScopeJSON(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	expiresAt := time.Unix(200, 0).UTC()
+	legacy := `{"confirmation_id":"legacy","confirmation_token_id":"token","plugin_id":"com.example","plugin_instance_id":"plugin","surface_instance_id":"surface","bridge_channel_id":"bridge","method":"example.run","request_hash":"request","plan_hash":"plan","scope_json":"{\"active_fingerprint\":\"sha256:fingerprint\",\"owner_session_hash\":\"session\",\"owner_user_hash\":\"user\",\"owner_env_hash\":\"env\",\"session_channel_id_hash\":\"channel\",\"policy_revision\":1,\"management_revision\":1,\"revoke_epoch\":1,\"target_descriptor_sha256\":\"sha256:target\"}","issued_at":1000000000,"expires_at":200000000000}`
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO confirmation_intents(confirmation_id,plugin_instance_id,owner_session_hash,owner_user_hash,owner_env_hash,session_channel_id_hash,status,expires_at,confirmation_json) VALUES(?,?,?,?,?,?,'pending',?,?)`, "legacy", "plugin", "session", "user", "env", "channel", expiresAt.UnixNano(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Confirmations().ListConfirmationIntentRecords(ctx, "plugin"); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("ListConfirmationIntentRecords() error = %v, want ErrStateConflict", err)
+	}
+}
+
+func TestCurrentSessionViewRejectsLegacyFenceAndPhasePayloads(t *testing.T) {
+	ctx := context.Background()
+	scope := sessionctx.SessionScope{OwnerSessionHash: "session", OwnerUserHash: "user", OwnerEnvHash: "env", SessionChannelIDHash: "channel"}
+
+	t.Run("flat fence counts", func(t *testing.T) {
+		store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+
+		proof := bytes.Repeat([]byte{1}, sha256.Size)
+		updatedAt := time.Unix(100, 0).UTC()
+		legacy := `{"teardown_operation_id":"teardown","operations":2,"created_at":100000000000,"updated_at":100000000000}`
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO session_fences(owner_session_hash,owner_user_hash,owner_env_hash,session_channel_id_hash,state,fence_json,proof_sha256,updated_at) VALUES(?,?,?,?,?,?,?,?)`, scope.OwnerSessionHash, scope.OwnerUserHash, scope.OwnerEnvHash, scope.SessionChannelIDHash, sessionscope.StateDraining, legacy, proof, updatedAt.UnixNano()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Sessions().GetSessionControlRecord(ctx, scope); !errors.Is(err, sessionscope.ErrInvalidState) {
+			t.Fatalf("GetSessionControlRecord() error = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("counts_json phase", func(t *testing.T) {
+		store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+
+		proof := bytes.Repeat([]byte{2}, sha256.Size)
+		now := time.Unix(100, 0).UTC()
+		if _, err := store.Sessions().BeginSessionControlTeardown(ctx, sessionscope.ControlRecord{Scope: scope, State: sessionscope.StateDraining, TeardownOperationID: "teardown", ProofSHA256: proof, CreatedAt: now, UpdatedAt: now}, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO session_teardown_phases(owner_session_hash,owner_user_hash,owner_env_hash,session_channel_id_hash,phase,phase_json) VALUES(?,?,?,?,?,?)`, scope.OwnerSessionHash, scope.OwnerUserHash, scope.OwnerEnvHash, scope.SessionChannelIDHash, sessionscope.PhaseExecution, `{"counts_json":"{\"operations\":2}"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Sessions().GetSessionControlRecord(ctx, scope); !errors.Is(err, sessionscope.ErrInvalidCounts) {
+			t.Fatalf("GetSessionControlRecord() error = %v, want ErrInvalidCounts", err)
+		}
+	})
 }

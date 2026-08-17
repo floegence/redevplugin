@@ -23,7 +23,7 @@ test("repository docs define the source-crate platform boundary", () => {
   for (const [label, source] of Object.entries(documents)) {
     assert.match(
       source,
-      /ReDevPlugin publishes (?:the Rust runtime as|versioned)\s+source\s+crates/i,
+      /ReDevPlugin publishes (?:exact\s+Rust|versioned)\s+source\s+crates/i,
       `${label} must declare the source-crate publication boundary`,
     );
     assert.match(

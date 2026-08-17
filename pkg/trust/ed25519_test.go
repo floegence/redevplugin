@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 func TestEd25519VerifierAcceptsSignedVerifiedPackage(t *testing.T) {
@@ -227,27 +227,21 @@ func unsignedFixturePackage(t *testing.T) pluginpkg.Package {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.trust",
 			"display_name": "Trust",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "trust.view", "kind": "view", "label": "Trust", "entry": "ui/index.html"}
-		]
+		],
+		"workers": [],
+		"methods": []
 	}`)
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html><title>Trust</title><body><main>Trust</main><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`)
 	writeFile(t, filepath.Join(dir, "ui", "assets", "app.js"), "void 0;")

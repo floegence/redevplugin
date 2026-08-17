@@ -12,48 +12,38 @@ capabilities.
 
 ## Current Platform Snapshot
 
-- Go module: `github.com/floegence/redevplugin/v2`
+- Platform version source: `VERSION` (`3.0.0`)
+- Go module: `github.com/floegence/redevplugin/v3`
 - TypeScript packages: the opt-in raw contract body package
   `@floegence/redevplugin-contracts` and the sandbox/runtime SDK
   `@floegence/redevplugin-ui`
 - Rust workspace and publication set: exactly `redevplugin-runtime` and
   `redevplugin-worker-sdk`
-- Contracts: OpenAPI, manifest schema, package-signature schema,
-  release-metadata schema, source-policy schema, source-revocations schema,
-  token/ticket schema, iframe bridge and render policy, opaque surface document
-  and transport schemas, compatibility and release manifest schemas, IPC schema,
-  WASM ABI schema, worker invocation payload schema, stable error-code schema,
-  persistent resource-scope schema, performance-evidence schema, and target
-  classifier fixture
-- Active coordinated contracts are Surface API 1, Worker API 1,
-  `plugin-host-v11`, `rust-ipc-v7`, `plugin-ui-v7`, `bridge-v7`,
-  `plugin-platform-v17`, `manifest-v9`, opaque
-  document v3, opaque transport v6, release metadata v8, compatibility manifest
-  v20, public API catalog v1, error codes v8, resource scope v1, session scope
-  v1, and token/ticket v4. WASM ABI v2,
-  worker invocation v3, and package
-  signature v1 remain unchanged. Package admission accepts both frozen manifest
-  v8 packages and new manifest v9 packages; only v9 is scaffolded.
-- The canonical contract registry is available through opt-in Go and npm
-  contract libraries with identical immutable bytes, IDs, versions, hashes,
-  and aggregate digest. It is returned by the active compatibility-v20
-  Host API, and importing ordinary Host or UI entrypoints does not link or load
-  the raw schema bodies.
+- Plugin author compatibility: manifest v9 with `plugin_api=1`. Older manifests
+  and parallel UI/WASM compatibility axes are rejected rather than normalized.
+- Host/runtime compatibility: `internal_wire=1`, checked once by the exact
+  Hello/HelloAck handshake. Ordinary frames carry no version field.
+- Canonical contracts use fixed paths, including
+  `spec/openapi/plugin-platform.yaml` and
+  `spec/internal/runtime-wire.schema.json`.
+- Each release publishes one signed, staging-generated
+  `PlatformReleaseManifest` containing the exact hashes of the Go, npm, crate,
+  and contract artifacts. The manifest is not checked into an artifact whose
+  hash it contains.
 - The contract libraries also expose canonical release-signing DTOs and
   build, preimage, strict-decode, and verifier APIs for root delegation,
   packages, release metadata, source policy and its pointer, and revocation and
   its pointer. The seven signing usages are domain separated, timestamps are
   explicit inputs, and pointer genesis is fixed to epoch `0` plus the all-zero
   SHA-256 sentinel. These APIs live in `pkg/releasecontract` and the opt-in
-  contracts packages; `pkg/releasetrust` consumes the active compatibility-v20
-  contract.
-- Source policy v3, source-policy pointer v2, revocation v3, and revocation
-  pointer v2 provide a 90-day personal-maintainer validity profile while the
-  prior v2/v1 documents remain strict compatibility inputs.
+  contracts packages; `pkg/releasetrust` consumes the one canonical release
+  metadata contract.
+- Source policy and revocation documents remain mutable security facts. They do
+  not create an additional platform compatibility matrix.
 
 ## Localized Plugin Presentation
 
-Manifest v8 requires an author-owned presentation catalog. The default locale
+Manifest v9 requires an author-owned presentation catalog. The default locale
 uses the manifest's plugin, publisher, surface, setting, and option labels;
 authors may add up to 15 complete localized records. Localizations are keyed by
 canonical BCP 47 tags and must cover every translatable field without missing,
@@ -166,30 +156,30 @@ an English fallback or mix locales within one resolved presentation.
   state requires a host-provided `PackageTrustVerifier`; unsigned local packages
   can be enabled only when host policy permits local generated plugins.
 - Release inspection verifies an exact release reference before confirmation
-  and returns Host-derived permission IDs, activation requiredness, method
-  bindings, and effects without installing a plugin.
-  Durable release-install executions then continue through the authoritative
-  enable transaction by default for every accepted source. Required permissions
-  are granted only when the request explicitly approves their signed IDs;
-  otherwise the installed plugin remains disabled with a `needs_attention`
-  result. Fetch, download, hash, signature, capability, commit, and enable
-  progress uses the shared Execution/Event stream, and a Host restart resumes a
-  matching release or external package that was committed before activation
-  completed.
+  and returns Host-derived permission IDs, method bindings, and effects without
+  installing a plugin. One `InstallCommit` atomically persists the record,
+  PluginData binding, and default settings with `enable_state=enabled`. Required
+  permissions are granted only when the request explicitly approves their
+  signed IDs; missing grants make the affected open/capability action return
+  `permission_required` without changing lifecycle state. Fetch, download,
+  integrity verification, and commit progress use the shared Execution/Event
+  stream. Runtime and surface publication are retryable derived work after the
+  durable commit.
 - External package admission accepts a public HTTPS package URL or GitHub
   repository through a process-local `inspect -> confirm -> install` transaction. The
   inspection returns immutable source, hash, signature, execution-approval,
   update-eligibility, and effective capability evidence for explicit review.
   Signature state does not decide basic manual installation: absent,
   unknown-signer, and temporarily unavailable assessments may be confirmed and
-  remain manual-update-only. A new plugin activates in that same Host call when
-  all required permission IDs were explicitly approved; otherwise activation
-  ends in `needs_attention` without unapproved grants.
+  remain manual-update-only. A successful commit installs the plugin as enabled;
+  unapproved capabilities remain unavailable until the user grants them.
   Invalid or revoked signatures block installation and execution. Each opaque,
   expiring inspection stays bound to the exact authenticated owner/session; the
   installer reopens and revalidates public HTTPS, DNS, redirects, TLS identity,
-  size, and exact bytes before the single Host control transaction. Updates
-  preserve the pre-install enabled or user-disabled intent.
+  size, and exact bytes before the single Host control transaction. Only an
+  explicit user disable writes `disabled_by_user`; trust, policy, permission,
+  readiness, and runtime failures revoke derived resources without rewriting
+  that intent.
 - The host-neutral `pkg/trust` package provides an Ed25519 verifier and keyring
   interface for package signatures. Hosts still decide which keys, publishers,
   registries, or enterprise policies are trusted, but they can reuse the common
@@ -201,7 +191,7 @@ an English fallback or mix locales within one resolved presentation.
 - The CLI can generate local Ed25519 signing keys and produce signed package
   artifacts without placing private keys in shell arguments. Start with
   `redevplugin scaffold <plugin-id> <display-name> <out-dir>`, package the
-  generated UI plus one ABI v2 WASM backend worker, then sign it:
+  generated UI plus one current `plugin_api=1` WASM backend worker, then sign it:
   `redevplugin keygen <key-id> <private.json> <public.json>` followed by
   `redevplugin sign <unsigned.redevplugin> <private.json> <signed.redevplugin>`.
   Development harnesses can then run
@@ -268,11 +258,11 @@ an English fallback or mix locales within one resolved presentation.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
   generated render policy, TypeScript SDK route coverage, and package validator
   aligned.
-- Manifest v8 requires every method to declare closed request and response
+- Manifest v9 requires every method to declare closed request and response
   object schemas. Package validation compiles those schemas without remote
   references; Host dispatch validates requests before adapters/runtime and
   validates canonical redacted responses before returning them to plugin code.
-- Manifest v8 surface declarations use only host-neutral `view`, `command`, or
+- Manifest v9 surface declarations use only host-neutral `view`, `command`, or
   `background` kinds with optional `primary`, `secondary`, or `utility` intent.
   Activity bars, workbench panes, settings pages, and modal placement remain
   host-product decisions.
@@ -282,10 +272,10 @@ an English fallback or mix locales within one resolved presentation.
   codes, bridge response codes, TypeScript client-side transport codes, and Rust
   IPC codes so product shells can branch on stable values without scraping
   localized messages.
-- WASM worker ABI schema tests keep `wasm-worker-v2.schema.json` aligned with
-  the Go package validator, Go compatibility version, Rust ABI crate constants,
-  Rust IPC worker export validation, Rust runtime linked hostcall modules, and
-  the worker invocation schema export enum.
+- WASM author ABI schema tests keep `spec/plugin/wasm-abi.json` aligned with
+  the Go package validator, Rust worker export validation, runtime linked
+  hostcall modules, and the canonical worker invocation schema. `plugin_api=1`
+  is the only author-visible compatibility input.
 - Go package validation compiles the complete WASM module with Wazero before it
   accepts memory and export metadata. The Rust ABI crate independently runs
   `wasmparser::Validator::validate_all` before runtime execution, and the Wasmi
@@ -293,26 +283,27 @@ an English fallback or mix locales within one resolved presentation.
   `memory.grow`. The manifest platform ceiling is 256 MiB per worker; a Host
   may reject a lower value through its package trust policy.
 - Plugin backend authors use the published `redevplugin-worker-sdk` crate at the
-  same platform version. The platform package set and publication evidence bind
-  its registry coordinate and checksum; hosts and plugin authors do not copy a
+  same platform version. The signed platform release manifest binds its
+  registry coordinate and checksum; hosts and plugin authors do not copy a
   bundled crate or wire a sibling checkout.
-- Rust IPC schema tests keep startup `hello` / `hello_ack` frames bound to the
-  Host-issued channel nonce, runtime generation, IPC version, and WASM ABI
-  version, keep worker invocation leases bound to `lease_nonce` for runtime
+- Runtime wire tests keep startup `hello` / `hello_ack` frames bound to the
+  Host-issued connection nonce, exact platform version, `internal_wire=1`, and
+  runtime artifact identity, while worker invocation leases remain bound to `lease_nonce` for runtime
   replay rejection, require structured heartbeat ACK results for control-channel
   liveness, and require `revoke_epoch_ack` results to report the plugin
   instance, revoke epoch, and closed socket/stream/storage-handle counters.
   IPC golden fixtures under `testdata/contracts/ipc/` are read by Go Host tests
   and Rust IPC crate tests. They cover the current handshake/response shape plus
-  Host/Rust IPC version mismatch, WASM ABI mismatch, missing required fields,
+  Host/Rust wire mismatch, missing required fields,
   replayed request IDs, unknown frame types, and runtime-generation mismatch
   fail-closed paths.
-- Rust IPC v4 multiplexes invocations over one runtime process with one reader,
+- The current internal wire multiplexes invocations over one runtime process with one reader,
   one serialized writer, and a pending map keyed by `request_id`. Runtime-origin
-  artifact, grant, storage, and network frames carry `parent_request_id`, which
-  the Go supervisor resolves back to the signed invocation audience before Host
-  IO. `cancel_invoke` removes queued work or marks running work canceled without
-  invalidating the runtime generation.
+  artifact and generic Hostcall frames carry `parent_request_id`, which the Go
+  supervisor resolves back to the signed invocation audience before Host I/O.
+  `cancel_invoke` removes queued work or marks running work canceled without
+  invalidating the runtime generation. No independently versioned IPC contract
+  or semantic storage/network frame family remains.
 - `RuntimeLimits` is a Host-only Go configuration. Defaults derive 4-16 workers
   from `GOMAXPROCS`, cap the queue at 64, cap each plugin at 2-8 concurrent
   workers, and allow 64 compiled modules or 128 MiB of source WASM. Go waits for
@@ -361,8 +352,7 @@ an English fallback or mix locales within one resolved presentation.
   parent-only token boundaries aligned with the TypeScript SDK.
 - The TypeScript package includes sandbox iframe bridge helpers and a host-side
   `PluginPlatformClient` for release-reference platform management routes:
-  compatibility manifest read, release-ref install/update, downgrade,
-  enable/disable/uninstall, surface open, runtime
+  release-ref install/update, downgrade, enable/disable/uninstall, surface open, runtime
   start/health/recover-enabled/retry/stop, settings schema/read/patch, execution
   list/get/cancel, data export/import, permission grant/revoke/list, secret
   bind/test/delete, host-mediated intent list/invoke, and owner-scoped diagnostic
@@ -456,37 +446,20 @@ an English fallback or mix locales within one resolved presentation.
   stable platform classifications and validated public details are preserved,
   while the original error graph and adapter-controlled error text are discarded
   before cleanup, diagnostics, or HTTP mapping.
-- `redevplugin version` emits a host-consumable compatibility manifest with the
-  current platform version matrix plus SHA-256 hashes for the released OpenAPI,
-  manifest, signature, release-metadata, source-policy, source-revocations,
-  token/ticket, bridge, opaque-surface document and transport, compatibility,
-  release-manifest, IPC, WASM,
-  network-grant, worker invocation, capability contract and exact-pin schemas,
-  error-code, performance-evidence, and target-classifier contracts. Network
-  grant schema, release manifest schema,
-  and target-classifier fixture versions are tracked independently so hosts can
-  distinguish grant envelope drift, bundle manifest drift, and classifier rule
-  drift. The target-classifier fixture now carries executable allow/deny cases
-  for public DNS, punycode hostnames, metadata hosts, RFC1918/ULA/link-local
-  addresses, and IPv4-mapped IPv6 private addresses, with Go tests reading the
-  same JSON contract.
-- `spec/plugin/contract-registry-v2.json` is the generated complete inventory of
-  those public contract IDs, paths, versions, and SHA-256 identities; Go and
-  TypeScript registries are generated from the same source set.
-- Platform package-set and publication tests keep Go, npm, Rust registry
-  coordinates, integrity, source identity, compatibility hashes, and the
-  exact-one completion manifest aligned without an OS runtime bundle or
-  self-referential checksum set.
-- Mounted hosts can also expose the same compatibility manifest through the
-  closed `POST /_redevplugin/api/plugins/platform/compatibility/query` request,
-  allowing a product to
-  verify the loaded platform artifact set without shelling out to the CLI; the
-  TypeScript `PluginPlatformClient.getCompatibility()` helper reads the same
-  endpoint for browser-hosted product shells.
-- `redevplugin verify-compatibility <compatibility.json> <artifact-root>` checks
-  a released compatibility manifest against the current version matrix and the
-  referenced contract artifact hashes. Host products can use this command before
-  upgrading a published ReDevPlugin dependency set.
+- `VERSION` is the only editable platform-version source. Release checks require
+  exact equality across the `/v3` Go module, npm packages, Rust crates, OpenAPI,
+  tag, and registry readback.
+- `scripts/generate_platform_release_manifest.mjs` runs only after the package
+  artifacts have been frozen. It emits deterministic canonical bytes into an
+  external staging directory, with top-level `platform_version`, `plugin_api`,
+  `internal_wire`, and sorted `{name, sha256}` artifacts. The signed release
+  asset is the one release index; no checked-in contract registry, package set,
+  compatibility matrix, runtime descriptor, or performance publication is a
+  second source of truth.
+- The target-classifier fixtures remain executable security tests for public
+  DNS, punycode hostnames, metadata hosts, RFC1918/ULA/link-local addresses, and
+  IPv4-mapped IPv6 private addresses. They are security inputs, not independent
+  compatibility axes.
 - Connectivity brokers compile manifest-declared HTTP, WebSocket, TCP, and UDP
   connectors into grantable policies. The host-neutral network executor now
   consumes short-lived connection grants and performs bounded HTTP
@@ -495,56 +468,35 @@ an English fallback or mix locales within one resolved presentation.
   request-size, response-size, chunk-size, and stream-buffer limits. It revalidates
   grant expiry, transport, destination, and the target classifier at execution
   time so UI bridge calls and backend worker hostcalls can share the same
-  fail-closed network boundary. Grants whose `target_classifier_version` does
-  not match the current compatibility matrix are rejected before any dial or
-  broker dispatch. IPv4-mapped IPv6 literals and resolved addresses are unmapped
+  fail-closed network boundary. Grants with an unknown target-classifier
+  identity are rejected before any dial or broker dispatch. IPv4-mapped IPv6
+  literals and resolved addresses are unmapped
   before blocked-range checks so mapped loopback/private/link-local targets
   cannot bypass IPv4 CIDR policy. Long-lived WebSocket subscriptions remain tied
   to the streaming envelope contract instead of the one-shot round trip API.
-- Host tests include a black-box runtime subprocess path that invokes a worker
-  method, has the helper runtime request `network_execute` over IPC, mints the
-  grant through the Host connectivity broker, records HTTP, streamed HTTP,
-  WebSocket, TCP, and UDP executor request/response paths, and verifies that
-  streamed HTTP responses return a Host-readable `stream_id` and stream ticket
-  before returning the worker result.
+- Host tests include black-box runtime subprocess paths that invoke workers
+  through the same `redevplugin.io` contract used by published plugins. They
+  cover Host-owned storage namespaces plus bounded HTTP, WebSocket, TCP, and UDP
+  resource operations without a second network-execute protocol.
 - The Rust runtime requests a bound WASM artifact only on a compiled-module cache
   miss, validates the module through its private ABI module, executes it through
   the shared Wasmi engine and fair worker scheduler, and returns the result over
-  multiplexed `invoke_worker_result` frames. It exposes brokered storage and
-  network hostcalls bound to the parent invocation. Generated plugins use
-  the real linear-memory ABI by default:
-  `redevplugin.storage/files(req_ptr, req_len, out_ptr, out_len) -> i32`,
-  `redevplugin.storage/kv(req_ptr, req_len, out_ptr, out_len) -> i32`,
-  `redevplugin.storage/sqlite(req_ptr, req_len, out_ptr, out_len) -> i32`, and
-  `redevplugin.network/execute(req_ptr, req_len, out_ptr, out_len) -> i32`.
-  The worker writes bounded JSON broker requests into WASM memory, the Rust
-  runtime injects Host-owned identity, surface/session stream audience, policy,
-  grant, revoke context, and the subscription invocation's Host-owned
-  `stream_id`,
-  executes the requests through the `storage_file`, `storage_kv`,
-  `storage_sqlite`, and `network_execute` IPC paths, and writes JSON responses
-  back into worker-provided output buffers. `network_execute.operation =
-  "http_stream"` is currently a Host stream-store bridge: the Go supervisor
-  streams HTTP response chunks into `stream.Store` and returns response
-  metadata plus `stream_id`. Plugin request JSON cannot select that id; the Rust
-  runtime injects it from the Host invocation and rejects missing or
-  plugin-supplied values. This path is a Host-owned stream-store bridge rather
-  than a Rust-owned persistent stream transport. Before each broker dispatch
-  the runtime verifies control-channel freshness and fails closed with
-  `RUNTIME_CONTROL_CHANNEL_STALE` when the Host heartbeat/revocation window is
-  stale. Runtime revoke ACKs now return a structured result with closed
-  socket/stream/storage-handle counters. The Rust runtime keeps an in-process
-  registry for brokered storage handles, network socket leases, and Host
-  stream-store bridge stream IDs; revoke epochs
-  clear matching registry entries and report the actual closed counts. Resource
-  classes that are purely Host-owned report zero because Rust has no matching
-  handle to close. ABI v2 workers import only the closed storage and
-  `redevplugin.network/execute` hostcalls. Host integration tests build
-  and exercise the real Rust runtime whenever a local Cargo toolchain is
-  available, including FileStore file writes, KV writes, SQLite DDL through the
-  plugin data broker, generated scaffold broker workers using the memory
-  ABI, HTTP/WebSocket/TCP/UDP network memory hostcalls, and linear-memory HTTP
-  executor paths.
+  multiplexed `invoke_worker_result` frames. Current `plugin_api=1` workers may
+  import only the six functions in the `redevplugin.io` module. `rdp_call_v1`
+  carries one closed `{plugin_api, operation, arguments}` envelope;
+  `rdp_read_v1`, `rdp_write_v1`, `rdp_seek_v1`, `rdp_close_v1`, and
+  `rdp_last_error_v1` operate on opaque resources returned by that control call.
+  The runtime sends one generic Hostcall frame keyed by the signed invocation
+  identity. The Host resolves that identity to the already verified method,
+  permissions, resource scope, management revision, revoke epoch, and broker
+  access before dispatching plugin-data storage or resource I/O. Storage files,
+  KV, and SQLite remain Host-owned namespace operations; HTTP, WebSocket, TCP,
+  and UDP use the same resource control/read/write path. There are no separate
+  WASM storage/network imports or storage/network semantic IPC frame families.
+  Before each dispatch the runtime verifies control-channel freshness and fails
+  closed with `RUNTIME_CONTROL_CHANNEL_STALE` when the Host heartbeat or
+  revocation window is stale. Revoke ACKs report resources actually closed by
+  the runtime; purely Host-owned resources are revoked by the Host broker.
 - `redevplugin inspect-data <state-root> [plugin-instance-id]` reports catalog
   bindings, export objects, namespaces, and byte/file quota usage without
   dumping plugin file contents or scanning an unowned filesystem root.
@@ -575,12 +527,12 @@ an English fallback or mix locales within one resolved presentation.
   install -> enable -> open -> disable -> uninstall flow without importing any
   host-product internals. Dev uninstall always removes the copied package,
   plugin data, settings, secret bindings, and authorization records.
-- `redevplugin examples-server <state-root> <runtime-path> <runtime-descriptor.json>` starts the
+- `redevplugin examples-server <state-root> <runtime-path>` starts the
   user-facing Examples Showcase with Memos, Weather, and Sky Strike. Every
   example uses the Go Host, HTTP adapter, real Rust runtime, installable plugin
-  package, and persisted plugin storage. The descriptor must be generated at
-  build time and travel with the runtime; startup never derives its expected
-  digest from the binary it is about to execute. The examples server is a local
+  package, and persisted plugin storage. Runtime identity is verified by the
+  current Hello/HelloAck handshake; no public runtime descriptor is loaded.
+  The examples server is a local
   conformance harness, not a production authentication or authorization
   implementation: it injects one synthetic session and accepts every valid
   platform action. An embedding product must provide its own authenticated
@@ -663,12 +615,13 @@ partial or mismatched registry publication is fail-closed and cannot be repaired
 by overwriting an existing version.
 
 Only after registry readback and conformance succeed does the GitHub Release
-contain exactly one attested `platform-package-publication-v2.json` completion
-manifest. ReDevPlugin GitHub Releases do not contain OS runtime binaries,
+contain exactly one attested `platform-release-manifest.json` asset. ReDevPlugin
+GitHub Releases do not contain OS runtime binaries,
 runtime archives, installers, or product signatures. They also do not attach npm
 tarballs, `.crate` files, product checksums, or runtime signing bundles. Registry
-integrity and provenance remain authoritative for package bytes; the completion
-manifest binds those identities to the source commit and contract-set digest.
+integrity and provenance remain authoritative for package bytes; the release
+manifest binds their readback SHA-256 values and canonical contract hashes to
+the one platform version.
 
 The host product owns the resulting binary, SBOM, provenance, signature,
 installer, and product archive. ReDevPlugin continues to own runtime admission,

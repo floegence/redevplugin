@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 type ExternalPackageIntent struct {
@@ -187,7 +187,6 @@ type ExternalPackageCapabilityContractSummary struct {
 type ExternalPackageWorkerSummary struct {
 	WorkerID         string `json:"worker_id"`
 	Artifact         string `json:"artifact"`
-	ABI              string `json:"abi"`
 	Mode             string `json:"mode"`
 	Scope            string `json:"scope"`
 	MemoryLimitBytes int64  `json:"memory_limit_bytes"`
@@ -290,7 +289,6 @@ type ExternalPackageInspection struct {
 
 type InstalledExternalPackage struct {
 	Plugin              *registry.PluginRecord              `json:"plugin"`
-	Activation          registry.ReleaseInstallActivation   `json:"activation"`
 	SignatureAssessment *ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
 	SourceProvenance    *ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
 	ExecutionApproval   *ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
@@ -404,7 +402,7 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 	workers := make([]ExternalPackageWorkerSummary, 0, len(m.Workers))
 	for _, worker := range m.Workers {
 		workers = append(workers, ExternalPackageWorkerSummary{
-			WorkerID: worker.WorkerID, Artifact: worker.Artifact, ABI: worker.ABI, Mode: string(worker.Mode), Scope: worker.Scope,
+			WorkerID: worker.WorkerID, Artifact: worker.Artifact, Mode: string(worker.Mode), Scope: worker.Scope,
 			MemoryLimitBytes: worker.MemoryLimitBytes, IdleTimeoutMS: worker.IdleTimeoutMS,
 		})
 	}

@@ -1,3 +1,4 @@
+use crate::PLUGIN_API;
 use crate::error::{Error, Result};
 use crate::resource::call_control_raw;
 use serde::de::DeserializeOwned;
@@ -6,7 +7,7 @@ use serde_json::Value;
 
 #[derive(Serialize)]
 struct ControlRequest<'a, Arguments> {
-    api: u8,
+    plugin_api: u16,
     operation: &'a str,
     arguments: &'a Arguments,
 }
@@ -29,7 +30,7 @@ where
     ResultValue: DeserializeOwned,
 {
     let request = serde_json::to_vec(&ControlRequest {
-        api: 1,
+        plugin_api: PLUGIN_API,
         operation,
         arguments,
     })
@@ -70,7 +71,7 @@ pub struct Limits {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Capabilities {
-    pub worker_api: u16,
+    pub plugin_api: u16,
     #[serde(default)]
     pub features: Vec<String>,
     pub limits: Limits,
@@ -87,14 +88,33 @@ pub fn capabilities() -> Result<Capabilities> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn control_request_uses_the_single_plugin_api_identity() {
+        let request = serde_json::to_value(ControlRequest {
+            plugin_api: PLUGIN_API,
+            operation: "storage.sqlite",
+            arguments: &json!({"operation": "query"}),
+        })
+        .unwrap();
+        assert_eq!(
+            request,
+            json!({
+                "plugin_api": PLUGIN_API,
+                "operation": "storage.sqlite",
+                "arguments": {"operation": "query"}
+            })
+        );
+    }
 
     #[test]
     fn new_control_reader_tolerates_unknown_optional_fields() {
         let value: Value = decode_response(
-            br#"{"ok":true,"result":{"worker_api":1,"future":true},"future_envelope":7}"#,
+            br#"{"ok":true,"result":{"plugin_api":1,"future":true},"future_envelope":7}"#,
         )
         .unwrap();
-        assert_eq!(value["worker_api"], 1);
+        assert_eq!(value["plugin_api"], 1);
         let error = decode_response::<Value>(
             br#"{"ok":false,"error":{"code":"TIMEOUT","message":"late","retryable":true,"details":{},"future":1},"future_envelope":7}"#,
         )

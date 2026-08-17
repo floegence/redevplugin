@@ -1,6 +1,6 @@
 package host
 
-import "github.com/floegence/redevplugin/v2/internal/runtimeclient"
+import "github.com/floegence/redevplugin/v3/internal/runtimeclient"
 
 // RuntimeModuleCacheMetrics reports the bounded runtime module cache state.
 type RuntimeModuleCacheMetrics struct {
@@ -17,7 +17,7 @@ type RuntimeProcessHealth struct {
 	RuntimeGenerationID string                    `json:"runtime_generation_id"`
 	IPCChannelID        string                    `json:"ipc_channel_id,omitempty"`
 	ConnectionNonce     string                    `json:"connection_nonce,omitempty"`
-	Descriptor          RuntimeDescriptor         `json:"descriptor"`
+	ArtifactIdentity    RuntimeArtifactIdentity   `json:"artifact_identity"`
 	Ready               bool                      `json:"ready"`
 	ActiveInvocations   int                       `json:"active_invocations"`
 	QueuedInvocations   int                       `json:"queued_invocations"`
@@ -33,9 +33,9 @@ type RuntimeShardHealth struct {
 
 // RuntimeHealth is the Host-owned public runtime health response.
 type RuntimeHealth struct {
-	Ready      bool                 `json:"ready"`
-	Descriptor RuntimeDescriptor    `json:"descriptor"`
-	Shards     []RuntimeShardHealth `json:"shards"`
+	Ready            bool                    `json:"ready"`
+	ArtifactIdentity RuntimeArtifactIdentity `json:"artifact_identity"`
+	Shards           []RuntimeShardHealth    `json:"shards"`
 }
 
 type WorkerExecutionError = runtimeclient.WorkerExecutionError
@@ -56,9 +56,9 @@ var (
 
 func publicRuntimeHealth(health runtimeclient.ManagerHealth) RuntimeHealth {
 	result := RuntimeHealth{
-		Ready:      health.Ready,
-		Descriptor: publicRuntimeDescriptor(health.Descriptor),
-		Shards:     make([]RuntimeShardHealth, 0, len(health.Shards)),
+		Ready:            health.Ready,
+		ArtifactIdentity: publicRuntimeArtifactIdentity(health.ArtifactIdentity),
+		Shards:           make([]RuntimeShardHealth, 0, len(health.Shards)),
 	}
 	for _, shard := range health.Shards {
 		result.Shards = append(result.Shards, RuntimeShardHealth{
@@ -68,7 +68,7 @@ func publicRuntimeHealth(health runtimeclient.ManagerHealth) RuntimeHealth {
 				RuntimeGenerationID: shard.RuntimeGenerationID,
 				IPCChannelID:        shard.IPCChannelID,
 				ConnectionNonce:     shard.ConnectionNonce,
-				Descriptor:          publicRuntimeDescriptor(shard.Descriptor),
+				ArtifactIdentity:    publicRuntimeArtifactIdentity(shard.ArtifactIdentity),
 				Ready:               shard.Ready,
 				ActiveInvocations:   shard.ActiveInvocations,
 				QueuedInvocations:   shard.QueuedInvocations,
@@ -86,25 +86,18 @@ func publicRuntimeHealth(health runtimeclient.ManagerHealth) RuntimeHealth {
 	return result
 }
 
-func publicRuntimeDescriptor(descriptor runtimeclient.RuntimeDescriptor) RuntimeDescriptor {
-	target, targetErr := ParseRuntimeAdmissionTarget(descriptor.Target().String())
-	ipcVersion, ipcErr := ParseRustIPCVersion(descriptor.RustIPCVersion())
-	wasmVersion, wasmErr := ParseWASMABIVersion(descriptor.WASMABIVersion())
-	contractDigest, contractErr := ParseSHA256Digest(descriptor.ContractSetSHA256())
-	binaryDigest, binaryErr := ParseSHA256Digest(descriptor.BinarySHA256())
-	if targetErr != nil || ipcErr != nil || wasmErr != nil || contractErr != nil || binaryErr != nil {
-		return RuntimeDescriptor{}
+func publicRuntimeArtifactIdentity(identity runtimeclient.RuntimeArtifactIdentity) RuntimeArtifactIdentity {
+	binaryDigest, binaryErr := ParseSHA256Digest(identity.BinarySHA256())
+	if binaryErr != nil {
+		return RuntimeArtifactIdentity{}
 	}
-	result, err := NewRuntimeDescriptor(RuntimeDescriptorOptions{
-		PlatformVersion:   descriptor.PlatformVersion(),
-		Target:            target,
-		RustIPCVersion:    ipcVersion,
-		WASMABIVersion:    wasmVersion,
-		ContractSetSHA256: contractDigest,
-		BinarySHA256:      binaryDigest,
+	result, err := NewRuntimeArtifactIdentity(RuntimeArtifactIdentityOptions{
+		PlatformVersion: identity.PlatformVersion(),
+		Target:          identity.Target(),
+		BinarySHA256:    binaryDigest,
 	})
 	if err != nil {
-		return RuntimeDescriptor{}
+		return RuntimeArtifactIdentity{}
 	}
 	return result
 }

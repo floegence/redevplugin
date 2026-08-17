@@ -7,213 +7,58 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
-func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
-	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v8.schema.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var schema map[string]any
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		t.Fatal(err)
-	}
-
+func TestManifestSchemaMatchesCurrentGoContract(t *testing.T) {
+	schema := readManifestSchema(t)
 	if schema["additionalProperties"] != false {
-		t.Fatalf("manifest schema additionalProperties = %#v, want false", schema["additionalProperties"])
+		t.Fatalf("manifest additionalProperties = %#v, want false", schema["additionalProperties"])
 	}
-	required := requireStringSlice(t, schema["required"], "manifest required")
-	if !stringSetEqual(required, []string{"schema_version", "publisher", "plugin", "presentation", "surfaces"}) {
-		t.Fatalf("manifest required = %#v", required)
-	}
+	assertStringSet(t, requireStringSlice(t, schema["required"], "manifest required"), []string{
+		"schema_version", "publisher", "plugin", "api", "permissions", "presentation", "surfaces", "workers", "methods",
+	}, "manifest required")
 
-	props := requireNestedObject(t, schema, "properties")
-	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.manifest.v8" {
-		t.Fatalf("schema_version const = %#v", got)
+	properties := requireNestedObject(t, schema, "properties")
+	if got := requireNestedObject(t, properties, "schema_version")["const"]; got != manifest.SchemaVersionV9 {
+		t.Fatalf("schema_version = %#v, want %q", got, manifest.SchemaVersionV9)
 	}
-	pluginProps := requireNestedObject(t, props, "plugin", "properties")
-	if got := requireNestedObject(t, pluginProps, "api_version")["const"]; got != "plugin-v1" {
-		t.Fatalf("plugin.api_version const = %#v", got)
+	plugin := requireNestedObject(t, properties, "plugin")
+	assertStringSet(t, requireStringSlice(t, plugin["required"], "plugin required"), []string{"plugin_id", "display_name", "version"}, "plugin required")
+	pluginProperties := requireNestedObject(t, plugin, "properties")
+	for _, retired := range []string{"api_version", "min_runtime_version", "ui_protocol_version"} {
+		if _, exists := pluginProperties[retired]; exists {
+			t.Fatalf("plugin schema retained %q", retired)
+		}
 	}
-	if got := requireNestedObject(t, pluginProps, "ui_protocol_version")["const"]; got != "plugin-ui-v7" {
-		t.Fatalf("plugin.ui_protocol_version const = %#v", got)
+	if got := requireNestedObject(t, properties, "api", "properties", "major")["const"]; got != float64(manifest.PluginAPIMajor) {
+		t.Fatalf("api.major = %#v, want %d", got, manifest.PluginAPIMajor)
 	}
-	presentation := requireNestedObject(t, props, "presentation")
-	icon := requireNestedObject(t, presentation, "properties", "icon")
-	if icon["type"] != "object" || icon["additionalProperties"] != false {
-		t.Fatalf("presentation.icon schema = %#v", icon)
+	workerProperties := requireNestedObject(t, properties, "workers", "items", "properties")
+	for _, retired := range []string{"abi", "abi_version", "idle_timeout_ms"} {
+		if _, exists := workerProperties[retired]; exists {
+			t.Fatalf("worker schema retained %q", retired)
+		}
 	}
-	iconProps := requireNestedObject(t, icon, "properties")
-	if iconProps["path"] == nil {
-		t.Fatal("presentation.icon.path is missing")
+	if got := requireNestedObject(t, workerProperties, "mode")["const"]; got != string(manifest.WorkerModeJob) {
+		t.Fatalf("worker mode = %#v, want %q", got, manifest.WorkerModeJob)
 	}
-	assertStringSet(t, requireStringSlice(t, presentation["required"], "presentation required"), []string{
-		"default_locale", "summary", "description", "highlights", "keywords", "localizations",
-	}, "presentation required")
-	if got := requireNestedObject(t, presentation, "properties", "localizations")["maxItems"]; got != float64(15) {
-		t.Fatalf("presentation localizations maxItems = %#v, want 15", got)
+	methodProperties := requireNestedObject(t, properties, "methods", "items", "properties")
+	if requireNestedObject(t, methodProperties, "route")["additionalProperties"] != false {
+		t.Fatal("method route must be closed")
 	}
-	defs := requireNestedObject(t, schema, "$defs")
-	localization := requireNestedObject(t, defs, "localization")
-	assertStringSet(t, requireStringSlice(t, localization["required"], "localization required"), []string{
-		"locale", "plugin_name", "summary", "description", "highlights", "keywords", "surfaces", "settings",
-	}, "localization required")
-	settingOption := requireNestedObject(t, defs, "setting_option")
-	assertStringSet(t, requireStringSlice(t, settingOption["required"], "setting option required"), []string{"value", "label"}, "setting option required")
-
-	surfaceProps := requireNestedObject(t, props, "surfaces", "items", "properties")
-	assertStringEnum(t, requireNestedObject(t, surfaceProps, "kind")["enum"], "surface kind", []string{
-		string(manifest.SurfaceView),
-		string(manifest.SurfaceCommand),
-		string(manifest.SurfaceBackground),
-	})
-	assertStringEnum(t, requireNestedObject(t, surfaceProps, "intent")["enum"], "surface intent", []string{
-		string(manifest.SurfaceIntentPrimary),
-		string(manifest.SurfaceIntentSecondary),
-		string(manifest.SurfaceIntentUtility),
-	})
-	if _, ok := surfaceProps["method"]; ok {
-		t.Fatal("surface schema must not bind product methods or placement behavior")
-	}
-	defaultSize := requireNestedObject(t, surfaceProps, "default_size")
-	if defaultSize["additionalProperties"] != false {
-		t.Fatalf("surface default_size additionalProperties = %#v, want false", defaultSize["additionalProperties"])
-	}
-
-	methodProps := requireNestedObject(t, props, "methods", "items", "properties")
-	assertStringEnum(t, requireNestedObject(t, methodProps, "effect")["enum"], "method effect", []string{
-		string(manifest.MethodEffectRead),
-		string(manifest.MethodEffectWrite),
-		string(manifest.MethodEffectDelete),
-		string(manifest.MethodEffectExecute),
-		string(manifest.MethodEffectAdmin),
-	})
-	assertStringEnum(t, requireNestedObject(t, methodProps, "execution")["enum"], "method execution", []string{
-		string(manifest.MethodExecutionSync),
-		string(manifest.MethodExecutionOperation),
-		string(manifest.MethodExecutionSubscription),
-	})
-	brokerAccess := requireNestedObject(t, methodProps, "broker_access")
-	if brokerAccess["additionalProperties"] != false {
-		t.Fatalf("method broker_access additionalProperties = %#v, want false", brokerAccess["additionalProperties"])
-	}
-	storageBroker := requireNestedObject(t, brokerAccess, "properties", "storage", "items")
-	assertStringSet(t, requireStringSlice(t, storageBroker["required"], "storage broker required"), []string{"store_id", "operations"}, "storage broker required")
-	networkBroker := requireNestedObject(t, brokerAccess, "properties", "network", "items")
-	assertStringSet(t, requireStringSlice(t, networkBroker["required"], "network broker required"), []string{"connector_id", "transport", "operations"}, "network broker required")
-	assertStringEnum(t, requireNestedObject(t, networkBroker, "properties", "transport")["enum"], "network broker transport", []string{"http", "websocket", "tcp", "udp"})
-	route := requireNestedObject(t, methodProps, "route")
-	if route["additionalProperties"] != false {
-		t.Fatalf("method route additionalProperties = %#v, want false", route["additionalProperties"])
-	}
-	assertStringEnum(t, requireNestedObject(t, route, "properties", "kind")["enum"], "method route kind", []string{
-		string(manifest.MethodRouteCapability),
-		string(manifest.MethodRouteWorker),
-		string(manifest.MethodRouteCoreAction),
-	})
-	routeConditions := requireObjectArray(t, route["allOf"], "method route allOf")
-	capabilityRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteCapability), "capability route")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, capabilityRoute, "then")["required"], "capability route required"), []string{"binding_id", "target_method"}, "capability route required")
-	assertForbiddenRequiredFields(t, requireNestedObject(t, capabilityRoute, "then"), []string{"worker_id", "action_id"}, "capability route forbidden fields")
-	workerRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteWorker), "worker route")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, workerRoute, "then")["required"], "worker route required"), []string{"worker_id"}, "worker route required")
-	assertForbiddenRequiredFields(t, requireNestedObject(t, workerRoute, "then"), []string{"binding_id", "target_method", "action_id"}, "worker route forbidden fields")
-	coreActionRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteCoreAction), "core action route")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, coreActionRoute, "then")["required"], "core action route required"), []string{"action_id"}, "core action route required")
-	assertForbiddenRequiredFields(t, requireNestedObject(t, coreActionRoute, "then"), []string{"binding_id", "target_method", "worker_id"}, "core action route forbidden fields")
-
-	methodConditions := requireObjectArray(t, requireNestedObject(t, props, "methods", "items")["allOf"], "method allOf")
-	dangerousMethod := requireConstCondition(t, methodConditions, "dangerous", true, "dangerous method")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, dangerousMethod, "then")["required"], "dangerous method required"), []string{"confirmation"}, "dangerous method required")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, dangerousMethod, "then", "properties", "confirmation", "properties", "mode")["enum"], "dangerous confirmation modes"), []string{string(manifest.ConfirmationRequired), string(manifest.ConfirmationRiskBased)}, "dangerous confirmation modes")
-	preflightOnlyMethod := requireConstCondition(t, methodConditions, "preflight_only", true, "preflight-only method")
-	if got := requireNestedObject(t, preflightOnlyMethod, "then", "properties", "effect")["const"]; got != string(manifest.MethodEffectRead) {
-		t.Fatalf("preflight_only effect const = %#v, want %q", got, manifest.MethodEffectRead)
-	}
-	if got := requireNestedObject(t, preflightOnlyMethod, "then", "properties", "execution")["const"]; got != string(manifest.MethodExecutionSync) {
-		t.Fatalf("preflight_only execution const = %#v, want %q", got, manifest.MethodExecutionSync)
-	}
-	if got := requireNestedObject(t, preflightOnlyMethod, "then", "properties", "dangerous")["const"]; got != false {
-		t.Fatalf("preflight_only dangerous const = %#v, want false", got)
-	}
-	asyncMethod := requireEnumCondition(t, methodConditions, "execution", []string{string(manifest.MethodExecutionOperation), string(manifest.MethodExecutionSubscription)}, "async method")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, asyncMethod, "then")["required"], "async method required"), []string{"cancel_policy"}, "async method required")
-	cancelPolicy := requireNestedObject(t, methodProps, "cancel_policy")
-	cancelConditions := requireObjectArray(t, cancelPolicy["allOf"], "cancel policy allOf")
-	cancelable := requireConstCondition(t, cancelConditions, "cancelable", true, "cancelable method")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, cancelable, "then")["required"], "cancelable method required"), []string{"ack_timeout_ms"}, "cancelable method required")
-	if got := requireNestedObject(t, cancelable, "then", "properties", "ack_timeout_ms")["minimum"]; got != float64(1) {
-		t.Fatalf("cancelable ack_timeout_ms minimum = %#v, want 1", got)
-	}
-	nonCancelable := requireConstCondition(t, cancelConditions, "cancelable", false, "non-cancelable method")
-	if got := requireNestedObject(t, nonCancelable, "then", "properties", "ack_timeout_ms")["const"]; got != float64(0) {
-		t.Fatalf("non-cancelable ack_timeout_ms const = %#v, want 0", got)
-	}
-
-	workerProps := requireNestedObject(t, props, "workers", "items", "properties")
-	if got := requireNestedObject(t, workerProps, "abi")["const"]; got != version.WASMABIVersion {
-		t.Fatalf("worker abi const = %#v, want %q", got, version.WASMABIVersion)
-	}
-	if got := requireNestedObject(t, workerProps, "mode")["const"]; got != string(manifest.WorkerModeJob) {
-		t.Fatalf("worker mode const = %#v, want %q", got, manifest.WorkerModeJob)
-	}
-	assertStringEnum(t, requireNestedObject(t, workerProps, "scope")["enum"], "worker scope", []string{"user", "environment"})
-	if got := requireNestedObject(t, workerProps, "memory_limit_bytes")["maximum"]; got != float64(manifest.MaxWorkerMemoryLimitBytes) {
-		t.Fatalf("worker memory maximum = %#v, want %d", got, manifest.MaxWorkerMemoryLimitBytes)
-	}
-
-	storageProps := requireNestedObject(t, props, "storage", "properties", "stores", "items", "properties")
-	assertStringEnum(t, requireNestedObject(t, storageProps, "kind")["enum"], "storage kind", []string{"kv", "files", "sqlite"})
-	assertStringEnum(t, requireNestedObject(t, storageProps, "scope")["enum"], "storage scope", []string{"user", "environment"})
-	if _, ok := storageProps["quota_files"].(map[string]any); !ok {
-		t.Fatal("storage store schema missing quota_files")
-	}
-	if _, ok := storageProps["sqlite_bootstrap"]; ok {
-		t.Fatal("manifest schema must not expose Host-owned sqlite_bootstrap")
-	}
-	networkProps := requireNestedObject(t, props, "network_access", "properties", "connectors", "items", "properties")
-	assertStringEnum(t, requireNestedObject(t, networkProps, "transport")["enum"], "network connector transport", []string{
-		string(connectivity.TransportHTTP),
-		string(connectivity.TransportWebSocket),
-		string(connectivity.TransportTCP),
-		string(connectivity.TransportUDP),
-	})
-	assertStringEnum(t, requireNestedObject(t, networkProps, "scope")["enum"], "network connector scope", []string{"user", "environment"})
-
-	settingsProps := requireNestedObject(t, props, "settings", "properties", "fields", "items", "properties")
-	assertStringEnum(t, requireNestedObject(t, settingsProps, "scope")["enum"], "settings field scope", []string{"user", "environment"})
 }
 
-func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
-	root := repoRoot(t)
-	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v8.schema.json"))
+func TestManifestSchemaAndGoDecoderAcceptOnlyCurrentContract(t *testing.T) {
+	compiled := compileManifestSchema(t)
+	fixturePath := filepath.Join(repoRoot(t), "testdata", "generated_plugins", "method-contract", "manifest.json")
+	raw, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiler := jsonschema.NewCompiler()
-	compiler.Draft = jsonschema.Draft2020
-	compiler.AssertFormat = true
-	pinSchemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "host-capability-pin-v1.schema.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin/host-capability-pin-v1.schema.json", bytes.NewReader(pinSchemaRaw)); err != nil {
-		t.Fatal(err)
-	}
-	if err := compiler.AddResource("urn:redevplugin:manifest-v8", bytes.NewReader(schemaRaw)); err != nil {
-		t.Fatal(err)
-	}
-	compiled, err := compiler.Compile("urn:redevplugin:manifest-v8")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixtureRaw, err := os.ReadFile(filepath.Join(root, "testdata", "generated_plugins", "method-contract", "manifest.json"))
-	if err != nil {
+	var current map[string]any
+	if err := json.Unmarshal(raw, &current); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,188 +67,89 @@ func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
 		mutate func(map[string]any)
 		valid  bool
 	}{
-		{name: "closed composition fixture", valid: true},
-		{
-			name: "nested open object",
-			mutate: func(document map[string]any) {
-				method := firstManifestMethod(t, document)
-				method["request_schema"] = map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"properties": map[string]any{
-						"filter": map[string]any{"type": "object"},
-					},
-				}
-			},
-			valid: false,
-		},
-		{
-			name: "negative composition open object",
-			mutate: func(document map[string]any) {
-				method := firstManifestMethod(t, document)
-				method["request_schema"] = map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"properties": map[string]any{
-						"filter": map[string]any{"not": map[string]any{"type": "string"}},
-					},
-				}
-			},
-			valid: false,
-		},
+		{name: "current", valid: true},
+		{name: "legacy schema", mutate: func(value map[string]any) { value["schema_version"] = "redevplugin.manifest.v8" }},
+		{name: "unknown root field", mutate: func(value map[string]any) { value["future"] = true }},
+		{name: "unknown plugin field", mutate: func(value map[string]any) { value["plugin"].(map[string]any)["api_version"] = "plugin-v1" }},
+		{name: "unknown plugin API", mutate: func(value map[string]any) { value["api"].(map[string]any)["major"] = float64(2) }},
+		{name: "missing workers", mutate: func(value map[string]any) { delete(value, "workers") }},
+		{name: "worker ABI axis", mutate: func(value map[string]any) {
+			value["workers"] = []any{map[string]any{"worker_id": "legacy", "artifact": "workers/legacy.wasm", "abi": "redevplugin-wasm-worker-v2", "mode": "job", "scope": "user", "memory_limit_bytes": float64(1024)}}
+		}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var document map[string]any
-			if err := json.Unmarshal(fixtureRaw, &document); err != nil {
-				t.Fatal(err)
-			}
+			value := cloneJSONDocument(t, current)
 			if tc.mutate != nil {
-				tc.mutate(document)
+				tc.mutate(value)
 			}
-			raw, err := json.Marshal(document)
+			raw, err := json.Marshal(value)
 			if err != nil {
 				t.Fatal(err)
 			}
-			machineErr := compiled.Validate(document)
+			machineErr := compiled.Validate(value)
 			_, goErr := manifest.Decode(bytes.NewReader(raw))
 			if (machineErr == nil) != tc.valid {
-				t.Fatalf("machine schema valid = %t, want %t: %v", machineErr == nil, tc.valid, machineErr)
+				t.Fatalf("machine valid = %t, want %t: %v", machineErr == nil, tc.valid, machineErr)
 			}
 			if (goErr == nil) != tc.valid {
-				t.Fatalf("Go manifest valid = %t, want %t: %v", goErr == nil, tc.valid, goErr)
+				t.Fatalf("Go valid = %t, want %t: %v", goErr == nil, tc.valid, goErr)
 			}
 		})
 	}
 }
 
-func TestManifestV9MachineSchemaAllowsIgnorableNestedExtensions(t *testing.T) {
+func readManifestSchema(t *testing.T) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "plugin", "manifest-v9.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	return schema
+}
+
+func compileManifestSchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v9.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiler := jsonschema.NewCompiler()
-	compiler.Draft = jsonschema.Draft2020
-	if err := compiler.AddResource("urn:redevplugin:manifest-v9", bytes.NewReader(raw)); err != nil {
-		t.Fatal(err)
-	}
-	schema, err := compiler.Compile("urn:redevplugin:manifest-v9")
+	pin, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "host-capability-pin-v1.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	document := map[string]any{
-		"schema_version": "redevplugin.manifest.v9",
-		"publisher":      map[string]any{"publisher_id": "example", "future": true},
-		"plugin":         map[string]any{"plugin_id": "com.example.v9", "display_name": "V9", "version": "1.0.0", "future": true},
-		"api":            map[string]any{"surface": 1, "worker": 1, "optional_features": []any{"future.optional.v1"}, "future": true},
-		"permissions":    []any{},
-		"presentation":   map[string]any{"locales": map[string]any{"default": "en-US", "future": true}, "future": true},
-		"surfaces":       []any{},
-		"workers":        []any{},
-		"methods":        []any{},
-		"future":         map[string]any{"opaque": true},
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
+	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin-api/1/host-capability-pin-v1.schema.json", bytes.NewReader(pin)); err != nil {
+		t.Fatal(err)
 	}
-	if err := schema.Validate(document); err != nil {
-		t.Fatalf("forward-compatible v9 document rejected: %v", err)
+	const resource = "urn:redevplugin:manifest-v9"
+	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
 	}
-	document["api"].(map[string]any)["required_features"] = []any{"future.required.v1"}
-	if err := schema.Validate(document); err == nil {
-		t.Fatal("unknown required feature must be rejected")
+	compiled, err := compiler.Compile(resource)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return compiled
 }
 
-func firstManifestMethod(t *testing.T, document map[string]any) map[string]any {
+func cloneJSONDocument(t *testing.T, value map[string]any) map[string]any {
 	t.Helper()
-	methods, ok := document["methods"].([]any)
-	if !ok || len(methods) == 0 {
-		t.Fatal("fixture methods are missing")
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
 	}
-	method, ok := methods[0].(map[string]any)
-	if !ok {
-		t.Fatal("fixture method is not an object")
+	var cloned map[string]any
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		t.Fatal(err)
 	}
-	return method
-}
-
-func assertStringEnum(t *testing.T, value any, label string, want []string) {
-	t.Helper()
-	got := requireStringSlice(t, value, label+" enum")
-	if !stringSetEqual(got, want) {
-		t.Fatalf("%s enum = %#v, want %#v", label, got, want)
-	}
-}
-
-func requireObjectArray(t *testing.T, value any, label string) []map[string]any {
-	t.Helper()
-	rawItems, ok := value.([]any)
-	if !ok {
-		t.Fatalf("%s = %#v, want array", label, value)
-	}
-	items := make([]map[string]any, 0, len(rawItems))
-	for i, rawItem := range rawItems {
-		item, ok := rawItem.(map[string]any)
-		if !ok {
-			t.Fatalf("%s[%d] = %#v, want object", label, i, rawItem)
-		}
-		items = append(items, item)
-	}
-	return items
-}
-
-func requireConstCondition(t *testing.T, conditions []map[string]any, field string, value any, label string) map[string]any {
-	t.Helper()
-	for _, condition := range conditions {
-		fieldSchema, ok := nestedObject(condition, "if", "properties", field)
-		if !ok {
-			continue
-		}
-		if got := fieldSchema["const"]; got == value {
-			return condition
-		}
-	}
-	t.Fatalf("%s condition for %s const %#v not found", label, field, value)
-	return nil
-}
-
-func requireEnumCondition(t *testing.T, conditions []map[string]any, field string, values []string, label string) map[string]any {
-	t.Helper()
-	for _, condition := range conditions {
-		fieldSchema, ok := nestedObject(condition, "if", "properties", field)
-		if !ok {
-			continue
-		}
-		if got := requireStringSlice(t, fieldSchema["enum"], label+" enum"); stringSetEqual(got, values) {
-			return condition
-		}
-	}
-	t.Fatalf("%s condition for %s enum %#v not found", label, field, values)
-	return nil
-}
-
-func nestedObject(from map[string]any, path ...string) (map[string]any, bool) {
-	current := from
-	for _, key := range path {
-		next, ok := current[key].(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		current = next
-	}
-	return current, true
-}
-
-func assertForbiddenRequiredFields(t *testing.T, schema map[string]any, want []string, label string) {
-	t.Helper()
-	forbidden := requireObjectArray(t, requireNestedObject(t, schema, "not")["anyOf"], label)
-	got := make([]string, 0, len(forbidden))
-	for _, condition := range forbidden {
-		required := requireStringSlice(t, condition["required"], label+" required")
-		if len(required) != 1 {
-			t.Fatalf("%s condition required = %#v, want one field", label, required)
-		}
-		got = append(got, required[0])
-	}
-	assertStringSet(t, got, want, label)
+	return cloned
 }

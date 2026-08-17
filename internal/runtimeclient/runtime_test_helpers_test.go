@@ -10,18 +10,18 @@ import (
 	"os"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
-type testHostSemanticIPCReaderV7 struct {
+type testHostSemanticIPCReader struct {
 	reader  io.Reader
 	pending bytes.Reader
 }
 
-func (reader *testHostSemanticIPCReaderV7) Read(destination []byte) (int, error) {
+func (reader *testHostSemanticIPCReader) Read(destination []byte) (int, error) {
 	for reader.pending.Len() == 0 {
-		frame, err := readHostSemanticIPCFrameV7(reader.reader)
+		frame, err := readHostSemanticIPCFrame(reader.reader)
 		if err != nil {
 			return 0, err
 		}
@@ -43,19 +43,18 @@ func (testWriterCloser) Close() error { return nil }
 
 var testRuntimeTarget = runtimetarget.LinuxAMD64
 
-func testRuntimeDescriptor(target runtimetarget.Target, digest string) RuntimeDescriptor {
-	runtimeVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
+func testRuntimeArtifactIdentity(target runtimetarget.Target, digest string) RuntimeArtifactIdentity {
+	runtimeVersion, err := version.ParseSemVer(version.CurrentPlatformVersion())
 	if err != nil {
 		panic(err)
 	}
-	descriptor, err := NewRuntimeDescriptor(RuntimeDescriptorOptions{
-		PlatformVersion: runtimeVersion, Target: target, RustIPCVersion: version.RustIPCVersion,
-		WASMABIVersion: version.WASMABIVersion, ContractSetSHA256: version.ContractSetSHA256, BinarySHA256: digest,
+	identity, err := NewRuntimeArtifactIdentity(RuntimeArtifactIdentityOptions{
+		PlatformVersion: runtimeVersion, Target: target, BinarySHA256: digest,
 	})
 	if err != nil {
 		panic(err)
 	}
-	return descriptor
+	return identity
 }
 
 func newTestProcessSupervisor(t *testing.T, options ProcessSupervisorOptions) (*ProcessSupervisor, error) {
@@ -69,7 +68,7 @@ func newTestProcessSupervisor(t *testing.T, options ProcessSupervisorOptions) (*
 	if _, err := io.Copy(hasher, file); err != nil {
 		t.Fatalf("hash test runtime executable: %v", err)
 	}
-	options.Descriptor = testRuntimeDescriptor(testRuntimeTarget, hex.EncodeToString(hasher.Sum(nil)))
+	options.ArtifactIdentity = testRuntimeArtifactIdentity(testRuntimeTarget, hex.EncodeToString(hasher.Sum(nil)))
 	if options.IOBroker == nil {
 		options.IOBroker = testRuntimeIOBroker{}
 	}

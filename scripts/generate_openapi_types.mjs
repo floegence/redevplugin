@@ -5,12 +5,8 @@ import { spawnSync } from "node:child_process";
 import { parse as parseYAML, stringify as stringifyYAML } from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
-const contractSource = JSON.parse(await readFile(join(root, "internal/contracts/active-contracts.json"), "utf8"));
-const openAPIContract = contractSource.artifacts.find((artifact) => artifact.id === "plugin-platform-openapi");
-if (!openAPIContract || typeof openAPIContract.path !== "string") {
-  throw new Error("active plugin platform OpenAPI contract is missing");
-}
-const source = join(root, openAPIContract.path);
+const source = join(root, "spec/openapi/plugin-platform.yaml");
+const platformVersion = (await readFile(join(root, "VERSION"), "utf8")).trim();
 const output = join(root, "packages/redevplugin-ui/src/openapi.gen.ts");
 const check = process.argv.includes("--check");
 const generated = check
@@ -21,6 +17,9 @@ const schemaMetadata = new Set(["$schema", "$id", "$anchor", "$dynamicAnchor", "
 const minimatchCompatibilityLoader = join(root, "scripts/redocly_minimatch_compat.cjs");
 
 const openAPI = parseYAML(await readFile(source, "utf8"));
+if (openAPI.info?.version !== platformVersion) {
+  throw new Error(`OpenAPI info.version ${JSON.stringify(openAPI.info?.version)} does not match VERSION ${platformVersion}`);
+}
 const bundledOpenAPI = await bundleExternalSchemas(openAPI);
 await writeFile(bundledSource, stringifyYAML(bundledOpenAPI));
 

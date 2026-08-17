@@ -9,7 +9,7 @@ const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const quickCIEvidenceVerifier = readFileSync("scripts/verify_quick_ci_evidence.mjs", "utf8");
 
 test("privileged release jobs never checkout or execute candidate repository scripts", () => {
-  const privileged = ["release-admission", "publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"];
+  const privileged = ["release-admission", "publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-release-manifest", "publish-release"];
   for (const jobName of privileged) {
     const job = workflow.jobs?.[jobName];
     if (!job) continue;
@@ -77,9 +77,8 @@ test("privileged Rust verifiers pin a tomllib-capable Python", () => {
   assert.equal(steps[setupIndex].with["python-version"], "3.13");
 });
 
-test("Rust artifact verification binds a closed metadata set independently of publish order", () => {
-  const packageSet = JSON.parse(readFileSync("spec/plugin/platform-package-set-v3.json", "utf8"));
-  const expected = packageSet.rust_crates.map(({ name }) => name).sort();
+test("Rust artifact verification binds the two current source crates without a package-set DTO", () => {
+  const expected = ["redevplugin-runtime", "redevplugin-worker-sdk"];
   const source = workflow.jobs["publish-rust"].steps.find(
     (step) => step.name === "Verify immutable package artifact",
   ).run;
@@ -112,7 +111,7 @@ test("npm publication jobs pin a trusted-publishing capable npm", () => {
 });
 
 test("inline privileged Python is syntactically valid", () => {
-  for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"]) {
+  for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-release-manifest", "publish-release"]) {
     for (const step of workflow.jobs[jobName].steps) {
       if (typeof step.run !== "string") continue;
       for (const match of step.run.matchAll(/<<'PY'\n([\s\S]*?)\nPY(?:\n|$)/g)) {
@@ -146,7 +145,7 @@ test("standard publication uses one resumable release transaction", () => {
   assert.match(source, /exact_asset_matches/);
   assert.match(source, /cmp -s "\$manifest" "\$downloaded"/);
   assert.match(source, /reconcile_public/);
-  assert.match(source, /name=platform-package-publication-v2\.json/);
+  assert.match(source, /name=platform-release-manifest\.json/);
   assert.match(source, /length == 1/);
   assert.match(source, /\.\[0\]\.content_type == \$content_type/);
   assert.match(source, /\.\[0\]\.state == "uploaded"/);
@@ -182,7 +181,7 @@ test("standard publication uses one resumable release transaction", () => {
   assert.match(normalAdmission.steps[0].run, /gh api --method DELETE[\s\S]{0,200}releases\/\$\{duplicate_id\}/);
   assert.doesNotMatch(normalAdmission.steps[0].run, /gh api --method DELETE[\s\S]{0,200}releases\/\$\{release_id\}/);
   assert.match(normalAdmission.steps[0].run, /normal release admission refuses an existing public Release/);
-  for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"]) {
+  for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-release-manifest", "publish-release"]) {
     assert.ok(workflow.jobs[jobName].needs.includes("release-admission"), `${jobName} must wait for release admission`);
   }
 });
@@ -200,7 +199,7 @@ test("release readback jobs install their required runtime and output directorie
   assert.ok(rustSteps.some((step) => step.run === "npm ci"));
   const goSource = workflow.jobs["verify-go"].steps.map((step) => step.run ?? "").join("\n");
   assert.match(goSource, /mkdir -p dist/);
-  const publicationSteps = workflow.jobs["create-publication"].steps;
+  const publicationSteps = workflow.jobs["create-release-manifest"].steps;
   assert.ok(publicationSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version-file"] === ".node-version"));
   assert.ok(publicationSteps.some((step) => step.run === "npm ci"));
   const releaseSteps = workflow.jobs["verify-release"].steps;
@@ -208,9 +207,9 @@ test("release readback jobs install their required runtime and output directorie
   assert.ok(releaseSteps.some((step) => step.run === "npm ci"));
 });
 
-test("privileged npm publication reads the package-build Node authority before setup", () => {
+test("privileged npm publication reads the release-package Node authority before setup", () => {
   const packageBuildSource = workflow.jobs["package-build"].steps.map((step) => step.run ?? "").join("\n");
-  assert.match(packageBuildSource, /install -m 0644 \.node-version dist\/platform-packages\/\.node-version/);
+  assert.match(packageBuildSource, /install -m 0644 \.node-version dist\/release-packages\/\.node-version/);
   const packageUpload = workflow.jobs["package-build"].steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"));
   assert.equal(packageUpload?.with?.["include-hidden-files"], true);
   for (const jobName of ["publish-npm-contracts", "publish-npm-ui"]) {
@@ -218,8 +217,49 @@ test("privileged npm publication reads the package-build Node authority before s
     const downloadIndex = steps.findIndex((step) => step.uses?.startsWith("actions/download-artifact@"));
     const setupIndex = steps.findIndex((step) => step.uses?.startsWith("actions/setup-node@"));
     assert.ok(downloadIndex >= 0 && downloadIndex < setupIndex, `${jobName} must download the authority before setup-node`);
-    assert.equal(steps[setupIndex].with["node-version-file"], "dist/platform-packages/.node-version");
+    assert.equal(steps[setupIndex].with["node-version-file"], "dist/release-packages/.node-version");
   }
+});
+
+test("release workflow has one staging-only platform release manifest", () => {
+  const source = readFileSync(".github/workflows/release.yml", "utf8");
+  for (const retired of [
+    "platform_package_build",
+    "platform-package-build",
+    "platform_package_publication",
+    "platform-package-publication",
+    "platform-package-set",
+    "compatibility-manifest",
+  ]) {
+    assert.doesNotMatch(source, new RegExp(retired));
+  }
+
+  const create = workflow.jobs["create-release-manifest"];
+  assert.ok(create);
+  assert.deepEqual(create.needs, ["preflight", "verify-go", "verify-npm", "verify-rust"]);
+  const createSource = create.steps.map((step) => step.run ?? "").join("\n");
+  assert.match(createSource, /go-readback\.json/);
+  assert.match(createSource, /npm-readback\.json/);
+  assert.match(createSource, /rust-readback\.json/);
+  assert.match(createSource, /generate_platform_release_manifest\.mjs/);
+  assert.match(createSource, /staging="\$\{RUNNER_TEMP\}\/redevplugin-release-staging"/);
+  assert.match(createSource, /\$staging\/platform-release-manifest\.json/);
+  assert.match(createSource, /zip_sha256/);
+  assert.match(createSource, /tarball_sha256/);
+  assert.match(createSource, /registry_checksum_sha256/);
+
+  const attest = workflow.jobs["attest-release-manifest"];
+  assert.ok(attest.needs.includes("create-release-manifest"));
+  assert.equal(
+    attest.steps.find((step) => step.uses?.startsWith("actions/attest-build-provenance@"))?.with?.["subject-path"],
+    "${{ runner.temp }}/redevplugin-release-staging/platform-release-manifest.json",
+  );
+
+  const publish = workflow.jobs["publish-release"];
+  assert.equal(publish.steps.find((step) => step.run)?.env.CONTENT_TYPE, "application/json");
+  const publishSource = publish.steps.map((step) => step.run ?? "").join("\n");
+  assert.match(publishSource, /asset_name=platform-release-manifest\.json/);
+  assert.match(publishSource, /manifest="\$\{RUNNER_TEMP\}\/redevplugin-release-staging\/platform-release-manifest\.json"/);
 });
 
 test("npm readbacks delegate bounded retry classification to the verifier", () => {
@@ -269,8 +309,8 @@ test("release package build requires both hosted runtime containment targets", (
 
 test("standard release names only the two public Rust source crates", () => {
   const packageBuild = workflow.jobs["package-build"].steps
-    .find((step) => step.name?.startsWith("Build and verify"));
-  assert.equal(packageBuild.name, "Build and verify two npm packages and two source crates");
+    .find((step) => step.name?.startsWith("Build two npm"));
+  assert.equal(packageBuild.name, "Build two npm packages and two source crates");
   const workflowSource = readFileSync(".github/workflows/release.yml", "utf8");
   for (const retired of ["redevplugin-ipc", "redevplugin-wasm-abi", "redevplugin-target-classifier"]) {
     assert.doesNotMatch(workflowSource, new RegExp(`(?:order|package|crate|name)[^\\n]{0,120}${retired}`));

@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v3/internal/performanceevidence"
 )
 
 func TestPerformanceNamespaceDatabaseWarmCacheAllocations(t *testing.T) {

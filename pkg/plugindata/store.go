@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	settingsdomain "github.com/floegence/redevplugin/v3/pkg/settings"
 )
 
 const (
@@ -256,16 +256,16 @@ func (s *FileStore) begin() (func(), error) {
 	return s.lifecycle.RUnlock, nil
 }
 
-func (s *FileStore) CommitEnable(ctx context.Context, req CommitEnableRequest) (Dataset, error) {
+func (s *FileStore) InstallCommit(ctx context.Context, req InstallCommitRequest, commit InstallCatalogCommit) (Dataset, error) {
 	release, err := s.begin()
 	if err != nil {
 		return Dataset{}, err
 	}
 	defer release()
-	if req.ExpectedManagementRevision == 0 {
-		return Dataset{}, fmt.Errorf("%w: expected management revision is required", ErrInvalidArgument)
+	if commit == nil {
+		return Dataset{}, fmt.Errorf("%w: install catalog commit is required", ErrInvalidArgument)
 	}
-	pluginID, shape, initialSettings, err := normalizeEnable(req)
+	pluginID, shape, initialSettings, err := normalizeInstall(req.PluginInstanceID, req.Shape)
 	if err != nil {
 		return Dataset{}, err
 	}
@@ -275,66 +275,82 @@ func (s *FileStore) CommitEnable(ctx context.Context, req CommitEnableRequest) (
 	}
 	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
-	existing, found, err := s.catalog.GetBinding(ctx, pluginID)
+	current, found, err := s.catalog.GetBinding(ctx, pluginID)
 	if err != nil {
 		return Dataset{}, err
 	}
-	var expected *Binding
-	var next Binding
-	var publishedWorkspace string
 	if found {
-		if existing.State != BindingActive && existing.State != BindingRetained {
-			return Dataset{}, ErrNotActive
+		if current.State != BindingRetained {
+			return Dataset{}, fmt.Errorf("%w: %s", ErrNotRetained, pluginID)
 		}
-		_, manifest, err := s.workspaceForBinding(environment, existing)
+		workspace, manifest, err := s.workspaceForBinding(environment, current)
 		if err != nil {
 			return Dataset{}, err
 		}
 		if manifest.ShapeHash != shapeHash(shape) {
-			return Dataset{}, ErrShapeMismatch
+			return Dataset{}, fmt.Errorf("%w: retained data shape differs from installed declaration", ErrShapeMismatch)
 		}
-		expected = &existing
-		next = existing
-		if existing.State == BindingRetained {
-			next.State = BindingActive
-			next.Revision++
-			next.RetainedAt = nil
-			next.ExpiresAt = nil
+		snapshot, err := snapshotRootedTree(workspace.root, rootedTreeSnapshotOptions{})
+		if err != nil {
+			return Dataset{}, err
 		}
-	} else {
+		if err := validateWorkspaceContentsSnapshot(ctx, workspace.root, manifest, snapshot); err != nil {
+			return Dataset{}, err
+		}
+		expected := cloneBinding(current)
+		next := cloneBinding(current)
+		next.State = BindingActive
+		next.Revision++
+		next.RetainedAt = nil
+		next.ExpiresAt = nil
+		now := req.Now
+		if now.IsZero() {
+			now = s.now()
+		}
 		s.publicationMu.Lock()
 		defer s.publicationMu.Unlock()
-		generationID, err := newID("gen")
-		if err != nil {
-			return Dataset{}, err
+		if err := commit(ctx, &expected, next, shape, now); err != nil {
+			return Dataset{}, fmt.Errorf("commit plugin install: %w", err)
 		}
-		stage, err := s.newStage("workspace")
-		if err != nil {
-			return Dataset{}, err
-		}
-		defer os.RemoveAll(stage)
-		if err := initializeWorkspaceScopes(ctx, stage, shape, environment, user, initialSettings); err != nil {
-			return Dataset{}, err
-		}
-		manifest, err := s.finalizeWorkspace(ctx, stage, generationID, shape, environment)
-		if err != nil {
-			return Dataset{}, err
-		}
-		publishedWorkspace = s.scopedWorkspacePath(environment, generationID)
-		if err := s.publishStage(stage, publishedWorkspace); err != nil {
-			return Dataset{}, err
-		}
-		next = Binding{PluginInstanceID: pluginID, GenerationID: generationID, State: BindingActive, Revision: 1, ShapeHash: manifest.ShapeHash}
+		return Dataset{Binding: cloneBinding(next), Shape: cloneShape(shape)}, nil
+	}
+
+	s.publicationMu.Lock()
+	defer s.publicationMu.Unlock()
+	generationID, err := newID("gen")
+	if err != nil {
+		return Dataset{}, err
+	}
+	stage, err := s.newStage("workspace")
+	if err != nil {
+		return Dataset{}, err
+	}
+	defer os.RemoveAll(stage)
+	if err := initializeWorkspaceScopes(ctx, stage, shape, environment, user, initialSettings); err != nil {
+		return Dataset{}, err
+	}
+	manifest, err := s.finalizeWorkspace(ctx, stage, generationID, shape, environment)
+	if err != nil {
+		return Dataset{}, err
+	}
+	publishedWorkspace := s.scopedWorkspacePath(environment, generationID)
+	if err := s.publishStage(stage, publishedWorkspace); err != nil {
+		return Dataset{}, err
+	}
+	next := Binding{
+		PluginInstanceID: pluginID,
+		GenerationID:     generationID,
+		State:            BindingActive,
+		Revision:         1,
+		ShapeHash:        manifest.ShapeHash,
 	}
 	now := req.Now
 	if now.IsZero() {
 		now = s.now()
 	}
-	if err := s.catalog.CommitEnable(ctx, req.ExpectedManagementRevision, expected, next, shape, now); err != nil {
-		cause := fmt.Errorf("commit plugin enable: %w", err)
-		if publishedWorkspace != "" {
-			cause = s.rollbackPublishedDirectory(publishedWorkspace, filepath.Dir(publishedWorkspace), cause)
-		}
+	if err := commit(ctx, nil, next, shape, now); err != nil {
+		cause := fmt.Errorf("commit plugin install: %w", err)
+		cause = s.rollbackPublishedDirectory(publishedWorkspace, filepath.Dir(publishedWorkspace), cause)
 		return Dataset{}, cause
 	}
 	return Dataset{Binding: cloneBinding(next), Shape: cloneShape(shape)}, nil
@@ -1035,7 +1051,7 @@ func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.Resourc
 		return "", Object{}, datasetManifest{}, err
 	}
 	if exported.PluginInstanceID == "" {
-		return "", Object{}, datasetManifest{}, sessionctx.ErrOwnerScopeMigrationRequired
+		return "", Object{}, datasetManifest{}, fmt.Errorf("%w: export manifest is missing plugin owner", ErrDatasetCorrupt)
 	}
 	if exported.PluginInstanceID != pluginInstanceID || catalogObject.PluginInstanceID != pluginInstanceID || exported.ObjectID != objectID || !exported.Scope.Matches(owner) || exported.ContentHash != catalogObject.ContentHash || exported.ShapeHash != catalogObject.ShapeHash {
 		return "", Object{}, datasetManifest{}, fmt.Errorf("%w: export catalog metadata mismatch", ErrDatasetCorrupt)
@@ -1057,7 +1073,7 @@ func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.Resourc
 
 func validateObjectMetadata(object Object) error {
 	if object.PluginInstanceID == "" {
-		return sessionctx.ErrOwnerScopeMigrationRequired
+		return fmt.Errorf("%w: export catalog metadata is missing plugin owner", ErrDatasetCorrupt)
 	}
 	if object.ObjectID == "" || object.SizeBytes <= 0 || object.CreatedAt.IsZero() || !canonicalHash(object.ContentHash) || !canonicalHash(object.ShapeHash) {
 		return fmt.Errorf("%w: invalid export object metadata", ErrDatasetCorrupt)
@@ -1299,7 +1315,7 @@ func (s *FileStore) cleanupOnOpen(ctx context.Context) error {
 			return fmt.Errorf("%w: missing export object %s", ErrDatasetCorrupt, object.ObjectID)
 		}
 		if manifest.PluginInstanceID == "" {
-			return sessionctx.ErrOwnerScopeMigrationRequired
+			return fmt.Errorf("%w: export manifest is missing plugin owner", ErrDatasetCorrupt)
 		}
 		if manifest.PluginInstanceID != object.PluginInstanceID || manifest.ObjectID != object.ObjectID || !manifest.Scope.Matches(item.Scope) || manifest.ContentHash != object.ContentHash || manifest.ShapeHash != object.ShapeHash {
 			return fmt.Errorf("%w: export object metadata mismatch", ErrDatasetCorrupt)
@@ -1518,31 +1534,16 @@ func validateMaintenanceObject(item MaintenanceObject) error {
 	return validateObjectMetadata(item.Object)
 }
 
-func normalizeEnable(req CommitEnableRequest) (string, Shape, map[string]json.RawMessage, error) {
-	pluginID, err := normalizeIdentifier("plugin instance ID", req.PluginInstanceID)
+func normalizeInstall(pluginInstanceID string, requestedShape Shape) (string, Shape, map[string]json.RawMessage, error) {
+	pluginID, err := normalizeIdentifier("plugin instance ID", pluginInstanceID)
 	if err != nil {
 		return "", Shape{}, nil, err
 	}
-	shape, err := normalizeShape(req.Shape)
+	shape, err := normalizeShape(requestedShape)
 	if err != nil {
 		return "", Shape{}, nil, err
 	}
-	allowed := make(map[string]struct{}, len(shape.Settings.Fields))
-	for _, field := range shape.Settings.Fields {
-		allowed[field.Key] = struct{}{}
-	}
-	settings := make(map[string]json.RawMessage, len(req.InitialSettings))
-	for key, raw := range req.InitialSettings {
-		if _, ok := allowed[key]; !ok {
-			return "", Shape{}, nil, fmt.Errorf("%w: %s", ErrUnknownSetting, key)
-		}
-		normalized, err := normalizeRawJSON(raw)
-		if err != nil {
-			return "", Shape{}, nil, fmt.Errorf("%w: setting %s: %v", ErrInvalidArgument, key, err)
-		}
-		settings[key] = normalized
-	}
-	settings, err = settingsdomain.NormalizeRawValues(shape.Settings.Fields, settings)
+	settings, err := settingsdomain.NormalizeRawValues(shape.Settings.Fields, nil)
 	if err != nil {
 		return "", Shape{}, nil, err
 	}

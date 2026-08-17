@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/httpadapter"
+	"github.com/floegence/redevplugin/v3/pkg/httpadapter"
 )
 
 type routeFixture struct {
@@ -61,7 +61,7 @@ func TestOpenAPIRouteSetMatchesFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v17.yaml"))
+	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 
 func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	root := repoRoot(t)
-	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v17.yaml")
+	path := filepath.Join(root, "spec", "openapi", "plugin-platform.yaml")
 	requestBodies, err := readOpenAPIRequestBodyRoutes(path)
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +238,7 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 }
 
 func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
 
 func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,6 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"plugin_gateway_token: { type: string, minLength: 1 }",
 		"delete_data: { type: boolean }",
 		"asset_ticket: { type: string, minLength: 1 }",
-		"ui_protocol_version: { type: string, enum: [plugin-ui-v7] }",
 		"management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }",
 		"revoke_epoch: { type: integer, minimum: 1, maximum: 9007199254740991 }",
 		"DisposeSurfaceRequest:",
@@ -302,6 +301,11 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 			t.Fatalf("OpenAPI schema missing snippet %q", snippet)
 		}
 	}
+	for _, retired := range []string{"ui_protocol_version", "plugin-ui-v7"} {
+		if strings.Contains(text, retired) {
+			t.Fatalf("OpenAPI retains retired UI compatibility input %q", retired)
+		}
+	}
 	if strings.Contains(text, "enum: [bundled,") {
 		t.Fatalf("OpenAPI TrustState must not expose bundled as a public target trust state")
 	}
@@ -309,7 +313,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 
 func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +396,7 @@ func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 
 func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +459,7 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 
 func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +507,7 @@ func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 
 func TestOpenAPITrustedScopeAndRetainedDataMatchClosedGoDTOs(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,15 +561,12 @@ func TestReleaseRefTrustSchemasDefineClosedContracts(t *testing.T) {
 		snippets []string
 	}{
 		{
-			path: "release-metadata-v8.schema.json",
+			path: "release-metadata.schema.json",
 			snippets: []string{
 				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_metadata.v8" }`,
+				`"schema_version": { "const": "redevplugin.release_metadata" }`,
 				`"release_metadata_signature": { "$ref": "#/$defs/release_metadata_signature" }`,
 				`"package_signature": { "$ref": "#/$defs/package_release_signature" }`,
-				`"host_capability_contract_ref":`,
-				`"required": ["publisher_id", "contract_id", "contract_version", "artifact_sha256"]`,
-				`"artifact_sha256": { "$ref": "#/$defs/sha256" }`,
 				`"source_policy_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
 				`"revocation_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
 			},
@@ -878,11 +879,6 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"features(): Promise<PluginFeatures>", `#requestQuery("/_redevplugin/api/plugins/features/query"`},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/platform/compatibility/query"},
-			Owner:        "PluginPlatformClient.getCompatibility",
-			Snippets:     []string{"getCompatibility(): Promise<PluginCompatibilityManifest>", `#requestQuery("/_redevplugin/api/plugins/platform/compatibility/query"`},
-		},
-		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/open"},
 			Owner:        "PluginPlatformClient.openSurfaceInSlot",
 			Snippets:     []string{"openSurfaceInSlot(", "#openSurface(request: PluginOpenSurfaceRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/surfaces/open"`},
@@ -1013,11 +1009,6 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"deleteRetainedData(request: PluginRetainedDataDeleteRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/delete"`},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/bind"},
-			Owner:        "PluginPlatformClient.bindRetainedData",
-			Snippets:     []string{"bindRetainedData(request: PluginRetainedDataBindRequest)", `#mutatePluginAt("POST", "/_redevplugin/api/plugins/retained-data/bind"`},
-		},
-		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
 			Owner:        "PluginPlatformClient.cleanupExpiredRetainedData",
 			Snippets:     []string{"cleanupExpiredRetainedData(request: PluginRetainedDataCleanupRequest", `#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/cleanup-expired"`},
@@ -1121,7 +1112,6 @@ func requiredJSONRequestBodyRoutes() []routeFixture {
 		{Method: "POST", Path: "/_redevplugin/api/plugins/downgrade"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/catalog/query"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/features/query"},
-		{Method: "POST", Path: "/_redevplugin/api/plugins/platform/compatibility/query"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/open"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
@@ -1146,7 +1136,6 @@ func requiredJSONRequestBodyRoutes() []routeFixture {
 		{Method: "POST", Path: "/_redevplugin/api/plugins/data/import"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/query"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/delete"},
-		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/bind"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/query"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/requirements/query"},

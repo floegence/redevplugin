@@ -12,12 +12,12 @@ func TestActiveReleaseContractsDoNotExposePublisherContinuity(t *testing.T) {
 		"RootDelegationInput":   RootDelegationInput{},
 		"RootDelegationV1":      RootDelegationV1{},
 		"SourcePolicyInput":     SourcePolicyInput{},
-		"SourcePolicyV2":        SourcePolicyV2{},
+		"SourcePolicyV3":        SourcePolicyV3{},
 		"ReleasePointerInput":   ReleasePointerInput{},
-		"SourcePolicyPointerV1": SourcePolicyPointerV1{},
+		"SourcePolicyPointerV2": SourcePolicyPointerV2{},
 		"RevocationInput":       RevocationInput{},
-		"RevocationV2":          RevocationV2{},
-		"RevocationPointerV1":   RevocationPointerV1{},
+		"RevocationV3":          RevocationV3{},
+		"RevocationPointerV2":   RevocationPointerV2{},
 	} {
 		typeOf := reflect.TypeOf(value)
 		for _, field := range []string{"PreviousEpoch", "PreviousDocumentSHA256", "PreviousRootEpoch", "PreviousDelegationSHA256"} {

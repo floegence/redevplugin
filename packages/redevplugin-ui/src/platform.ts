@@ -53,9 +53,6 @@ type PlatformSchemas = components["schemas"];
 export type PluginCatalogResult = PlatformSchemas["PluginCatalogResult"];
 export type PluginCatalogRecord = PluginCatalogResult["plugins"][number];
 export type PluginFeatures = PlatformSchemas["PluginFeaturesSuccessResponse"]["data"];
-export type PluginCompatibilityManifest = PlatformSchemas["PluginCompatibilityManifest"];
-export type PluginCompatibilityMatrix = PluginCompatibilityManifest["matrix"];
-export type PluginContractArtifact = PluginCompatibilityManifest["contracts"][number];
 export type PluginTrustState = PlatformSchemas["TrustState"];
 export type PluginTrustHashSet = PlatformSchemas["TrustHashSet"];
 export type PluginVerifiedSignature = PlatformSchemas["VerifiedSignature"];
@@ -104,7 +101,6 @@ function toPluginSurfaceHostBootstrap(value: PluginSurfaceBootstrapResult): Plug
     pluginId: value.plugin_id,
     pluginInstanceId: value.plugin_instance_id,
     pluginVersion: value.plugin_version,
-    uiProtocolVersion: value.ui_protocol_version,
     surfaceId: value.surface_id,
     surfaceInstanceId: value.surface_instance_id,
     activeFingerprint: value.active_fingerprint,
@@ -176,7 +172,6 @@ export type PluginDataBinding = PlatformSchemas["PluginDataBinding"];
 export type PluginRetainedDataListOptions = PlatformSchemas["ListRetainedDataQueryRequest"];
 export type PluginRetainedDataList = PlatformSchemas["RetainedDataList"];
 export type PluginRetainedDataDeleteRequest = PlatformSchemas["DeleteRetainedDataRequest"];
-export type PluginRetainedDataBindRequest = PlatformSchemas["BindRetainedDataRequest"];
 export type PluginRetainedDataCleanupRequest = PlatformSchemas["CleanupExpiredRetainedDataRequest"];
 export type PluginRetainedDataCleanupResult = PlatformSchemas["RetainedDataCleanupResult"];
 
@@ -210,7 +205,6 @@ export class PluginPlatformClient {
 
   catalog(options: PluginRequestOptions = {}): Promise<PluginCatalogResult> { return this.#requestQuery("/_redevplugin/api/plugins/catalog/query", {}, options); }
   features(options: PluginRequestOptions = {}): Promise<PluginFeatures> { return this.#requestQuery("/_redevplugin/api/plugins/features/query", {}, options); }
-  getCompatibility(options: PluginRequestOptions = {}): Promise<PluginCompatibilityManifest> { return this.#requestQuery("/_redevplugin/api/plugins/platform/compatibility/query", {}, options); }
   installReleaseRef(request: PluginInstallReleaseRefRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request, options);
   }
@@ -413,9 +407,6 @@ export class PluginPlatformClient {
 
   deleteRetainedData(request: PluginRetainedDataDeleteRequest, options: PluginRequestOptions = {}): Promise<PluginDataBinding> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/delete", request, options);
-  }
-  bindRetainedData(request: PluginRetainedDataBindRequest, options: PluginRequestOptions = {}): Promise<PluginDataBinding> {
-    return this.#mutatePluginAt("POST", "/_redevplugin/api/plugins/retained-data/bind", request.target_plugin_instance_id, request, options);
   }
   cleanupExpiredRetainedData(request: PluginRetainedDataCleanupRequest = {}, options: PluginRequestOptions = {}): Promise<PluginRetainedDataCleanupResult> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/cleanup-expired", request, options);

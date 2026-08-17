@@ -127,8 +127,4 @@ echo "==> runtime and platform contracts"
 ./scripts/check_redevplugin_runtime_contract.sh --ci
 ./scripts/check_redevplugin_platform.sh --ci
 
-echo "==> platform package build and publication verifier fixtures"
-npm run platform-package-build:test
-npm run platform-package-publication:test
-
 echo "ReDevPlugin pre-push gate passed"

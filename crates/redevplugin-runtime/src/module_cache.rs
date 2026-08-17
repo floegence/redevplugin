@@ -95,7 +95,7 @@ struct ModuleCacheState {
 struct ModuleKey {
     artifact_sha256: String,
     wasmi_version: &'static str,
-    worker_api_major: String,
+    plugin_api: u16,
 }
 
 struct CacheEntry {
@@ -170,13 +170,13 @@ impl ModuleCache {
     pub fn get_or_compile(
         &self,
         artifact_sha256: &str,
-        worker_api_major: &str,
+        plugin_api: u16,
         cancellation: &Arc<Cancellation>,
         load: impl FnOnce() -> Result<Vec<u8>, ModuleCacheError> + Send + 'static,
     ) -> Result<CompiledModule, ModuleCacheError> {
         self.get_or_compile_with_hooks(
             artifact_sha256,
-            worker_api_major,
+            plugin_api,
             cancellation,
             CompileFlightHooks::noop(),
             load,
@@ -186,7 +186,7 @@ impl ModuleCache {
     pub fn get_or_compile_with_hooks(
         &self,
         artifact_sha256: &str,
-        worker_api_major: &str,
+        plugin_api: u16,
         cancellation: &Arc<Cancellation>,
         hooks: CompileFlightHooks,
         load: impl FnOnce() -> Result<Vec<u8>, ModuleCacheError> + Send + 'static,
@@ -197,7 +197,7 @@ impl ModuleCache {
         let key = ModuleKey {
             artifact_sha256: artifact_sha256.to_string(),
             wasmi_version: WASMI_ENGINE_VERSION,
-            worker_api_major: worker_api_major.to_string(),
+            plugin_api,
         };
         let (flight, leader) = {
             let mut state = self.state.lock().expect("module cache mutex poisoned");
@@ -365,7 +365,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    const ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
+    const PLUGIN_API: u16 = 1;
     #[test]
     fn concurrent_first_load_compiles_once() {
         let cache = Arc::new(ModuleCache::new(engine(), 64, 128 * 1024 * 1024));
@@ -380,7 +380,7 @@ mod tests {
                 barrier.wait();
                 let canceled = Cancellation::new();
                 cache
-                    .get_or_compile("sha256:a", ABI_VERSION, &canceled, move || {
+                    .get_or_compile("sha256:a", PLUGIN_API, &canceled, move || {
                         loads.fetch_add(1, Ordering::SeqCst);
                         thread::sleep(Duration::from_millis(20));
                         Ok(worker_module())
@@ -417,14 +417,14 @@ mod tests {
         let canceled = Cancellation::new();
         let initial_loads = Arc::clone(&loads);
         cache
-            .get_or_compile("sha256:a", ABI_VERSION, &canceled, move || {
+            .get_or_compile("sha256:a", PLUGIN_API, &canceled, move || {
                 initial_loads.fetch_add(1, Ordering::SeqCst);
                 Ok(worker_module())
             })
             .expect("initial module compiles");
         let reloads = Arc::clone(&loads);
         cache
-            .get_or_compile("sha256:a", ABI_VERSION, &canceled, move || {
+            .get_or_compile("sha256:a", PLUGIN_API, &canceled, move || {
                 reloads.fetch_add(1, Ordering::SeqCst);
                 Err(ModuleCacheError::Load("unexpected reload".to_string()))
             })
@@ -441,7 +441,7 @@ mod tests {
         let load = |key: &str| {
             let loads = Arc::clone(&loads);
             cache
-                .get_or_compile(key, ABI_VERSION, &canceled, move || {
+                .get_or_compile(key, PLUGIN_API, &canceled, move || {
                     loads.fetch_add(1, Ordering::SeqCst);
                     Ok(worker_module())
                 })
@@ -463,11 +463,11 @@ mod tests {
         let canceled = Cancellation::new();
         for key in ["sha256:a", "sha256:b", "sha256:c", "sha256:d", "sha256:e"] {
             cache
-                .get_or_compile(key, ABI_VERSION, &canceled, || Ok(worker_module()))
+                .get_or_compile(key, PLUGIN_API, &canceled, || Ok(worker_module()))
                 .unwrap();
         }
         cache
-            .get_or_compile("sha256:c", ABI_VERSION, &canceled, || {
+            .get_or_compile("sha256:c", PLUGIN_API, &canceled, || {
                 Err(ModuleCacheError::Load("unexpected reload".to_string()))
             })
             .unwrap();
@@ -494,7 +494,7 @@ mod tests {
         for _ in 0..2 {
             let loads_for_attempt = Arc::clone(&loads);
             let error = cache
-                .get_or_compile("sha256:invalid", ABI_VERSION, &canceled, move || {
+                .get_or_compile("sha256:invalid", PLUGIN_API, &canceled, move || {
                     loads_for_attempt.fetch_add(1, Ordering::SeqCst);
                     Ok(b"not wasm".to_vec())
                 })
@@ -515,7 +515,7 @@ mod tests {
         let error = cache
             .get_or_compile_with_hooks(
                 "sha256:completion-failure",
-                ABI_VERSION,
+                PLUGIN_API,
                 &canceled,
                 CompileFlightHooks::new(
                     || Ok(()),
@@ -536,7 +536,7 @@ mod tests {
         cache
             .get_or_compile(
                 "sha256:completion-failure",
-                ABI_VERSION,
+                PLUGIN_API,
                 &canceled,
                 move || {
                     retry_loads.fetch_add(1, Ordering::SeqCst);
@@ -553,7 +553,7 @@ mod tests {
         let cache = ModuleCache::new(engine(), 64, source.len() - 1);
         let canceled = Cancellation::new();
         let error = cache
-            .get_or_compile("sha256:oversized", ABI_VERSION, &canceled, move || {
+            .get_or_compile("sha256:oversized", PLUGIN_API, &canceled, move || {
                 Ok(source)
             })
             .expect_err("source outside the cache budget must not execute uncached");
@@ -578,7 +578,7 @@ mod tests {
             thread::spawn(move || {
                 cache.get_or_compile_with_hooks(
                     "sha256:completion-window",
-                    ABI_VERSION,
+                    PLUGIN_API,
                     &canceled,
                     CompileFlightHooks::new(
                         || Ok(()),
@@ -602,7 +602,7 @@ mod tests {
             thread::spawn(move || {
                 cache.get_or_compile(
                     "sha256:completion-window",
-                    ABI_VERSION,
+                    PLUGIN_API,
                     &canceled,
                     move || {
                         retry_loads.fetch_add(1, Ordering::SeqCst);
@@ -640,7 +640,7 @@ mod tests {
         cache
             .get_or_compile(
                 "sha256:completion-window",
-                ABI_VERSION,
+                PLUGIN_API,
                 &canceled,
                 move || {
                     retry_loads_after_completion.fetch_add(1, Ordering::SeqCst);
@@ -665,17 +665,12 @@ mod tests {
             let load_started = Arc::clone(&load_started);
             let release_load = Arc::clone(&release_load);
             thread::spawn(move || {
-                cache.get_or_compile(
-                    "sha256:ordered-failure",
-                    ABI_VERSION,
-                    &canceled,
-                    move || {
-                        load_started.wait();
-                        release_load.wait();
-                        load_returned_sender.send(()).unwrap();
-                        Ok(b"not wasm".to_vec())
-                    },
-                )
+                cache.get_or_compile("sha256:ordered-failure", PLUGIN_API, &canceled, move || {
+                    load_started.wait();
+                    release_load.wait();
+                    load_returned_sender.send(()).unwrap();
+                    Ok(b"not wasm".to_vec())
+                })
             })
         };
         load_started.wait();
@@ -731,7 +726,7 @@ mod tests {
             let load_started = Arc::clone(&load_started);
             let release_load = Arc::clone(&release_load);
             thread::spawn(move || {
-                cache.get_or_compile("sha256:cancel", ABI_VERSION, &canceled, move || {
+                cache.get_or_compile("sha256:cancel", PLUGIN_API, &canceled, move || {
                     load_started.wait();
                     release_load.wait();
                     Ok(worker_module())
@@ -743,7 +738,7 @@ mod tests {
             let cache = Arc::clone(&cache);
             let canceled = Arc::clone(&waiter_canceled);
             thread::spawn(move || {
-                cache.get_or_compile("sha256:cancel", ABI_VERSION, &canceled, || {
+                cache.get_or_compile("sha256:cancel", PLUGIN_API, &canceled, || {
                     panic!("waiter must join the existing compile flight")
                 })
             })
@@ -772,7 +767,7 @@ mod tests {
             let load_started = Arc::clone(&load_started);
             let release_load = Arc::clone(&release_load);
             thread::spawn(move || {
-                cache.get_or_compile("sha256:waiter", ABI_VERSION, &canceled, move || {
+                cache.get_or_compile("sha256:waiter", PLUGIN_API, &canceled, move || {
                     load_started.wait();
                     release_load.wait();
                     Ok(worker_module())
@@ -784,7 +779,7 @@ mod tests {
             let cache = Arc::clone(&cache);
             let canceled = Arc::clone(&waiter_canceled);
             thread::spawn(move || {
-                cache.get_or_compile("sha256:waiter", ABI_VERSION, &canceled, || {
+                cache.get_or_compile("sha256:waiter", PLUGIN_API, &canceled, || {
                     panic!("waiter must join the existing compile flight")
                 })
             })
@@ -814,7 +809,7 @@ mod tests {
             let key = ModuleKey {
                 artifact_sha256: format!("sha256:{index:064x}"),
                 wasmi_version: WASMI_ENGINE_VERSION,
-                worker_api_major: ABI_VERSION.to_string(),
+                plugin_api: PLUGIN_API,
             };
             let last_used = index as u64 + 1;
             state.entries.insert(
@@ -878,7 +873,7 @@ mod property_gates {
     use super::*;
     use proptest::prelude::*;
 
-    const ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
+    const PLUGIN_API: u16 = 1;
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(16))]
@@ -896,7 +891,7 @@ mod property_gates {
                 let cancellation = Cancellation::new();
                 let _ = cache.get_or_compile(
                     &format!("sha256:{index}:{suffix}"),
-                    ABI_VERSION,
+                    PLUGIN_API,
                     &cancellation,
                     move || Ok(source),
                 );

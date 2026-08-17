@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import {
+  assertCurrentWorkerImports,
   assertSourceSnapshotUnchanged,
   buildCanonicalWasmArtifacts,
   canonicalRustImage,
@@ -79,6 +80,7 @@ if (!checkOnly || forceCanonical || isCanonicalBuildHost()) {
 
 const sourceSnapshotAfter = await snapshotCanonicalCargoSources(sourceSnapshotOptions);
 assertSourceSnapshotUnchanged(sourceSnapshotBefore, sourceSnapshotAfter);
+assertCurrentWorkerImports(await readFile(resolve(root, workerOutputPath)), workerOutputPath);
 const artifactHashes = await hashPaths(root, [workerOutputPath]);
 const workerArtifactLock = Buffer.from(`${JSON.stringify({
   schema_version: "redevplugin.scaffold_worker_artifacts.v1",

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 func TestExternalPackageSourceProvenanceJSONMatchesOpenAPIUnion(t *testing.T) {
@@ -296,7 +296,7 @@ func TestExternalPackageSecuritySummaryJSONFieldsMatchOpenAPI(t *testing.T) {
 		{value: ExternalPackageCancelSummary{}, want: []string{"ack_timeout_ms", "cancelable", "disable_behavior", "uninstall_behavior"}},
 		{value: ExternalPackageMethodSummary{}, want: []string{"cancel", "confirmation", "dangerous", "effect", "execution", "method", "preflight_only", "required_permissions", "route"}},
 		{value: ExternalPackageCapabilityContractSummary{}, want: []string{"binding_id", "capability_id", "capability_version", "contract_sha256"}},
-		{value: ExternalPackageWorkerSummary{}, want: []string{"abi", "artifact", "idle_timeout_ms", "memory_limit_bytes", "mode", "scope", "worker_id"}},
+		{value: ExternalPackageWorkerSummary{}, want: []string{"artifact", "idle_timeout_ms", "memory_limit_bytes", "mode", "scope", "worker_id"}},
 		{value: ExternalPackageNetworkMethodAccessSummary{}, want: []string{"http_methods", "method", "operations"}},
 		{value: ExternalPackageNetworkSummary{}, want: []string{"auth_declared", "connector_id", "destinations", "method_access", "scope", "tls_declared", "transport"}},
 		{value: ExternalPackageStorageMethodAccessSummary{}, want: []string{"method", "operations"}},
@@ -334,11 +334,10 @@ func externalPackageProjectionFixture() (manifest.Manifest, []capabilitycontract
 		ArtifactSHA256: "sha256:" + strings.Repeat("b", 64),
 	}
 	m := manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersionV8,
+		SchemaVersion: manifest.SchemaVersionV9,
 		Publisher:     manifest.Publisher{PublisherID: "example.publisher", DisplayName: "Example Publisher"},
 		Plugin: manifest.Plugin{
-			PluginID: "example.external", DisplayName: "External", Version: "2.0.1", APIVersion: "plugin-v1",
-			MinRuntimeVersion: "1.0.0", UIProtocolVersion: "plugin-ui-v7",
+			PluginID: "example.external", DisplayName: "External", Version: "2.0.1",
 		},
 		Presentation: manifest.PresentationSpec{
 			DefaultLocale: "en-US", Summary: "Inspect an external package.",
@@ -383,8 +382,8 @@ func externalPackageProjectionFixture() (manifest.Manifest, []capabilitycontract
 			},
 		},
 		Workers: []manifest.WorkerSpec{
-			{WorkerID: "jobs", Artifact: "workers/jobs.wasm", ABI: "redevplugin-wasm-worker-v2", Mode: manifest.WorkerModeJob, Scope: "environment", MemoryLimitBytes: 64 << 20, IdleTimeoutMS: 5000},
-			{WorkerID: "cleanup", Artifact: "workers/cleanup.wasm", ABI: "redevplugin-wasm-worker-v2", Mode: manifest.WorkerModeJob, Scope: "user", MemoryLimitBytes: 32 << 20},
+			{WorkerID: "jobs", Artifact: "workers/jobs.wasm", Mode: manifest.WorkerModeJob, Scope: "environment", MemoryLimitBytes: 64 << 20, IdleTimeoutMS: 5000},
+			{WorkerID: "cleanup", Artifact: "workers/cleanup.wasm", Mode: manifest.WorkerModeJob, Scope: "user", MemoryLimitBytes: 32 << 20},
 		},
 		Storage: &manifest.StorageSpec{Stores: []manifest.StoreSpec{
 			{StoreID: "state", Kind: "sqlite", Scope: "environment", QuotaBytes: 8 << 20, QuotaFiles: &quotaFiles, SchemaVersion: 3},

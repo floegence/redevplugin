@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 )
 
 func TestPublicPresentationWireUsesEmptyArrays(t *testing.T) {

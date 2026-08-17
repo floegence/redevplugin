@@ -20,25 +20,25 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/redevplugin/v2/internal/controlstore"
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/externalsource"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/sessionscope"
-	"github.com/floegence/redevplugin/v2/pkg/settings"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
-	"github.com/floegence/redevplugin/v2/pkg/websecurity"
+	"github.com/floegence/redevplugin/v3/internal/controlstore"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/externalsource"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionscope"
+	"github.com/floegence/redevplugin/v3/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
 
 type successResponse struct {
@@ -425,11 +425,9 @@ type installReleaseRefRequest struct {
 }
 
 type startReleaseInstallExecutionRequest struct {
-	RequestID             string            `json:"request_id"`
-	PluginInstanceID      string            `json:"plugin_instance_id"`
-	ReleaseRef            releaseRefRequest `json:"release_ref"`
-	ActivateAfterInstall  *bool             `json:"activate_after_install,omitempty"`
-	ApprovedPermissionIDs []string          `json:"approved_permission_ids,omitempty"`
+	RequestID        string            `json:"request_id"`
+	PluginInstanceID string            `json:"plugin_instance_id"`
+	ReleaseRef       releaseRefRequest `json:"release_ref"`
 }
 
 type inspectReleasePackageRequest struct {
@@ -443,10 +441,8 @@ type inspectExternalPackageRequest struct {
 }
 
 type installInspectedPackageRequest struct {
-	InspectionID          string   `json:"inspection_id"`
-	ExpectedPackageSHA256 string   `json:"expected_package_sha256"`
-	ActivateAfterInstall  *bool    `json:"activate_after_install,omitempty"`
-	ApprovedPermissionIDs []string `json:"approved_permission_ids,omitempty"`
+	InspectionID          string `json:"inspection_id"`
+	ExpectedPackageSHA256 string `json:"expected_package_sha256"`
 }
 
 type updateReleaseRefRequest struct {
@@ -484,13 +480,6 @@ type deleteRetainedDataRequest struct {
 	ExpectedBindingRevision *uint64 `json:"expected_binding_revision"`
 }
 
-type bindRetainedDataRequest struct {
-	SourcePluginInstanceID           string  `json:"source_plugin_instance_id"`
-	ExpectedSourceBindingRevision    *uint64 `json:"expected_source_binding_revision"`
-	TargetPluginInstanceID           string  `json:"target_plugin_instance_id"`
-	TargetExpectedManagementRevision *uint64 `json:"target_expected_management_revision"`
-}
-
 type cleanupExpiredRetainedDataRequest struct{}
 
 type openSurfaceRequest struct {
@@ -504,7 +493,6 @@ type surfaceBootstrapResponse struct {
 	PluginID            string    `json:"plugin_id"`
 	PluginInstanceID    string    `json:"plugin_instance_id"`
 	PluginVersion       string    `json:"plugin_version"`
-	UIProtocolVersion   string    `json:"ui_protocol_version"`
 	SurfaceID           string    `json:"surface_id"`
 	SurfaceInstanceID   string    `json:"surface_instance_id"`
 	ActiveFingerprint   string    `json:"active_fingerprint"`
@@ -526,7 +514,6 @@ func publicSurfaceBootstrap(bootstrap bridge.SurfaceBootstrap) surfaceBootstrapR
 		PluginID:            bootstrap.PluginID,
 		PluginInstanceID:    bootstrap.PluginInstanceID,
 		PluginVersion:       bootstrap.PluginVersion,
-		UIProtocolVersion:   bootstrap.UIProtocolVersion,
 		SurfaceID:           bootstrap.SurfaceID,
 		SurfaceInstanceID:   bootstrap.SurfaceInstanceID,
 		ActiveFingerprint:   bootstrap.ActiveFingerprint,
@@ -582,7 +569,6 @@ type pluginBridgeHandshake struct {
 	AssetSessionNonce  string `json:"asset_session_nonce"`
 	ManagementRevision uint64 `json:"management_revision"`
 	RevokeEpoch        uint64 `json:"revoke_epoch"`
-	UIProtocolVersion  string `json:"ui_protocol_version"`
 }
 
 type rpcRequest struct {
@@ -911,7 +897,6 @@ var routes = []routeSpec{
 	queryRoute("/_redevplugin/api/plugins/catalog/query", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleCatalog }),
 	getRoute("/_redevplugin/api/plugins/{plugin_instance_id}/icon/{sha256}", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleReadPluginIcon }),
 	queryRoute("/_redevplugin/api/plugins/features/query", websecurity.RouteActionListFeatures, func(h *Handler) http.HandlerFunc { return h.handleFeatures }),
-	queryRoute("/_redevplugin/api/plugins/platform/compatibility/query", websecurity.RouteActionGetCompatibility, func(h *Handler) http.HandlerFunc { return h.handleCompatibility }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", websecurity.RouteActionOpenSurface, func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/session/revoke-scope", websecurity.RouteActionRevokeSessionScope, func(h *Handler) http.HandlerFunc { return h.handleRevokeSessionScope }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare", websecurity.RouteActionPrepareSurface, func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }),
@@ -937,7 +922,6 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/import", websecurity.RouteActionImportData, func(h *Handler) http.HandlerFunc { return h.handleImportData }),
 	queryRoute("/_redevplugin/api/plugins/retained-data/query", websecurity.RouteActionListRetainedData, func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", websecurity.RouteActionDeleteRetainedData, func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/bind", websecurity.RouteActionBindRetainedData, func(h *Handler) http.HandlerFunc { return h.handleBindRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", websecurity.RouteActionCleanupExpiredRetainedData, func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }),
 	queryRoute("/_redevplugin/api/plugins/permissions/query", websecurity.RouteActionListPermissions, func(h *Handler) http.HandlerFunc { return h.handleListPermissions }),
 	queryRoute("/_redevplugin/api/plugins/permissions/requirements/query", websecurity.RouteActionGetPermissionRequirements, func(h *Handler) http.HandlerFunc { return h.handlePermissionRequirements }),
@@ -1358,7 +1342,6 @@ func (h Handler) handleStartReleaseInstallExecution(w http.ResponseWriter, r *ht
 	}
 	record, err := h.host.StartReleaseInstallExecution(r.Context(), host.StartReleaseInstallExecutionRequest{
 		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef.domain(),
-		ActivateAfterInstall: req.ActivateAfterInstall, ApprovedPermissionIDs: req.ApprovedPermissionIDs,
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -1445,7 +1428,6 @@ func (h Handler) handleInstallInspectedPackage(w http.ResponseWriter, r *http.Re
 	}
 	result, err := h.host.InstallInspectedPackage(r.Context(), host.InstallInspectedPackageRequest{
 		InspectionID: req.InspectionID, ExpectedPackageSHA256: req.ExpectedPackageSHA256,
-		ActivateAfterInstall: req.ActivateAfterInstall, ApprovedPermissionIDs: req.ApprovedPermissionIDs,
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -1799,21 +1781,6 @@ func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicFeatures(features)})
 }
 
-func (h Handler) handleCompatibility(w http.ResponseWriter, r *http.Request) {
-	var req emptyRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	compatibility, err := h.host.GetCompatibility(r.Context())
-	if err != nil {
-		code := errorCodeForManagementError(err)
-		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "platform.get_compatibility", code, err), errorDetails{})
-		return
-	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicCompatibility(compatibility)})
-}
-
 func (h Handler) handleOpenSurface(w http.ResponseWriter, r *http.Request) {
 	var req openSurfaceRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1904,7 +1871,6 @@ func bridgeHandshake(handshake pluginBridgeHandshake) bridge.Handshake {
 		AssetSessionNonce:  handshake.AssetSessionNonce,
 		ManagementRevision: handshake.ManagementRevision,
 		RevokeEpoch:        handshake.RevokeEpoch,
-		UIProtocolVersion:  handshake.UIProtocolVersion,
 	}
 }
 
@@ -2390,37 +2356,6 @@ func (h Handler) handleDeleteRetainedData(w http.ResponseWriter, r *http.Request
 		details := bindingRevisionDetails(err)
 		code := errorCodeForDataLifecycleError(err)
 		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "retained-data.delete", code, err), details, mutation.ForError(err))
-		return
-	}
-	writeMutationSuccess(w, publicPluginDataBinding(record))
-}
-
-func (h Handler) handleBindRetainedData(w http.ResponseWriter, r *http.Request) {
-	var req bindRetainedDataRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	expectedSourceBindingRevision, err := requiredRevision(req.ExpectedSourceBindingRevision, "expected_source_binding_revision")
-	if err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	targetExpectedManagementRevision, err := requiredRevision(req.TargetExpectedManagementRevision, "target_expected_management_revision")
-	if err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	record, err := h.host.BindRetainedData(r.Context(), host.BindRetainedDataRequest{
-		SourcePluginInstanceID:           req.SourcePluginInstanceID,
-		ExpectedSourceBindingRevision:    expectedSourceBindingRevision,
-		TargetPluginInstanceID:           req.TargetPluginInstanceID,
-		TargetExpectedManagementRevision: targetExpectedManagementRevision,
-	})
-	if err != nil {
-		details := bindingRevisionDetails(err)
-		code := errorCodeForDataLifecycleError(err)
-		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "retained-data.bind", code, err), details, mutation.ForError(err))
 		return
 	}
 	writeMutationSuccess(w, publicPluginDataBinding(record))
@@ -3211,8 +3146,6 @@ func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return security.ErrManagementRevisionMismatch
-	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
-		return security.ErrUIProtocolUnsupported
 	case errors.Is(err, host.ErrPluginRuntimeNotConfigured):
 		return security.ErrRuntimeUnavailable
 	case errors.Is(err, host.ErrPluginRuntimeIncompatible):
@@ -3231,8 +3164,6 @@ func httpStatusForOpenSurfaceError(err error) int {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
-		return http.StatusConflict
-	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return http.StatusConflict
 	case errors.Is(err, host.ErrPluginRuntimeNotConfigured):
 		return http.StatusServiceUnavailable
@@ -3337,8 +3268,6 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin platform internal failure"
 	case security.ErrDisabled:
 		return "plugin is disabled"
-	case security.ErrDisabledByPolicy:
-		return "plugin is disabled by policy"
 	case security.ErrPermissionDenied:
 		return "plugin permission was denied"
 	case security.ErrConfirmationRequired:
@@ -3385,8 +3314,6 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin runtime is unavailable"
 	case security.ErrRuntimeVersionMismatch:
 		return "plugin runtime version is incompatible"
-	case security.ErrUIProtocolUnsupported:
-		return "plugin UI protocol is unsupported"
 	case security.ErrUIProtocolViolation:
 		return "plugin UI violated the platform protocol"
 	case security.ErrSurfaceQuiesceTimeout:
@@ -3520,8 +3447,6 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return security.ErrManagementRevisionMismatch
-	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
-		return security.ErrUIProtocolUnsupported
 	case errors.Is(err, host.ErrPluginRuntimeNotConfigured):
 		return security.ErrRuntimeUnavailable
 	case errors.Is(err, host.ErrPluginRuntimeIncompatible):
@@ -3629,8 +3554,6 @@ func httpStatusForManagementError(err error) int {
 		errors.Is(err, registry.ErrInvalidExternalPackageInstall):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
-		return http.StatusConflict
-	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return http.StatusConflict
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrNamespaceNotFound):
 		return http.StatusBadRequest
@@ -3834,7 +3757,7 @@ func errorCodeForWorkerExecutionErrorValue(workerError host.WorkerExecutionError
 		return security.ErrGrantInvalid
 	case "RUNTIME_LEASE_INVALID", "RUNTIME_LEASE_SIGNATURE_INVALID":
 		return security.ErrLeaseInvalid
-	case "RUNTIME_CONTROL_CHANNEL_STALE", "WASM_WORKER_FAILED", "WASM_HOSTCALL_FAILED", "HOSTCALL_FAILED":
+	case "RUNTIME_CONTROL_CHANNEL_STALE", "WASM_WORKER_FAILED", "HOSTCALL_FAILED":
 		return security.ErrRuntimeUnavailable
 	case "WASM_WORKER_INVALID":
 		return security.ErrContractMismatch
@@ -3913,7 +3836,7 @@ func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
-	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, host.ErrStorageScopeMismatch), errors.Is(err, plugindata.ErrStorageScopeMismatch):
 		return security.ErrStorageScopeMismatch
@@ -3975,7 +3898,7 @@ func errorCodeForSecretError(err error) security.ErrorCode {
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrSecretScopeMismatch):
 		return security.ErrSecretScopeMismatch
-	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
@@ -3992,7 +3915,7 @@ func publicSecretErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, host.ErrSecretScopeMismatch):
 		return "secret reference scope does not match the request"
-	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
 		return "secret owner scope does not match the authenticated session"
 	case errors.Is(err, host.ErrAdapterFailure):
 		return "secret adapter operation failed"
@@ -4011,7 +3934,7 @@ func errorCodeForSettingsError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
-	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, plugindata.ErrSettingScopeMismatch):
 		return security.ErrOwnerScopeMismatch
@@ -4032,7 +3955,7 @@ func httpStatusForSettingsError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
-	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
 		return http.StatusForbidden
 	case errors.Is(err, plugindata.ErrRevisionConflict):
 		return http.StatusConflict
@@ -4047,7 +3970,7 @@ func httpStatusForSecretError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
-	case errors.Is(err, host.ErrSecretScopeMismatch), errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
+	case errors.Is(err, host.ErrSecretScopeMismatch), errors.Is(err, host.ErrOwnerScopeMismatch):
 		return http.StatusForbidden
 	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
 		return http.StatusBadRequest
@@ -4192,7 +4115,7 @@ func httpStatusForDataLifecycleError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
-	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired), errors.Is(err, host.ErrStorageScopeMismatch):
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, host.ErrStorageScopeMismatch):
 		return http.StatusForbidden
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge

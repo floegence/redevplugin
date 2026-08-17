@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,20 +87,14 @@ test("crate-local fixtures remain exact copies of their canonical repository inp
     ["testdata/contracts/ipc/unknown_enum.json", "crates/redevplugin-runtime/testdata/ipc/unknown_enum.json"],
     ["testdata/contracts/ipc/valid_hello_ack.json", "crates/redevplugin-runtime/testdata/ipc/valid_hello_ack.json"],
     ["testdata/contracts/ipc/valid_invoke_worker_result.json", "crates/redevplugin-runtime/testdata/ipc/valid_invoke_worker_result.json"],
-    ["testdata/contracts/ipc/valid_validate_handle_grant.json", "crates/redevplugin-runtime/testdata/ipc/valid_validate_handle_grant.json"],
     ["testdata/contracts/wasm/invalid-final-opcode.hex", "crates/redevplugin-runtime/testdata/wasm/invalid-final-opcode.hex"],
     ["testdata/contracts/wasm/table-maximum-exceeds-limit.hex", "crates/redevplugin-runtime/testdata/wasm/table-maximum-exceeds-limit.hex"],
     ["testdata/contracts/runtime-lease-signature-v2-invocation.json", "crates/redevplugin-runtime/testdata/runtime-lease-signature-v2-invocation.json"],
-    ["spec/plugin/ipc-v7-fixtures.json", "crates/redevplugin-runtime/testdata/ipc-v7-fixtures.json"],
+    ["spec/internal/runtime-wire-fixtures.json", "crates/redevplugin-runtime/testdata/runtime-wire-fixtures.json"],
     ["cmd/redevplugin/scaffold_assets/backend.wasm", "crates/redevplugin-runtime/testdata/scaffold-backend.wasm"],
   ]) {
     assert.equal(readFileSync(canonical).compare(readFileSync(local)), 0, local);
   }
-  assert.equal(
-    createHash("sha256").update(readFileSync("crates/redevplugin-runtime/testdata/memos.wasm")).digest("hex"),
-    "b62b6e23a39c7bd43de9aadee055695f5586939349e2eee1e8218c81f3b4401f",
-    "runtime compatibility fixture must remain the frozen v1.1.4 worker",
-  );
   for (const { name } of rustSourcePackages) {
     const local = `crates/${name}/LICENSE`;
     assert.equal(readFileSync("LICENSE").compare(readFileSync(local)), 0, local);
@@ -202,7 +195,7 @@ test("all Rust source crates package deterministically and test from an isolated
       validDigest: /^[0-9a-f]{64}$/.test(sha256),
     })), rustSourcePackages.map(({ name }) => ({
       name,
-      version: "2.0.10",
+      version: "3.0.0",
       validSize: true,
       validDigest: true,
     })));

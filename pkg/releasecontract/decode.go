@@ -20,25 +20,24 @@ func DecodePackageSignature(raw []byte, context PackageVerificationContext) (Pac
 	return document, nil
 }
 
-func DecodeReleaseMetadata(raw []byte) (ReleaseMetadataV8, error) {
-	var document ReleaseMetadataV8
+func DecodeReleaseMetadata(raw []byte) (ReleaseMetadata, error) {
+	var document ReleaseMetadata
 	if err := decodeCanonicalDocument(raw, &document, func() error {
 		return validateReleaseMetadata(document)
 	}); err != nil {
-		return ReleaseMetadataV8{}, err
+		return ReleaseMetadata{}, err
 	}
 	return cloneReleaseMetadata(document), nil
 }
 
-func DecodeSourcePolicy(raw []byte) (SourcePolicyV2, error) {
-	var document SourcePolicyV2
+func DecodeSourcePolicy(raw []byte) (SourcePolicyV3, error) {
+	var document SourcePolicyV3
 	if err := decodeCanonicalDocument(raw, &document, func() error {
 		return validateSourcePolicy(document, true)
 	}); err != nil {
-		return SourcePolicyV2{}, err
+		return SourcePolicyV3{}, err
 	}
 	return sourcePolicyFromInput(SourcePolicyInput{
-		SchemaVersion:          document.SchemaVersion,
 		SourceID:               document.SourceID,
 		Channel:                document.Channel,
 		Epoch:                  document.Epoch,
@@ -60,25 +59,24 @@ func DecodeSourcePolicy(raw []byte) (SourcePolicyV2, error) {
 	}, document.Signature), nil
 }
 
-func DecodeSourcePolicyPointer(raw []byte) (SourcePolicyPointerV1, error) {
-	var document SourcePolicyPointerV1
+func DecodeSourcePolicyPointer(raw []byte) (SourcePolicyPointerV2, error) {
+	var document SourcePolicyPointerV2
 	if err := decodeCanonicalDocument(raw, &document, func() error {
 		return validateSourcePolicyPointer(document, true)
 	}); err != nil {
-		return SourcePolicyPointerV1{}, err
+		return SourcePolicyPointerV2{}, err
 	}
 	return document, nil
 }
 
-func DecodeRevocation(raw []byte) (RevocationV2, error) {
-	var document RevocationV2
+func DecodeRevocation(raw []byte) (RevocationV3, error) {
+	var document RevocationV3
 	if err := decodeCanonicalDocument(raw, &document, func() error {
 		return validateRevocation(document, true)
 	}); err != nil {
-		return RevocationV2{}, err
+		return RevocationV3{}, err
 	}
 	return revocationFromInput(RevocationInput{
-		SchemaVersion:   document.SchemaVersion,
 		SourceID:        document.SourceID,
 		Channel:         document.Channel,
 		Epoch:           document.Epoch,
@@ -91,12 +89,12 @@ func DecodeRevocation(raw []byte) (RevocationV2, error) {
 	}, document.Signature), nil
 }
 
-func DecodeRevocationPointer(raw []byte) (RevocationPointerV1, error) {
-	var document RevocationPointerV1
+func DecodeRevocationPointer(raw []byte) (RevocationPointerV2, error) {
+	var document RevocationPointerV2
 	if err := decodeCanonicalDocument(raw, &document, func() error {
 		return validateRevocationPointer(document, true)
 	}); err != nil {
-		return RevocationPointerV1{}, err
+		return RevocationPointerV2{}, err
 	}
 	return document, nil
 }

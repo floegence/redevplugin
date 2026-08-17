@@ -6,36 +6,29 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
-func DecodeModel(r io.Reader) (Model, error) {
+func decodeCurrent(r io.Reader) (Manifest, error) {
 	raw, err := io.ReadAll(io.LimitReader(r, 1<<20+1))
 	if err != nil {
-		return Model{}, err
+		return Manifest{}, err
 	}
 	if len(raw) == 0 || len(raw) > 1<<20 {
-		return Model{}, fmt.Errorf("manifest exceeds 1 MiB")
+		return Manifest{}, fmt.Errorf("manifest exceeds 1 MiB")
 	}
 	var header struct {
 		SchemaVersion string `json:"schema_version"`
 	}
 	if err := json.Unmarshal(raw, &header); err != nil {
-		return Model{}, err
+		return Manifest{}, err
 	}
 	switch header.SchemaVersion {
-	case SchemaVersionV8:
-		legacy, err := decodeV8(bytes.NewReader(raw))
-		if err != nil {
-			return Model{}, err
-		}
-		return normalizeV8(legacy)
 	case SchemaVersionV9:
 		return decodeV9(raw)
 	default:
-		return Model{}, ValidationError{Field: "schema_version", Message: "unsupported manifest schema"}
+		return Manifest{}, ValidationError{Field: "schema_version", Message: "unsupported manifest schema"}
 	}
 }
 
@@ -46,96 +39,64 @@ func canonicalManifestJSON(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &header); err != nil {
 		return nil, err
 	}
-	if header.SchemaVersion == SchemaVersionV9 {
-		return releasecontract.CanonicalJSON(raw)
+	if header.SchemaVersion != SchemaVersionV9 {
+		return nil, ValidationError{Field: "schema_version", Message: "unsupported manifest schema"}
 	}
-	legacy, err := decodeV8(bytes.NewReader(raw))
+	return releasecontract.CanonicalJSON(raw)
+}
+
+// CanonicalJSON returns the exact hash input for the current manifest.
+func CanonicalJSON(raw []byte) ([]byte, error) { return canonicalManifestJSON(raw) }
+
+// MarshalCanonical returns the current manifest wire representation. Package
+// installation should retain the original canonical bytes; this encoder is for
+// current in-memory records and deterministic tests only.
+func MarshalCanonical(current Manifest) ([]byte, error) {
+	if err := Validate(current); err != nil {
+		return nil, err
+	}
+	document := v9Document{
+		SchemaVersion:      current.SchemaVersion,
+		Publisher:          current.Publisher,
+		Plugin:             v9Plugin{PluginID: current.Plugin.PluginID, DisplayName: current.Plugin.DisplayName, Version: current.Plugin.Version},
+		API:                current.API,
+		Permissions:        append([]PermissionID{}, current.Permissions...),
+		Surfaces:           append([]SurfaceSpec{}, current.Surfaces...),
+		CapabilityBindings: append([]CapabilityBinding(nil), current.CapabilityBindings...),
+		Workers:            []v9Worker{},
+		Methods:            append([]MethodSpec{}, current.Methods...),
+		Storage:            current.Storage,
+		NetworkAccess:      current.NetworkAccess,
+		Settings:           current.Settings,
+		Intents:            append([]IntentSpec(nil), current.Intents...),
+	}
+	document.Presentation.Icon = current.Presentation.Icon
+	document.Presentation.Locales.Default = current.Presentation.DefaultLocale
+	for _, worker := range current.Workers {
+		document.Workers = append(document.Workers, v9Worker{WorkerID: worker.WorkerID, Artifact: worker.Artifact, Mode: worker.Mode, Scope: worker.Scope, MemoryLimitBytes: worker.MemoryLimitBytes})
+	}
+	raw, err := json.Marshal(document)
 	if err != nil {
 		return nil, err
 	}
-	// v8's published hash input is the typed encoding and must never be
-	// replaced by the lossless v9 canonicalizer.
-	return json.Marshal(legacy)
-}
-
-// CanonicalJSON returns the exact hash input for either the frozen v8 typed
-// manifest or the forward-compatible v9 lossless document.
-func CanonicalJSON(raw []byte) ([]byte, error) { return canonicalManifestJSON(raw) }
-
-func normalizeV8(legacy Manifest) (Model, error) {
-	model := Model{Manifest: legacy, SchemaSource: SchemaVersionV8}
-	surface, worker := uint16(1), uint16(1)
-	model.API.Surface = &surface
-	model.API.Worker = &worker
-	features := map[FeatureID]struct{}{}
-	if legacy.NetworkAccess != nil {
-		for _, connector := range legacy.NetworkAccess.Connectors {
-			switch connector.Transport {
-			case "http":
-				features[FeatureNetHTTP] = struct{}{}
-			case "websocket":
-				features[FeatureNetWebSocket] = struct{}{}
-			case "tcp":
-				features[FeatureNetTCP] = struct{}{}
-			case "udp":
-				features[FeatureNetUDP] = struct{}{}
-			}
-		}
-	}
-	for feature := range features {
-		model.API.RequiredFeatures = append(model.API.RequiredFeatures, feature)
-	}
-	sort.Slice(model.API.RequiredFeatures, func(i, j int) bool { return model.API.RequiredFeatures[i] < model.API.RequiredFeatures[j] })
-	if legacy.NetworkAccess != nil && len(legacy.NetworkAccess.Connectors) > 0 {
-		model.Permissions = []PermissionID{PermissionNetworkClient}
-	}
-	return model, nil
-}
-
-// Normalize converts a previously decoded manifest into the current behavior
-// model. It is used by durable-record migration and legacy callers.
-func Normalize(legacy Manifest) (Model, error) { return normalizeV8(legacy) }
-
-// RestoreModel rebuilds the normalized behavior projection persisted by the
-// registry. The manifest payload remains the legacy-compatible typed form;
-// source and public API fields carry the author schema facts not represented
-// in that payload.
-func RestoreModel(legacy Manifest, source string, api PublicAPIRequirement, permissions []PermissionID) (Model, error) {
-	if source == "" || source == SchemaVersionV8 {
-		return normalizeV8(legacy)
-	}
-	if source != SchemaVersionV9 {
-		return Model{}, ValidationError{Field: "manifest_schema_source", Message: "unsupported manifest source"}
-	}
-	normalizedAPI, err := normalizePublicAPI(api)
-	if err != nil {
-		return Model{}, err
-	}
-	normalizedPermissions, err := normalizePermissions(permissions)
-	if err != nil {
-		return Model{}, err
-	}
-	if legacy.SchemaVersion != SchemaVersionV8 {
-		return Model{}, ValidationError{Field: "manifest.schema_version", Message: "persisted normalized manifest must use v8 payload"}
-	}
-	if err := Validate(legacy); err != nil {
-		return Model{}, err
-	}
-	return Model{Manifest: legacy, SchemaSource: SchemaVersionV9, API: normalizedAPI, Permissions: normalizedPermissions}, nil
+	return canonicalManifestJSON(raw)
 }
 
 type v9Document struct {
-	SchemaVersion string               `json:"schema_version"`
-	Publisher     Publisher            `json:"publisher"`
-	Plugin        v9Plugin             `json:"plugin"`
-	API           PublicAPIRequirement `json:"api"`
-	Permissions   []PermissionID       `json:"permissions"`
-	Presentation  v9Presentation       `json:"presentation"`
-	Surfaces      []SurfaceSpec        `json:"surfaces"`
-	Workers       []v9Worker           `json:"workers"`
-	Methods       []v9Method           `json:"methods"`
-	Storage       *StorageSpec         `json:"storage,omitempty"`
-	Settings      *SettingsSpec        `json:"settings,omitempty"`
+	SchemaVersion      string               `json:"schema_version"`
+	Publisher          Publisher            `json:"publisher"`
+	Plugin             v9Plugin             `json:"plugin"`
+	API                PublicAPIRequirement `json:"api"`
+	Permissions        []PermissionID       `json:"permissions"`
+	Presentation       v9Presentation       `json:"presentation"`
+	Surfaces           []SurfaceSpec        `json:"surfaces"`
+	CapabilityBindings []CapabilityBinding  `json:"capability_bindings,omitempty"`
+	Workers            []v9Worker           `json:"workers"`
+	Methods            []MethodSpec         `json:"methods"`
+	Storage            *StorageSpec         `json:"storage,omitempty"`
+	NetworkAccess      *NetworkAccessSpec   `json:"network_access,omitempty"`
+	Settings           *SettingsSpec        `json:"settings,omitempty"`
+	Intents            []IntentSpec         `json:"intents,omitempty"`
 }
 
 type v9Plugin struct {
@@ -159,66 +120,71 @@ type v9Worker struct {
 	MemoryLimitBytes int64      `json:"memory_limit_bytes"`
 }
 
-type v9Method struct {
-	Method         string              `json:"method"`
-	WorkerID       string              `json:"worker_id"`
-	Effect         MethodEffect        `json:"effect"`
-	Execution      MethodExecutionMode `json:"execution"`
-	RequestSchema  map[string]any      `json:"request_schema"`
-	ResponseSchema map[string]any      `json:"response_schema"`
-}
-
-func decodeV9(raw []byte) (Model, error) {
+func decodeV9(raw []byte) (Manifest, error) {
 	canonical, err := canonicalManifestJSON(raw)
 	if err != nil {
-		return Model{}, err
+		return Manifest{}, err
 	}
-	_ = canonical // package hashing retains these bytes; Model only owns behavior.
+	_ = canonical // pluginpkg retains these bytes as the signing and hash authority.
 	var document v9Document
 	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&document); err != nil {
-		return Model{}, err
+		return Manifest{}, err
 	}
 	if document.SchemaVersion != SchemaVersionV9 {
-		return Model{}, ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v9"}
+		return Manifest{}, ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v9"}
+	}
+	for _, required := range []struct {
+		field   string
+		present bool
+	}{
+		{field: "permissions", present: document.Permissions != nil},
+		{field: "surfaces", present: document.Surfaces != nil},
+		{field: "workers", present: document.Workers != nil},
+		{field: "methods", present: document.Methods != nil},
+	} {
+		if !required.present {
+			return Manifest{}, ValidationError{Field: required.field, Message: "is required"}
+		}
 	}
 	normalizedAPI, err := normalizePublicAPI(document.API)
 	if err != nil {
-		return Model{}, err
+		return Manifest{}, err
 	}
 	permissions, err := normalizePermissions(document.Permissions)
 	if err != nil {
-		return Model{}, err
+		return Manifest{}, err
 	}
-	legacy := Manifest{
-		SchemaVersion: SchemaVersionV8,
-		Publisher:     document.Publisher,
-		Plugin:        Plugin{PluginID: document.Plugin.PluginID, DisplayName: document.Plugin.DisplayName, Version: document.Plugin.Version, APIVersion: "plugin-v1", MinRuntimeVersion: "0.0.0", UIProtocolVersion: "plugin-ui-v7"},
-		Presentation:  PresentationSpec{DefaultLocale: document.Presentation.Locales.Default, Summary: document.Plugin.DisplayName, Description: []string{document.Plugin.DisplayName}, Highlights: []string{}, Keywords: []string{document.Plugin.DisplayName}, Localizations: []PresentationLocalizationSpec{}, Icon: document.Presentation.Icon},
-		Surfaces:      document.Surfaces,
-		Storage:       document.Storage,
-		Settings:      document.Settings,
+	current := Manifest{
+		SchemaVersion:      SchemaVersionV9,
+		Publisher:          document.Publisher,
+		Plugin:             Plugin{PluginID: document.Plugin.PluginID, DisplayName: document.Plugin.DisplayName, Version: document.Plugin.Version},
+		API:                normalizedAPI,
+		Permissions:        permissions,
+		Presentation:       PresentationSpec{DefaultLocale: document.Presentation.Locales.Default, Summary: document.Plugin.DisplayName, Description: []string{document.Plugin.DisplayName}, Highlights: []string{}, Keywords: []string{document.Plugin.DisplayName}, Localizations: []PresentationLocalizationSpec{}, Icon: document.Presentation.Icon},
+		Surfaces:           document.Surfaces,
+		CapabilityBindings: document.CapabilityBindings,
+		Methods:            document.Methods,
+		Storage:            document.Storage,
+		NetworkAccess:      document.NetworkAccess,
+		Settings:           document.Settings,
+		Intents:            document.Intents,
 	}
 	for _, worker := range document.Workers {
-		legacy.Workers = append(legacy.Workers, WorkerSpec{WorkerID: worker.WorkerID, Artifact: worker.Artifact, ABI: "redevplugin-wasm-worker-v2", Mode: worker.Mode, Scope: worker.Scope, MemoryLimitBytes: worker.MemoryLimitBytes})
+		current.Workers = append(current.Workers, WorkerSpec{WorkerID: worker.WorkerID, Artifact: worker.Artifact, Mode: worker.Mode, Scope: worker.Scope, MemoryLimitBytes: worker.MemoryLimitBytes})
 	}
-	for _, method := range document.Methods {
-		legacy.Methods = append(legacy.Methods, MethodSpec{Method: method.Method, Effect: method.Effect, Execution: method.Execution, Route: MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: method.WorkerID}, RequestSchema: method.RequestSchema, ResponseSchema: method.ResponseSchema})
+	if err := Validate(current); err != nil {
+		return Manifest{}, err
 	}
-	if err := Validate(legacy); err != nil {
-		return Model{}, err
-	}
-	return Model{Manifest: legacy, SchemaSource: SchemaVersionV9, API: normalizedAPI, Permissions: permissions}, nil
+	return current, nil
 }
 
 func normalizePublicAPI(api PublicAPIRequirement) (PublicAPIRequirement, error) {
-	if api.Surface == nil || *api.Surface != 1 {
-		return PublicAPIRequirement{}, ValidationError{Field: "api.surface", Message: "must be 1"}
+	if api.Major != PluginAPIMajor {
+		return PublicAPIRequirement{}, ValidationError{Field: "api.major", Message: "must be 1"}
 	}
-	if api.Worker == nil || *api.Worker != 1 {
-		return PublicAPIRequirement{}, ValidationError{Field: "api.worker", Message: "must be 1"}
-	}
-	normalized := PublicAPIRequirement{Surface: api.Surface, Worker: api.Worker}
+	normalized := PublicAPIRequirement{Major: api.Major}
 	seen := map[FeatureID]string{}
 	for _, feature := range api.RequiredFeatures {
 		if !knownFeature(feature) {
@@ -279,22 +245,3 @@ func knownPermission(value PermissionID) bool {
 		return false
 	}
 }
-
-func decodeV8(r io.Reader) (Manifest, error) {
-	decoder := json.NewDecoder(r)
-	decoder.DisallowUnknownFields()
-	var m Manifest
-	if err := decoder.Decode(&m); err != nil {
-		return Manifest{}, err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err != nil {
-			return Manifest{}, err
-		}
-		return Manifest{}, fmt.Errorf("manifest contains trailing JSON values")
-	}
-	return m, Validate(m)
-}
-
-func (m Model) String() string { return strings.TrimSpace(m.PluginID()) }

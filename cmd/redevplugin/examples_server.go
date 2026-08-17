@@ -15,17 +15,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/httpadapter"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/secrets"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/trust"
-	"github.com/floegence/redevplugin/v2/pkg/websecurity"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/httpadapter"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/trust"
+	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
 
 const (
@@ -135,6 +135,8 @@ func examplesSession() sessionctx.Context {
 		OwnerUserHash:        examplesUserHash,
 		OwnerEnvHash:         examplesEnvHash,
 		SessionChannelIDHash: examplesChannelHash,
+		CanRead:              true,
+		CanWrite:             true,
 	}
 }
 
@@ -198,23 +200,19 @@ type examplesServerOptions struct {
 	OnReady           func(*host.Host)
 }
 
-func examplesServer(ctx context.Context, stateRoot string, runtimePath string, descriptorPath string) error {
-	return examplesServerWithOptions(ctx, stateRoot, runtimePath, descriptorPath, examplesServerOptions{RuntimeShardCount: 1})
+func examplesServer(ctx context.Context, stateRoot string, runtimePath string) error {
+	return examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{RuntimeShardCount: 1})
 }
 
-func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePath string, descriptorPath string, options examplesServerOptions) error {
+func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePath string, options examplesServerOptions) error {
 	ctx = examplesContext(ctx)
 	stateRoot = strings.TrimSpace(stateRoot)
 	runtimePath = strings.TrimSpace(runtimePath)
-	descriptorPath = strings.TrimSpace(descriptorPath)
 	if stateRoot == "" {
 		return errors.New("state_root is required")
 	}
 	if runtimePath == "" {
 		return errors.New("runtime_path is required")
-	}
-	if descriptorPath == "" {
-		return errors.New("runtime_descriptor_path is required")
 	}
 	repositoryRoot := strings.TrimSpace(options.RepositoryRoot)
 	if repositoryRoot == "" {
@@ -253,11 +251,11 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	if err != nil {
 		return err
 	}
-	runtimeDescriptor, err := loadCommandRuntimeDescriptor(descriptorPath, runtimeTarget)
+	runtimeIdentity, err := inspectCommandRuntimeArtifact(runtimePath, runtimeTarget)
 	if err != nil {
 		return err
 	}
-	runtimeModule, err := newCommandRuntimeModule(ctx, runtimePath, stateRoot, runtimeDescriptor, 15*time.Second)
+	runtimeModule, err := newCommandRuntimeModule(ctx, runtimePath, stateRoot, runtimeIdentity, 15*time.Second)
 	if err != nil {
 		return err
 	}
@@ -303,6 +301,10 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		record, err := ensureExamplePlugin(ctx, pluginHost, repositoryRoot, spec)
 		if err != nil {
 			return fmt.Errorf("prepare example plugin %s: %w", spec.Slug, err)
+		}
+		record, err = grantExamplePluginPermissions(ctx, pluginHost, record)
+		if err != nil {
+			return fmt.Errorf("authorize example plugin %s: %w", spec.Slug, err)
 		}
 		installed[spec.Slug] = exampleInstalledPlugin{Spec: spec, Record: record}
 	}
@@ -460,6 +462,47 @@ func ensureExamplePlugin(ctx context.Context, pluginHost *host.Host, repositoryR
 		})
 	}
 	return record, err
+}
+
+func grantExamplePluginPermissions(ctx context.Context, pluginHost *host.Host, record registry.PluginRecord) (registry.PluginRecord, error) {
+	requirements, err := pluginHost.GetPermissionRequirements(ctx, host.GetPermissionRequirementsRequest{
+		PluginInstanceID: record.PluginInstanceID,
+	})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	grants, err := pluginHost.ListPermissionGrants(ctx, host.ListPermissionGrantsRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		ActiveOnly:       true,
+	})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	active := make(map[string]struct{}, len(grants))
+	for _, grant := range grants {
+		active[grant.PermissionID] = struct{}{}
+	}
+	revisions := registry.AuthorizationRevisionsFromRecord(record)
+	for _, permissionID := range requirements.RequiredPermissions {
+		if _, ok := active[permissionID]; ok {
+			continue
+		}
+		result, err := pluginHost.GrantPermission(ctx, host.GrantPermissionRequest{
+			PluginInstanceID:           record.PluginInstanceID,
+			PermissionID:               permissionID,
+			ExpectedPolicyRevision:     revisions.PolicyRevision,
+			ExpectedManagementRevision: revisions.ManagementRevision,
+			ExpectedRevokeEpoch:        revisions.RevokeEpoch,
+		})
+		if err != nil {
+			return registry.PluginRecord{}, err
+		}
+		revisions = result.Revisions
+	}
+	record.PolicyRevision = revisions.PolicyRevision
+	record.ManagementRevision = revisions.ManagementRevision
+	record.RevokeEpoch = revisions.RevokeEpoch
+	return record, nil
 }
 
 func catalogItem(plugin exampleInstalledPlugin) exampleCatalogItem {

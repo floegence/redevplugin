@@ -7,20 +7,18 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
@@ -31,7 +29,7 @@ func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
 		runtimeManager: supervisor,
 	})
 
-	target := hostTestRuntimeDescriptor().Target()
+	target := hostTestRuntimeArtifactIdentity().Target()
 	health, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: target})
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
@@ -56,7 +54,7 @@ func TestStartRuntimeStopsManagerWhenStartedHealthIsInvalid(t *testing.T) {
 	manager.health.Ready = false
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 
-	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: hostTestRuntimeDescriptor().Target()}); !errors.Is(err, ErrPluginRuntimeIncompatible) {
+	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: hostTestRuntimeArtifactIdentity().Target()}); !errors.Is(err, ErrPluginRuntimeIncompatible) {
 		t.Fatalf("StartRuntime() error = %v, want %v", err, ErrPluginRuntimeIncompatible)
 	}
 	if manager.startCalls != 1 || manager.stopCalls != 1 {
@@ -74,7 +72,7 @@ func TestHostCloseStopsRuntimeWithBoundedDeadlineAndWaitsForCompletion(t *testin
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 	pluginData := &recordingClosePluginData{PluginData: h.adapters.PluginData}
 	h.adapters.PluginData = pluginData
-	target := hostTestRuntimeDescriptor().Target()
+	target := hostTestRuntimeArtifactIdentity().Target()
 	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: target}); err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
@@ -228,6 +226,13 @@ func TestStopRuntimePreservesSurfacesWhenManagerStopFails(t *testing.T) {
 	if strings.Contains(fmt.Sprint(diagnostics.events[0]), stopFailure.Error()) {
 		t.Fatalf("runtime stop diagnostic retained raw cause: %#v", diagnostics.events[0])
 	}
+	stored, getErr := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if stored.EnableState != registry.EnableEnabled {
+		t.Fatalf("runtime failure changed enable state = %q, want enabled", stored.EnableState)
+	}
 	if diagnostics.events[0].OwnerSessionHash != "session_hash" || diagnostics.events[0].OwnerUserHash != "user_hash" || diagnostics.events[0].OwnerEnvHash != "env_hash" || diagnostics.events[0].SessionChannelIDHash != "channel_hash" {
 		t.Fatalf("runtime stop diagnostic owner scope mismatch: %#v", diagnostics.events[0])
 	}
@@ -328,143 +333,6 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 		ArtifactSHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 	}); err == nil {
 		t.Fatal("ReadArtifact() expected sha mismatch error")
-	}
-}
-
-type recordingHostNetworkExecutor struct {
-	httpCalls      int
-	streamCalls    int
-	websocketCalls int
-	tcpCalls       int
-	udpCalls       int
-	lastHTTP       connectivity.HTTPRequest
-	lastStreamHTTP connectivity.HTTPRequest
-	lastWebSocket  connectivity.WebSocketRoundTripRequest
-	lastTCP        connectivity.TCPRoundTripRequest
-	lastUDP        connectivity.UDPRoundTripRequest
-	httpStatus     int
-	httpBody       []byte
-	streamChunks   [][]byte
-	wsResponse     connectivity.WebSocketRoundTripResponse
-	tcpResponse    connectivity.TCPRoundTripResponse
-	udpResponse    connectivity.UDPRoundTripResponse
-}
-
-func (e *recordingHostNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
-	e.httpCalls++
-	e.lastHTTP = req
-	status := e.httpStatus
-	if status == 0 {
-		status = http.StatusOK
-	}
-	return connectivity.HTTPResponse{StatusCode: status, Body: append([]byte(nil), e.httpBody...)}, nil
-}
-
-func (e *recordingHostNetworkExecutor) StreamHTTP(_ context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
-	e.streamCalls++
-	e.lastStreamHTTP = req
-	status := e.httpStatus
-	if status == 0 {
-		status = http.StatusOK
-	}
-	chunks := e.streamChunks
-	if len(chunks) == 0 && len(e.httpBody) > 0 {
-		chunks = [][]byte{e.httpBody}
-	}
-	var bytesRead int64
-	for index, chunk := range chunks {
-		if err := onChunk(connectivity.HTTPResponseChunk{Index: index, Data: append([]byte(nil), chunk...)}); err != nil {
-			return connectivity.HTTPStreamResponse{}, err
-		}
-		bytesRead += int64(len(chunk))
-	}
-	return connectivity.HTTPStreamResponse{StatusCode: status, BytesRead: bytesRead, ChunkCount: len(chunks)}, nil
-}
-
-func (e *recordingHostNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
-	e.websocketCalls++
-	e.lastWebSocket = req
-	return e.wsResponse, nil
-}
-
-func (e *recordingHostNetworkExecutor) TCPRoundTrip(_ context.Context, req connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
-	e.tcpCalls++
-	e.lastTCP = req
-	return e.tcpResponse, nil
-}
-
-func (e *recordingHostNetworkExecutor) UDPRoundTrip(_ context.Context, req connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
-	e.udpCalls++
-	e.lastUDP = req
-	return e.udpResponse, nil
-}
-
-func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
-	now := time.Now().UTC()
-	service := bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
-	revision := bridge.RevisionBinding{PolicyRevision: 1, ManagementRevision: 2, RevokeEpoch: 3}
-	minted, err := service.MintHandleGrant(bridge.MintHandleGrantRequest{
-		PluginInstanceID:     "plugini_1",
-		ActiveFingerprint:    "sha256:active",
-		RuntimeInstanceID:    "runtime_1",
-		RuntimeGenerationID:  "runtime_gen_1",
-		RuntimeShardID:       "runtime_shard_1",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		OwnerEnvHash:         "env_hash",
-		SessionChannelIDHash: "channel_hash",
-		HandleID:             "storage:db",
-		Method:               "storage.sqlite",
-		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		Revision:             revision,
-		Limits:               bridge.Limits{MaxTotalBytes: 4096},
-		Now:                  now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	validator := runtimeHandleGrantValidator{tokens: service}
-	result, err := validator.ValidateHandleGrant(hostTestContext(), runtimeclient.HandleGrantValidationRequest{
-		HandleGrantToken:     minted.HandleGrantToken,
-		PluginInstanceID:     "plugini_1",
-		ActiveFingerprint:    "sha256:active",
-		RuntimeInstanceID:    "runtime_1",
-		RuntimeGenerationID:  "runtime_gen_1",
-		RuntimeShardID:       "runtime_shard_1",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		OwnerEnvHash:         "env_hash",
-		SessionChannelIDHash: "channel_hash",
-		HandleID:             "storage:db",
-		Method:               "storage.sqlite",
-		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		PolicyRevision:       1,
-		ManagementRevision:   2,
-		RevokeEpoch:          3,
-	})
-	if err != nil {
-		t.Fatalf("ValidateHandleGrant() error = %v", err)
-	}
-	if result.HandleGrantID != minted.HandleGrantID || result.HandleID != "storage:db" || result.Method != "storage.sqlite" || result.MaxTotalBytes != 4096 {
-		t.Fatalf("handle grant result mismatch: %#v", result)
-	}
-	if _, err := validator.ValidateHandleGrant(hostTestContext(), runtimeclient.HandleGrantValidationRequest{
-		HandleGrantToken:     minted.HandleGrantToken,
-		PluginInstanceID:     "plugini_1",
-		ActiveFingerprint:    "sha256:active",
-		RuntimeGenerationID:  "runtime_gen_1",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		OwnerEnvHash:         "env_hash",
-		SessionChannelIDHash: "channel_hash",
-		HandleID:             "storage:other",
-		Method:               "storage.sqlite",
-		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		PolicyRevision:       1,
-		ManagementRevision:   2,
-		RevokeEpoch:          3,
-	}); !errors.Is(err, bridge.ErrTokenAudience) {
-		t.Fatalf("ValidateHandleGrant(wrong handle) error = %v, want ErrTokenAudience", err)
 	}
 }
 

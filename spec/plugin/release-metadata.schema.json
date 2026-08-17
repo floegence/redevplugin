@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-metadata.schema.json",
+  "title": "ReDevPlugin signed plugin release metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "release_metadata_ref",
+    "publisher_id",
+    "plugin_id",
+    "version",
+    "distribution_ref",
+    "hashes",
+    "release_metadata_signature",
+    "package_signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.release_metadata" },
+    "source_id": { "type": "string", "minLength": 1 },
+    "release_metadata_ref": { "$ref": "#/$defs/artifact_ref" },
+    "publisher_id": { "type": "string", "minLength": 1 },
+    "plugin_id": { "type": "string", "minLength": 1 },
+    "version": { "$ref": "#/$defs/semver" },
+    "distribution_ref": { "$ref": "#/$defs/distribution_ref" },
+    "hashes": { "$ref": "#/$defs/package_hash_set" },
+    "release_metadata_signature": { "$ref": "#/$defs/release_metadata_signature" },
+    "package_signature": { "$ref": "#/$defs/package_release_signature" },
+    "release_evidence": { "$ref": "#/$defs/release_evidence" },
+    "metadata": {
+      "type": "object",
+      "maxProperties": 128,
+      "propertyNames": { "minLength": 1, "maxLength": 128 },
+      "additionalProperties": { "type": "string", "maxLength": 4096 }
+    }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "artifact_ref": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._/@+-]+$",
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "[?#]" }
+        ]
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^(sha256:)?[a-f0-9]{64}$"
+    },
+    "distribution_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["distribution", "artifact_ref"],
+      "properties": {
+        "distribution": { "enum": ["registry_ref", "host_artifact_ref"] },
+        "artifact_ref": { "$ref": "#/$defs/artifact_ref" }
+      }
+    },
+    "package_hash_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package_sha256", "manifest_sha256", "entries_sha256"],
+      "properties": {
+        "package_sha256": { "$ref": "#/$defs/sha256" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "entries_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "release_metadata_signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "signature_ref", "source_policy_epoch", "revocation_epoch"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "type": "string", "minLength": 1 },
+        "signature_ref": { "$ref": "#/$defs/artifact_ref" },
+        "source_policy_epoch": { "$ref": "#/$defs/decimal_epoch" },
+        "revocation_epoch": { "$ref": "#/$defs/decimal_epoch" }
+      }
+    },
+    "package_release_signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "signature_bundle_ref", "source_policy_epoch", "revocation_epoch"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "type": "string", "minLength": 1 },
+        "signature_bundle_ref": { "$ref": "#/$defs/artifact_ref" },
+        "source_policy_epoch": { "$ref": "#/$defs/decimal_epoch" },
+        "revocation_epoch": { "$ref": "#/$defs/decimal_epoch" }
+      }
+    },
+    "release_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "notices_sha256": { "$ref": "#/$defs/sha256" },
+        "provenance_sha256": { "$ref": "#/$defs/sha256" },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      }
+    },
+    "decimal_epoch": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    }
+  }
+}

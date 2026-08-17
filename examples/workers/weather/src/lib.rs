@@ -1,9 +1,7 @@
 use redevplugin_worker_sdk::storage::sqlite::{
     self, ExecRequest, QueryRequest, QueryResponse, Value as SQLiteValue,
 };
-use redevplugin_worker_sdk::{
-    WorkerError, WorkerRequest, WorkerResult, decode_base64_text, export_worker, network,
-};
+use redevplugin_worker_sdk::{WorkerError, WorkerRequest, WorkerResult, export_worker, http};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -79,7 +77,6 @@ fn search_locations(params: SearchParams) -> WorkerResult {
         ));
     }
     let payload = http_get(
-        "geocoding",
         "https://geocoding-api.open-meteo.com",
         "/v1/search",
         BTreeMap::from([
@@ -214,7 +211,6 @@ fn fetch_and_cache_forecast(params: &ForecastParams, cache_key: &str) -> WorkerR
         params.timezone.trim()
     };
     let payload = http_get(
-        "forecast",
         "https://api.open-meteo.com",
         "/v1/forecast",
         BTreeMap::from([
@@ -249,34 +245,57 @@ fn forecast_response(mut forecast: Value, cache_state: &str, age_seconds: i64) -
 }
 
 fn http_get(
-    connector_id: &str,
     destination: &str,
     path: &str,
     query: BTreeMap<String, Vec<String>>,
 ) -> Result<Value, WorkerError> {
-    let mut request = network::ExecuteRequest::http_get(connector_id, destination, path);
-    request.query = query;
-    request.max_request_bytes = Some(32_768);
-    request.max_response_bytes = Some(393_216);
-    request.timeout_ms = Some(8_000);
-    let response = network::execute(request)?;
-    let status = response.status_code.unwrap_or_default();
+    let query = query
+        .iter()
+        .flat_map(|(name, values)| {
+            values
+                .iter()
+                .map(move |value| format!("{}={}", percent_encode(name), percent_encode(value)))
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    let url = format!("{destination}{path}?{query}");
+    let response = http::RequestBody::begin(http::HttpRequest {
+        method: "GET".to_string(),
+        url,
+        headers: vec![],
+        redirect: http::RedirectMode::Error,
+        timeout_ms: Some(8_000),
+    })?
+    .finish()?;
+    let status = response.status;
     if !(200..300).contains(&status) {
         return Err(WorkerError::new(
             "WEATHER_SERVICE_FAILED",
             format!("weather service returned HTTP {status}"),
         ));
     }
-    if response.body_base64.is_empty() {
-        return Err(WorkerError::hostcall("network response omitted body"));
+    let body = response.body.read_all()?;
+    if body.len() > 393_216 {
+        return Err(WorkerError::hostcall("network response exceeds limit"));
     }
-    let text = decode_base64_text(&response.body_base64)?;
-    serde_json::from_str(&text).map_err(|err| {
+    serde_json::from_slice(&body).map_err(|err| {
         WorkerError::new(
             "WEATHER_SERVICE_FAILED",
             format!("decode weather response: {err}"),
         )
     })
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 fn project_search_location(value: &Value) -> Option<Value> {

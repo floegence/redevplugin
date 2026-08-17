@@ -5,11 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 func TestValidateReleaseRefRequiresStrictSemVer(t *testing.T) {
@@ -32,31 +30,8 @@ func TestValidateReleaseRefRequiresStrictSemVer(t *testing.T) {
 	}
 }
 
-func TestValidateReleaseCompatibilityRequiresStrictSemVer(t *testing.T) {
-	for _, testCase := range []struct {
-		name                  string
-		minReDevPluginVersion string
-		minRuntimeVersion     string
-	}{
-		{name: "minimum redevplugin version", minReDevPluginVersion: "0.5", minRuntimeVersion: "1.0.0"},
-		{name: "minimum runtime version", minReDevPluginVersion: "0.5.0", minRuntimeVersion: "1.0"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			pkg := pluginpkg.Package{Manifest: manifest.Manifest{Plugin: manifest.Plugin{MinRuntimeVersion: testCase.minRuntimeVersion}}}
-			release := PluginPackageRelease{Compatibility: &ReleaseCompatibility{
-				MinReDevPluginVersion: testCase.minReDevPluginVersion,
-				MinRuntimeVersion:     testCase.minRuntimeVersion,
-				UIProtocolVersion:     "plugin-ui-v5",
-			}}
-			if err := validateReleaseCompatibility(pkg, release); !errors.Is(err, ErrReleaseRefVerificationFailed) {
-				t.Fatalf("validateReleaseCompatibility() error = %v, want ErrReleaseRefVerificationFailed", err)
-			}
-		})
-	}
-}
-
 func TestReleaseSourcePolicyUsesSemVerPrecedence(t *testing.T) {
-	blocked := releasecontract.SourcePolicyV2{DowngradePolicy: "block"}
+	blocked := releasecontract.SourcePolicyV3{DowngradePolicy: "block"}
 	for _, testCase := range []struct {
 		name    string
 		current string
@@ -85,7 +60,7 @@ func TestReleaseSourcePolicyRejectsInvalidSemVer(t *testing.T) {
 		PackageTrustActionUpdate,
 		&registry.PluginRecord{Version: "1.0.0"},
 		PluginReleaseRef{Version: "next"},
-		releasecontract.SourcePolicyV2{},
+		releasecontract.SourcePolicyV3{},
 	)
 	if !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("enforceReleaseSourcePolicy() error = %v, want ErrReleaseRefVerificationFailed", err)
@@ -97,7 +72,7 @@ func TestReleaseSourcePolicyTreatsPrereleaseAsDowngradeFromStable(t *testing.T) 
 		PackageTrustActionUpdate,
 		&registry.PluginRecord{Version: "1.0.0"},
 		PluginReleaseRef{Version: "1.0.0-rc.1"},
-		releasecontract.SourcePolicyV2{DowngradePolicy: "block"},
+		releasecontract.SourcePolicyV3{DowngradePolicy: "block"},
 	)
 	if !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("enforceReleaseSourcePolicy() error = %v, want ErrReleaseRefPolicyDenied", err)

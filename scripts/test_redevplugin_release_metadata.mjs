@@ -16,7 +16,7 @@ const canonicalPackage = {
 };
 const valid = {
   version: "v0.4.0",
-  versionSource: 'const developmentCompatibilityVersion = "0.4.0"\n',
+  versionFile: "0.4.0\n",
   changelog: "# Changelog\n\n## v0.4.0\n\n- Release.\n\n## v0.3.2\n",
   cargoMetadata: { packages: [canonicalPackage] },
   root,
@@ -27,9 +27,9 @@ assert.equal(sourceReleaseVersion(valid.changelog), "0.4.0");
 assert.equal(normalizeReleaseVersion("v0.4.0"), "0.4.0");
 
 for (const [label, mutation, expected] of [
-  ["tag drift", { version: "0.4.1" }, /Go compatibility version/],
-  ["Go compatibility drift", { versionSource: 'const developmentCompatibilityVersion = "0.4.1"\n' }, /Go compatibility version/],
-  ["duplicate Go compatibility source", { versionSource: `${valid.versionSource}${valid.versionSource}` }, /one developmentCompatibilityVersion/],
+  ["tag drift", { version: "0.4.1" }, /VERSION/],
+  ["VERSION drift", { versionFile: "0.4.1\n" }, /VERSION/],
+  ["VERSION whitespace drift", { versionFile: "0.4.0\n\n" }, /VERSION/],
   ["CHANGELOG drift", { changelog: valid.changelog.replace("## v0.4.0", "## v0.4.1") }, /CHANGELOG first release/],
   ["Worker SDK drift", { cargoMetadata: { packages: [{ ...canonicalPackage, version: "0.4.1" }] } }, /Worker SDK version/],
   ["Worker SDK path drift", { cargoMetadata: { packages: [{ ...canonicalPackage, manifest_path: join(root, "other", "Cargo.toml") }] } }, /one canonical/],

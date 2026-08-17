@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 const (
@@ -24,6 +24,7 @@ const (
 
 var (
 	ErrInvalidConfirmationIntent       = errors.New("plugin confirmation intent is invalid")
+	ErrConfirmationStoreSchema         = errors.New("plugin confirmation store schema is incompatible")
 	ErrConfirmationIntentNotFound      = errors.New("plugin confirmation intent not found")
 	ErrConfirmationIntentExpired       = errors.New("plugin confirmation intent expired")
 	ErrConfirmationIntentScopeMismatch = errors.New("plugin confirmation intent scope mismatch")

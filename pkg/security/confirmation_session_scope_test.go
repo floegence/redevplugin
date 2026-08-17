@@ -1,15 +1,17 @@
 package security
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	_ "modernc.org/sqlite"
 )
 
@@ -264,7 +266,7 @@ func TestSQLiteConfirmationSessionRevocationLedgerCapacitySurvivesReopen(t *test
 	}
 }
 
-func TestSQLiteConfirmationLegacyOwnerMigrationAndMalformedIsolation(t *testing.T) {
+func TestSQLiteConfirmationStoreRejectsLegacyOwnerSchema(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "legacy-confirmations.sqlite")
 	db, err := sql.Open("sqlite", path)
@@ -283,62 +285,22 @@ CREATE INDEX idx_plugin_confirmation_intents_plugin_instance
 ON plugin_confirmation_intents(plugin_instance_id, issued_at, confirmation_id)`); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Unix(1, 0).UTC()
-	validScope, err := json.Marshal(persistedConfirmationScopeFrom(testScopedConfirmationRequest(now).Scope))
-	if err != nil {
-		t.Fatal(err)
-	}
-	insert := `INSERT INTO plugin_confirmation_intents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	if _, err := db.ExecContext(ctx, insert,
-		"confirmation_legacy_valid", "token_valid", "com.example.scope", "plugini_scope",
-		"surface_scope", "bridge_scope", "scope.test", "sha256:request", "sha256:plan",
-		string(validScope), now.UnixNano(), now.Add(time.Hour).UnixNano(),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, insert,
-		"confirmation_legacy_malformed", "token_malformed", "com.example.scope", "plugini_scope",
-		"surface_scope", "bridge_scope", "scope.test", "sha256:request", "sha256:plan",
-		`{"owner_env_hash":"env_only"}`, now.UnixNano(), now.Add(time.Hour).UnixNano(),
-	); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-
-	store, err := NewSQLiteConfirmationIntentStore(ctx, path)
+	before, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("NewSQLiteConfirmationIntentStore() error = %v", err)
-	}
-	if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
-		ConfirmationID: "confirmation_legacy_valid",
-		SessionScope:   confirmationSessionScope(testScopedConfirmationRequest(now).Scope),
-		Now:            now,
-	}); err != nil {
-		t.Fatalf("ConsumeConfirmationIntent(migrated) error = %v", err)
-	}
-	if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
-		ConfirmationID: "confirmation_legacy_malformed",
-		SessionScope:   confirmationSessionScope(testScopedConfirmationRequest(now).Scope),
-		Now:            now,
-	}); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
-		t.Fatalf("ConsumeConfirmationIntent(malformed) error = %v, want migration required", err)
-	}
-	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewSQLiteConfirmationIntentStore(ctx, path)
-	if err != nil {
-		t.Fatalf("reopen error = %v", err)
+	if _, err := NewSQLiteConfirmationIntentStore(ctx, path); !errors.Is(err, ErrConfirmationStoreSchema) {
+		t.Fatalf("NewSQLiteConfirmationIntentStore() error = %v, want ErrConfirmationStoreSchema", err)
 	}
-	defer reopened.Close()
-	if _, err := reopened.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
-		ConfirmationID: "confirmation_legacy_malformed",
-		SessionScope:   confirmationSessionScope(testScopedConfirmationRequest(now).Scope),
-		Now:            now,
-	}); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
-		t.Fatalf("reopen malformed error = %v", err)
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("legacy confirmation store was modified")
 	}
 }
 

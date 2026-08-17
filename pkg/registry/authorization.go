@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
 type AuthorizationRevisions struct {

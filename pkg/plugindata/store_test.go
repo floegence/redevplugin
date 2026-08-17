@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/settings"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
 )
 
 func pluginDataTestContext() context.Context {
@@ -68,14 +68,6 @@ type catalogCase struct {
 func catalogCases() []catalogCase {
 	return []catalogCase{
 		{name: "memory", open: func(t *testing.T) registry.Store { return registry.NewMemoryStore() }},
-		{name: "sqlite", open: func(t *testing.T) registry.Store {
-			store, err := registry.NewSQLiteStore(pluginDataTestContext(), filepath.Join(t.TempDir(), "registry.sqlite"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = store.Close() })
-			return store
-		}},
 	}
 }
 
@@ -94,25 +86,12 @@ func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 			now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
 			record := putPlugin(t, catalog, "plugini_source", now)
 			shape := testShape()
-			dataset, err := store.CommitEnable(ctx, plugindata.CommitEnableRequest{
-				PluginInstanceID:           record.PluginInstanceID,
-				Shape:                      shape,
-				InitialSettings:            map[string]json.RawMessage{"theme": json.RawMessage(`"dark"`)},
-				ExpectedManagementRevision: record.ManagementRevision,
-				Now:                        now.Add(time.Second),
-			})
+			dataset, err := installFileStore(t, store, catalog, ctx, record, shape, now.Add(time.Second))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if dataset.Binding.Revision != 1 || dataset.Binding.ShapeHash == "" {
 				t.Fatalf("dataset = %#v", dataset)
-			}
-			enabled, err := catalog.GetPlugin(ctx, record.PluginInstanceID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if enabled.EnableState != registry.EnableEnabled || enabled.ManagementRevision != record.ManagementRevision+1 {
-				t.Fatalf("enabled = %#v", enabled)
 			}
 
 			if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "notes/a.txt", Data: []byte("hello")}); err != nil {
@@ -204,55 +183,6 @@ func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 	}
 }
 
-func TestFileStoreCommitEnableReactivatesRetainedBinding(t *testing.T) {
-	for _, tc := range catalogCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := pluginDataTestContext()
-			catalog := tc.open(t)
-			store, err := plugindata.Open(ctx, resolvedTempDir(t), catalog)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = store.Close() })
-
-			now := time.Date(2026, 8, 6, 5, 0, 0, 0, time.UTC)
-			shape := testShape()
-			record := putPlugin(t, catalog, "plugini_reinstall", now)
-			dataset, err := store.CommitEnable(ctx, enableRequest(record, shape, now))
-			if err != nil {
-				t.Fatal(err)
-			}
-			enabled, err := catalog.GetPlugin(ctx, record.PluginInstanceID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
-				PluginInstanceID:           record.PluginInstanceID,
-				ExpectedManagementRevision: enabled.ManagementRevision,
-				Now:                        now.Add(2 * time.Second),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			retained, err := store.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: record.PluginInstanceID})
-			if err != nil || len(retained) != 1 {
-				t.Fatalf("ListRetained() = %#v, %v", retained, err)
-			}
-
-			reinstalled := putPlugin(t, catalog, record.PluginInstanceID, now.Add(3*time.Second))
-			reactivated, err := store.CommitEnable(ctx, enableRequest(reinstalled, shape, now.Add(4*time.Second)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if reactivated.Binding.State != plugindata.BindingActive ||
-				reactivated.Binding.GenerationID != dataset.Binding.GenerationID ||
-				reactivated.Binding.Revision != retained[0].Revision+1 ||
-				reactivated.Binding.RetainedAt != nil || reactivated.Binding.ExpiresAt != nil {
-				t.Fatalf("reactivated binding = %#v, retained = %#v", reactivated.Binding, retained[0])
-			}
-		})
-	}
-}
-
 func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 	for _, tc := range catalogCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -266,7 +196,7 @@ func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 			now := time.Date(2026, 7, 17, 11, 0, 0, 0, time.UTC)
 			shape := testShape()
 			source := putPlugin(t, catalog, "plugini_source", now)
-			if _, err := store.CommitEnable(ctx, enableRequest(source, shape, now)); err != nil {
+			if _, err := installFileStore(t, store, catalog, ctx, source, shape, now); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: source.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt", Data: []byte("portable")}); err != nil {
@@ -284,7 +214,7 @@ func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 			if err := store.DeleteExport(ctx, plugindata.DeleteExportRequest{PluginInstanceID: target.PluginInstanceID, ObjectID: exported.ObjectID}); !errors.Is(err, plugindata.ErrExportNotFound) {
 				t.Fatalf("cross-plugin delete error = %v, want ErrExportNotFound", err)
 			}
-			disabled, err := catalog.SetEnableState(ctx, source.PluginInstanceID, registry.EnableDisabled, "import", now.Add(3*time.Second))
+			disabled, err := catalog.SetEnableState(ctx, source.PluginInstanceID, registry.EnableDisabledByUser, "import", now.Add(3*time.Second))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -336,7 +266,7 @@ func TestCleanupExpiredRemovesEveryReturnedGeneration(t *testing.T) {
 			generationIDs := make([]string, 0, 2)
 			for _, instanceID := range []string{"plugini_cleanup_a", "plugini_cleanup_b"} {
 				record := putPlugin(t, catalog, instanceID, now)
-				dataset, err := store.CommitEnable(ctx, enableRequest(record, shape, now))
+				dataset, err := installFileStore(t, store, catalog, ctx, record, shape, now)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -389,7 +319,7 @@ func TestFileStoreQuotaRootLockAndClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugin := putPluginWithManifest(t, catalog, "plugini_quota", time.Now(), quotaManifest)
-	if _, err := store.CommitEnable(ctx, enableRequest(plugin, shape, time.Now())); err != nil {
+	if _, err := installFileStore(t, store, catalog, ctx, plugin, shape, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: plugin.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "too-large", Data: []byte("12345")}); !errors.Is(err, storage.ErrQuotaExceeded) {
@@ -432,7 +362,7 @@ func TestFileStoreColdUsageRejectsOverQuotaSQLiteSidecars(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugin := putPluginWithManifest(t, catalog, "plugini_sqlite_cold_quota", time.Now(), quotaManifest)
-	dataset, err := store.CommitEnable(ctx, enableRequest(plugin, shape, time.Now()))
+	dataset, err := installFileStore(t, store, catalog, ctx, plugin, shape, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +446,7 @@ func TestFileStoreImportRejectsTamperedObject(t *testing.T) {
 	now := time.Now().UTC()
 	shape := testShape()
 	source := putPlugin(t, catalog, "plugini_source", now)
-	if _, err := store.CommitEnable(ctx, enableRequest(source, shape, now)); err != nil {
+	if _, err := installFileStore(t, store, catalog, ctx, source, shape, now); err != nil {
 		t.Fatal(err)
 	}
 	exported, err := store.Export(ctx, plugindata.ExportRequest{PluginInstanceID: source.PluginInstanceID})
@@ -528,7 +458,7 @@ func TestFileStoreImportRejectsTamperedObject(t *testing.T) {
 	if err := os.WriteFile(settingsPath, []byte(`{"scope":{"kind":"user","owner_env_hash":"owner_env_hash_test","owner_user_hash":"owner_user_hash_test"},"revision":1,"values":{"theme":"tampered"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	disabled, err := catalog.SetEnableState(ctx, source.PluginInstanceID, registry.EnableDisabled, "import", now)
+	disabled, err := catalog.SetEnableState(ctx, source.PluginInstanceID, registry.EnableDisabledByUser, "import", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +467,7 @@ func TestFileStoreImportRejectsTamperedObject(t *testing.T) {
 	}
 }
 
-func TestCommitEnableRejectsCallerDefinedShape(t *testing.T) {
+func TestInstallCommitRejectsCallerDefinedShape(t *testing.T) {
 	ctx := pluginDataTestContext()
 	catalog := registry.NewMemoryStore()
 	store, err := plugindata.Open(ctx, resolvedTempDir(t), catalog)
@@ -548,15 +478,15 @@ func TestCommitEnableRejectsCallerDefinedShape(t *testing.T) {
 	record := putPlugin(t, catalog, "plugini_shape", time.Now())
 	shape := testShape()
 	shape.Settings.Fields[0].Options = []string{"dark", "invented"}
-	_, err = store.CommitEnable(ctx, enableRequest(record, shape, time.Now()))
+	_, err = installFileStore(t, store, catalog, ctx, record, shape, time.Now())
 	if !errors.Is(err, plugindata.ErrShapeMismatch) {
-		t.Fatalf("CommitEnable() error = %v, want ErrShapeMismatch", err)
+		t.Fatalf("InstallCommit() error = %v, want ErrShapeMismatch", err)
 	}
 	if _, found, err := catalog.GetBinding(ctx, record.PluginInstanceID); err != nil || found {
 		t.Fatalf("binding found = %v, err = %v", found, err)
 	}
 	stored, err := catalog.GetPlugin(ctx, record.PluginInstanceID)
-	if err != nil || stored.EnableState != registry.EnableDisabled || stored.ManagementRevision != record.ManagementRevision {
+	if err != nil || stored.EnableState != registry.EnableDisabledByUser || stored.ManagementRevision != record.ManagementRevision {
 		t.Fatalf("stored = %#v, err = %v", stored, err)
 	}
 }
@@ -588,7 +518,7 @@ func TestOpenCanonicalizesSymlinkAncestor(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := putPlugin(t, catalog, "plugini_canonical_root", time.Now())
-	if _, err := store.CommitEnable(pluginDataTestContext(), enableRequest(record, testShape(), time.Now())); err != nil {
+	if _, err := installFileStore(t, store, catalog, pluginDataTestContext(), record, testShape(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if entries, err := os.ReadDir(filepath.Join(real, "data", "workspaces", "environment", "owner_env_hash_test")); err != nil || len(entries) != 1 {
@@ -627,11 +557,11 @@ func TestFileStoreMaintenancePreservesOtherOwners(t *testing.T) {
 			shape := testShape()
 			recordA := putPluginWithContext(t, ctxA, catalog, "plugini_shared", time.Now(), testManifest())
 			recordB := putPluginWithContext(t, ctxB, catalog, "plugini_shared", time.Now(), testManifest())
-			datasetA, err := store.CommitEnable(ctxA, enableRequest(recordA, shape, time.Now()))
+			datasetA, err := installFileStore(t, store, catalog, ctxA, recordA, shape, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
-			datasetB, err := store.CommitEnable(ctxB, enableRequest(recordB, shape, time.Now()))
+			datasetB, err := installFileStore(t, store, catalog, ctxB, recordB, shape, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -683,15 +613,7 @@ func TestFileStoreScopesSettingsAndStorageByAuthenticatedOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			record := putPluginWithContext(t, ctxA, catalog, "plugini_scoped", time.Now(), manifest)
-			if _, err := store.CommitEnable(ctxA, plugindata.CommitEnableRequest{
-				PluginInstanceID: record.PluginInstanceID,
-				Shape:            shape,
-				InitialSettings: map[string]json.RawMessage{
-					"user_theme": json.RawMessage(`"default"`),
-					"env_mode":   json.RawMessage(`"shared"`),
-				},
-				ExpectedManagementRevision: record.ManagementRevision,
-			}); err != nil {
+			if _, err := installFileStore(t, store, catalog, ctxA, record, shape, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 
@@ -767,7 +689,7 @@ func TestFileStoreScopesSettingsAndStorageByAuthenticatedOwner(t *testing.T) {
 			}
 
 			otherRecord := putPluginWithContext(t, ctxOtherEnv, catalog, record.PluginInstanceID, time.Now(), manifest)
-			if _, err := store.CommitEnable(ctxOtherEnv, plugindata.CommitEnableRequest{PluginInstanceID: otherRecord.PluginInstanceID, Shape: shape, ExpectedManagementRevision: otherRecord.ManagementRevision}); err != nil {
+			if _, err := installFileStore(t, store, catalog, ctxOtherEnv, otherRecord, shape, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.ReadFile(ctxOtherEnv, storage.FileReadRequest{PluginInstanceID: otherRecord.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctxOtherEnv, sessionctx.ScopeEnvironment), StoreID: "env_files", Path: "value.txt"}); !errors.Is(err, storage.ErrFileNotFound) {
@@ -795,7 +717,7 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 				t.Fatal(err)
 			}
 			record := putPluginWithContext(t, ctxA, catalog, "plugini_export_scoped", time.Now(), manifest)
-			if _, err := store.CommitEnable(ctxA, plugindata.CommitEnableRequest{PluginInstanceID: record.PluginInstanceID, Shape: shape, ExpectedManagementRevision: record.ManagementRevision}); err != nil {
+			if _, err := installFileStore(t, store, catalog, ctxA, record, shape, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			write := func(ctx context.Context, scope sessionctx.ScopeKind, storeID, value string) {
@@ -838,7 +760,7 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 			patch(ctxA, sessionctx.ScopeUser, 2, "user_theme", "changed-a")
 			patch(ctxB, sessionctx.ScopeUser, 2, "user_theme", "preserved-b")
 			patch(ctxA, sessionctx.ScopeEnvironment, 2, "env_mode", "changed-env")
-			disabled, err := catalog.SetEnableState(ctxA, record.PluginInstanceID, registry.EnableDisabled, "import", time.Now())
+			disabled, err := catalog.SetEnableState(ctxA, record.PluginInstanceID, registry.EnableDisabledByUser, "import", time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -899,7 +821,7 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 	}
 }
 
-func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
+func TestFileStoreRejectsUnexpectedOwnerlessDataWithoutMutation(t *testing.T) {
 	t.Run("nonempty", func(t *testing.T) {
 		root := resolvedTempDir(t)
 		legacy := filepath.Join(root, "workspaces", "gen_legacy")
@@ -909,8 +831,11 @@ func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(legacy, "dataset.json"), []byte("{}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
-			t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
+		if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrDatasetCorrupt) {
+			t.Fatalf("Open() error = %v, want ErrDatasetCorrupt", err)
+		}
+		if _, err := os.Stat(filepath.Join(legacy, "dataset.json")); err != nil {
+			t.Fatalf("legacy data was mutated: %v", err)
 		}
 	})
 
@@ -927,8 +852,11 @@ func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(legacy, "payload"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
-				t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
+			if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrDatasetCorrupt) {
+				t.Fatalf("Open() error = %v, want ErrDatasetCorrupt", err)
+			}
+			if _, err := os.Stat(filepath.Join(legacy, "payload")); err != nil {
+				t.Fatalf("legacy data was mutated: %v", err)
 			}
 		})
 	}
@@ -943,17 +871,15 @@ func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		store, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore())
-		if err != nil {
-			t.Fatal(err)
+		if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrDatasetCorrupt) {
+			t.Fatalf("Open() error = %v, want ErrDatasetCorrupt", err)
 		}
-		defer store.Close()
 		for _, legacy := range []string{
 			filepath.Join(root, "workspaces", "gen_empty"),
 			filepath.Join(root, "objects", "obj_empty"),
 		} {
-			if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("empty legacy path remains: %s: %v", legacy, err)
+			if _, err := os.Stat(legacy); err != nil {
+				t.Fatalf("legacy path was mutated: %s: %v", legacy, err)
 			}
 		}
 	})
@@ -968,7 +894,7 @@ func TestFileStoreRejectsExportManifestWithoutPluginOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := putPlugin(t, catalog, "plugini_manifest_owner", time.Now())
-	if _, err := store.CommitEnable(ctx, enableRequest(record, testShape(), time.Now())); err != nil {
+	if _, err := installFileStore(t, store, catalog, ctx, record, testShape(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	exported, err := store.Export(ctx, plugindata.ExportRequest{PluginInstanceID: record.PluginInstanceID})
@@ -995,8 +921,8 @@ func TestFileStoreRejectsExportManifestWithoutPluginOwner(t *testing.T) {
 	if err := os.WriteFile(manifestPath, append(raw, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := plugindata.Open(ctx, root, catalog); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
-		t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
+	if _, err := plugindata.Open(ctx, root, catalog); !errors.Is(err, plugindata.ErrDatasetCorrupt) {
+		t.Fatalf("Open() error = %v, want ErrDatasetCorrupt", err)
 	}
 }
 
@@ -1010,6 +936,23 @@ func putPluginWithManifest(t *testing.T, store registry.Store, instanceID string
 
 func putPluginWithContext(t *testing.T, ctx context.Context, store registry.Store, instanceID string, now time.Time, pluginManifest manifest.Manifest) registry.PluginRecord {
 	t.Helper()
+	pluginManifest.SchemaVersion = manifest.SchemaVersionV9
+	pluginManifest.API.Major = 1
+	pluginManifest.Publisher.DisplayName = "Example"
+	pluginManifest.Plugin.DisplayName = "Example plugin"
+	if pluginManifest.Presentation.DefaultLocale == "" {
+		pluginManifest.Presentation = manifest.PresentationSpec{
+			DefaultLocale: "en-US",
+			Summary:       "Example plugin",
+			Description:   []string{"Example plugin"},
+			Highlights:    []string{},
+			Keywords:      []string{"example"},
+			Localizations: []manifest.PresentationLocalizationSpec{},
+		}
+	}
+	if len(pluginManifest.Surfaces) == 0 {
+		pluginManifest.Surfaces = []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Example", Entry: "ui/index.html"}}
+	}
 	record, err := store.PutPlugin(ctx, registry.PluginRecord{
 		PluginInstanceID:  instanceID,
 		PublisherID:       pluginManifest.Publisher.PublisherID,
@@ -1017,8 +960,12 @@ func putPluginWithContext(t *testing.T, ctx context.Context, store registry.Stor
 		Version:           "1.0.0",
 		ActiveFingerprint: "sha256:" + instanceID,
 		TrustState:        registry.TrustVerified,
-		EnableState:       registry.EnableDisabled,
-		Manifest:          pluginManifest,
+		PackageSourceProvenance: registry.PackageSourceProvenance{
+			Kind:            registry.PackageSourceLocalGenerated,
+			SourceReference: "test",
+		},
+		EnableState: registry.EnableDisabledByUser,
+		Manifest:    pluginManifest,
 	}, registry.PutOptions{Now: now})
 	if err != nil {
 		t.Fatal(err)
@@ -1038,7 +985,7 @@ func testManifest() manifest.Manifest {
 	files := int64(64)
 	dbFiles := int64(8)
 	return manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersionV8,
+		SchemaVersion: manifest.SchemaVersionV9,
 		Publisher:     manifest.Publisher{PublisherID: "example"},
 		Plugin:        manifest.Plugin{PluginID: "com.example.notes", Version: "1.0.0"},
 		Settings: &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{{
@@ -1055,7 +1002,7 @@ func testManifest() manifest.Manifest {
 func scopedTestManifest() manifest.Manifest {
 	files := int64(64)
 	return manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersionV8,
+		SchemaVersion: manifest.SchemaVersionV9,
 		Publisher:     manifest.Publisher{PublisherID: "example"},
 		Plugin:        manifest.Plugin{PluginID: "com.example.scoped", Version: "1.0.0"},
 		Settings: &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{
@@ -1069,8 +1016,17 @@ func scopedTestManifest() manifest.Manifest {
 	}
 }
 
-func enableRequest(record registry.PluginRecord, shape plugindata.Shape, now time.Time) plugindata.CommitEnableRequest {
-	return plugindata.CommitEnableRequest{PluginInstanceID: record.PluginInstanceID, Shape: shape, InitialSettings: map[string]json.RawMessage{"theme": json.RawMessage(`"dark"`)}, ExpectedManagementRevision: record.ManagementRevision, Now: now.Add(time.Second)}
+func installFileStore(t *testing.T, store *plugindata.FileStore, catalog registry.Store, ctx context.Context, record registry.PluginRecord, shape plugindata.Shape, now time.Time) (plugindata.Dataset, error) {
+	t.Helper()
+	// Registry stores are only catalog fakes here; Host/control-store tests own
+	// the lifecycle assertion that a fresh install persists enabled atomically.
+	return store.InstallCommit(ctx, plugindata.InstallCommitRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		Shape:            shape,
+		Now:              now,
+	}, func(commitCtx context.Context, expected *plugindata.Binding, binding plugindata.Binding, committedShape plugindata.Shape, commitTime time.Time) error {
+		return catalog.SwapImport(commitCtx, record.ManagementRevision, expected, binding, committedShape, commitTime)
+	})
 }
 
 func resolvedTempDir(t *testing.T) string {

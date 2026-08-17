@@ -13,8 +13,8 @@ func TestCapabilityExecutionRuntimeHasOneExecutionSinkAndIndex(t *testing.T) {
 	}
 	text := string(source)
 	for _, retired := range []string{
-		`"github.com/floegence/redevplugin/v2/pkg/operation"`,
-		`"github.com/floegence/redevplugin/v2/pkg/stream"`,
+		`"github.com/floegence/redevplugin/v3/pkg/operation"`,
+		`"github.com/floegence/redevplugin/v3/pkg/stream"`,
 		"hostOperationSink",
 		"hostStreamSink",
 		"operations map[",

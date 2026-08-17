@@ -53,7 +53,6 @@ for (const testCase of [
       "--output", fixture.output,
       "--measurements", join(fixture.base, "missing-measurements.ndjson"),
       "--comparisons", join(fixture.base, "missing-comparisons.ndjson"),
-      "--compatibility", join(fixture.base, "missing-compatibility.json"),
       "--version", "0.5.0",
       "--source-commit", sourceCommit,
       "--gate", "release",

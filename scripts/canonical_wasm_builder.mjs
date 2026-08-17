@@ -12,6 +12,15 @@ const pinnedWasmTargetSHA256 = Object.freeze({
   "1.88.0": "3152d1cbc104215914e27562980c0d99b4164c7f1aa578794e003b16ce065c32",
 });
 
+const currentWorkerImports = new Set([
+  "rdp_call_v1",
+  "rdp_read_v1",
+  "rdp_write_v1",
+  "rdp_seek_v1",
+  "rdp_close_v1",
+  "rdp_last_error_v1",
+]);
+
 const inheritedEnvironmentKeys = [
   "PATH",
   "HOME",
@@ -50,6 +59,33 @@ export function parseCanonicalWasmGeneratorArgs(args) {
     checkOnly: args.includes("--check"),
     forceCanonical: args.includes("--canonical"),
   };
+}
+
+export function assertCurrentWorkerImports(content, label) {
+  let module;
+  try {
+    module = new WebAssembly.Module(content);
+  } catch (error) {
+    throw new Error(`${label} is not a valid WebAssembly module: ${error}`);
+  }
+  const imports = WebAssembly.Module.imports(module);
+  if (imports.length === 0) {
+    throw new Error(`${label} does not import the ReDevPlugin Worker API`);
+  }
+  for (const imported of imports) {
+    if (
+      imported.kind !== "function" ||
+      imported.module !== "redevplugin.io" ||
+      !currentWorkerImports.has(imported.name)
+    ) {
+      throw new Error(
+        `${label} imports unsupported Worker API symbol ${imported.module}.${imported.name} (${imported.kind})`,
+      );
+    }
+  }
+  if (!imports.some((imported) => imported.name === "rdp_call_v1")) {
+    throw new Error(`${label} does not import redevplugin.io.rdp_call_v1`);
+  }
 }
 
 export function canonicalRustImage(rustVersion) {

@@ -3,25 +3,12 @@ package sessionctx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 )
 
-var legacyOwnerHashPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
-
-func TestOwnerScopeMigrationRequiredContract(t *testing.T) {
-	if OwnerScopeMigrationRequiredCode != "owner_scope_migration_required" {
-		t.Fatalf("OwnerScopeMigrationRequiredCode = %q", OwnerScopeMigrationRequiredCode)
-	}
-	if ErrOwnerScopeMigrationRequired.Error() != OwnerScopeMigrationRequiredCode {
-		t.Fatalf("ErrOwnerScopeMigrationRequired = %q", ErrOwnerScopeMigrationRequired)
-	}
-	if !errors.Is(fmt.Errorf("open owner-scoped store: %w", ErrOwnerScopeMigrationRequired), ErrOwnerScopeMigrationRequired) {
-		t.Fatal("wrapped migration error did not preserve the platform sentinel")
-	}
-}
+var ownerHashPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 
 func TestContextResourceScope(t *testing.T) {
 	session := Context{
@@ -104,7 +91,7 @@ func TestOwnerHashValidationMatchesReleasedPattern(t *testing.T) {
 	for first := 0; first <= 255; first++ {
 		for second := 0; second <= 255; second++ {
 			value := string([]byte{byte(first), byte(second)})
-			if got, want := validOwnerHash(value), legacyOwnerHashPattern.MatchString(value); got != want {
+			if got, want := validOwnerHash(value), ownerHashPattern.MatchString(value); got != want {
 				t.Fatalf("validOwnerHash(%q) = %t, want %t", value, got, want)
 			}
 		}
@@ -120,7 +107,7 @@ func TestOwnerHashValidationMatchesReleasedPattern(t *testing.T) {
 		"A\u00e9",
 		"A\x00",
 	} {
-		if got, want := validOwnerHash(value), legacyOwnerHashPattern.MatchString(value); got != want {
+		if got, want := validOwnerHash(value), ownerHashPattern.MatchString(value); got != want {
 			t.Fatalf("validOwnerHash(%q) = %t, want %t", value, got, want)
 		}
 	}

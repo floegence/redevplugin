@@ -193,7 +193,8 @@ try {
   const weatherNavigation = desktop.locator('#plugin-list button[data-slug="weather"]');
   await weatherNavigation.click();
   await waitFor(() => methodCalls.filter((body) => body.includes('"method":"memos.draft.save"')).length > saveCallsBeforeQuiesce, 5_000, "Memos quiesce draft call");
-  await pluginFrame(desktop, "Weather");
+  const quiesceWeather = await pluginFrame(desktop, "Weather");
+  await quiesceWeather.locator(".weather-story").waitFor({ state: "visible", timeout: 20_000 });
   assert.equal(await weatherNavigation.evaluate((element) => document.activeElement === element), true, "switching apps must preserve navigation focus");
   await desktop.locator('#plugin-list button[data-slug="memos"]').click();
   memos = await pluginFrame(desktop, "Memos");
@@ -413,6 +414,7 @@ try {
     const switchedWeather = await pluginFrame(desktop, "Weather");
     await switchedWeather.locator(".weather-app").waitFor({ state: "visible", timeout: 10_000 });
     pluginSwitchSamplesMs.push(performance.now() - startedAt);
+    await switchedWeather.locator(".weather-story").waitFor({ state: "visible", timeout: 20_000 });
   }
   const sortedPluginSwitchSamplesMs = [...pluginSwitchSamplesMs].sort((left, right) => left - right);
   const pluginSwitchP95Ms = sortedPluginSwitchSamplesMs[Math.ceil(sortedPluginSwitchSamplesMs.length * 0.95) - 1];

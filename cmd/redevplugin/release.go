@@ -4,8 +4,8 @@ import (
 	"context"
 	"os"
 
-	"github.com/floegence/redevplugin/v2/pkg/releasepublisher"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/releasepublisher"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 func runRelease(ctx context.Context, args []string) error {
@@ -64,8 +64,7 @@ func runRelease(ctx context.Context, args []string) error {
 			OK: true, Phase: "verified", Output: args[1], Presentation: verified.Presentation,
 			PresentationIcon: verified.PresentationIcon,
 			ManifestSHA256:   verified.ManifestSHA256, PresentationSHA256: verified.PresentationSHA256,
-			ContractSetSHA256: version.CurrentCompatibilityManifest().ContractSetSHA256,
-			VerifierVersion:   version.CurrentCompatibilityVersion(),
+			VerifierVersion: version.CurrentPlatformVersion(),
 		})
 	case "extract-presentation-icon":
 		if len(args) != 3 {
@@ -77,8 +76,7 @@ func runRelease(ctx context.Context, args []string) error {
 		}
 		return writeJSON(presentationIconExtractionSummary{
 			OK: true, Phase: "presentation_icon_extracted", Output: args[1], IconOutput: args[2], PresentationIcon: icon,
-			ContractSetSHA256: version.CurrentCompatibilityManifest().ContractSetSHA256,
-			VerifierVersion:   version.CurrentCompatibilityVersion(),
+			VerifierVersion: version.CurrentPlatformVersion(),
 		})
 	default:
 		return usage()

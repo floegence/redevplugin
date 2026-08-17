@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 var _ host.ManagementAction = RouteActionListPlugins

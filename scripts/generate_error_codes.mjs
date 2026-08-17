@@ -3,12 +3,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
-const contractSource = JSON.parse(await readFile(join(root, "internal/contracts/active-contracts.json"), "utf8"));
-const errorCodeContract = contractSource.artifacts.find((artifact) => artifact.id === "error-codes-schema");
-if (!errorCodeContract || typeof errorCodeContract.path !== "string") {
-  throw new Error("active error code contract is missing");
-}
-const source = join(root, errorCodeContract.path);
+const sourcePath = "spec/plugin/error-codes.schema.json";
+const source = join(root, sourcePath);
 const output = join(root, "packages/redevplugin-ui/src/error-codes.gen.ts");
 const check = process.argv.includes("--check");
 const generated = check
@@ -24,7 +20,7 @@ const groups = [
   ["runtimeProcessFailureCodes", "runtime_process_failure_code"],
 ];
 
-let contents = `// Generated from ${errorCodeContract.path}. Do not edit.\n\n`;
+let contents = `// Generated from ${sourcePath}. Do not edit.\n\n`;
 for (const [exportName, definitionName] of groups) {
   const values = definitions[definitionName]?.enum;
   if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {

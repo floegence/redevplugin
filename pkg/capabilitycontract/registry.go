@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	platformversion "github.com/floegence/redevplugin/v2/pkg/version"
+	platformversion "github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)

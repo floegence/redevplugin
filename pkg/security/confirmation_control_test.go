@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/controlstore"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/internal/controlstore"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func TestControlConfirmationStorePreservesCapacityRevocationAndExpiry(t *testing.T) {

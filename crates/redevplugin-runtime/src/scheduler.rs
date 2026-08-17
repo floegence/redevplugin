@@ -2,7 +2,6 @@ use crate::ipc as redevplugin_ipc;
 use redevplugin_ipc::ParsedWorkerInvocation;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
@@ -108,19 +107,12 @@ impl Drop for CancellationRegistration {
     }
 }
 
-pub enum InvocationSignal {
-    HostcallResponse(String),
-    Canceled,
-}
-
 pub struct InvocationJob {
     pub request_id: String,
     pub plugin_instance_id: String,
     pub session_scope: Option<redevplugin_ipc::SessionScope>,
     pub invocation: Arc<ParsedWorkerInvocation>,
     pub cancellation: Arc<Cancellation>,
-    pub signal_sender: Sender<InvocationSignal>,
-    pub signals: Receiver<InvocationSignal>,
 }
 
 impl std::fmt::Debug for InvocationJob {
@@ -136,7 +128,6 @@ impl std::fmt::Debug for InvocationJob {
 
 impl InvocationJob {
     pub fn new(invocation: ParsedWorkerInvocation) -> redevplugin_ipc::IpcResult<Self> {
-        let (signal_sender, signals) = mpsc::channel();
         let request_id = invocation.request_id().to_string();
         let plugin_instance_id = invocation.plugin_instance_id()?.to_string();
         let session_scope = invocation.session_scope()?;
@@ -146,8 +137,6 @@ impl InvocationJob {
             session_scope,
             invocation: Arc::new(invocation),
             cancellation: Cancellation::new(),
-            signal_sender,
-            signals,
         })
     }
 }
@@ -252,7 +241,6 @@ struct QueueToken {
 struct ActiveInvocation {
     plugin_instance_id: String,
     cancellation: Arc<Cancellation>,
-    signal_sender: Sender<InvocationSignal>,
     session_scope: Option<redevplugin_ipc::SessionScope>,
 }
 
@@ -427,7 +415,6 @@ impl InvocationScheduler {
                     ActiveInvocation {
                         plugin_instance_id,
                         cancellation: Arc::clone(&job.cancellation),
-                        signal_sender: job.signal_sender.clone(),
                         session_scope: job.session_scope.clone(),
                     },
                 );
@@ -531,10 +518,8 @@ impl InvocationScheduler {
         }
         if let Some(active) = state.active.get(request_id) {
             let cancellation = Arc::clone(&active.cancellation);
-            let signal_sender = active.signal_sender.clone();
             drop(state);
             cancellation.cancel();
-            let _ = signal_sender.send(InvocationSignal::Canceled);
             return CancelDisposition::Running;
         }
         if state.recent_request_ids.contains(request_id) {
@@ -635,21 +620,15 @@ impl InvocationScheduler {
         let cancellations = running_request_ids
             .iter()
             .filter_map(|request_id| state.active.get(request_id))
-            .map(|active| {
-                (
-                    Arc::clone(&active.cancellation),
-                    active.signal_sender.clone(),
-                )
-            })
+            .map(|active| Arc::clone(&active.cancellation))
             .collect::<Vec<_>>();
         drop(state);
 
         for job in &queued {
             job.cancellation.cancel();
         }
-        for (cancellation, signal_sender) in cancellations {
+        for cancellation in cancellations {
             cancellation.cancel();
-            let _ = signal_sender.send(InvocationSignal::Canceled);
         }
         self.available.notify_all();
         SessionRevokeDisposition {
@@ -752,14 +731,6 @@ impl InvocationScheduler {
         }
     }
 
-    pub fn signal(&self, request_id: &str, signal: InvocationSignal) -> bool {
-        let state = self.state.lock().expect("scheduler mutex poisoned");
-        state
-            .active
-            .get(request_id)
-            .is_some_and(|active| active.signal_sender.send(signal).is_ok())
-    }
-
     pub fn metrics(&self) -> SchedulerMetrics {
         let state = self.state.lock().expect("scheduler mutex poisoned");
         SchedulerMetrics {
@@ -791,7 +762,6 @@ impl InvocationScheduler {
         }
         for active in state.active.values() {
             active.cancellation.cancel();
-            let _ = active.signal_sender.send(InvocationSignal::Canceled);
         }
         state.order.clear();
         state.queued_by_session.clear();
@@ -965,16 +935,12 @@ mod tests {
     }
 
     #[test]
-    fn marks_running_invocation_canceled_and_notifies_worker() {
+    fn marks_running_invocation_canceled() {
         let scheduler = InvocationScheduler::new(2, 1);
         scheduler.enqueue(job("a1", "a")).unwrap();
         let invocation = scheduler.take().unwrap();
         assert!(matches!(scheduler.cancel("a1"), CancelDisposition::Running));
         assert!(invocation.cancellation.is_canceled());
-        assert!(matches!(
-            invocation.signals.recv().unwrap(),
-            InvocationSignal::Canceled
-        ));
         scheduler.finish("a1");
         assert_eq!(
             scheduler.metrics(),
@@ -1006,10 +972,6 @@ mod tests {
         assert_eq!(revoked.queued[0].request_id, "exact-queued");
         assert_eq!(revoked.running_request_ids, ["exact-running"]);
         assert!(running.cancellation.is_canceled());
-        assert!(matches!(
-            running.signals.recv().unwrap(),
-            InvocationSignal::Canceled
-        ));
         assert_eq!(scheduler.take().unwrap().request_id, "sibling");
         assert!(matches!(
             scheduler.enqueue(session_job("future", "plugin-a", &exact)),
@@ -1170,7 +1132,7 @@ mod tests {
         let sibling = scope("session-a", "user-a", "env-a", "channel-b");
         let template = Arc::new(
             redevplugin_ipc::parse_worker_invocation(
-                r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"template","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"plugin_instance_id":"plugin","method":"worker.echo"}}}"#,
+                r#"{"frame_type":"invoke_worker","request_id":"template","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"plugin_instance_id":"plugin","method":"worker.echo"}}}"#,
             )
             .unwrap(),
         );
@@ -1248,7 +1210,7 @@ mod tests {
 
     #[test]
     fn invocation_job_builder_returns_typed_error_without_panicking() {
-        let frame = r#"{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"missing-plugin","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"method":"worker.echo"}}}"#;
+        let frame = r#"{"frame_type":"invoke_worker","request_id":"missing-plugin","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"method":"worker.echo"}}}"#;
         let invocation = redevplugin_ipc::parse_worker_invocation(frame).unwrap();
         let result = std::panic::catch_unwind(|| InvocationJob::new(invocation));
         assert_eq!(
@@ -1261,7 +1223,7 @@ mod tests {
 
     fn job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+            r#"{{"frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
         );
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }
@@ -1287,7 +1249,7 @@ mod tests {
         scope: &redevplugin_ipc::SessionScope,
     ) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
+            r#"{{"frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
             scope.owner_session_hash,
             scope.owner_user_hash,
             scope.owner_env_hash,
@@ -1301,15 +1263,12 @@ mod tests {
         scope: &redevplugin_ipc::SessionScope,
         invocation: &Arc<ParsedWorkerInvocation>,
     ) -> InvocationJob {
-        let (signal_sender, signals) = mpsc::channel();
         InvocationJob {
             request_id: request_id.to_string(),
             plugin_instance_id: "plugin".to_string(),
             session_scope: Some(scope.clone()),
             invocation: Arc::clone(invocation),
             cancellation: Cancellation::new(),
-            signal_sender,
-            signals,
         }
     }
 }
@@ -1382,7 +1341,7 @@ mod property_gates {
 
     fn property_job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+            r#"{{"frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
         );
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }
@@ -1398,7 +1357,7 @@ mod property_gates {
         scope: &redevplugin_ipc::SessionScope,
     ) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v7","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
+            r#"{{"frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
             scope.owner_session_hash,
             scope.owner_user_hash,
             scope.owner_env_hash,

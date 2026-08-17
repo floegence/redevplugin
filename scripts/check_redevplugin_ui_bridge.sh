@@ -5,7 +5,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 SURFACE_SRC="$ROOT_DIR/packages/redevplugin-ui/src/surface.ts"
 
 cd "$ROOT_DIR"
-npm run contracts:check
+npm run ui-contracts:check
 node scripts/check_redevplugin_ui_bridge.mjs "$ROOT_DIR"
 
 node - "$SURFACE_SRC" "$ROOT_DIR" <<'NODE'
@@ -21,7 +21,7 @@ if (wildcardTransfers.length !== 1) {
 }
 const transferStart = surface.lastIndexOf("iframeWindow.postMessage({", surface.indexOf(wildcardTransfers[0]));
 const transferBlock = surface.slice(transferStart, surface.indexOf(wildcardTransfers[0]) + wildcardTransfers[0].length);
-for (const required of ["redevplugin.surface.port", "frame_generation_id", "ui_protocol_version"]) {
+for (const required of ["redevplugin.surface.port", "frame_generation_id"]) {
   if (!transferBlock.includes(required)) throw new Error(`bootstrap transfer is missing ${required}`);
 }
 for (const forbidden of ["plugin_id", "surface_instance_id", "active_fingerprint", "bridge_nonce", "asset_session", "token", "ticket"]) {

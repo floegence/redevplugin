@@ -24,7 +24,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/tetratelabs/wazero"
 	_ "golang.org/x/image/webp"
 	"golang.org/x/net/html"
@@ -59,8 +59,6 @@ type PresentationIconAsset struct {
 
 type Package struct {
 	Manifest               manifest.Manifest `json:"manifest"`
-	ManifestModel          manifest.Model    `json:"-"`
-	ManifestSource         string            `json:"manifest_source,omitempty"`
 	PackageHash            string            `json:"package_hash"`
 	ManifestHash           string            `json:"manifest_hash"`
 	CanonicalManifest      string            `json:"canonical_manifest"`
@@ -467,10 +465,6 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 	if err != nil {
 		return Package{}, manifestDecodeValidationError(err)
 	}
-	normalizedManifest, err := manifest.DecodeModel(bytes.NewReader(manifestBytes))
-	if err != nil {
-		return Package{}, manifestDecodeValidationError(err)
-	}
 	if err := validatePackageArtifactBoundary(files); err != nil {
 		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_artifact_boundary")
 	}
@@ -504,8 +498,6 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 	}
 	return Package{
 		Manifest:               decodedManifest,
-		ManifestModel:          normalizedManifest,
-		ManifestSource:         normalizedManifest.SchemaSource,
 		PackageHash:            packageHash,
 		ManifestHash:           manifestHash,
 		CanonicalManifest:      string(canonicalManifest),
@@ -693,7 +685,7 @@ func validateManifestArtifacts(ctx context.Context, m manifest.Manifest, files m
 		if !ok {
 			return fmt.Errorf("workers[%d].artifact %q is not present in package", i, artifact)
 		}
-		contract, err := defaultWASMInspectionCache.inspect(ctx, content, worker.ABI)
+		contract, err := defaultWASMInspectionCache.inspect(ctx, content)
 		if err != nil {
 			return fmt.Errorf("workers[%d].artifact %q: %w", i, artifact, err)
 		}
@@ -1237,10 +1229,7 @@ func validateWASMWorkerContract(contract wasmModuleContract, memoryLimitBytes in
 		}
 	}
 	i32, i64 := byte(0x7f), byte(0x7e)
-	legacyHostcall := wasmFunctionType{Params: []byte{i32, i32, i32, i32}, Results: []byte{i32}}
 	allowedHostcalls := map[string]map[string]wasmFunctionType{
-		"redevplugin.storage": {"files": legacyHostcall, "kv": legacyHostcall, "sqlite": legacyHostcall},
-		"redevplugin.network": {"execute": legacyHostcall},
 		"redevplugin.io": {
 			"rdp_call_v1":       {Params: []byte{i32, i32, i32, i32}, Results: []byte{i32}},
 			"rdp_read_v1":       {Params: []byte{i64, i32, i32, i32}, Results: []byte{i32}},

@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"unicode/utf8"
 )
+
+var canonicalJSONIntegerPattern = regexp.MustCompile(`^(0|-?[1-9][0-9]*)$`)
 
 const (
 	maxDocumentBytes = 1024 * 1024
@@ -77,7 +80,7 @@ func appendCanonicalJSON(out []byte, value any, depth int) ([]byte, error) {
 	case string:
 		return appendCanonicalJSONString(out, typed)
 	case json.Number:
-		if !canonicalUnsignedDecimalPattern.MatchString(string(typed)) {
+		if !canonicalJSONIntegerPattern.MatchString(string(typed)) {
 			return nil, fmt.Errorf("%w: non-canonical JSON number", ErrInvalidDocument)
 		}
 		return append(out, string(typed)...), nil

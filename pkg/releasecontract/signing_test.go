@@ -23,16 +23,16 @@ type releaseSigningFixture struct {
 	PackageContext         PackageVerificationContext
 	Package                PackageSignatureV1
 	MetadataChannel        string
-	Metadata               ReleaseMetadataV8
+	Metadata               ReleaseMetadata
 	MetadataSignature      []byte
 	PolicyInput            SourcePolicyInput
-	Policy                 SourcePolicyV2
+	Policy                 SourcePolicyV3
 	PolicyPointerInput     ReleasePointerInput
-	PolicyPointer          SourcePolicyPointerV1
+	PolicyPointer          SourcePolicyPointerV2
 	RevocationInput        RevocationInput
-	Revocation             RevocationV2
+	Revocation             RevocationV3
 	RevocationPointerInput ReleasePointerInput
-	RevocationPointer      RevocationPointerV1
+	RevocationPointer      RevocationPointerV2
 	Preimages              map[SigningUsage][]byte
 	Signatures             map[SigningUsage][]byte
 }
@@ -85,20 +85,19 @@ func TestReleaseSigningDomainsAreCanonicalAndSeparated(t *testing.T) {
 	}
 }
 
-func TestPersonalMaintainerTrustDocumentsSupportNinetyDaysWithoutChangingLegacyLimits(t *testing.T) {
+func TestCurrentTrustDocumentsUseOnlyCurrentSchemas(t *testing.T) {
 	fixture := newReleaseSigningFixture(t)
 	privateKey := ed25519.NewKeyFromSeed(releaseSigningFixtureSeed())
 	const expiresAt = "2026-10-18T00:00:00Z"
 
 	policyInput := fixture.PolicyInput
-	policyInput.SchemaVersion = SourcePolicySchemaVersionV3
 	policyInput.Limits = PersonalMaintainerSourcePolicyLimits()
 	policyInput.ExpiresAt = expiresAt
 	policyPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicySigningPreimage(policyInput) })
-	policy := mustBuild(t, func() (SourcePolicyV2, error) {
+	policy := mustBuild(t, func() (SourcePolicyV3, error) {
 		return BuildSourcePolicy(policyInput, signReleasePreimage(privateKey, policyPreimage))
 	})
-	if policy.SchemaVersion != SourcePolicySchemaVersionV3 || policy.Limits.DocumentMaxLifetimeSeconds != 90*24*60*60 {
+	if policy.SchemaVersion != SourcePolicySchemaVersion || policy.Limits.DocumentMaxLifetimeSeconds != 90*24*60*60 {
 		t.Fatalf("personal policy profile = %#v", policy)
 	}
 	if err := VerifySourcePolicy(policy, fixture.Verifier); err != nil {
@@ -106,17 +105,16 @@ func TestPersonalMaintainerTrustDocumentsSupportNinetyDaysWithoutChangingLegacyL
 	}
 	policyBytes := mustPreimage(t, func() ([]byte, error) { return CanonicalSourcePolicy(policy) })
 	decodedPolicy, err := DecodeSourcePolicy(policyBytes)
-	if err != nil || decodedPolicy.SchemaVersion != SourcePolicySchemaVersionV3 {
+	if err != nil || decodedPolicy.SchemaVersion != SourcePolicySchemaVersion {
 		t.Fatalf("DecodeSourcePolicy() = %#v, %v", decodedPolicy, err)
 	}
 
 	policyDigest := sha256.Sum256(policyBytes)
 	pointerInput := fixture.PolicyPointerInput
-	pointerInput.SchemaVersion = SourcePolicyPointerSchemaVersionV2
 	pointerInput.DocumentSHA256 = fmtSHA256(policyDigest)
 	pointerInput.ExpiresAt = expiresAt
 	pointerPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicyPointerSigningPreimage(pointerInput) })
-	pointer := mustBuild(t, func() (SourcePolicyPointerV1, error) {
+	pointer := mustBuild(t, func() (SourcePolicyPointerV2, error) {
 		return BuildSourcePolicyPointer(pointerInput, signReleasePreimage(privateKey, pointerPreimage))
 	})
 	if err := VerifySourcePolicyPointer(pointer, fixture.Verifier); err != nil {
@@ -124,10 +122,9 @@ func TestPersonalMaintainerTrustDocumentsSupportNinetyDaysWithoutChangingLegacyL
 	}
 
 	revocationInput := fixture.RevocationInput
-	revocationInput.SchemaVersion = RevocationSchemaVersionV3
 	revocationInput.ExpiresAt = expiresAt
 	revocationPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationSigningPreimage(revocationInput) })
-	revocation := mustBuild(t, func() (RevocationV2, error) {
+	revocation := mustBuild(t, func() (RevocationV3, error) {
 		return BuildRevocation(revocationInput, signReleasePreimage(privateKey, revocationPreimage))
 	})
 	if err := VerifyRevocation(revocation, fixture.Verifier); err != nil {
@@ -136,11 +133,10 @@ func TestPersonalMaintainerTrustDocumentsSupportNinetyDaysWithoutChangingLegacyL
 	revocationBytes := mustPreimage(t, func() ([]byte, error) { return CanonicalRevocation(revocation) })
 	revocationDigest := sha256.Sum256(revocationBytes)
 	revocationPointerInput := fixture.RevocationPointerInput
-	revocationPointerInput.SchemaVersion = RevocationPointerSchemaVersionV2
 	revocationPointerInput.DocumentSHA256 = fmtSHA256(revocationDigest)
 	revocationPointerInput.ExpiresAt = expiresAt
 	revocationPointerPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationPointerSigningPreimage(revocationPointerInput) })
-	revocationPointer := mustBuild(t, func() (RevocationPointerV1, error) {
+	revocationPointer := mustBuild(t, func() (RevocationPointerV2, error) {
 		return BuildRevocationPointer(revocationPointerInput, signReleasePreimage(privateKey, revocationPointerPreimage))
 	})
 	if err := VerifyRevocationPointer(revocationPointer, fixture.Verifier); err != nil {
@@ -154,30 +150,70 @@ func TestPersonalMaintainerTrustDocumentsSupportNinetyDaysWithoutChangingLegacyL
 	}
 }
 
-func TestReleaseMetadataAcceptsOnlyReleasedSchemaUIProtocolPairs(t *testing.T) {
+func TestReleaseSecurityContractsRejectLegacySchemas(t *testing.T) {
 	fixture := newReleaseSigningFixture(t)
-	tests := []struct {
-		name     string
-		schema   string
-		protocol string
-		wantErr  bool
+	cases := []struct {
+		name    string
+		current string
+		legacy  string
+		raw     []byte
+		decode  func([]byte) error
 	}{
-		{name: "v8", schema: ReleaseMetadataSchemaVersionV8, protocol: "plugin-ui-v7"},
-		{name: "v5 is retired", schema: "redevplugin.release_metadata.v5", protocol: "plugin-ui-v5", wantErr: true},
-		{name: "v6 is retired", schema: "redevplugin.release_metadata.v6", protocol: "plugin-ui-v6", wantErr: true},
-		{name: "v7 is retired", schema: "redevplugin.release_metadata.v7", protocol: "plugin-ui-v7", wantErr: true},
-		{name: "v8 with old UI protocol", schema: ReleaseMetadataSchemaVersionV8, protocol: "plugin-ui-v6", wantErr: true},
+		{
+			name: "source policy", current: SourcePolicySchemaVersion, legacy: "redevplugin.release_source_policy.v2",
+			raw:    mustPreimage(t, func() ([]byte, error) { return CanonicalSourcePolicy(fixture.Policy) }),
+			decode: func(raw []byte) error { _, err := DecodeSourcePolicy(raw); return err },
+		},
+		{
+			name: "source policy pointer", current: SourcePolicyPointerSchemaVersion, legacy: "redevplugin.release_source_policy_pointer.v1",
+			raw:    mustPreimage(t, func() ([]byte, error) { return CanonicalSourcePolicyPointer(fixture.PolicyPointer) }),
+			decode: func(raw []byte) error { _, err := DecodeSourcePolicyPointer(raw); return err },
+		},
+		{
+			name: "revocation", current: RevocationSchemaVersion, legacy: "redevplugin.release_revocation.v2",
+			raw:    mustPreimage(t, func() ([]byte, error) { return CanonicalRevocation(fixture.Revocation) }),
+			decode: func(raw []byte) error { _, err := DecodeRevocation(raw); return err },
+		},
+		{
+			name: "revocation pointer", current: RevocationPointerSchemaVersion, legacy: "redevplugin.release_revocation_pointer.v1",
+			raw:    mustPreimage(t, func() ([]byte, error) { return CanonicalRevocationPointer(fixture.RevocationPointer) }),
+			decode: func(raw []byte) error { _, err := DecodeRevocationPointer(raw); return err },
+		},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			metadata := fixture.Metadata
-			metadata.SchemaVersion = tc.schema
-			metadata.Compatibility.UIProtocolVersion = tc.protocol
-			_, err := BuildReleaseMetadata(metadata)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("BuildReleaseMetadata() error = %v, wantErr %v", err, tc.wantErr)
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			legacy := bytes.Replace(item.raw, []byte(item.current), []byte(item.legacy), 1)
+			if err := item.decode(legacy); !errors.Is(err, ErrInvalidDocument) {
+				t.Fatalf("legacy schema error = %v, want ErrInvalidDocument", err)
 			}
 		})
+	}
+}
+
+func TestReleaseMetadataRejectsVersionedSchemasAndCompatibilityFields(t *testing.T) {
+	fixture := newReleaseSigningFixture(t)
+	for _, schema := range []string{
+		"redevplugin.release_metadata.v5",
+		"redevplugin.release_metadata.v6",
+		"redevplugin.release_metadata.v7",
+		"redevplugin.release_metadata.v8",
+	} {
+		metadata := fixture.Metadata
+		metadata.SchemaVersion = schema
+		if _, err := BuildReleaseMetadata(metadata); !errors.Is(err, ErrInvalidDocument) {
+			t.Fatalf("BuildReleaseMetadata(%q) error = %v, want ErrInvalidDocument", schema, err)
+		}
+	}
+
+	raw, err := CanonicalReleaseMetadata(fixture.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, retired := range []string{"compatibility", "host_requirements", "ui_protocol_version", "min_runtime_version"} {
+		mutated := insertBeforeObjectEnd(raw, `,"`+retired+`":{}`)
+		if _, err := DecodeReleaseMetadata(mutated); !errors.Is(err, ErrInvalidDocument) {
+			t.Fatalf("retired release metadata field %q error = %v, want ErrInvalidDocument", retired, err)
+		}
 	}
 }
 
@@ -255,6 +291,21 @@ func TestReleaseContractCanonicalRoundTripAndClosedDecoding(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCanonicalJSONAcceptsSignedIntegersAndRejectsNonCanonicalNumbers(t *testing.T) {
+	canonical, err := CanonicalJSON([]byte(`{"maximum":180,"minimum":-180,"zero":0}`))
+	if err != nil {
+		t.Fatalf("CanonicalJSON() signed integers error = %v", err)
+	}
+	if got, want := string(canonical), `{"maximum":180,"minimum":-180,"zero":0}`; got != want {
+		t.Fatalf("CanonicalJSON() = %s, want %s", got, want)
+	}
+	for _, raw := range []string{`{"value":-0}`, `{"value":1.0}`, `{"value":1e0}`} {
+		if _, err := CanonicalJSON([]byte(raw)); err == nil {
+			t.Fatalf("CanonicalJSON(%s) accepted a non-canonical number", raw)
+		}
 	}
 }
 
@@ -374,8 +425,8 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	packageDocument := mustBuild(t, func() (PackageSignatureV1, error) { return BuildPackageSignature(packageInput, packageSignature) })
 	packageContext := PackageVerificationContext{SourceID: packageInput.SourceID, Channel: packageInput.Channel, Version: packageInput.Version}
 
-	metadata := ReleaseMetadataV8{
-		SchemaVersion:      ReleaseMetadataSchemaVersionV8,
+	metadata := ReleaseMetadata{
+		SchemaVersion:      ReleaseMetadataSchemaVersion,
 		SourceID:           "example_source",
 		ReleaseMetadataRef: "plugins/example.publisher/example.plugin/1.2.3/release.json",
 		PublisherID:        "example.publisher",
@@ -404,12 +455,6 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 			SourcePolicyEpoch:  "1",
 			RevocationEpoch:    "1",
 		},
-		Compatibility: ReleaseCompatibility{
-			MinReDevPluginVersion: "0.7.0",
-			MinRuntimeVersion:     "0.7.0",
-			UIProtocolVersion:     "plugin-ui-v7",
-			SupportedTargets:      []string{"linux/amd64", "linux/arm64"},
-		},
 		ReleaseEvidence: &ReleaseEvidence{
 			NoticesSHA256:    strings.Repeat("4", 64),
 			ProvenanceSHA256: strings.Repeat("5", 64),
@@ -422,7 +467,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 			"zeta":  "last",
 		},
 	}
-	metadata = mustBuild(t, func() (ReleaseMetadataV8, error) { return BuildReleaseMetadata(metadata) })
+	metadata = mustBuild(t, func() (ReleaseMetadata, error) { return BuildReleaseMetadata(metadata) })
 	metadataPreimage := mustPreimage(t, func() ([]byte, error) { return ReleaseMetadataSigningPreimage("stable", metadata) })
 	metadataSignature := signReleasePreimage(privateKey, metadataPreimage)
 
@@ -454,7 +499,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	}
 	policyPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicySigningPreimage(policyInput) })
 	policySignature := signReleasePreimage(privateKey, policyPreimage)
-	policy := mustBuild(t, func() (SourcePolicyV2, error) { return BuildSourcePolicy(policyInput, policySignature) })
+	policy := mustBuild(t, func() (SourcePolicyV3, error) { return BuildSourcePolicy(policyInput, policySignature) })
 	policyBytes := mustPreimage(t, func() ([]byte, error) { return CanonicalSourcePolicy(policy) })
 	policyDigest := sha256.Sum256(policyBytes)
 
@@ -470,7 +515,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	}
 	policyPointerPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicyPointerSigningPreimage(policyPointerInput) })
 	policyPointerSignature := signReleasePreimage(privateKey, policyPointerPreimage)
-	policyPointer := mustBuild(t, func() (SourcePolicyPointerV1, error) {
+	policyPointer := mustBuild(t, func() (SourcePolicyPointerV2, error) {
 		return BuildSourcePolicyPointer(policyPointerInput, policyPointerSignature)
 	})
 
@@ -493,7 +538,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	}
 	revocationPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationSigningPreimage(revocationInput) })
 	revocationSignature := signReleasePreimage(privateKey, revocationPreimage)
-	revocation := mustBuild(t, func() (RevocationV2, error) { return BuildRevocation(revocationInput, revocationSignature) })
+	revocation := mustBuild(t, func() (RevocationV3, error) { return BuildRevocation(revocationInput, revocationSignature) })
 	revocationBytes := mustPreimage(t, func() ([]byte, error) { return CanonicalRevocation(revocation) })
 	revocationDigest := sha256.Sum256(revocationBytes)
 
@@ -509,7 +554,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	}
 	revocationPointerPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationPointerSigningPreimage(revocationPointerInput) })
 	revocationPointerSignature := signReleasePreimage(privateKey, revocationPointerPreimage)
-	revocationPointer := mustBuild(t, func() (RevocationPointerV1, error) {
+	revocationPointer := mustBuild(t, func() (RevocationPointerV2, error) {
 		return BuildRevocationPointer(revocationPointerInput, revocationPointerSignature)
 	})
 

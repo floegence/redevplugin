@@ -15,7 +15,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 )
 
 func ensurePrivateDirectory(path string) error {

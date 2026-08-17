@@ -11,7 +11,7 @@ import (
 // panic or an unbounded read.
 func FuzzReadIPCFrame(f *testing.F) {
 	f.Add([]byte("{}\n"))
-	f.Add([]byte("{\"ipc_version\":\"rust-ipc-v7\",\"frame_type\":\"heartbeat\",\"request_id\":\"r1\",\"runtime_generation_id\":\"g1\",\"payload\":{}}\n"))
+	f.Add([]byte("{\"frame_type\":\"heartbeat\",\"request_id\":\"r1\",\"runtime_generation_id\":\"g1\",\"payload\":{}}\n"))
 	f.Add([]byte("{\"request_id\":\"r1\",\"request_id\":\"r2\"}\n"))
 	f.Fuzz(func(t *testing.T, input []byte) {
 		_, _ = readIPCFrame(bufio.NewReader(bytes.NewReader(input)))
@@ -21,10 +21,10 @@ func FuzzReadIPCFrame(f *testing.F) {
 // FuzzStrictJSON ensures duplicate keys, unknown fields, trailing values and
 // malformed UTF-8 are all handled as ordinary decode errors.
 func FuzzStrictJSON(f *testing.F) {
-	f.Add([]byte(`{"handle_grant_id":"grant_1","handle_id":"storage:db","method":"storage.kv","runtime_generation_id":"g1"}`))
-	f.Add([]byte(`{"handle_grant_id":"grant_1","handle_grant_id":"grant_2"}`))
+	f.Add([]byte(`{"invocation_id":"invocation_1","resource_id":1,"ok":true,"bytes_read":1}`))
+	f.Add([]byte(`{"invocation_id":"invocation_1","invocation_id":"invocation_2"}`))
 	f.Fuzz(func(t *testing.T, input []byte) {
-		var value HandleGrantValidationResult
+		var value runtimeIOResultMetadata
 		_, _ = value, decodeStrictJSON(input, &value)
 	})
 }

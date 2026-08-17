@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 func TestUIOnlyLifecycleDoesNotRequireRuntimeManager(t *testing.T) {
@@ -142,7 +142,7 @@ func newNeverStartedProcessManager(t *testing.T) *runtimeclient.ProcessManager {
 		ShardCount: 1,
 		Supervisor: runtimeclient.ProcessSupervisorOptions{
 			RuntimePath:           filepath.Join(t.TempDir(), "missing-redevplugin-runtime"),
-			Descriptor:            hostTestRuntimeDescriptor(),
+			ArtifactIdentity:      hostTestRuntimeArtifactIdentity(),
 			Limits:                runtimeclient.DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -197,10 +197,9 @@ func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
-		PlatformVersion: runtimeVersion, Target: hostTestRuntimeDescriptor().Target(),
-		RustIPCVersion: version.RustIPCVersion, WASMABIVersion: version.WASMABIVersion,
-		ContractSetSHA256: version.ContractSetSHA256, BinarySHA256: strings.Repeat("b", 64),
+	descriptor, err := runtimeclient.NewRuntimeArtifactIdentity(runtimeclient.RuntimeArtifactIdentityOptions{
+		PlatformVersion: runtimeVersion, Target: hostTestRuntimeArtifactIdentity().Target(),
+		BinarySHA256: strings.Repeat("b", 64),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +210,7 @@ func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing
 		localGenerated: true,
 		runtimeManager: manager,
 	})
-	packageBytes := buildWorkerFixturePackageWithMinRuntime(t, "0.1.0")
+	packageBytes := buildWorkerFixturePackageVersion(t, "1.0.0")
 	_, err = h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
 		PluginInstanceID: nextTestPluginInstanceID(t),
 		PackageReader:    bytes.NewReader(packageBytes),
@@ -232,8 +231,8 @@ func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing
 	}
 }
 
-func TestValidateWorkerRuntimeDescriptorRejectsUnexpectedTarget(t *testing.T) {
-	descriptor := hostTestRuntimeDescriptor()
+func TestValidateWorkerRuntimeArtifactIdentityRejectsUnexpectedTarget(t *testing.T) {
+	descriptor := hostTestRuntimeArtifactIdentity()
 	expectedTarget := descriptor.Target()
 	otherArch := "arm64"
 	if expectedTarget.Arch() == "arm64" {
@@ -243,14 +242,9 @@ func TestValidateWorkerRuntimeDescriptorRejectsUnexpectedTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := registry.PluginRecord{
-		Manifest: manifest.Manifest{Workers: []manifest.WorkerSpec{{WorkerID: "worker", ABI: version.WASMABIVersion}}},
-		RuntimeRequirement: &registry.RuntimeRequirement{
-			MinVersion: descriptor.PlatformVersion().String(),
-		},
-	}
-	if err := validateWorkerRuntimeDescriptor(record, descriptor, expectedTarget); !errors.Is(err, ErrPluginRuntimeIncompatible) {
-		t.Fatalf("validateWorkerRuntimeDescriptor() error = %v, want ErrPluginRuntimeIncompatible", err)
+	record := registry.PluginRecord{Manifest: manifest.Manifest{Workers: []manifest.WorkerSpec{{WorkerID: "worker"}}}}
+	if err := validateWorkerRuntimeArtifactIdentity(record, descriptor, expectedTarget); !errors.Is(err, ErrPluginRuntimeIncompatible) {
+		t.Fatalf("validateWorkerRuntimeArtifactIdentity() error = %v, want ErrPluginRuntimeIncompatible", err)
 	}
 }
 
@@ -265,30 +259,37 @@ func TestStartRuntimeRequiresExplicitCanonicalTarget(t *testing.T) {
 	}
 }
 
-func TestWorkerEnableRejectsPreflightFailureBeforeMutation(t *testing.T) {
+func TestWorkerEnableRuntimeFailureKeepsEnabled(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
 		runtimeManager: manager,
 	})
-	installed := importWorkerVersion(t, h, "1.0.0", "0.0.0-dev")
-	preflightFailure := errors.New("runtime artifact unavailable")
-	manager.preflightErr = preflightFailure
-
-	_, err := h.EnablePlugin(hostTestContext(), EnableRequest{
+	installed := importWorkerVersion(t, h, "1.0.0")
+	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "test runtime readiness",
 	})
-	if !errors.Is(err, ErrPluginRuntimeIncompatible) {
-		t.Fatalf("EnablePlugin() error = %v, want ErrPluginRuntimeIncompatible", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.bindErr = runtimeclient.ErrRuntimeNotReady
+
+	_, err = h.EnablePlugin(hostTestContext(), EnableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: disabled.ManagementRevision,
+	})
+	if !errors.Is(err, runtimeclient.ErrRuntimeNotReady) {
+		t.Fatalf("EnablePlugin() error = %v, want ErrRuntimeNotReady", err)
 	}
 	stored, getErr := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if stored.EnableState != registry.EnableDisabled || stored.ManagementRevision != installed.ManagementRevision {
-		t.Fatalf("failed enable mutated record: %#v", stored)
+	if stored.EnableState != registry.EnableEnabled || stored.ManagementRevision != disabled.ManagementRevision+1 {
+		t.Fatalf("runtime readiness failure rewrote lifecycle state: %#v", stored)
 	}
 }
 
@@ -299,9 +300,9 @@ func TestWorkerUpdateRejectsPreflightFailureBeforeMutation(t *testing.T) {
 		localGenerated: true,
 		runtimeManager: manager,
 	})
-	installed := importWorkerVersion(t, h, "1.0.0", "0.0.0-dev")
+	installed := importWorkerVersion(t, h, "1.0.0")
 	manager.preflightErr = errors.New("runtime artifact unavailable")
-	packageBytes := buildWorkerFixturePackageVersion(t, "2.0.0", "0.0.0-dev")
+	packageBytes := buildWorkerFixturePackageVersion(t, "2.0.0")
 
 	_, err := h.UpdateLocalPackage(hostTestContext(), UpdateLocalPackageRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
@@ -328,8 +329,8 @@ func TestWorkerDowngradeRejectsPreflightFailureBeforeMutation(t *testing.T) {
 		localGenerated: true,
 		runtimeManager: manager,
 	})
-	installed := importWorkerVersion(t, h, "1.0.0", "0.0.0-dev")
-	packageBytes := buildWorkerFixturePackageVersion(t, "2.0.0", "0.0.0-dev")
+	installed := importWorkerVersion(t, h, "1.0.0")
+	packageBytes := buildWorkerFixturePackageVersion(t, "2.0.0")
 	updated, err := h.UpdateLocalPackage(hostTestContext(), UpdateLocalPackageRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		ExpectedManagementRevision: installed.ManagementRevision,
@@ -370,10 +371,9 @@ func TestWorkerInvocationRejectsStaleBindingDescriptorBeforeDispatch(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.bindingDescriptor, err = runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+	manager.bindingDescriptor, err = runtimeclient.NewRuntimeArtifactIdentity(runtimeclient.RuntimeArtifactIdentityOptions{
 		PlatformVersion: staleVersion, Target: manager.descriptor.Target(),
-		RustIPCVersion: manager.descriptor.RustIPCVersion(), WASMABIVersion: manager.descriptor.WASMABIVersion(),
-		ContractSetSHA256: manager.descriptor.ContractSetSHA256(), BinarySHA256: strings.Repeat("c", 64),
+		BinarySHA256: strings.Repeat("c", 64),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -414,10 +414,9 @@ func TestWorkerOpenSurfaceIgnoresIncompatibleRuntimeHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.health.Descriptor, err = runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+	manager.health.ArtifactIdentity, err = runtimeclient.NewRuntimeArtifactIdentity(runtimeclient.RuntimeArtifactIdentityOptions{
 		PlatformVersion: staleVersion, Target: manager.descriptor.Target(),
-		RustIPCVersion: manager.descriptor.RustIPCVersion(), WASMABIVersion: manager.descriptor.WASMABIVersion(),
-		ContractSetSHA256: manager.descriptor.ContractSetSHA256(), BinarySHA256: strings.Repeat("d", 64),
+		BinarySHA256: strings.Repeat("d", 64),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -481,7 +480,7 @@ func TestStopRuntimePreservesUIOnlySurface(t *testing.T) {
 	}
 }
 
-func recordingRuntimeManagerForDescriptor(descriptor runtimeclient.RuntimeDescriptor) *recordingRuntimeManager {
+func recordingRuntimeManagerForDescriptor(descriptor runtimeclient.RuntimeArtifactIdentity) *recordingRuntimeManager {
 	return &recordingRuntimeManager{
 		descriptor: descriptor,
 		health: runtimeclient.Health{
@@ -489,26 +488,16 @@ func recordingRuntimeManagerForDescriptor(descriptor runtimeclient.RuntimeDescri
 			RuntimeGenerationID: "runtime_gen_test",
 			IPCChannelID:        "ipc_test",
 			ConnectionNonce:     "connection_nonce_test_1234567890",
-			Descriptor:          descriptor,
+			ArtifactIdentity:    descriptor,
 			Ready:               true,
 		},
 	}
 }
 
-func buildWorkerFixturePackageWithMinRuntime(t *testing.T, minimumVersion string) []byte {
-	return buildWorkerFixturePackageVersion(t, "1.0.0", minimumVersion)
-}
-
-func buildWorkerFixturePackageVersion(t *testing.T, pluginVersion string, minimumVersion string) []byte {
+func buildWorkerFixturePackageVersion(t *testing.T, pluginVersion string) []byte {
 	t.Helper()
 	dir := t.TempDir()
-	manifestJSON := strings.Replace(
-		workerFixtureManifestJSON(),
-		`"min_runtime_version": "0.0.0-dev"`,
-		`"min_runtime_version": "`+minimumVersion+`"`,
-		1,
-	)
-	manifestJSON = strings.Replace(manifestJSON, `"version": "1.0.0"`, `"version": "`+pluginVersion+`"`, 1)
+	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"version": "1.0.0"`, `"version": "`+pluginVersion+`"`, 1)
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
@@ -519,9 +508,9 @@ func buildWorkerFixturePackageVersion(t *testing.T, pluginVersion string, minimu
 	return buffer.Bytes()
 }
 
-func importWorkerVersion(t *testing.T, h *Host, pluginVersion string, minimumVersion string) registry.PluginRecord {
+func importWorkerVersion(t *testing.T, h *Host, pluginVersion string) registry.PluginRecord {
 	t.Helper()
-	packageBytes := buildWorkerFixturePackageVersion(t, pluginVersion, minimumVersion)
+	packageBytes := buildWorkerFixturePackageVersion(t, pluginVersion)
 	installed, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
 		PluginInstanceID: nextTestPluginInstanceID(t),
 		PackageReader:    bytes.NewReader(packageBytes),

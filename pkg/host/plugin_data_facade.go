@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
 )
 
 type InspectPluginDataRequest struct {

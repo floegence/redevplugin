@@ -33,22 +33,21 @@ product session authority.
 
 ## Bridge Protocol
 
-The current bridge protocol is described by `spec/plugin/bridge-v7.schema.json`
-and implemented by the TypeScript package. Installed `plugin-ui-v7` packages
-use only `bridge-v7` and the current opaque-surface transport. Contract checks
+The current bridge protocol is described by its canonical schema and implemented
+by the TypeScript package. Plugins select this UI contract through
+`plugin_api=1`; there is no separately negotiated UI protocol. Contract checks
 keep these frame names and forbidden response fields aligned with that schema:
 
 - `redevplugin.bridge.call`;
 - `redevplugin.bridge.execution.events`;
 - `redevplugin.bridge.execution.query`;
-- current execution events in `plugin-ui-v7`;
+- current execution events;
 - `redevplugin.ui.mount`;
 - `redevplugin.ui.patch`;
 - `redevplugin.bridge.cancel`;
 - `redevplugin.ui.action`;
 - `redevplugin.bridge.response`;
-- `redevplugin.bridge.lifecycle`;
-- `plugin-ui-v7`, using the published exact mapping.
+- `redevplugin.bridge.lifecycle`.
 
 The parent transfers one secret-free bootstrap port to the current iframe
 `contentWindow` and frame generation. Because the iframe has an opaque origin,
@@ -78,13 +77,13 @@ original mutation outcome.
 
 The trusted-parent SDK computes `handshake_transcript_sha256` before it asks the Go
 Host for a parent-only `plugin_gateway_token`. The transcript is the SHA-256 of
-a length-prefixed `redevplugin.bridge.handshake.v3` field list containing the
-plugin ID, surface ID, surface instance ID, active fingerprint, bridge nonce,
-asset-session nonce, management revision, revoke epoch, UI protocol version,
-and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
+a length-prefixed handshake field list containing the plugin ID, surface ID,
+surface instance ID, active fingerprint, bridge nonce, asset-session nonce,
+management revision, revoke epoch, and `bridge_channel_id`. The Go Host
+recomputes the same hash and refuses to
 mint a parent-only gateway token if the transcript is missing or mismatched.
 This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
-`bridge-v7.schema.json` contract.
+`bridge.schema.json` contract.
 
 ## Restricted JSX
 
@@ -151,7 +150,7 @@ or dual-version decoder.
 `PluginPlatformClient` is for trusted host pages. It wraps platform management
 routes exposed by `pkg/httpadapter`, including:
 
-- compatibility manifest read;
+- platform identity and current plugin inventory read;
 - release-reference install/update for official or registry-backed product
   flows where the host page sends `PluginReleaseRef` rather than package bytes;
 - downgrade, enable, disable, uninstall, and surface open;

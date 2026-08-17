@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
 )
 
 const securityAuditExportInterval = time.Second

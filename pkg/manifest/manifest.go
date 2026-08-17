@@ -1,7 +1,6 @@
 package manifest
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,27 +9,25 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/version"
-)
-
-const (
-	SchemaVersionV8 = "redevplugin.manifest.v8"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 type Manifest struct {
-	SchemaVersion      string              `json:"schema_version"`
-	Publisher          Publisher           `json:"publisher"`
-	Plugin             Plugin              `json:"plugin"`
-	Presentation       PresentationSpec    `json:"presentation"`
-	Surfaces           []SurfaceSpec       `json:"surfaces,omitempty"`
-	CapabilityBindings []CapabilityBinding `json:"capability_bindings,omitempty"`
-	Methods            []MethodSpec        `json:"methods,omitempty"`
-	Workers            []WorkerSpec        `json:"workers,omitempty"`
-	Storage            *StorageSpec        `json:"storage,omitempty"`
-	NetworkAccess      *NetworkAccessSpec  `json:"network_access,omitempty"`
-	Settings           *SettingsSpec       `json:"settings,omitempty"`
-	Intents            []IntentSpec        `json:"intents,omitempty"`
+	SchemaVersion      string               `json:"schema_version"`
+	Publisher          Publisher            `json:"publisher"`
+	Plugin             Plugin               `json:"plugin"`
+	API                PublicAPIRequirement `json:"api"`
+	Permissions        []PermissionID       `json:"permissions"`
+	Presentation       PresentationSpec     `json:"presentation"`
+	Surfaces           []SurfaceSpec        `json:"surfaces,omitempty"`
+	CapabilityBindings []CapabilityBinding  `json:"capability_bindings,omitempty"`
+	Methods            []MethodSpec         `json:"methods,omitempty"`
+	Workers            []WorkerSpec         `json:"workers,omitempty"`
+	Storage            *StorageSpec         `json:"storage,omitempty"`
+	NetworkAccess      *NetworkAccessSpec   `json:"network_access,omitempty"`
+	Settings           *SettingsSpec        `json:"settings,omitempty"`
+	Intents            []IntentSpec         `json:"intents,omitempty"`
 }
 
 type Publisher struct {
@@ -39,12 +36,9 @@ type Publisher struct {
 }
 
 type Plugin struct {
-	PluginID          string `json:"plugin_id"`
-	DisplayName       string `json:"display_name"`
-	Version           string `json:"version"`
-	APIVersion        string `json:"api_version"`
-	MinRuntimeVersion string `json:"min_runtime_version"`
-	UIProtocolVersion string `json:"ui_protocol_version"`
+	PluginID    string `json:"plugin_id"`
+	DisplayName string `json:"display_name"`
+	Version     string `json:"version"`
 }
 
 func (m Manifest) PluginID() string {
@@ -53,10 +47,6 @@ func (m Manifest) PluginID() string {
 
 func (m Manifest) Version() string {
 	return m.Plugin.Version
-}
-
-func (m Manifest) APIVersion() string {
-	return m.Plugin.APIVersion
 }
 
 type CapabilityBinding struct {
@@ -206,7 +196,6 @@ const (
 type WorkerSpec struct {
 	WorkerID         string     `json:"worker_id"`
 	Artifact         string     `json:"artifact"`
-	ABI              string     `json:"abi"`
 	Mode             WorkerMode `json:"mode"`
 	Scope            string     `json:"scope"`
 	MemoryLimitBytes int64      `json:"memory_limit_bytes"`
@@ -276,29 +265,12 @@ func (e ValidationError) Error() string {
 }
 
 func Decode(r io.Reader) (Manifest, error) {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return Manifest{}, err
-	}
-	var header struct {
-		SchemaVersion string `json:"schema_version"`
-	}
-	if err := json.Unmarshal(raw, &header); err != nil {
-		return Manifest{}, err
-	}
-	if header.SchemaVersion == SchemaVersionV9 {
-		model, err := DecodeModel(bytes.NewReader(raw))
-		if err != nil {
-			return Manifest{}, err
-		}
-		return model.Manifest, nil
-	}
-	return decodeV8(bytes.NewReader(raw))
+	return decodeCurrent(r)
 }
 
 func Validate(m Manifest) error {
-	if !validSchemaUIProtocolPair(m.SchemaVersion, m.Plugin.UIProtocolVersion) {
-		return ValidationError{Field: "schema_version", Message: "must pair redevplugin.manifest.v8 with plugin-ui-v7"}
+	if m.SchemaVersion != SchemaVersionV9 {
+		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v9"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
@@ -312,14 +284,11 @@ func Validate(m Manifest) error {
 	if _, err := version.ParseSemVer(m.Plugin.Version); err != nil {
 		return ValidationError{Field: "plugin.version", Message: "must be a strict semantic version"}
 	}
-	if m.Plugin.APIVersion != "plugin-v1" {
-		return ValidationError{Field: "plugin.api_version", Message: "must be plugin-v1"}
+	if _, err := normalizePublicAPI(m.API); err != nil {
+		return err
 	}
-	if !version.SupportsPluginUIProtocol(m.Plugin.UIProtocolVersion) {
-		return ValidationError{Field: "plugin.ui_protocol_version", Message: "is unsupported"}
-	}
-	if _, err := version.ParseSemVer(m.Plugin.MinRuntimeVersion); err != nil {
-		return ValidationError{Field: "plugin.min_runtime_version", Message: "must be a strict semantic version"}
+	if _, err := normalizePermissions(m.Permissions); err != nil {
+		return err
 	}
 	if m.Surfaces == nil {
 		return ValidationError{Field: "surfaces", Message: "is required"}
@@ -349,9 +318,6 @@ func Validate(m Manifest) error {
 		workers[worker.WorkerID] = struct{}{}
 		if strings.TrimSpace(worker.Artifact) == "" {
 			return ValidationError{Field: fmt.Sprintf("workers[%d].artifact", i), Message: "is required"}
-		}
-		if worker.ABI != "redevplugin-wasm-worker-v2" {
-			return ValidationError{Field: fmt.Sprintf("workers[%d].abi", i), Message: "must be redevplugin-wasm-worker-v2"}
 		}
 		if worker.Mode != WorkerModeJob {
 			return ValidationError{Field: fmt.Sprintf("workers[%d].mode", i), Message: "must be job"}
@@ -615,10 +581,6 @@ func Validate(m Manifest) error {
 	}
 
 	return nil
-}
-
-func validSchemaUIProtocolPair(schemaVersion, uiProtocolVersion string) bool {
-	return schemaVersion == SchemaVersionV8 && uiProtocolVersion == "plugin-ui-v7"
 }
 
 type secretRefScopeDeclaration struct {
@@ -891,8 +853,6 @@ func DescriptorHashInput(m Manifest) ([]byte, error) {
 		PublisherID        string              `json:"publisher_id"`
 		PluginID           string              `json:"plugin_id"`
 		Version            string              `json:"version"`
-		APIVersion         string              `json:"api_version"`
-		UIProtocolVersion  string              `json:"ui_protocol_version"`
 		CapabilityBindings []CapabilityBinding `json:"capability_bindings"`
 		Methods            []MethodSpec        `json:"methods"`
 		Workers            []WorkerSpec        `json:"workers"`
@@ -904,8 +864,6 @@ func DescriptorHashInput(m Manifest) ([]byte, error) {
 		PublisherID:        m.Publisher.PublisherID,
 		PluginID:           m.Plugin.PluginID,
 		Version:            m.Plugin.Version,
-		APIVersion:         m.Plugin.APIVersion,
-		UIProtocolVersion:  m.Plugin.UIProtocolVersion,
 		CapabilityBindings: m.CapabilityBindings,
 		Methods:            methods,
 		Workers:            m.Workers,

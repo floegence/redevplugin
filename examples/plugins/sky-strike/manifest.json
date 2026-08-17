@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v8",
+  "schema_version": "redevplugin.manifest.v9",
   "publisher": {
     "publisher_id": "dev.redevplugin.examples",
     "display_name": "ReDevPlugin Examples"
@@ -7,22 +7,18 @@
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.sky-strike",
     "display_name": "Sky Strike",
-    "version": "1.0.0",
-    "api_version": "plugin-v1",
-    "min_runtime_version": "0.5.0",
-    "ui_protocol_version": "plugin-ui-v7"
+    "version": "1.0.0"
   },
+  "api": {
+    "major": 1,
+    "required_features": [],
+    "optional_features": []
+  },
+  "permissions": [],
   "presentation": {
-    "default_locale": "en-US",
-    "summary": "Sky Strike extends the host with its declared plugin capabilities.",
-    "description": [
-      "Sky Strike is a ReDevPlugin package whose surfaces and capabilities are verified by the host before use."
-    ],
-    "highlights": [],
-    "keywords": [
-      "Sky Strike"
-    ],
-    "localizations": []
+    "locales": {
+      "default": "en-US"
+    }
   },
   "surfaces": [
     {
@@ -35,6 +31,15 @@
         "width": 1100,
         "height": 760
       }
+    }
+  ],
+  "workers": [
+    {
+      "worker_id": "score_backend",
+      "artifact": "workers/sky-strike.wasm",
+      "mode": "job",
+      "scope": "user",
+      "memory_limit_bytes": 16777216
     }
   ],
   "methods": [
@@ -160,16 +165,6 @@
           }
         }
       }
-    }
-  ],
-  "workers": [
-    {
-      "worker_id": "score_backend",
-      "artifact": "workers/sky-strike.wasm",
-      "abi": "redevplugin-wasm-worker-v2",
-      "mode": "job",
-      "scope": "user",
-      "memory_limit_bytes": 16777216
     }
   ],
   "storage": {

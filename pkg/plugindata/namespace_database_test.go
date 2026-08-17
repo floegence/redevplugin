@@ -14,17 +14,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	settingsdomain "github.com/floegence/redevplugin/v3/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
 )
 
 func TestBrokerPaginatesFilesAndKVWithPersistentKeys(t *testing.T) {
 	store, _, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	for _, path := range []string{"z.txt", "a.txt", "d.txt", "b.txt", "c.txt", "nested/child.txt"} {
 		if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: path, Data: []byte(path)}); err != nil {
 			t.Fatal(err)
@@ -91,9 +89,7 @@ func TestNamespaceTransactionsEnforceLogicalFileQuotas(t *testing.T) {
 		{ID: "files", Kind: NamespaceFiles, Scope: "user", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 2},
 		{ID: "kv", Kind: NamespaceKV, Scope: "user", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 1},
 	}}
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_quota", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_quota", shape)
 	write, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_quota", ResourceScope: internalUserScope(), StoreID: "files", Path: "notes/a.txt", Data: []byte("a")})
 	if err != nil || write.Usage.UsageFiles != 2 {
 		t.Fatalf("first file write = %#v, err = %v", write, err)
@@ -122,10 +118,7 @@ func TestNamespaceDatabaseCacheReusesAndClosesGenerationConnections(t *testing.T
 		{ID: "user_files", Kind: NamespaceFiles, Scope: "user", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 16},
 		{ID: "environment_files", Kind: NamespaceFiles, Scope: "environment", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 16},
 	}}
-	dataset, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
+	dataset := installInternalStore(t, store, ctx, "plugini_test", shape)
 	for _, access := range []struct {
 		ctx     context.Context
 		storeID string
@@ -401,9 +394,7 @@ func TestExportClosesWarmNamespaceDatabasesBeforeSnapshot(t *testing.T) {
 			shape.Namespaces[index].QuotaBytes = 4096
 		}
 	}
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	errs := make(chan error, 16)
 	var wg sync.WaitGroup
 	for worker := 0; worker < 16; worker++ {
@@ -488,9 +479,7 @@ func TestExportClosesWarmNamespaceDatabasesBeforeSnapshot(t *testing.T) {
 func TestBrokerRejectsUnexpectedPhysicalNamespaceEntries(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Key: "valid", Value: []byte("value")}); err != nil {
 		t.Fatal(err)
 	}
@@ -517,9 +506,7 @@ func TestBrokerRequiresExactRequestResourceScope(t *testing.T) {
 	store, _, shape := newInternalStore(t)
 	ctx := internalTestContext()
 	shape.Namespaces = append(shape.Namespaces, Namespace{ID: "db", Kind: NamespaceSQLite, Scope: "user", SchemaVersion: 1, QuotaBytes: 1 << 20, QuotaFiles: 8})
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "scope.txt", Data: []byte("scope")}); err != nil {
 		t.Fatal(err)
 	}
@@ -592,9 +579,7 @@ func TestBrokerRequiresExactRequestResourceScope(t *testing.T) {
 func TestExportRejectsNonCanonicalFilesNamespaceLayout(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	binding, _, err := catalog.GetBinding(ctx, "plugini_test")
 	if err != nil {
 		t.Fatal(err)

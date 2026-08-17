@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 func TestPublisherWorkspaceCompletesExternalSigningFlow(t *testing.T) {
@@ -57,7 +57,7 @@ func finalizeTestRelease(t *testing.T, ctx context.Context, packageDir string) s
 		SourceType: "registry", SourceClass: "official", GeneratedAt: "2026-08-01T00:00:00Z", ExpiresAt: "2026-10-30T00:00:00Z",
 		Root:                 PublicKeyV1{Algorithm: "ed25519", KeyID: "example_root", PublicKey: base64.StdEncoding.EncodeToString(rootPublic)},
 		Signing:              PublicKeyV1{Algorithm: "ed25519", KeyID: "example_signing", PublicKey: base64.StdEncoding.EncodeToString(signingPublic)},
-		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.6.23", Distribution: "registry_ref", HostRequirements: []releasecontract.ReleaseHostRequirement{},
+		AllowedArtifactHosts: []string{"github.com"}, Distribution: "registry_ref",
 	}
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	status, err := Prepare(ctx, config, packageFile, workspace)

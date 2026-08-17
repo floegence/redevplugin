@@ -20,10 +20,7 @@ export function readPerformanceContract(path) {
 
 export function validatePerformanceContract(contract) {
   assertRecord(contract, "performance contract");
-  assertExactKeys(contract, ["schema_version", "comparison_probes", "scenarios"], "performance contract");
-  if (contract.schema_version !== "redevplugin.performance_contract.v4") {
-    throw new Error(`unsupported performance contract schema_version ${JSON.stringify(contract.schema_version)}`);
-  }
+  assertExactKeys(contract, ["comparison_probes", "scenarios"], "performance contract");
   validateComparisonProbes(contract.comparison_probes);
   if (!Array.isArray(contract.scenarios) || contract.scenarios.length === 0) {
     throw new Error("performance contract scenarios must be a non-empty array");
@@ -230,18 +227,13 @@ export function validatePerformanceEvidence(evidence, contract, options) {
     throw new Error("performance evidence comparison provenance is required");
   }
   assertExactKeys(evidence, [
-    "schema_version",
     "release_version",
     "source_commit",
     "generated_at",
     "environment",
     "scenarios",
     "comparisons",
-    "contract_hashes",
   ], "performance evidence");
-  if (evidence.schema_version !== "redevplugin.performance_evidence.v4") {
-    throw new Error(`performance evidence schema_version mismatch: ${JSON.stringify(evidence.schema_version)}`);
-  }
   if (typeof evidence.release_version !== "string" || !semanticVersionPattern.test(evidence.release_version)) {
     throw new Error(`performance evidence release_version is invalid: ${JSON.stringify(evidence.release_version)}`);
   }
@@ -286,27 +278,6 @@ export function validatePerformanceEvidence(evidence, contract, options) {
   });
   validateComparisonProvenance(evidence.comparisons, contract.comparison_probes, evidence.source_commit, evidence.scenarios);
 
-  if (!Array.isArray(evidence.contract_hashes)) throw new Error("performance evidence contract_hashes must be an array");
-  const contractHashes = new Map();
-  for (const [index, entry] of evidence.contract_hashes.entries()) {
-    const label = `performance evidence contract_hashes[${index}]`;
-    assertRecord(entry, label);
-    assertExactKeys(entry, ["id", "sha256"], label);
-    if (typeof entry.id !== "string" || !/^[a-z][a-z0-9-]+$/.test(entry.id) || contractHashes.has(entry.id)) {
-      throw new Error(`${label}.id is invalid or duplicated`);
-    }
-    if (typeof entry.sha256 !== "string" || !sha256Pattern.test(entry.sha256)) {
-      throw new Error(`${label}.sha256 is invalid`);
-    }
-    contractHashes.set(entry.id, entry.sha256);
-  }
-  if (options?.contractHashes !== undefined) {
-    const expectedHashes = normalizedContractHashes(options.contractHashes);
-    const actualHashes = normalizedContractHashes(evidence.contract_hashes);
-    if (!sameJSON(actualHashes, expectedHashes)) {
-      throw new Error(`performance evidence contract hashes mismatch: got ${JSON.stringify(actualHashes)}, want ${JSON.stringify(expectedHashes)}`);
-    }
-  }
 }
 
 function validateComparisonProvenance(comparisons, probes, sourceCommit, scenarios) {
@@ -354,11 +325,4 @@ function assertExactKeys(value, expected, label) {
 
 function sameJSON(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function normalizedContractHashes(entries) {
-  if (!Array.isArray(entries)) throw new Error("expected contract hashes must be an array");
-  return entries
-    .map((entry) => ({ id: entry.id, sha256: entry.sha256 }))
-    .sort((left, right) => left.id.localeCompare(right.id));
 }

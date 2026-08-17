@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 const (
@@ -103,17 +103,17 @@ func workspaceNamespaceRoot(workspaceRoot string, scope sessionctx.ResourceScope
 }
 
 func prepareResourceScopeLayout(root string) error {
-	if err := removeEmptyLegacyEntries(filepath.Join(root, workspacesDirName), environmentOwnersDirName); err != nil {
+	if err := rejectUnexpectedScopeEntries(filepath.Join(root, workspacesDirName), environmentOwnersDirName); err != nil {
 		return err
 	}
 	objectsRoot := filepath.Join(root, objectsDirName)
-	if err := removeEmptyLegacyEntries(objectsRoot, environmentOwnersDirName, userOwnersDirName); err != nil {
+	if err := rejectUnexpectedScopeEntries(objectsRoot, environmentOwnersDirName, userOwnersDirName); err != nil {
 		return err
 	}
 	return rejectPluginlessObjectLayout(objectsRoot)
 }
 
-func removeEmptyLegacyEntries(root string, expected ...string) error {
+func rejectUnexpectedScopeEntries(root string, expected ...string) error {
 	expectedNames := make(map[string]struct{}, len(expected))
 	for _, name := range expected {
 		expectedNames[name] = struct{}{}
@@ -132,17 +132,7 @@ func removeEmptyLegacyEntries(root string, expected ...string) error {
 			}
 			continue
 		}
-		path := filepath.Join(root, entry.Name())
-		empty, err := emptyDirectoryTree(path)
-		if err != nil {
-			return err
-		}
-		if !empty {
-			return sessionctx.ErrOwnerScopeMigrationRequired
-		}
-		if err := os.RemoveAll(path); err != nil {
-			return err
-		}
+		return fmt.Errorf("%w: unexpected owner-scoped data entry %q", ErrDatasetCorrupt, entry.Name())
 	}
 	return nil
 }
@@ -187,33 +177,11 @@ func inspectObjectOwnerLayout(root string, ownerDepth int) error {
 		}
 		for _, legacyEntry := range []string{exportManifestName, exportPayloadName} {
 			if _, err := os.Lstat(filepath.Join(root, entry.Name(), legacyEntry)); err == nil {
-				return sessionctx.ErrOwnerScopeMigrationRequired
+				return fmt.Errorf("%w: export object is missing plugin owner", ErrDatasetCorrupt)
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-func emptyDirectoryTree(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return false, nil
-	}
-	empty := true
-	err = filepath.WalkDir(path, func(current string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if current != path {
-			empty = false
-			return fs.SkipAll
-		}
-		return nil
-	})
-	return empty, err
 }

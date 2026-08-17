@@ -1,0 +1,509 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/internal/runtime-wire.schema.json",
+  "title": "ReDevPlugin Host/runtime wire",
+  "internal_wire": 1,
+  "oneOf": [
+    { "$ref": "#/$defs/hello_frame" },
+    { "$ref": "#/$defs/hello_ack_frame" },
+    { "$ref": "#/$defs/ordinary_frame" }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "nonempty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "positive_json_integer": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "positive_integer": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "nonnegative_json_integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "runtime_limits": {
+      "type": "object",
+      "description": "Negotiated runtime capacities. per_plugin_concurrency must not exceed worker_count. Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count.",
+      "additionalProperties": false,
+      "required": [
+        "worker_count",
+        "queue_capacity",
+        "per_plugin_concurrency",
+        "module_cache_entries",
+        "module_cache_source_bytes"
+      ],
+      "properties": {
+        "worker_count": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Number of runtime worker threads." },
+        "queue_capacity": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Maximum queued worker invocations." },
+        "per_plugin_concurrency": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Maximum concurrent invocations for one plugin; must not exceed worker_count." },
+        "module_cache_entries": { "type": "integer", "minimum": 1, "maximum": 1024, "description": "Maximum compiled modules retained by the runtime cache." },
+        "module_cache_source_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728, "description": "Maximum source WASM bytes retained by the runtime cache (128 MiB)." }
+      }
+    },
+    "process_containment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "profile",
+        "seccomp_policy_sha256",
+        "no_new_privs",
+        "seccomp_tsync",
+        "process_creation_denied",
+        "reexec_denied",
+        "active"
+      ],
+      "properties": {
+        "schema_version": { "const": "redevplugin.process_containment.v1" },
+        "profile": { "const": "linux-runtime-v1" },
+        "seccomp_policy_sha256": { "$ref": "#/$defs/sha256" },
+        "no_new_privs": { "const": true },
+        "seccomp_tsync": { "const": true },
+        "process_creation_denied": { "const": true },
+        "reexec_denied": { "const": true },
+        "active": { "const": true }
+      }
+    },
+    "runtime_lease_public_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "public_key_base64"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "$ref": "#/$defs/nonempty_string" },
+        "public_key_base64": { "$ref": "#/$defs/nonempty_string" }
+      }
+    },
+    "resource_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "owner_env_hash"],
+      "properties": {
+        "kind": { "enum": ["user", "environment"] },
+        "owner_env_hash": { "$ref": "#/$defs/nonempty_string" },
+        "owner_user_hash": { "$ref": "#/$defs/nonempty_string" }
+      }
+    },
+    "hello_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "internal_wire",
+        "platform_version",
+        "runtime_artifact_sha256",
+        "connection_nonce",
+        "target",
+        "host_process_id",
+        "started_unix_nano",
+        "runtime_lease_public_keys",
+        "limits"
+      ],
+      "properties": {
+        "internal_wire": { "const": 1 },
+        "platform_version": { "$ref": "#/$defs/semver" },
+        "runtime_artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "connection_nonce": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "target": { "enum": ["darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"] },
+        "host_process_id": { "$ref": "#/$defs/positive_json_integer" },
+        "started_unix_nano": { "$ref": "#/$defs/positive_integer" },
+        "runtime_lease_public_keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/runtime_lease_public_key" }
+        },
+        "limits": { "$ref": "#/$defs/runtime_limits" }
+      }
+    },
+    "hello_ack_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "internal_wire",
+        "platform_version",
+        "runtime_artifact_sha256",
+        "connection_nonce",
+        "actual_target",
+        "limits"
+      ],
+      "properties": {
+        "internal_wire": { "const": 1 },
+        "platform_version": { "$ref": "#/$defs/semver" },
+        "runtime_artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "connection_nonce": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "actual_target": { "enum": ["darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"] },
+        "limits": { "$ref": "#/$defs/runtime_limits" },
+        "process_containment": { "$ref": "#/$defs/process_containment" }
+      }
+    },
+    "module_cache_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hits", "misses", "compiles", "entries", "source_bytes"],
+      "properties": {
+        "hits": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "misses": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "compiles": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "entries": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "source_bytes": { "$ref": "#/$defs/nonnegative_json_integer" }
+      }
+    },
+    "heartbeat_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_generation_id",
+        "runtime_unix_nano",
+        "max_staleness_ms",
+        "host_sent_unix_nano",
+        "active_invocations",
+        "queued_invocations",
+        "limits",
+        "module_cache"
+      ],
+      "properties": {
+        "runtime_generation_id": { "$ref": "#/$defs/nonempty_string" },
+        "runtime_unix_nano": { "$ref": "#/$defs/positive_integer" },
+        "max_staleness_ms": { "$ref": "#/$defs/positive_json_integer" },
+        "host_sent_unix_nano": { "$ref": "#/$defs/positive_integer" },
+        "active_invocations": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "queued_invocations": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "limits": { "$ref": "#/$defs/runtime_limits" },
+        "module_cache": { "$ref": "#/$defs/module_cache_metrics" }
+      }
+    },
+    "heartbeat_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sent_unix_nano": { "$ref": "#/$defs/positive_integer" },
+        "max_staleness_ms": { "$ref": "#/$defs/positive_json_integer" },
+        "ok": { "type": "boolean" },
+        "result": { "$ref": "#/$defs/heartbeat_result" },
+        "code": { "$ref": "#/$defs/nonempty_string" },
+        "message": { "$ref": "#/$defs/nonempty_string" },
+        "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+      },
+      "oneOf": [
+        { "required": ["sent_unix_nano", "max_staleness_ms"] },
+        { "required": ["ok"] }
+      ]
+    },
+    "invoke_worker_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lease", "method", "invocation"],
+      "properties": {
+        "prewarm": { "type": "boolean" },
+        "lease": { "type": "object" },
+        "method": { "$ref": "#/$defs/nonempty_string" },
+        "invocation": { "type": "object" }
+      }
+    },
+    "invoke_worker_result_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": {},
+        "code": { "$ref": "#/$defs/nonempty_string" },
+        "message": { "$ref": "#/$defs/nonempty_string" },
+        "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+      }
+    },
+    "cancel_invoke_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invocation_request_id"],
+      "properties": {
+        "invocation_request_id": { "$ref": "#/$defs/nonempty_string" }
+      }
+    },
+    "cancel_invoke_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invocation_request_id", "disposition"],
+      "properties": {
+        "invocation_request_id": { "$ref": "#/$defs/nonempty_string" },
+        "disposition": { "enum": ["queued", "running", "complete"] }
+      }
+    },
+    "cancel_invoke_ack_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": { "$ref": "#/$defs/cancel_invoke_result" },
+        "code": { "$ref": "#/$defs/nonempty_string" },
+        "message": { "$ref": "#/$defs/nonempty_string" },
+        "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+      }
+    },
+    "compile_flight_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_request_id", "package_hash", "artifact", "artifact_sha256"],
+      "properties": {
+        "artifact_request_id": { "$ref": "#/$defs/nonempty_string" },
+        "package_hash": { "$ref": "#/$defs/sha256_ref" },
+        "artifact": { "$ref": "#/$defs/nonempty_string" },
+        "artifact_sha256": { "$ref": "#/$defs/sha256_ref" }
+      }
+    },
+    "open_handle_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "package_hash": { "$ref": "#/$defs/sha256_ref" },
+        "artifact": { "$ref": "#/$defs/nonempty_string" },
+        "artifact_sha256": { "$ref": "#/$defs/sha256_ref" },
+        "ok": { "type": "boolean" },
+        "sha256": { "$ref": "#/$defs/sha256_ref" },
+        "content_base64": { "type": "string" },
+        "code": { "$ref": "#/$defs/nonempty_string" },
+        "message": { "$ref": "#/$defs/nonempty_string" },
+        "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+      },
+      "oneOf": [
+        { "required": ["package_hash", "artifact", "artifact_sha256"] },
+        { "required": ["ok"] }
+      ]
+    },
+    "revoke_epoch_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_scope", "plugin_instance_id", "revoke_epoch"],
+      "properties": {
+        "resource_scope": { "$ref": "#/$defs/resource_scope" },
+        "plugin_instance_id": { "$ref": "#/$defs/nonempty_string" },
+        "revoke_epoch": { "$ref": "#/$defs/positive_json_integer" }
+      }
+    },
+    "revoke_epoch_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resource_scope",
+        "plugin_instance_id",
+        "revoke_epoch",
+        "closed_socket_count",
+        "closed_stream_count",
+        "closed_storage_handle_count"
+      ],
+      "properties": {
+        "resource_scope": { "$ref": "#/$defs/resource_scope" },
+        "plugin_instance_id": { "$ref": "#/$defs/nonempty_string" },
+        "revoke_epoch": { "$ref": "#/$defs/positive_json_integer" },
+        "closed_socket_count": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "closed_stream_count": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "closed_storage_handle_count": { "$ref": "#/$defs/nonnegative_json_integer" }
+      }
+    },
+    "revoke_epoch_ack_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": { "$ref": "#/$defs/revoke_epoch_result" },
+        "code": { "$ref": "#/$defs/nonempty_string" },
+        "message": { "$ref": "#/$defs/nonempty_string" },
+        "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+      }
+    },
+    "session_revoke_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_revoke_sequence",
+        "owner_session_hash",
+        "owner_user_hash",
+        "owner_env_hash",
+        "session_channel_id_hash"
+      ],
+      "properties": {
+        "session_revoke_sequence": { "$ref": "#/$defs/positive_json_integer" },
+        "owner_session_hash": { "$ref": "#/$defs/nonempty_string" },
+        "owner_user_hash": { "$ref": "#/$defs/nonempty_string" },
+        "owner_env_hash": { "$ref": "#/$defs/nonempty_string" },
+        "session_channel_id_hash": { "$ref": "#/$defs/nonempty_string" }
+      }
+    },
+    "session_revoke_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queued_invocations",
+        "running_invocations",
+        "storage_hostcalls",
+        "active_network_requests",
+        "sockets",
+        "network_streams"
+      ],
+      "properties": {
+        "queued_invocations": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "running_invocations": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "storage_hostcalls": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "active_network_requests": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "sockets": { "$ref": "#/$defs/nonnegative_json_integer" },
+        "network_streams": { "$ref": "#/$defs/nonnegative_json_integer" }
+      }
+    },
+    "session_revoke_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_revoke_sequence", "state", "counts"],
+      "properties": {
+        "session_revoke_sequence": { "$ref": "#/$defs/positive_json_integer" },
+        "state": { "const": "complete" },
+        "counts": { "$ref": "#/$defs/session_revoke_counts" }
+      }
+    },
+    "session_revoke_ack_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": { "$ref": "#/$defs/session_revoke_result" },
+        "code": { "$ref": "#/$defs/nonempty_string" },
+        "message": { "$ref": "#/$defs/nonempty_string" },
+        "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+      }
+    },
+    "hello_frame": {
+      "allOf": [
+        { "$ref": "#/$defs/semantic_frame" },
+        {
+          "type": "object",
+          "required": ["runtime_generation_id", "payload"],
+          "properties": {
+            "frame_type": { "const": "hello" },
+            "payload": { "$ref": "#/$defs/hello_payload" }
+          }
+        }
+      ]
+    },
+    "hello_ack_frame": {
+      "allOf": [
+        { "$ref": "#/$defs/semantic_frame" },
+        {
+          "type": "object",
+          "required": ["runtime_generation_id", "payload"],
+          "properties": {
+            "frame_type": { "const": "hello_ack" },
+            "payload": { "$ref": "#/$defs/hello_ack_payload" }
+          }
+        }
+      ]
+    },
+    "ordinary_frame": {
+      "allOf": [
+        { "$ref": "#/$defs/ordinary_frame_shape" },
+        {
+          "oneOf": [
+            { "properties": { "frame_type": { "const": "heartbeat" }, "payload": { "$ref": "#/$defs/heartbeat_payload" } } },
+            { "properties": { "frame_type": { "const": "invoke_worker" }, "payload": { "$ref": "#/$defs/invoke_worker_payload" } } },
+            { "properties": { "frame_type": { "const": "invoke_worker_result" }, "payload": { "$ref": "#/$defs/invoke_worker_result_payload" } } },
+            { "properties": { "frame_type": { "const": "cancel_invoke" }, "payload": { "$ref": "#/$defs/cancel_invoke_payload" } } },
+            { "properties": { "frame_type": { "const": "cancel_invoke_ack" }, "payload": { "$ref": "#/$defs/cancel_invoke_ack_payload" } } },
+            { "properties": { "frame_type": { "const": "compile_flight_register" }, "payload": { "$ref": "#/$defs/compile_flight_payload" } } },
+            { "properties": { "frame_type": { "const": "compile_flight_complete" }, "payload": { "$ref": "#/$defs/compile_flight_payload" } } },
+            { "properties": { "frame_type": { "const": "open_handle" }, "payload": { "$ref": "#/$defs/open_handle_payload" } } },
+            { "properties": { "frame_type": { "const": "revoke_epoch" }, "payload": { "$ref": "#/$defs/revoke_epoch_payload" } } },
+            { "properties": { "frame_type": { "const": "revoke_epoch_ack" }, "payload": { "$ref": "#/$defs/revoke_epoch_ack_payload" } } },
+            { "properties": { "frame_type": { "const": "session_revoke" }, "payload": { "$ref": "#/$defs/session_revoke_payload" } } },
+            { "properties": { "frame_type": { "const": "session_revoke_ack" }, "payload": { "$ref": "#/$defs/session_revoke_ack_payload" } } }
+          ]
+        }
+      ]
+    },
+    "ordinary_frame_shape": {
+      "allOf": [
+        { "$ref": "#/$defs/semantic_frame" },
+        { "required": ["runtime_generation_id", "payload"] }
+      ]
+    },
+    "semantic_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_type", "request_id"],
+      "properties": {
+        "frame_type": {
+          "enum": [
+            "hello",
+            "hello_ack",
+            "heartbeat",
+            "invoke_worker",
+            "invoke_worker_result",
+            "cancel_invoke",
+            "cancel_invoke_ack",
+            "compile_flight_register",
+            "compile_flight_complete",
+            "open_handle",
+            "revoke_epoch",
+            "revoke_epoch_ack",
+            "session_revoke",
+            "session_revoke_ack"
+          ]
+        },
+        "request_id": { "$ref": "#/$defs/nonempty_string" },
+        "parent_request_id": { "$ref": "#/$defs/nonempty_string" },
+        "runtime_generation_id": { "$ref": "#/$defs/nonempty_string" },
+        "payload": {}
+      }
+    }
+  },
+  "x-frame-contracts": {
+    "hello": { "direction": "host_to_runtime", "payload": "#/$defs/hello_payload" },
+    "hello_ack": { "direction": "runtime_to_host", "payload": "#/$defs/hello_ack_payload" },
+    "heartbeat": { "direction": "bidirectional", "payload": "#/$defs/heartbeat_payload" },
+    "invoke_worker": { "direction": "host_to_runtime", "payload": "#/$defs/invoke_worker_payload" },
+    "invoke_worker_result": { "direction": "runtime_to_host", "payload": "#/$defs/invoke_worker_result_payload" },
+    "cancel_invoke": { "direction": "host_to_runtime", "payload": "#/$defs/cancel_invoke_payload" },
+    "cancel_invoke_ack": { "direction": "runtime_to_host", "payload": "#/$defs/cancel_invoke_ack_payload" },
+    "compile_flight_register": { "direction": "runtime_to_host", "payload": "#/$defs/compile_flight_payload" },
+    "compile_flight_complete": { "direction": "runtime_to_host", "payload": "#/$defs/compile_flight_payload" },
+    "open_handle": { "direction": "bidirectional", "payload": "#/$defs/open_handle_payload" },
+    "revoke_epoch": { "direction": "host_to_runtime", "payload": "#/$defs/revoke_epoch_payload" },
+    "revoke_epoch_ack": { "direction": "runtime_to_host", "payload": "#/$defs/revoke_epoch_ack_payload" },
+    "session_revoke": { "direction": "host_to_runtime", "payload": "#/$defs/session_revoke_payload" },
+    "session_revoke_ack": { "direction": "runtime_to_host", "payload": "#/$defs/session_revoke_ack_payload" }
+  },
+  "x-binary-header": {
+    "byte_order": "big-endian",
+    "magic_hex": "52445046",
+    "size": 19,
+    "fields": [
+      { "name": "magic", "offset": 0, "size": 4 },
+      { "name": "kind", "offset": 4, "size": 1 },
+      { "name": "flags", "offset": 5, "size": 2 },
+      { "name": "correlation_id", "offset": 7, "size": 8 },
+      { "name": "payload_len", "offset": 15, "size": 4 }
+    ]
+  },
+  "x-binary-payload": {
+    "metadata_length_prefix_bytes": 4,
+    "metadata_length_byte_order": "big-endian",
+    "layout": ["metadata_length", "metadata", "body"]
+  }
+}

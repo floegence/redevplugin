@@ -34,30 +34,19 @@ var ErrUnsupportedFeature = errors.New("UNSUPPORTED_FEATURE")
 var ErrUnsupportedPermission = errors.New("UNSUPPORTED_PERMISSION")
 
 type PublicAPIRequirement struct {
-	Surface          *uint16     `json:"surface,omitempty"`
-	Worker           *uint16     `json:"worker,omitempty"`
+	Major            uint16      `json:"major"`
 	RequiredFeatures []FeatureID `json:"required_features,omitempty"`
 	OptionalFeatures []FeatureID `json:"optional_features,omitempty"`
 }
 
-// Model is the single normalized manifest representation consumed after the
-// decode boundary. Manifest is embedded for source compatibility while
-// downstream packages migrate away from schema-specific fields.
-type Model struct {
-	Manifest
-	SchemaSource string
-	API          PublicAPIRequirement
-	Permissions  []PermissionID
-}
-
-func (m Model) RequiredFeatureIDs() []FeatureID {
+func (m Manifest) RequiredFeatureIDs() []FeatureID {
 	return append([]FeatureID(nil), m.API.RequiredFeatures...)
 }
 
-func (m Model) OptionalFeatureIDs() []FeatureID {
+func (m Manifest) OptionalFeatureIDs() []FeatureID {
 	return append([]FeatureID(nil), m.API.OptionalFeatures...)
 }
 
-func (m Model) PermissionIDs() []PermissionID {
+func (m Manifest) PermissionIDs() []PermissionID {
 	return append([]PermissionID(nil), m.Permissions...)
 }

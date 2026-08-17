@@ -29,11 +29,10 @@
     "port_envelope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "frame_generation_id", "ui_protocol_version"],
+      "required": ["type", "frame_generation_id"],
       "properties": {
         "type": { "const": "redevplugin.surface.port" },
-        "frame_generation_id": { "$ref": "#/$defs/opaque_handle" },
-        "ui_protocol_version": { "const": "plugin-ui-v7" }
+        "frame_generation_id": { "$ref": "#/$defs/opaque_handle" }
       }
     },
     "port_ack": {
@@ -190,11 +189,10 @@
       "description": "Transferred ports are ordered as runtime_control then plugin_bridge; only plugin_bridge is exposed through the worker SDK claim.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "surface_handle", "ui_protocol_version", "port_roles"],
+      "required": ["type", "surface_handle", "port_roles"],
       "properties": {
         "type": { "const": "redevplugin.worker.initialize" },
         "surface_handle": { "$ref": "#/$defs/opaque_handle" },
-        "ui_protocol_version": { "const": "plugin-ui-v7" },
         "port_roles": {
           "type": "array",
           "prefixItems": [

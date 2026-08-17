@@ -3,8 +3,8 @@ package host
 import (
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 func TestMethodSchemaCacheEnforcesLRUCapacity(t *testing.T) {

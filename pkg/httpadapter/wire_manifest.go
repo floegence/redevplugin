@@ -1,9 +1,9 @@
 package httpadapter
 
 import (
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
 
 type capabilityPinResponse struct {
@@ -52,12 +52,15 @@ type manifestPublisherResponse struct {
 }
 
 type manifestPluginResponse struct {
-	PluginID          string `json:"plugin_id"`
-	DisplayName       string `json:"display_name"`
-	Version           string `json:"version"`
-	APIVersion        string `json:"api_version"`
-	MinRuntimeVersion string `json:"min_runtime_version"`
-	UIProtocolVersion string `json:"ui_protocol_version"`
+	PluginID    string `json:"plugin_id"`
+	DisplayName string `json:"display_name"`
+	Version     string `json:"version"`
+}
+
+type manifestAPIResponse struct {
+	Major            uint16               `json:"major"`
+	RequiredFeatures []manifest.FeatureID `json:"required_features,omitempty"`
+	OptionalFeatures []manifest.FeatureID `json:"optional_features,omitempty"`
 }
 
 type manifestLocalizedSurfaceResponse struct {
@@ -192,7 +195,6 @@ type manifestMethodResponse struct {
 type manifestWorkerResponse struct {
 	WorkerID         string `json:"worker_id"`
 	Artifact         string `json:"artifact"`
-	ABI              string `json:"abi"`
 	Mode             string `json:"mode"`
 	Scope            string `json:"scope"`
 	MemoryLimitBytes int64  `json:"memory_limit_bytes"`
@@ -251,6 +253,8 @@ type manifestResponse struct {
 	SchemaVersion      string                              `json:"schema_version"`
 	Publisher          manifestPublisherResponse           `json:"publisher"`
 	Plugin             manifestPluginResponse              `json:"plugin"`
+	API                manifestAPIResponse                 `json:"api"`
+	Permissions        []manifest.PermissionID             `json:"permissions"`
 	Presentation       manifestPresentationResponse        `json:"presentation"`
 	Surfaces           []manifestSurfaceResponse           `json:"surfaces,omitempty"`
 	CapabilityBindings []manifestCapabilityBindingResponse `json:"capability_bindings,omitempty"`
@@ -270,9 +274,12 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		},
 		Plugin: manifestPluginResponse{
 			PluginID: source.Plugin.PluginID, DisplayName: source.Plugin.DisplayName, Version: source.Plugin.Version,
-			APIVersion: source.Plugin.APIVersion, MinRuntimeVersion: source.Plugin.MinRuntimeVersion,
-			UIProtocolVersion: source.Plugin.UIProtocolVersion,
 		},
+		API: manifestAPIResponse{
+			Major: source.API.Major, RequiredFeatures: append([]manifest.FeatureID(nil), source.API.RequiredFeatures...),
+			OptionalFeatures: append([]manifest.FeatureID(nil), source.API.OptionalFeatures...),
+		},
+		Permissions:  append([]manifest.PermissionID(nil), source.Permissions...),
 		Presentation: publicManifestPresentation(source.Presentation),
 	}
 	response.Surfaces = make([]manifestSurfaceResponse, len(source.Surfaces))
@@ -347,7 +354,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 	response.Workers = make([]manifestWorkerResponse, len(source.Workers))
 	for index, worker := range source.Workers {
 		response.Workers[index] = manifestWorkerResponse{
-			WorkerID: worker.WorkerID, Artifact: worker.Artifact, ABI: worker.ABI, Mode: string(worker.Mode),
+			WorkerID: worker.WorkerID, Artifact: worker.Artifact, Mode: string(worker.Mode),
 			Scope: worker.Scope, MemoryLimitBytes: worker.MemoryLimitBytes, IdleTimeoutMS: worker.IdleTimeoutMS,
 		}
 	}

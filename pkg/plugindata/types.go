@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	settingsdomain "github.com/floegence/redevplugin/v3/pkg/settings"
 )
 
 var (
@@ -106,7 +106,6 @@ type Catalog interface {
 	GetBinding(ctx context.Context, pluginInstanceID string) (Binding, bool, error)
 	ListBindings(ctx context.Context, cursor string, limit int) ([]Binding, string, error)
 	ListAllBindingsForMaintenance(ctx context.Context, cursor string, limit int) ([]MaintenanceBinding, string, error)
-	CommitEnable(ctx context.Context, expectedManagementRevision uint64, expected *Binding, next Binding, shape Shape, now time.Time) error
 	SwapImport(ctx context.Context, expectedManagementRevision uint64, expected *Binding, next Binding, shape Shape, now time.Time) error
 	BindRetained(ctx context.Context, expected Binding, targetPluginInstanceID string, targetExpectedManagementRevision uint64, targetShape Shape, now time.Time) (Binding, error)
 	DeleteRetained(ctx context.Context, expected Binding) error
@@ -130,13 +129,13 @@ type Settings struct {
 	Values   map[string]json.RawMessage `json:"values"`
 }
 
-type CommitEnableRequest struct {
-	PluginInstanceID           string
-	Shape                      Shape
-	InitialSettings            map[string]json.RawMessage
-	ExpectedManagementRevision uint64
-	Now                        time.Time `json:"-"`
+type InstallCommitRequest struct {
+	PluginInstanceID string
+	Shape            Shape
+	Now              time.Time `json:"-"`
 }
+
+type InstallCatalogCommit func(ctx context.Context, expected *Binding, next Binding, shape Shape, now time.Time) error
 
 type ExportRequest struct {
 	PluginInstanceID string
@@ -208,7 +207,7 @@ type PatchSettingsRequest struct {
 
 type Store interface {
 	Durable() bool
-	CommitEnable(ctx context.Context, req CommitEnableRequest) (Dataset, error)
+	InstallCommit(ctx context.Context, req InstallCommitRequest, commit InstallCatalogCommit) (Dataset, error)
 	Export(ctx context.Context, req ExportRequest) (Export, error)
 	DeleteExport(ctx context.Context, req DeleteExportRequest) error
 	Import(ctx context.Context, req ImportRequest) (Dataset, error)

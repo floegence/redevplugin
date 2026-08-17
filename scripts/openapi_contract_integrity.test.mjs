@@ -8,20 +8,38 @@ import { parse as parseYAML } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 
 async function readOpenAPI() {
-  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v17.yaml"), "utf8"));
+  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform.yaml"), "utf8"));
 }
 
-async function readIPCSchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/ipc-v7.schema.json"), "utf8"));
+async function readRuntimeWireSchema() {
+  return JSON.parse(await readFile(join(root, "spec/internal/runtime-wire.schema.json"), "utf8"));
 }
 
 async function readSessionScopeSchema() {
   return JSON.parse(await readFile(join(root, "spec/plugin/session-scope-v1.schema.json"), "utf8"));
 }
 
-async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v20.schema.json"), "utf8"));
-}
+test("OpenAPI has one canonical path and projects VERSION", async () => {
+  const [openAPI, version] = await Promise.all([
+    readOpenAPI(),
+    readFile(join(root, "VERSION"), "utf8"),
+  ]);
+  assert.equal(openAPI.info.version, version.trim());
+  await assert.rejects(
+    readFile(join(root, "spec/openapi/plugin-platform-v17.yaml"), "utf8"),
+    { code: "ENOENT" },
+  );
+});
+
+test("surface bootstrap and handshake use plugin_api without a UI version axis", async () => {
+  const openAPI = await readOpenAPI();
+  for (const name of ["SurfaceBootstrap", "TrustedParentBridgeHandshake"]) {
+    const schema = openAPI.components.schemas[name];
+    assert.equal(schema.properties.ui_protocol_version, undefined);
+    assert.equal(schema.required.includes("ui_protocol_version"), false);
+  }
+  assert.doesNotMatch(JSON.stringify(openAPI), /plugin-ui-v[0-9]+/);
+});
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
   const openAPI = await readOpenAPI();
@@ -142,50 +160,13 @@ test("session scope contract closes identity, phases, counts, and public result 
   }
 });
 
-test("Rust IPC v7 carries closed session revoke request and acknowledgement frames", async () => {
-  const schema = await readIPCSchema();
-  assert.equal(schema.properties.ipc_version.const, "rust-ipc-v7");
-  assert.ok(schema.properties.frame_type.enum.includes("session_revoke"));
-  assert.ok(schema.properties.frame_type.enum.includes("session_revoke_ack"));
-
-  const request = schema.$defs.session_revoke_request_payload;
-  assert.equal(request.additionalProperties, false);
-  assert.deepEqual(request.required, [
-    "session_revoke_sequence",
-    "owner_session_hash",
-    "owner_user_hash",
-    "owner_env_hash",
-    "session_channel_id_hash",
-  ]);
-  assert.deepEqual(request.properties.session_revoke_sequence, {
-    type: "integer",
-    minimum: 1,
-    maximum: Number.MAX_SAFE_INTEGER,
-  });
-
-  const result = schema.$defs.session_revoke_ack_result;
-  assert.equal(result.additionalProperties, false);
-  assert.deepEqual(result.required, ["session_revoke_sequence", "state", "counts"]);
-  assert.deepEqual(result.properties.state, { const: "complete" });
-  for (const count of Object.values(schema.$defs.session_revoke_ack_counts.properties)) {
-    assert.deepEqual(count, { $ref: "#/$defs/session_revoke_count" });
-  }
-  assert.equal(schema.$defs.session_revoke_count.maximum, Number.MAX_SAFE_INTEGER);
-});
-
-test("current compatibility manifest publishes the complete session revoke and UI transport matrix", async () => {
-  const schema = await readCompatibilitySchema();
-  const matrix = schema.properties.matrix;
-  assert.ok(matrix.required.includes("session_scope_schema_version"));
-  assert.ok(!matrix.required.includes("session_scope_maintenance_schema_version"));
-  assert.deepEqual(matrix.properties.plugin_host_protocol_version, { const: "plugin-host-v11" });
-  assert.deepEqual(matrix.properties.rust_ipc_version, { const: "rust-ipc-v7" });
-  assert.deepEqual(matrix.properties.token_ticket_schema_version, { const: "token-ticket-v4" });
-  assert.deepEqual(matrix.properties.session_scope_schema_version, { const: "session-scope-v1" });
-  assert.equal(matrix.properties.session_scope_maintenance_schema_version, undefined);
-  assert.deepEqual(matrix.properties.error_codes_schema_version, { const: "error-codes-v8" });
-  assert.deepEqual(matrix.properties.supported_plugin_ui_protocol_versions, { const: ["plugin-ui-v7"] });
-  assert.equal(matrix.properties.plugin_ui_transport_mappings.const.length, 1);
+test("internal wire version is owned only by Hello and HelloAck", async () => {
+  const schema = await readRuntimeWireSchema();
+  assert.equal(schema.internal_wire, 1);
+  assert.equal(schema.$defs.hello_payload.properties.internal_wire.const, 1);
+  assert.equal(schema.$defs.hello_ack_payload.properties.internal_wire.const, 1);
+  assert.equal(schema.$defs.semantic_frame.properties.internal_wire, undefined);
+  assert.equal(schema.$defs.ordinary_frame.properties, undefined);
 });
 
 test("async work exposes one execution identity and cursor event contract", async () => {
@@ -315,7 +296,6 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
     "artifact",
     "code",
     "connector_id",
-    "contract_set_sha256",
 		"execution_id",
 		"executions_deleted",
     "failure_code",
@@ -335,13 +315,11 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
     "runtime_target_arch",
     "runtime_target_os",
     "runtime_version",
-    "rust_ipc_version",
     "stage_id",
     "store_id",
     "stream",
     "surface_instance_id",
     "transport",
-    "wasm_abi_version",
   ]);
 	for (const field of ["executions_deleted", "revoke_epoch"]) {
     assert.deepEqual(schemas.PluginDiagnosticDetails.properties[field], {
@@ -351,7 +329,7 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
     });
   }
   assert.deepEqual(schemas.PluginDiagnosticDetails.properties.runtime_process_failure_code, {
-    $ref: "../plugin/error-codes-v8.schema.json#/$defs/runtime_process_failure_code",
+    $ref: "../plugin/error-codes.schema.json#/$defs/runtime_process_failure_code",
   });
   assert.deepEqual(schemas.PluginDiagnosticEvent.properties.details, {
     $ref: "#/components/schemas/PluginDiagnosticDetails",
@@ -361,10 +339,10 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
   });
 });
 
-test("OpenAPI and IPC runtime limits have identical bounds and descriptions", async () => {
-  const [openAPI, ipcSchema] = await Promise.all([readOpenAPI(), readIPCSchema()]);
+test("OpenAPI and internal wire runtime limits have identical bounds and descriptions", async () => {
+  const [openAPI, wireSchema] = await Promise.all([readOpenAPI(), readRuntimeWireSchema()]);
   const openAPILimits = openAPI.components.schemas.RuntimeLimits;
-  const ipcLimits = ipcSchema.$defs.runtime_limits;
+  const ipcLimits = wireSchema.$defs.runtime_limits;
   assert.equal(openAPILimits.type, ipcLimits.type);
   assert.equal(openAPILimits.additionalProperties, ipcLimits.additionalProperties);
   assert.equal(openAPILimits.description, ipcLimits.description);

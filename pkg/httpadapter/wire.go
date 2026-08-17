@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 // HTTP wire DTOs are deliberately separate from Host and persistence DTOs.
@@ -81,11 +80,6 @@ type localImportProvenanceResponse struct {
 	AssessedAt     string `json:"assessed_at"`
 }
 
-type runtimeRequirementResponse struct {
-	MinVersion       string   `json:"min_version"`
-	SupportedTargets []string `json:"supported_targets,omitempty"`
-}
-
 type releaseTrustBindingResponse struct {
 	SourceID              string `json:"source_id"`
 	Channel               string `json:"channel"`
@@ -119,7 +113,6 @@ type pluginVersionResponse struct {
 	Presentation          presentationCatalogResponse              `json:"presentation"`
 	PresentationSHA256    string                                   `json:"presentation_sha256"`
 	PackageEntries        []packageEntryResponse                   `json:"package_entries"`
-	RuntimeRequirement    *runtimeRequirementResponse              `json:"runtime_requirement,omitempty"`
 	ActivatedAt           time.Time                                `json:"activated_at"`
 	Metadata              map[string]string                        `json:"metadata,omitempty"`
 }
@@ -152,7 +145,6 @@ type pluginRecordResponse struct {
 	Presentation          presentationCatalogResponse              `json:"presentation"`
 	PresentationSHA256    string                                   `json:"presentation_sha256"`
 	PackageEntries        []packageEntryResponse                   `json:"package_entries"`
-	RuntimeRequirement    *runtimeRequirementResponse              `json:"runtime_requirement,omitempty"`
 	VersionHistory        []pluginVersionResponse                  `json:"version_history,omitempty"`
 	InstalledAt           time.Time                                `json:"installed_at"`
 	EnabledAt             *time.Time                               `json:"enabled_at,omitempty"`
@@ -195,7 +187,7 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 		CapabilityContracts:   publicCapabilityPins(record.CapabilityContracts), EnableState: string(record.EnableState), DisabledReason: record.DisabledReason,
 		PolicyRevision: record.PolicyRevision, ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch,
 		Manifest: publicManifest, Presentation: publicPresentationCatalog(presentation), PresentationSHA256: presentationSHA256,
-		PackageEntries: publicPackageEntries(record.PackageEntries), RuntimeRequirement: publicRuntimeRequirement(record.RuntimeRequirement),
+		PackageEntries: publicPackageEntries(record.PackageEntries),
 		VersionHistory: versions, InstalledAt: record.InstalledAt, EnabledAt: cloneWireTime(record.EnabledAt), UpdatedAt: record.UpdatedAt,
 		DeletedAt: cloneWireTime(record.DeletedAt), Metadata: cloneWireStringMap(record.Metadata),
 	}, nil
@@ -203,7 +195,6 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 
 type installedExternalPackageResponse struct {
 	Plugin              *pluginRecordResponse                    `json:"plugin,omitempty"`
-	Activation          registry.ReleaseInstallActivation        `json:"activation"`
 	SignatureAssessment *host.ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
 	SourceProvenance    *host.ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
 	ExecutionApproval   *host.ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
@@ -230,7 +221,6 @@ func publicReleasePackageInspection(value host.ReleasePackageInspection) release
 
 func publicInstalledExternalPackage(result host.InstalledExternalPackage) (installedExternalPackageResponse, error) {
 	response := installedExternalPackageResponse{
-		Activation:          result.Activation,
 		SignatureAssessment: result.SignatureAssessment,
 		SourceProvenance:    result.SourceProvenance, ExecutionApproval: result.ExecutionApproval,
 		UpdateEligibility: result.UpdateEligibility, SecuritySummary: result.SecuritySummary,
@@ -328,8 +318,8 @@ func publicPluginVersion(version registry.PluginVersion) (pluginVersionResponse,
 		LocalImportProvenance: publicLocalImportProvenance(version.LocalImportProvenance),
 		CapabilityContracts:   publicCapabilityPins(version.CapabilityContracts), Manifest: publicManifest,
 		Presentation: publicPresentationCatalog(presentation), PresentationSHA256: presentationSHA256,
-		PackageEntries: publicPackageEntries(version.PackageEntries), RuntimeRequirement: publicRuntimeRequirement(version.RuntimeRequirement),
-		ActivatedAt: version.ActivatedAt, Metadata: cloneWireStringMap(version.Metadata),
+		PackageEntries: publicPackageEntries(version.PackageEntries),
+		ActivatedAt:    version.ActivatedAt, Metadata: cloneWireStringMap(version.Metadata),
 	}, nil
 }
 
@@ -374,17 +364,6 @@ func publicLocalImportProvenance(value *registry.LocalImportProvenance) *localIm
 		ImportID: value.ImportID, Distribution: value.Distribution, PolicyEpoch: value.PolicyEpoch,
 		UnsignedPolicy: value.UnsignedPolicy, AssessedAt: value.AssessedAt,
 	}
-}
-
-func publicRuntimeRequirement(value *registry.RuntimeRequirement) *runtimeRequirementResponse {
-	if value == nil {
-		return nil
-	}
-	targets := make([]string, len(value.SupportedTargets))
-	for index, target := range value.SupportedTargets {
-		targets[index] = target.String()
-	}
-	return &runtimeRequirementResponse{MinVersion: value.MinVersion, SupportedTargets: targets}
 }
 
 type permissionResponse struct {
@@ -515,23 +494,10 @@ func publicSettingsSnapshot(result host.SettingsResult) (settingsSnapshotRespons
 	}, nil
 }
 
-type runtimeDescriptorInternalResponse struct {
-	RustIPCVersion    string `json:"rust_ipc"`
-	ContractSetSHA256 string `json:"contract_set_sha256"`
-}
-
-type runtimeDescriptorPublicAPIResponse struct {
-	WorkerMajors []uint16 `json:"worker_majors"`
-	Features     []string `json:"features"`
-}
-
-type runtimeDescriptorResponse struct {
-	SchemaVersion   string                             `json:"schema_version"`
-	PlatformVersion string                             `json:"platform_version"`
-	Target          string                             `json:"target"`
-	Internal        runtimeDescriptorInternalResponse  `json:"internal"`
-	PublicAPI       runtimeDescriptorPublicAPIResponse `json:"public_api"`
-	BinarySHA256    string                             `json:"binary_sha256"`
+type runtimeArtifactIdentityResponse struct {
+	PlatformVersion string `json:"platform_version"`
+	Target          string `json:"target"`
+	BinarySHA256    string `json:"binary_sha256"`
 }
 
 type runtimeLimitsResponse struct {
@@ -551,21 +517,21 @@ type runtimeModuleCacheResponse struct {
 }
 
 type runtimeShardHealthResponse struct {
-	RuntimeShardID      string                     `json:"runtime_shard_id"`
-	RuntimeInstanceID   string                     `json:"runtime_instance_id"`
-	RuntimeGenerationID string                     `json:"runtime_generation_id"`
-	Descriptor          runtimeDescriptorResponse  `json:"descriptor"`
-	Ready               bool                       `json:"ready"`
-	ActiveInvocations   int                        `json:"active_invocations"`
-	QueuedInvocations   int                        `json:"queued_invocations"`
-	Limits              runtimeLimitsResponse      `json:"limits"`
-	ModuleCache         runtimeModuleCacheResponse `json:"module_cache"`
+	RuntimeShardID      string                          `json:"runtime_shard_id"`
+	RuntimeInstanceID   string                          `json:"runtime_instance_id"`
+	RuntimeGenerationID string                          `json:"runtime_generation_id"`
+	ArtifactIdentity    runtimeArtifactIdentityResponse `json:"artifact_identity"`
+	Ready               bool                            `json:"ready"`
+	ActiveInvocations   int                             `json:"active_invocations"`
+	QueuedInvocations   int                             `json:"queued_invocations"`
+	Limits              runtimeLimitsResponse           `json:"limits"`
+	ModuleCache         runtimeModuleCacheResponse      `json:"module_cache"`
 }
 
 type runtimeHealthResponse struct {
-	Ready      bool                         `json:"ready"`
-	Descriptor runtimeDescriptorResponse    `json:"descriptor"`
-	Shards     []runtimeShardHealthResponse `json:"shards"`
+	Ready            bool                            `json:"ready"`
+	ArtifactIdentity runtimeArtifactIdentityResponse `json:"artifact_identity"`
+	Shards           []runtimeShardHealthResponse    `json:"shards"`
 }
 
 func publicRuntimeHealth(health host.RuntimeHealth) runtimeHealthResponse {
@@ -573,26 +539,19 @@ func publicRuntimeHealth(health host.RuntimeHealth) runtimeHealthResponse {
 	for index, shard := range health.Shards {
 		shards[index] = runtimeShardHealthResponse{
 			RuntimeShardID: shard.RuntimeShardID, RuntimeInstanceID: shard.RuntimeInstanceID,
-			RuntimeGenerationID: shard.RuntimeGenerationID, Descriptor: publicRuntimeDescriptor(shard.Descriptor),
+			RuntimeGenerationID: shard.RuntimeGenerationID, ArtifactIdentity: publicRuntimeArtifactIdentity(shard.ArtifactIdentity),
 			Ready: shard.Ready, ActiveInvocations: shard.ActiveInvocations, QueuedInvocations: shard.QueuedInvocations,
 			Limits: publicRuntimeLimits(shard.Limits), ModuleCache: publicRuntimeModuleCache(shard.ModuleCache),
 		}
 	}
-	return runtimeHealthResponse{Ready: health.Ready, Descriptor: publicRuntimeDescriptor(health.Descriptor), Shards: shards}
+	return runtimeHealthResponse{Ready: health.Ready, ArtifactIdentity: publicRuntimeArtifactIdentity(health.ArtifactIdentity), Shards: shards}
 }
 
-func publicRuntimeDescriptor(descriptor host.RuntimeDescriptor) runtimeDescriptorResponse {
-	target := descriptor.Target().String()
-	catalog := version.CurrentPublicAPICatalog()
-	return runtimeDescriptorResponse{
-		SchemaVersion: "runtime-descriptor-v3", PlatformVersion: descriptor.PlatformVersion().String(), Target: target,
-		Internal: runtimeDescriptorInternalResponse{
-			RustIPCVersion: descriptor.RustIPCVersion().String(), ContractSetSHA256: descriptor.ContractSetSHA256().String(),
-		},
-		PublicAPI: runtimeDescriptorPublicAPIResponse{
-			WorkerMajors: append([]uint16(nil), catalog.WorkerAPIMajors...), Features: append([]string(nil), catalog.Features...),
-		},
-		BinarySHA256: descriptor.BinarySHA256().String(),
+func publicRuntimeArtifactIdentity(identity host.RuntimeArtifactIdentity) runtimeArtifactIdentityResponse {
+	return runtimeArtifactIdentityResponse{
+		PlatformVersion: identity.PlatformVersion().String(),
+		Target:          identity.Target().String(),
+		BinarySHA256:    identity.BinarySHA256().String(),
 	}
 }
 
@@ -837,9 +796,6 @@ type diagnosticDetailsResponse struct {
 	RuntimeInstanceID         string                                  `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID       string                                  `json:"runtime_generation_id,omitempty"`
 	RuntimeVersion            string                                  `json:"runtime_version,omitempty"`
-	RustIPCVersion            string                                  `json:"rust_ipc_version,omitempty"`
-	WASMABIVersion            string                                  `json:"wasm_abi_version,omitempty"`
-	ContractSetSHA256         string                                  `json:"contract_set_sha256,omitempty"`
 	RuntimeTargetOS           string                                  `json:"runtime_target_os,omitempty"`
 	RuntimeTargetArch         string                                  `json:"runtime_target_arch,omitempty"`
 	RuntimeBinarySHA256       string                                  `json:"runtime_binary_sha256,omitempty"`
@@ -891,9 +847,7 @@ func publicDiagnosticDetails(details host.DiagnosticDetails) *diagnosticDetailsR
 		RuntimeProcessFailureCode: details.RuntimeProcessFailureCode,
 		RuntimeInstanceID:         details.RuntimeInstanceID,
 		RuntimeGenerationID:       details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
-		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
-		ContractSetSHA256: details.ContractSetSHA256,
-		RuntimeTargetOS:   details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
+		RuntimeTargetOS: details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
 		RuntimeBinarySHA256: details.RuntimeBinarySHA256, OS: details.OS, Arch: details.Arch,
 		Stream: details.Stream, PackageHash: details.PackageHash, Artifact: details.Artifact,
 		PluginInstanceID: details.PluginInstanceID, StoreID: details.StoreID, Operation: details.Operation,

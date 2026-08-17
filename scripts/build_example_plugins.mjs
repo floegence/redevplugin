@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import ts from "typescript";
 import {
+  assertCurrentWorkerImports,
   assertSourceSnapshotUnchanged,
   buildCanonicalWasmArtifacts,
   canonicalRustImage,
@@ -105,6 +106,9 @@ if (!checkOnly || forceCanonical || isCanonicalBuildHost()) {
 
 const sourceSnapshotAfter = await snapshotCanonicalCargoSources(sourceSnapshotOptions);
 assertSourceSnapshotUnchanged(sourceSnapshotBefore, sourceSnapshotAfter);
+for (const [, , output] of wasmTargets) {
+  assertCurrentWorkerImports(await readFile(resolve(root, output)), output);
+}
 const artifactHashes = await hashPaths(root, wasmTargets.map(([, , output]) => output));
 const workerArtifactLock = Buffer.from(`${JSON.stringify({
   schema_version: "redevplugin.example_worker_artifacts.v1",

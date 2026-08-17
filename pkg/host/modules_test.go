@@ -3,18 +3,20 @@ package host
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/testsupport/releasetrustfixture"
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/internal/testsupport/releasetrustfixture"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
 )
 
 func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {
@@ -200,10 +202,10 @@ func TestFeaturesReturnsClosedConfiguredSet(t *testing.T) {
 
 func TestInstallPreflightReportsEveryMissingManifestFeatureBeforeSideEffects(t *testing.T) {
 	h, assets := newModulePreflightTestHost(t)
-	pkg := readTestPackage(t, buildWorkerNetworkFixturePackage(t))
-	pkg.ManifestModel.CapabilityBindings = []manifest.CapabilityBinding{{Contract: capabilitycontract.Pin{ContractID: "test"}}}
-	pkg.ManifestModel.Methods = append(pkg.ManifestModel.Methods, manifest.MethodSpec{Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteCoreAction}})
-	pkg.ManifestModel.Settings = &manifest.SettingsSpec{Fields: []manifest.SettingFieldSpec{{Type: "secret", SecretRef: "token"}}}
+	pkg := readTestPackage(t, buildV9IOPermissionFixturePackage(t))
+	pkg.Manifest.CapabilityBindings = []manifest.CapabilityBinding{{Contract: capabilitycontract.Pin{ContractID: "test"}}}
+	pkg.Manifest.Methods = append(pkg.Manifest.Methods, manifest.MethodSpec{Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteCoreAction}})
+	pkg.Manifest.Settings = &manifest.SettingsSpec{Fields: []manifest.SettingFieldSpec{{Type: "secret", SecretRef: "token"}}}
 	disableModuleFeatures(h, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction)
 
 	_, err := h.installResolvedPackage(hostTestContext(), pkg, "plugini_module_preflight", packageTrustInput{LocalImport: true}, time.Time{}, nil)
@@ -215,7 +217,7 @@ func TestLocalInstallPreflightRejectsMissingConnectivityBeforeSideEffects(t *tes
 	h, assets := newModulePreflightTestHost(t)
 	disableModuleFeatures(h, FeatureConnectivity)
 
-	_, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
+	_, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildV9IOPermissionFixturePackage(t))
 	assertMissingFeatures(t, err, FeatureConnectivity)
 	assertModulePreflightHasNoWrites(t, h, assets, 0)
 }
@@ -251,14 +253,25 @@ func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *t
 	historic.Version = "0.9.0"
 	historic.Manifest.Plugin.Version = historic.Version
 	historic.Manifest.NetworkAccess = networkPackage.Manifest.NetworkAccess
+	canonicalManifest, err := manifest.MarshalCanonical(historic.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestSum := sha256.Sum256(canonicalManifest)
+	historic.CanonicalManifest = string(canonicalManifest)
+	historic.ManifestHash = "sha256:" + hex.EncodeToString(manifestSum[:])
 	historic.PackageHash = "sha256:historic-network"
-	// The fixture synthesizes a historical package without passing through the
-	// package admission path. Let Registry normalization derive package-bound
-	// security facts for that synthetic version.
-	historic.SignatureAssessment = registry.SignatureAssessment{}
-	historic.PackageSourceProvenance = registry.PackageSourceProvenance{}
-	historic.ExecutionApproval = registry.ExecutionApproval{}
-	historic.UpdateEligibility = ""
+	// The fixture synthesizes a historical package without passing through
+	// admission, so bind every security fact to the synthetic package exactly.
+	historic.TrustAssessment.VerifiedHashes.PackageSHA256 = historic.PackageHash
+	historic.TrustAssessment.VerifiedHashes.ManifestSHA256 = historic.ManifestHash
+	historic.TrustAssessment.VerifiedHashes.EntriesSHA256 = historic.EntriesHash
+	historic.SignatureAssessment.PackageSHA256 = historic.PackageHash
+	historic.SignatureAssessment.ManifestSHA256 = historic.ManifestHash
+	historic.SignatureAssessment.EntriesSHA256 = historic.EntriesHash
+	historic.SignatureAssessment.AssessedHashes = historic.TrustAssessment.VerifiedHashes
+	historic.PackageSourceProvenance.PackageSHA256 = historic.PackageHash
+	historic.ExecutionApproval.PackageSHA256 = historic.PackageHash
 	historic.SecurityCapabilitySummary = registry.SecurityCapabilitySummary{}
 	installed.VersionHistory = []registry.PluginVersion{versionSnapshot(historic, time.Now().UTC())}
 	installed, err = h.putPluginRecord(hostTestContext(), installed, time.Time{})
@@ -349,7 +362,6 @@ func disableModuleFeatures(h *Host, features ...Feature) {
 		case FeatureRelease:
 			h.adapters.ReleaseTrust = nil
 			h.adapters.ReleaseArtifactResolver = nil
-			h.adapters.HostRequirements = nil
 		case FeatureRuntime:
 			h.adapters.RuntimeManager = nil
 		case FeatureCapability:

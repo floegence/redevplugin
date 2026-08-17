@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
-	"github.com/floegence/redevplugin/v2/pkg/releasetrust"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
 )
 
 const (
@@ -34,7 +34,6 @@ type Options struct {
 	InstallPolicy        string
 	DowngradePolicy      string
 	AllowedArtifactHosts []string
-	HostRequirements     []releasecontract.ReleaseHostRequirement
 	GeneratedAt          time.Time
 	ExpiresAt            time.Time
 }
@@ -43,10 +42,10 @@ type Fixture struct {
 	Service               *releasetrust.ReleaseTrustService
 	ServiceSet            *releasetrust.ServiceSet
 	Identity              releasetrust.ReleaseIdentity
-	SourcePolicy          releasecontract.SourcePolicyV2
+	SourcePolicy          releasecontract.SourcePolicyV3
 	Package               pluginpkg.Package
 	PackageBytes          []byte
-	Metadata              releasecontract.ReleaseMetadataV8
+	Metadata              releasecontract.ReleaseMetadata
 	MetadataBytes         []byte
 	MetadataSignature     []byte
 	PackageSignature      releasecontract.PackageSignatureV1
@@ -250,8 +249,8 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		signedPackage.Manifest.PluginID(),
 		signedPackage.Manifest.Version(),
 	)
-	releaseMetadata := releasecontract.ReleaseMetadataV8{
-		SchemaVersion: releaseMetadataSchemaVersion(signedPackage.Manifest.Plugin.UIProtocolVersion), SourceID: sourceID, ReleaseMetadataRef: releaseMetadataRef,
+	releaseMetadata := releasecontract.ReleaseMetadata{
+		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersion, SourceID: sourceID, ReleaseMetadataRef: releaseMetadataRef,
 		PublisherID: signedPackage.Manifest.Publisher.PublisherID, PluginID: signedPackage.Manifest.PluginID(), Version: signedPackage.Manifest.Version(),
 		DistributionRef: releasecontract.ReleaseDistributionRef{
 			Distribution: "registry_ref",
@@ -269,11 +268,6 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 			SignatureBundleRef: fmt.Sprintf("plugins/%s/%s/%s/package.sig", signedPackage.Manifest.Publisher.PublisherID, signedPackage.Manifest.PluginID(), signedPackage.Manifest.Version()),
 			SourcePolicyEpoch:  "1", RevocationEpoch: "1",
 		},
-		Compatibility: releasecontract.ReleaseCompatibility{
-			MinReDevPluginVersion: "0.1.0", MinRuntimeVersion: signedPackage.Manifest.Plugin.MinRuntimeVersion,
-			UIProtocolVersion: signedPackage.Manifest.Plugin.UIProtocolVersion,
-		},
-		HostRequirements: cloneHostRequirements(options.HostRequirements),
 	}
 	releaseMetadata, err = releasecontract.BuildReleaseMetadata(releaseMetadata)
 	if err != nil {
@@ -453,15 +447,6 @@ func (transport *DocumentTransport) FirstDeadlineRemaining() (time.Duration, boo
 	return transport.firstDeadlineRemaining, transport.hasDeadline
 }
 
-func cloneHostRequirements(values []releasecontract.ReleaseHostRequirement) []releasecontract.ReleaseHostRequirement {
-	cloned := make([]releasecontract.ReleaseHostRequirement, len(values))
-	for index, value := range values {
-		cloned[index] = value
-		cloned[index].RequiredCapabilityContracts = slices.Clone(value.RequiredCapabilityContracts)
-	}
-	return cloned
-}
-
 func deterministicPrivateKey(seed byte) ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize))
 }
@@ -485,11 +470,4 @@ func valueOrDefault(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func releaseMetadataSchemaVersion(uiProtocolVersion string) string {
-	if uiProtocolVersion == "plugin-ui-v7" {
-		return releasecontract.ReleaseMetadataSchemaVersionV8
-	}
-	return ""
 }

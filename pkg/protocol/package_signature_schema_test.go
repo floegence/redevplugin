@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/trust"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/trust"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 func TestPackageSignatureSchemaMatchesGoSigningContract(t *testing.T) {

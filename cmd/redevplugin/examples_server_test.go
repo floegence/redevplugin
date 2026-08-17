@@ -18,12 +18,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -129,7 +129,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	serverResult := make(chan error, 1)
 	hostReady := make(chan *host.Host, 1)
 	go func() {
-		serverResult <- examplesServerWithOptions(ctx, privateExamplesStateRoot(t), runtimePath, writeTestRuntimeDescriptor(t, runtimePath), examplesServerOptions{
+		serverResult <- examplesServerWithOptions(ctx, privateExamplesStateRoot(t), runtimePath, examplesServerOptions{
 			Listener:          listener,
 			Output:            io.Discard,
 			RepositoryRoot:    repositoryRoot,
@@ -173,7 +173,8 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 		t.Fatal("Weather example plugin is not installed")
 	}
 	now := time.Now().UTC()
-	bootstrap, err := pluginHost.OpenSurface(context.Background(), host.OpenSurfaceRequest{
+	testContext := examplesContext(context.Background())
+	bootstrap, err := pluginHost.OpenSurface(testContext, host.OpenSurfaceRequest{
 		PluginInstanceID:           weatherRecord.instanceID,
 		ExpectedManagementRevision: weatherRecord.stateVersion,
 		SurfaceID:                  "weather.view",
@@ -184,7 +185,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pluginHost.PrepareSurface(context.Background(), host.PrepareSurfaceRequest{
+	if _, err := pluginHost.PrepareSurface(testContext, host.PrepareSurfaceRequest{
 		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
 		AssetTicket:       bootstrap.AssetTicket,
 
@@ -201,10 +202,9 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  version.PluginUIProtocolVersion,
 	}
 	bridgeChannelID := "bridge_examples_weather_live_test"
-	gateway, err := pluginHost.MintBridgeToken(context.Background(), host.MintBridgeTokenRequest{
+	gateway, err := pluginHost.MintBridgeToken(testContext, host.MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           bridgeChannelID,
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, bridgeChannelID),
@@ -214,7 +214,18 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := pluginHost.CallPluginMethod(context.Background(), host.CallMethodRequest{
+	if _, err := pluginHost.CallPluginMethod(testContext, host.CallMethodRequest{
+		PluginInstanceID:  weatherRecord.instanceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		BridgeChannelID:   bridgeChannelID,
+		GatewayToken:      gateway.GatewayToken,
+		Method:            "weather.initialize",
+		Params:            map[string]any{},
+		Now:               now.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatalf("CallPluginMethod(weather.initialize) error = %v", err)
+	}
+	result, err := pluginHost.CallPluginMethod(testContext, host.CallMethodRequest{
 		PluginInstanceID:  weatherRecord.instanceID,
 		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
 
@@ -226,10 +237,11 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 			"longitude": 13.41,
 			"timezone":  "Europe/Berlin",
 		},
-		Now: now.Add(3 * time.Second),
+		Now: now.Add(4 * time.Second),
 	})
 	if err != nil {
-		t.Fatalf("CallPluginMethod(weather.forecast) error = %v", err)
+		workerError, _ := host.AsValidatedWorkerExecutionError(err)
+		t.Fatalf("CallPluginMethod(weather.forecast) error = %v; worker error = %#v", err, workerError)
 	}
 	if fmt.Sprint(result.Data) == "" {
 		t.Fatal("Weather forecast result is empty")
@@ -242,16 +254,16 @@ type hostPluginRecord struct {
 }
 
 func TestExamplesHealthHandlerReadsLiveRuntimeHealth(t *testing.T) {
-	descriptor := mustDescribeCommandRuntime(t, os.Args[0])
+	descriptor := mustInspectCommandRuntimeArtifact(t, os.Args[0])
 	runtimeHealth := &examplesRuntimeHealthStub{health: host.RuntimeHealth{
-		Ready:      true,
-		Descriptor: descriptor,
+		Ready:            true,
+		ArtifactIdentity: descriptor,
 		Shards: []host.RuntimeShardHealth{{
 			RuntimeShardID: "runtime_shard_00",
 			RuntimeProcessHealth: host.RuntimeProcessHealth{
 				Ready:               true,
 				RuntimeGenerationID: "runtime_generation_1",
-				Descriptor:          descriptor,
+				ArtifactIdentity:    descriptor,
 			},
 		}},
 	}}
@@ -278,9 +290,6 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	if os.Getenv("REDEVPLUGIN_RUN_BROWSER_SMOKE") != "1" {
 		t.Skip("set REDEVPLUGIN_RUN_BROWSER_SMOKE=1 to run the browser acceptance suite")
 	}
-	if runtime.GOOS != "linux" {
-		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
-	}
 	repositoryRoot := cliRepoRoot(t)
 	runtimePath := buildExamplesRuntime(t, repositoryRoot)
 	stateRoot := privateExamplesStateRoot(t)
@@ -294,7 +303,7 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	hostReady := make(chan *host.Host, 1)
 	events := newExamplesRecordingEvents()
 	go func() {
-		serverResult <- examplesServerWithOptions(ctx, stateRoot, runtimePath, writeTestRuntimeDescriptor(t, runtimePath), examplesServerOptions{
+		serverResult <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
 			Listener:          listener,
 			NetworkExecutor:   examplesFixtureNetworkExecutor{},
 			Events:            events,
@@ -360,7 +369,7 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 	result := make(chan error, 1)
 	ready := make(chan struct{}, 1)
 	go func() {
-		result <- examplesServerWithOptions(ctx, stateRoot, runtimePath, writeTestRuntimeDescriptor(t, runtimePath), examplesServerOptions{
+		result <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
 			Listener:          listener,
 			NetworkExecutor:   examplesFixtureNetworkExecutor{},
 			Output:            io.Discard,
@@ -391,9 +400,6 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 
 func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 	t.Helper()
-	if runtime.GOOS != "linux" {
-		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
-	}
 	repositoryRoot, err := filepath.Abs(repositoryRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -410,25 +416,31 @@ func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 		}
 	}
 	var target string
-	switch runtime.GOARCH {
-	case "amd64":
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "darwin/amd64":
+		target = "x86_64-apple-darwin"
+	case "darwin/arm64":
+		target = "aarch64-apple-darwin"
+	case "linux/amd64":
 		target = "x86_64-unknown-linux-gnu"
-	case "arm64":
+	case "linux/arm64":
 		target = "aarch64-unknown-linux-gnu"
 	default:
-		t.Skipf("the v0.6 runtime admission contract does not support Linux/%s", runtime.GOARCH)
+		t.Skipf("the current runtime contract does not support %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	cargoTargetDir := filepath.Join(t.TempDir(), "cargo-target")
 	command := exec.Command(cargo, "build", "--locked", "--target", target, "-p", "redevplugin-runtime")
 	command.Dir = repositoryRoot
-	rustflagsKey := "CARGO_TARGET_" + strings.ToUpper(strings.ReplaceAll(target, "-", "_")) + "_RUSTFLAGS"
 	command.Env = append(os.Environ(),
 		"CARGO_TARGET_DIR="+cargoTargetDir,
 		"CARGO_TERM_COLOR=never",
-		rustflagsKey+"=-C target-feature=+crt-static -C relocation-model=pic -C linker="+filepath.Join(repositoryRoot, "scripts", "link_redevplugin_runtime_static_pie.sh"),
 	)
+	if runtime.GOOS == "linux" {
+		rustflagsKey := "CARGO_TARGET_" + strings.ToUpper(strings.ReplaceAll(target, "-", "_")) + "_RUSTFLAGS"
+		command.Env = append(command.Env, rustflagsKey+"=-C target-feature=+crt-static -C relocation-model=pic -C linker="+filepath.Join(repositoryRoot, "scripts", "link_redevplugin_runtime_static_pie.sh"))
+	}
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("cargo build static PIE redevplugin-runtime failed: %v\n%s", err, output)
+		t.Fatalf("cargo build redevplugin-runtime for %s failed: %v\n%s", target, err, output)
 	}
 	builtPath := filepath.Join(cargoTargetDir, target, "debug", "redevplugin-runtime")
 	source, err := os.Open(builtPath)

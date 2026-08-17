@@ -69,7 +69,7 @@ type runtimePipes struct {
 func launchRuntimeProcess(options runtimeProcessLaunchOptions) (*runtimeProcess, error) {
 	if options.executable == nil {
 		if len(options.args) != 0 || len(options.env) != 0 {
-			return launchLegacyRuntimeProcess(options)
+			return launchPortableRuntimeProcess(options)
 		}
 		return launchFixedPathRuntimeProcess(options)
 	}
@@ -309,7 +309,6 @@ func containedRuntimeEnvironment() []string {
 	return []string{
 		"LANG=C",
 		"LC_ALL=C",
-		"REDEVPLUGIN_RUNTIME_PROFILE=" + runtimeContainmentProfile,
 	}
 }
 

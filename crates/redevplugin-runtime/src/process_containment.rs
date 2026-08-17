@@ -335,11 +335,11 @@ mod linux {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn activate() -> Result<redevplugin_ipc::ProcessContainmentEvidence, String> {
-    Err("runtime process containment is supported only on Linux".to_string())
+pub(crate) fn activate() -> Result<Option<redevplugin_ipc::ProcessContainmentEvidence>, String> {
+    Ok(None)
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn activate() -> Result<redevplugin_ipc::ProcessContainmentEvidence, String> {
-    linux::activate()
+pub(crate) fn activate() -> Result<Option<redevplugin_ipc::ProcessContainmentEvidence>, String> {
+    linux::activate().map(Some)
 }

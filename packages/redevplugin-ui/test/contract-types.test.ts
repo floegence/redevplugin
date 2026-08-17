@@ -3,7 +3,7 @@ import type {
   PluginRecord,
   PluginSettingsPatchRequest,
 } from "../src/platform.js";
-import type { PluginUIProtocolVersion } from "../src/surface.js";
+import type { OpaquePluginBootstrapHTMLOptions } from "../src/surface.js";
 
 type IsUnknown<T> = unknown extends T ? ([keyof T] extends [never] ? true : false) : false;
 
@@ -43,8 +43,8 @@ void invalidScope;
 void missingScope;
 void incompletePin;
 
-const currentUIProtocol: PluginUIProtocolVersion = "plugin-ui-v7";
-// @ts-expect-error Retired UI protocols are not part of the current SDK.
-const retiredUIProtocol: PluginUIProtocolVersion = "plugin-ui-v6";
-void currentUIProtocol;
-void retiredUIProtocol;
+const currentBootstrapOptions: OpaquePluginBootstrapHTMLOptions = { scriptNonce: "nonce_test" };
+// @ts-expect-error UI compatibility is selected only by plugin_api; callers cannot negotiate another UI version.
+const retiredUIProtocolOption: OpaquePluginBootstrapHTMLOptions = { uiProtocolVersion: "plugin-ui-v7" };
+void currentBootstrapOptions;
+void retiredUIProtocolOption;

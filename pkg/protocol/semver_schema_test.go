@@ -6,16 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 func TestPublishedSemVerSchemasUseCanonicalPattern(t *testing.T) {
 	root := repoRoot(t)
 	for _, schemaName := range []string{
-		"manifest-v8.schema.json",
-		"release-metadata-v8.schema.json",
+		"manifest-v9.schema.json",
+		"release-metadata.schema.json",
 		"release-revocation-v3.schema.json",
-		"ipc-v7.schema.json",
 	} {
 		t.Run(schemaName, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", schemaName))

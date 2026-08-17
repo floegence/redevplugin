@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/host"
 )
 
 func TestRuntimeCapabilitiesExposeNoInjectableState(t *testing.T) {
@@ -30,7 +30,7 @@ func TestRuntimeCapabilitiesExposeNoInjectableState(t *testing.T) {
 
 func TestLegacyPublicRuntimeClientPackageIsAbsent(t *testing.T) {
 	repositoryRoot := runtimePublicAPITestRepositoryRoot(t)
-	command := exec.Command("go", "list", "github.com/floegence/redevplugin/v2/pkg/runtimeclient")
+	command := exec.Command("go", "list", "github.com/floegence/redevplugin/v3/pkg/runtimeclient")
 	command.Dir = repositoryRoot
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := command.CombinedOutput(); err == nil {

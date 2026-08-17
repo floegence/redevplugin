@@ -9,8 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
-	"github.com/floegence/redevplugin/v2/pkg/releasepublisher"
+	"github.com/floegence/redevplugin/v3/pkg/releasepublisher"
 )
 
 func TestReleasePublisherSchemasMatchGoWireDTOs(t *testing.T) {
@@ -23,9 +22,7 @@ func TestReleasePublisherSchemasMatchGoWireDTOs(t *testing.T) {
 			name:     "release-publisher-config-v1.schema.json",
 			topLevel: reflect.TypeOf(releasepublisher.ConfigV1{}),
 			nestedDefs: map[string]reflect.Type{
-				"public_key":             reflect.TypeOf(releasepublisher.PublicKeyV1{}),
-				"host_requirement":       reflect.TypeOf(releasecontract.ReleaseHostRequirement{}),
-				"capability_requirement": reflect.TypeOf(releasecontract.HostCapabilityRequirementRef{}),
+				"public_key": reflect.TypeOf(releasepublisher.PublicKeyV1{}),
 			},
 		},
 		{
@@ -97,8 +94,7 @@ func TestReleasePublisherSchemasValidateRepresentativeDocuments(t *testing.T) {
 		GeneratedAt: "2026-08-01T00:00:00Z", ExpiresAt: "2026-10-30T00:00:00Z",
 		Root:                 key,
 		Signing:              releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_signing", PublicKey: publicKey},
-		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.6.23", Distribution: "registry_ref",
-		HostRequirements: []releasecontract.ReleaseHostRequirement{},
+		AllowedArtifactHosts: []string{"github.com"}, Distribution: "registry_ref",
 	}
 	reference := releasepublisher.PublisherReleaseRefV1{
 		SchemaVersion: releasepublisher.ReleaseRefSchemaVersion,
@@ -133,11 +129,11 @@ func TestReleasePublisherSchemasValidateRepresentativeDocuments(t *testing.T) {
 			if err := json.Unmarshal(raw, &value); err != nil {
 				t.Fatal(err)
 			}
-			if err := compilePlatformPackageSchema(t, name).Validate(value); err != nil {
+			if err := compilePluginSchema(t, name).Validate(value); err != nil {
 				t.Fatalf("representative publisher document rejected: %v", err)
 			}
 			value.(map[string]any)["unknown"] = true
-			if err := compilePlatformPackageSchema(t, name).Validate(value); err == nil {
+			if err := compilePluginSchema(t, name).Validate(value); err == nil {
 				t.Fatal("schema accepted an unknown top-level field")
 			}
 		})

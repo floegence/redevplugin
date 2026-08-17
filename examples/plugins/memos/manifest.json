@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v8",
+  "schema_version": "redevplugin.manifest.v9",
   "publisher": {
     "publisher_id": "dev.redevplugin.examples",
     "display_name": "ReDevPlugin Examples"
@@ -7,22 +7,18 @@
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.memos",
     "display_name": "Memos",
-    "version": "1.2.1",
-    "api_version": "plugin-v1",
-    "min_runtime_version": "0.5.0",
-    "ui_protocol_version": "plugin-ui-v7"
+    "version": "1.2.1"
   },
+  "api": {
+    "major": 1,
+    "required_features": [],
+    "optional_features": []
+  },
+  "permissions": [],
   "presentation": {
-    "default_locale": "en-US",
-    "summary": "Memos extends the host with its declared plugin capabilities.",
-    "description": [
-      "Memos is a ReDevPlugin package whose surfaces and capabilities are verified by the host before use."
-    ],
-    "highlights": [],
-    "keywords": [
-      "Memos"
-    ],
-    "localizations": []
+    "locales": {
+      "default": "en-US"
+    }
   },
   "surfaces": [
     {
@@ -35,6 +31,15 @@
         "width": 1040,
         "height": 720
       }
+    }
+  ],
+  "workers": [
+    {
+      "worker_id": "memos_backend",
+      "artifact": "workers/memos.wasm",
+      "mode": "job",
+      "scope": "user",
+      "memory_limit_bytes": 33554432
     }
   ],
   "methods": [
@@ -1019,16 +1024,6 @@
           }
         ]
       }
-    }
-  ],
-  "workers": [
-    {
-      "worker_id": "memos_backend",
-      "artifact": "workers/memos.wasm",
-      "abi": "redevplugin-wasm-worker-v2",
-      "mode": "job",
-      "scope": "user",
-      "memory_limit_bytes": 33554432
     }
   ],
   "storage": {

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 type TokenKind string
@@ -60,7 +60,6 @@ type SurfaceSession struct {
 	PluginID             string    `json:"plugin_id"`
 	PluginInstanceID     string    `json:"plugin_instance_id"`
 	PluginVersion        string    `json:"plugin_version"`
-	UIProtocolVersion    string    `json:"ui_protocol_version"`
 	SurfaceInstanceID    string    `json:"surface_instance_id"`
 	SurfaceID            string    `json:"surface_id"`
 	ActiveFingerprint    string    `json:"active_fingerprint"`
@@ -117,7 +116,6 @@ type Handshake struct {
 	AssetSessionNonce  string `json:"asset_session_nonce"`
 	ManagementRevision uint64 `json:"management_revision"`
 	RevokeEpoch        uint64 `json:"revoke_epoch"`
-	UIProtocolVersion  string `json:"ui_protocol_version"`
 }
 
 type CallRequest struct {

@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const modulePath = "github.com/floegence/redevplugin/v2";
+const modulePath = "github.com/floegence/redevplugin/v3";
 const defaultRetryDelaysMs = Object.freeze([0, 1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 30_000]);
 
 export async function verifyGoModuleReadback({
@@ -67,6 +68,7 @@ export async function verifyGoModuleReadback({
       version: moduleVersion,
       h1: proxy.Sum,
       go_mod_h1: proxy.GoModSum,
+      zip_sha256: moduleZipSHA256(proxy),
       source_commit: expectedSourceCommit,
     };
     if (outputPath) {
@@ -135,6 +137,13 @@ export function validateModuleIdentity(result, label, moduleVersion) {
       throw new Error(`${label} ${name} is invalid`);
     }
   }
+}
+
+export function moduleZipSHA256(result) {
+  if (typeof result?.Zip !== "string" || result.Zip.length === 0) {
+    throw new Error("module zip path is missing from readback");
+  }
+  return createHash("sha256").update(readFileSync(result.Zip)).digest("hex");
 }
 
 async function downloadModule({

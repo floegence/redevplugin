@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
@@ -23,10 +23,6 @@ func TestResourceScopeSchemaMatchesSessionContextContract(t *testing.T) {
 	}
 	defs := requireNestedObject(t, schema, "$defs")
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "scope_kind"), []string{"user", "environment"}, "resource scope kind")
-	migrationCode := requireNestedObject(t, defs, "owner_scope_migration_required_code")
-	if migrationCode["const"] != sessionctx.OwnerScopeMigrationRequiredCode {
-		t.Fatalf("owner scope migration code = %#v, want %q", migrationCode["const"], sessionctx.OwnerScopeMigrationRequiredCode)
-	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
 	compiler.AssertFormat = true

@@ -97,7 +97,6 @@ export function createBrowserHarnessServer(options = {}) {
           plugin_id: "dev.redevplugin.opaque-browser",
           plugin_instance_id: "plugin_browser_harness_1",
           plugin_version: "0.2.0",
-          ui_protocol_version: "plugin-ui-v7",
           surface_id: "dev.redevplugin.opaque-browser.view",
           surface_instance_id: surfaceID,
           active_fingerprint: digest(`active-${sequence}`),

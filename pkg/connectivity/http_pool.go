@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 const (

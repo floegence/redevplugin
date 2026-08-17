@@ -5,13 +5,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 var _ plugindata.Catalog = (*Store)(nil)
@@ -73,49 +72,91 @@ func (s *Store) ListAllBindingsForMaintenance(ctx context.Context, cursor string
 	return result, "", nil
 }
 
-func (s *Store) CommitEnable(ctx context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
+func (s *Store) InstallCommit(ctx context.Context, record registry.PluginRecord, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) (registry.PluginRecord, error) {
 	owner, err := pluginDataEnvironmentOwner(ctx)
 	if err != nil {
-		return err
+		return registry.PluginRecord{}, err
 	}
-	if err := validateControlDataBinding(next); err != nil || next.State != plugindata.BindingActive {
-		return plugindata.ErrInvalidArgument
+	if record.EnableState != registry.EnableEnabled || record.ManagementRevision != 0 || record.DeletedAt != nil ||
+		record.PluginInstanceID != next.PluginInstanceID || next.State != plugindata.BindingActive {
+		return registry.PluginRecord{}, plugindata.ErrInvalidArgument
 	}
-	return s.pluginDataMutation(ctx, func(tx *sql.Tx) error {
-		record, err := getControlPluginRecord(ctx, tx, owner, next.PluginInstanceID)
-		if err != nil {
-			return err
+	if err := validateControlDataBinding(next); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if expected == nil {
+		if next.Revision != 1 {
+			return registry.PluginRecord{}, plugindata.ErrBindingConflict
 		}
-		if err := validateControlRecordDataShape(record, next, shape); err != nil {
-			return err
+	} else {
+		if err := validateControlDataBinding(*expected); err != nil || expected.State != plugindata.BindingRetained {
+			return registry.PluginRecord{}, plugindata.ErrInvalidArgument
 		}
-		if record.ManagementRevision != expectedManagementRevision {
-			return &registry.ManagementRevisionConflictError{PluginInstanceID: next.PluginInstanceID, Expected: expectedManagementRevision, Actual: record.ManagementRevision}
+		reactivated := cloneControlDataBinding(*expected)
+		reactivated.State = plugindata.BindingActive
+		reactivated.Revision++
+		reactivated.RetainedAt = nil
+		reactivated.ExpiresAt = nil
+		if !sameControlDataBinding(reactivated, next) {
+			return registry.PluginRecord{}, plugindata.ErrBindingConflict
+		}
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	record.RevokeEpoch = 1
+	record.DisabledReason = ""
+	record.EnabledAt = &now
+	var stored registry.PluginRecord
+	err = s.pluginDataMutation(ctx, func(tx *sql.Tx) error {
+		if _, err := getControlPluginRecord(ctx, tx, owner, record.PluginInstanceID); err == nil {
+			return plugindata.ErrBindingConflict
+		} else if !errors.Is(err, registry.ErrNotFound) {
+			return err
 		}
 		actual, found, err := getControlDataBinding(ctx, tx, owner, next.PluginInstanceID)
 		if err != nil {
 			return err
 		}
 		if expected == nil {
-			if found || next.Revision != 1 {
+			if found {
 				return plugindata.ErrBindingConflict
+			}
+		} else if !found || !sameControlDataBinding(actual, *expected) {
+			return plugindata.ErrBindingConflict
+		}
+		prepared, err := registry.PreparePluginPut(owner, record, nil, now)
+		if err != nil {
+			return err
+		}
+		if prepared.EnableState != registry.EnableEnabled || prepared.ManagementRevision != 1 || prepared.RevokeEpoch != 1 {
+			return plugindata.ErrInvalidArgument
+		}
+		if err := validateControlRecordDataShape(prepared, next, shape); err != nil {
+			return err
+		}
+		if expected == nil {
+			if err := insertControlPluginRecord(ctx, tx, prepared); err != nil {
+				return err
 			}
 			if err := insertControlDataBinding(ctx, tx, owner, next); err != nil {
 				return err
 			}
 		} else {
-			if !found || !sameControlDataBinding(actual, *expected) || !validControlEnableTransition(*expected, next) {
-				return plugindata.ErrBindingConflict
+			if err := persistControlPluginRecord(ctx, tx, prepared); err != nil {
+				return err
 			}
-			if !sameControlDataBinding(actual, next) {
-				if err := updateControlDataBinding(ctx, tx, owner, next); err != nil {
-					return err
-				}
+			if err := updateExactControlDataBinding(ctx, tx, owner, *expected, next); err != nil {
+				return err
 			}
 		}
-		record = registry.PrepareEnableState(record, registry.EnableEnabled, "", now)
-		return persistControlPluginRecord(ctx, tx, record)
+		stored = prepared
+		return nil
 	})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	return stored, nil
 }
 
 func (s *Store) SwapImport(ctx context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
@@ -297,8 +338,6 @@ func (s *Store) CommitUninstall(ctx context.Context, req plugindata.CommitUninst
 		if now.IsZero() {
 			now = time.Now().UTC()
 		}
-		record.EnableState = registry.EnableDisabled
-		record.DisabledReason = "uninstalled"
 		record.ManagementRevision++
 		record.RevokeEpoch++
 		record.UpdatedAt = now
@@ -518,6 +557,16 @@ func persistControlPluginRecord(ctx context.Context, tx *sql.Tx, record registry
 	return upsertControlPlugin(ctx, tx, controlPluginRecord(record, raw))
 }
 
+func insertControlPluginRecord(ctx context.Context, tx *sql.Tx, record registry.PluginRecord) error {
+	raw, err := encodeRegistryPluginRecord(record)
+	if err != nil {
+		return err
+	}
+	control := controlPluginRecord(record, raw)
+	_, err = tx.ExecContext(ctx, `INSERT INTO plugin_records(owner_env_hash,plugin_instance_id,publisher_id,plugin_id,version,active_fingerprint,package_sha256,manifest_sha256,entries_sha256,state,disabled_reason,policy_revision,management_revision,revoke_epoch,installed_at,enabled_at,updated_at,deleted_at,record_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, control.OwnerEnvHash, control.PluginInstanceID, control.PublisherID, control.PluginID, control.Version, control.ActiveFingerprint, control.PackageSHA256, control.ManifestSHA256, control.EntriesSHA256, control.State, control.DisabledReason, control.PolicyRevision, control.ManagementRevision, control.RevokeEpoch, control.InstalledAt, optionalInt64(control.EnabledAt), control.UpdatedAt, optionalInt64(control.DeletedAt), string(control.RawJSON))
+	return err
+}
+
 func getControlDataBinding(ctx context.Context, q controlDataQuerier, owner, pluginInstanceID string) (plugindata.Binding, bool, error) {
 	var binding plugindata.Binding
 	var state string
@@ -585,6 +634,21 @@ func insertControlDataBinding(ctx context.Context, tx *sql.Tx, owner string, bin
 
 func updateControlDataBinding(ctx context.Context, tx *sql.Tx, owner string, binding plugindata.Binding) error {
 	result, err := tx.ExecContext(ctx, `UPDATE plugin_data_bindings SET generation_id=?,state=?,revision=?,shape_hash=?,retained_at=?,expires_at=? WHERE owner_env_hash=? AND plugin_instance_id=?`, binding.GenerationID, string(binding.State), binding.Revision, binding.ShapeHash, nullableControlTime(binding.RetainedAt), nullableControlTime(binding.ExpiresAt), owner, binding.PluginInstanceID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return plugindata.ErrBindingConflict
+	}
+	return nil
+}
+
+func updateExactControlDataBinding(ctx context.Context, tx *sql.Tx, owner string, expected, next plugindata.Binding) error {
+	result, err := tx.ExecContext(ctx, `UPDATE plugin_data_bindings SET generation_id=?,state=?,revision=?,shape_hash=?,retained_at=?,expires_at=? WHERE owner_env_hash=? AND plugin_instance_id=? AND generation_id=? AND state=? AND revision=? AND shape_hash=? AND retained_at IS ? AND expires_at IS ?`, next.GenerationID, string(next.State), next.Revision, next.ShapeHash, nullableControlTime(next.RetainedAt), nullableControlTime(next.ExpiresAt), owner, expected.PluginInstanceID, expected.GenerationID, string(expected.State), expected.Revision, expected.ShapeHash, nullableControlTime(expected.RetainedAt), nullableControlTime(expected.ExpiresAt))
 	if err != nil {
 		return err
 	}
@@ -670,21 +734,6 @@ func validateControlRecordDataShape(record registry.PluginRecord, binding plugin
 	return nil
 }
 
-func validControlEnableTransition(expected, next plugindata.Binding) bool {
-	if expected.State == plugindata.BindingActive {
-		return sameControlDataBinding(expected, next)
-	}
-	if expected.State != plugindata.BindingRetained {
-		return false
-	}
-	reactivated := expected
-	reactivated.State = plugindata.BindingActive
-	reactivated.Revision++
-	reactivated.RetainedAt = nil
-	reactivated.ExpiresAt = nil
-	return sameControlDataBinding(reactivated, next)
-}
-
 func sameControlDataBinding(left, right plugindata.Binding) bool {
 	return left.PluginInstanceID == right.PluginInstanceID && left.GenerationID == right.GenerationID && left.State == right.State && left.Revision == right.Revision && left.ShapeHash == right.ShapeHash && equalControlTimes(left.RetainedAt, right.RetainedAt) && equalControlTimes(left.ExpiresAt, right.ExpiresAt)
 }
@@ -741,66 +790,4 @@ func parsePluginDataCursor(cursor string, count int) []string {
 		return make([]string, count)
 	}
 	return parts
-}
-
-func importRegistryPluginData(ctx context.Context, tx *sql.Tx, legacy *sql.DB) error {
-	tables := []struct {
-		name  string
-		query string
-		copy  func(*sql.Rows) error
-	}{
-		{name: "plugin_data_bindings", query: `SELECT owner_env_hash,plugin_instance_id,generation_id,state,revision,shape_hash,retained_at,expires_at FROM plugin_data_bindings`, copy: func(rows *sql.Rows) error {
-			for rows.Next() {
-				var owner, plugin, generation, state, shape string
-				var revision uint64
-				var retainedAt, expiresAt sql.NullInt64
-				if err := rows.Scan(&owner, &plugin, &generation, &state, &revision, &shape, &retainedAt, &expiresAt); err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_data_bindings(owner_env_hash,plugin_instance_id,generation_id,state,revision,shape_hash,retained_at,expires_at) VALUES(?,?,?,?,?,?,?,?)`, owner, plugin, generation, state, revision, shape, nullableSQLInt(retainedAt), nullableSQLInt(expiresAt)); err != nil {
-					return err
-				}
-			}
-			return rows.Err()
-		}},
-		{name: "plugin_data_objects", query: `SELECT scope_kind,owner_env_hash,owner_user_hash,plugin_instance_id,object_id,content_hash,shape_hash,size_bytes,created_at FROM plugin_data_objects`, copy: func(rows *sql.Rows) error {
-			for rows.Next() {
-				var values [7]string
-				var sizeBytes, createdAt int64
-				if err := rows.Scan(&values[0], &values[1], &values[2], &values[3], &values[4], &values[5], &values[6], &sizeBytes, &createdAt); err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_data_objects(scope_kind,owner_env_hash,owner_user_hash,plugin_instance_id,object_id,content_hash,shape_hash,size_bytes,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, values[0], values[1], values[2], values[3], values[4], values[5], values[6], sizeBytes, createdAt); err != nil {
-					return err
-				}
-			}
-			return rows.Err()
-		}},
-	}
-	for _, table := range tables {
-		var exists int
-		if err := legacy.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table.name).Scan(&exists); err != nil {
-			return fmt.Errorf("%w: inspect registry %s: %v", ErrMigration, table.name, err)
-		}
-		if exists == 0 {
-			continue
-		}
-		rows, err := legacy.QueryContext(ctx, table.query)
-		if err != nil {
-			return fmt.Errorf("%w: read registry %s: %v", ErrMigration, table.name, err)
-		}
-		err = table.copy(rows)
-		rows.Close()
-		if err != nil {
-			return fmt.Errorf("%w: import registry %s: %v", ErrMigration, table.name, err)
-		}
-	}
-	return nil
-}
-
-func nullableSQLInt(value sql.NullInt64) any {
-	if !value.Valid {
-		return nil
-	}
-	return value.Int64
 }

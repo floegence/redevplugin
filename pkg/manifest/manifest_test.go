@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 )
 
 func TestDecodeValidManifest(t *testing.T) {
@@ -25,24 +25,22 @@ func TestDecodeValidManifest(t *testing.T) {
 	}
 }
 
-func TestValidateAcceptsOnlyReleasedManifestUIProtocolPairs(t *testing.T) {
+func TestValidateAcceptsOnlyCurrentManifestAndPluginAPI(t *testing.T) {
 	tests := []struct {
-		name     string
-		schema   string
-		protocol string
-		wantErr  bool
+		name    string
+		schema  string
+		api     uint16
+		wantErr bool
 	}{
-		{name: "v8", schema: SchemaVersionV8, protocol: "plugin-ui-v7"},
-		{name: "v5 is retired", schema: "redevplugin.manifest.v5", protocol: "plugin-ui-v5", wantErr: true},
-		{name: "v6 is retired", schema: "redevplugin.manifest.v6", protocol: "plugin-ui-v6", wantErr: true},
-		{name: "v7 is retired", schema: "redevplugin.manifest.v7", protocol: "plugin-ui-v7", wantErr: true},
-		{name: "v8 requires ui v7", schema: SchemaVersionV8, protocol: "plugin-ui-v6", wantErr: true},
+		{name: "current", schema: SchemaVersionV9, api: PluginAPIMajor},
+		{name: "retired manifest", schema: "redevplugin.manifest.v8", api: PluginAPIMajor, wantErr: true},
+		{name: "unknown plugin API", schema: SchemaVersionV9, api: 2, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			candidate := validManifest()
 			candidate.SchemaVersion = tc.schema
-			candidate.Plugin.UIProtocolVersion = tc.protocol
+			candidate.API.Major = tc.api
 			err := Validate(candidate)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tc.wantErr)
@@ -88,13 +86,6 @@ func TestValidateMatchesCurrentManifestRequiredFields(t *testing.T) {
 			},
 		},
 		{
-			name:  "minimum runtime version",
-			field: "plugin.min_runtime_version",
-			mutate: func(m *Manifest) {
-				m.Plugin.MinRuntimeVersion = "v1.0.0"
-			},
-		},
-		{
 			name:  "surfaces field",
 			field: "surfaces",
 			mutate: func(m *Manifest) {
@@ -106,7 +97,7 @@ func TestValidateMatchesCurrentManifestRequiredFields(t *testing.T) {
 			field: "workers[0].idle_timeout_ms",
 			mutate: func(m *Manifest) {
 				m.Workers = []WorkerSpec{{
-					WorkerID: "worker", Artifact: "workers/worker.wasm", ABI: "redevplugin-wasm-worker-v2",
+					WorkerID: "worker", Artifact: "workers/worker.wasm",
 					Mode: WorkerModeJob, Scope: "user", MemoryLimitBytes: 1 << 20, IdleTimeoutMS: -1,
 				}}
 			},
@@ -774,7 +765,6 @@ func TestValidateWorkers(t *testing.T) {
 	m.Workers = []WorkerSpec{{
 		WorkerID:         "echo_worker",
 		Artifact:         "workers/echo.wasm",
-		ABI:              "redevplugin-wasm-worker-v2",
 		Mode:             WorkerModeJob,
 		Scope:            "user",
 		MemoryLimitBytes: 16 << 20,
@@ -809,13 +799,6 @@ func TestValidateWorkers(t *testing.T) {
 				m.Workers[0].Artifact = ""
 			},
 			field: "workers[0].artifact",
-		},
-		{
-			name: "invalid abi",
-			mutate: func(m *Manifest) {
-				m.Workers[0].ABI = "other-abi"
-			},
-			field: "workers[0].abi",
 		},
 		{
 			name: "invalid mode",
@@ -906,7 +889,6 @@ func validManifestWithWorkerMethod() Manifest {
 	m.Workers = []WorkerSpec{{
 		WorkerID:         "echo_worker",
 		Artifact:         "workers/echo.wasm",
-		ABI:              "redevplugin-wasm-worker-v2",
 		Mode:             WorkerModeJob,
 		Scope:            "user",
 		MemoryLimitBytes: 16 << 20,
@@ -1067,15 +1049,14 @@ func stringPtr(value string) *string {
 
 func validManifest() Manifest {
 	return Manifest{
-		SchemaVersion: SchemaVersionV8,
+		SchemaVersion: SchemaVersionV9,
 		Publisher:     Publisher{PublisherID: "example", DisplayName: "Example"},
+		API:           PublicAPIRequirement{Major: PluginAPIMajor},
+		Permissions:   []PermissionID{},
 		Plugin: Plugin{
-			PluginID:          "com.example.resources",
-			DisplayName:       "Resources",
-			Version:           "1.0.0",
-			APIVersion:        "plugin-v1",
-			MinRuntimeVersion: "0.1.0",
-			UIProtocolVersion: "plugin-ui-v7",
+			PluginID:    "com.example.resources",
+			DisplayName: "Resources",
+			Version:     "1.0.0",
 		},
 		Presentation: PresentationSpec{
 			DefaultLocale: "en-US",
@@ -1190,33 +1171,17 @@ func TestValidateAllowsSecretRefWithinSameScope(t *testing.T) {
 
 func validManifestJSON() string {
 	return fmt.Sprintf(`{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.resources",
 			"display_name": "Resources",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
 		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Manage example resources.",
-			"description": ["Inspect and manage example resources from one surface."],
-			"highlights": ["Review resources before changing them."],
-			"keywords": ["resources", "management"],
-			"localizations": [{
-				"locale": "fr-FR",
-				"plugin_name": "Ressources",
-				"publisher_name": "Exemple",
-				"summary": "Gérez les ressources d’exemple.",
-				"description": ["Inspectez et gérez les ressources d’exemple depuis une surface unique."],
-				"highlights": ["Examinez les ressources avant de les modifier."],
-				"keywords": ["ressources", "gestion"],
-				"surfaces": [{"surface_id": "resources.view", "label": "Ressources"}],
-				"settings": [{"key": "default_source", "label": "Source par défaut", "options": [{"value": "primary", "label": "Principale"}, {"value": "secondary", "label": "Secondaire"}]}]
-			}]
+			"locales": {"default": "en-US"}
 		},
 		"surfaces": [
 			{"surface_id": "resources.view", "kind": "view", "label": "Resources", "entry": "ui/index.html"}
@@ -1234,12 +1199,7 @@ func validManifestJSON() string {
 				"response_schema": {"type": "object", "additionalProperties": false}
 			}
 		],
-		"settings": {
-			"schema_version": 1,
-			"fields": [
-				{"key": "default_source", "type": "select", "scope": "user", "label": "Default source", "default": "primary", "options": [{"value": "primary", "label": "Primary"}, {"value": "secondary", "label": "Secondary"}]}
-			]
-		},
+		"workers": [],
 		"intents": [
 			{"intent_id": "open-resource-list", "method": "resources.list"}
 		]

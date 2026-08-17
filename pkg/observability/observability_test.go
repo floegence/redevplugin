@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 )
 
 func TestMemoryStoreAppendsAudit(t *testing.T) {

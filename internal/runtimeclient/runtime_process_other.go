@@ -1,9 +1,9 @@
-//go:build !linux
+//go:build !darwin && !linux
 
 package runtimeclient
 
 func launchRuntimeProcess(options runtimeProcessLaunchOptions) (*runtimeProcess, error) {
-	return launchLegacyRuntimeProcess(options)
+	return launchPortableRuntimeProcess(options)
 }
 
 func closeRuntimePIDFD(int) error {

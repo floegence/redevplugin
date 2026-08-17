@@ -20,7 +20,7 @@ import {
   qualifyRouteAuthorizationAttempt,
 } from "./route_authorization_comparison.mjs";
 
-const contractPath = resolve(import.meta.dirname, "../spec/plugin/performance-contract-v4.json");
+const contractPath = resolve(import.meta.dirname, "../testdata/quality/performance.json");
 
 test("performance contract accepts its exact scenario and metric shape", () => {
   const contract = readPerformanceContract(contractPath);
@@ -58,11 +58,9 @@ test("performance contract rejects scenario and metric drift", () => {
   }
 });
 
-test("performance evidence metadata and contract hashes are closed and immutable", () => {
+test("performance quality report metadata is closed and immutable", () => {
   const contract = readPerformanceContract(contractPath);
-  const contractHashes = [{ id: "performance-contract", sha256: "a".repeat(64) }];
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v4",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-17T00:00:00Z",
@@ -77,14 +75,12 @@ test("performance evidence metadata and contract hashes are closed and immutable
     },
     scenarios: measurementsFrom(contract, "release", "b".repeat(40)),
     comparisons: [comparisonFrom(contract, "b".repeat(40))],
-    contract_hashes: contractHashes,
   };
   const options = {
     expectedGate: "release",
     releaseVersion: evidence.release_version,
     sourceCommit: evidence.source_commit,
     generatedAt: evidence.generated_at,
-    contractHashes,
   };
   assert.doesNotThrow(() => validatePerformanceEvidence(evidence, contract, options));
   for (const generatedAt of [
@@ -105,7 +101,6 @@ test("performance evidence metadata and contract hashes are closed and immutable
     ["release version", (value) => value.release_version = "0.5.1", "release_version mismatch"],
     ["source commit", (value) => value.source_commit = "c".repeat(40), "source_commit mismatch"],
     ["generated at", (value) => value.generated_at = "2026-07-18T00:00:00Z", "generated_at mismatch"],
-    ["contract hashes", (value) => value.contract_hashes[0].sha256 = "d".repeat(64), "contract hashes mismatch"],
   ]) {
     const drifted = structuredClone(evidence);
     mutate(drifted);
@@ -116,7 +111,6 @@ test("performance evidence metadata and contract hashes are closed and immutable
 test("performance evidence requires provenance for every pinned comparison probe", () => {
   const contract = readPerformanceContract(contractPath);
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v4",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-20T00:00:00Z",
@@ -130,7 +124,6 @@ test("performance evidence requires provenance for every pinned comparison probe
       chromium_version: "Chromium 138.0.0",
     },
     scenarios: measurementsFrom(contract, "release"),
-    contract_hashes: [{ id: "performance-contract", sha256: "a".repeat(64) }],
   };
   assert.throws(
     () => validatePerformanceEvidence(evidence, contract, {
@@ -138,7 +131,6 @@ test("performance evidence requires provenance for every pinned comparison probe
       releaseVersion: evidence.release_version,
       sourceCommit: evidence.source_commit,
       generatedAt: evidence.generated_at,
-      contractHashes: evidence.contract_hashes,
     }),
     /comparison provenance/,
   );
@@ -146,9 +138,7 @@ test("performance evidence requires provenance for every pinned comparison probe
 
 test("performance evidence rejects malformed raw route authorization profiles", () => {
   const contract = readPerformanceContract(contractPath);
-  const contractHashes = [{ id: "performance-contract", sha256: "a".repeat(64) }];
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v4",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-20T00:00:00Z",
@@ -163,14 +153,12 @@ test("performance evidence rejects malformed raw route authorization profiles", 
     },
     scenarios: measurementsFrom(contract, "release", "b".repeat(40)),
     comparisons: [comparisonFrom(contract, "b".repeat(40))],
-    contract_hashes: contractHashes,
   };
   const options = {
     expectedGate: "release",
     releaseVersion: evidence.release_version,
     sourceCommit: evidence.source_commit,
     generatedAt: evidence.generated_at,
-    contractHashes,
   };
   const cases = [
     ["empty operating system", (profile) => profile.environment.os = "", /environment/],
@@ -198,10 +186,9 @@ test("performance evidence rejects malformed raw route authorization profiles", 
   }
 });
 
-test("performance contract is a closed unique machine contract", () => {
+test("performance quality configuration is closed and unique", () => {
   const raw = JSON.parse(readFileSync(contractPath, "utf8"));
-  assert.deepEqual(Object.keys(raw).sort(), ["comparison_probes", "scenarios", "schema_version"]);
-  assert.equal(raw.schema_version, "redevplugin.performance_contract.v4");
+  assert.deepEqual(Object.keys(raw).sort(), ["comparison_probes", "scenarios"]);
   assert.equal(raw.scenarios.length, 20);
   assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 20);
   assert.deepEqual(

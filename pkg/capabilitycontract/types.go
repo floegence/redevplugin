@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	platformversion "github.com/floegence/redevplugin/v2/pkg/version"
+	platformversion "github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 const SchemaVersion = "redevplugin.host_capability_contract.v1"

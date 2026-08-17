@@ -12,21 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/externalsource"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/externalsource"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
-
-type failCommitEnablePluginData struct {
-	PluginData
-	err error
-}
-
-func (p *failCommitEnablePluginData) CommitEnable(context.Context, plugindata.CommitEnableRequest) (plugindata.Dataset, error) {
-	return plugindata.Dataset{}, p.err
-}
 
 type externalPackageTestStage struct {
 	mu                 sync.Mutex
@@ -191,13 +182,6 @@ func TestExternalPackageUnsignedInspectInstallEnablesWithoutGrants(t *testing.T)
 	if inspection.Intent.PluginInstanceID == "" || inspection.InspectedHashes.PackageSHA256 == "" {
 		t.Fatalf("inspection identity is incomplete: %#v", inspection)
 	}
-	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
-		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
-		ActivateAfterInstall: new(false), ApprovedPermissionIDs: []string{"read"}, Now: now.Add(30 * time.Second),
-	}); !errors.Is(err, ErrExternalPackageRequestInvalid) {
-		t.Fatalf("disabled activation with approvals error = %v", err)
-	}
-
 	committed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, Now: now.Add(time.Minute),
 	})
@@ -276,15 +260,15 @@ func TestStateRootExternalInstallNeedsNoCallerRegistryOrInstallStages(t *testing
 	}
 }
 
-func TestSQLiteExternalPackageCallPluginMethodKeepsExecutionAuthorized(t *testing.T) {
+func TestSQLiteExternalPackageGrantRemainsExplicitAfterInstall(t *testing.T) {
 	ctx := hostTestContext()
-	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	fixture, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true,
-		capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+		capabilityContract: &verified, capabilityAdapter: &recordingCapabilityAdapter{},
 	})
-	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildRPCFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	stage := &externalPackageTestStage{pkg: fixture.Package}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{Status: registry.SignatureUnknownSigner})
 	now := stableRecentTestNow()
 
 	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
@@ -297,7 +281,7 @@ func TestSQLiteExternalPackageCallPluginMethodKeepsExecutionAuthorized(t *testin
 	}
 	committed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
-		ApprovedPermissionIDs: []string{"read"}, Now: now.Add(time.Second),
+		Now: now.Add(time.Second),
 	})
 	if err != nil {
 		t.Fatalf("InstallInspectedPackage() error = %v", err)
@@ -305,41 +289,52 @@ func TestSQLiteExternalPackageCallPluginMethodKeepsExecutionAuthorized(t *testin
 	if committed.Plugin == nil {
 		t.Fatal("InstallInspectedPackage() returned no plugin")
 	}
-	if committed.Plugin.EnableState != registry.EnableEnabled || committed.Activation.Status != registry.ReleaseInstallActivationEnabled {
-		t.Fatalf("external install did not grant and enable in one confirmation: %#v", committed)
+	if committed.Plugin.EnableState != registry.EnableEnabled {
+		t.Fatalf("external install did not persist enabled state: %#v", committed)
 	}
 	grants, err := h.ListPermissionGrants(ctx, ListPermissionGrantsRequest{PluginInstanceID: committed.Plugin.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != 1 || grants[0].PermissionID != "read" {
-		t.Fatalf("permission grants = %#v, want approved read grant", grants)
+	if len(grants) != 0 {
+		t.Fatalf("permission grants = %#v, want none before explicit grant", grants)
 	}
-	_, gateway := openSurfaceAndMintGateway(t, h, committed.Plugin.PluginInstanceID, "rpc.view")
-
-	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID: committed.Plugin.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
-		Method: "echo.ping", Params: map[string]any{"message": "hello"},
-		Now: stableRecentTestNow(),
-	})
+	revisions := mustAuthorizationRevisions(t, h, committed.Plugin.PluginInstanceID)
+	if _, err := h.GrantPermission(ctx, GrantPermissionRequest{
+		PluginInstanceID:           committed.Plugin.PluginInstanceID,
+		PermissionID:               "read",
+		ExpectedPolicyRevision:     revisions.PolicyRevision,
+		ExpectedManagementRevision: revisions.ManagementRevision,
+		ExpectedRevokeEpoch:        revisions.RevokeEpoch,
+		Now:                        now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	grants, err = h.ListPermissionGrants(ctx, ListPermissionGrantsRequest{PluginInstanceID: committed.Plugin.PluginInstanceID})
 	if err != nil {
-		t.Fatalf("CallPluginMethod() error = %v", err)
+		t.Fatal(err)
 	}
-	data, ok := result.Data.(map[string]any)
-	if !ok || data["ok"] != true || adapter.calls != 1 {
-		t.Fatalf("CallPluginMethod() result = %#v, adapter calls = %d", result, adapter.calls)
+	if len(grants) != 1 || grants[0].PermissionID != "read" {
+		t.Fatalf("permission grants = %#v, want explicit read grant", grants)
+	}
+	updated, err := h.getPluginRecord(ctx, committed.Plugin.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.EnableState != registry.EnableEnabled {
+		t.Fatalf("grant changed enable state to %q", updated.EnableState)
 	}
 }
 
-func TestExternalPackageInstallNeedsAttentionWithoutRequiredPermissionApproval(t *testing.T) {
+func TestExternalPackageInstallKeepsEnabledWhilePermissionIsRequired(t *testing.T) {
 	ctx := hostTestContext()
+	fixture, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true,
-		capabilityID: "example.capability.echo", capabilityAdapter: &recordingCapabilityAdapter{},
+		capabilityContract: &verified, capabilityAdapter: &recordingCapabilityAdapter{},
 	})
-	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildRPCFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	stage := &externalPackageTestStage{pkg: fixture.Package}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{Status: registry.SignatureUnknownSigner})
 	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/permission-review.redevplugin"},
@@ -353,46 +348,23 @@ func TestExternalPackageInstallNeedsAttentionWithoutRequiredPermissionApproval(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableDisabled ||
-		committed.Activation.Status != registry.ReleaseInstallActivationNeedsAttention ||
-		len(committed.Activation.MissingPermissionIDs) != 1 || committed.Activation.MissingPermissionIDs[0] != "read" {
-		t.Fatalf("external install activation = %#v, plugin = %#v", committed.Activation, committed.Plugin)
+	if committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableEnabled {
+		t.Fatalf("external install plugin = %#v, want enabled", committed.Plugin)
 	}
-}
-
-func TestExternalPackageInstallRecoversCommittedActivationAfterHostRestart(t *testing.T) {
-	ctx := hostTestContext()
-	stateRoot := filepath.Join(t.TempDir(), "control-state")
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: stateRoot, developerMode: true, localGenerated: true})
-	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
-	h.adapters.PluginData = &failCommitEnablePluginData{PluginData: h.adapters.PluginData, err: errors.New("simulated activation interruption")}
-	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
-		Intent: ExternalPackageIntent{Action: "install"},
-		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/recovery.redevplugin"},
-	})
+	grants, err := h.ListPermissionGrants(ctx, ListPermissionGrantsRequest{PluginInstanceID: committed.Plugin.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	committed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
-		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
-	})
-	if err == nil || committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableDisabled {
-		t.Fatalf("interrupted external install = %#v, err = %v", committed, err)
+	if len(grants) != 0 {
+		t.Fatalf("permission grants = %#v, want none", grants)
 	}
-	pluginInstanceID := committed.Plugin.PluginInstanceID
-	if err := h.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: stateRoot, developerMode: true, localGenerated: true})
-	defer restarted.Close()
-	recovered, err := restarted.getPluginRecord(ctx, pluginInstanceID)
+	listed, err := h.ListPluginInventory(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.EnableState != registry.EnableEnabled {
-		t.Fatalf("recovered external install = %#v, want enabled", recovered)
+	if len(listed) != 1 || listed[0].Plugin.EnableState != registry.EnableEnabled ||
+		listed[0].ActionState.CanOpen || listed[0].ActionState.BlockedReason != PluginActionBlockedPermission {
+		t.Fatalf("inventory with missing grant = %#v", listed)
 	}
 }
 
@@ -740,7 +712,49 @@ func TestExternalPackageInspectionExpiresAcrossHostRestart(t *testing.T) {
 	}
 }
 
-func TestExternalPackageFreshnessPolicyDisablesRevokedButAllowsUnavailable(t *testing.T) {
+func TestExternalFreshInstallUsesInstallCommitAndPublishesDerivedState(t *testing.T) {
+	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildCurrentLifecyclePackage(t, currentSettingsManifestJSON()))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/install-commit.redevplugin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.Plugin == nil || installed.Plugin.EnableState != registry.EnableEnabled || installed.Plugin.ManagementRevision != 1 {
+		t.Fatalf("installed plugin = %#v, want enabled at revision 1", installed.Plugin)
+	}
+	binding, found, err := h.controlStore.GetBinding(hostTestContext(), installed.Plugin.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || binding.State != plugindata.BindingActive {
+		t.Fatalf("external install binding = %#v, found=%v; want active", binding, found)
+	}
+	settings, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{
+		PluginInstanceID: installed.Plugin.PluginInstanceID,
+		Scope:            sessionctx.ScopeUser,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Values["default_engine"] != "docker" || settings.Values["show_stopped"] != true {
+		t.Fatalf("external install default settings = %#v", settings.Values)
+	}
+	if len(surfaces.snapshots) != 1 || surfaces.snapshots[0].PluginInstanceID != installed.Plugin.PluginInstanceID {
+		t.Fatalf("external install surface snapshots = %#v, want one installed snapshot", surfaces.snapshots)
+	}
+}
+
+func TestExternalPackageFreshnessRevokesRuntimeButKeepsEnabled(t *testing.T) {
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	pkg := readTestPackage(t, buildFixturePackage(t))
 	pkg.PackageSignature = &pluginpkg.PackageSignature{SchemaVersion: pluginpkg.PackageSignatureSchemaVersion, Algorithm: "ed25519", KeyID: "known", Signature: "test"}
@@ -763,21 +777,49 @@ func TestExternalPackageFreshnessPolicyDisablesRevokedButAllowsUnavailable(t *te
 		t.Fatal(err)
 	}
 	record := *committed.Plugin
-
-	assessor.setFreshness(registry.SignatureAssessment{Status: registry.SignatureUnavailable}, errors.New("keyring offline"))
-	if err := h.canRun(hostTestContext(), record); err != nil {
-		t.Fatalf("canRun() unavailable freshness error = %v", err)
-	}
-	assessor.setFreshness(registry.SignatureAssessment{Status: registry.SignatureRevoked}, nil)
-	if err := h.validateExecutionBinding(hostTestContext(), capability.ExecutionBinding{PluginInstanceID: record.PluginInstanceID}); !errors.Is(err, capability.ErrExecutionRevoked) {
-		t.Fatalf("validateExecutionBinding() revoked freshness error = %v, want execution revoked", err)
-	}
-	disabled, err := h.getPluginRecord(hostTestContext(), record.PluginInstanceID)
+	opened, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		SurfaceID:                  "lifecycle.view",
+		SurfaceInstanceID:          "surface_before_signature_revocation",
+		ExpectedManagementRevision: record.ManagementRevision,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if disabled.EnableState != registry.EnableDisabledByPolicy {
-		t.Fatalf("enable state = %q, want disabled_by_policy", disabled.EnableState)
+
+	assessor.setFreshness(registry.SignatureAssessment{Status: registry.SignatureUnavailable}, errors.New("keyring offline"))
+	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		SurfaceID:                  "lifecycle.view",
+		SurfaceInstanceID:          "surface_while_signature_service_unavailable",
+		ExpectedManagementRevision: record.ManagementRevision,
+	}); err != nil {
+		t.Fatalf("OpenSurface() unavailable freshness error = %v", err)
+	}
+	assessor.setFreshness(registry.SignatureAssessment{Status: registry.SignatureRevoked}, nil)
+	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		SurfaceID:                  "lifecycle.view",
+		SurfaceInstanceID:          "surface_after_signature_revocation",
+		ExpectedManagementRevision: record.ManagementRevision,
+	}); !errors.Is(err, ErrPluginTrustDenied) {
+		t.Fatalf("OpenSurface() revoked freshness error = %v, want trust denied", err)
+	}
+	stored, err := h.getPluginRecord(hostTestContext(), record.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EnableState != registry.EnableEnabled {
+		t.Fatalf("signature revocation changed enable state to %q", stored.EnableState)
+	}
+	if stored.RevokeEpoch <= record.RevokeEpoch {
+		t.Fatalf("signature revocation did not advance revoke epoch: before=%d after=%d", record.RevokeEpoch, stored.RevokeEpoch)
+	}
+	if _, err := h.PrepareSurface(hostTestContext(), PrepareSurfaceRequest{
+		SurfaceInstanceID: opened.SurfaceInstanceID,
+		AssetTicket:       opened.AssetTicket,
+	}); err == nil {
+		t.Fatal("PrepareSurface() reused a ticket after signature revocation")
 	}
 	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
 		t.Fatal("revoked freshness did not revoke runtime capabilities")
@@ -927,8 +969,7 @@ func TestExternalPackageUpdatePreservesUserDisabledIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Plugin == nil || updated.Plugin.Version != "2.0.0" || updated.Plugin.EnableState != registry.EnableDisabled ||
-		updated.Activation.Status != registry.ReleaseInstallActivationNotRequested {
+	if updated.Plugin == nil || updated.Plugin.Version != "2.0.0" || updated.Plugin.EnableState != registry.EnableDisabledByUser {
 		t.Fatalf("user-disabled update = %#v", updated)
 	}
 }

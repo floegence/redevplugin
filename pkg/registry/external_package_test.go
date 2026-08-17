@@ -1,16 +1,9 @@
 package registry
 
 import (
-	"context"
-	"crypto/sha256"
-	"database/sql"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
 )
 
 func TestPrepareExternalPackageInstallBindsOwnerAndRevision(t *testing.T) {
@@ -44,13 +37,13 @@ func TestExternalPackageInstallRejectsInvalidOrRevokedSignature(t *testing.T) {
 	}
 }
 
-func TestExternalPackageInstallPreservesDisabledZeroGrantManualOnly(t *testing.T) {
+func TestExternalPackageInstallEnablesByDefaultWithoutGrant(t *testing.T) {
 	req := externalPackageInstallRequest("owner_env_hash_test", time.Now().UTC())
 	installed, err := PrepareExternalPackageInstall("owner_env_hash_test", req, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if installed.EnableState != EnableDisabled || installed.UpdateEligibility != UpdateManualOnly {
+	if installed.EnableState != EnableEnabled || installed.UpdateEligibility != UpdateManualOnly {
 		t.Fatalf("installed security state = %#v", installed)
 	}
 	if installed.PolicyRevision != 1 {
@@ -58,178 +51,147 @@ func TestExternalPackageInstallPreservesDisabledZeroGrantManualOnly(t *testing.T
 	}
 }
 
-func TestSQLiteRegistryHasNoExternalInspectionOrReceiptTable(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
+func TestCurrentPluginRecordRequiresExplicitPackageSourceProvenance(t *testing.T) {
+	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+	record := externalPackageInstallRequest("owner_env_hash_test", now).Record
+	record.PackageSourceProvenance = PackageSourceProvenance{}
+	if _, err := PreparePluginPut("owner_env_hash_test", record, nil, now); err == nil {
+		t.Fatal("PreparePluginPut() inferred source provenance from legacy trust state")
 	}
-	defer store.Close()
-	for _, table := range []string{"external_package_commit_receipts", "external_package_inspections"} {
-		var count int
-		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 0 {
-			t.Fatalf("durable external package transient table %q exists", table)
-		}
+	if RunnablePluginRecord(record) {
+		t.Fatal("RunnablePluginRecord() accepted a record without explicit source provenance")
 	}
 }
 
-func TestSQLiteRegistryRejectsLegacyExternalReceiptTableWithoutChangingSource(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
+func TestExplicitLocalImportNormalizesExecutionApproval(t *testing.T) {
+	now := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
+	record := externalPackageInstallRequest("owner_env_hash_test", now).Record
+	record.TrustState = TrustUnsignedLocal
+	record.TrustAssessment = TrustAssessment{TrustState: TrustUnsignedLocal}
+	record.SignatureAssessment = SignatureAssessment{}
+	record.PackageSourceProvenance = PackageSourceProvenance{
+		Kind:            PackageSourceLocalGenerated,
+		PackageSHA256:   record.PackageHash,
+		SourceReference: "local_import",
+	}
+	record.LocalImportProvenance = &LocalImportProvenance{
+		ImportID:       "local_import",
+		Distribution:   "local_import",
+		PolicyEpoch:    "local_import",
+		UnsignedPolicy: "dev_only",
+		AssessedAt:     now.Format(time.RFC3339),
+	}
+	record.ExecutionApproval = ExecutionApproval{}
+
+	stored, err := PreparePluginPut("owner_env_hash_test", record, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.ExecContext(ctx, `CREATE TABLE external_package_commit_receipts (legacy TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeHash := sha256.Sum256(before)
-	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
-		_ = reopened.Close()
-		t.Fatal("NewSQLiteStore() accepted an ambiguous legacy receipt table")
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if afterHash := sha256.Sum256(after); afterHash != beforeHash {
-		t.Fatal("failed open changed the legacy registry bytes")
+	if stored.ExecutionApproval.Status != ExecutionApprovalUserApproved ||
+		stored.ExecutionApproval.OwnerEnvHash != "owner_env_hash_test" ||
+		stored.ExecutionApproval.PackageSHA256 != record.PackageHash ||
+		!stored.ExecutionApproval.ApprovedAt.Equal(now) ||
+		!RunnablePluginRecord(stored) {
+		t.Fatalf("local import execution approval = %#v", stored.ExecutionApproval)
 	}
 }
 
-func TestSQLiteRegistryPreservesPopulatedHistoricalV5ExternalReceiptTable(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
+func TestExternalSourceDoesNotInferExecutionApproval(t *testing.T) {
+	now := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
+	record := externalPackageInstallRequest("owner_env_hash_test", now).Record
+	record.ExecutionApproval = ExecutionApproval{}
+
+	stored, err := PreparePluginPut("owner_env_hash_test", record, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	createHistoricalV5ExternalPackageReceiptTable(t, store.db)
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO external_package_commit_receipts VALUES(
-  'env','inspection','commit','install','confirmation','request',0,
-  'fingerprint','package','plugin','committed','committed','{}','',1,2
-)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
-		_ = reopened.Close()
-		t.Fatal("NewSQLiteStore() discarded a historical external package receipt")
-	}
-	dsn, err := registrySQLiteDSN(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var version, receipts int
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM external_package_commit_receipts`).Scan(&receipts); err != nil {
-		t.Fatal(err)
-	}
-	if version != 5 || receipts != 1 {
-		t.Fatalf("failed migration changed historical state: version=%d receipts=%d", version, receipts)
+	if stored.ExecutionApproval.Status != ExecutionApprovalPending || RunnablePluginRecord(stored) {
+		t.Fatalf("external execution approval = %#v", stored.ExecutionApproval)
 	}
 }
 
-func TestSQLiteRegistryRejectsHistoricalV5ReceiptConstraintDrift(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
+func TestIncompleteLocalImportDoesNotInferExecutionApproval(t *testing.T) {
+	now := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
+	record := externalPackageInstallRequest("owner_env_hash_test", now).Record
+	record.TrustState = TrustUnsignedLocal
+	record.TrustAssessment = TrustAssessment{TrustState: TrustUnsignedLocal}
+	record.SignatureAssessment = SignatureAssessment{}
+	record.PackageSourceProvenance = PackageSourceProvenance{
+		Kind:            PackageSourceLocalGenerated,
+		PackageSHA256:   record.PackageHash,
+		SourceReference: "local_import",
+	}
+	record.LocalImportProvenance = &LocalImportProvenance{
+		ImportID:     "local_import",
+		Distribution: "local_import",
+		AssessedAt:   now.Format(time.RFC3339),
+	}
+	record.ExecutionApproval = ExecutionApproval{}
+
+	stored, err := PreparePluginPut("owner_env_hash_test", record, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	createHistoricalV5ExternalPackageReceiptTableWithoutCommitUniqueness(t, store.db)
-	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
-		_ = reopened.Close()
-		t.Fatal("NewSQLiteStore() accepted historical receipt constraint drift")
+	if stored.ExecutionApproval.Status != ExecutionApprovalPending || RunnablePluginRecord(stored) {
+		t.Fatalf("incomplete local import execution approval = %#v", stored.ExecutionApproval)
 	}
 }
 
-func createHistoricalV5ExternalPackageReceiptTableWithoutCommitUniqueness(t *testing.T, db *sql.DB) {
-	t.Helper()
-	if _, err := db.Exec(`
-CREATE TABLE external_package_commit_receipts (
-    owner_env_hash TEXT NOT NULL, inspection_id TEXT NOT NULL, commit_id TEXT NOT NULL,
-    intent TEXT NOT NULL, confirmation_digest TEXT NOT NULL, request_sha256 TEXT NOT NULL,
-    expected_management_revision INTEGER NOT NULL, intended_fingerprint TEXT NOT NULL,
-    intended_package_sha256 TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, status TEXT NOT NULL,
-    mutation_outcome TEXT NOT NULL, record_snapshot_json TEXT NOT NULL DEFAULT 'null',
-    failure_code TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-    PRIMARY KEY(owner_env_hash, inspection_id)
-)`); err != nil {
-		t.Fatal(err)
-	}
-}
+func TestVersionHistorySecurityNormalizationDoesNotInferLifecycleApproval(t *testing.T) {
+	record := normalizePluginSecurityFacts(PluginRecord{
+		OwnerEnvHash: "owner_env_hash_test",
+		EnableState:  EnableEnabled,
+		VersionHistory: []PluginVersion{{
+			Version:      "0.9.0",
+			PackageHash:  "sha256:history-package",
+			ManifestHash: "sha256:history-manifest",
+			EntriesHash:  "sha256:history-entries",
+			TrustState:   TrustVerified,
+		}},
+	})
 
-func TestSQLiteRegistryRejectsFutureSchemaVersion(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	dsn, err := registrySQLiteDSN(path)
-	if err != nil {
-		t.Fatal(err)
+	history := record.VersionHistory[0]
+	if history.ExecutionApproval.Status != ExecutionApprovalPending {
+		t.Fatalf("history execution approval = %q, want pending", history.ExecutionApproval.Status)
 	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(context.Background(), `PRAGMA user_version = 999`); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	if store, err := NewSQLiteStore(registryTestContext(), path); err == nil {
-		_ = store.Close()
-		t.Fatal("NewSQLiteStore() accepted future schema version")
+	if history.ExecutionApproval.OwnerEnvHash != record.OwnerEnvHash || history.ExecutionApproval.PackageSHA256 != history.PackageHash {
+		t.Fatalf("history execution approval binding = %#v", history.ExecutionApproval)
 	}
 }
 
 func externalPackageInstallRequest(ownerEnvHash string, now time.Time) InstallExternalPackageRequest {
 	packageHash := "sha256:external-package"
 	return InstallExternalPackageRequest{
-		Intent: ExternalPackageInstall, Now: now,
+		Intent: ExternalPackageInstall,
+		Now:    now,
 		Record: PluginRecord{
-			PluginInstanceID: "plugini_external", PublisherID: "example", PluginID: "com.example.external", Version: "1.0.0",
-			ActiveFingerprint: "sha256:external-fingerprint", PackageHash: packageHash, ManifestHash: "sha256:manifest", EntriesHash: "sha256:entries",
-			TrustState: TrustNeedsReview,
-			SignatureAssessment: SignatureAssessment{Status: SignatureAbsent,
+			PluginInstanceID:  "plugini_external",
+			PublisherID:       "example",
+			PluginID:          "com.example.external",
+			Version:           "1.0.0",
+			ActiveFingerprint: "sha256:external-fingerprint",
+			PackageHash:       packageHash,
+			ManifestHash:      "sha256:manifest",
+			EntriesHash:       "sha256:entries",
+			TrustState:        TrustNeedsReview,
+			SignatureAssessment: SignatureAssessment{
+				Status:         SignatureAbsent,
 				AssessedHashes: TrustHashSet{PackageSHA256: packageHash, ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries"},
-				PackageSHA256:  packageHash, ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries"},
-			PackageSourceProvenance: PackageSourceProvenance{Kind: PackageSourceGitHubRepository, RepositoryURL: "https://github.com/example/plugin",
-				GitHubRepositoryID: "R_123", GitHubReleaseID: "REL_123", GitHubAssetID: "ASSET_123", PackageSHA256: packageHash},
-			ExecutionApproval: ExecutionApproval{Status: ExecutionApprovalUserApproved, OwnerEnvHash: ownerEnvHash, PackageSHA256: packageHash},
-			UpdateEligibility: UpdateManualOnly, EnableState: EnableDisabled,
-			SecurityCapabilitySummary: SecurityCapabilitySummary{SchemaVersion: "security-capability-summary-v1", CanonicalJSON: `{"network":false}`, SHA256: "sha256:capability-summary"},
-			Manifest:                  manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.external", Version: "1.0.0"}},
+				PackageSHA256:  packageHash, ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries",
+			},
+			PackageSourceProvenance: PackageSourceProvenance{
+				Kind: PackageSourceGitHubRepository, RepositoryURL: "https://github.com/example/plugin",
+				GitHubRepositoryID: "R_123", GitHubReleaseID: "REL_123", GitHubAssetID: "ASSET_123", PackageSHA256: packageHash,
+			},
+			ExecutionApproval: ExecutionApproval{
+				Status: ExecutionApprovalUserApproved, OwnerEnvHash: ownerEnvHash, PackageSHA256: packageHash,
+			},
+			UpdateEligibility: UpdateManualOnly,
+			EnableState:       EnableEnabled,
+			SecurityCapabilitySummary: SecurityCapabilitySummary{
+				SchemaVersion: "security-capability-summary-v1", CanonicalJSON: `{"network":false}`, SHA256: "sha256:capability-summary",
+			},
+			Manifest: currentTestManifest("com.example.external", "1.0.0"),
 		},
 	}
 }

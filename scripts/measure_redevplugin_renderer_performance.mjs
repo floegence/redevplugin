@@ -175,7 +175,6 @@ async function buildHostHarnessSource(workerContent) {
     stdin: {
       contents: `
 import { createPreparedPluginSurfaceHost, createReDevPluginSurfaceTransport } from "./packages/redevplugin-ui/src/surface.ts";
-import { pluginUIProtocolVersion } from "./packages/redevplugin-ui/src/contracts.gen.ts";
 const digest = (character) => "sha256:" + character.repeat(64);
 const workerContent = ${JSON.stringify(workerContent)};
 const now = Date.now();
@@ -230,7 +229,6 @@ const host = createPreparedPluginSurfaceHost({
     pluginId: "com.example.performance",
     pluginInstanceId: "plugini_performance_1",
     pluginVersion: "1.0.0",
-    uiProtocolVersion: pluginUIProtocolVersion,
     surfaceId: "performance.view",
     surfaceInstanceId: "surface_performance_1",
     activeFingerprint: digest("a"),

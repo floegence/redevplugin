@@ -10,13 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
 type TrustState string
@@ -33,11 +32,16 @@ const (
 type EnableState string
 
 const (
-	EnableDisabled             EnableState = "disabled"
-	EnableEnabled              EnableState = "enabled"
-	EnableDisabledByPolicy     EnableState = "disabled_by_policy"
-	EnableDisabledIncompatible EnableState = "disabled_incompatible"
+	EnableEnabled        EnableState = "enabled"
+	EnableDisabledByUser EnableState = "disabled_by_user"
 )
+
+func ValidateEnableState(state EnableState) error {
+	if state != EnableEnabled && state != EnableDisabledByUser {
+		return fmt.Errorf("%w: %q", ErrInvalidEnableState, state)
+	}
+	return nil
+}
 
 type TrustHashSet struct {
 	PackageSHA256  string `json:"package_sha256"`
@@ -101,10 +105,8 @@ type PluginRecord struct {
 	ManagementRevision        uint64                    `json:"management_revision"`
 	RevokeEpoch               uint64                    `json:"revoke_epoch"`
 	Manifest                  manifest.Manifest         `json:"manifest"`
-	ManifestModel             manifest.Model            `json:"-"`
-	ManifestSource            string                    `json:"manifest_source,omitempty"`
+	CanonicalManifest         string                    `json:"-"`
 	PackageEntries            []pluginpkg.Entry         `json:"package_entries"`
-	RuntimeRequirement        *RuntimeRequirement       `json:"runtime_requirement,omitempty"`
 	VersionHistory            []PluginVersion           `json:"version_history,omitempty"`
 	InstalledAt               time.Time                 `json:"installed_at"`
 	EnabledAt                 *time.Time                `json:"enabled_at,omitempty"`
@@ -114,37 +116,26 @@ type PluginRecord struct {
 }
 
 type PluginVersion struct {
-	Version                   string                        `json:"version"`
-	ActiveFingerprint         string                        `json:"active_fingerprint"`
-	PackageHash               string                        `json:"package_hash"`
-	ManifestHash              string                        `json:"manifest_hash"`
-	EntriesHash               string                        `json:"entries_hash"`
-	TrustState                TrustState                    `json:"trust_state"`
-	TrustAssessment           TrustAssessment               `json:"trust_assessment"`
-	SignatureAssessment       SignatureAssessment           `json:"signature_assessment"`
-	PackageSourceProvenance   PackageSourceProvenance       `json:"source_provenance"`
-	ExecutionApproval         ExecutionApproval             `json:"execution_approval"`
-	UpdateEligibility         UpdateEligibility             `json:"update_eligibility"`
-	SecurityCapabilitySummary SecurityCapabilitySummary     `json:"security_summary"`
-	ReleaseTrustBinding       *ReleaseTrustBinding          `json:"release_trust_binding,omitempty"`
-	LocalImportProvenance     *LocalImportProvenance        `json:"local_import_provenance,omitempty"`
-	CapabilityContracts       []capabilitycontract.Pin      `json:"capability_contracts,omitempty"`
-	Manifest                  manifest.Manifest             `json:"manifest"`
-	ManifestModel             manifest.Model                `json:"-"`
-	ManifestSource            string                        `json:"manifest_source,omitempty"`
-	ManifestAPI               manifest.PublicAPIRequirement `json:"manifest_api,omitempty"`
-	ManifestPermissions       []manifest.PermissionID       `json:"manifest_permissions,omitempty"`
-	PackageEntries            []pluginpkg.Entry             `json:"package_entries"`
-	RuntimeRequirement        *RuntimeRequirement           `json:"runtime_requirement,omitempty"`
-	ActivatedAt               time.Time                     `json:"activated_at"`
-	Metadata                  map[string]string             `json:"metadata,omitempty"`
-}
-
-// RuntimeRequirement is the exact worker-runtime compatibility contract that
-// was verified for an installed package version. UI-only packages leave it nil.
-type RuntimeRequirement struct {
-	MinVersion       string                 `json:"min_version"`
-	SupportedTargets []runtimetarget.Target `json:"supported_targets,omitempty"`
+	Version                   string                    `json:"version"`
+	ActiveFingerprint         string                    `json:"active_fingerprint"`
+	PackageHash               string                    `json:"package_hash"`
+	ManifestHash              string                    `json:"manifest_hash"`
+	EntriesHash               string                    `json:"entries_hash"`
+	TrustState                TrustState                `json:"trust_state"`
+	TrustAssessment           TrustAssessment           `json:"trust_assessment"`
+	SignatureAssessment       SignatureAssessment       `json:"signature_assessment"`
+	PackageSourceProvenance   PackageSourceProvenance   `json:"source_provenance"`
+	ExecutionApproval         ExecutionApproval         `json:"execution_approval"`
+	UpdateEligibility         UpdateEligibility         `json:"update_eligibility"`
+	SecurityCapabilitySummary SecurityCapabilitySummary `json:"security_summary"`
+	ReleaseTrustBinding       *ReleaseTrustBinding      `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance     *LocalImportProvenance    `json:"local_import_provenance,omitempty"`
+	CapabilityContracts       []capabilitycontract.Pin  `json:"capability_contracts,omitempty"`
+	Manifest                  manifest.Manifest         `json:"manifest"`
+	CanonicalManifest         string                    `json:"-"`
+	PackageEntries            []pluginpkg.Entry         `json:"package_entries"`
+	ActivatedAt               time.Time                 `json:"activated_at"`
+	Metadata                  map[string]string         `json:"metadata,omitempty"`
 }
 
 type LocalImportProvenance struct {
@@ -181,7 +172,10 @@ type Store interface {
 	AbortInstall(ctx context.Context, pluginInstanceID string) error
 }
 
-var ErrNotFound = errors.New("plugin record not found")
+var (
+	ErrNotFound           = errors.New("plugin record not found")
+	ErrInvalidEnableState = errors.New("invalid plugin enable state")
+)
 
 type MemoryStore struct {
 	mu               sync.RWMutex
@@ -246,13 +240,13 @@ func PreparePluginPut(ownerEnvHash string, record PluginRecord, existing *Plugin
 	}
 	record = cloned
 	record.OwnerEnvHash = ownerEnvHash
-	if record.ManifestModel.PluginID() == "" && record.Manifest.PluginID() != "" {
-		normalized, normalizeErr := manifest.Normalize(record.Manifest)
-		if normalizeErr != nil {
-			return PluginRecord{}, normalizeErr
+	if err := ValidateEnableState(record.EnableState); err != nil {
+		return PluginRecord{}, err
+	}
+	if record.Manifest.PluginID() != "" {
+		if validateErr := manifest.Validate(record.Manifest); validateErr != nil {
+			return PluginRecord{}, validateErr
 		}
-		record.ManifestModel = normalized
-		record.ManifestSource = normalized.SchemaSource
 	}
 	if existing != nil {
 		record.InstalledAt = existing.InstalledAt
@@ -270,13 +264,17 @@ func PreparePluginPut(ownerEnvHash string, record PluginRecord, existing *Plugin
 	}
 	record.UpdatedAt = now
 	record = normalizePluginSecurityFacts(record)
+	record = approveExplicitLocalImport(record)
 	if err := validatePersistedPluginSecurityFacts(record); err != nil {
 		return PluginRecord{}, err
 	}
 	return record, nil
 }
 
-func PrepareEnableState(record PluginRecord, state EnableState, reason string, now time.Time) PluginRecord {
+func PrepareEnableState(record PluginRecord, state EnableState, reason string, now time.Time) (PluginRecord, error) {
+	if err := ValidateEnableState(state); err != nil {
+		return PluginRecord{}, err
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -290,7 +288,7 @@ func PrepareEnableState(record PluginRecord, state EnableState, reason string, n
 	} else {
 		record.EnabledAt = nil
 	}
-	return record
+	return record, nil
 }
 
 func (s *MemoryStore) GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error) {
@@ -336,6 +334,9 @@ func (s *MemoryStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
 }
 
 func (s *MemoryStore) SetEnableState(ctx context.Context, pluginInstanceID string, state EnableState, reason string, now time.Time) (PluginRecord, error) {
+	if err := ValidateEnableState(state); err != nil {
+		return PluginRecord{}, err
+	}
 	ownerEnvHash, err := environmentOwner(ctx)
 	if err != nil {
 		return PluginRecord{}, err
@@ -351,7 +352,10 @@ func (s *MemoryStore) SetEnableState(ctx context.Context, pluginInstanceID strin
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	record = PrepareEnableState(record, state, reason, now)
+	record, err = PrepareEnableState(record, state, reason, now)
+	if err != nil {
+		return PluginRecord{}, err
+	}
 	s.records[key] = record
 	return clonePluginRecord(record)
 }
@@ -377,8 +381,6 @@ func (s *MemoryStore) CommitUninstall(ctx context.Context, req plugindata.Commit
 		now = time.Now().UTC()
 	}
 	binding, hasBinding := s.dataBindings[key]
-	record.EnableState = EnableDisabled
-	record.DisabledReason = "uninstalled"
 	record.ManagementRevision++
 	record.RevokeEpoch++
 	record.UpdatedAt = now
@@ -441,17 +443,10 @@ func normalizeTrustAssessment(record PluginRecord) PluginRecord {
 
 func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
 	ownerEnvHash := record.OwnerEnvHash
-	manifestModel := record.ManifestModel
-	manifestSource := record.ManifestSource
-	versionModels := make([]manifest.Model, len(record.VersionHistory))
-	versionSources := make([]string, len(record.VersionHistory))
-	versionAPIs := make([]manifest.PublicAPIRequirement, len(record.VersionHistory))
-	versionPermissions := make([][]manifest.PermissionID, len(record.VersionHistory))
-	for i, version := range record.VersionHistory {
-		versionModels[i] = version.ManifestModel
-		versionSources[i] = version.ManifestSource
-		versionAPIs[i] = version.ManifestAPI
-		versionPermissions[i] = append([]manifest.PermissionID(nil), version.ManifestPermissions...)
+	canonicalManifest := record.CanonicalManifest
+	versionCanonicalManifests := make([]string, len(record.VersionHistory))
+	for index := range record.VersionHistory {
+		versionCanonicalManifests[index] = record.VersionHistory[index].CanonicalManifest
 	}
 	raw, err := json.Marshal(record)
 	if err != nil {
@@ -462,68 +457,22 @@ func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
 		return PluginRecord{}, err
 	}
 	cloned.OwnerEnvHash = ownerEnvHash
-	cloned.ManifestModel = manifestModel
-	cloned.ManifestSource = manifestSource
-	for i := range cloned.VersionHistory {
-		if i < len(versionModels) {
-			cloned.VersionHistory[i].ManifestModel = versionModels[i]
-			cloned.VersionHistory[i].ManifestSource = versionSources[i]
-			cloned.VersionHistory[i].ManifestAPI = versionAPIs[i]
-			cloned.VersionHistory[i].ManifestPermissions = append([]manifest.PermissionID(nil), versionPermissions[i]...)
-		}
-	}
-	if cloned.ManifestModel.PluginID() == "" && cloned.Manifest.PluginID() != "" {
-		if normalized, normalizeErr := manifest.Normalize(cloned.Manifest); normalizeErr == nil {
-			cloned.ManifestModel = normalized
-			cloned.ManifestSource = normalized.SchemaSource
-		}
+	cloned.CanonicalManifest = canonicalManifest
+	for index := range cloned.VersionHistory {
+		cloned.VersionHistory[index].CanonicalManifest = versionCanonicalManifests[index]
 	}
 	return cloned, nil
 }
 
-func RunnableTrustState(state TrustState) bool {
-	switch state {
-	case TrustVerified, TrustUnsignedLocal:
-		return true
-	default:
-		return false
-	}
-}
-
-// RunnablePluginRecord preserves the legacy trust projection for records that
-// predate external-package facts. External packages are governed by their
-// environment-and-package-bound execution approval instead of signature state.
 func RunnablePluginRecord(record PluginRecord) bool {
-	switch record.PackageSourceProvenance.Kind {
-	case PackageSourcePackageURL, PackageSourceGitHubRepository, PackageSourcePackageUpload,
-		PackageSourceOfficialCatalog, PackageSourceApprovedCatalog:
-		if !validSignatureAssessmentStatus(record.SignatureAssessment.Status) ||
-			!validExecutionApprovalStatus(record.ExecutionApproval.Status) {
-			return false
-		}
-		if record.SignatureAssessment.Status == SignatureInvalid || record.SignatureAssessment.Status == SignatureRevoked {
-			return false
-		}
-		return record.ExecutionApproval.Status == ExecutionApprovalUserApproved ||
-			record.ExecutionApproval.Status == ExecutionApprovalPolicyApproved
-	case "":
-		// New package records are checked before Registry persistence normalizes
-		// their source facts. This narrow fallback must not accept a partially
-		// populated or future external-package security projection.
-		if record.SignatureAssessment.Status != "" || record.ExecutionApproval.Status != "" {
-			return false
-		}
-		return RunnableTrustState(record.TrustState)
-	case PackageSourceLocalGenerated, PackageSourceLegacyRegistry:
-		if !validSignatureAssessmentStatus(record.SignatureAssessment.Status) ||
-			!validExecutionApprovalStatus(record.ExecutionApproval.Status) {
-			return false
-		}
-		if record.SignatureAssessment.Status == SignatureInvalid || record.SignatureAssessment.Status == SignatureRevoked {
-			return false
-		}
-		return RunnableTrustState(record.TrustState)
-	default:
+	if !validPackageSourceProvenance(record.PackageSourceProvenance) ||
+		!validSignatureAssessmentStatus(record.SignatureAssessment.Status) ||
+		!validExecutionApprovalStatus(record.ExecutionApproval.Status) {
 		return false
 	}
+	if record.SignatureAssessment.Status == SignatureInvalid || record.SignatureAssessment.Status == SignatureRevoked {
+		return false
+	}
+	return record.ExecutionApproval.Status == ExecutionApprovalUserApproved ||
+		record.ExecutionApproval.Status == ExecutionApprovalPolicyApproved
 }

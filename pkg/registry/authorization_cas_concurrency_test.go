@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
 func TestAuthorizationConcurrentCASMutations(t *testing.T) {
@@ -143,100 +142,68 @@ func TestAuthorizationConcurrentCASMutations(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		for _, backend := range []string{"memory", "sqlite"} {
-			t.Run(test.name+"/"+backend, func(t *testing.T) {
-				ctx := registryTestContext()
-				now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
-				store, sqliteStore, sqlitePath := openConcurrentAuthorizationStore(t, ctx, backend)
-				plugin := putAuthorizationTestPlugin(t, store, "plugini_concurrent_"+test.name, "com.example.concurrent-"+test.name, now.Add(-time.Hour))
-				before, err := store.GetAuthorization(ctx, plugin.PluginInstanceID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if test.prepare != nil {
-					before = test.prepare(ctx, t, store, before, now.Add(-time.Minute))
-				}
+		t.Run(test.name, func(t *testing.T) {
+			ctx := registryTestContext()
+			now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
+			store := Store(NewMemoryStore())
+			plugin := putAuthorizationTestPlugin(t, store, "plugini_concurrent_"+test.name, "com.example.concurrent-"+test.name, now.Add(-time.Hour))
+			before, err := store.GetAuthorization(ctx, plugin.PluginInstanceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.prepare != nil {
+				before = test.prepare(ctx, t, store, before, now.Add(-time.Minute))
+			}
 
-				start := make(chan struct{})
-				results := make(chan concurrentAuthorizationResult, contenders)
-				var writers sync.WaitGroup
-				for contender := 0; contender < contenders; contender++ {
-					writers.Add(1)
-					go func(contender int) {
-						defer writers.Done()
-						<-start
-						results <- concurrentAuthorizationResult{
-							contender: contender,
-							err:       test.mutate(ctx, store, before, contender, now),
-						}
-					}(contender)
-				}
-				close(start)
-				writers.Wait()
-				close(results)
+			start := make(chan struct{})
+			results := make(chan concurrentAuthorizationResult, contenders)
+			var writers sync.WaitGroup
+			for contender := 0; contender < contenders; contender++ {
+				writers.Add(1)
+				go func(contender int) {
+					defer writers.Done()
+					<-start
+					results <- concurrentAuthorizationResult{
+						contender: contender,
+						err:       test.mutate(ctx, store, before, contender, now),
+					}
+				}(contender)
+			}
+			close(start)
+			writers.Wait()
+			close(results)
 
-				winner := -1
-				conflicts := 0
-				for result := range results {
-					switch {
-					case result.err == nil:
-						if winner != -1 {
-							t.Fatalf("multiple concurrent %s mutations succeeded: %d and %d", test.name, winner, result.contender)
-						}
-						winner = result.contender
-					case errors.Is(result.err, ErrAuthorizationRevisionConflict):
-						conflicts++
-					default:
-						t.Fatalf("concurrent %s mutation %d error = %v", test.name, result.contender, result.err)
+			winner := -1
+			conflicts := 0
+			for result := range results {
+				switch {
+				case result.err == nil:
+					if winner != -1 {
+						t.Fatalf("multiple concurrent %s mutations succeeded: %d and %d", test.name, winner, result.contender)
 					}
+					winner = result.contender
+				case errors.Is(result.err, ErrAuthorizationRevisionConflict):
+					conflicts++
+				default:
+					t.Fatalf("concurrent %s mutation %d error = %v", test.name, result.contender, result.err)
 				}
-				if winner == -1 || conflicts != contenders-1 {
-					t.Fatalf("concurrent %s results: winner=%d conflicts=%d, want one winner and %d conflicts", test.name, winner, conflicts, contenders-1)
-				}
+			}
+			if winner == -1 || conflicts != contenders-1 {
+				t.Fatalf("concurrent %s results: winner=%d conflicts=%d, want one winner and %d conflicts", test.name, winner, conflicts, contenders-1)
+			}
 
-				final, err := store.GetAuthorization(ctx, plugin.PluginInstanceID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				test.assertFinal(t, before, final, winner, now)
-				if sqliteStore != nil {
-					if err := sqliteStore.Close(); err != nil {
-						t.Fatal(err)
-					}
-					reopened, err := NewSQLiteStore(ctx, sqlitePath)
-					if err != nil {
-						t.Fatal(err)
-					}
-					t.Cleanup(func() { _ = reopened.Close() })
-					reopenedSnapshot, err := reopened.GetAuthorization(ctx, plugin.PluginInstanceID)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !reflect.DeepEqual(reopenedSnapshot, final) {
-						t.Fatalf("reopened concurrent %s snapshot = %#v, want %#v", test.name, reopenedSnapshot, final)
-					}
-				}
-			})
-		}
+			final, err := store.GetAuthorization(ctx, plugin.PluginInstanceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.assertFinal(t, before, final, winner, now)
+		})
 	}
 }
 
 type concurrentAuthorizationResult struct {
 	contender int
 	err       error
-}
-
-func openConcurrentAuthorizationStore(t *testing.T, ctx context.Context, backend string) (Store, *SQLiteStore, string) {
-	t.Helper()
-	if backend == "memory" {
-		return NewMemoryStore(), nil, ""
-	}
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return store, store, path
 }
 
 func assertConcurrentAuthorizationPlugin(t *testing.T, before PluginRecord, final PluginRecord, revokeIncrement uint64, updatedAt time.Time) {

@@ -15,33 +15,32 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/releasepublisher"
-	"github.com/floegence/redevplugin/v2/pkg/secrets"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
-	"github.com/floegence/redevplugin/v2/pkg/trust"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasepublisher"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/trust"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 type validateSummary struct {
-	OK            bool           `json:"ok"`
-	Kind          string         `json:"kind"`
-	PluginID      string         `json:"plugin_id"`
-	Version       string         `json:"version"`
-	PackageHash   string         `json:"package_hash,omitempty"`
-	ManifestHash  string         `json:"manifest_hash,omitempty"`
-	EntriesHash   string         `json:"entries_hash,omitempty"`
-	Signed        bool           `json:"signed,omitempty"`
-	SignatureKey  string         `json:"signature_key,omitempty"`
-	SignatureAlgo string         `json:"signature_algorithm,omitempty"`
-	VersionMatrix version.Matrix `json:"version_matrix"`
+	OK            bool   `json:"ok"`
+	Kind          string `json:"kind"`
+	PluginID      string `json:"plugin_id"`
+	Version       string `json:"version"`
+	PackageHash   string `json:"package_hash,omitempty"`
+	ManifestHash  string `json:"manifest_hash,omitempty"`
+	EntriesHash   string `json:"entries_hash,omitempty"`
+	Signed        bool   `json:"signed,omitempty"`
+	SignatureKey  string `json:"signature_key,omitempty"`
+	SignatureAlgo string `json:"signature_algorithm,omitempty"`
 }
 
 type lifecycleSummary struct {
@@ -67,13 +66,12 @@ type keygenSummary struct {
 }
 
 type scaffoldSummary struct {
-	OK          bool           `json:"ok"`
-	Kind        string         `json:"kind"`
-	PluginID    string         `json:"plugin_id"`
-	Version     string         `json:"version"`
-	OutputDir   string         `json:"output_dir"`
-	Files       []string       `json:"files"`
-	VersionInfo version.Matrix `json:"version_matrix"`
+	OK        bool     `json:"ok"`
+	Kind      string   `json:"kind"`
+	PluginID  string   `json:"plugin_id"`
+	Version   string   `json:"version"`
+	OutputDir string   `json:"output_dir"`
+	Files     []string `json:"files"`
 }
 
 type scaffoldManifestV9 struct {
@@ -108,14 +106,12 @@ type scaffoldWorkerV9 struct {
 
 type scaffoldMethodV9 struct {
 	Method         string                       `json:"method"`
-	WorkerID       string                       `json:"worker_id"`
 	Effect         manifest.MethodEffect        `json:"effect"`
 	Execution      manifest.MethodExecutionMode `json:"execution"`
 	RequestSchema  map[string]any               `json:"request_schema"`
 	ResponseSchema map[string]any               `json:"response_schema"`
+	Route          manifest.MethodRouteSpec     `json:"route"`
 }
-
-func uint16Ptr(value uint16) *uint16 { return &value }
 
 //go:embed scaffold_assets/plugin-worker.js
 var scaffoldPluginWorkerJS []byte
@@ -129,10 +125,10 @@ var scaffoldWorkerWASM []byte
 //go:embed scaffold_assets/worker-lib.rs
 var scaffoldWorkerRust []byte
 
-type compatibilityVerifySummary struct {
-	OK            bool   `json:"ok"`
-	SchemaVersion string `json:"schema_version"`
-	Contracts     int    `json:"contracts"`
+type platformVersionSummary struct {
+	PlatformVersion string `json:"platform_version"`
+	PluginAPI       uint16 `json:"plugin_api"`
+	InternalWire    uint16 `json:"internal_wire"`
 }
 
 type presentationInspectionSummary struct {
@@ -143,18 +139,16 @@ type presentationInspectionSummary struct {
 	PresentationIcon   *releasepublisher.PresentationIconEvidenceV1 `json:"presentation_icon,omitempty"`
 	ManifestSHA256     string                                       `json:"manifest_sha256"`
 	PresentationSHA256 string                                       `json:"presentation_sha256"`
-	ContractSetSHA256  string                                       `json:"contract_set_sha256"`
 	VerifierVersion    string                                       `json:"verifier_version"`
 }
 
 type presentationIconExtractionSummary struct {
-	OK                bool                                        `json:"ok"`
-	Phase             string                                      `json:"phase"`
-	Output            string                                      `json:"output"`
-	IconOutput        string                                      `json:"icon_output"`
-	PresentationIcon  releasepublisher.PresentationIconEvidenceV1 `json:"presentation_icon"`
-	ContractSetSHA256 string                                      `json:"contract_set_sha256"`
-	VerifierVersion   string                                      `json:"verifier_version"`
+	OK               bool                                        `json:"ok"`
+	Phase            string                                      `json:"phase"`
+	Output           string                                      `json:"output"`
+	IconOutput       string                                      `json:"icon_output"`
+	PresentationIcon releasepublisher.PresentationIconEvidenceV1 `json:"presentation_icon"`
+	VerifierVersion  string                                      `json:"verifier_version"`
 }
 
 type dataInspectSummary struct {
@@ -170,7 +164,6 @@ type dataInspectSummary struct {
 	Bindings         []plugindata.Binding      `json:"bindings"`
 	Objects          []plugindata.Object       `json:"objects"`
 	Namespaces       []storage.NamespaceRecord `json:"namespaces"`
-	VersionMatrix    version.Matrix            `json:"version_matrix"`
 }
 
 type signingPrivateKeyFile struct {
@@ -233,12 +226,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return signPackage(ctx, args[1], args[2], args[3])
 	case "version":
-		return writeJSON(version.CurrentCompatibilityManifest())
-	case "verify-compatibility":
-		if len(args) != 3 {
-			return usage()
-		}
-		return verifyCompatibility(args[1], args[2])
+		return writeJSON(platformVersionSummary{PlatformVersion: version.CurrentPlatformVersion(), PluginAPI: 1, InternalWire: 1})
 	case "release":
 		return runRelease(ctx, args[1:])
 	case "inspect-data":
@@ -347,10 +335,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return devStatus(args[1])
 	case "examples-server":
-		if len(args) != 4 {
+		if len(args) != 3 {
 			return usage()
 		}
-		return examplesServer(ctx, args[1], args[2], args[3])
+		return examplesServer(ctx, args[1], args[2])
 	case "enable":
 		if len(args) != 2 {
 			return usage()
@@ -369,25 +357,6 @@ func run(ctx context.Context, args []string) error {
 	default:
 		return usage()
 	}
-}
-
-func verifyCompatibility(manifestFile string, artifactRoot string) error {
-	raw, err := os.ReadFile(manifestFile)
-	if err != nil {
-		return err
-	}
-	manifest, err := version.DecodeCompatibilityManifest(raw)
-	if err != nil {
-		return err
-	}
-	if err := version.VerifyCompatibilityManifest(manifest, artifactRoot); err != nil {
-		return err
-	}
-	return writeJSON(compatibilityVerifySummary{
-		OK:            true,
-		SchemaVersion: manifest.SchemaVersion,
-		Contracts:     len(manifest.Contracts),
-	})
 }
 
 func inspectData(ctx context.Context, root string, pluginInstanceID string) error {
@@ -422,7 +391,6 @@ func inspectData(ctx context.Context, root string, pluginInstanceID string) erro
 		Bindings:         inspection.Bindings,
 		Objects:          objects,
 		Namespaces:       inspection.Namespaces,
-		VersionMatrix:    version.CurrentMatrix(),
 	})
 }
 
@@ -444,7 +412,6 @@ func validate(ctx context.Context, filename string) error {
 			Signed:        signed,
 			SignatureKey:  signatureKey,
 			SignatureAlgo: signatureAlgo,
-			VersionMatrix: version.CurrentMatrix(),
 		})
 	}
 	raw, err := os.ReadFile(filename)
@@ -456,11 +423,10 @@ func validate(ctx context.Context, filename string) error {
 		return err
 	}
 	return writeJSON(validateSummary{
-		OK:            true,
-		Kind:          "manifest",
-		PluginID:      decoded.PluginID(),
-		Version:       decoded.Version(),
-		VersionMatrix: version.CurrentMatrix(),
+		OK:       true,
+		Kind:     "manifest",
+		PluginID: decoded.PluginID(),
+		Version:  decoded.Version(),
 	})
 }
 
@@ -490,7 +456,6 @@ func buildPackage(ctx context.Context, srcDir string, outFile string) error {
 		Signed:        signed,
 		SignatureKey:  signatureKey,
 		SignatureAlgo: signatureAlgo,
-		VersionMatrix: version.CurrentMatrix(),
 	})
 }
 
@@ -515,7 +480,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 	if outDir == "" {
 		return scaffoldSummary{}, fmt.Errorf("output directory is required")
 	}
-	platformVersion := version.CurrentCompatibilityVersion()
+	platformVersion := version.CurrentPlatformVersion()
 	manifestDoc := scaffoldManifestV9{
 		SchemaVersion: manifest.SchemaVersionV9,
 		Publisher: manifest.Publisher{
@@ -523,7 +488,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			DisplayName: "Local Generated",
 		},
 		Plugin:       scaffoldPluginV9{PluginID: pluginID, DisplayName: displayName, Version: "0.1.0"},
-		API:          manifest.PublicAPIRequirement{Surface: uint16Ptr(1), Worker: uint16Ptr(1), OptionalFeatures: []manifest.FeatureID{manifest.FeatureIOStream}},
+		API:          manifest.PublicAPIRequirement{Major: 1, OptionalFeatures: []manifest.FeatureID{manifest.FeatureIOStream}},
 		Permissions:  []manifest.PermissionID{},
 		Presentation: scaffoldPresentationV9{Locales: map[string]string{"default": "en-US"}},
 		Surfaces: []manifest.SurfaceSpec{{
@@ -535,8 +500,9 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		}},
 		Workers: []scaffoldWorkerV9{{WorkerID: "backend", Artifact: "workers/backend.wasm", Mode: manifest.WorkerModeJob, Scope: "user", MemoryLimitBytes: 16 << 20}},
 		Methods: []scaffoldMethodV9{{
-			Method: "worker.echo", WorkerID: "backend",
+			Method: "worker.echo",
 			Effect: manifest.MethodEffectRead, Execution: manifest.MethodExecutionSync,
+			Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend"},
 			RequestSchema: closedRequiredMethodObjectSchema(map[string]any{
 				"message": map[string]any{"type": "string"},
 			}, []string{"message"}),
@@ -586,13 +552,12 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 	}
 	sortStrings(created)
 	return scaffoldSummary{
-		OK:          true,
-		Kind:        "plugin_scaffold",
-		PluginID:    pluginID,
-		Version:     manifestDoc.Plugin.Version,
-		OutputDir:   outDir,
-		Files:       created,
-		VersionInfo: version.CurrentMatrix(),
+		OK:        true,
+		Kind:      "plugin_scaffold",
+		PluginID:  pluginID,
+		Version:   manifestDoc.Plugin.Version,
+		OutputDir: outDir,
+		Files:     created,
 	}, nil
 }
 
@@ -619,9 +584,8 @@ func scaffoldEchoResponseSchema() map[string]any {
 		"transport": map[string]any{"type": "string"},
 		"method":    map[string]any{"type": "string", "const": "worker.echo"},
 		"worker_id": map[string]any{"type": "string", "const": "backend"},
-		"wasm_abi":  map[string]any{"type": "string", "const": version.WASMABIVersion},
 		"message":   map[string]any{"type": "string"},
-	}, []string{"backend", "transport", "method", "worker_id", "wasm_abi", "message"})
+	}, []string{"backend", "transport", "method", "worker_id", "message"})
 }
 
 func scaffoldSource(source []byte, displayName string) []byte {
@@ -828,7 +792,6 @@ func signPackage(ctx context.Context, packageFile string, privateKeyFile string,
 		Signed:        signed,
 		SignatureKey:  signatureKey,
 		SignatureAlgo: signatureAlgo,
-		VersionMatrix: version.CurrentMatrix(),
 	})
 }
 
@@ -913,7 +876,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> | redevplugin release verify <out-dir> | redevplugin release extract-presentation-icon <out-dir> <out-file> | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> <runtime-descriptor.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> | redevplugin release verify <out-dir> | redevplugin release extract-presentation-icon <out-dir> <out-file> | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {

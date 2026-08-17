@@ -4,90 +4,32 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
-  resolveBridgeContractDescriptors,
+  currentBridgeContractDescriptors,
   validateUIBridgeInputs,
   validateUIBridgeRepository,
 } from "./check_redevplugin_ui_bridge.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const source = JSON.parse(await readFile(join(root, "internal/contracts/active-contracts.json"), "utf8"));
-const descriptors = resolveBridgeContractDescriptors(source);
+const descriptors = currentBridgeContractDescriptors();
 const baseline = {
   descriptors,
   activeSchema: JSON.parse(await readFile(join(root, descriptors.active.path), "utf8")),
   activeTransportSchema: JSON.parse(await readFile(join(root, descriptors.active.transportPath), "utf8")),
   surface: await readFile(join(root, "packages/redevplugin-ui/src/surface.ts"), "utf8"),
   contracts: await readFile(join(root, "packages/redevplugin-ui/src/contracts.gen.ts"), "utf8"),
-  rendererPerformance: await readFile(join(root, "scripts/measure_redevplugin_renderer_performance.mjs"), "utf8"),
 };
 
-test("UI bridge gate resolves the active schema from the closed contract source", async () => {
+test("UI bridge gate uses the single current schema", async () => {
   assert.deepEqual(descriptors.active, {
-    uiProtocolVersion: "plugin-ui-v7",
-    bridgeSchemaVersion: "bridge-v7",
-    path: "spec/plugin/bridge-v7.schema.json",
+    bridgeSchemaVersion: "bridge",
+    path: "spec/plugin/bridge.schema.json",
     transportSchemaVersion: "opaque-surface-transport-v6",
     transportPath: "spec/plugin/opaque-surface-transport-v6.schema.json",
   });
   await assert.doesNotReject(validateUIBridgeRepository(root));
 });
 
-test("UI bridge gate rejects matrix and active artifact drift", () => {
-  const malformedMapping = structuredClone(source);
-  malformedMapping.matrix.plugin_ui_transport_mappings[0].unexpected = true;
-  assert.throws(
-    () => resolveBridgeContractDescriptors(malformedMapping),
-    /UI transport mapping must be a closed object/,
-  );
-
-  const wrongMatrix = structuredClone(source);
-  wrongMatrix.matrix.bridge_schema_version = "bridge-v5";
-  assert.throws(
-    () => resolveBridgeContractDescriptors(wrongMatrix),
-    /requires plugin-ui-v7, bridge-v7, and opaque-surface-transport-v6 only/,
-  );
-
-  const wrongArtifact = structuredClone(source);
-  const artifact = wrongArtifact.artifacts.find(({ id }) => id === "iframe-bridge-schema");
-  artifact.version = "bridge-v5";
-  assert.throws(
-    () => resolveBridgeContractDescriptors(wrongArtifact),
-    /active bridge artifact does not match/,
-  );
-
-  const wrongMatrixTransport = structuredClone(source);
-  wrongMatrixTransport.matrix.opaque_surface_transport_schema_version = "opaque-surface-transport-v4";
-  assert.throws(
-    () => resolveBridgeContractDescriptors(wrongMatrixTransport),
-    /requires plugin-ui-v7, bridge-v7, and opaque-surface-transport-v6 only/,
-  );
-
-  const wrongMappedTransport = structuredClone(source);
-  const activeMapping = wrongMappedTransport.matrix.plugin_ui_transport_mappings.find(
-    ({ plugin_ui_protocol_version }) => plugin_ui_protocol_version === "plugin-ui-v7",
-  );
-  activeMapping.opaque_surface_transport_schema_version = "opaque-surface-transport-v4";
-  assert.throws(
-    () => resolveBridgeContractDescriptors(wrongMappedTransport),
-    /surface transport do not match the transport mapping/,
-  );
-
-  const wrongTransportArtifact = structuredClone(source);
-  const transportArtifact = wrongTransportArtifact.artifacts.find(({ id }) => id === "opaque-surface-transport-schema");
-  transportArtifact.version = "opaque-surface-transport-v4";
-  assert.throws(
-    () => resolveBridgeContractDescriptors(wrongTransportArtifact),
-    /active surface transport artifact does not match/,
-  );
-});
-
-test("UI bridge gate fails closed for an unreviewed future active protocol", () => {
-  const future = structuredClone(baseline);
-  future.descriptors.active.uiProtocolVersion = "plugin-ui-v8";
-  assert.throws(() => validateUIBridgeInputs(future), /does not understand active UI protocol plugin-ui-v8/);
-});
-
-test("plugin-ui-v7 requires closed execution cancel, query, and events frames", () => {
+test("current UI contract requires closed execution cancel, query, and events frames", () => {
   for (const definition of ["execution_cancel", "execution_query", "execution_events"]) {
     const withoutDefinition = structuredClone(baseline);
     delete withoutDefinition.activeSchema.$defs[definition];
@@ -104,114 +46,20 @@ test("plugin-ui-v7 requires closed execution cancel, query, and events frames", 
     assert.throws(() => validateUIBridgeInputs(withUnexpectedProperty), new RegExp(`${definition} frame is not closed and exact`));
   }
 
-  const withRetiredProtocol = structuredClone(baseline);
-  withRetiredProtocol.surface += " plugin-ui-v6";
-  assert.throws(() => validateUIBridgeInputs(withRetiredProtocol), /retains a retired UI protocol/);
 });
 
-test("generated bridge versions must equal the active contract source", () => {
-  const staleUI = structuredClone(baseline);
-  staleUI.contracts = staleUI.contracts.replace(
-    '"plugin_ui_protocol_version": "plugin-ui-v7"',
-    '"plugin_ui_protocol_version": "plugin-ui-v6"',
-  );
-  assert.throws(() => validateUIBridgeInputs(staleUI), /generated contract plugin_ui_protocol_version does not match/);
-
-  const staleBridge = structuredClone(baseline);
-  staleBridge.contracts = staleBridge.contracts.replace(
-    '  "bridge_schema_version": "bridge-v7",',
-    '  "bridge_schema_version": "bridge-v6",',
-  );
-  assert.throws(() => validateUIBridgeInputs(staleBridge), /generated contract bridge_schema_version does not match/);
-});
-
-test("renderer performance harness must use the generated active UI protocol", () => {
-  const staleHarness = structuredClone(baseline);
-  staleHarness.rendererPerformance = staleHarness.rendererPerformance.replace(
-    "uiProtocolVersion: pluginUIProtocolVersion,",
-    'uiProtocolVersion: "plugin-ui-v5",',
-  );
-  assert.throws(() => validateUIBridgeInputs(staleHarness), /not structurally bound to the generated active UI protocol/);
-
-  const commentDecoy = structuredClone(baseline);
-  commentDecoy.rendererPerformance = commentDecoy.rendererPerformance
-    .replace(
-      'import { pluginUIProtocolVersion } from "./packages/redevplugin-ui/src/contracts.gen.ts";',
-      '// import { pluginUIProtocolVersion } from "./packages/redevplugin-ui/src/contracts.gen.ts";',
-    )
-    .replace(
-      "uiProtocolVersion: pluginUIProtocolVersion,",
-      'uiProtocolVersion: "plugin-ui-v5", // uiProtocolVersion: pluginUIProtocolVersion,',
-    );
-  assert.throws(() => validateUIBridgeInputs(commentDecoy), /not structurally bound to the generated active UI protocol/);
-
-  const shadowedProtocol = structuredClone(baseline);
-  shadowedProtocol.rendererPerformance = shadowedProtocol.rendererPerformance
-    .replace(
-      "const host = createPreparedPluginSurfaceHost({",
-      'const host = (() => {\n  const pluginUIProtocolVersion = "plugin-ui-v5";\n  return createPreparedPluginSurfaceHost({',
-    )
-    .replace(
-      "});\ndocument.querySelector(\"#surface-root\").append(host.element);",
-      "});\n})();\ndocument.querySelector(\"#surface-root\").append(host.element);",
-    );
-  assert.throws(() => validateUIBridgeInputs(shadowedProtocol), /not structurally bound to the generated active UI protocol/);
-
-  const shadowedHostFactory = structuredClone(baseline);
-  shadowedHostFactory.rendererPerformance = shadowedHostFactory.rendererPerformance
-    .replace(
-      "const host = createPreparedPluginSurfaceHost({",
-      "const host = (() => {\n  const createPreparedPluginSurfaceHost = () => ({ element: document.createElement(\"div\") });\n  return createPreparedPluginSurfaceHost({",
-    )
-    .replace(
-      "});\ndocument.querySelector(\"#surface-root\").append(host.element);",
-      "});\n})();\ndocument.querySelector(\"#surface-root\").append(host.element);",
-    );
-  assert.throws(() => validateUIBridgeInputs(shadowedHostFactory), /not structurally bound to the generated active UI protocol/);
-
-  for (const override of [
-    'uiProtocolVersion: pluginUIProtocolVersion,\n    ...{ uiProtocolVersion: "plugin-ui-v5" },',
-    'uiProtocolVersion: pluginUIProtocolVersion,\n    ["uiProtocolVersion"]: "plugin-ui-v5",',
-    'uiProtocolVersion: pluginUIProtocolVersion,\n    get uiProtocolVersion() { return "plugin-ui-v5"; },',
+test("current UI contract rejects an independent UI protocol axis", () => {
+  for (const [target, source] of [
+    ["surface", "ui_protocol_version"],
+    ["contracts", 'pluginUIProtocolVersion = "plugin-ui-v7"'],
+    ["activeTransportSchema", { ui_protocol_version: { const: "plugin-ui-v7" } }],
   ]) {
-    const bootstrapOverride = structuredClone(baseline);
-    bootstrapOverride.rendererPerformance = bootstrapOverride.rendererPerformance.replace(
-      "uiProtocolVersion: pluginUIProtocolVersion,",
-      override,
-    );
-    assert.throws(() => validateUIBridgeInputs(bootstrapOverride), /not structurally bound to the generated active UI protocol/);
+    const stale = structuredClone(baseline);
+    if (target === "activeTransportSchema") {
+      stale.activeTransportSchema.$defs.port_envelope.properties.ui_protocol_version = source.ui_protocol_version;
+    } else {
+      stale[target] += `\n${source}`;
+    }
+    assert.throws(() => validateUIBridgeInputs(stale), /retains an independent UI protocol axis/);
   }
-
-  const hostOptionsOverride = structuredClone(baseline);
-  hostOptionsOverride.rendererPerformance = hostOptionsOverride.rendererPerformance.replace(
-    '  onError: (error) => { globalThis.__redevpluginError = error.message; },\n});',
-    '  onError: (error) => { globalThis.__redevpluginError = error.message; },\n  ...{ bootstrap: {} },\n});',
-  );
-  assert.throws(() => validateUIBridgeInputs(hostOptionsOverride), /not structurally bound to the generated active UI protocol/);
-
-  const injectedInterpolation = structuredClone(baseline);
-  injectedInterpolation.rendererPerformance = injectedInterpolation.rendererPerformance.replace(
-    "uiProtocolVersion: pluginUIProtocolVersion,",
-    'uiProtocolVersion: pluginUIProtocolVersion,\n    injected: ${"0, uiProtocolVersion: \\"plugin-ui-v5\\""},',
-  );
-  assert.throws(() => validateUIBridgeInputs(injectedInterpolation), /not structurally bound to the generated active UI protocol/);
-
-  const movedInterpolation = structuredClone(baseline);
-  movedInterpolation.rendererPerformance = movedInterpolation.rendererPerformance
-    .replace(
-      "const workerContent = ${JSON.stringify(workerContent)};",
-      'const workerContent = "static-worker";',
-    )
-    .replace(
-      "uiProtocolVersion: pluginUIProtocolVersion,",
-      "uiProtocolVersion: pluginUIProtocolVersion,\n    injected: ${JSON.stringify(workerContent)},",
-    );
-  assert.throws(() => validateUIBridgeInputs(movedInterpolation), /not structurally bound to the generated active UI protocol/);
-
-  const shadowedJSON = structuredClone(baseline);
-  shadowedJSON.rendererPerformance = shadowedJSON.rendererPerformance.replace(
-    "async function buildHostHarnessSource(workerContent) {",
-    'async function buildHostHarnessSource(workerContent) {\n  const JSON = { stringify: () => "\\\"injected\\\"" };',
-  );
-  assert.throws(() => validateUIBridgeInputs(shadowedJSON), /not structurally bound to the generated active UI protocol/);
 });

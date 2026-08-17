@@ -13,12 +13,6 @@ var ErrInvalidResourceScope = errors.New("resource owner scope is invalid")
 
 var ErrInvalidSessionScope = errors.New("session scope is invalid")
 
-const OwnerScopeMigrationRequiredCode = "owner_scope_migration_required"
-
-// ErrOwnerScopeMigrationRequired rejects persisted resources whose owner scope
-// cannot be reconstructed without guessing.
-var ErrOwnerScopeMigrationRequired = errors.New(OwnerScopeMigrationRequiredCode)
-
 type ScopeKind string
 
 const (

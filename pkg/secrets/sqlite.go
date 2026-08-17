@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	_ "modernc.org/sqlite"
 )
 
@@ -280,22 +280,6 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
-	legacy, err := secretSchemaNeedsOwnerMigration(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if legacy {
-		var count int64
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_secret_bindings`).Scan(&count); err != nil {
-			return err
-		}
-		if count != 0 {
-			return sessionctx.ErrOwnerScopeMigrationRequired
-		}
-		if _, err := tx.ExecContext(ctx, `DROP TABLE plugin_secret_bindings`); err != nil {
-			return err
-		}
-	}
 
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_secret_bindings (
@@ -315,16 +299,19 @@ CREATE TABLE IF NOT EXISTS plugin_secret_bindings (
 )`); err != nil {
 		return err
 	}
+	if err := validateSecretSchema(ctx, tx); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(owner_env_hash, plugin_instance_id, scope, owner_user_hash, bound, updated_at)`); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func secretSchemaNeedsOwnerMigration(ctx context.Context, tx *sql.Tx) (bool, error) {
+func validateSecretSchema(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_secret_bindings)`)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer rows.Close()
 	columns := map[string]struct{}{}
@@ -338,19 +325,26 @@ func secretSchemaNeedsOwnerMigration(ctx context.Context, tx *sql.Tx) (bool, err
 			primaryKey  int
 		)
 		if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultExpr, &primaryKey); err != nil {
-			return false, err
+			return err
 		}
 		columns[name] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return false, err
+		return err
 	}
-	if len(columns) == 0 {
-		return false, nil
+	want := []string{
+		"owner_env_hash", "owner_user_hash", "plugin_instance_id", "secret_ref", "scope",
+		"bound", "last_test_status", "bound_at", "tested_at", "deleted_at", "updated_at",
 	}
-	_, hasEnv := columns["owner_env_hash"]
-	_, hasUser := columns["owner_user_hash"]
-	return !hasEnv || !hasUser, nil
+	if len(columns) != len(want) {
+		return ErrSecretStoreSchema
+	}
+	for _, name := range want {
+		if _, ok := columns[name]; !ok {
+			return ErrSecretStoreSchema
+		}
+	}
+	return nil
 }
 
 func getSQLiteRecord(ctx context.Context, db queryer, owner sessionctx.ResourceScope, req BindRequest) (Record, bool, error) {

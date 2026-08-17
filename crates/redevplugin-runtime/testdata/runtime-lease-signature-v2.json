@@ -2,8 +2,8 @@
   "schema_version": "redevplugin.runtime_execution_lease.signature_fixture.v2",
   "method": "worker.echo",
   "public_key_base64": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=",
-  "canonical_payload": "{\"schema_version\":\"redevplugin.runtime_execution_lease.v2\",\"token_kind\":\"runtime_execution_lease\",\"lease_id\":\"rel_fixture_v1\",\"token_id\":\"rel_token_fixture_v1\",\"lease_nonce\":\"nonce_fixture_1234567890\",\"plugin_instance_id\":\"plugini_fixture_v1\",\"plugin_id\":\"com.example.worker\",\"plugin_version\":\"1.2.3\",\"active_fingerprint\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"invocation_id\":\"invoke_fixture_v2\",\"scope_kind\":\"user\",\"issued_at_unix_ms\":1783161900000,\"method\":\"worker.echo\",\"effect\":\"read\",\"execution\":\"subscription\",\"execution_id\":\"execution_fixture_v1\",\"audit_correlation_id\":\"audit_fixture_v1\",\"surface_instance_id\":\"surface_fixture_v1\",\"owner_session_hash\":\"owner_session_fixture_v1\",\"owner_user_hash\":\"owner_user_fixture_v1\",\"owner_env_hash\":\"owner_env_fixture_v1\",\"session_channel_id_hash\":\"channel_fixture_v1\",\"bridge_channel_id\":\"bridge_fixture_v1\",\"target_descriptor_hashes\":[\"invocation:sha256:7f12ee0e72cf2e7fa149a23697a36ead653b498cf884db2e69d250b3cfdc7abf\",\"method:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"worker:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"],\"limits\":{\"timeout_ms\":2000,\"memory_bytes\":65536,\"max_payload_bytes\":4096,\"max_stream_bytes_per_sec\":1024},\"policy_revision\":11,\"management_revision\":12,\"revoke_epoch\":13,\"expires_at_unix_ms\":1783161930000,\"runtime_shard_id\":\"rtshard_fixture_v1\",\"runtime_instance_id\":\"rtinst_fixture_v1\",\"runtime_generation_id\":\"rtgen_fixture_v1\",\"ipc_channel_id\":\"ipc_fixture_v1\",\"connection_nonce\":\"connection_nonce_fixture_1234567890\",\"key_id\":\"host_ephemeral_fixture_v1\"}",
-  "signature": "ed25519:m3LCZ9bbv0MXiN73TjAnAwlfOQ8zebxkn8eWJ7sQGZzwo7YHHH06ag+ANamsXdicHmBWCxxc3LVi/Y1irXiWCw==",
+  "canonical_payload": "{\"schema_version\":\"redevplugin.runtime_execution_lease.v2\",\"token_kind\":\"runtime_execution_lease\",\"lease_id\":\"rel_fixture_v1\",\"token_id\":\"rel_token_fixture_v1\",\"lease_nonce\":\"nonce_fixture_1234567890\",\"plugin_instance_id\":\"plugini_fixture_v1\",\"plugin_id\":\"com.example.worker\",\"plugin_version\":\"1.2.3\",\"active_fingerprint\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"invocation_id\":\"invoke_fixture_v2\",\"scope_kind\":\"user\",\"issued_at_unix_ms\":1783161900000,\"method\":\"worker.echo\",\"effect\":\"read\",\"execution\":\"subscription\",\"execution_id\":\"execution_fixture_v1\",\"audit_correlation_id\":\"audit_fixture_v1\",\"surface_instance_id\":\"surface_fixture_v1\",\"owner_session_hash\":\"owner_session_fixture_v1\",\"owner_user_hash\":\"owner_user_fixture_v1\",\"owner_env_hash\":\"owner_env_fixture_v1\",\"session_channel_id_hash\":\"channel_fixture_v1\",\"bridge_channel_id\":\"bridge_fixture_v1\",\"target_descriptor_hashes\":[\"invocation:sha256:26a6e600ceaa442d444ed681a2de5879fd0f837949542b4352925626c91bb3e0\",\"method:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"worker:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"],\"limits\":{\"timeout_ms\":2000,\"memory_bytes\":65536,\"max_payload_bytes\":4096,\"max_stream_bytes_per_sec\":1024},\"policy_revision\":11,\"management_revision\":12,\"revoke_epoch\":13,\"expires_at_unix_ms\":1783161930000,\"runtime_shard_id\":\"rtshard_fixture_v1\",\"runtime_instance_id\":\"rtinst_fixture_v1\",\"runtime_generation_id\":\"rtgen_fixture_v1\",\"ipc_channel_id\":\"ipc_fixture_v1\",\"connection_nonce\":\"connection_nonce_fixture_1234567890\",\"key_id\":\"host_ephemeral_fixture_v1\"}",
+  "signature": "ed25519:wGdM2sOIozbhoniEsi1mx2UV+vTjFjW5vQDcZtQwc11pWI4VyN5M7tVqyO3h5Lxk1nr4WJcNiRGHqLOlCuD3Dg==",
   "lease": {
     "lease_id": "rel_fixture_v1",
     "token_id": "rel_token_fixture_v1",
@@ -27,7 +27,7 @@
     "execution_id": "execution_fixture_v1",
     "audit_correlation_id": "audit_fixture_v1",
     "target_descriptor_hashes": [
-      "invocation:sha256:7f12ee0e72cf2e7fa149a23697a36ead653b498cf884db2e69d250b3cfdc7abf",
+      "invocation:sha256:26a6e600ceaa442d444ed681a2de5879fd0f837949542b4352925626c91bb3e0",
       "method:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "worker:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     ],
@@ -45,7 +45,7 @@
     "ipc_channel_id": "ipc_fixture_v1",
     "connection_nonce": "connection_nonce_fixture_1234567890",
     "key_id": "host_ephemeral_fixture_v1",
-    "signature": "ed25519:m3LCZ9bbv0MXiN73TjAnAwlfOQ8zebxkn8eWJ7sQGZzwo7YHHH06ag+ANamsXdicHmBWCxxc3LVi/Y1irXiWCw==",
+    "signature": "ed25519:wGdM2sOIozbhoniEsi1mx2UV+vTjFjW5vQDcZtQwc11pWI4VyN5M7tVqyO3h5Lxk1nr4WJcNiRGHqLOlCuD3Dg==",
     "issued_at_unix_ms": 1783161900000,
     "expires_at_unix_ms": 1783161930000
   }

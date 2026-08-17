@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 )
 
 func TestRuntimeExecJournalDurablyTransitionsAndReconciles(t *testing.T) {
@@ -17,7 +17,7 @@ func TestRuntimeExecJournalDurablyTransitionsAndReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	descriptor := testPublicRuntimeDescriptor(t, "linux/amd64", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	descriptor := testPublicRuntimeArtifactIdentity(t, "linux/amd64", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	journal, err := newRuntimeExecJournal(root, descriptor)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +42,7 @@ func TestRuntimeExecJournalDurablyTransitionsAndReconciles(t *testing.T) {
 	if err := decodeRuntimeExecJournal(raw, &record); err != nil {
 		t.Fatal(err)
 	}
-	if record.State != runtimeExecJournalOpened || record.MutationOutcome != string(mutation.OutcomeCommitted) || record.DescriptorDigest != descriptor.BinarySHA256().String() {
+	if record.State != runtimeExecJournalOpened || record.MutationOutcome != string(mutation.OutcomeCommitted) || record.ArtifactSHA256 != descriptor.BinarySHA256().String() {
 		t.Fatalf("reconciled journal = %#v", record)
 	}
 }

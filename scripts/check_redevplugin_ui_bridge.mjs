@@ -3,7 +3,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const executionFrames = [
@@ -36,83 +35,25 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 }
 
 export async function validateUIBridgeRepository(rootDir = defaultRoot) {
-  const sourcePath = join(rootDir, "internal/contracts/active-contracts.json");
-  const source = parseJSON(await readFile(sourcePath, "utf8"), "active contract source");
-  const descriptors = resolveBridgeContractDescriptors(source);
+  const descriptors = currentBridgeContractDescriptors();
   const activeSchemaPath = resolveRepositoryPath(rootDir, descriptors.active.path, "active bridge artifact");
   const activeTransportPath = resolveRepositoryPath(rootDir, descriptors.active.transportPath, "active surface transport artifact");
-  const [activeSchema, activeTransportSchema, surface, contracts, rendererPerformance] = await Promise.all([
+  const [activeSchema, activeTransportSchema, surface, contracts] = await Promise.all([
     readJSON(activeSchemaPath, "active bridge schema"),
     readJSON(activeTransportPath, "active surface transport schema"),
     readFile(join(rootDir, "packages/redevplugin-ui/src/surface.ts"), "utf8"),
     readFile(join(rootDir, "packages/redevplugin-ui/src/contracts.gen.ts"), "utf8"),
-    readFile(join(rootDir, "scripts/measure_redevplugin_renderer_performance.mjs"), "utf8"),
   ]);
-  validateUIBridgeInputs({ descriptors, activeSchema, activeTransportSchema, surface, contracts, rendererPerformance });
+  validateUIBridgeInputs({ descriptors, activeSchema, activeTransportSchema, surface, contracts });
 }
 
-export function resolveBridgeContractDescriptors(source) {
-  if (!isRecord(source) || !hasExactKeys(source, ["schema_version", "matrix", "artifacts"]) ||
-      source.schema_version !== "redevplugin.contract_source.v1") {
-    throw new Error("active bridge gate requires the closed redevplugin contract source");
-  }
-  const matrix = source.matrix;
-  if (!isRecord(matrix)) throw new Error("active bridge gate requires a contract matrix");
-  const activeUI = requireVersion(matrix.plugin_ui_protocol_version, /^plugin-ui-v[1-9][0-9]*$/, "active UI protocol");
-  const activeBridge = requireVersion(matrix.bridge_schema_version, /^bridge-v[1-9][0-9]*$/, "active bridge schema");
-  const activeTransport = requireVersion(
-    matrix.opaque_surface_transport_schema_version,
-    /^opaque-surface-transport-v[1-9][0-9]*$/,
-    "active surface transport schema",
-  );
-  if (activeUI !== "plugin-ui-v7" || activeBridge !== "bridge-v7" || activeTransport !== "opaque-surface-transport-v6" ||
-      JSON.stringify(matrix.supported_plugin_ui_protocol_versions) !== JSON.stringify(["plugin-ui-v7"])) {
-    throw new Error("active UI bridge gate requires plugin-ui-v7, bridge-v7, and opaque-surface-transport-v6 only");
-  }
-  if (!Array.isArray(matrix.plugin_ui_transport_mappings) || matrix.plugin_ui_transport_mappings.length !== 1) {
-    throw new Error("UI transport mappings must exactly cover supported UI protocols");
-  }
-  const mappings = new Map();
-  for (const mapping of matrix.plugin_ui_transport_mappings) {
-    if (!isRecord(mapping) || !hasExactKeys(mapping, [
-      "plugin_ui_protocol_version",
-      "opaque_surface_transport_schema_version",
-      "bridge_schema_version",
-    ])) {
-      throw new Error("UI transport mapping must be a closed object");
-    }
-    const protocol = requireVersion(mapping.plugin_ui_protocol_version, /^plugin-ui-v[1-9][0-9]*$/, "mapped UI protocol");
-    const bridge = requireVersion(mapping.bridge_schema_version, /^bridge-v[1-9][0-9]*$/, "mapped bridge schema");
-    const transport = requireVersion(
-      mapping.opaque_surface_transport_schema_version,
-      /^opaque-surface-transport-v[1-9][0-9]*$/,
-      "mapped surface transport",
-    );
-    if (mappings.has(protocol)) throw new Error(`duplicate UI transport mapping for ${protocol}`);
-    mappings.set(protocol, { bridge, transport });
-  }
-  const activeMapping = mappings.get(activeUI);
-  if ([...mappings.keys()].some((protocol) => !matrix.supported_plugin_ui_protocol_versions.includes(protocol)) ||
-      activeMapping?.bridge !== activeBridge || activeMapping?.transport !== activeTransport) {
-    throw new Error("active UI protocol, bridge, and surface transport do not match the transport mapping");
-  }
-
-  if (!Array.isArray(source.artifacts)) throw new Error("active bridge gate requires contract artifacts");
-  const activeArtifact = requireActiveArtifact(source.artifacts, "iframe-bridge-schema", activeBridge, "bridge");
-  const activeTransportArtifact = requireActiveArtifact(
-    source.artifacts,
-    "opaque-surface-transport-schema",
-    activeTransport,
-    "surface transport",
-  );
-
+export function currentBridgeContractDescriptors() {
   return {
     active: {
-      uiProtocolVersion: activeUI,
-      bridgeSchemaVersion: activeBridge,
-      path: activeArtifact.path,
-      transportSchemaVersion: activeTransport,
-      transportPath: activeTransportArtifact.path,
+      bridgeSchemaVersion: "bridge",
+      path: "spec/plugin/bridge.schema.json",
+      transportSchemaVersion: "opaque-surface-transport-v6",
+      transportPath: "spec/plugin/opaque-surface-transport-v6.schema.json",
     },
   };
 }
@@ -123,19 +64,15 @@ export function validateUIBridgeInputs({
   activeTransportSchema,
   surface,
   contracts,
-  rendererPerformance,
 }) {
   if (!isRecord(descriptors) || !isRecord(descriptors.active) ||
-      typeof surface !== "string" || typeof contracts !== "string" || typeof rendererPerformance !== "string") {
+      typeof surface !== "string" || typeof contracts !== "string") {
     throw new Error("bridge gate inputs are invalid");
   }
   validateBridgeSchemaIdentity(activeSchema, descriptors.active);
   validateTransportSchemaIdentity(activeTransportSchema, descriptors.active);
   validatePluginVisibleIsolation(activeSchema, "active bridge schema");
 
-  if (descriptors.active.uiProtocolVersion !== "plugin-ui-v7") {
-    throw new Error(`bridge gate does not understand active UI protocol ${descriptors.active.uiProtocolVersion}`);
-  }
   validateExecutionSchemas(activeSchema);
   const activeText = JSON.stringify(activeSchema);
   for (const frame of commonFrames) {
@@ -146,19 +83,17 @@ export function validateUIBridgeInputs({
     throw new Error("active plugin UI must not retain the full-tree render frame");
   }
   if (!activeSchema.$defs?.context || !surface.includes("redevplugin.bridge.context") || !surface.includes("redevplugin.surface.context")) {
-    throw new Error("plugin-ui-v7 surface context contract is missing");
+    throw new Error("current surface context contract is missing");
   }
-  for (const required of [...executionFrames, "redevplugin.bridge.context", "redevplugin.surface.context", "pluginUIProtocolVersion"]) {
-    if (!surface.includes(required)) throw new Error(`plugin-ui-v7 surface gate is missing ${required}`);
+  for (const required of [...executionFrames, "redevplugin.bridge.context", "redevplugin.surface.context"]) {
+    if (!surface.includes(required)) throw new Error(`current surface gate is missing ${required}`);
   }
-  if (!surface.includes("pluginUIProtocolVersion") || /plugin-ui-v[1-6]\b/.test(surface)) {
-    throw new Error("surface SDK retains a retired UI protocol");
+  const currentSources = [surface, contracts, JSON.stringify(activeTransportSchema)];
+  if (currentSources.some((source) => source.includes("pluginUIProtocolVersion") || source.includes("ui_protocol_version") || /plugin-ui-v[0-9]+\b/.test(source))) {
+    throw new Error("current UI contract retains an independent UI protocol axis");
   }
   const bridgeProtocolLiterals = [...new Set(surface.match(/bridge-v[0-9]+/g) ?? [])];
   if (bridgeProtocolLiterals.length > 0) throw new Error("surface SDK retains a retired bridge protocol");
-  requireGeneratedVersion(contracts, "plugin_ui_protocol_version", descriptors.active.uiProtocolVersion);
-  requireGeneratedVersion(contracts, "bridge_schema_version", descriptors.active.bridgeSchemaVersion);
-  validateRendererPerformanceProtocolBinding(rendererPerformance);
 
   const responseDef = JSON.stringify(activeSchema.$defs?.response);
   for (const forbidden of trustedParentFields.slice(3)) {
@@ -170,176 +105,6 @@ export function validateUIBridgeInputs({
   if (!activeSchema["x-redevplugin-render-policy"]) {
     throw new Error("active bridge schema is missing the generated renderer policy source");
   }
-}
-
-function validateRendererPerformanceProtocolBinding(source) {
-  const outer = ts.createSourceFile(
-    "measure_redevplugin_renderer_performance.mjs",
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.JS,
-  );
-  if (outer.parseDiagnostics.length > 0) throw rendererPerformanceProtocolBindingError();
-  const harnessFunctions = outer.statements.filter((statement) =>
-    ts.isFunctionDeclaration(statement) && statement.name?.text === "buildHostHarnessSource",
-  );
-  if (harnessFunctions.length !== 1 || harnessFunctions[0].parameters.length !== 1 ||
-      !ts.isIdentifier(harnessFunctions[0].parameters[0].name) ||
-      harnessFunctions[0].parameters[0].name.text !== "workerContent" || !harnessFunctions[0].body) {
-    throw rendererPerformanceProtocolBindingError();
-  }
-  const harnessTemplates = [];
-  walkTypeScript(harnessFunctions[0].body, (node) => {
-    if (!ts.isTemplateExpression(node)) return;
-    const staticText = node.head.text + node.templateSpans.map((span) => span.literal.text).join("");
-    if (staticText.includes("createPreparedPluginSurfaceHost")) harnessTemplates.push(node);
-  });
-  if (harnessTemplates.length !== 1 || harnessTemplates[0].templateSpans.length !== 1) {
-    throw rendererPerformanceProtocolBindingError();
-  }
-
-  const template = harnessTemplates[0];
-  const interpolation = template.templateSpans[0].expression;
-  if (!ts.isCallExpression(interpolation) || interpolation.arguments.length !== 1 ||
-      !ts.isPropertyAccessExpression(interpolation.expression) ||
-      !ts.isIdentifier(interpolation.expression.expression) || interpolation.expression.expression.text !== "JSON" ||
-      interpolation.expression.name.text !== "stringify" ||
-      !ts.isIdentifier(interpolation.arguments[0]) || interpolation.arguments[0].text !== "workerContent") {
-    throw rendererPerformanceProtocolBindingError();
-  }
-  const outerChecker = typeCheckerFor(outer);
-  const parameterSymbol = outerChecker.getSymbolAtLocation(harnessFunctions[0].parameters[0].name);
-  const jsonSymbol = outerChecker.getSymbolAtLocation(interpolation.expression.expression);
-  if (!parameterSymbol || parameterSymbol !== outerChecker.getSymbolAtLocation(interpolation.arguments[0]) ||
-      (jsonSymbol?.declarations?.length ?? 0) > 0) {
-    throw rendererPerformanceProtocolBindingError();
-  }
-  const embeddedSentinel = "__REDEVPLUGIN_EMBEDDED_VALUE__";
-  const embeddedSource = template.head.text + template.templateSpans.map(
-    (span) => JSON.stringify(embeddedSentinel) + span.literal.text,
-  ).join("");
-  const embedded = ts.createSourceFile(
-    "redevplugin-renderer-performance-host.ts",
-    embeddedSource,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-  if (embedded.parseDiagnostics.length > 0) throw rendererPerformanceProtocolBindingError();
-  const workerDeclarations = embedded.statements.flatMap((statement) =>
-    ts.isVariableStatement(statement) ? statement.declarationList.declarations.filter((declaration) =>
-      ts.isIdentifier(declaration.name) && declaration.name.text === "workerContent") : [],
-  );
-  const sentinels = [];
-  walkTypeScript(embedded, (node) => {
-    if (ts.isStringLiteral(node) && node.text === embeddedSentinel) sentinels.push(node);
-  });
-  if (workerDeclarations.length !== 1 || sentinels.length !== 1 || workerDeclarations[0].initializer !== sentinels[0]) {
-    throw rendererPerformanceProtocolBindingError();
-  }
-
-  const protocolImports = namedValueImports(
-    embedded,
-    "./packages/redevplugin-ui/src/contracts.gen.ts",
-    "pluginUIProtocolVersion",
-    "pluginUIProtocolVersion",
-  );
-  if (protocolImports.length !== 1) throw rendererPerformanceProtocolBindingError();
-  const hostImports = namedValueImports(
-    embedded,
-    "./packages/redevplugin-ui/src/surface.ts",
-    "createPreparedPluginSurfaceHost",
-    "createPreparedPluginSurfaceHost",
-  );
-  if (hostImports.length !== 1) throw rendererPerformanceProtocolBindingError();
-
-  const hostCalls = [];
-  walkTypeScript(embedded, (node) => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
-        node.expression.text === "createPreparedPluginSurfaceHost") {
-      hostCalls.push(node);
-    }
-  });
-  if (hostCalls.length !== 1 || hostCalls[0].arguments.length !== 1 ||
-      !ts.isObjectLiteralExpression(hostCalls[0].arguments[0])) {
-    throw rendererPerformanceProtocolBindingError();
-  }
-  const hostOptions = closedObjectProperties(hostCalls[0].arguments[0]);
-  const bootstrap = hostOptions.get("bootstrap");
-  if (!bootstrap || !ts.isObjectLiteralExpression(bootstrap.initializer)) throw rendererPerformanceProtocolBindingError();
-  const protocol = closedObjectProperties(bootstrap.initializer).get("uiProtocolVersion");
-  if (!protocol || !ts.isIdentifier(protocol.initializer) || protocol.initializer.text !== "pluginUIProtocolVersion") {
-    throw rendererPerformanceProtocolBindingError();
-  }
-  const checker = typeCheckerFor(embedded);
-  const protocolImportSymbol = checker.getSymbolAtLocation(protocolImports[0].name);
-  const protocolInitializerSymbol = checker.getSymbolAtLocation(protocol.initializer);
-  const hostImportSymbol = checker.getSymbolAtLocation(hostImports[0].name);
-  const hostCalleeSymbol = checker.getSymbolAtLocation(hostCalls[0].expression);
-  if (!protocolImportSymbol || protocolImportSymbol !== protocolInitializerSymbol ||
-      !hostImportSymbol || hostImportSymbol !== hostCalleeSymbol) {
-    throw rendererPerformanceProtocolBindingError();
-  }
-}
-
-function namedValueImports(sourceFile, moduleName, importedName, localName) {
-  return sourceFile.statements.flatMap((statement) => {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) ||
-        statement.moduleSpecifier.text !== moduleName || statement.importClause?.isTypeOnly === true ||
-        !statement.importClause?.namedBindings || !ts.isNamedImports(statement.importClause.namedBindings)) {
-      return [];
-    }
-    return statement.importClause.namedBindings.elements.filter((element) =>
-      element.isTypeOnly !== true &&
-      (element.propertyName?.text ?? element.name.text) === importedName &&
-      element.name.text === localName,
-    );
-  });
-}
-
-function typeCheckerFor(sourceFile) {
-  const compilerOptions = {
-    allowJs: true,
-    module: ts.ModuleKind.ESNext,
-    noLib: true,
-    noResolve: true,
-    target: ts.ScriptTarget.Latest,
-  };
-  const host = {
-    fileExists: (fileName) => fileName === sourceFile.fileName,
-    getCanonicalFileName: (fileName) => fileName,
-    getCurrentDirectory: () => "",
-    getDefaultLibFileName: () => "lib.d.ts",
-    getNewLine: () => "\n",
-    getSourceFile: (fileName) => fileName === sourceFile.fileName ? sourceFile : undefined,
-    readFile: (fileName) => fileName === sourceFile.fileName ? sourceFile.text : undefined,
-    useCaseSensitiveFileNames: () => true,
-    writeFile: () => undefined,
-  };
-  return ts.createProgram([sourceFile.fileName], compilerOptions, host).getTypeChecker();
-}
-
-function closedObjectProperties(object) {
-  const properties = new Map();
-  for (const property of object.properties) {
-    if (!ts.isPropertyAssignment(property) ||
-        (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name)) ||
-        properties.has(property.name.text)) {
-      throw rendererPerformanceProtocolBindingError();
-    }
-    properties.set(property.name.text, property);
-  }
-  return properties;
-}
-
-function walkTypeScript(node, visit) {
-  visit(node);
-  ts.forEachChild(node, (child) => walkTypeScript(child, visit));
-}
-
-function rendererPerformanceProtocolBindingError() {
-  return new Error("renderer performance harness is not structurally bound to the generated active UI protocol");
 }
 
 function validateExecutionSchemas(schema) {
@@ -373,23 +138,23 @@ function validateExecutionFrame(schema, definition, contract) {
       properties?.id?.$ref !== "#/$defs/request_id" ||
       properties?.execution_id?.$ref !== "#/$defs/opaque_handle" ||
       (contract.validate && !contract.validate(properties))) {
-    throw new Error(`plugin-ui-v7 ${definition} frame is not closed and exact`);
+    throw new Error(`current ${definition} frame is not closed and exact`);
   }
   const references = Array.isArray(schema.oneOf)
     ? schema.oneOf.filter((entry) => entry?.$ref === `#/$defs/${definition}`)
     : [];
-  if (references.length !== 1) throw new Error(`plugin-ui-v7 must publish exactly one ${definition} frame reference`);
+  if (references.length !== 1) throw new Error(`current contract must publish exactly one ${definition} frame reference`);
 }
 
 function validateTransportSchemaIdentity(schema, descriptor) {
   if (!isRecord(schema) || schema.$id !== `https://schemas.redevplugin.dev/plugin/${descriptor.transportSchemaVersion}.schema.json`) {
-    throw new Error(`${descriptor.uiProtocolVersion} surface transport schema identity does not match ${descriptor.transportSchemaVersion}`);
+    throw new Error(`surface transport schema identity does not match ${descriptor.transportSchemaVersion}`);
   }
 }
 
 function validateBridgeSchemaIdentity(schema, descriptor) {
   if (!isRecord(schema) || schema.$id !== `https://schemas.redevplugin.dev/plugin/${descriptor.bridgeSchemaVersion}.schema.json`) {
-    throw new Error(`${descriptor.uiProtocolVersion} bridge schema identity does not match ${descriptor.bridgeSchemaVersion}`);
+    throw new Error(`bridge schema identity does not match ${descriptor.bridgeSchemaVersion}`);
   }
 }
 
@@ -400,28 +165,9 @@ function validatePluginVisibleIsolation(schema, label) {
   }
 }
 
-function requireGeneratedVersion(source, key, expected) {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const matches = [...source.matchAll(new RegExp(`^  "${escaped}"\\s*:\\s*"([^"]+)",?$`, "gm"))];
-  if (matches.length !== 1 || matches[0][1] !== expected) {
-    throw new Error(`generated contract ${key} does not match active value ${expected}`);
-  }
-}
-
 function validContractPath(value) {
   return typeof value === "string" && /^spec\/plugin\/[A-Za-z0-9._/-]+$/.test(value) &&
     !value.includes("..") && !value.includes("\\") && value.endsWith(".schema.json");
-}
-
-function requireActiveArtifact(artifacts, id, expectedVersion, label) {
-  const matches = artifacts.filter((artifact) => isRecord(artifact) && artifact.id === id);
-  if (matches.length !== 1 || !hasExactKeys(matches[0], ["id", "path", "version"])) {
-    throw new Error(`active contract source must contain one closed ${label} artifact`);
-  }
-  if (matches[0].version !== expectedVersion || !validContractPath(matches[0].path)) {
-    throw new Error(`active ${label} artifact does not match the matrix schema version`);
-  }
-  return matches[0];
 }
 
 function resolveRepositoryPath(rootDir, candidate, label) {
@@ -444,11 +190,6 @@ function parseJSON(source, label) {
   } catch {
     throw new Error(`${label} is not valid JSON`);
   }
-}
-
-function requireVersion(value, pattern, label) {
-  if (typeof value !== "string" || !pattern.test(value)) throw new Error(`${label} is invalid`);
-  return value;
 }
 
 function isRecord(value) {

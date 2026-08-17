@@ -45,21 +45,14 @@ test("trusted-parent handshake transcript has one stable current vector", async 
     asset_session_nonce: "asset_nonce_1",
     management_revision: 7,
     revoke_epoch: 3,
-    ui_protocol_version: "plugin-ui-v7",
   }, "bridge_channel_1");
-  assert.equal(got, "sha256:e7b2ce79d9f886e2bdb080bd0c63a11dd3c23144474012c3c6736ab21c6cb0d2");
+  assert.equal(got, "sha256:761226eb620c1a1277cb83b129f9e800ce1f1df243a04e7b6f5ad4952e65bcba");
 });
 
-test("opaque bootstrap rejects retired plugin UI protocols", () => {
-  for (const retired of ["plugin-ui-v5", "plugin-ui-v6"] as const) {
-    assert.throws(
-      () => createOpaquePluginBootstrapHTML({
-        scriptNonce: "nonce_test",
-        uiProtocolVersion: retired as unknown as "plugin-ui-v7",
-      }),
-      /uiProtocolVersion must be plugin-ui-v7/,
-    );
-  }
+test("opaque bootstrap has no independent UI protocol compatibility axis", () => {
+  const html = createOpaquePluginBootstrapHTML({ scriptNonce: "nonce_test" });
+  assert.equal(html.includes("plugin-ui-v"), false);
+  assert.equal(html.includes("ui_protocol_version"), false);
 });
 
 class FakePort implements MessagePortLike {
@@ -288,7 +281,6 @@ const hostBootstrap = {
   pluginId: "com.example.plugin",
   pluginInstanceId: "plugin_instance_1",
   pluginVersion: "1.0.0",
-  uiProtocolVersion: "plugin-ui-v7",
   surfaceId: "example.view",
   surfaceInstanceId: "surface_1",
   activeFingerprint: digest("a"),
@@ -329,7 +321,6 @@ function platformSurfaceBootstrap(overrides: Record<string, unknown> = {}): Reco
     plugin_id: hostBootstrap.pluginId,
     plugin_instance_id: hostBootstrap.pluginInstanceId,
     plugin_version: hostBootstrap.pluginVersion,
-    ui_protocol_version: hostBootstrap.uiProtocolVersion,
     surface_id: hostBootstrap.surfaceId,
     surface_instance_id: hostBootstrap.surfaceInstanceId,
     active_fingerprint: hostBootstrap.activeFingerprint,
@@ -1235,7 +1226,6 @@ test("surface host transfers one secret-free wildcard port and waits for paint, 
   assert.deepEqual(Object.keys(frame.transferred[0]?.message as Record<string, unknown>).sort(), [
     "frame_generation_id",
     "type",
-    "ui_protocol_version",
   ]);
   assert.equal(JSON.stringify(frame.transferred[0]?.message).includes("nonce"), false);
   assert.equal(JSON.stringify(frame.transferred[0]?.message).includes("plugin"), true);
@@ -2744,7 +2734,7 @@ test("surface host applies and updates context without replacing the iframe", as
   fetch.push(preparation());
   fetch.push(gatewayLease());
   const host = createSurfaceHost(frame, {
-    bootstrap: { ...hostBootstrap, uiProtocolVersion: "plugin-ui-v7" },
+    bootstrap: hostBootstrap,
     surfaceContext: initialContext,
     testMessageChannel: channel,
     hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
@@ -3065,7 +3055,7 @@ test("plugin disable immediately tears down matching local surface hosts", async
     active_fingerprint: hostBootstrap.activeFingerprint,
     trust_state: "verified",
     trust_assessment: { trust_state: "verified", verified_hashes: { package_sha256: digest("1"), manifest_sha256: digest("2"), entries_sha256: digest("3") } },
-    enable_state: "disabled",
+    enable_state: "disabled_by_user",
   });
   const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
 
@@ -3091,7 +3081,7 @@ const lifecyclePluginRecord = {
       entries_sha256: digest("3"),
     },
   },
-  enable_state: "disabled",
+  enable_state: "disabled_by_user",
 };
 
 const releaseRef = {

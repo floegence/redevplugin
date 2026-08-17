@@ -8,12 +8,12 @@ import (
 
 func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 	requests := []any{
-		ListDiagnosticEventsRequest{}, PackageTrustVerificationRequest{}, HostRequirementSelectionRequest{},
+		ListDiagnosticEventsRequest{}, PackageTrustVerificationRequest{},
 		ReleaseArtifactResolveRequest{}, StartRuntimeRequest{},
 		ImportLocalPackageRequest{}, UpdateLocalPackageRequest{}, InstallReleaseRefRequest{}, StartReleaseInstallExecutionRequest{}, UpdateReleaseRefRequest{},
 		InspectPluginDataRequest{}, ReadPluginDataFileRequest{}, WritePluginDataFileRequest{},
 		DowngradeRequest{}, EnableRequest{}, DisableRequest{}, UninstallRequest{}, ListRetainedDataRequest{},
-		DeleteRetainedDataRequest{}, BindRetainedDataRequest{}, CleanupExpiredRetainedDataRequest{}, ExportDataRequest{},
+		DeleteRetainedDataRequest{}, CleanupExpiredRetainedDataRequest{}, ExportDataRequest{},
 		ImportDataRequest{}, DeleteExportDataRequest{}, GrantPermissionRequest{}, RevokePermissionRequest{},
 		InspectExternalPackageRequest{}, InspectUploadedExternalPackageRequest{}, InstallInspectedPackageRequest{},
 		ListPermissionGrantsRequest{}, PutSecurityPolicyRequest{}, GetSecurityPolicyRequest{}, DeleteSecurityPolicyRequest{},

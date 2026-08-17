@@ -11,7 +11,7 @@ import (
 )
 
 func TestExternalPackageFeatureIsPublishedByTheOpenAPIContract(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestExternalPackageFeatureIsPublishedByTheOpenAPIContract(t *testing.T) {
 }
 
 func TestExternalPackageRoutesExposeClosedInspectAndInstallFlow(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestExternalPackageRoutesExposeClosedInspectAndInstallFlow(t *testing.T) {
 }
 
 func TestExternalPackageDurableCommitAndQueryRoutesAreRetired(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestExternalPackageDurableCommitAndQueryRoutesAreRetired(t *testing.T) {
 }
 
 func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 		properties []string
 	}{
 		{schema: "InspectExternalPackageRequest", properties: []string{"intent", "source"}},
-		{schema: "InstallInspectedPackageRequest", properties: []string{"activate_after_install", "approved_permission_ids", "expected_package_sha256", "inspection_id"}},
+		{schema: "InstallInspectedPackageRequest", properties: []string{"expected_package_sha256", "inspection_id"}},
 	}
 	for _, tt := range tests {
 		block := openAPISchemaBlock(t, source, tt.schema)
@@ -137,7 +137,7 @@ func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 }
 
 func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
 }
 
 func TestExternalPackageProjectionPreservesLegacyTrustFields(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestExternalPackageProjectionPreservesLegacyTrustFields(t *testing.T) {
 }
 
 func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v17.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) 
 		{schema: "ExternalPackageCancelSummary", properties: []string{"ack_timeout_ms", "cancelable", "disable_behavior", "uninstall_behavior"}},
 		{schema: "ExternalPackageMethodSummary", properties: []string{"cancel", "confirmation", "dangerous", "effect", "execution", "method", "preflight_only", "required_permissions", "route"}},
 		{schema: "ExternalPackageCapabilityContractSummary", properties: []string{"binding_id", "capability_id", "capability_version", "contract_sha256"}},
-		{schema: "ExternalPackageWorkerSummary", properties: []string{"abi", "artifact", "idle_timeout_ms", "memory_limit_bytes", "mode", "scope", "worker_id"}},
+		{schema: "ExternalPackageWorkerSummary", properties: []string{"artifact", "idle_timeout_ms", "memory_limit_bytes", "mode", "scope", "worker_id"}},
 		{schema: "ExternalPackageNetworkMethodAccessSummary", properties: []string{"http_methods", "method", "operations"}},
 		{schema: "ExternalPackageNetworkSummary", properties: []string{"auth_declared", "connector_id", "destinations", "method_access", "scope", "tls_declared", "transport"}},
 		{schema: "ExternalPackageStorageMethodAccessSummary", properties: []string{"method", "operations"}},

@@ -1,14 +1,16 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func secretTestContext() context.Context {
@@ -318,12 +320,23 @@ VALUES('plugin_legacy', 'token', 'user', 1, '', 1)`); err != nil {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewSQLiteStore(context.Background(), path); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
-		t.Fatalf("NewSQLiteStore() error = %v, want migration required", err)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSQLiteStore(context.Background(), path); !errors.Is(err, ErrSecretStoreSchema) {
+		t.Fatalf("NewSQLiteStore() error = %v, want ErrSecretStoreSchema", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("legacy secret store was modified")
 	}
 }
 
-func TestSQLiteStoreRebuildsEmptyOwnerlessTable(t *testing.T) {
+func TestSQLiteStoreRejectsEmptyOwnerlessTable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-empty.sqlite")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -335,12 +348,18 @@ func TestSQLiteStoreRebuildsEmptyOwnerlessTable(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewSQLiteStore(context.Background(), path)
+	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	if err := store.BindSecretRef(secretTestContext(), BindRequest{PluginInstanceID: "plugin_new", SecretRef: "token", Scope: ScopeUser}); err != nil {
+	if _, err := NewSQLiteStore(context.Background(), path); !errors.Is(err, ErrSecretStoreSchema) {
+		t.Fatalf("NewSQLiteStore() error = %v, want ErrSecretStoreSchema", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("legacy secret store was modified")
 	}
 }

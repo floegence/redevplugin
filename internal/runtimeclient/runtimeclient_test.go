@@ -12,8 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,16 +23,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_FIXED_FD_HELPER") == "1" {
+		runFixedFDLayoutHelper()
+		return
+	}
 	if rawExitCode := os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_EXIT_CODE"); rawExitCode != "" {
 		exitCode, err := strconv.Atoi(rawExitCode)
 		if err != nil {
@@ -50,11 +50,87 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BAD_HELPER") == "1" {
 		writeRuntimeHelperStartMarker()
-		os.Stdout.WriteString("not-json\n")
+		ipcWrite := os.NewFile(runtimeIPCWriteFD, "redevplugin-ipc-write")
+		if ipcWrite == nil {
+			os.Exit(254)
+		}
+		_, _ = ipcWrite.WriteString("not-json\n")
 		time.Sleep(10 * time.Second)
 		return
 	}
 	os.Exit(m.Run())
+}
+
+func TestPortableRuntimeProcessUsesTheCanonicalFixedFDLayout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	process, err := launchPortableRuntimeProcess(runtimeProcessLaunchOptions{
+		context: ctx,
+		path:    os.Args[0],
+		args:    []string{"-test.run=TestMain"},
+		env:     append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_FIXED_FD_HELPER=1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = process.Kill()
+		_ = process.Wait()
+	}()
+	assertRuntimeChannelRoundTrip(t, process.ipcIn, process.ipcOut, 'i')
+	assertRuntimeChannelRoundTrip(t, process.controlIn, process.controlOut, 'c')
+}
+
+func assertRuntimeChannelRoundTrip(t *testing.T, writer io.Writer, reader io.Reader, value byte) {
+	t.Helper()
+	if _, err := writer.Write([]byte{value}); err != nil {
+		t.Fatalf("write runtime channel: %v", err)
+	}
+	response := []byte{0}
+	if _, err := io.ReadFull(reader, response); err != nil {
+		t.Fatalf("read runtime channel: %v", err)
+	}
+	if response[0] != value {
+		t.Fatalf("runtime channel response = %q, want %q", response[0], value)
+	}
+}
+
+func runFixedFDLayoutHelper() {
+	if os.Getenv("REDEVPLUGIN_CONTROL_READ_FD") != "" || os.Getenv("REDEVPLUGIN_CONTROL_WRITE_FD") != "" {
+		os.Exit(90)
+	}
+	for _, pair := range [][2]int{{runtimeIPCReadFD, runtimeIPCWriteFD}, {runtimeControlReadFD, runtimeControlWriteFD}} {
+		reader := os.NewFile(uintptr(pair[0]), "runtime-fixed-read")
+		writer := os.NewFile(uintptr(pair[1]), "runtime-fixed-write")
+		if reader == nil || writer == nil {
+			os.Exit(91)
+		}
+		value := []byte{0}
+		if _, err := io.ReadFull(reader, value); err != nil {
+			os.Exit(92)
+		}
+		if _, err := writer.Write(value); err != nil {
+			os.Exit(93)
+		}
+	}
+	os.Exit(0)
+}
+
+func TestRuntimeProcessWaitCleansOwnedStagingOnce(t *testing.T) {
+	var cleanups int
+	process := &runtimeProcess{
+		wait:    func() error { return nil },
+		cleanup: func() { cleanups++ },
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if cleanups != 1 {
+		t.Fatalf("runtime staging cleanup count = %d, want 1", cleanups)
+	}
 }
 
 func TestRuntimeProcessFailureCodesMapExactExitStatuses(t *testing.T) {
@@ -197,12 +273,12 @@ func TestReadIPCFrameRejectsNonCanonicalJSON(t *testing.T) {
 		name  string
 		frame string
 	}{
-		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
-		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
-		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
-		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
-		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
-		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v7","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
+		{name: "unknown field", frame: `{"frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
+		{name: "duplicate frame type", frame: `{"frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
+		{name: "case folded request id", frame: `{"frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
+		{name: "case alias only", frame: `{"frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
+		{name: "duplicate nested payload key", frame: `{"frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
+		{name: "trailing JSON", frame: `{"frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -215,17 +291,16 @@ func TestReadIPCFrameRejectsNonCanonicalJSON(t *testing.T) {
 
 func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 	baseFrame := ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeHelloAck,
 		RequestID:           "hello_1",
 		RuntimeGenerationID: "g1",
 	}
 	for _, payload := range []string{
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
-		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v7","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
+		`{"internal_wire":1,"platform_version":"3.0.0","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456","future":true}`,
+		`{"internal_wire":1,"platform_version":"3.0.0","platform_version":"3.0.1","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
+		`{"internal_wire":1,"platform_version":"3.0.0","PLATFORM_VERSION":"3.0.1","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
+		`{"internal_wire":1,"PLATFORM_VERSION":"3.0.0","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"}`,
+		`{"internal_wire":1,"platform_version":"3.0.0","runtime_artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","connection_nonce":"nonce_1234567890123456"} {}`,
 	} {
 		frame := baseFrame
 		frame.Payload = json.RawMessage(payload)
@@ -233,7 +308,7 @@ func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 			"hello_1",
 			"g1",
 			"nonce_1234567890123456",
-			testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
+			testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64)),
 			DefaultRuntimeLimits(),
 			frame,
 		); !errors.Is(err, ErrRuntimeHandshake) {
@@ -243,7 +318,7 @@ func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 }
 
 func TestValidateHelloAckRequiresExactContainmentEvidence(t *testing.T) {
-	descriptor := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64))
+	descriptor := testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64))
 	validContainment := processContainmentEvidence{
 		SchemaVersion:         "redevplugin.process_containment.v1",
 		Profile:               runtimeContainmentProfile,
@@ -255,14 +330,13 @@ func TestValidateHelloAckRequiresExactContainmentEvidence(t *testing.T) {
 		Active:                true,
 	}
 	validAck := helloAckPayload{
-		RuntimeVersion:     descriptor.PlatformVersion().String(),
-		ActualTarget:       descriptor.Target().String(),
-		RustIPCVersion:     descriptor.RustIPCVersion(),
-		WASMABIVersion:     descriptor.WASMABIVersion(),
-		ContractSetSHA256:  descriptor.ContractSetSHA256(),
-		ChannelNonce:       "nonce_1234567890123456",
-		Limits:             DefaultRuntimeLimits(),
-		ProcessContainment: &validContainment,
+		InternalWire:          InternalWire,
+		PlatformVersion:       descriptor.PlatformVersion().String(),
+		RuntimeArtifactSHA256: descriptor.BinarySHA256(),
+		ConnectionNonce:       "nonce_1234567890123456",
+		ActualTarget:          descriptor.Target().String(),
+		Limits:                DefaultRuntimeLimits(),
+		ProcessContainment:    &validContainment,
 	}
 	frameFor := func(t *testing.T, ack helloAckPayload) ipcFrame {
 		t.Helper()
@@ -271,14 +345,13 @@ func TestValidateHelloAckRequiresExactContainmentEvidence(t *testing.T) {
 			t.Fatal(err)
 		}
 		return ipcFrame{
-			IPCVersion:          version.RustIPCVersion,
 			FrameType:           ipcFrameTypeHelloAck,
 			RequestID:           "hello_1",
 			RuntimeGenerationID: "generation_1",
 			Payload:             payload,
 		}
 	}
-	if _, err := validateHelloAck("hello_1", "generation_1", validAck.ChannelNonce, descriptor, validAck.Limits, frameFor(t, validAck), true); err != nil {
+	if _, err := validateHelloAck("hello_1", "generation_1", validAck.ConnectionNonce, descriptor, validAck.Limits, frameFor(t, validAck), true); err != nil {
 		t.Fatalf("validateHelloAck() valid containment error = %v", err)
 	}
 
@@ -304,7 +377,7 @@ func TestValidateHelloAckRequiresExactContainmentEvidence(t *testing.T) {
 			ack := validAck
 			ack.ProcessContainment = &containment
 			test.mutate(&ack)
-			if _, err := validateHelloAck("hello_1", "generation_1", ack.ChannelNonce, descriptor, ack.Limits, frameFor(t, ack), true); !errors.Is(err, ErrRuntimeHandshake) {
+			if _, err := validateHelloAck("hello_1", "generation_1", ack.ConnectionNonce, descriptor, ack.Limits, frameFor(t, ack), true); !errors.Is(err, ErrRuntimeHandshake) {
 				t.Fatalf("validateHelloAck() error = %v, want ErrRuntimeHandshake", err)
 			}
 		})
@@ -320,255 +393,6 @@ func TestStrictJSONAllowsCaseDistinctDynamicMapKeys(t *testing.T) {
 	}
 	if payload.Headers["Key"] != "first" || payload.Headers["key"] != "second" {
 		t.Fatalf("headers = %#v", payload.Headers)
-	}
-}
-
-func TestHostcallHandlersRejectNonCanonicalRequests(t *testing.T) {
-	health := Health{RuntimeGenerationID: "g1"}
-	allowedArtifact := &ArtifactRequest{}
-	allowedInvocation := &workerInvocationContext{}
-	tests := []struct {
-		name     string
-		wantCode string
-		knownKey string
-		call     func(*ProcessSupervisor, io.Writer, ipcFrame) error
-	}{
-		{name: "open handle", wantCode: "ARTIFACT_REQUEST_INVALID", knownKey: "package_hash", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
-			return supervisor.respondToOpenHandle(context.Background(), writer, "g1", frame, allowedArtifact)
-		}},
-		{name: "validate handle grant", wantCode: "HANDLE_GRANT_REQUEST_INVALID", knownKey: "handle_grant_token", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
-			return supervisor.respondToValidateHandleGrant(context.Background(), writer, "g1", frame, allowedInvocation)
-		}},
-		{name: "storage file", wantCode: "STORAGE_FILE_REQUEST_INVALID", knownKey: "handle_grant_token", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
-			return supervisor.respondToStorageFile(context.Background(), writer, health, frame, allowedInvocation)
-		}},
-		{name: "storage kv", wantCode: "STORAGE_KV_REQUEST_INVALID", knownKey: "handle_grant_token", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
-			return supervisor.respondToStorageKV(context.Background(), writer, health, frame, allowedInvocation)
-		}},
-		{name: "storage sqlite", wantCode: "STORAGE_SQLITE_REQUEST_INVALID", knownKey: "handle_grant_token", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
-			return supervisor.respondToStorageSQLite(context.Background(), writer, health, frame, allowedInvocation)
-		}},
-		{name: "network grant", wantCode: "NETWORK_GRANT_REQUEST_INVALID", knownKey: "plugin_instance_id", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
-			return supervisor.respondToNetworkGrant(context.Background(), writer, health, frame, allowedInvocation)
-		}},
-		{name: "network execute", wantCode: "NETWORK_EXECUTE_REQUEST_INVALID", knownKey: "plugin_instance_id", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
-			return supervisor.respondToNetworkExecute(context.Background(), writer, health, frame, allowedInvocation)
-		}},
-	}
-	for _, test := range tests {
-		for _, request := range []struct {
-			name    string
-			payload string
-		}{
-			{name: "unknown field", payload: `{"future":true}`},
-			{name: "duplicate field", payload: fmt.Sprintf(`{"%s":"first","%s":"second"}`, test.knownKey, test.knownKey)},
-			{name: "case folded field", payload: fmt.Sprintf(`{"%s":"first","%s":"second"}`, test.knownKey, strings.ToUpper(test.knownKey))},
-			{name: "case alias only", payload: fmt.Sprintf(`{"%s":"first"}`, strings.ToUpper(test.knownKey))},
-			{name: "trailing JSON", payload: `{}` + ` {}`},
-		} {
-			t.Run(test.name+"/"+request.name, func(t *testing.T) {
-				var output bytes.Buffer
-				frame := ipcFrame{RequestID: "hostcall_1", Payload: json.RawMessage(request.payload)}
-				if err := test.call(&ProcessSupervisor{}, &output, frame); err != nil {
-					t.Fatalf("handler error = %v", err)
-				}
-				response, err := readSemanticJSONTestFrame(bufio.NewReader(&output))
-				if err != nil {
-					t.Fatalf("read response: %v", err)
-				}
-				var failure struct {
-					OK          bool              `json:"ok"`
-					Code        string            `json:"code"`
-					Message     string            `json:"message"`
-					ErrorOrigin WorkerErrorOrigin `json:"error_origin"`
-				}
-				if err := decodeStrictJSON(response.Payload, &failure); err != nil {
-					t.Fatalf("decode response payload: %v", err)
-				}
-				if failure.OK || failure.Code != test.wantCode || failure.ErrorOrigin != WorkerErrorOriginHostcall {
-					t.Fatalf("failure = %#v, want code %s", failure, test.wantCode)
-				}
-			})
-		}
-	}
-}
-
-func TestBrokerResponsesFailClosedAboveWASMHostcallLimit(t *testing.T) {
-	tests := []struct {
-		name     string
-		wantCode string
-		write    func(*bytes.Buffer) error
-	}{
-		{
-			name:     "storage file",
-			wantCode: "STORAGE_FILE_TOO_LARGE",
-			write: func(buffer *bytes.Buffer) error {
-				return (&ProcessSupervisor{}).writeStorageFileResponse(buffer, "g1", ipcFrame{RequestID: "r1", ParentRequestID: "invoke1"}, storageFileResponsePayload{
-					Operation: "read", OK: true, DataBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
-					Usage: &storage.Usage{PluginInstanceID: "plugini_1", StoreID: "workspace", QuotaBytes: 1, QuotaFiles: 1},
-				})
-			},
-		},
-		{
-			name:     "storage kv",
-			wantCode: "STORAGE_KV_VALUE_TOO_LARGE",
-			write: func(buffer *bytes.Buffer) error {
-				return (&ProcessSupervisor{}).writeStorageKVResponse(buffer, "g1", ipcFrame{RequestID: "r1", ParentRequestID: "invoke1"}, storageKVResponsePayload{
-					Operation: "get", OK: true, ValueBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
-					Usage: &storage.Usage{PluginInstanceID: "plugini_1", StoreID: "settings", QuotaBytes: 1, QuotaFiles: 1},
-				})
-			},
-		},
-		{
-			name:     "storage sqlite",
-			wantCode: "STORAGE_SQLITE_RESULT_TOO_LARGE",
-			write: func(buffer *bytes.Buffer) error {
-				large := strings.Repeat("x", maxWASMHostcallResponseBytes+1)
-				rows := [][]storageSQLiteValueIPC{{{Text: &large}}}
-				return (&ProcessSupervisor{}).writeStorageSQLiteResponse(buffer, "g1", ipcFrame{RequestID: "r1", ParentRequestID: "invoke1"}, storageSQLiteResponsePayload{
-					Operation: "query", OK: true, Rows: &rows, Columns: &[]string{}, Usage: &storage.Usage{PluginInstanceID: "plugini_1", StoreID: "db", QuotaBytes: 1, QuotaFiles: 1},
-				})
-			},
-		},
-		{
-			name:     "network",
-			wantCode: "NETWORK_RESPONSE_TOO_LARGE",
-			write: func(buffer *bytes.Buffer) error {
-				return (&ProcessSupervisor{}).writeNetworkExecuteResponse(buffer, "g1", ipcFrame{RequestID: "r1", ParentRequestID: "invoke1"}, networkExecuteResponsePayload{
-					OK: true, BodyBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
-				})
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var output bytes.Buffer
-			if err := tc.write(&output); err != nil {
-				t.Fatalf("write response error = %v", err)
-			}
-			if output.Len() > maxWASMHostcallResponseBytes {
-				t.Fatalf("bounded response length = %d, want <= %d", output.Len(), maxWASMHostcallResponseBytes)
-			}
-			if !strings.Contains(output.String(), tc.wantCode) ||
-				!strings.Contains(output.String(), `"error_origin":"hostcall"`) ||
-				!strings.Contains(output.String(), `"parent_request_id":"invoke1"`) {
-				t.Fatalf("bounded response = %s, want %s hostcall error", output.String(), tc.wantCode)
-			}
-		})
-	}
-}
-
-func TestStorageSuccessResponsesUseOperationSpecificClosedWireShapes(t *testing.T) {
-	usage := &storage.Usage{
-		PluginInstanceID: "plugini_1", StoreID: "workspace",
-		UsageBytes: 1, QuotaBytes: 100, UsageFiles: 1, QuotaFiles: 10,
-	}
-	rowsAffected := int64(1)
-	columns := []string{"title"}
-	text := "note"
-	rows := [][]storageSQLiteValueIPC{{{Text: &text}}}
-	tests := []struct {
-		name string
-		want []string
-		raw  func() ([]byte, error)
-	}{
-		{name: "file read", want: []string{"ok", "path", "data_base64", "size_bytes", "usage"}, raw: func() ([]byte, error) {
-			return marshalStorageFileHostcallPayload(storageFileResponsePayload{Operation: "read", OK: true, Path: "a.txt", DataBase64: "YQ==", SizeBytes: 1, Usage: usage})
-		}},
-		{name: "file write", want: []string{"ok", "path", "size_bytes", "usage"}, raw: func() ([]byte, error) {
-			return marshalStorageFileHostcallPayload(storageFileResponsePayload{Operation: "write", OK: true, Path: "a.txt", SizeBytes: 1, Usage: usage})
-		}},
-		{name: "file delete", want: []string{"ok", "path"}, raw: func() ([]byte, error) {
-			return marshalStorageFileHostcallPayload(storageFileResponsePayload{Operation: "delete", OK: true, Path: "a.txt"})
-		}},
-		{name: "file list", want: []string{"ok", "path", "entries", "usage"}, raw: func() ([]byte, error) {
-			return marshalStorageFileHostcallPayload(storageFileResponsePayload{Operation: "list", OK: true, Entries: []storage.FileEntry{}, Usage: usage})
-		}},
-		{name: "kv get", want: []string{"ok", "key", "value_base64", "size_bytes", "usage"}, raw: func() ([]byte, error) {
-			return marshalStorageKVHostcallPayload(storageKVResponsePayload{Operation: "get", OK: true, Key: "theme", ValueBase64: "ZGFyaw==", SizeBytes: 4, Usage: usage})
-		}},
-		{name: "kv put", want: []string{"ok", "key", "size_bytes", "usage"}, raw: func() ([]byte, error) {
-			return marshalStorageKVHostcallPayload(storageKVResponsePayload{Operation: "put", OK: true, Key: "theme", SizeBytes: 4, Usage: usage})
-		}},
-		{name: "kv delete", want: []string{"ok", "key"}, raw: func() ([]byte, error) {
-			return marshalStorageKVHostcallPayload(storageKVResponsePayload{Operation: "delete", OK: true, Key: "theme"})
-		}},
-		{name: "kv list", want: []string{"ok", "prefix", "entries", "usage"}, raw: func() ([]byte, error) {
-			return marshalStorageKVHostcallPayload(storageKVResponsePayload{Operation: "list", OK: true, Prefix: "settings/", Entries: []storage.KVEntry{}, Usage: usage})
-		}},
-		{name: "sqlite exec", want: []string{"ok", "database", "rows_affected", "last_insert_id", "usage"}, raw: func() ([]byte, error) {
-			return marshalStorageSQLiteHostcallPayload(storageSQLiteResponsePayload{Operation: "exec", OK: true, Database: "plugin.sqlite", RowsAffected: &rowsAffected, LastInsertID: 7, Usage: usage})
-		}},
-		{name: "sqlite query", want: []string{"ok", "database", "columns", "rows", "usage"}, raw: func() ([]byte, error) {
-			return marshalStorageSQLiteHostcallPayload(storageSQLiteResponsePayload{Operation: "query", OK: true, Database: "plugin.sqlite", Columns: &columns, Rows: &rows, Usage: usage})
-		}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			raw, err := test.raw()
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatal(err)
-			}
-			if len(decoded) != len(test.want) {
-				t.Fatalf("response keys = %v, want %v; payload=%s", decoded, test.want, raw)
-			}
-			for _, key := range test.want {
-				if _, ok := decoded[key]; !ok {
-					t.Fatalf("response missing %q: %s", key, raw)
-				}
-			}
-		})
-	}
-}
-
-func TestStorageSuccessResponsesRejectMixedOrIncompleteOperations(t *testing.T) {
-	usage := &storage.Usage{PluginInstanceID: "plugini_1", StoreID: "workspace", QuotaBytes: 100, QuotaFiles: 10}
-	rowsAffected := int64(1)
-	columns := []string{"title"}
-	rows := [][]storageSQLiteValueIPC{}
-	tests := []struct {
-		name string
-		raw  func() ([]byte, error)
-	}{
-		{name: "file read with list fields", raw: func() ([]byte, error) {
-			return marshalStorageFileHostcallPayload(storageFileResponsePayload{Operation: "read", OK: true, Entries: []storage.FileEntry{}, Usage: usage})
-		}},
-		{name: "file write with read fields", raw: func() ([]byte, error) {
-			return marshalStorageFileHostcallPayload(storageFileResponsePayload{Operation: "write", OK: true, DataBase64: "YQ==", Usage: usage})
-		}},
-		{name: "file list missing usage", raw: func() ([]byte, error) {
-			return marshalStorageFileHostcallPayload(storageFileResponsePayload{Operation: "list", OK: true, Entries: []storage.FileEntry{}})
-		}},
-		{name: "kv get with list fields", raw: func() ([]byte, error) {
-			return marshalStorageKVHostcallPayload(storageKVResponsePayload{Operation: "get", OK: true, Entries: []storage.KVEntry{}, Usage: usage})
-		}},
-		{name: "kv put with get fields", raw: func() ([]byte, error) {
-			return marshalStorageKVHostcallPayload(storageKVResponsePayload{Operation: "put", OK: true, ValueBase64: "YQ==", Usage: usage})
-		}},
-		{name: "kv list missing usage", raw: func() ([]byte, error) {
-			return marshalStorageKVHostcallPayload(storageKVResponsePayload{Operation: "list", OK: true, Entries: []storage.KVEntry{}})
-		}},
-		{name: "sqlite exec with query fields", raw: func() ([]byte, error) {
-			return marshalStorageSQLiteHostcallPayload(storageSQLiteResponsePayload{Operation: "exec", OK: true, RowsAffected: &rowsAffected, Columns: &columns, Rows: &rows, Usage: usage})
-		}},
-		{name: "sqlite query with exec fields", raw: func() ([]byte, error) {
-			return marshalStorageSQLiteHostcallPayload(storageSQLiteResponsePayload{Operation: "query", OK: true, RowsAffected: &rowsAffected, Columns: &columns, Rows: &rows, Usage: usage})
-		}},
-		{name: "sqlite query missing rows", raw: func() ([]byte, error) {
-			return marshalStorageSQLiteHostcallPayload(storageSQLiteResponsePayload{Operation: "query", OK: true, Columns: &columns, Usage: usage})
-		}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if raw, err := test.raw(); err == nil {
-				t.Fatalf("accepted invalid success response: %s", raw)
-			}
-		})
 	}
 }
 
@@ -600,10 +424,8 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	if !health.Ready ||
 		health.RuntimeInstanceID == "" ||
 		health.RuntimeGenerationID == "" ||
-		health.Descriptor.PlatformVersion().String() != version.CurrentCompatibilityVersion() ||
-		health.Descriptor.Target() != testRuntimeTarget ||
-		health.Descriptor.RustIPCVersion() != version.RustIPCVersion ||
-		health.Descriptor.WASMABIVersion() != version.WASMABIVersion {
+		health.ArtifactIdentity.PlatformVersion().String() != version.CurrentPlatformVersion() ||
+		health.ArtifactIdentity.Target() != testRuntimeTarget {
 		t.Fatalf("health mismatch: %#v", health)
 	}
 	heartbeat, err := supervisor.Heartbeat(context.Background())
@@ -615,6 +437,13 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 		heartbeat.MaxStalenessMillis != int64(maxHeartbeatStaleness/time.Millisecond) ||
 		heartbeat.HostSentUnixNanoEcho <= 0 {
 		t.Fatalf("heartbeat mismatch: %#v", heartbeat)
+	}
+	projected, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health(after heartbeat) error = %v", err)
+	}
+	if projected.ActiveInvocations != heartbeat.ActiveInvocations || projected.QueuedInvocations != heartbeat.QueuedInvocations || projected.ModuleCache != heartbeat.ModuleCache {
+		t.Fatalf("health did not project heartbeat state: health=%#v heartbeat=%#v", projected, heartbeat)
 	}
 	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
 	if err != nil {
@@ -930,8 +759,8 @@ func TestProcessSupervisorRequiresExplicitDescriptor(t *testing.T) {
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 	})
-	if !errors.Is(err, ErrRuntimeDescriptorInvalid) {
-		t.Fatalf("NewProcessSupervisor() error = %v, want ErrRuntimeDescriptorInvalid", err)
+	if !errors.Is(err, ErrRuntimeArtifactIdentityInvalid) {
+		t.Fatalf("NewProcessSupervisor() error = %v, want ErrRuntimeArtifactIdentityInvalid", err)
 	}
 }
 
@@ -939,7 +768,7 @@ func TestProcessSupervisorRejectsDigestMismatchBeforeStartingProcess(t *testing.
 	markerPath := filepath.Join(t.TempDir(), "runtime-started")
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath:           os.Args[0],
-		Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("0", 64)),
+		ArtifactIdentity:      testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("0", 64)),
 		Args:                  []string{"-test.run=TestMain"},
 		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_START_MARKER="+markerPath),
 		Limits:                DefaultRuntimeLimits(),
@@ -962,15 +791,15 @@ func TestProcessSupervisorRejectsDigestMismatchBeforeStartingProcess(t *testing.
 
 func TestProcessSupervisorRejectsHelloDescriptorMismatch(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		env  string
+		name               string
+		env                string
+		descriptorMismatch bool
 	}{
-		{name: "runtime version", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_RUNTIME_VERSION=99.0.0"},
-		{name: "build metadata", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_RUNTIME_VERSION=" + version.CurrentCompatibilityVersion() + "+different-build"},
-		{name: "target", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET=linux/arm64"},
-		{name: "ipc", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_IPC_VERSION=rust-ipc-v99"},
-		{name: "wasm abi", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_WASM_ABI_VERSION=redevplugin-wasm-worker-v99"},
-		{name: "contract set", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_CONTRACT_SET_SHA256=" + strings.Repeat("f", 64)},
+		{name: "platform version", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_PLATFORM_VERSION=99.0.0", descriptorMismatch: true},
+		{name: "build metadata", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_PLATFORM_VERSION=" + version.CurrentPlatformVersion() + "+different-build", descriptorMismatch: true},
+		{name: "target", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET=linux/arm64", descriptorMismatch: true},
+		{name: "internal wire", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_INTERNAL_WIRE=2"},
+		{name: "runtime artifact", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_ARTIFACT_SHA256=" + strings.Repeat("f", 64), descriptorMismatch: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
@@ -986,8 +815,9 @@ func TestProcessSupervisorRejectsHelloDescriptorMismatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := supervisor.Start(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeHandshake) || !errors.Is(err, ErrRuntimeDescriptorMismatch) {
-				t.Fatalf("Start() error = %v, want handshake descriptor mismatch", err)
+			err = supervisor.Start(context.Background(), testRuntimeTarget)
+			if !errors.Is(err, ErrRuntimeHandshake) || (test.descriptorMismatch && !errors.Is(err, ErrRuntimeArtifactIdentityMismatch)) {
+				t.Fatalf("Start() error = %v, want handshake rejection", err)
 			}
 			health, healthErr := supervisor.Health(context.Background())
 			if healthErr != nil {
@@ -1649,7 +1479,6 @@ func TestIPCGoldenFixtures(t *testing.T) {
 		"valid_invoke_worker_result.json",
 		"valid_session_revoke.json",
 		"valid_session_revoke_ack.json",
-		"valid_validate_handle_grant.json",
 	}
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "contracts", "ipc", "*.json"))
 	if err != nil {
@@ -1711,7 +1540,7 @@ func validateSessionRevokeGoldenFixture(name string, raw []byte) error {
 	}, SessionRevokeSequence: 1}
 	switch name {
 	case "valid_session_revoke.json":
-		if frame.IPCVersion != version.RustIPCVersion || frame.FrameType != ipcFrameTypeSessionRevoke || frame.RequestID != "session_revoke_1" || frame.RuntimeGenerationID != "runtime_generation_fixture_1" {
+		if frame.FrameType != ipcFrameTypeSessionRevoke || frame.RequestID != "session_revoke_1" || frame.RuntimeGenerationID != "runtime_generation_fixture_1" {
 			return errors.New("session revoke request frame identity mismatch")
 		}
 		var payload sessionRevokeRequestPayload
@@ -1746,7 +1575,7 @@ type ipcGoldenFixture struct {
 	ParentRequestID     string   `json:"parent_request_id,omitempty"`
 	RuntimeGenerationID string   `json:"runtime_generation_id"`
 	ResponseFrameType   string   `json:"response_frame_type,omitempty"`
-	ChannelNonce        string   `json:"channel_nonce,omitempty"`
+	ConnectionNonce     string   `json:"connection_nonce,omitempty"`
 	WantError           bool     `json:"want_error"`
 	ErrorContains       string   `json:"error_contains,omitempty"`
 	Frame               ipcFrame `json:"frame"`
@@ -1759,7 +1588,7 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 		if err := json.Unmarshal(fixture.Frame.Payload, &ack); err != nil {
 			return err
 		}
-		runtimeVersion, err := version.ParseSemVer(ack.RuntimeVersion)
+		runtimeVersion, err := version.ParseSemVer(ack.PlatformVersion)
 		if err != nil {
 			return err
 		}
@@ -1767,15 +1596,13 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 		if err != nil {
 			return err
 		}
-		descriptor, err := NewRuntimeDescriptor(RuntimeDescriptorOptions{
-			PlatformVersion: runtimeVersion, Target: target, RustIPCVersion: ack.RustIPCVersion,
-			WASMABIVersion: ack.WASMABIVersion, ContractSetSHA256: ack.ContractSetSHA256,
-			BinarySHA256: strings.Repeat("a", 64),
+		identity, err := NewRuntimeArtifactIdentity(RuntimeArtifactIdentityOptions{
+			PlatformVersion: runtimeVersion, Target: target, BinarySHA256: strings.Repeat("a", 64),
 		})
 		if err != nil {
 			return err
 		}
-		_, err = validateHelloAck(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ChannelNonce, descriptor, ack.Limits, fixture.Frame)
+		_, err = validateHelloAck(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ConnectionNonce, identity, ack.Limits, fixture.Frame)
 		return err
 	case "response":
 		if err := validateIPCResponse(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ResponseFrameType, fixture.Frame); err != nil {
@@ -1783,23 +1610,6 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 		}
 		_, err := decodeRuntimeResponse(fixture.Frame)
 		return err
-	case "validate_handle_grant":
-		if fixture.Frame.FrameType != ipcFrameTypeValidateHandleGrant ||
-			fixture.Frame.RequestID != fixture.RequestID ||
-			fixture.Frame.ParentRequestID != fixture.ParentRequestID ||
-			fixture.Frame.RuntimeGenerationID != fixture.RuntimeGenerationID {
-			return errors.New("validate_handle_grant frame identity mismatch")
-		}
-		var request HandleGrantValidationRequest
-		if err := decodeStrictJSON(fixture.Frame.Payload, &request); err != nil {
-			return err
-		}
-		if request.ResourceScope.Validate() != nil ||
-			request.OwnerSessionHash == "" || request.OwnerUserHash == "" ||
-			request.OwnerEnvHash == "" || request.SessionChannelIDHash == "" {
-			return errors.New("validate_handle_grant audience is invalid")
-		}
-		return nil
 	default:
 		return fmt.Errorf("unsupported ipc fixture kind %q", fixture.Kind)
 	}
@@ -1815,14 +1625,13 @@ func TestWorkerInvocationContextBindsBrokerAccessHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workerInvocationContextFromInvocation() error = %v", err)
 	}
-	if !invocation.BrokerAccess.allowsStorage("notes", "query") || invocation.BrokerAccess.allowsStorage("notes", "exec") {
+	if len(invocation.BrokerAccess.Storage) != 1 || invocation.BrokerAccess.Storage[0].StoreID != "notes" ||
+		len(invocation.BrokerAccess.Storage[0].Operations) != 1 || invocation.BrokerAccess.Storage[0].Operations[0] != "query" {
 		t.Fatalf("storage broker access mismatch: %#v", invocation.BrokerAccess.Storage)
 	}
-	if !invocation.BrokerAccess.allowsNetwork("forecast", "http", "http", "GET") || invocation.BrokerAccess.allowsNetwork("forecast", "http", "http", "POST") {
+	if len(invocation.BrokerAccess.Network) != 1 || invocation.BrokerAccess.Network[0].ConnectorID != "forecast" ||
+		len(invocation.BrokerAccess.Network[0].HTTPMethods) != 1 || invocation.BrokerAccess.Network[0].HTTPMethods[0] != "GET" {
 		t.Fatalf("network broker access mismatch: %#v", invocation.BrokerAccess.Network)
-	}
-	if scope, ok := invocation.BrokerAccess.networkScope("forecast", "http"); !ok || scope != sessionctx.ScopeUser {
-		t.Fatalf("network broker scope = %q, %v", scope, ok)
 	}
 	var tampered map[string]any
 	if err := json.Unmarshal(payload, &tampered); err != nil {
@@ -1870,163 +1679,6 @@ func TestWorkerInvocationContextRejectsSignedLeaseAudienceMismatch(t *testing.T)
 			}
 			if _, err := workerInvocationContextFromInvocation(lease, raw); !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), field) {
 				t.Fatalf("audience mismatch error = %v, want %s mismatch", err, field)
-			}
-		})
-	}
-}
-
-func TestStorageHostcallIdentityMismatchStopsBeforeGrantAndBroker(t *testing.T) {
-	lease := workerInvocationLeaseFixture()
-	invocation, err := workerInvocationContextFromInvocation(lease, workerInvocationFixture())
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := storageFileRequestPayload{
-		HandleGrantToken:    "handle_grant_token_1",
-		PluginInstanceID:    lease.PluginInstanceID,
-		ActiveFingerprint:   lease.ActiveFingerprint,
-		RuntimeInstanceID:   lease.RuntimeInstanceID,
-		RuntimeGenerationID: lease.RuntimeGenerationID,
-		RuntimeShardID:      lease.RuntimeShardID,
-		HandleID:            "storage:workspace",
-		Method:              "storage.files",
-		ResourceScope:       testUserResourceScope(),
-		PolicyRevision:      lease.PolicyRevision,
-		ManagementRevision:  lease.ManagementRevision,
-		RevokeEpoch:         lease.RevokeEpoch,
-		Operation:           "read",
-		StoreID:             "workspace",
-		Path:                "notes/today.txt",
-		MaxBytes:            1024,
-	}
-	tests := []struct {
-		name   string
-		mutate func(*storageFileRequestPayload)
-	}{
-		{name: "plugin_instance_id", mutate: func(req *storageFileRequestPayload) { req.PluginInstanceID = "plugini_spoofed" }},
-		{name: "active_fingerprint", mutate: func(req *storageFileRequestPayload) { req.ActiveFingerprint = "sha256:spoofed" }},
-		{name: "runtime_instance_id", mutate: func(req *storageFileRequestPayload) { req.RuntimeInstanceID = "runtime_spoofed" }},
-		{name: "runtime_generation_id", mutate: func(req *storageFileRequestPayload) { req.RuntimeGenerationID = "runtime_gen_spoofed" }},
-		{name: "runtime_shard_id", mutate: func(req *storageFileRequestPayload) { req.RuntimeShardID = "runtime_shard_spoofed" }},
-		{name: "policy_revision", mutate: func(req *storageFileRequestPayload) { req.PolicyRevision++ }},
-		{name: "management_revision", mutate: func(req *storageFileRequestPayload) { req.ManagementRevision++ }},
-		{name: "revoke_epoch", mutate: func(req *storageFileRequestPayload) { req.RevokeEpoch++ }},
-		{name: "owner_user_hash", mutate: func(req *storageFileRequestPayload) { req.ResourceScope.OwnerUserHash = "user_spoofed" }},
-		{name: "store_scope", mutate: func(req *storageFileRequestPayload) {
-			req.ResourceScope = sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
-		}},
-		{name: "missing_resource_scope", mutate: func(req *storageFileRequestPayload) { req.ResourceScope = sessionctx.ResourceScope{} }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			req := base
-			test.mutate(&req)
-			validator := &recordingHandleGrantValidator{}
-			files := &recordingStorageFilesBroker{}
-			supervisor := &ProcessSupervisor{handleGrants: validator, storageFiles: files}
-			var output bytes.Buffer
-			if err := supervisor.respondToStorageFile(context.Background(), &output, Health{RuntimeGenerationID: lease.RuntimeGenerationID}, ipcFrame{
-				RequestID: "storage_identity_1",
-				Payload:   mustMarshalRaw(req),
-			}, &invocation); err != nil {
-				t.Fatal(err)
-			}
-			if validator.calls != 0 || files.readCalls != 0 || files.writeCalls != 0 || files.deleteCalls != 0 || files.listCalls != 0 {
-				t.Fatalf("identity mismatch reached adapters: validator=%d files=%#v", validator.calls, files)
-			}
-			response, err := readSemanticJSONTestFrame(bufio.NewReader(&output))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var failure hostcallFailurePayload
-			if err := decodeStrictJSON(response.Payload, &failure); err != nil {
-				t.Fatal(err)
-			}
-			if failure.OK || (failure.Code != "STORAGE_FILE_REQUEST_DENIED" && failure.Code != "STORAGE_FILE_REQUEST_INVALID") {
-				t.Fatalf("failure = %#v", failure)
-			}
-		})
-	}
-}
-
-func TestNetworkHostcallIdentityMismatchStopsBeforeBrokerAndExecutor(t *testing.T) {
-	lease := workerInvocationLeaseFixture()
-	invocation, err := workerInvocationContextFromInvocation(lease, workerInvocationFixture())
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := networkExecuteRequestPayload{
-		PluginID:             lease.PluginID,
-		PluginInstanceID:     lease.PluginInstanceID,
-		ActiveFingerprint:    lease.ActiveFingerprint,
-		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: lease.OwnerEnvHash, OwnerUserHash: lease.OwnerUserHash},
-		RuntimeInstanceID:    lease.RuntimeInstanceID,
-		RuntimeGenerationID:  lease.RuntimeGenerationID,
-		RuntimeShardID:       lease.RuntimeShardID,
-		PolicyRevision:       lease.PolicyRevision,
-		ManagementRevision:   lease.ManagementRevision,
-		RevokeEpoch:          lease.RevokeEpoch,
-		ConnectorID:          "api",
-		Transport:            connectivity.TransportHTTP,
-		Destination:          "https://api.example.com",
-		TTLMillis:            1000,
-		Operation:            "http",
-		Method:               http.MethodPost,
-		Path:                 "/v1/worker",
-		MaxResponseBytes:     1024,
-		TimeoutMillis:        1000,
-		OwnerSessionHash:     lease.OwnerSessionHash,
-		OwnerUserHash:        lease.OwnerUserHash,
-		OwnerEnvHash:         lease.OwnerEnvHash,
-		SessionChannelIDHash: lease.SessionChannelIDHash,
-	}
-	tests := []struct {
-		name   string
-		mutate func(*networkExecuteRequestPayload)
-	}{
-		{name: "plugin_id", mutate: func(req *networkExecuteRequestPayload) { req.PluginID = "com.example.spoofed" }},
-		{name: "plugin_instance_id", mutate: func(req *networkExecuteRequestPayload) { req.PluginInstanceID = "plugini_spoofed" }},
-		{name: "active_fingerprint", mutate: func(req *networkExecuteRequestPayload) { req.ActiveFingerprint = "sha256:spoofed" }},
-		{name: "runtime_instance_id", mutate: func(req *networkExecuteRequestPayload) { req.RuntimeInstanceID = "runtime_spoofed" }},
-		{name: "runtime_generation_id", mutate: func(req *networkExecuteRequestPayload) { req.RuntimeGenerationID = "runtime_gen_spoofed" }},
-		{name: "runtime_shard_id", mutate: func(req *networkExecuteRequestPayload) { req.RuntimeShardID = "runtime_shard_spoofed" }},
-		{name: "policy_revision", mutate: func(req *networkExecuteRequestPayload) { req.PolicyRevision++ }},
-		{name: "management_revision", mutate: func(req *networkExecuteRequestPayload) { req.ManagementRevision++ }},
-		{name: "revoke_epoch", mutate: func(req *networkExecuteRequestPayload) { req.RevokeEpoch++ }},
-		{name: "owner_session_hash", mutate: func(req *networkExecuteRequestPayload) { req.OwnerSessionHash = "session_spoofed" }},
-		{name: "owner_user_hash", mutate: func(req *networkExecuteRequestPayload) { req.OwnerUserHash = "user_spoofed" }},
-		{name: "owner_env_hash", mutate: func(req *networkExecuteRequestPayload) { req.OwnerEnvHash = "env_spoofed" }},
-		{name: "resource_scope", mutate: func(req *networkExecuteRequestPayload) { req.ResourceScope.OwnerUserHash = "user_spoofed" }},
-		{name: "session_channel_id_hash", mutate: func(req *networkExecuteRequestPayload) { req.SessionChannelIDHash = "channel_spoofed" }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			req := base
-			test.mutate(&req)
-			validator := &recordingHandleGrantValidator{}
-			broker := &recordingConnectivityBroker{}
-			executor := &recordingNetworkExecutor{}
-			supervisor := &ProcessSupervisor{handleGrants: validator, connectivity: broker, networkExecutor: executor}
-			var output bytes.Buffer
-			if err := supervisor.respondToNetworkExecute(context.Background(), &output, Health{RuntimeGenerationID: lease.RuntimeGenerationID}, ipcFrame{
-				RequestID: "network_identity_1",
-				Payload:   mustMarshalRaw(req),
-			}, &invocation); err != nil {
-				t.Fatal(err)
-			}
-			if validator.calls != 0 || broker.calls != 0 || executor.httpCalls != 0 || executor.streamCalls != 0 || executor.websocketCalls != 0 || executor.tcpCalls != 0 || executor.udpCalls != 0 {
-				t.Fatalf("identity mismatch reached adapters: validator=%d broker=%d executor=%#v", validator.calls, broker.calls, executor)
-			}
-			response, err := readSemanticJSONTestFrame(bufio.NewReader(&output))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var failure hostcallFailurePayload
-			if err := decodeStrictJSON(response.Payload, &failure); err != nil {
-				t.Fatal(err)
-			}
-			if failure.OK || (failure.Code != "NETWORK_EXECUTE_REQUEST_DENIED" && failure.Code != "NETWORK_EXECUTE_REQUEST_INVALID") {
-				t.Fatalf("failure = %#v", failure)
 			}
 		})
 	}
@@ -2093,10 +1745,10 @@ func TestProcessSupervisorArtifactHostcallIsInvocationIndependentAndGenerationBo
 	request := ArtifactRequest{PackageHash: fixturePackageHash, Artifact: fixtureArtifact, ArtifactSHA256: fixtureArtifactSHA}
 	flight := &pendingCompileFlight{
 		generation: generation, parentRequestID: "invoke_old", artifactRequestID: "invoke_old:artifact",
-		artifact: request, wasmABIVersion: version.WASMABIVersion, registered: true,
+		artifact: request, registered: true,
 	}
 	supervisor.dispatchCompileFlightArtifact(generation, Health{RuntimeGenerationID: generation.id}, ipcFrame{
-		IPCVersion: version.RustIPCVersion, FrameType: ipcFrameTypeOpenHandle,
+		FrameType: ipcFrameTypeOpenHandle,
 		RequestID: flight.artifactRequestID, ParentRequestID: flight.parentRequestID, RuntimeGenerationID: generation.id,
 		Payload: mustMarshalRaw(request),
 	}, flight)
@@ -2372,922 +2024,6 @@ func TestProcessSupervisorInvalidatesRuntimeForUnknownHostcallParent(t *testing.
 	stopRuntimeSupervisor(t, supervisor)
 }
 
-func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.T) {
-	validator := &recordingHandleGrantValidator{
-		result: HandleGrantValidationResult{
-			HandleGrantID:       "handle_grant_1",
-			HandleID:            "storage:db",
-			Method:              "storage.sqlite",
-			RuntimeGenerationID: "runtime_gen_test",
-			ResourceScope:       testUserResourceScope(),
-			MaxTotalBytes:       4096,
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE=1"),
-		HandleGrants:          validator,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
-	if err != nil {
-		t.Fatalf("InvokeWorker() error = %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(rawResult, &decoded); err != nil {
-		t.Fatalf("decode worker result: %v", err)
-	}
-	handle, ok := decoded["handle_grant"].(map[string]any)
-	if !ok {
-		t.Fatalf("handle grant result missing: %#v", decoded)
-	}
-	if handle["ok"] != true || handle["handle_id"] != "storage:db" || handle["method"] != "storage.sqlite" {
-		t.Fatalf("handle grant result mismatch: %#v", handle)
-	}
-	if validator.calls != 1 || validator.last.RuntimeGenerationID != health.RuntimeGenerationID || validator.last.HandleID != "storage:db" {
-		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
-	}
-	assertHandleGrantSessionAudience(t, validator.last)
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *testing.T) {
-	validator := &recordingHandleGrantValidator{
-		result: HandleGrantValidationResult{
-			HandleGrantID:       "handle_grant_1",
-			HandleID:            "storage:workspace",
-			Method:              "storage.files",
-			RuntimeGenerationID: "runtime_gen_test",
-			ResourceScope:       testUserResourceScope(),
-			MaxTotalBytes:       4096,
-		},
-	}
-	files := &recordingStorageFilesBroker{
-		readResult: storage.FileReadResult{
-			Path:      "notes/today.txt",
-			Data:      []byte("hello"),
-			SizeBytes: 5,
-			Usage:     storage.Usage{PluginInstanceID: "plugini_1", StoreID: "workspace", UsageBytes: 5, QuotaBytes: 4096},
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
-		HandleGrants:          validator,
-		StorageFiles:          files,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixture())
-	if err != nil {
-		t.Fatalf("InvokeWorker() error = %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(rawResult, &decoded); err != nil {
-		t.Fatalf("decode worker result: %v", err)
-	}
-	storageFile, ok := decoded["storage_file"].(map[string]any)
-	if !ok {
-		t.Fatalf("storage file result missing: %#v", decoded)
-	}
-	if storageFile["ok"] != true || storageFile["path"] != "notes/today.txt" || storageFile["data_base64"] != base64.StdEncoding.EncodeToString([]byte("hello")) {
-		t.Fatalf("storage file result mismatch: %#v", storageFile)
-	}
-	if validator.calls != 1 || validator.last.HandleID != "storage:workspace" || validator.last.Method != "storage.files" {
-		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
-	}
-	assertHandleGrantSessionAudience(t, validator.last)
-	if files.readCalls != 1 || files.lastRead.PluginInstanceID != "plugini_1" || files.lastRead.StoreID != "workspace" || files.lastRead.Path != "notes/today.txt" {
-		t.Fatalf("storage read mismatch: calls=%d last=%#v", files.readCalls, files.lastRead)
-	}
-	assertBoundedDeadline(t, "storage file read", files.lastReadCalledAt, files.lastReadDeadline, files.lastReadDeadlineOK, defaultRuntimeHostcallTimeout)
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesStorageOperationOutsideMethodBrokerAccess(t *testing.T) {
-	validator := &recordingHandleGrantValidator{}
-	files := &recordingStorageFilesBroker{}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
-		HandleGrants:          validator,
-		StorageFiles:          files,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixtureWithAccess(workerBrokerAccess{
-		Storage: []workerStorageBrokerAccess{{StoreID: "workspace", Scope: "user", Operations: []string{"write"}}},
-	}))
-	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "STORAGE_FILE_REQUEST_DENIED") {
-		t.Fatalf("InvokeWorker() error = %v, want method-scoped storage denial", err)
-	}
-	if validator.calls != 0 || files.readCalls != 0 {
-		t.Fatalf("denied storage request reached broker: validator=%d reads=%d", validator.calls, files.readCalls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testing.T) {
-	validator := &recordingHandleGrantValidator{
-		result: HandleGrantValidationResult{
-			HandleGrantID:       "handle_grant_1",
-			HandleID:            "storage:settings",
-			Method:              "storage.kv",
-			RuntimeGenerationID: "runtime_gen_test",
-			ResourceScope:       testUserResourceScope(),
-			MaxTotalBytes:       4096,
-		},
-	}
-	kv := &recordingStorageKVBroker{
-		putResult: storage.KVPutResult{
-			Key:       "demo/last_broker_run",
-			SizeBytes: 8,
-			Usage:     storage.Usage{PluginInstanceID: "plugini_1", StoreID: "settings", UsageBytes: 8, QuotaBytes: 4096},
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV=put"),
-		HandleGrants:          validator,
-		StorageKV:             kv,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixture())
-	if err != nil {
-		t.Fatalf("InvokeWorker() error = %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(rawResult, &decoded); err != nil {
-		t.Fatalf("decode worker result: %v", err)
-	}
-	storageKV, ok := decoded["storage_kv"].(map[string]any)
-	if !ok {
-		t.Fatalf("storage kv result missing: %#v", decoded)
-	}
-	if storageKV["ok"] != true || storageKV["key"] != "demo/last_broker_run" || storageKV["size_bytes"] != float64(8) {
-		t.Fatalf("storage kv result mismatch: %#v", storageKV)
-	}
-	if validator.calls != 1 || validator.last.HandleID != "storage:settings" || validator.last.Method != "storage.kv" {
-		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
-	}
-	assertHandleGrantSessionAudience(t, validator.last)
-	if kv.putCalls != 1 || kv.lastPut.PluginInstanceID != "plugini_1" || kv.lastPut.StoreID != "settings" || kv.lastPut.Key != "demo/last_broker_run" || string(kv.lastPut.Value) != "hello kv" {
-		t.Fatalf("storage kv put mismatch: calls=%d last=%#v", kv.putCalls, kv.lastPut)
-	}
-	assertBoundedDeadline(t, "storage kv put", kv.lastPutCalledAt, kv.lastPutDeadline, kv.lastPutDeadlineOK, defaultRuntimeHostcallTimeout)
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *testing.T) {
-	validator := &recordingHandleGrantValidator{
-		result: HandleGrantValidationResult{
-			HandleGrantID:       "handle_grant_1",
-			HandleID:            "storage:db",
-			Method:              "storage.sqlite",
-			RuntimeGenerationID: "runtime_gen_test",
-			ResourceScope:       testUserResourceScope(),
-			MaxTotalBytes:       4096,
-		},
-	}
-	title := "stored from wasm"
-	score := int64(7)
-	sqlite := &recordingStorageSQLiteBroker{
-		queryResult: storage.SQLiteQueryResult{
-			Database: "plugin.sqlite",
-			Columns:  []string{"title", "score"},
-			Rows: [][]storage.SQLiteValue{{
-				{Text: &title},
-				{Int: &score},
-			}},
-			Usage: storage.Usage{PluginInstanceID: "plugini_1", StoreID: "db", UsageBytes: 4096, QuotaBytes: 8192},
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE=query"),
-		HandleGrants:          validator,
-		StorageSQLite:         sqlite,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixture())
-	if err != nil {
-		t.Fatalf("InvokeWorker() error = %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(rawResult, &decoded); err != nil {
-		t.Fatalf("decode worker result: %v", err)
-	}
-	storageSQLite, ok := decoded["storage_sqlite"].(map[string]any)
-	if !ok {
-		t.Fatalf("storage sqlite result missing: %#v", decoded)
-	}
-	if storageSQLite["ok"] != true || storageSQLite["database"] != "plugin.sqlite" {
-		t.Fatalf("storage sqlite result mismatch: %#v", storageSQLite)
-	}
-	rows, ok := storageSQLite["rows"].([]any)
-	if !ok || len(rows) != 1 {
-		t.Fatalf("storage sqlite rows mismatch: %#v", storageSQLite["rows"])
-	}
-	if validator.calls != 1 || validator.last.HandleID != "storage:db" || validator.last.Method != "storage.sqlite" {
-		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
-	}
-	assertHandleGrantSessionAudience(t, validator.last)
-	if sqlite.queryCalls != 1 || sqlite.lastQuery.PluginInstanceID != "plugini_1" || sqlite.lastQuery.StoreID != "db" || sqlite.lastQuery.SQL != "SELECT title, score FROM events WHERE score = ?" {
-		t.Fatalf("storage sqlite query mismatch: calls=%d last=%#v", sqlite.queryCalls, sqlite.lastQuery)
-	}
-	assertBoundedDeadline(t, "storage sqlite query", sqlite.lastQueryCalledAt, sqlite.lastQueryDeadline, sqlite.lastQueryDeadlineOK, time.Second)
-	if len(sqlite.lastQuery.Args) != 1 || sqlite.lastQuery.Args[0].Int == nil || *sqlite.lastQuery.Args[0].Int != score {
-		t.Fatalf("storage sqlite args mismatch: %#v", sqlite.lastQuery.Args)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestStorageSQLiteQueryResponsePreservesEmptyRows(t *testing.T) {
-	broker := &recordingStorageSQLiteBroker{
-		queryResult: storage.SQLiteQueryResult{
-			Database: "plugin.sqlite",
-			Columns:  []string{"id"},
-			Rows:     [][]storage.SQLiteValue{},
-		},
-	}
-	payload := dispatchStorageSQLiteRequest(context.Background(), broker, storageSQLiteRequestPayload{
-		Operation: "query",
-		StoreID:   "db",
-		Database:  "plugin.sqlite",
-		SQL:       "SELECT id FROM notes WHERE 1 = 0",
-	})
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal empty SQLite query response: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("decode empty SQLite query response: %v", err)
-	}
-	rows, ok := decoded["rows"].([]any)
-	if !ok || len(rows) != 0 {
-		t.Fatalf("empty SQLite query rows must remain an explicit array: %s", raw)
-	}
-}
-
-func TestStorageSQLiteValuePreservesEmptyBlobPresence(t *testing.T) {
-	emptyBlob := []byte{}
-	wire := storageSQLiteValueToIPC(storage.SQLiteValue{Blob: emptyBlob})
-	if wire.BlobBase64 == nil || *wire.BlobBase64 != "" || wire.Null != nil || wire.Int != nil || wire.Float != nil || wire.Text != nil {
-		t.Fatalf("empty blob wire value = %#v", wire)
-	}
-	decoded, err := storageSQLiteValueFromIPC(wire)
-	if err != nil || decoded.Blob == nil || len(decoded.Blob) != 0 {
-		t.Fatalf("empty blob decoded value = %#v, err=%v", decoded, err)
-	}
-	falseValue := false
-	intValue := int64(1)
-	textValue := "ambiguous"
-	for _, invalid := range []storageSQLiteValueIPC{
-		{},
-		{Null: &falseValue},
-		{Int: &intValue, Text: &textValue},
-	} {
-		if _, err := storageSQLiteValueFromIPC(invalid); err == nil {
-			t.Fatalf("accepted invalid SQLite value %#v", invalid)
-		}
-	}
-}
-
-func TestStorageSQLiteExecResponsePreservesZeroRowsAffected(t *testing.T) {
-	broker := &recordingStorageSQLiteBroker{
-		execResult: storage.SQLiteExecResult{Database: "plugin.sqlite", RowsAffected: 0},
-	}
-	payload := dispatchStorageSQLiteRequest(context.Background(), broker, storageSQLiteRequestPayload{
-		Operation: "exec",
-		StoreID:   "db",
-		Database:  "plugin.sqlite",
-		SQL:       "CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY)",
-	})
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal zero-row SQLite exec response: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("decode zero-row SQLite exec response: %v", err)
-	}
-	if rowsAffected, ok := decoded["rows_affected"].(float64); !ok || rowsAffected != 0 {
-		t.Fatalf("zero-row SQLite exec response must preserve rows_affected: %s", raw)
-	}
-}
-
-func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) {
-	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
-	broker := &recordingConnectivityBroker{
-		grant: connectivity.ConnectionGrant{
-			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
-			PluginInstanceID:        "plugini_1",
-			ActiveFingerprint:       "sha256:active",
-			PolicyRevision:          1,
-			ManagementRevision:      2,
-			RevokeEpoch:             3,
-			ConnectorID:             "api",
-			Transport:               connectivity.TransportHTTP,
-			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
-			RuntimeGenerationID:     "runtime_gen_test",
-			TargetClassifierVersion: version.TargetClassifierVersion,
-			ExpiresAt:               now.Add(30 * time.Second),
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
-		Connectivity:          broker,
-		Now:                   func() time.Time { return now },
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixture())
-	if err != nil {
-		t.Fatalf("InvokeWorker() error = %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(rawResult, &decoded); err != nil {
-		t.Fatalf("decode worker result: %v", err)
-	}
-	networkGrant, ok := decoded["network_grant"].(map[string]any)
-	if !ok {
-		t.Fatalf("network grant result missing: %#v", decoded)
-	}
-	if networkGrant["ok"] != true || networkGrant["grant_id"] != broker.grant.GrantID || networkGrant["connector_id"] != "api" || networkGrant["transport"] != "http" {
-		t.Fatalf("network grant result mismatch: %#v", networkGrant)
-	}
-	if broker.calls != 1 ||
-		broker.last.PluginInstanceID != "plugini_1" ||
-		broker.last.RuntimeGenerationID != health.RuntimeGenerationID ||
-		!broker.last.ResourceScope.Matches(sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}) ||
-		broker.last.ConnectorID != "api" ||
-		broker.last.Destination != "https://api.example.com" ||
-		broker.last.TTL != 30*time.Second {
-		t.Fatalf("connectivity broker mismatch: calls=%d last=%#v", broker.calls, broker.last)
-	}
-	if !broker.hasLastSession || broker.lastSession.OwnerEnvHash != "env_hash" || broker.lastSession.OwnerUserHash != "user_hash" {
-		t.Fatalf("connectivity broker session = %#v, present=%v", broker.lastSession, broker.hasLastSession)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorRejectsNetworkGrantClassifierVersionMismatch(t *testing.T) {
-	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
-	broker := &recordingConnectivityBroker{
-		grant: connectivity.ConnectionGrant{
-			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
-			PluginInstanceID:        "plugini_1",
-			ActiveFingerprint:       "sha256:active",
-			PolicyRevision:          1,
-			ManagementRevision:      2,
-			RevokeEpoch:             3,
-			ConnectorID:             "api",
-			Transport:               connectivity.TransportHTTP,
-			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
-			RuntimeGenerationID:     "runtime_gen_test",
-			TargetClassifierVersion: "target-classifier-invalid",
-			ExpiresAt:               now.Add(30 * time.Second),
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
-		Connectivity:          broker,
-		Now:                   func() time.Time { return now },
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	_, err = supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixture())
-	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "NETWORK_GRANT_VALIDATION_FAILED") {
-		t.Fatalf("InvokeWorker() error = %v, want NETWORK_GRANT_VALIDATION_FAILED runtime request", err)
-	}
-	if broker.calls != 1 {
-		t.Fatalf("connectivity broker calls = %d, want 1", broker.calls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
-	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
-	broker := &recordingConnectivityBroker{
-		grant: connectivity.ConnectionGrant{
-			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
-			PluginInstanceID:        "plugini_1",
-			ActiveFingerprint:       "sha256:active",
-			PolicyRevision:          1,
-			ManagementRevision:      2,
-			RevokeEpoch:             3,
-			ConnectorID:             "api",
-			Transport:               connectivity.TransportHTTP,
-			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
-			RuntimeGenerationID:     "runtime_gen_test",
-			TargetClassifierVersion: version.TargetClassifierVersion,
-			ExpiresAt:               now.Add(30 * time.Second),
-		},
-	}
-	executor := &recordingNetworkExecutor{
-		httpResponse: connectivity.HTTPResponse{
-			StatusCode: 201,
-			Headers:    http.Header{"X-Worker": []string{"ok"}},
-			Body:       []byte(`{"ok":true}`),
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
-		Connectivity:          broker,
-		NetworkExecutor:       executor,
-		Now:                   func() time.Time { return now },
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixture())
-	if err != nil {
-		t.Fatalf("InvokeWorker() error = %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(rawResult, &decoded); err != nil {
-		t.Fatalf("decode worker result: %v", err)
-	}
-	networkExecute, ok := decoded["network_execute"].(map[string]any)
-	if !ok {
-		t.Fatalf("network execute result missing: %#v", decoded)
-	}
-	if networkExecute["ok"] != true || networkExecute["status_code"] != float64(201) || networkExecute["body_base64"] != base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)) {
-		t.Fatalf("network execute result mismatch: %#v", networkExecute)
-	}
-	if broker.calls != 1 || broker.last.ConnectorID != "api" || broker.last.Destination != "https://api.example.com" {
-		t.Fatalf("connectivity broker mismatch: calls=%d last=%#v", broker.calls, broker.last)
-	}
-	if executor.httpCalls != 1 ||
-		executor.lastHTTP.Grant.GrantID != broker.grant.GrantID ||
-		executor.lastHTTP.Method != http.MethodPost ||
-		executor.lastHTTP.Path != "/v1/worker" ||
-		executor.lastHTTP.Query.Encode() != "lang=en&units=metric" ||
-		string(executor.lastHTTP.Body) != `{"hello":"network"}` ||
-		executor.lastHTTP.Headers.Get("X-Test") != "ok" ||
-		executor.lastHTTP.MaxResponseBytes != 1024 ||
-		executor.lastHTTP.Timeout != 2*time.Second {
-		t.Fatalf("network executor mismatch: calls=%d last=%#v", executor.httpCalls, executor.lastHTTP)
-	}
-	assertBoundedDeadline(t, "network grant mint", broker.lastCalledAt, broker.lastDeadline, broker.lastDeadlineOK, 2*time.Second)
-	assertBoundedDeadline(t, "network http execute", executor.lastHTTPCalledAt, executor.lastHTTPDeadline, executor.lastHTTPDeadlineOK, 2*time.Second)
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesHTTPMethodOutsideMethodBrokerAccess(t *testing.T) {
-	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
-	broker := &recordingConnectivityBroker{}
-	executor := &recordingNetworkExecutor{}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
-		Connectivity:          broker,
-		NetworkExecutor:       executor,
-		Now:                   func() time.Time { return now },
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixtureWithAccess(workerBrokerAccess{
-		Network: []workerNetworkBrokerAccess{{ConnectorID: "api", Transport: "http", Scope: "user", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
-	}))
-	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "NETWORK_EXECUTE_REQUEST_DENIED") {
-		t.Fatalf("InvokeWorker() error = %v, want method-scoped HTTP method denial", err)
-	}
-	if broker.calls != 0 || executor.httpCalls != 0 {
-		t.Fatalf("denied network request reached broker: grants=%d http=%d", broker.calls, executor.httpCalls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T) {
-	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
-	broker := &recordingConnectivityBroker{
-		grant: connectivity.ConnectionGrant{
-			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
-			PluginInstanceID:        "plugini_1",
-			ActiveFingerprint:       "sha256:active",
-			PolicyRevision:          1,
-			ManagementRevision:      2,
-			RevokeEpoch:             3,
-			ConnectorID:             "api",
-			Transport:               connectivity.TransportHTTP,
-			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
-			RuntimeGenerationID:     "runtime_gen_test",
-			TargetClassifierVersion: version.TargetClassifierVersion,
-			ExpiresAt:               now.Add(30 * time.Second),
-		},
-	}
-	executor := &recordingNetworkExecutor{
-		streamResponse: connectivity.HTTPStreamResponse{
-			StatusCode: http.StatusAccepted,
-			Headers:    http.Header{"Content-Type": []string{"text/plain"}},
-		},
-		streamChunks: [][]byte{[]byte("alpha\n"), []byte("beta\n")},
-	}
-	executionEvents := newExecutionEventSink(streamIDForRuntimeNetworkTest)
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http_stream"),
-		Connectivity:          broker,
-		NetworkExecutor:       executor,
-		StreamSink:            executionEvents,
-		Now:                   func() time.Time { return now },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
-		LeaseID:             "lease_1",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-	}, "worker.echo", workerInvocationFixture())
-	if err != nil {
-		t.Fatalf("InvokeWorker() error = %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(rawResult, &decoded); err != nil {
-		t.Fatalf("decode worker result: %v", err)
-	}
-	networkExecute, ok := decoded["network_execute"].(map[string]any)
-	if !ok {
-		t.Fatalf("network execute result missing: %#v", decoded)
-	}
-	returnedStreamID, _ := networkExecute["stream_id"].(string)
-	if networkExecute["ok"] != true ||
-		networkExecute["status_code"] != float64(http.StatusAccepted) ||
-		returnedStreamID != streamIDForRuntimeNetworkTest ||
-		networkExecute["body_base64"] != nil ||
-		networkExecute["bytes_read"] != float64(len("alpha\nbeta\n")) ||
-		networkExecute["chunk_count"] != float64(2) {
-		t.Fatalf("stream network execute result mismatch: %#v", networkExecute)
-	}
-	events, closed, failureCode := executionEvents.snapshot()
-	if !closed || failureCode != "" {
-		t.Fatalf("execution terminal state = closed %t failure %q", closed, failureCode)
-	}
-	if len(events) != 2 || events[0].executionID != streamIDForRuntimeNetworkTest || events[0].kind != "data" || string(events[0].data) != "alpha\n" || events[1].executionID != streamIDForRuntimeNetworkTest || events[1].kind != "data" || string(events[1].data) != "beta\n" {
-		t.Fatalf("execution events mismatch: %#v", events)
-	}
-	if executor.streamCalls != 1 ||
-		executor.lastStreamHTTP.MaxChunkBytes != 4 ||
-		executor.lastStreamHTTP.MaxResponseBytes != 1024 ||
-		executor.lastStreamHTTP.Timeout != 2*time.Second {
-		t.Fatalf("stream executor mismatch: calls=%d req=%#v", executor.streamCalls, executor.lastStreamHTTP)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestNetworkExecuteErrorResponseMapsRateLimit(t *testing.T) {
-	rawErr := fmt.Errorf("%w: udp endpoint", connectivity.ErrRateLimited)
-	response := networkExecuteErrorResponse(rawErr)
-	if response.OK || response.Code != "NETWORK_RATE_LIMITED" || response.Message != "network request was rate limited" {
-		t.Fatalf("rate-limit response mismatch: %#v", response)
-	}
-	if strings.Contains(response.Message, "udp endpoint") {
-		t.Fatalf("rate-limit response leaked internal error: %#v", response)
-	}
-	if !errors.Is(response.InternalError, connectivity.ErrRateLimited) {
-		t.Fatalf("rate-limit internal error = %v, want ErrRateLimited", response.InternalError)
-	}
-}
-
-func TestNetworkExecuteErrorResponseMapsExecutionSinkFailures(t *testing.T) {
-	for _, test := range []struct {
-		err  error
-		code string
-	}{
-		{capability.ErrQuotaExceeded, "NETWORK_STREAM_BACKPRESSURE"},
-		{execution.ErrInvalidTransition, "NETWORK_STREAM_INVALID"},
-		{capability.ErrExecutionRevoked, "NETWORK_STREAM_NOT_FOUND"},
-		{execution.ErrTerminal, "NETWORK_STREAM_CLOSED"},
-	} {
-		response := networkExecuteErrorResponse(test.err)
-		if response.OK || response.Code != test.code || !errors.Is(response.InternalError, test.err) {
-			t.Fatalf("network execution sink error %v mapped to %#v, want %s", test.err, response, test.code)
-		}
-	}
-}
-
-func TestRuntimeHostcallFailuresRedactPublicErrorsAndRetainDiagnostics(t *testing.T) {
-	t.Run("storage sqlite", func(t *testing.T) {
-		const sensitive = "open /Users/secret/path/plugin.sqlite: vault-token-super-secret"
-		diagnostics := &runtimeDiagnosticSink{}
-		validator := &recordingHandleGrantValidator{
-			result: HandleGrantValidationResult{
-				HandleGrantID:       "handle_grant_1",
-				HandleID:            "storage:db",
-				Method:              "storage.sqlite",
-				RuntimeGenerationID: "runtime_gen_test",
-				ResourceScope:       testUserResourceScope(),
-			},
-		}
-		supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-			Limits:                DefaultRuntimeLimits(),
-			HandshakeTimeout:      5 * time.Second,
-			HeartbeatInterval:     2 * time.Second,
-			MaxHeartbeatStaleness: 5 * time.Second,
-			RuntimePath:           os.Args[0],
-			Args:                  []string{"-test.run=TestMain"},
-			Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE=query"),
-			Diagnostics:           diagnostics,
-			HandleGrants:          validator,
-			StorageSQLite:         &recordingStorageSQLiteBroker{err: errors.New(sensitive)},
-			StreamSink:            &recordingRuntimeStreamSink{},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-			t.Fatalf("Start() error = %v", err)
-		}
-		t.Cleanup(func() { stopRuntimeSupervisor(t, supervisor) })
-		health, err := supervisor.Health(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-		_, err = supervisor.invokeWorkerForTest(context.Background(), Lease{
-			LeaseID:             "lease_redaction_storage",
-			RuntimeGenerationID: health.RuntimeGenerationID,
-			PluginInstanceID:    "plugini_1",
-			PolicyRevision:      1,
-			ManagementRevision:  2,
-			RevokeEpoch:         3,
-		}, "worker.echo", workerInvocationFixture())
-		assertRedactedRuntimeError(t, err, "STORAGE_SQLITE_FAILED", "storage sqlite operation failed", sensitive)
-		assertHostcallFailureDiagnostic(t, diagnostics, "storage_sqlite", "STORAGE_SQLITE_FAILED", sensitive)
-	})
-
-	t.Run("network execute", func(t *testing.T) {
-		const sensitive = "resolver internal: 10.0.0.7 via private-dns at /Users/secret/path"
-		now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
-		diagnostics := &runtimeDiagnosticSink{}
-		broker := &recordingConnectivityBroker{
-			grant: connectivity.ConnectionGrant{
-				GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
-				PluginInstanceID:        "plugini_1",
-				ActiveFingerprint:       "sha256:active",
-				PolicyRevision:          1,
-				ManagementRevision:      2,
-				RevokeEpoch:             3,
-				ConnectorID:             "api",
-				Transport:               connectivity.TransportHTTP,
-				Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
-				RuntimeGenerationID:     "runtime_gen_test",
-				TargetClassifierVersion: version.TargetClassifierVersion,
-				ExpiresAt:               now.Add(30 * time.Second),
-			},
-		}
-		supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-			Limits:                DefaultRuntimeLimits(),
-			HandshakeTimeout:      5 * time.Second,
-			HeartbeatInterval:     2 * time.Second,
-			MaxHeartbeatStaleness: 5 * time.Second,
-			RuntimePath:           os.Args[0],
-			Args:                  []string{"-test.run=TestMain"},
-			Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
-			Diagnostics:           diagnostics,
-			Connectivity:          broker,
-			NetworkExecutor:       &recordingNetworkExecutor{err: errors.New(sensitive)},
-			Now:                   func() time.Time { return now },
-			StreamSink:            &recordingRuntimeStreamSink{},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-			t.Fatalf("Start() error = %v", err)
-		}
-		t.Cleanup(func() { stopRuntimeSupervisor(t, supervisor) })
-		health, err := supervisor.Health(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-		_, err = supervisor.invokeWorkerForTest(context.Background(), Lease{
-			LeaseID:             "lease_redaction_network",
-			RuntimeGenerationID: health.RuntimeGenerationID,
-			PluginInstanceID:    "plugini_1",
-			PolicyRevision:      1,
-			ManagementRevision:  2,
-			RevokeEpoch:         3,
-		}, "worker.echo", workerInvocationFixture())
-		assertRedactedRuntimeError(t, err, "NETWORK_EXECUTE_FAILED", "network execute operation failed", sensitive)
-		assertHostcallFailureDiagnostic(t, diagnostics, "network_execute", "NETWORK_EXECUTE_FAILED", sensitive)
-	})
-}
-
 func assertRedactedRuntimeError(t *testing.T, err error, code, publicMessage, sensitive string) {
 	t.Helper()
 	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), code) || !strings.Contains(err.Error(), publicMessage) {
@@ -3419,506 +2155,6 @@ func (failingRuntimeDiagnosticReader) Read([]byte) (int, error) {
 }
 
 func (failingRuntimeDiagnosticReader) Close() error { return nil }
-
-func TestProcessSupervisorExecutesWebSocketAndSocketNetworkDuringWorkerInvocation(t *testing.T) {
-	cases := []struct {
-		name          string
-		operation     string
-		transport     connectivity.Transport
-		destination   connectivity.Destination
-		response      func(*recordingNetworkExecutor)
-		assertRequest func(*testing.T, *recordingNetworkExecutor)
-		assertResult  func(*testing.T, map[string]any)
-	}{
-		{
-			name:        "websocket",
-			operation:   "websocket_round_trip",
-			transport:   connectivity.TransportWebSocket,
-			destination: connectivity.Destination{Transport: connectivity.TransportWebSocket, Scheme: "wss", Host: "stream.example.com", Port: 443},
-			response: func(executor *recordingNetworkExecutor) {
-				executor.wsResponse = connectivity.WebSocketRoundTripResponse{MessageType: connectivity.WebSocketMessageText, Payload: []byte("ws:hello")}
-			},
-			assertRequest: func(t *testing.T, executor *recordingNetworkExecutor) {
-				t.Helper()
-				if executor.websocketCalls != 1 || executor.lastWebSocket.MessageType != connectivity.WebSocketMessageText || string(executor.lastWebSocket.Payload) != "hello" || executor.lastWebSocket.MaxResponseBytes != 1024 || executor.lastWebSocket.Timeout != 2*time.Second {
-					t.Fatalf("websocket executor mismatch: calls=%d last=%#v", executor.websocketCalls, executor.lastWebSocket)
-				}
-			},
-			assertResult: func(t *testing.T, result map[string]any) {
-				t.Helper()
-				if result["message_type"] != string(connectivity.WebSocketMessageText) || result["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("ws:hello")) {
-					t.Fatalf("websocket result mismatch: %#v", result)
-				}
-			},
-		},
-		{
-			name:        "tcp",
-			operation:   "tcp_round_trip",
-			transport:   connectivity.TransportTCP,
-			destination: connectivity.Destination{Transport: connectivity.TransportTCP, Host: "db.example.com", Port: 5432},
-			response: func(executor *recordingNetworkExecutor) {
-				executor.tcpResponse = connectivity.TCPRoundTripResponse{Payload: []byte("tcp:hello")}
-			},
-			assertRequest: func(t *testing.T, executor *recordingNetworkExecutor) {
-				t.Helper()
-				if executor.tcpCalls != 1 || string(executor.lastTCP.Payload) != "hello" || executor.lastTCP.MaxRequestBytes != 2048 || executor.lastTCP.MaxReadBytes != 1024 || executor.lastTCP.Timeout != 2*time.Second {
-					t.Fatalf("tcp executor mismatch: calls=%d last=%#v", executor.tcpCalls, executor.lastTCP)
-				}
-			},
-			assertResult: func(t *testing.T, result map[string]any) {
-				t.Helper()
-				if result["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("tcp:hello")) {
-					t.Fatalf("tcp result mismatch: %#v", result)
-				}
-			},
-		},
-		{
-			name:        "udp",
-			operation:   "udp_round_trip",
-			transport:   connectivity.TransportUDP,
-			destination: connectivity.Destination{Transport: connectivity.TransportUDP, Host: "metrics.example.com", Port: 8125},
-			response: func(executor *recordingNetworkExecutor) {
-				executor.udpResponse = connectivity.UDPRoundTripResponse{Payload: []byte("udp:hello")}
-			},
-			assertRequest: func(t *testing.T, executor *recordingNetworkExecutor) {
-				t.Helper()
-				if executor.udpCalls != 1 || string(executor.lastUDP.Payload) != "hello" || executor.lastUDP.MaxReadBytes != 1024 || executor.lastUDP.Timeout != 2*time.Second {
-					t.Fatalf("udp executor mismatch: calls=%d last=%#v", executor.udpCalls, executor.lastUDP)
-				}
-			},
-			assertResult: func(t *testing.T, result map[string]any) {
-				t.Helper()
-				if result["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("udp:hello")) {
-					t.Fatalf("udp result mismatch: %#v", result)
-				}
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
-			broker := &recordingConnectivityBroker{
-				grant: connectivity.ConnectionGrant{
-					GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
-					PluginInstanceID:        "plugini_1",
-					ActiveFingerprint:       "sha256:active",
-					PolicyRevision:          1,
-					ManagementRevision:      2,
-					RevokeEpoch:             3,
-					ConnectorID:             "api",
-					Transport:               tc.transport,
-					Destination:             tc.destination,
-					RuntimeGenerationID:     "runtime_gen_test",
-					TargetClassifierVersion: version.TargetClassifierVersion,
-					ExpiresAt:               now.Add(30 * time.Second),
-				},
-			}
-			executor := &recordingNetworkExecutor{}
-			tc.response(executor)
-			supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-				Limits:                DefaultRuntimeLimits(),
-				HandshakeTimeout:      5 * time.Second,
-				HeartbeatInterval:     2 * time.Second,
-				MaxHeartbeatStaleness: 5 * time.Second,
-				RuntimePath:           os.Args[0],
-				Args:                  []string{"-test.run=TestMain"},
-				Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE="+tc.operation),
-				Connectivity:          broker,
-				NetworkExecutor:       executor,
-				Now:                   func() time.Time { return now },
-				StreamSink:            &recordingRuntimeStreamSink{},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-				t.Fatalf("Start() error = %v", err)
-			}
-			health, err := supervisor.Health(context.Background())
-			if err != nil {
-				t.Fatal(err)
-			}
-			broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-			rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
-				LeaseID:             "lease_1",
-				RuntimeGenerationID: health.RuntimeGenerationID,
-				PluginInstanceID:    "plugini_1",
-				PolicyRevision:      1,
-				ManagementRevision:  2,
-				RevokeEpoch:         3,
-			}, "worker.echo", workerInvocationFixture())
-			if err != nil {
-				t.Fatalf("InvokeWorker() error = %v", err)
-			}
-			var decoded map[string]any
-			if err := json.Unmarshal(rawResult, &decoded); err != nil {
-				t.Fatalf("decode worker result: %v", err)
-			}
-			networkExecute, ok := decoded["network_execute"].(map[string]any)
-			if !ok {
-				t.Fatalf("network execute result missing: %#v", decoded)
-			}
-			if broker.calls != 1 || broker.last.Transport != tc.transport {
-				t.Fatalf("connectivity broker mismatch: calls=%d last=%#v", broker.calls, broker.last)
-			}
-			tc.assertRequest(t, executor)
-			tc.assertResult(t, networkExecute)
-			stopRuntimeSupervisor(t, supervisor)
-		})
-	}
-}
-
-func TestProcessSupervisorDeniesNetworkExecuteWithoutExecutor(t *testing.T) {
-	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
-	broker := &recordingConnectivityBroker{
-		grant: connectivity.ConnectionGrant{
-			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
-			PluginInstanceID:        "plugini_1",
-			ActiveFingerprint:       "sha256:active",
-			PolicyRevision:          1,
-			ManagementRevision:      2,
-			RevokeEpoch:             3,
-			ConnectorID:             "api",
-			Transport:               connectivity.TransportHTTP,
-			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
-			RuntimeGenerationID:     "runtime_gen_test",
-			TargetClassifierVersion: version.TargetClassifierVersion,
-			ExpiresAt:               now.Add(30 * time.Second),
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
-		Connectivity:          broker,
-		Now:                   func() time.Time { return now },
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesNetworkGrantWithoutBroker(t *testing.T) {
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
-	validator := &recordingHandleGrantValidator{
-		result: HandleGrantValidationResult{
-			HandleGrantID:       "handle_grant_1",
-			HandleID:            "storage:workspace",
-			Method:              "storage.files",
-			RuntimeGenerationID: "runtime_gen_test",
-			ResourceScope:       testUserResourceScope(),
-			MaxTotalBytes:       4096,
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
-		HandleGrants:          validator,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	if validator.calls != 0 {
-		t.Fatalf("validator should not be called when broker is unavailable: %d", validator.calls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesStorageKVWithoutBroker(t *testing.T) {
-	validator := &recordingHandleGrantValidator{
-		result: HandleGrantValidationResult{
-			HandleGrantID:       "handle_grant_1",
-			HandleID:            "storage:settings",
-			Method:              "storage.kv",
-			RuntimeGenerationID: "runtime_gen_test",
-			ResourceScope:       testUserResourceScope(),
-			MaxTotalBytes:       4096,
-		},
-	}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV=put"),
-		HandleGrants:          validator,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	if validator.calls != 0 {
-		t.Fatalf("validator should not be called when broker is unavailable: %d", validator.calls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T) {
-	validator := &recordingHandleGrantValidator{
-		result: HandleGrantValidationResult{
-			HandleGrantID:       "handle_grant_1",
-			HandleID:            "storage:workspace",
-			Method:              "storage.files",
-			RuntimeGenerationID: "runtime_gen_test",
-			ResourceScope:       testUserResourceScope(),
-			MaxTotalBytes:       4096,
-		},
-	}
-	files := &recordingStorageFilesBroker{}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE=read"),
-		HandleGrants:          validator,
-		StorageFiles:          files,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3)); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	if validator.calls != 0 || files.readCalls != 0 {
-		t.Fatalf("storage outside worker should not touch validator or broker: validator=%d reads=%d", validator.calls, files.readCalls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
-	validator := &recordingHandleGrantValidator{
-		result: HandleGrantValidationResult{
-			HandleGrantID:       "handle_grant_1",
-			HandleID:            "storage:settings",
-			Method:              "storage.kv",
-			RuntimeGenerationID: "runtime_gen_test",
-			ResourceScope:       testUserResourceScope(),
-			MaxTotalBytes:       4096,
-		},
-	}
-	kv := &recordingStorageKVBroker{}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE=put"),
-		HandleGrants:          validator,
-		StorageKV:             kv,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3)); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	if validator.calls != 0 || kv.putCalls != 0 {
-		t.Fatalf("storage kv outside worker should not touch validator or broker: validator=%d puts=%d", validator.calls, kv.putCalls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T) {
-	broker := &recordingConnectivityBroker{}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT_ON_REVOKE=1"),
-		Connectivity:          broker,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3)); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	if broker.calls != 0 {
-		t.Fatalf("network grant outside worker should not touch broker: %d", broker.calls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorDeniesHandleGrantOutsideWorkerInvocation(t *testing.T) {
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE_ON_REVOKE=1"),
-		HandleGrants:          &recordingHandleGrantValidator{},
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3)); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorRejectsInvalidHandleGrantRequestBeforeValidator(t *testing.T) {
-	validator := &recordingHandleGrantValidator{}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE=1", "REDEVPLUGIN_RUNTIMECLIENT_INVALID_HANDLE_REQUEST=1"),
-		HandleGrants:          validator,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	if validator.calls != 0 {
-		t.Fatalf("validator was called for invalid request: %d", validator.calls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
-func TestProcessSupervisorRejectsHandleGrantSessionMismatchBeforeValidator(t *testing.T) {
-	validator := &recordingHandleGrantValidator{}
-	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
-		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
-		HeartbeatInterval:     2 * time.Second,
-		MaxHeartbeatStaleness: 5 * time.Second,
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE=1", "REDEVPLUGIN_RUNTIMECLIENT_HANDLE_OWNER_MISMATCH=1"),
-		HandleGrants:          validator,
-		StreamSink:            &recordingRuntimeStreamSink{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
-		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
-	}
-	if validator.calls != 0 {
-		t.Fatalf("validator was called for session-mismatched request: %d", validator.calls)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
 
 func TestProcessSupervisorDeniesUnboundArtifactHandle(t *testing.T) {
 	provider := &recordingArtifactProvider{
@@ -4076,8 +2312,15 @@ func TestRuntimeHostcallContextCapsRequestedTimeout(t *testing.T) {
 }
 
 func runRuntimeClientHelper() {
-	reader := bufio.NewReader(&testHostSemanticIPCReaderV7{reader: os.Stdin})
-	runtimeOutput := newRuntimeSemanticIPCWriteCloserV7(os.Stdout)
+	ipcReadFile := os.NewFile(runtimeIPCReadFD, "redevplugin-ipc-read")
+	ipcWriteFile := os.NewFile(runtimeIPCWriteFD, "redevplugin-ipc-write")
+	controlReadFile := os.NewFile(runtimeControlReadFD, "redevplugin-control-read")
+	controlWriteFile := os.NewFile(runtimeControlWriteFD, "redevplugin-control-write")
+	if ipcReadFile == nil || ipcWriteFile == nil || controlReadFile == nil || controlWriteFile == nil {
+		os.Exit(64)
+	}
+	reader := bufio.NewReader(&testHostSemanticIPCReader{reader: ipcReadFile})
+	runtimeOutput := newRuntimeSemanticIPCWriteCloser(ipcWriteFile)
 	encoder := json.NewEncoder(runtimeOutput)
 	line, err := reader.ReadBytes('\n')
 	if err != nil {
@@ -4087,14 +2330,14 @@ func runRuntimeClientHelper() {
 	if err := json.Unmarshal(line, &frame); err != nil {
 		os.Exit(3)
 	}
-	if frame.FrameType != ipcFrameTypeHello || frame.IPCVersion != version.RustIPCVersion || strings.TrimSpace(frame.RequestID) == "" {
+	if frame.FrameType != ipcFrameTypeHello || strings.TrimSpace(frame.RequestID) == "" {
 		os.Exit(4)
 	}
 	var hello helloRequestPayload
 	if err := json.Unmarshal(frame.Payload, &hello); err != nil {
 		os.Exit(5)
 	}
-	channelNonce := hello.ChannelNonce
+	channelNonce := hello.ConnectionNonce
 	if strings.TrimSpace(channelNonce) == "" {
 		os.Exit(6)
 	}
@@ -4112,19 +2355,21 @@ func runRuntimeClientHelper() {
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BAD_NONCE") == "1" {
 		channelNonce = "wrong_channel_nonce"
 	}
-	runtimeVersion := envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_RUNTIME_VERSION", version.CurrentCompatibilityVersion())
+	platformVersion := envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_PLATFORM_VERSION", version.CurrentPlatformVersion())
 	actualTarget := envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET", hello.Target)
+	internalWire := InternalWire
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_ACK_INTERNAL_WIRE") == "2" {
+		internalWire = 2
+	}
 	payload, _ := json.Marshal(helloAckPayload{
-		RuntimeVersion:    runtimeVersion,
-		ActualTarget:      actualTarget,
-		RustIPCVersion:    envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_IPC_VERSION", version.RustIPCVersion),
-		WASMABIVersion:    envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_WASM_ABI_VERSION", version.WASMABIVersion),
-		ContractSetSHA256: envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_CONTRACT_SET_SHA256", hello.ContractSetSHA256),
-		ChannelNonce:      channelNonce,
-		Limits:            hello.Limits,
+		InternalWire:          internalWire,
+		PlatformVersion:       platformVersion,
+		RuntimeArtifactSHA256: envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_ARTIFACT_SHA256", hello.RuntimeArtifactSHA256),
+		ConnectionNonce:       channelNonce,
+		ActualTarget:          actualTarget,
+		Limits:                hello.Limits,
 	})
 	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeHelloAck,
 		RequestID:           frame.RequestID,
 		RuntimeGenerationID: frame.RuntimeGenerationID,
@@ -4138,25 +2383,12 @@ func runRuntimeClientHelper() {
 		time.Sleep(100 * time.Millisecond)
 		os.Exit(exitCode)
 	}
-	controlReadFD, err := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_READ_FD"))
-	if err != nil || controlReadFD < 3 {
-		os.Exit(64)
-	}
-	controlWriteFD, err := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_WRITE_FD"))
-	if err != nil || controlWriteFD < 3 {
-		os.Exit(65)
-	}
-	controlReadFile := os.NewFile(uintptr(controlReadFD), "redevplugin-control-read")
-	controlWriteFile := os.NewFile(uintptr(controlWriteFD), "redevplugin-control-write")
-	if controlReadFile == nil || controlWriteFile == nil {
-		os.Exit(66)
-	}
 	revoked := make(chan struct{})
 	var revokeOnce sync.Once
 	var heartbeatCount atomic.Int64
 	go runRuntimeClientControlHelper(
-		bufio.NewReader(&testHostSemanticIPCReaderV7{reader: controlReadFile}),
-		json.NewEncoder(newRuntimeSemanticIPCWriteCloserV7(controlWriteFile)),
+		bufio.NewReader(&testHostSemanticIPCReader{reader: controlReadFile}),
+		json.NewEncoder(newRuntimeSemanticIPCWriteCloser(controlWriteFile)),
 		revoked,
 		&revokeOnce,
 		&heartbeatCount,
@@ -4193,7 +2425,6 @@ func runRuntimeClientHelper() {
 					}
 					raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: json.RawMessage(`{"data":{"from_runtime":true}}`)})
 					_ = encoder.Encode(ipcFrame{
-						IPCVersion:          version.RustIPCVersion,
 						FrameType:           ipcFrameTypeInvokeWorkerResult,
 						RequestID:           request.RequestID,
 						RuntimeGenerationID: request.RuntimeGenerationID,
@@ -4221,7 +2452,6 @@ func runRuntimeClientHelper() {
 				resultPayload := runtimeResponsePayload{OK: false, Code: "RUNTIME_CAPABILITY_REVOKED", Message: "runtime capability was revoked", ErrorOrigin: WorkerErrorOriginRuntime}
 				raw, _ := json.Marshal(resultPayload)
 				_ = encoder.Encode(ipcFrame{
-					IPCVersion:          version.RustIPCVersion,
 					FrameType:           ipcFrameTypeInvokeWorkerResult,
 					RequestID:           request.RequestID,
 					RuntimeGenerationID: request.RuntimeGenerationID,
@@ -4233,7 +2463,6 @@ func runRuntimeClientHelper() {
 				resultPayload := runtimeResponsePayload{OK: false, Code: "RUNTIME_CONTROL_CHANNEL_STALE", Message: "heartbeat did not run during invocation", ErrorOrigin: WorkerErrorOriginRuntime}
 				raw, _ := json.Marshal(resultPayload)
 				_ = encoder.Encode(ipcFrame{
-					IPCVersion:          version.RustIPCVersion,
 					FrameType:           ipcFrameTypeInvokeWorkerResult,
 					RequestID:           request.RequestID,
 					RuntimeGenerationID: request.RuntimeGenerationID,
@@ -4246,43 +2475,12 @@ func runRuntimeClientHelper() {
 					continue
 				}
 			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT") == "1" {
-				if !requestNetworkGrantFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE") != "" {
-				if !requestNetworkExecuteFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE") != "" {
-				if !requestStorageFileFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV") != "" {
-				if !requestStorageKVFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE") != "" {
-				if !requestStorageSQLiteFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE") == "1" {
-				if !validateHandleGrantFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
 			resultPayload := runtimeResponsePayload{OK: true, Result: json.RawMessage(`{"data":{"from_runtime":true}}`)}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_FAIL_INVOKE") == "1" {
 				resultPayload = runtimeResponsePayload{OK: false, Code: "WASM_WORKER_FAILED", Message: "runtime worker execution failed", ErrorOrigin: WorkerErrorOriginRuntime}
 			}
 			raw, _ := json.Marshal(resultPayload)
 			_ = encoder.Encode(ipcFrame{
-				IPCVersion:          version.RustIPCVersion,
 				FrameType:           ipcFrameTypeInvokeWorkerResult,
 				RequestID:           request.RequestID,
 				RuntimeGenerationID: request.RuntimeGenerationID,
@@ -4296,7 +2494,6 @@ func runRuntimeClientHelper() {
 				Disposition:         "running",
 			})})
 			_ = encoder.Encode(ipcFrame{
-				IPCVersion:          version.RustIPCVersion,
 				FrameType:           ipcFrameTypeCancelInvokeAck,
 				RequestID:           request.RequestID,
 				RuntimeGenerationID: request.RuntimeGenerationID,
@@ -4307,7 +2504,6 @@ func runRuntimeClientHelper() {
 				invocation := *lateArtifactInvocation
 				artifact := artifactRequestPayloadFromInvoke(invocation)
 				_ = encoder.Encode(ipcFrame{
-					IPCVersion:          version.RustIPCVersion,
 					FrameType:           ipcFrameTypeOpenHandle,
 					RequestID:           invocation.RequestID + ":artifact",
 					ParentRequestID:     invocation.RequestID,
@@ -4322,7 +2518,6 @@ func runRuntimeClientHelper() {
 			invocation := *lateArtifactInvocation
 			artifact := artifactRequestPayloadFromInvoke(invocation)
 			_ = encoder.Encode(ipcFrame{
-				IPCVersion:          version.RustIPCVersion,
 				FrameType:           "compile_flight_complete",
 				RequestID:           invocation.RequestID + ":artifact:complete",
 				ParentRequestID:     invocation.RequestID,
@@ -4332,14 +2527,12 @@ func runRuntimeClientHelper() {
 					"package_hash":        artifact.PackageHash,
 					"artifact":            artifact.Artifact,
 					"artifact_sha256":     artifact.ArtifactSHA256,
-					"wasm_abi_version":    version.WASMABIVersion,
 				}),
 			})
 			canceledPayload, _ := json.Marshal(runtimeResponsePayload{
 				OK: false, Code: "RUNTIME_INVOCATION_CANCELED", Message: "runtime invocation was canceled", ErrorOrigin: WorkerErrorOriginRuntime,
 			})
 			_ = encoder.Encode(ipcFrame{
-				IPCVersion:          version.RustIPCVersion,
 				FrameType:           ipcFrameTypeInvokeWorkerResult,
 				RequestID:           invocation.RequestID,
 				RuntimeGenerationID: invocation.RuntimeGenerationID,
@@ -4405,16 +2598,12 @@ func runRuntimeClientControlHelper(
 				"module_cache":          ModuleCacheMetrics{},
 			})})
 			_ = encoder.Encode(ipcFrame{
-				IPCVersion:          version.RustIPCVersion,
 				FrameType:           ipcFrameTypeHeartbeat,
 				RequestID:           request.RequestID,
 				RuntimeGenerationID: request.RuntimeGenerationID,
 				Payload:             raw,
 			})
 		case ipcFrameTypeRevokeEpoch:
-			if writeUnexpectedControlHostcall(encoder, request) {
-				continue
-			}
 			var revokeReq revokeEpochRequestPayload
 			_ = json.Unmarshal(request.Payload, &revokeReq)
 			revokeOnce.Do(func() { close(revoked) })
@@ -4427,7 +2616,6 @@ func runRuntimeClientControlHelper(
 				"closed_storage_handle_count": 4,
 			})})
 			_ = encoder.Encode(ipcFrame{
-				IPCVersion:          version.RustIPCVersion,
 				FrameType:           ipcFrameTypeRevokeEpochAck,
 				RequestID:           request.RequestID,
 				RuntimeGenerationID: request.RuntimeGenerationID,
@@ -4437,36 +2625,6 @@ func runRuntimeClientControlHelper(
 			os.Exit(68)
 		}
 	}
-}
-
-func writeUnexpectedControlHostcall(encoder *json.Encoder, request ipcFrame) bool {
-	var frameType string
-	var payload any
-	switch {
-	case os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE") != "":
-		frameType = ipcFrameTypeStorageFile
-		payload = storageFileRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE"))
-	case os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE") != "":
-		frameType = ipcFrameTypeStorageKV
-		payload = storageKVRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE"))
-	case os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT_ON_REVOKE") == "1":
-		frameType = ipcFrameTypeNetworkGrant
-		payload = networkGrantRequestFromInvoke(request)
-	case os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE_ON_REVOKE") == "1":
-		frameType = ipcFrameTypeValidateHandleGrant
-		payload = handleGrantValidationRequestFromInvoke(request)
-	default:
-		return false
-	}
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           frameType,
-		RequestID:           request.RequestID + ":unexpected-hostcall",
-		ParentRequestID:     request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             mustMarshalRaw(payload),
-	})
-	return true
 }
 
 func waitForSustainedIPCLock(t *testing.T, supervisor *ProcessSupervisor, duration time.Duration) {
@@ -4545,7 +2703,6 @@ func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, requ
 		parentRequestID = request.RequestID + ":unknown"
 	}
 	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeOpenHandle,
 		RequestID:           request.RequestID + ":artifact",
 		ParentRequestID:     parentRequestID,
@@ -4571,7 +2728,6 @@ func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, requ
 		writeCompileFlightLifecycleFromHelper(encoder, request, ipcFrameTypeCompileFlightComplete)
 		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: artifact.Code, Message: artifact.Message, ErrorOrigin: artifact.ErrorOrigin})
 		_ = encoder.Encode(ipcFrame{
-			IPCVersion:          version.RustIPCVersion,
 			FrameType:           ipcFrameTypeInvokeWorkerResult,
 			RequestID:           request.RequestID,
 			RuntimeGenerationID: request.RuntimeGenerationID,
@@ -4588,7 +2744,6 @@ func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, requ
 		},
 	})})
 	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeInvokeWorkerResult,
 		RequestID:           request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
@@ -4608,7 +2763,6 @@ func writeCompileFlightLifecycleFromHelper(encoder *json.Encoder, request ipcFra
 		suffix = ":complete"
 	}
 	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           frameType,
 		RequestID:           artifactRequestID + suffix,
 		ParentRequestID:     request.RequestID,
@@ -4618,7 +2772,6 @@ func writeCompileFlightLifecycleFromHelper(encoder *json.Encoder, request ipcFra
 			PackageHash:       artifact.PackageHash,
 			Artifact:          artifact.Artifact,
 			ArtifactSHA256:    artifact.ArtifactSHA256,
-			WASMABIVersion:    version.WASMABIVersion,
 		}),
 	})
 }
@@ -4633,643 +2786,6 @@ func artifactRequestPayloadFromInvoke(request ipcFrame) artifactHandleRequestPay
 		os.Exit(12)
 	}
 	return artifactHandleRequestPayload(invocation)
-}
-
-func validateHandleGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
-	rawHandleReq, _ := json.Marshal(handleGrantValidationRequestFromInvoke(request))
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeValidateHandleGrant,
-		RequestID:           request.RequestID + ":handle_grant",
-		ParentRequestID:     request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             rawHandleReq,
-	})
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		os.Exit(13)
-	}
-	var response ipcFrame
-	if err := json.Unmarshal(line, &response); err != nil {
-		os.Exit(14)
-	}
-	if response.FrameType != ipcFrameTypeValidateHandleGrant || response.RequestID != request.RequestID+":handle_grant" || response.ParentRequestID != request.RequestID {
-		os.Exit(15)
-	}
-	var grant handleGrantValidationResultPayload
-	if err := json.Unmarshal(response.Payload, &grant); err != nil {
-		os.Exit(16)
-	}
-	if !grant.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: grant.Code, Message: grant.Message, ErrorOrigin: grant.ErrorOrigin})
-		resultFrameType := ipcFrameTypeInvokeWorkerResult
-		if request.FrameType == ipcFrameTypeRevokeEpoch {
-			resultFrameType = ipcFrameTypeRevokeEpochAck
-		}
-		_ = encoder.Encode(ipcFrame{
-			IPCVersion:          version.RustIPCVersion,
-			FrameType:           resultFrameType,
-			RequestID:           request.RequestID,
-			RuntimeGenerationID: request.RuntimeGenerationID,
-			Payload:             raw,
-		})
-		return false
-	}
-	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
-		"handle_grant": map[string]any{
-			"ok":                    grant.OK,
-			"handle_grant_id":       grant.HandleGrantID,
-			"handle_id":             grant.HandleID,
-			"method":                grant.Method,
-			"runtime_generation_id": grant.RuntimeGenerationID,
-			"resource_scope":        grant.ResourceScope,
-			"max_total_bytes":       grant.MaxTotalBytes,
-		},
-	})})
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeInvokeWorkerResult,
-		RequestID:           request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             raw,
-	})
-	return false
-}
-
-func requestStorageFileFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
-	rawStorageReq, _ := json.Marshal(storageFileRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE")))
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeStorageFile,
-		RequestID:           request.RequestID + ":storage_file",
-		ParentRequestID:     request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             rawStorageReq,
-	})
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		os.Exit(17)
-	}
-	var response ipcFrame
-	if err := json.Unmarshal(line, &response); err != nil {
-		os.Exit(18)
-	}
-	if response.FrameType != ipcFrameTypeStorageFile || response.RequestID != request.RequestID+":storage_file" || response.ParentRequestID != request.RequestID {
-		os.Exit(19)
-	}
-	var storageFile storageFileResponsePayload
-	if err := json.Unmarshal(response.Payload, &storageFile); err != nil {
-		os.Exit(20)
-	}
-	if !storageFile.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageFile.Code, Message: storageFile.Message, ErrorOrigin: storageFile.ErrorOrigin})
-		resultFrameType := ipcFrameTypeInvokeWorkerResult
-		if request.FrameType == ipcFrameTypeRevokeEpoch {
-			resultFrameType = ipcFrameTypeRevokeEpochAck
-		}
-		_ = encoder.Encode(ipcFrame{
-			IPCVersion:          version.RustIPCVersion,
-			FrameType:           resultFrameType,
-			RequestID:           request.RequestID,
-			RuntimeGenerationID: request.RuntimeGenerationID,
-			Payload:             raw,
-		})
-		return false
-	}
-	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
-		"storage_file": storageFile,
-	})})
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeInvokeWorkerResult,
-		RequestID:           request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             raw,
-	})
-	return false
-}
-
-func requestStorageKVFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
-	rawStorageReq, _ := json.Marshal(storageKVRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV")))
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeStorageKV,
-		RequestID:           request.RequestID + ":storage_kv",
-		ParentRequestID:     request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             rawStorageReq,
-	})
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		os.Exit(41)
-	}
-	var response ipcFrame
-	if err := json.Unmarshal(line, &response); err != nil {
-		os.Exit(42)
-	}
-	if response.FrameType != ipcFrameTypeStorageKV || response.RequestID != request.RequestID+":storage_kv" || response.ParentRequestID != request.RequestID {
-		os.Exit(43)
-	}
-	var storageKV storageKVResponsePayload
-	if err := json.Unmarshal(response.Payload, &storageKV); err != nil {
-		os.Exit(44)
-	}
-	if !storageKV.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageKV.Code, Message: storageKV.Message, ErrorOrigin: storageKV.ErrorOrigin})
-		resultFrameType := ipcFrameTypeInvokeWorkerResult
-		if request.FrameType == ipcFrameTypeRevokeEpoch {
-			resultFrameType = ipcFrameTypeRevokeEpochAck
-		}
-		_ = encoder.Encode(ipcFrame{
-			IPCVersion:          version.RustIPCVersion,
-			FrameType:           resultFrameType,
-			RequestID:           request.RequestID,
-			RuntimeGenerationID: request.RuntimeGenerationID,
-			Payload:             raw,
-		})
-		return false
-	}
-	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
-		"storage_kv": storageKV,
-	})})
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeInvokeWorkerResult,
-		RequestID:           request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             raw,
-	})
-	return false
-}
-
-func requestStorageSQLiteFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
-	rawStorageReq, _ := json.Marshal(storageSQLiteRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE")))
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeStorageSQLite,
-		RequestID:           request.RequestID + ":storage_sqlite",
-		ParentRequestID:     request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             rawStorageReq,
-	})
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		os.Exit(51)
-	}
-	var response ipcFrame
-	if err := json.Unmarshal(line, &response); err != nil {
-		os.Exit(52)
-	}
-	if response.FrameType != ipcFrameTypeStorageSQLite || response.RequestID != request.RequestID+":storage_sqlite" || response.ParentRequestID != request.RequestID {
-		os.Exit(53)
-	}
-	var storageSQLite storageSQLiteResponsePayload
-	if err := json.Unmarshal(response.Payload, &storageSQLite); err != nil {
-		os.Exit(54)
-	}
-	if !storageSQLite.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageSQLite.Code, Message: storageSQLite.Message, ErrorOrigin: storageSQLite.ErrorOrigin})
-		resultFrameType := ipcFrameTypeInvokeWorkerResult
-		if request.FrameType == ipcFrameTypeRevokeEpoch {
-			resultFrameType = ipcFrameTypeRevokeEpochAck
-		}
-		_ = encoder.Encode(ipcFrame{
-			IPCVersion:          version.RustIPCVersion,
-			FrameType:           resultFrameType,
-			RequestID:           request.RequestID,
-			RuntimeGenerationID: request.RuntimeGenerationID,
-			Payload:             raw,
-		})
-		return false
-	}
-	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
-		"storage_sqlite": storageSQLite,
-	})})
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeInvokeWorkerResult,
-		RequestID:           request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             raw,
-	})
-	return false
-}
-
-func requestNetworkGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
-	rawNetworkReq, _ := json.Marshal(networkGrantRequestFromInvoke(request))
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeNetworkGrant,
-		RequestID:           request.RequestID + ":network_grant",
-		ParentRequestID:     request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             rawNetworkReq,
-	})
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		os.Exit(21)
-	}
-	var response ipcFrame
-	if err := json.Unmarshal(line, &response); err != nil {
-		os.Exit(22)
-	}
-	if response.FrameType != ipcFrameTypeNetworkGrant || response.RequestID != request.RequestID+":network_grant" || response.ParentRequestID != request.RequestID {
-		os.Exit(23)
-	}
-	var networkGrant networkGrantResponsePayload
-	if err := json.Unmarshal(response.Payload, &networkGrant); err != nil {
-		os.Exit(24)
-	}
-	if !networkGrant.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: networkGrant.Code, Message: networkGrant.Message, ErrorOrigin: networkGrant.ErrorOrigin})
-		resultFrameType := ipcFrameTypeInvokeWorkerResult
-		if request.FrameType == ipcFrameTypeRevokeEpoch {
-			resultFrameType = ipcFrameTypeRevokeEpochAck
-		}
-		_ = encoder.Encode(ipcFrame{
-			IPCVersion:          version.RustIPCVersion,
-			FrameType:           resultFrameType,
-			RequestID:           request.RequestID,
-			RuntimeGenerationID: request.RuntimeGenerationID,
-			Payload:             raw,
-		})
-		return false
-	}
-	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
-		"network_grant": networkGrant,
-	})})
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeInvokeWorkerResult,
-		RequestID:           request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             raw,
-	})
-	return false
-}
-
-func requestNetworkExecuteFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
-	rawNetworkReq, _ := json.Marshal(networkExecuteRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE")))
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeNetworkExecute,
-		RequestID:           request.RequestID + ":network_execute",
-		ParentRequestID:     request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             rawNetworkReq,
-	})
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		os.Exit(25)
-	}
-	var response ipcFrame
-	if err := json.Unmarshal(line, &response); err != nil {
-		os.Exit(26)
-	}
-	if response.FrameType != ipcFrameTypeNetworkExecute || response.RequestID != request.RequestID+":network_execute" || response.ParentRequestID != request.RequestID {
-		os.Exit(27)
-	}
-	var networkExecute networkExecuteResponsePayload
-	if err := json.Unmarshal(response.Payload, &networkExecute); err != nil {
-		os.Exit(28)
-	}
-	if !networkExecute.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: networkExecute.Code, Message: networkExecute.Message, ErrorOrigin: networkExecute.ErrorOrigin})
-		_ = encoder.Encode(ipcFrame{
-			IPCVersion:          version.RustIPCVersion,
-			FrameType:           ipcFrameTypeInvokeWorkerResult,
-			RequestID:           request.RequestID,
-			RuntimeGenerationID: request.RuntimeGenerationID,
-			Payload:             raw,
-		})
-		return false
-	}
-	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
-		"network_execute": networkExecute,
-	})})
-	_ = encoder.Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeInvokeWorkerResult,
-		RequestID:           request.RequestID,
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		Payload:             raw,
-	})
-	return false
-}
-
-func storageFileRequestFromInvoke(request ipcFrame, operation string) storageFileRequestPayload {
-	req := storageFileRequestPayload{
-		HandleGrantToken:    "handle_grant_token_1",
-		PluginInstanceID:    "plugini_1",
-		ActiveFingerprint:   "sha256:active",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		RuntimeShardID:      "runtime_shard_1",
-		HandleID:            "storage:workspace",
-		Method:              "storage.files",
-		ResourceScope:       resourceScopeFromHelperRequest(request),
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-		Operation:           operation,
-		StoreID:             "workspace",
-		Path:                "notes/today.txt",
-		DataBase64:          base64.StdEncoding.EncodeToString([]byte("hello")),
-		MaxBytes:            1024,
-		MaxEntries:          10,
-	}
-	if request.FrameType == ipcFrameTypeInvokeWorker {
-		var payload invokeWorkerRequestPayload
-		if err := json.Unmarshal(request.Payload, &payload); err == nil {
-			req.PluginInstanceID = payload.Lease.PluginInstanceID
-			req.ActiveFingerprint = payload.Lease.ActiveFingerprint
-			req.RuntimeInstanceID = payload.Lease.RuntimeInstanceID
-			req.RuntimeGenerationID = payload.Lease.RuntimeGenerationID
-			req.RuntimeShardID = payload.Lease.RuntimeShardID
-			req.PolicyRevision = payload.Lease.PolicyRevision
-			req.ManagementRevision = payload.Lease.ManagementRevision
-			req.RevokeEpoch = payload.Lease.RevokeEpoch
-		}
-	}
-	return req
-}
-
-func storageKVRequestFromInvoke(request ipcFrame, operation string) storageKVRequestPayload {
-	req := storageKVRequestPayload{
-		HandleGrantToken:    "handle_grant_token_1",
-		PluginInstanceID:    "plugini_1",
-		ActiveFingerprint:   "sha256:active",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		RuntimeShardID:      "runtime_shard_1",
-		HandleID:            "storage:settings",
-		Method:              "storage.kv",
-		ResourceScope:       resourceScopeFromHelperRequest(request),
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-		Operation:           operation,
-		StoreID:             "settings",
-		Key:                 "demo/last_broker_run",
-		ValueBase64:         base64.StdEncoding.EncodeToString([]byte("hello kv")),
-		Prefix:              "demo/",
-		MaxBytes:            1024,
-		MaxEntries:          10,
-	}
-	if request.FrameType == ipcFrameTypeInvokeWorker {
-		var payload invokeWorkerRequestPayload
-		if err := json.Unmarshal(request.Payload, &payload); err == nil {
-			req.PluginInstanceID = payload.Lease.PluginInstanceID
-			req.ActiveFingerprint = payload.Lease.ActiveFingerprint
-			req.RuntimeInstanceID = payload.Lease.RuntimeInstanceID
-			req.RuntimeGenerationID = payload.Lease.RuntimeGenerationID
-			req.RuntimeShardID = payload.Lease.RuntimeShardID
-			req.PolicyRevision = payload.Lease.PolicyRevision
-			req.ManagementRevision = payload.Lease.ManagementRevision
-			req.RevokeEpoch = payload.Lease.RevokeEpoch
-		}
-	}
-	return req
-}
-
-func storageSQLiteRequestFromInvoke(request ipcFrame, operation string) storageSQLiteRequestPayload {
-	score := int64(7)
-	req := storageSQLiteRequestPayload{
-		HandleGrantToken:    "handle_grant_token_1",
-		PluginInstanceID:    "plugini_1",
-		ActiveFingerprint:   "sha256:active",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		RuntimeShardID:      "runtime_shard_1",
-		HandleID:            "storage:db",
-		Method:              "storage.sqlite",
-		ResourceScope:       resourceScopeFromHelperRequest(request),
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-		Operation:           operation,
-		StoreID:             "db",
-		Database:            "plugin.sqlite",
-		SQL:                 "SELECT title, score FROM events WHERE score = ?",
-		Args:                []storageSQLiteValueIPC{{Int: &score}},
-		MaxRows:             10,
-		MaxResponseBytes:    4096,
-		TimeoutMillis:       1000,
-	}
-	if operation == "exec" {
-		req.SQL = "INSERT INTO events (title, score) VALUES ('stored from wasm', 7)"
-		req.Args = nil
-	}
-	if request.FrameType == ipcFrameTypeInvokeWorker {
-		var payload invokeWorkerRequestPayload
-		if err := json.Unmarshal(request.Payload, &payload); err == nil {
-			req.PluginInstanceID = payload.Lease.PluginInstanceID
-			req.ActiveFingerprint = payload.Lease.ActiveFingerprint
-			req.RuntimeInstanceID = payload.Lease.RuntimeInstanceID
-			req.RuntimeGenerationID = payload.Lease.RuntimeGenerationID
-			req.RuntimeShardID = payload.Lease.RuntimeShardID
-			req.PolicyRevision = payload.Lease.PolicyRevision
-			req.ManagementRevision = payload.Lease.ManagementRevision
-			req.RevokeEpoch = payload.Lease.RevokeEpoch
-		}
-	}
-	return req
-}
-
-func networkExecuteRequestFromInvoke(request ipcFrame, operation string) networkExecuteRequestPayload {
-	grantReq := networkGrantRequestFromInvoke(request)
-	req := networkExecuteRequestPayload{
-		PluginID:            "com.example.worker",
-		PluginInstanceID:    grantReq.PluginInstanceID,
-		ActiveFingerprint:   grantReq.ActiveFingerprint,
-		ResourceScope:       grantReq.ResourceScope,
-		RuntimeInstanceID:   grantReq.RuntimeInstanceID,
-		RuntimeGenerationID: grantReq.RuntimeGenerationID,
-		RuntimeShardID:      grantReq.RuntimeShardID,
-		PolicyRevision:      grantReq.PolicyRevision,
-		ManagementRevision:  grantReq.ManagementRevision,
-		RevokeEpoch:         grantReq.RevokeEpoch,
-		ConnectorID:         grantReq.ConnectorID,
-		Transport:           grantReq.Transport,
-		Destination:         grantReq.Destination,
-		TTLMillis:           grantReq.TTLMillis,
-		Operation:           operation,
-		Method:              http.MethodPost,
-		Path:                "/v1/worker",
-		Query:               url.Values{"units": []string{"metric"}, "lang": []string{"en"}},
-		Headers:             http.Header{"X-Test": []string{"ok"}},
-		BodyBase64:          base64.StdEncoding.EncodeToString([]byte(`{"hello":"network"}`)),
-		MaxRequestBytes:     2048,
-		MaxResponseBytes:    1024,
-		TimeoutMillis:       2000,
-	}
-	if request.FrameType == ipcFrameTypeInvokeWorker {
-		var payload invokeWorkerRequestPayload
-		var invocation struct {
-			PluginID             string `json:"plugin_id"`
-			ActiveFingerprint    string `json:"active_fingerprint"`
-			Method               string `json:"method"`
-			Effect               string `json:"effect"`
-			Execution            string `json:"execution"`
-			SurfaceInstanceID    string `json:"surface_instance_id"`
-			OwnerSessionHash     string `json:"owner_session_hash"`
-			OwnerUserHash        string `json:"owner_user_hash"`
-			OwnerEnvHash         string `json:"owner_env_hash"`
-			SessionChannelIDHash string `json:"session_channel_id_hash"`
-			BridgeChannelID      string `json:"bridge_channel_id"`
-			ExecutionID          string `json:"execution_id"`
-		}
-		if err := json.Unmarshal(request.Payload, &payload); err == nil {
-			_ = json.Unmarshal(payload.Invocation, &invocation)
-			if strings.TrimSpace(invocation.PluginID) != "" {
-				req.PluginID = invocation.PluginID
-			}
-			if strings.TrimSpace(invocation.ActiveFingerprint) != "" {
-				req.ActiveFingerprint = invocation.ActiveFingerprint
-			}
-			req.StreamMethod = invocation.Method
-			req.StreamEffect = invocation.Effect
-			req.StreamExecution = invocation.Execution
-			req.SurfaceInstanceID = invocation.SurfaceInstanceID
-			req.OwnerSessionHash = invocation.OwnerSessionHash
-			req.OwnerUserHash = invocation.OwnerUserHash
-			req.OwnerEnvHash = invocation.OwnerEnvHash
-			req.SessionChannelIDHash = invocation.SessionChannelIDHash
-			req.BridgeChannelID = invocation.BridgeChannelID
-			req.StreamID = invocation.ExecutionID
-		}
-	}
-	switch operation {
-	case "http_stream":
-		req.MaxChunkBytes = 4
-		req.MaxBufferedBytes = 64 * 1024
-		req.ContentType = "text/plain"
-	case "websocket_round_trip":
-		req.Transport = connectivity.TransportWebSocket
-		req.Destination = "wss://stream.example.com"
-		req.PayloadBase64 = base64.StdEncoding.EncodeToString([]byte("hello"))
-		req.MessageType = string(connectivity.WebSocketMessageText)
-	case "tcp_round_trip":
-		req.Transport = connectivity.TransportTCP
-		req.Destination = "tcp://db.example.com:5432"
-		req.PayloadBase64 = base64.StdEncoding.EncodeToString([]byte("hello"))
-	case "udp_round_trip":
-		req.Transport = connectivity.TransportUDP
-		req.Destination = "udp://metrics.example.com:8125"
-		req.PayloadBase64 = base64.StdEncoding.EncodeToString([]byte("hello"))
-	}
-	return req
-}
-
-func networkGrantRequestFromInvoke(request ipcFrame) networkGrantRequestPayload {
-	req := networkGrantRequestPayload{
-		PluginInstanceID:    "plugini_1",
-		ActiveFingerprint:   "sha256:active",
-		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		RuntimeShardID:      "runtime_shard_1",
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
-		ConnectorID:         "api",
-		Transport:           connectivity.TransportHTTP,
-		Destination:         "https://api.example.com",
-		TTLMillis:           30000,
-	}
-	if request.FrameType == ipcFrameTypeInvokeWorker {
-		var payload invokeWorkerRequestPayload
-		if err := json.Unmarshal(request.Payload, &payload); err == nil {
-			req.PluginInstanceID = payload.Lease.PluginInstanceID
-			req.ActiveFingerprint = payload.Lease.ActiveFingerprint
-			req.ResourceScope = sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: payload.Lease.OwnerEnvHash, OwnerUserHash: payload.Lease.OwnerUserHash}
-			req.RuntimeInstanceID = payload.Lease.RuntimeInstanceID
-			req.RuntimeGenerationID = payload.Lease.RuntimeGenerationID
-			req.RuntimeShardID = payload.Lease.RuntimeShardID
-			req.PolicyRevision = payload.Lease.PolicyRevision
-			req.ManagementRevision = payload.Lease.ManagementRevision
-			req.RevokeEpoch = payload.Lease.RevokeEpoch
-		}
-	}
-	return req
-}
-
-func handleGrantValidationRequestFromInvoke(request ipcFrame) HandleGrantValidationRequest {
-	req := HandleGrantValidationRequest{
-		HandleGrantToken:     "handle_grant_token_1",
-		PluginInstanceID:     "plugini_1",
-		ActiveFingerprint:    "sha256:active",
-		RuntimeInstanceID:    "runtime_1",
-		RuntimeGenerationID:  request.RuntimeGenerationID,
-		RuntimeShardID:       "runtime_shard_1",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		OwnerEnvHash:         "env_hash",
-		SessionChannelIDHash: "channel_hash",
-		HandleID:             "storage:db",
-		Method:               "storage.sqlite",
-		ResourceScope:        resourceScopeFromHelperRequest(request),
-		PolicyRevision:       1,
-		ManagementRevision:   2,
-		RevokeEpoch:          3,
-	}
-	if request.FrameType == ipcFrameTypeInvokeWorker {
-		var payload invokeWorkerRequestPayload
-		if err := json.Unmarshal(request.Payload, &payload); err == nil {
-			req.PluginInstanceID = payload.Lease.PluginInstanceID
-			req.ActiveFingerprint = payload.Lease.ActiveFingerprint
-			req.RuntimeInstanceID = payload.Lease.RuntimeInstanceID
-			req.RuntimeGenerationID = payload.Lease.RuntimeGenerationID
-			req.RuntimeShardID = payload.Lease.RuntimeShardID
-			req.OwnerSessionHash = payload.Lease.OwnerSessionHash
-			req.OwnerUserHash = payload.Lease.OwnerUserHash
-			req.OwnerEnvHash = payload.Lease.OwnerEnvHash
-			req.SessionChannelIDHash = payload.Lease.SessionChannelIDHash
-			req.PolicyRevision = payload.Lease.PolicyRevision
-			req.ManagementRevision = payload.Lease.ManagementRevision
-			req.RevokeEpoch = payload.Lease.RevokeEpoch
-		}
-	}
-	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_INVALID_HANDLE_REQUEST") == "1" {
-		req.HandleGrantToken = ""
-	}
-	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_HANDLE_OWNER_MISMATCH") == "1" {
-		req.OwnerSessionHash = "session_other"
-	}
-	return req
-}
-
-func assertHandleGrantSessionAudience(t testing.TB, req HandleGrantValidationRequest) {
-	t.Helper()
-	if req.OwnerSessionHash != "session_hash" ||
-		req.OwnerUserHash != "user_hash" ||
-		req.OwnerEnvHash != "env_hash" ||
-		req.SessionChannelIDHash != "channel_hash" {
-		t.Fatalf("handle grant session audience mismatch: %#v", req)
-	}
-}
-
-func resourceScopeFromHelperRequest(request ipcFrame) sessionctx.ResourceScope {
-	if request.FrameType == ipcFrameTypeRevokeEpoch {
-		var payload revokeEpochRequestPayload
-		if json.Unmarshal(request.Payload, &payload) == nil && payload.ResourceScope.Valid() {
-			return payload.ResourceScope
-		}
-	}
-	if request.FrameType == ipcFrameTypeInvokeWorker {
-		var payload invokeWorkerRequestPayload
-		if json.Unmarshal(request.Payload, &payload) == nil {
-			if strings.TrimSpace(payload.Lease.OwnerUserHash) != "" {
-				return sessionctx.ResourceScope{
-					Kind:          sessionctx.ScopeUser,
-					OwnerEnvHash:  payload.Lease.OwnerEnvHash,
-					OwnerUserHash: payload.Lease.OwnerUserHash,
-				}
-			}
-			return sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: payload.Lease.OwnerEnvHash}
-		}
-	}
-	return sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
 }
 
 func mustMarshalRaw(value any) json.RawMessage {
@@ -5365,290 +2881,6 @@ type nopWriteCloser struct {
 }
 
 func (nopWriteCloser) Close() error { return nil }
-
-type recordingHandleGrantValidator struct {
-	calls  int
-	last   HandleGrantValidationRequest
-	result HandleGrantValidationResult
-	err    error
-}
-
-type recordingStorageFilesBroker struct {
-	readCalls          int
-	writeCalls         int
-	deleteCalls        int
-	listCalls          int
-	lastRead           storage.FileReadRequest
-	lastWrite          storage.FileWriteRequest
-	lastDelete         storage.FileDeleteRequest
-	lastList           storage.FileListRequest
-	lastReadCalledAt   time.Time
-	lastReadDeadline   time.Time
-	lastReadDeadlineOK bool
-	readResult         storage.FileReadResult
-	writeResult        storage.FileWriteResult
-	listResult         storage.FileListResult
-	err                error
-}
-
-type recordingStorageKVBroker struct {
-	getCalls          int
-	putCalls          int
-	deleteCalls       int
-	listCalls         int
-	lastGet           storage.KVGetRequest
-	lastPut           storage.KVPutRequest
-	lastDelete        storage.KVDeleteRequest
-	lastList          storage.KVListRequest
-	lastPutCalledAt   time.Time
-	lastPutDeadline   time.Time
-	lastPutDeadlineOK bool
-	getResult         storage.KVGetResult
-	putResult         storage.KVPutResult
-	listResult        storage.KVListResult
-	err               error
-}
-
-type recordingStorageSQLiteBroker struct {
-	execCalls           int
-	queryCalls          int
-	lastExec            storage.SQLiteExecRequest
-	lastQuery           storage.SQLiteQueryRequest
-	lastQueryCalledAt   time.Time
-	lastQueryDeadline   time.Time
-	lastQueryDeadlineOK bool
-	execResult          storage.SQLiteExecResult
-	queryResult         storage.SQLiteQueryResult
-	err                 error
-}
-
-type recordingConnectivityBroker struct {
-	calls          int
-	installCall    int
-	removeCall     int
-	last           connectivity.GrantRequest
-	lastSession    sessionctx.Context
-	hasLastSession bool
-	lastCalledAt   time.Time
-	lastDeadline   time.Time
-	lastDeadlineOK bool
-	grant          connectivity.ConnectionGrant
-	err            error
-}
-
-type recordingNetworkExecutor struct {
-	httpCalls          int
-	streamCalls        int
-	websocketCalls     int
-	tcpCalls           int
-	udpCalls           int
-	lastHTTP           connectivity.HTTPRequest
-	lastStreamHTTP     connectivity.HTTPRequest
-	lastWebSocket      connectivity.WebSocketRoundTripRequest
-	lastTCP            connectivity.TCPRoundTripRequest
-	lastUDP            connectivity.UDPRoundTripRequest
-	lastHTTPCalledAt   time.Time
-	lastHTTPDeadline   time.Time
-	lastHTTPDeadlineOK bool
-	httpResponse       connectivity.HTTPResponse
-	streamResponse     connectivity.HTTPStreamResponse
-	streamChunks       [][]byte
-	wsResponse         connectivity.WebSocketRoundTripResponse
-	tcpResponse        connectivity.TCPRoundTripResponse
-	udpResponse        connectivity.UDPRoundTripResponse
-	err                error
-}
-
-func (b *recordingConnectivityBroker) InstallPolicy(context.Context, connectivity.PolicySet) error {
-	b.installCall++
-	return nil
-}
-
-func (b *recordingConnectivityBroker) RemovePolicy(context.Context, string) error {
-	b.removeCall++
-	return nil
-}
-
-func (b *recordingConnectivityBroker) MintConnectionGrant(ctx context.Context, req connectivity.GrantRequest) (connectivity.ConnectionGrant, error) {
-	b.calls++
-	b.last = req
-	b.lastSession, b.hasLastSession = sessionctx.FromContext(ctx)
-	b.lastCalledAt = time.Now()
-	b.lastDeadline, b.lastDeadlineOK = ctx.Deadline()
-	if b.err != nil {
-		return connectivity.ConnectionGrant{}, b.err
-	}
-	grant := b.grant
-	if !grant.ResourceScope.Valid() {
-		grant.ResourceScope = req.ResourceScope
-	}
-	return grant, nil
-}
-
-func (e *recordingNetworkExecutor) DoHTTP(ctx context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
-	e.httpCalls++
-	e.lastHTTP = req
-	e.lastHTTPCalledAt = time.Now()
-	e.lastHTTPDeadline, e.lastHTTPDeadlineOK = ctx.Deadline()
-	if e.err != nil {
-		return connectivity.HTTPResponse{}, e.err
-	}
-	return e.httpResponse, nil
-}
-
-func (e *recordingNetworkExecutor) StreamHTTP(ctx context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
-	e.streamCalls++
-	e.lastStreamHTTP = req
-	e.lastHTTPCalledAt = time.Now()
-	e.lastHTTPDeadline, e.lastHTTPDeadlineOK = ctx.Deadline()
-	if e.err != nil {
-		return connectivity.HTTPStreamResponse{}, e.err
-	}
-	var bytesRead int64
-	for index, chunk := range e.streamChunks {
-		if err := onChunk(connectivity.HTTPResponseChunk{Index: index, Data: append([]byte(nil), chunk...)}); err != nil {
-			return connectivity.HTTPStreamResponse{}, err
-		}
-		bytesRead += int64(len(chunk))
-	}
-	result := e.streamResponse
-	if result.StatusCode == 0 {
-		result.StatusCode = http.StatusOK
-	}
-	if result.BytesRead == 0 {
-		result.BytesRead = bytesRead
-	}
-	if result.ChunkCount == 0 {
-		result.ChunkCount = len(e.streamChunks)
-	}
-	return result, nil
-}
-
-func (e *recordingNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
-	e.websocketCalls++
-	e.lastWebSocket = req
-	if e.err != nil {
-		return connectivity.WebSocketRoundTripResponse{}, e.err
-	}
-	return e.wsResponse, nil
-}
-
-func (e *recordingNetworkExecutor) TCPRoundTrip(_ context.Context, req connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
-	e.tcpCalls++
-	e.lastTCP = req
-	if e.err != nil {
-		return connectivity.TCPRoundTripResponse{}, e.err
-	}
-	return e.tcpResponse, nil
-}
-
-func (e *recordingNetworkExecutor) UDPRoundTrip(_ context.Context, req connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
-	e.udpCalls++
-	e.lastUDP = req
-	if e.err != nil {
-		return connectivity.UDPRoundTripResponse{}, e.err
-	}
-	return e.udpResponse, nil
-}
-
-func (v *recordingHandleGrantValidator) ValidateHandleGrant(_ context.Context, req HandleGrantValidationRequest) (HandleGrantValidationResult, error) {
-	v.calls++
-	v.last = req
-	if v.err != nil {
-		return HandleGrantValidationResult{}, v.err
-	}
-	return v.result, nil
-}
-
-func (b *recordingStorageFilesBroker) ReadFile(ctx context.Context, req storage.FileReadRequest) (storage.FileReadResult, error) {
-	b.readCalls++
-	b.lastRead = req
-	b.lastReadCalledAt = time.Now()
-	b.lastReadDeadline, b.lastReadDeadlineOK = ctx.Deadline()
-	if b.err != nil {
-		return storage.FileReadResult{}, b.err
-	}
-	return b.readResult, nil
-}
-
-func (b *recordingStorageFilesBroker) WriteFile(_ context.Context, req storage.FileWriteRequest) (storage.FileWriteResult, error) {
-	b.writeCalls++
-	b.lastWrite = req
-	if b.err != nil {
-		return storage.FileWriteResult{}, b.err
-	}
-	return b.writeResult, nil
-}
-
-func (b *recordingStorageFilesBroker) DeleteFile(_ context.Context, req storage.FileDeleteRequest) error {
-	b.deleteCalls++
-	b.lastDelete = req
-	return b.err
-}
-
-func (b *recordingStorageFilesBroker) ListFiles(_ context.Context, req storage.FileListRequest) (storage.FileListResult, error) {
-	b.listCalls++
-	b.lastList = req
-	if b.err != nil {
-		return storage.FileListResult{}, b.err
-	}
-	return b.listResult, nil
-}
-
-func (b *recordingStorageKVBroker) GetKV(_ context.Context, req storage.KVGetRequest) (storage.KVGetResult, error) {
-	b.getCalls++
-	b.lastGet = req
-	if b.err != nil {
-		return storage.KVGetResult{}, b.err
-	}
-	return b.getResult, nil
-}
-
-func (b *recordingStorageKVBroker) PutKV(ctx context.Context, req storage.KVPutRequest) (storage.KVPutResult, error) {
-	b.putCalls++
-	b.lastPut = req
-	b.lastPutCalledAt = time.Now()
-	b.lastPutDeadline, b.lastPutDeadlineOK = ctx.Deadline()
-	if b.err != nil {
-		return storage.KVPutResult{}, b.err
-	}
-	return b.putResult, nil
-}
-
-func (b *recordingStorageKVBroker) DeleteKV(_ context.Context, req storage.KVDeleteRequest) error {
-	b.deleteCalls++
-	b.lastDelete = req
-	return b.err
-}
-
-func (b *recordingStorageKVBroker) ListKV(_ context.Context, req storage.KVListRequest) (storage.KVListResult, error) {
-	b.listCalls++
-	b.lastList = req
-	if b.err != nil {
-		return storage.KVListResult{}, b.err
-	}
-	return b.listResult, nil
-}
-
-func (b *recordingStorageSQLiteBroker) ExecSQLite(_ context.Context, req storage.SQLiteExecRequest) (storage.SQLiteExecResult, error) {
-	b.execCalls++
-	b.lastExec = req
-	if b.err != nil {
-		return storage.SQLiteExecResult{}, b.err
-	}
-	return b.execResult, nil
-}
-
-func (b *recordingStorageSQLiteBroker) QuerySQLite(ctx context.Context, req storage.SQLiteQueryRequest) (storage.SQLiteQueryResult, error) {
-	b.queryCalls++
-	b.lastQuery = req
-	b.lastQueryCalledAt = time.Now()
-	b.lastQueryDeadline, b.lastQueryDeadlineOK = ctx.Deadline()
-	if b.err != nil {
-		return storage.SQLiteQueryResult{}, b.err
-	}
-	return b.queryResult, nil
-}
 
 func (p *recordingArtifactProvider) ReadArtifact(_ context.Context, req ArtifactRequest) (ArtifactResult, error) {
 	p.calls++
@@ -5747,7 +2979,7 @@ func workerInvocationFixtureWithAccess(access workerBrokerAccess) []byte {
 	}
 	accessSum := sha256.Sum256(rawAccess)
 	accessHash := "sha256:" + hex.EncodeToString(accessSum[:])
-	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"user","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","execution_id":"execution_runtime_1","audit_correlation_id":"audit_runtime_1","broker_access":%s,"broker_access_sha256":%q,"params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA, rawAccess, accessHash))
+	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"user","artifact":%q,"artifact_sha256":%q,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","execution_id":"execution_runtime_1","audit_correlation_id":"audit_runtime_1","broker_access":%s,"broker_access_sha256":%q,"params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA, rawAccess, accessHash))
 }
 
 func (s *ProcessSupervisor) invokeWorkerForTest(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error) {

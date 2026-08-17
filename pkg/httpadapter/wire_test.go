@@ -11,21 +11,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func TestPublicWireProjectionsExcludeInternalIdentity(t *testing.T) {
@@ -287,7 +286,7 @@ func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 	types := []any{
 		successResponse{}, mutationSuccessResponse{}, errorBody{}, mutationErrorBody{}, errorDetails{},
 		packageHashSetRequest{}, releaseRefRequest{}, trustHashSetResponse{}, verifiedSignatureResponse{},
-		trustAssessmentResponse{}, localImportProvenanceResponse{}, runtimeRequirementResponse{}, pluginVersionResponse{},
+		trustAssessmentResponse{}, localImportProvenanceResponse{}, pluginVersionResponse{},
 		capabilityPinResponse{}, packageEntryResponse{}, manifestPublisherResponse{}, manifestPluginResponse{},
 		manifestLocalizedSurfaceResponse{}, manifestLocalizedSettingResponse{}, manifestPresentationLocalizationResponse{},
 		manifestPresentationResponse{}, presentationLocaleResponse{}, presentationCatalogResponse{},
@@ -299,7 +298,7 @@ func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 		opaqueSurfaceWorkerResponse{}, opaqueSurfaceAssetResponse{}, opaqueSurfaceDocumentResponse{},
 		pluginRecordResponse{}, permissionResponse{}, authorizationRevisionsResponse{}, permissionMutationResponse{},
 		settingsFieldResponse{}, settingsSchemaResponse{}, settingsSecretMetadataResponse{}, settingsSnapshotResponse{},
-		runtimeDescriptorResponse{}, runtimeLimitsResponse{}, runtimeModuleCacheResponse{},
+		runtimeArtifactIdentityResponse{}, runtimeLimitsResponse{}, runtimeModuleCacheResponse{},
 		runtimeShardHealthResponse{}, runtimeHealthResponse{}, surfacePreparationResponse{}, bridgeTokenResponse{}, callMethodResponse{},
 		confirmationPreparationResponse{}, confirmationRejectionResponse{}, intentResponse{}, intentListResponse{},
 		pluginDataBindingResponse{}, retainedDataListResponse{}, retainedDataCleanupResponse{}, diagnosticEventResponse{},
@@ -307,7 +306,7 @@ func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 		pluginCatalogResponse{}, permissionListResponse{}, dataExportResponse{}, acknowledgementResponse{},
 		surfaceDisposeResponse{}, runtimeStopResponse{}, deleteResponse{}, secretBindResponse{}, secretTestResponse{},
 		sessionScopeRevokeCountsResponse{}, sessionScopeRevokeResponse{}, securityPolicyDeleteResponse{}, securityPolicyListResponse{},
-		compatibilityMatrixResponse{}, compatibilityContractResponse{}, compatibilityResponse{}, surfaceBootstrapResponse{},
+		surfaceBootstrapResponse{},
 		securityPolicyResponse{}, executionListResponse{}, executionEventListResponse{},
 	}
 	validName := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -342,7 +341,7 @@ func TestPublicDiagnosticsExplicitlyMapClosedDetails(t *testing.T) {
 			FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 			ExecutionID:       "execution_1",
 			RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-			RustIPCVersion: "rust-ipc-v7", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
+			RuntimeTargetOS:   "linux",
 			RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
 			Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 			StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -362,7 +361,7 @@ func TestPublicDiagnosticsExplicitlyMapClosedDetails(t *testing.T) {
 		ExecutionsDeleted: 1, ExecutionID: "execution_1", InvocationID: "invocation_1", Method: "method.read",
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-		RustIPCVersion: "rust-ipc-v7", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
+		RuntimeTargetOS:   "linux",
 		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
 		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -420,9 +419,6 @@ func TestPublicAggregateProjectionsMatchPublishedFieldSets(t *testing.T) {
 		{name: "opaque surface style", domainType: pluginpkg.OpaqueSurfaceStyle{}, wireType: opaqueSurfaceStyleResponse{}},
 		{name: "opaque surface worker", domainType: pluginpkg.OpaqueSurfaceWorker{}, wireType: opaqueSurfaceWorkerResponse{}},
 		{name: "opaque surface asset", domainType: pluginpkg.OpaqueSurfaceAsset{}, wireType: opaqueSurfaceAssetResponse{}},
-		{name: "compatibility matrix", domainType: version.Matrix{}, wireType: compatibilityMatrixResponse{}},
-		{name: "compatibility contract", domainType: version.ContractArtifact{}, wireType: compatibilityContractResponse{}},
-		{name: "compatibility manifest", domainType: version.CompatibilityManifest{}, wireType: compatibilityResponse{}},
 		{name: "internal diagnostic details", domainType: observability.DiagnosticDetails{}, wireType: host.DiagnosticDetails{}},
 		{name: "public diagnostic details", domainType: host.DiagnosticDetails{}, wireType: diagnosticDetailsResponse{}},
 	}
@@ -433,46 +429,12 @@ func TestPublicAggregateProjectionsMatchPublishedFieldSets(t *testing.T) {
 	}
 }
 
-func TestPublicPlatformMappersOwnAndPreserveValues(t *testing.T) {
+func TestPublicPlatformMappersOwnValues(t *testing.T) {
 	features := []host.Feature{host.FeatureRelease, host.FeatureRuntime}
 	publicFeatureSet := publicFeatures(features)
 	features[0] = host.FeatureSecrets
 	if !reflect.DeepEqual(publicFeatureSet, []string{string(host.FeatureRelease), string(host.FeatureRuntime)}) {
 		t.Fatalf("publicFeatures() = %#v", publicFeatureSet)
-	}
-
-	source := version.CompatibilityManifest{
-		SchemaVersion: "compatibility-test",
-		Contracts: []version.ContractArtifact{{
-			ID: "contract-id", Path: "contract-path", Version: "contract-version", SHA256: "contract-sha256",
-		}},
-	}
-	matrix := reflect.ValueOf(&source.Matrix).Elem()
-	for index := range matrix.NumField() {
-		field := matrix.Field(index)
-		switch field.Kind() {
-		case reflect.String:
-			field.SetString(matrix.Type().Field(index).Name)
-		case reflect.Slice:
-			if field.Type().Elem().Kind() == reflect.String {
-				field.Set(reflect.ValueOf([]string{"plugin-ui-test"}))
-			} else {
-				field.Set(reflect.ValueOf([]version.PluginUITransportMapping{{PluginUIProtocolVersion: "plugin-ui-test", OpaqueSurfaceTransportSchemaVersion: "transport-test", BridgeSchemaVersion: "bridge-test"}}))
-			}
-		}
-	}
-	response := publicCompatibility(source)
-	publicMatrix := reflect.ValueOf(response.Matrix)
-	for index := range matrix.NumField() {
-		field := matrix.Type().Field(index)
-		mapped := publicMatrix.FieldByName(field.Name)
-		if !mapped.IsValid() || !reflect.DeepEqual(mapped.Interface(), matrix.Field(index).Interface()) {
-			t.Fatalf("publicCompatibility() lost matrix field %s: %#v", field.Name, response.Matrix)
-		}
-	}
-	source.Contracts[0].ID = "mutated"
-	if response.SchemaVersion != "compatibility-test" || len(response.Contracts) != 1 || response.Contracts[0].ID != "contract-id" {
-		t.Fatalf("publicCompatibility() lost or shared published values: %#v", response)
 	}
 }
 
@@ -538,7 +500,7 @@ func TestDomainClockFieldsAreExcludedFromJSON(t *testing.T) {
 		connectivity.GrantRequest{}, connectivity.HTTPRequest{}, connectivity.TCPRoundTripRequest{},
 		connectivity.UDPRoundTripRequest{}, connectivity.WebSocketRoundTripRequest{},
 		runtimeclient.RuntimeLeaseReplayConsumeRequest{}, runtimeclient.RuntimeLeaseVerificationRequest{},
-		plugindata.CommitEnableRequest{}, plugindata.ImportRequest{}, plugindata.BindRetainedRequest{}, plugindata.CommitUninstallRequest{},
+		plugindata.InstallCommitRequest{}, plugindata.ImportRequest{}, plugindata.BindRetainedRequest{}, plugindata.CommitUninstallRequest{},
 	}
 	for _, request := range requests {
 		typeOf := reflect.TypeOf(request)

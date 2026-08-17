@@ -49,7 +49,7 @@ func fixtureInvocation(session string) Invocation {
 
 func callControl(t *testing.T, service *Service, invocation Invocation, operation, arguments string) map[string]any {
 	t.Helper()
-	raw, err := service.Control(context.Background(), invocation, []byte(fmt.Sprintf(`{"api":1,"operation":%q,"arguments":%s}`, operation, arguments)))
+	raw, err := service.Control(context.Background(), invocation, []byte(fmt.Sprintf(`{"plugin_api":1,"operation":%q,"arguments":%s}`, operation, arguments)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +122,10 @@ func TestServicePlatformDiscoveryDoesNotExposeAuthorityFacts(t *testing.T) {
 	if capabilities["ok"] != true {
 		t.Fatalf("platform.capabilities = %#v", capabilities)
 	}
+	capabilityResult, ok := capabilities["result"].(map[string]any)
+	if !ok || capabilityResult["plugin_api"] != json.Number("1") {
+		t.Fatalf("platform.capabilities plugin_api = %#v", capabilities)
+	}
 	contextResponse := callControl(t, service, invocation, "platform.context", `{}`)
 	raw, _ := json.Marshal(contextResponse)
 	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "runtime_generation", "management_revision", "revoke_epoch", "invocation_id", "permissions"} {
@@ -132,6 +136,18 @@ func TestServicePlatformDiscoveryDoesNotExposeAuthorityFacts(t *testing.T) {
 	result, ok := contextResponse["result"].(map[string]any)
 	if contextResponse["ok"] != true || !ok || result["plugin_id"] != invocation.Plugin.ID || result["plugin_version"] != invocation.Plugin.Version || result["scope_kind"] != string(invocation.Owner.Scope.Kind) {
 		t.Fatalf("platform.context = %#v", contextResponse)
+	}
+}
+
+func TestServiceRejectsRetiredAPIField(t *testing.T) {
+	table, _ := NewTableWithLimits(DefaultLimits())
+	service, _ := NewService(table, nil, nil)
+	raw, err := service.Control(context.Background(), fixtureInvocation("session-retired-api"), []byte(`{"api":1,"operation":"platform.capabilities","arguments":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"code":"INVALID_ARGUMENT"`)) {
+		t.Fatalf("retired api field response = %s", raw)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"sort"
 	"sync"
@@ -15,14 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/performanceevidence"
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/internal/performanceevidence"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 const performanceRuntimePathEnv = "REDEVPLUGIN_PERFORMANCE_RUNTIME"
@@ -37,7 +34,7 @@ func TestPerformanceRuntimeWarmConcurrencyAndCache(t *testing.T) {
 		ModuleCacheEntries:     64,
 		ModuleCacheSourceBytes: 128 << 20,
 	}
-	h, supervisor, assets := newPerformanceRuntimeHost(t, runtimePath, limits, connectivity.NewMemoryBroker(), connectivity.NewExecutor(connectivity.ExecutorOptions{}))
+	h, supervisor, assets, _ := newPerformanceRuntimeHost(t, runtimePath, limits)
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	assets.reads.Store(0)
 
@@ -105,10 +102,8 @@ func TestPerformanceRuntimeCanceledColdLoadDoesNotFailWaiter(t *testing.T) {
 		ModuleCacheEntries:     8,
 		ModuleCacheSourceBytes: 16 << 20,
 	}
-	broker := connectivity.NewMemoryBroker()
-	executor := newPerformanceBlockingNetworkExecutor()
-	_, supervisor, assets := newPerformanceRuntimeHost(t, runtimePath, limits, broker, executor)
-	artifact := installPerformanceBlockingArtifact(t, assets, broker)
+	_, supervisor, assets, blocker := newPerformanceRuntimeHost(t, runtimePath, limits)
+	artifact := installPerformanceBlockingArtifact(t, assets)
 	artifactReadStarted, releaseArtifactRead := assets.blockNextRead()
 
 	leaderCtx, cancelLeader := context.WithCancel(hostTestContext())
@@ -139,7 +134,7 @@ func TestPerformanceRuntimeCanceledColdLoadDoesNotFailWaiter(t *testing.T) {
 
 	close(releaseArtifactRead)
 	select {
-	case request := <-executor.started:
+	case request := <-blocker.started:
 		close(request.release)
 	case <-time.After(time.Second):
 		t.Fatal("cold-load waiter did not reach network execution")
@@ -173,17 +168,15 @@ func TestPerformanceRuntimeIsolationAndCancellation(t *testing.T) {
 		ModuleCacheEntries:     64,
 		ModuleCacheSourceBytes: 128 << 20,
 	}
-	broker := connectivity.NewMemoryBroker()
-	executor := newPerformanceBlockingNetworkExecutor()
-	h, supervisor, assets := newPerformanceRuntimeHost(t, runtimePath, limits, broker, executor)
+	h, supervisor, assets, blocker := newPerformanceRuntimeHost(t, runtimePath, limits)
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	if errors, _ := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 1, 1); len(errors) > 0 {
 		t.Fatalf("warm echo invocation failed: %v", errors[0])
 	}
-	blocking := installPerformanceBlockingArtifact(t, assets, broker)
+	blocking := installPerformanceBlockingArtifact(t, assets)
 
 	blockedDone := invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), "isolation")
-	blockedRequest := waitForPerformanceBlockingRequest(t, blockedDone, executor.started, "isolation")
+	blockedRequest := waitForPerformanceBlockingRequest(t, blockedDone, blocker.started, "isolation")
 	errs, durations := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 16, performanceRuntimeAdmissionCapacity(limits))
 	if len(errs) > 0 {
 		t.Fatalf("isolated invocations failed: %v", errs[0])
@@ -211,7 +204,7 @@ func TestPerformanceRuntimeIsolationAndCancellation(t *testing.T) {
 	for index := 0; index < limits.PerPluginConcurrency; index++ {
 		done := invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), fmt.Sprintf("queue-blocker-%d", index))
 		blockers = append(blockers, done)
-		requests = append(requests, waitForPerformanceBlockingRequest(t, done, executor.started, "queue blocker"))
+		requests = append(requests, waitForPerformanceBlockingRequest(t, done, blocker.started, "queue blocker"))
 	}
 	queuedDurations := make([]time.Duration, 0, 20)
 	for index := 0; index < 20; index++ {
@@ -251,7 +244,7 @@ func TestPerformanceRuntimeIsolationAndCancellation(t *testing.T) {
 	for index := 0; index < 20; index++ {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := invokePerformanceBlockingWorker(supervisor, blocking, ctx, fmt.Sprintf("running-%d", index))
-		waitForPerformanceBlockingRequest(t, done, executor.started, "running cancellation")
+		waitForPerformanceBlockingRequest(t, done, blocker.started, "running cancellation")
 		started := time.Now()
 		cancel()
 		err := <-done
@@ -288,21 +281,19 @@ func TestPerformanceRuntimeSaturatedPluginPreservesOtherPluginCapacity(t *testin
 		ModuleCacheEntries:     64,
 		ModuleCacheSourceBytes: 128 << 20,
 	}
-	broker := connectivity.NewMemoryBroker()
-	executor := newPerformanceBlockingNetworkExecutor()
-	h, supervisor, assets := newPerformanceRuntimeHost(t, runtimePath, limits, broker, executor)
+	h, supervisor, assets, blocker := newPerformanceRuntimeHost(t, runtimePath, limits)
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	if errors, _ := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 1, 1); len(errors) > 0 {
 		t.Fatalf("warm invocation failed: %v", errors[0])
 	}
-	blocking := installPerformanceBlockingArtifact(t, assets, broker)
+	blocking := installPerformanceBlockingArtifact(t, assets)
 
 	active := make([]<-chan error, 0, limits.PerPluginConcurrency)
 	activeRequests := make([]*performanceBlockingRequest, 0, limits.PerPluginConcurrency)
 	for index := 0; index < limits.PerPluginConcurrency; index++ {
 		done := invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), fmt.Sprintf("saturation-active-%d", index))
 		active = append(active, done)
-		activeRequests = append(activeRequests, waitForPerformanceBlockingRequest(t, done, executor.started, "saturation active"))
+		activeRequests = append(activeRequests, waitForPerformanceBlockingRequest(t, done, blocker.started, "saturation active"))
 	}
 	queued := make([]<-chan error, 0, limits.PerPluginConcurrency)
 	queuedCancels := make([]context.CancelFunc, 0, limits.PerPluginConcurrency)
@@ -383,16 +374,13 @@ func newPerformanceRuntimeHost(
 	t *testing.T,
 	runtimePath string,
 	limits runtimeclient.RuntimeLimits,
-	broker connectivity.Broker,
-	executor connectivity.NetworkExecutor,
-) (*Host, *runtimeclient.ProcessSupervisor, *performanceCountingAssetStore) {
+) (*Host, *runtimeclient.ProcessSupervisor, *performanceCountingAssetStore, *performanceBlockingIOBroker) {
 	t.Helper()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
-		connectivityBroker: broker,
-		networkExecutor:    executor,
+		developerMode:  true,
+		localGenerated: true,
 	})
+	blocker := newPerformanceBlockingIOBroker()
 	observabilityStore := observability.NewMemoryStore()
 	h.adapters.Audit = observabilityStore
 	h.adapters.Diagnostics = observabilityStore
@@ -400,17 +388,11 @@ func newPerformanceRuntimeHost(
 	h.adapters.Assets = assets
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		RuntimePath:           runtimePath,
-		Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
+		ArtifactIdentity:      hostRuntimeTestDescriptor(t, runtimePath),
 		Diagnostics:           observabilityStore,
 		Artifacts:             runtimeArtifactProvider{assets: assets},
-		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:          h.adapters.PluginData,
-		StorageKV:             h.adapters.PluginData,
-		StorageSQLite:         h.adapters.PluginData,
-		Connectivity:          broker,
-		NetworkExecutor:       executor,
 		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
-		IOBroker:              h.runtimeIO,
+		IOBroker:              blocker,
 		Limits:                limits,
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -430,7 +412,7 @@ func newPerformanceRuntimeHost(
 			t.Errorf("stop runtime: %v", err)
 		}
 	})
-	return h, supervisor, assets
+	return h, supervisor, assets, blocker
 }
 
 type performanceRuntimeManager struct {
@@ -444,7 +426,7 @@ func (performanceRuntimeManager) BindHostServices(services runtimeclient.Runtime
 	return nil
 }
 
-func (m performanceRuntimeManager) Preflight(ctx context.Context, target runtimetarget.Target) (runtimeclient.RuntimeDescriptor, error) {
+func (m performanceRuntimeManager) Preflight(ctx context.Context, target runtimetarget.Target) (runtimeclient.RuntimeArtifactIdentity, error) {
 	return m.supervisor.Preflight(ctx, target)
 }
 
@@ -465,9 +447,9 @@ func (m performanceRuntimeManager) Health(ctx context.Context) (runtimeclient.Ma
 		return runtimeclient.ManagerHealth{}, err
 	}
 	return runtimeclient.ManagerHealth{
-		Ready:      health.Ready,
-		Descriptor: health.Descriptor,
-		Shards:     []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_performance", Health: health}},
+		Ready:            health.Ready,
+		ArtifactIdentity: health.ArtifactIdentity,
+		Shards:           []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_performance", Health: health}},
 	}, nil
 }
 
@@ -485,7 +467,7 @@ func (m performanceRuntimeManager) BindPlugin(ctx context.Context, pluginInstanc
 		RuntimeGenerationID: health.RuntimeGenerationID,
 		IPCChannelID:        health.IPCChannelID,
 		ConnectionNonce:     health.ConnectionNonce,
-		Descriptor:          health.Descriptor,
+		ArtifactIdentity:    health.ArtifactIdentity,
 	}, nil
 }
 
@@ -562,39 +544,39 @@ type performanceBlockingRequest struct {
 	release chan struct{}
 }
 
-type performanceBlockingNetworkExecutor struct {
+type performanceBlockingIOBroker struct {
 	started chan *performanceBlockingRequest
 }
 
-func newPerformanceBlockingNetworkExecutor() *performanceBlockingNetworkExecutor {
-	return &performanceBlockingNetworkExecutor{started: make(chan *performanceBlockingRequest, 64)}
+func newPerformanceBlockingIOBroker() *performanceBlockingIOBroker {
+	return &performanceBlockingIOBroker{started: make(chan *performanceBlockingRequest, 64)}
 }
 
-func (e *performanceBlockingNetworkExecutor) DoHTTP(ctx context.Context, _ connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
+func (broker *performanceBlockingIOBroker) Control(ctx context.Context, _ string, _ []byte) ([]byte, error) {
 	request := &performanceBlockingRequest{release: make(chan struct{})}
-	e.started <- request
+	broker.started <- request
 	select {
 	case <-ctx.Done():
-		return connectivity.HTTPResponse{}, ctx.Err()
+		return nil, ctx.Err()
 	case <-request.release:
-		return connectivity.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"ok":true}`)}, nil
+		return []byte(`{"ok":true,"result":{"blocked":false}}`), nil
 	}
 }
 
-func (e *performanceBlockingNetworkExecutor) StreamHTTP(context.Context, connectivity.HTTPRequest, func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
-	return connectivity.HTTPStreamResponse{}, errors.New("unexpected stream request")
+func (*performanceBlockingIOBroker) Read(context.Context, string, uint64, []byte) (int, uint32, error) {
+	return 0, 0, errors.New("unexpected performance runtime read")
 }
 
-func (e *performanceBlockingNetworkExecutor) WebSocketRoundTrip(context.Context, connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
-	return connectivity.WebSocketRoundTripResponse{}, errors.New("unexpected websocket request")
+func (*performanceBlockingIOBroker) Write(context.Context, string, uint64, []byte, uint32) (int, error) {
+	return 0, errors.New("unexpected performance runtime write")
 }
 
-func (e *performanceBlockingNetworkExecutor) TCPRoundTrip(context.Context, connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
-	return connectivity.TCPRoundTripResponse{}, errors.New("unexpected tcp request")
+func (*performanceBlockingIOBroker) Seek(context.Context, string, uint64, int64, int) (int64, error) {
+	return 0, errors.New("unexpected performance runtime seek")
 }
 
-func (e *performanceBlockingNetworkExecutor) UDPRoundTrip(context.Context, connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
-	return connectivity.UDPRoundTripResponse{}, errors.New("unexpected udp request")
+func (*performanceBlockingIOBroker) Close(context.Context, string, uint64) error {
+	return errors.New("unexpected performance runtime close")
 }
 
 type performanceBlockingArtifact struct {
@@ -605,10 +587,10 @@ type performanceBlockingArtifact struct {
 	activeFingerprint string
 }
 
-func installPerformanceBlockingArtifact(t *testing.T, assets pluginpkg.AssetStore, broker connectivity.Broker) performanceBlockingArtifact {
+func installPerformanceBlockingArtifact(t *testing.T, assets pluginpkg.AssetStore) performanceBlockingArtifact {
 	t.Helper()
-	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"GET","path":"/performance","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":5000}`)
-	module := importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", "redevplugin_worker_invoke", request)
+	request := []byte(`{"plugin_api":1,"operation":"platform.capabilities","arguments":{}}`)
+	module := importedMemoryHostcallWorkerWASMForTest("redevplugin.io", "rdp_call_v1", "control", "redevplugin_worker_invoke", request)
 	artifactSHA256 := performanceSHA256(module)
 	packageHash := performanceSHA256([]byte("redevplugin-performance-blocking-worker-v1"))
 	entry := pluginpkg.Entry{Path: "workers/blocking.wasm", Size: int64(len(module)), SHA256: artifactSHA256, Mode: "0644", ContentType: "application/wasm"}
@@ -620,33 +602,12 @@ func installPerformanceBlockingArtifact(t *testing.T, assets pluginpkg.AssetStor
 	if err := assets.PutOwnedPackage(context.Background(), &pkg); err != nil {
 		t.Fatal(err)
 	}
-	destination, err := connectivity.ParseDestination(connectivity.TransportHTTP, "https://api.example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
 	artifact := performanceBlockingArtifact{
 		packageHash:       packageHash,
 		artifactSHA256:    artifactSHA256,
 		pluginID:          "com.example.performance.blocking",
 		pluginInstanceID:  "plugini_performance_blocking",
 		activeFingerprint: performanceSHA256([]byte("redevplugin-performance-active-v1")),
-	}
-	if err := broker.InstallPolicy(hostTestContext(), connectivity.PolicySet{
-		PluginInstanceID:        artifact.pluginInstanceID,
-		PluginID:                artifact.pluginID,
-		ActiveFingerprint:       artifact.activeFingerprint,
-		PolicyRevision:          1,
-		ManagementRevision:      1,
-		RevokeEpoch:             1,
-		TargetClassifierVersion: version.TargetClassifierVersion,
-		Connectors: []connectivity.ConnectorPolicy{{
-			ConnectorID:  "api",
-			Transport:    connectivity.TransportHTTP,
-			Scope:        connectivity.ScopeUser,
-			Destinations: []connectivity.Destination{destination},
-		}},
-	}); err != nil {
-		t.Fatal(err)
 	}
 	return artifact
 }
@@ -676,7 +637,7 @@ func invokePerformanceBlockingWorker(supervisor *runtimeclient.ProcessSupervisor
 			RuntimeGenerationID: health.RuntimeGenerationID, PackageHash: artifact.packageHash,
 			WorkerID: "blocking_worker", WorkerMode: "job", WorkerScope: "user",
 			Artifact: "workers/blocking.wasm", ArtifactSHA256: artifact.artifactSHA256,
-			ABI: version.WASMABIVersion, Method: "worker.block",
+			Method: "worker.block",
 			Effect: "read", Execution: "sync", SurfaceInstanceID: "surface_performance",
 			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 			BridgeChannelID: "bridge_performance", AuditCorrelationID: "audit_" + suffix,

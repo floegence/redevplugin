@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/websecurity"
+	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
 
 func TestRouteSetReplacesSurfaceRevokeWithClosedSessionRevoke(t *testing.T) {

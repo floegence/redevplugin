@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
 
 func TestFixtureVerifiesRelease(t *testing.T) {
@@ -39,27 +39,21 @@ func buildPackage(t *testing.T) []byte {
 	t.Helper()
 	directory := t.TempDir()
 	manifest := `{
-  "schema_version": "redevplugin.manifest.v8",
+  "schema_version": "redevplugin.manifest.v9",
   "publisher": {"publisher_id": "fixture.publisher", "display_name": "Fixture"},
   "plugin": {
     "plugin_id": "fixture.plugin",
     "display_name": "Fixture",
-    "version": "1.0.0",
-    "api_version": "plugin-v1",
-    "min_runtime_version": "0.1.0",
-    "ui_protocol_version": "plugin-ui-v7"
+    "version": "1.0.0"
   },
-  "presentation": {
-    "default_locale": "en-US",
-    "summary": "Fixture plugin",
-    "description": ["Fixture plugin for release trust tests."],
-    "highlights": [],
-    "keywords": ["fixture"],
-    "localizations": []
-  },
+  "api": {"major": 1, "required_features": [], "optional_features": []},
+  "permissions": [],
+  "presentation": {"locales": {"default": "en-US"}},
   "surfaces": [
     {"surface_id": "fixture.view", "kind": "view", "label": "Fixture", "entry": "ui/index.html"}
-  ]
+  ],
+  "workers": [],
+  "methods": []
 }`
 	if err := os.MkdirAll(filepath.Join(directory, "ui", "assets"), 0o755); err != nil {
 		t.Fatal(err)

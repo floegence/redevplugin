@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"golang.org/x/sys/unix"
 )
 
@@ -22,10 +23,10 @@ func (name RuntimeBinaryName) valid() bool { return name.value == "redevplugin-r
 const requiredRuntimeMemfdSeals = unix.F_SEAL_FUTURE_WRITE | unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
 
 func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptions) (*VerifiedExecutable, error) {
-	if options.RootDir == nil || options.ExecutionRoot == nil || !options.RelativeName.valid() || !options.ExpectedDescriptor.valid() {
+	if options.RootDir == nil || options.ExecutionRoot == nil || !options.RelativeName.valid() || !options.ExpectedArtifactIdentity.valid() {
 		return nil, ErrRuntimeAdmissionInvalid
 	}
-	if err := options.ExpectedDescriptor.CompatibleWithPlatform(); err != nil {
+	if err := options.ExpectedArtifactIdentity.CompatibleWithPlatform(); err != nil {
 		return nil, err
 	}
 	rootFD, err := duplicateValidatedRuntimeDirectory(options.RootDir, false)
@@ -67,7 +68,7 @@ func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 	if err := validateRuntimeExecutableMetadata(sourceStat); err != nil {
 		return nil, err
 	}
-	if err := validateRuntimeELF(source, sourceStat.Size, options.ExpectedDescriptor.Target()); err != nil {
+	if err := validateRuntimeELF(source, sourceStat.Size, options.ExpectedArtifactIdentity.Target()); err != nil {
 		return nil, err
 	}
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
@@ -99,8 +100,8 @@ func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 	if err != nil {
 		return nil, err
 	}
-	if actualDigest != options.ExpectedDescriptor.BinarySHA256().String() {
-		return nil, fmt.Errorf("%w: binary digest mismatch", ErrRuntimeDescriptorMismatch)
+	if actualDigest != options.ExpectedArtifactIdentity.BinarySHA256().String() {
+		return nil, fmt.Errorf("%w: binary digest mismatch", ErrRuntimeArtifactIdentityMismatch)
 	}
 	if _, err := unix.FcntlInt(uintptr(memfd), unix.F_ADD_SEALS, requiredRuntimeMemfdSeals); err != nil {
 		return nil, fmt.Errorf("%w: seal executable memfd", ErrRuntimeAdmissionInvalid)
@@ -116,7 +117,7 @@ func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 	if sealedStat.Size != sourceStat.Size {
 		return nil, fmt.Errorf("%w: sealed executable size mismatch", ErrRuntimeAdmissionInvalid)
 	}
-	if err := validateRuntimeELF(sealed, sealedStat.Size, options.ExpectedDescriptor.Target()); err != nil {
+	if err := validateRuntimeELF(sealed, sealedStat.Size, options.ExpectedArtifactIdentity.Target()); err != nil {
 		return nil, err
 	}
 	sealedDigest, err := hashRuntimeExecutableFD(ctx, memfd, sealedStat.Size)
@@ -127,7 +128,7 @@ func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 		return nil, fmt.Errorf("%w: sealed executable digest mismatch", ErrRuntimeAdmissionInvalid)
 	}
 
-	journal, err := newRuntimeExecJournal(executionRoot, options.ExpectedDescriptor)
+	journal, err := newRuntimeExecJournal(executionRoot, options.ExpectedArtifactIdentity)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +136,7 @@ func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 	closeExecutionRoot = false
 	return &VerifiedExecutable{
 		state:         verifiedExecutableOwned,
-		descriptor:    options.ExpectedDescriptor,
+		descriptor:    options.ExpectedArtifactIdentity,
 		executable:    sealed,
 		executionRoot: executionRoot,
 		journal:       journal,
@@ -194,7 +195,7 @@ func validateRuntimeExecutableMetadata(stat unix.Stat_t) error {
 	return nil
 }
 
-func validateRuntimeELF(file *os.File, size int64, target RuntimeAdmissionTarget) error {
+func validateRuntimeELF(file *os.File, size int64, target runtimetarget.Target) error {
 	if file == nil || size <= 0 || size > maxRuntimeExecutableBytes {
 		return ErrRuntimeAdmissionInvalid
 	}
@@ -204,7 +205,7 @@ func validateRuntimeELF(file *os.File, size int64, target RuntimeAdmissionTarget
 	}
 	defer parsed.Close()
 	wantMachine := elf.EM_X86_64
-	if target == RuntimeAdmissionLinuxARM64 {
+	if target == runtimetarget.LinuxARM64 {
 		wantMachine = elf.EM_AARCH64
 	}
 	if parsed.Class != elf.ELFCLASS64 || parsed.ByteOrder.String() != "LittleEndian" || parsed.Machine != wantMachine || parsed.Type != elf.ET_DYN {

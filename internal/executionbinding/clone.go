@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/floegence/redevplugin/v2/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
 )
 
 // CloneTrusted returns an independently owned snapshot of a binding that has

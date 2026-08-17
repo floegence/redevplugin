@@ -1,9 +1,7 @@
 {
   "frame_type": "invoke_worker",
-  "ipc_version": "rust-ipc-v7",
   "payload": {
     "invocation": {
-      "abi": "redevplugin-wasm-worker-v2",
       "active_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "artifact": "workers/backend.wasm",
       "artifact_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -67,10 +65,10 @@
       "runtime_instance_id": "rtinst_fixture_v1",
       "runtime_shard_id": "rtshard_fixture_v1",
       "session_channel_id_hash": "channel_fixture_v1",
-      "signature": "ed25519:m3LCZ9bbv0MXiN73TjAnAwlfOQ8zebxkn8eWJ7sQGZzwo7YHHH06ag+ANamsXdicHmBWCxxc3LVi/Y1irXiWCw==",
+      "signature": "ed25519:wGdM2sOIozbhoniEsi1mx2UV+vTjFjW5vQDcZtQwc11pWI4VyN5M7tVqyO3h5Lxk1nr4WJcNiRGHqLOlCuD3Dg==",
       "surface_instance_id": "surface_fixture_v1",
       "target_descriptor_hashes": [
-        "invocation:sha256:7f12ee0e72cf2e7fa149a23697a36ead653b498cf884db2e69d250b3cfdc7abf",
+        "invocation:sha256:26a6e600ceaa442d444ed681a2de5879fd0f837949542b4352925626c91bb3e0",
         "method:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "worker:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
       ],

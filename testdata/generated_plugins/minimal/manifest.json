@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v8",
+  "schema_version": "redevplugin.manifest.v9",
   "publisher": {
     "publisher_id": "example",
     "display_name": "Example"
@@ -7,22 +7,18 @@
   "plugin": {
     "plugin_id": "com.example.minimal",
     "display_name": "Minimal",
-    "version": "1.0.0",
-    "api_version": "plugin-v1",
-    "min_runtime_version": "0.1.0",
-    "ui_protocol_version": "plugin-ui-v7"
+    "version": "1.0.0"
   },
+  "api": {
+    "major": 1,
+    "required_features": [],
+    "optional_features": []
+  },
+  "permissions": [],
   "presentation": {
-    "default_locale": "en-US",
-    "summary": "Minimal extends the host with its declared plugin capabilities.",
-    "description": [
-      "Minimal is a ReDevPlugin package whose surfaces and capabilities are verified by the host before use."
-    ],
-    "highlights": [],
-    "keywords": [
-      "Minimal"
-    ],
-    "localizations": []
+    "locales": {
+      "default": "en-US"
+    }
   },
   "surfaces": [
     {
@@ -31,5 +27,7 @@
       "label": "Minimal",
       "entry": "ui/index.html"
     }
-  ]
+  ],
+  "workers": [],
+  "methods": []
 }

@@ -157,15 +157,15 @@ func VerifyPackageSignature(context PackageVerificationContext, document Package
 	return verifyEncodedSignature(SigningUsagePackage, document.KeyID, preimage, document.Signature, verifier)
 }
 
-func BuildReleaseMetadata(document ReleaseMetadataV8) (ReleaseMetadataV8, error) {
+func BuildReleaseMetadata(document ReleaseMetadata) (ReleaseMetadata, error) {
 	document = cloneReleaseMetadata(document)
 	if err := validateReleaseMetadata(document); err != nil {
-		return ReleaseMetadataV8{}, err
+		return ReleaseMetadata{}, err
 	}
 	return document, nil
 }
 
-func ReleaseMetadataSigningPreimage(channel string, document ReleaseMetadataV8) ([]byte, error) {
+func ReleaseMetadataSigningPreimage(channel string, document ReleaseMetadata) ([]byte, error) {
 	if !newContractIDPattern.MatchString(channel) {
 		return nil, invalid("release metadata channel")
 	}
@@ -174,13 +174,13 @@ func ReleaseMetadataSigningPreimage(channel string, document ReleaseMetadataV8) 
 		return nil, err
 	}
 	payload := struct {
-		Channel         string            `json:"channel"`
-		ReleaseMetadata ReleaseMetadataV8 `json:"release_metadata"`
+		Channel         string          `json:"channel"`
+		ReleaseMetadata ReleaseMetadata `json:"release_metadata"`
 	}{Channel: channel, ReleaseMetadata: built}
 	return signingPreimage(SigningUsageReleaseMetadata, payload)
 }
 
-func CanonicalReleaseMetadata(document ReleaseMetadataV8) ([]byte, error) {
+func CanonicalReleaseMetadata(document ReleaseMetadata) ([]byte, error) {
 	built, err := BuildReleaseMetadata(document)
 	if err != nil {
 		return nil, err
@@ -188,7 +188,7 @@ func CanonicalReleaseMetadata(document ReleaseMetadataV8) ([]byte, error) {
 	return canonicalJSON(built)
 }
 
-func VerifyReleaseMetadata(channel string, document ReleaseMetadataV8, signature []byte, verifier SignatureVerifier) error {
+func VerifyReleaseMetadata(channel string, document ReleaseMetadata, signature []byte, verifier SignatureVerifier) error {
 	preimage, err := ReleaseMetadataSigningPreimage(channel, document)
 	if err != nil {
 		return err
@@ -199,10 +199,10 @@ func VerifyReleaseMetadata(channel string, document ReleaseMetadataV8, signature
 	return verifySignature(SigningUsageReleaseMetadata, document.ReleaseMetadataSignature.KeyID, preimage, signature, verifier)
 }
 
-func BuildSourcePolicy(input SourcePolicyInput, signature []byte) (SourcePolicyV2, error) {
+func BuildSourcePolicy(input SourcePolicyInput, signature []byte) (SourcePolicyV3, error) {
 	document := sourcePolicyFromInput(input, encodeSignature(signature))
 	if err := validateSourcePolicy(document, true); err != nil {
-		return SourcePolicyV2{}, err
+		return SourcePolicyV3{}, err
 	}
 	return document, nil
 }
@@ -215,9 +215,8 @@ func SourcePolicySigningPreimage(input SourcePolicyInput) ([]byte, error) {
 	return signingPreimageWithoutTopLevelSignature(SigningUsageSourcePolicy, document)
 }
 
-func (document SourcePolicyV2) SigningPreimage() ([]byte, error) {
+func (document SourcePolicyV3) SigningPreimage() ([]byte, error) {
 	return SourcePolicySigningPreimage(SourcePolicyInput{
-		SchemaVersion:          document.SchemaVersion,
 		SourceID:               document.SourceID,
 		Channel:                document.Channel,
 		Epoch:                  document.Epoch,
@@ -239,14 +238,14 @@ func (document SourcePolicyV2) SigningPreimage() ([]byte, error) {
 	})
 }
 
-func CanonicalSourcePolicy(document SourcePolicyV2) ([]byte, error) {
+func CanonicalSourcePolicy(document SourcePolicyV3) ([]byte, error) {
 	if err := validateSourcePolicy(document, true); err != nil {
 		return nil, err
 	}
 	return canonicalJSON(document)
 }
 
-func VerifySourcePolicy(document SourcePolicyV2, verifier SignatureVerifier) error {
+func VerifySourcePolicy(document SourcePolicyV3, verifier SignatureVerifier) error {
 	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
@@ -254,13 +253,9 @@ func VerifySourcePolicy(document SourcePolicyV2, verifier SignatureVerifier) err
 	return verifyEncodedSignature(SigningUsageSourcePolicy, document.KeyID, preimage, document.Signature, verifier)
 }
 
-func BuildSourcePolicyPointer(input ReleasePointerInput, signature []byte) (SourcePolicyPointerV1, error) {
-	schemaVersion := input.SchemaVersion
-	if schemaVersion == "" {
-		schemaVersion = SourcePolicyPointerSchemaVersionV1
-	}
-	document := SourcePolicyPointerV1{
-		SchemaVersion:  schemaVersion,
+func BuildSourcePolicyPointer(input ReleasePointerInput, signature []byte) (SourcePolicyPointerV2, error) {
+	document := SourcePolicyPointerV2{
+		SchemaVersion:  SourcePolicyPointerSchemaVersion,
 		SourceID:       input.SourceID,
 		Channel:        input.Channel,
 		Epoch:          input.Epoch,
@@ -272,7 +267,7 @@ func BuildSourcePolicyPointer(input ReleasePointerInput, signature []byte) (Sour
 		Signature:      encodeSignature(signature),
 	}
 	if err := validateSourcePolicyPointer(document, true); err != nil {
-		return SourcePolicyPointerV1{}, err
+		return SourcePolicyPointerV2{}, err
 	}
 	return document, nil
 }
@@ -286,18 +281,18 @@ func SourcePolicyPointerSigningPreimage(input ReleasePointerInput) ([]byte, erro
 	return signingPreimageWithoutTopLevelSignature(SigningUsageSourcePolicyPointer, document)
 }
 
-func (document SourcePolicyPointerV1) SigningPreimage() ([]byte, error) {
+func (document SourcePolicyPointerV2) SigningPreimage() ([]byte, error) {
 	return SourcePolicyPointerSigningPreimage(pointerInputFromSourcePolicy(document))
 }
 
-func CanonicalSourcePolicyPointer(document SourcePolicyPointerV1) ([]byte, error) {
+func CanonicalSourcePolicyPointer(document SourcePolicyPointerV2) ([]byte, error) {
 	if err := validateSourcePolicyPointer(document, true); err != nil {
 		return nil, err
 	}
 	return canonicalJSON(document)
 }
 
-func VerifySourcePolicyPointer(document SourcePolicyPointerV1, verifier SignatureVerifier) error {
+func VerifySourcePolicyPointer(document SourcePolicyPointerV2, verifier SignatureVerifier) error {
 	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
@@ -305,10 +300,10 @@ func VerifySourcePolicyPointer(document SourcePolicyPointerV1, verifier Signatur
 	return verifyEncodedSignature(SigningUsageSourcePolicyPointer, document.KeyID, preimage, document.Signature, verifier)
 }
 
-func BuildRevocation(input RevocationInput, signature []byte) (RevocationV2, error) {
+func BuildRevocation(input RevocationInput, signature []byte) (RevocationV3, error) {
 	document := revocationFromInput(input, encodeSignature(signature))
 	if err := validateRevocation(document, true); err != nil {
-		return RevocationV2{}, err
+		return RevocationV3{}, err
 	}
 	return document, nil
 }
@@ -321,9 +316,8 @@ func RevocationSigningPreimage(input RevocationInput) ([]byte, error) {
 	return signingPreimageWithoutTopLevelSignature(SigningUsageRevocation, document)
 }
 
-func (document RevocationV2) SigningPreimage() ([]byte, error) {
+func (document RevocationV3) SigningPreimage() ([]byte, error) {
 	return RevocationSigningPreimage(RevocationInput{
-		SchemaVersion:   document.SchemaVersion,
 		SourceID:        document.SourceID,
 		Channel:         document.Channel,
 		Epoch:           document.Epoch,
@@ -336,14 +330,14 @@ func (document RevocationV2) SigningPreimage() ([]byte, error) {
 	})
 }
 
-func CanonicalRevocation(document RevocationV2) ([]byte, error) {
+func CanonicalRevocation(document RevocationV3) ([]byte, error) {
 	if err := validateRevocation(document, true); err != nil {
 		return nil, err
 	}
 	return canonicalJSON(document)
 }
 
-func VerifyRevocation(document RevocationV2, verifier SignatureVerifier) error {
+func VerifyRevocation(document RevocationV3, verifier SignatureVerifier) error {
 	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
@@ -351,13 +345,9 @@ func VerifyRevocation(document RevocationV2, verifier SignatureVerifier) error {
 	return verifyEncodedSignature(SigningUsageRevocation, document.KeyID, preimage, document.Signature, verifier)
 }
 
-func BuildRevocationPointer(input ReleasePointerInput, signature []byte) (RevocationPointerV1, error) {
-	schemaVersion := input.SchemaVersion
-	if schemaVersion == "" {
-		schemaVersion = RevocationPointerSchemaVersionV1
-	}
-	document := RevocationPointerV1{
-		SchemaVersion:  schemaVersion,
+func BuildRevocationPointer(input ReleasePointerInput, signature []byte) (RevocationPointerV2, error) {
+	document := RevocationPointerV2{
+		SchemaVersion:  RevocationPointerSchemaVersion,
 		SourceID:       input.SourceID,
 		Channel:        input.Channel,
 		Epoch:          input.Epoch,
@@ -369,7 +359,7 @@ func BuildRevocationPointer(input ReleasePointerInput, signature []byte) (Revoca
 		Signature:      encodeSignature(signature),
 	}
 	if err := validateRevocationPointer(document, true); err != nil {
-		return RevocationPointerV1{}, err
+		return RevocationPointerV2{}, err
 	}
 	return document, nil
 }
@@ -383,18 +373,18 @@ func RevocationPointerSigningPreimage(input ReleasePointerInput) ([]byte, error)
 	return signingPreimageWithoutTopLevelSignature(SigningUsageRevocationPointer, document)
 }
 
-func (document RevocationPointerV1) SigningPreimage() ([]byte, error) {
+func (document RevocationPointerV2) SigningPreimage() ([]byte, error) {
 	return RevocationPointerSigningPreimage(pointerInputFromRevocation(document))
 }
 
-func CanonicalRevocationPointer(document RevocationPointerV1) ([]byte, error) {
+func CanonicalRevocationPointer(document RevocationPointerV2) ([]byte, error) {
 	if err := validateRevocationPointer(document, true); err != nil {
 		return nil, err
 	}
 	return canonicalJSON(document)
 }
 
-func VerifyRevocationPointer(document RevocationPointerV1, verifier SignatureVerifier) error {
+func VerifyRevocationPointer(document RevocationPointerV2, verifier SignatureVerifier) error {
 	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
@@ -415,13 +405,9 @@ func rootDelegationFromInput(input RootDelegationInput, signature string) RootDe
 	}
 }
 
-func sourcePolicyFromInput(input SourcePolicyInput, signature string) SourcePolicyV2 {
-	schemaVersion := input.SchemaVersion
-	if schemaVersion == "" {
-		schemaVersion = SourcePolicySchemaVersion
-	}
-	return SourcePolicyV2{
-		SchemaVersion:          schemaVersion,
+func sourcePolicyFromInput(input SourcePolicyInput, signature string) SourcePolicyV3 {
+	return SourcePolicyV3{
+		SchemaVersion:          SourcePolicySchemaVersion,
 		SourceID:               input.SourceID,
 		Channel:                input.Channel,
 		Epoch:                  input.Epoch,
@@ -444,13 +430,9 @@ func sourcePolicyFromInput(input SourcePolicyInput, signature string) SourcePoli
 	}
 }
 
-func revocationFromInput(input RevocationInput, signature string) RevocationV2 {
-	schemaVersion := input.SchemaVersion
-	if schemaVersion == "" {
-		schemaVersion = RevocationSchemaVersionV2
-	}
-	return RevocationV2{
-		SchemaVersion:   schemaVersion,
+func revocationFromInput(input RevocationInput, signature string) RevocationV3 {
+	return RevocationV3{
+		SchemaVersion:   RevocationSchemaVersion,
 		SourceID:        input.SourceID,
 		Channel:         input.Channel,
 		Epoch:           input.Epoch,
@@ -480,9 +462,8 @@ func packageInputFromDocument(context PackageVerificationContext, document Packa
 	}
 }
 
-func pointerInputFromSourcePolicy(document SourcePolicyPointerV1) ReleasePointerInput {
+func pointerInputFromSourcePolicy(document SourcePolicyPointerV2) ReleasePointerInput {
 	return ReleasePointerInput{
-		SchemaVersion:  document.SchemaVersion,
 		SourceID:       document.SourceID,
 		Channel:        document.Channel,
 		Epoch:          document.Epoch,
@@ -494,9 +475,8 @@ func pointerInputFromSourcePolicy(document SourcePolicyPointerV1) ReleasePointer
 	}
 }
 
-func pointerInputFromRevocation(document RevocationPointerV1) ReleasePointerInput {
+func pointerInputFromRevocation(document RevocationPointerV2) ReleasePointerInput {
 	return ReleasePointerInput{
-		SchemaVersion:  document.SchemaVersion,
 		SourceID:       document.SourceID,
 		Channel:        document.Channel,
 		Epoch:          document.Epoch,
@@ -508,13 +488,13 @@ func pointerInputFromRevocation(document RevocationPointerV1) ReleasePointerInpu
 	}
 }
 
-func validateSourcePolicyPointer(document SourcePolicyPointerV1, requireSignature bool) error {
+func validateSourcePolicyPointer(document SourcePolicyPointerV2, requireSignature bool) error {
 	return validatePointer(document.SchemaVersion, SourcePolicyPointerSchemaVersion, document.SourceID, document.Channel,
 		document.Epoch, document.Ref, document.DocumentSHA256,
 		document.GeneratedAt, document.ExpiresAt, document.KeyID, document.Signature, requireSignature)
 }
 
-func validateRevocationPointer(document RevocationPointerV1, requireSignature bool) error {
+func validateRevocationPointer(document RevocationPointerV2, requireSignature bool) error {
 	return validatePointer(document.SchemaVersion, RevocationPointerSchemaVersion, document.SourceID, document.Channel,
 		document.Epoch, document.Ref, document.DocumentSHA256,
 		document.GeneratedAt, document.ExpiresAt, document.KeyID, document.Signature, requireSignature)
@@ -595,14 +575,7 @@ func cloneActiveKeys(value SourcePolicyActiveKeys) SourcePolicyActiveKeys {
 	}
 }
 
-func cloneReleaseMetadata(value ReleaseMetadataV8) ReleaseMetadataV8 {
-	value.Compatibility.SupportedTargets = slices.Clone(value.Compatibility.SupportedTargets)
-	if value.HostRequirements != nil {
-		value.HostRequirements = slices.Clone(value.HostRequirements)
-		for index := range value.HostRequirements {
-			value.HostRequirements[index].RequiredCapabilityContracts = slices.Clone(value.HostRequirements[index].RequiredCapabilityContracts)
-		}
-	}
+func cloneReleaseMetadata(value ReleaseMetadata) ReleaseMetadata {
 	if value.ReleaseEvidence != nil {
 		cloned := *value.ReleaseEvidence
 		value.ReleaseEvidence = &cloned

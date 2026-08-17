@@ -1,4 +1,4 @@
-module github.com/floegence/redevplugin/v2
+module github.com/floegence/redevplugin/v3
 
 go 1.26.6
 

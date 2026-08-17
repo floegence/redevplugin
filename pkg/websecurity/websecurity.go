@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 var (
@@ -34,7 +34,6 @@ const (
 	RouteActionDowngradePlugin            = host.ManagementActionDowngradePlugin
 	RouteActionListPlugins                = host.ManagementActionListPlugins
 	RouteActionListFeatures               = host.ManagementActionListFeatures
-	RouteActionGetCompatibility           = host.ManagementActionGetCompatibility
 	RouteActionOpenSurface                = host.ManagementActionOpenSurface
 	RouteActionRevokeSessionScope         = host.ManagementActionRevokeSessionScope
 	RouteActionPrepareSurface             = host.ManagementActionPrepareSurface
@@ -59,7 +58,6 @@ const (
 	RouteActionImportData                 = host.ManagementActionImportPluginData
 	RouteActionListRetainedData           = host.ManagementActionListRetainedData
 	RouteActionDeleteRetainedData         = host.ManagementActionDeleteRetainedData
-	RouteActionBindRetainedData           = host.ManagementActionBindRetainedData
 	RouteActionCleanupExpiredRetainedData = host.ManagementActionCleanupExpiredRetainedData
 	RouteActionListPermissions            = host.ManagementActionListPermissionGrants
 	RouteActionGetPermissionRequirements  = host.ManagementActionGetPermissionRequirements

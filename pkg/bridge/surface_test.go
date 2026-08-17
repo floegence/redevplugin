@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func TestSurfaceBootstrapJSONOmitsInternalOwnerScope(t *testing.T) {
@@ -216,7 +216,7 @@ func TestSurfaceGatewayRenewalRotatesLeaseCredentialsAndExtendsSession(t *testin
 		t.Fatal(err)
 	}
 	if bound.PluginInstanceID != bootstrap.PluginInstanceID || bound.PluginVersion != bootstrap.PluginVersion ||
-		bound.ActiveFingerprint != bootstrap.ActiveFingerprint || bound.UIProtocolVersion != bootstrap.UIProtocolVersion {
+		bound.ActiveFingerprint != bootstrap.ActiveFingerprint {
 		t.Fatalf("bound surface = %#v", bound)
 	}
 	if _, err := service.InspectBoundSurface(InspectBoundSurfaceRequest{
@@ -444,9 +444,8 @@ func TestHandshakeTranscriptSHA256StableVector(t *testing.T) {
 		AssetSessionNonce:  "asset_nonce_1",
 		ManagementRevision: 7,
 		RevokeEpoch:        3,
-		UIProtocolVersion:  "plugin-ui-v7",
 	}, "bridge_channel_1")
-	const want = "sha256:e7b2ce79d9f886e2bdb080bd0c63a11dd3c23144474012c3c6736ab21c6cb0d2"
+	const want = "sha256:761226eb620c1a1277cb83b129f9e800ce1f1df243a04e7b6f5ad4952e65bcba"
 	if got != want {
 		t.Fatalf("HandshakeTranscriptSHA256() = %q, want %q", got, want)
 	}
@@ -1402,7 +1401,6 @@ func testOpenSurfaceRequest(now time.Time) OpenSurfaceRequest {
 		PluginID:             "com.example.plugin",
 		PluginInstanceID:     "plugini_test",
 		PluginVersion:        "1.2.3",
-		UIProtocolVersion:    "plugin-ui-v7",
 		SurfaceID:            "main.view",
 		SurfaceInstanceID:    "surface_test",
 		ActiveFingerprint:    "sha256:package",
@@ -1429,7 +1427,6 @@ func handshakeFromBootstrap(bootstrap SurfaceBootstrap) Handshake {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 }
 

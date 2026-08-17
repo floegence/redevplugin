@@ -79,7 +79,7 @@ func NewService(table *Table, mounts MountResolver, network NetworkAuthorizer) (
 }
 
 type controlRequest struct {
-	API       int             `json:"api"`
+	PluginAPI uint16          `json:"plugin_api"`
 	Operation string          `json:"operation"`
 	Arguments json.RawMessage `json:"arguments"`
 }
@@ -102,7 +102,7 @@ func (service *Service) Control(ctx context.Context, invocation Invocation, raw 
 		return marshalControlFailure("INVALID_ARGUMENT", "trusted invocation context is invalid", false), nil
 	}
 	var request controlRequest
-	if err := decodeClosedJSON(raw, &request); err != nil || request.API != 1 || request.Operation == "" || len(request.Arguments) == 0 {
+	if err := decodeClosedJSON(raw, &request); err != nil || request.PluginAPI != PluginAPI || request.Operation == "" || len(request.Arguments) == 0 {
 		return marshalControlFailure("INVALID_ARGUMENT", "control request is invalid", false), nil
 	}
 	result, err := service.dispatch(ctx, invocation, request.Operation, request.Arguments)
@@ -125,7 +125,7 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 			return nil, err
 		}
 		return map[string]any{
-			"worker_api": 1,
+			"plugin_api": PluginAPI,
 			"features":   []string{"fs.environment.v1", "fs.home.v1", "fs.watch.v1", "fs.workspace.v1", "io.stream.v1", "net.http.v1", "net.tcp.v1", "net.udp.v1", "net.websocket.v1"},
 			"limits": map[string]any{
 				"control_response_bytes": 64 << 10,

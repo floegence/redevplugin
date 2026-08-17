@@ -10,9 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 const (
@@ -68,7 +67,6 @@ type OpenSurfaceRequest struct {
 	PluginID             string          `json:"plugin_id"`
 	PluginInstanceID     string          `json:"plugin_instance_id"`
 	PluginVersion        string          `json:"plugin_version"`
-	UIProtocolVersion    string          `json:"ui_protocol_version"`
 	SurfaceID            string          `json:"surface_id"`
 	SurfaceInstanceID    string          `json:"surface_instance_id"`
 	ActiveFingerprint    string          `json:"active_fingerprint"`
@@ -88,7 +86,6 @@ type SurfaceBootstrap struct {
 	PluginID             string    `json:"plugin_id"`
 	PluginInstanceID     string    `json:"plugin_instance_id"`
 	PluginVersion        string    `json:"plugin_version"`
-	UIProtocolVersion    string    `json:"ui_protocol_version"`
 	SurfaceID            string    `json:"surface_id"`
 	SurfaceInstanceID    string    `json:"surface_instance_id"`
 	ActiveFingerprint    string    `json:"active_fingerprint"`
@@ -298,7 +295,6 @@ type BoundSurfaceSession struct {
 	PluginInstanceID  string `json:"plugin_instance_id"`
 	PluginVersion     string `json:"plugin_version"`
 	ActiveFingerprint string `json:"active_fingerprint"`
-	UIProtocolVersion string `json:"ui_protocol_version"`
 }
 
 type MintRuntimeExecutionLeaseRequest struct {
@@ -464,7 +460,6 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 	if strings.TrimSpace(req.PluginID) == "" ||
 		strings.TrimSpace(req.PluginInstanceID) == "" ||
 		strings.TrimSpace(req.PluginVersion) == "" ||
-		!version.SupportsPluginUIProtocol(req.UIProtocolVersion) ||
 		strings.TrimSpace(req.SurfaceID) == "" ||
 		strings.TrimSpace(req.SurfaceInstanceID) == "" ||
 		strings.TrimSpace(req.ActiveFingerprint) == "" ||
@@ -494,7 +489,6 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 		PluginID:             req.PluginID,
 		PluginInstanceID:     req.PluginInstanceID,
 		PluginVersion:        req.PluginVersion,
-		UIProtocolVersion:    req.UIProtocolVersion,
 		SurfaceID:            req.SurfaceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		ActiveFingerprint:    req.ActiveFingerprint,
@@ -550,7 +544,6 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 		PluginID:             req.PluginID,
 		PluginInstanceID:     req.PluginInstanceID,
 		PluginVersion:        req.PluginVersion,
-		UIProtocolVersion:    req.UIProtocolVersion,
 		SurfaceID:            req.SurfaceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		ActiveFingerprint:    req.ActiveFingerprint,
@@ -942,7 +935,6 @@ func HandshakeTranscriptSHA256(handshake Handshake, bridgeChannelID string) stri
 		handshake.AssetSessionNonce,
 		strconv.FormatUint(handshake.ManagementRevision, 10),
 		strconv.FormatUint(handshake.RevokeEpoch, 10),
-		handshake.UIProtocolVersion,
 		bridgeChannelID,
 	} {
 		data := []byte(field)
@@ -1046,7 +1038,7 @@ func (s *SurfaceTokenService) InspectBoundSurface(req InspectBoundSurfaceRequest
 	}
 	return BoundSurfaceSession{
 		PluginInstanceID: state.session.PluginInstanceID, PluginVersion: state.session.PluginVersion,
-		ActiveFingerprint: state.session.ActiveFingerprint, UIProtocolVersion: state.session.UIProtocolVersion,
+		ActiveFingerprint: state.session.ActiveFingerprint,
 	}, nil
 }
 
@@ -1743,8 +1735,7 @@ func (s SurfaceSession) validateHandshake(handshake Handshake) error {
 		handshake.BridgeNonce != s.BridgeNonce ||
 		handshake.AssetSessionNonce != s.AssetSessionNonce ||
 		handshake.ManagementRevision != s.ManagementRevision ||
-		handshake.RevokeEpoch != s.RevokeEpoch ||
-		handshake.UIProtocolVersion != s.UIProtocolVersion {
+		handshake.RevokeEpoch != s.RevokeEpoch {
 		return ErrHandshakeMismatch
 	}
 	return nil

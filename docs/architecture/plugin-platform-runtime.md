@@ -20,10 +20,10 @@ ReDevPlugin owns reusable extension mechanics:
   and TypeScript SDK helpers;
 - one Host-owned control database for installed facts, authorization,
   Execution/Event, confirmation, and runtime control state;
-- Rust runtime IPC, WASM worker ABI validation, brokered storage/network
-  hostcalls, runtime revocation state, and worker invocation payload contracts;
-- OpenAPI, JSON schemas, compatibility manifests, release manifests, release
-  bundle verification, and compatibility hash checks.
+- one internal Host/runtime wire, WASM worker ABI validation, brokered resource
+  I/O, runtime revocation state, and worker invocation payload contracts;
+- canonical OpenAPI and JSON schemas, plus one externally staged and signed
+  `PlatformReleaseManifest` containing the exact release artifact hashes.
 
 Host products own product policy and concrete adapters:
 
@@ -38,21 +38,21 @@ If a host needs more than adapter registration, route mounting, artifact
 selection, or product UI around ReDevPlugin, the missing reusable behavior
 belongs in ReDevPlugin first.
 
-Manifest v8 methods are executable contracts, not descriptive metadata. Both
+Manifest v9 methods are executable contracts, not descriptive metadata. Both
 request and response schemas are closed draft 2020-12 object schemas compiled
 during package validation. The Host keeps a bounded fingerprint+method LRU of
 compiled validators, rejects request mismatches before dispatch, canonicalizes
 and redacts adapter/runtime data, and rejects response mismatches before an
   execution result becomes visible.
 
-Manifest v8 surfaces express only host-neutral `view`, `command`, or
+Manifest v9 surfaces express only host-neutral `view`, `command`, or
 `background` roles plus optional `primary`, `secondary`, or `utility` intent.
 They do not encode product placement. A host maps those roles into its own
 navigation, workspace, settings, or command UI.
 
 ## Core Go Packages
 
-The Go module `github.com/floegence/redevplugin/v2` exposes the embeddable Host
+The Go module `github.com/floegence/redevplugin/v3` exposes the embeddable Host
 library and platform contracts.
 
 `pkg/bridge` owns token/ticket audiences, MessageChannel handshake state,
@@ -104,10 +104,10 @@ and marked that exact asset session prepared.
   to 32 entries with a 30-second idle timeout.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, Execution/Event reads and cancellation, surface
-  prepare/token/dispose, parent-only POST asset transport, compatibility, and
+  prepare/token/dispose, parent-only POST asset transport, and
   diagnostics.
-- `internal/runtimeclient` manages the Rust runtime subprocess, negotiated capacity,
-  multiplexed newline-delimited JSON IPC, invocation cancellation, and runtime
+- `internal/runtimeclient` manages the Rust runtime subprocess, exact
+  `internal_wire=1` Hello/HelloAck binding, framed IPC, invocation cancellation, and runtime
   health/cache metrics. A `Manager` must bind its required `RuntimeHostServices`
   exactly once before it can create or start shards; Host supplies the same
   execution/event sink used by capability dispatch. Runtime configuration
@@ -153,15 +153,16 @@ network access. The runtime validates WASM worker shape, executes the exported
 worker entrypoint with Wasmi, and performs brokered hostcalls through Host-owned
 IPC request/response frames.
 
-Rust IPC v4 uses one Go reader, one serialized pipe writer, and a pending map
-keyed by `request_id`; a worker invocation no longer holds a process-wide IPC
-mutex. Runtime-origin artifact, grant, storage, and network frames include
-`parent_request_id`. Grant, storage, and network frames are accepted only while
-the matching signed invocation is live and only within that invocation's
-audience and broker permissions. Artifact loading additionally uses bounded
+The current internal wire uses one Go reader, one serialized pipe writer, and a
+pending map keyed by `request_id`; a worker invocation does not hold a
+process-wide IPC mutex. Runtime-origin artifact and generic Hostcall frames
+include `parent_request_id` and are accepted only while the matching signed
+invocation is live. The Host resolves the invocation ID to its verified
+audience, permissions, resource scope, broker access, revisions, and revoke
+epoch before any I/O. Artifact loading additionally uses bounded
 `compile_flight_register` and `compile_flight_complete` routes pre-registered by
 the Host for the exact runtime generation, parent request, package, artifact,
-digest, and WASM ABI. A registered compile flight may finish after its leader is
+digest, and plugin API. A registered compile flight may finish after its leader is
 canceled without granting any other hostcall authority; unknown or mismatched
 routes invalidate the runtime generation. Active hostcall and compile-flight
 artifact route capacities equal the negotiated `worker_count`; canceled
@@ -189,8 +190,8 @@ property-relative numeric keyword, so the Go and Rust parsers are authoritative
 for that cross-field rule; the schemas do not expand it into a conditional table.
 
 One Wasmi Engine is shared for the runtime generation. Validated modules are
-single-flight compiled and cached by `(artifact_sha256, wasm_abi_version)` in a
-deterministic LRU, with default limits of 64 modules and 128 MiB source WASM.
+single-flight compiled and cached by artifact SHA-256 in a deterministic LRU,
+with default limits of 64 modules and 128 MiB source WASM.
 Cache hits do not request artifact bytes from the Host. Compilation failures are
 not cached, revocation does not remove content-addressed modules, and process
 restart clears the cache. Every invocation still creates a separate Store,
@@ -205,19 +206,15 @@ store so a valid module still cannot use `memory.grow` beyond its grant. The
 manifest contract rejects worker budgets above the 256 MiB platform ceiling;
 host package trust policy may impose a smaller product limit.
 
-The Go supervisor derives a bounded context for runtime-origin hostcalls before
-entering host adapters. Storage SQLite and network execution use request
-`timeout_ms` within the platform cap; artifact reads, handle-grant validation,
-storage file/KV, and network grant minting use the default hostcall cap.
-For `network_execute.operation = "http_stream"`, the supervisor registers a
-Host-owned read stream with the worker invocation's surface/session audience,
-the Rust runtime injects that invocation's `stream_id` into the broker request,
-and the supervisor streams bounded HTTP response chunks into `stream.Store`,
-closes or cancels the stream, and returns response metadata plus `stream_id`
-over IPC. A plugin request cannot select a stream id; a missing Host id or any
-plugin-supplied id fails closed. This is a Host stream-store bridge for
-runtime-origin HTTP responses, not the Rust hot-path persistent stream
-transport with credit, resume, or bidirectional flow control.
+The Go supervisor derives a bounded context for runtime-origin Hostcalls before
+entering host adapters. Workers import only `redevplugin.io`: `rdp_call_v1`
+sends a closed `{plugin_api, operation, arguments}` control envelope, while the
+read, write, seek, close, and last-error functions operate on opaque resource
+handles. Storage files, KV, and SQLite control operations are dispatched by the
+Host to the plugin-data namespace after validating the registered method access
+and resource scope. HTTP, WebSocket, TCP, and UDP use the same current resource
+control/read/write path. No separate storage, network, handle-grant, or network
+grant frame families exist on the internal wire.
 
 The supervisor maintains the control channel with `heartbeat` IPC frames. The
 default interval is 2 seconds and the default max-staleness window is 5 seconds.
@@ -226,8 +223,8 @@ echo, and max-staleness window. If the runtime cannot acknowledge within the
 window, the supervisor invalidates and kills that runtime generation.
 The Rust runtime also tracks the last valid heartbeat or revocation control
 frame. Once that max-staleness window is exceeded, it rejects new worker
-invocations before opening artifacts and rejects new storage/network hostcalls
-before dispatching Host IO.
+invocations before opening artifacts and rejects new resource Hostcalls before
+dispatching Host I/O.
 
 `Health` includes the Host-side runtime instance ID, runtime generation ID, IPC
 channel ID, handshake `connection_nonce`, active and queued invocation counts,
@@ -274,20 +271,16 @@ This keeps disable, uninstall, and session close usable when the configured
 runtime artifact is absent without weakening active-runtime acknowledgement
 checks.
 
-The runtime contract is versioned by:
+The runtime connection binds one exact `internal_wire=1` through Hello and
+HelloAck. Subsequent frames do not repeat a wire or ABI version. Plugin workers
+select the current WASM ABI only through `plugin_api=1`; runtime generation,
+Host-issued channel nonce, lease nonce replay cache, heartbeat staleness, and
+revoke epoch remain per-connection security facts rather than compatibility
+axes.
 
-- `plugin_host_protocol_version`;
-- `rust_ipc_version`;
-- `wasm_abi_version`;
-- `runtime_generation_id`, Host-issued IPC channel nonce, Rust in-process
-  runtime lease nonce replay cache, runtime-enforced heartbeat max-staleness,
-  and revoke epoch state;
-- compatibility manifest contract hashes.
-
-The runtime IPC contract also has executable golden fixtures in
-`testdata/contracts/ipc/`. Go Host tests and Rust IPC crate tests validate the
-current `hello_ack` and runtime response frames and reject older/newer Rust IPC
-versions, older/newer WASM ABI versions, missing request IDs, replayed request
+The runtime wire has executable golden fixtures in `testdata/contracts/ipc/`.
+Go Host tests and Rust runtime tests validate the current Hello/HelloAck and
+runtime response frames and reject wire mismatch before binding, missing request IDs, replayed request
 IDs, unknown frame types, and mismatched runtime generations.
 
 Any incompatible Host/runtime combination must fail closed with a diagnostic
@@ -374,11 +367,14 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v17.yaml`;
+- `spec/openapi/plugin-platform.yaml`;
 - `spec/plugin/manifest-v9.schema.json`;
-- `spec/plugin/public-api-v1.json`;
+- `spec/plugin/plugin-api.json`;
+- `spec/plugin/wasm-abi.json`;
+- `spec/plugin/worker-invocation.schema.json`;
+- `spec/internal/runtime-wire.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
-- `spec/plugin/release-metadata-v8.schema.json`;
+- `spec/plugin/release-metadata.schema.json`;
 - `spec/plugin/release-root-delegation-v1.schema.json`;
 - `spec/plugin/release-publisher-config-v1.schema.json`;
 - `spec/plugin/publisher-release-ref-v1.schema.json`;
@@ -389,47 +385,33 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/release-revocation-v3.schema.json`;
 - `spec/plugin/release-revocation-pointer-v2.schema.json`;
 - `spec/plugin/token-ticket-v4.schema.json`;
-- `spec/plugin/bridge-v7.schema.json`;
+- `spec/plugin/bridge.schema.json`;
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
 - `spec/plugin/opaque-surface-transport-v6.schema.json`;
-- `spec/plugin/compatibility-manifest-v20.schema.json`;
-- `spec/plugin/owner-scope-root-recovery-v1.schema.json`;
-- `spec/plugin/platform-package-set-v3.schema.json`;
-- `spec/plugin/platform-package-publication-v2.schema.json`;
 - `spec/plugin/runtime-admission-v1.schema.json`;
-- `spec/plugin/runtime-descriptor-v3.schema.json`;
 - `spec/plugin/process-containment-v1.schema.json`;
 - `spec/plugin/runtime-exec-journal-v1.schema.json`;
-- `spec/plugin/performance-contract-v4.json`;
-- `spec/plugin/performance-evidence-v4.schema.json`;
-- `spec/plugin/ipc-v7.schema.json`;
-- `spec/plugin/wasm-worker-v2.schema.json`;
-- `spec/plugin/worker-invocation-v3.schema.json`;
 - `spec/plugin/network-grant-v2.schema.json`;
 - `spec/plugin/resource-scope-v1.schema.json`;
 - `spec/plugin/session-scope-v1.schema.json`;
 - `spec/plugin/session-scope-maintenance-v1.json`;
-- `spec/plugin/error-codes-v8.schema.json`;
-- `spec/plugin/target-classifier-v2.json`;
-- `spec/plugin/contract-registry-v2.json`, the generated inventory and SHA-256
-  identity for every public contract above.
+- `spec/plugin/error-codes.schema.json`;
+- `spec/plugin/target-classifier-v2.json`.
 
-`redevplugin version` emits the compatibility manifest for the current artifact
-set. `redevplugin verify-compatibility <compatibility.json> <artifact-root>`
-checks the version matrix and contract hashes before a host product consumes a
-published dependency set.
+The release generator enumerates the exact `spec/` tree and records each file's
+SHA-256 in the externally staged `PlatformReleaseManifest`. There is no separate
+contract registry, compatibility matrix, package set, or runtime descriptor.
 
-The active v4 performance contract measures route authorization with nine
-adjacent, balanced AB/BA baseline/candidate pairs. Concurrency one retains
+The performance quality gate measures route authorization with nine adjacent,
+balanced AB/BA baseline/candidate pairs. Concurrency one retains
 per-request P95 and P99 latency evidence. Concurrency 100 and 1000 use complete
 batch elapsed time per request so scheduler and VM pauses affecting individual
 goroutines cannot masquerade as handler tail regressions. Each comparison
 attempt records the fixed run order, exact raw profiles, canonical hashes,
 runner environment, and deterministic noise qualification. Only a noisy
 attempt may retry, at most three attempts are permitted, and the accepted
-attempt must be the final qualified attempt. The v1-v3 performance contracts
-and evidence schemas remain immutable historical release artifacts; they are
-not part of the active compatibility matrix.
+attempt must be the final qualified attempt. Performance configuration and
+evidence remain test inputs; they are not public contracts or release artifacts.
 
 `PluginSurfaceHost.open()` applies one aggregate opening deadline across frame
 load, surface preparation, port acknowledgement, initial lease minting, first
@@ -590,18 +572,16 @@ diagnostic evidence so repair and retry behavior remains explicit.
 
 A host product should:
 
-1. import published ReDevPlugin Go and TypeScript versions;
-2. verify the published package set, registry integrity, and publication
-   completion evidence;
+1. import the published ReDevPlugin `/v3` Go module and matching TypeScript packages;
+2. verify the signed `PlatformReleaseManifest` and exact artifact hashes;
 3. build the runtime binary from verified published source crates with a fixed
-   product toolchain, then create the expected descriptor used by platform
-   admission;
+   product toolchain, then sign and bundle that product-owned binary;
 4. register session, origin, CSRF, storage-root, vault, audit, diagnostics, and
    business capability adapters;
 5. mount `pkg/httpadapter` routes or call the Go Host APIs directly;
 6. expose product UI around the host-neutral SDK instead of forking platform
    protocols;
-7. verify compatibility and package publication evidence before upgrading.
+7. require exact platform release identity before upgrading.
 
 Local sibling path wiring, `go.work`, `replace`, `file:`, `link:`,
 `workspace:`, `portal:`, Rust path overrides, copied source trees, or hidden

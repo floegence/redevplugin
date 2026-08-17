@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	settingsdomain "github.com/floegence/redevplugin/v2/pkg/settings"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	settingsdomain "github.com/floegence/redevplugin/v3/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
 )
 
 func internalTestContext() context.Context {
@@ -36,11 +36,11 @@ func internalUserScope() sessionctx.ResourceScope {
 }
 
 type internalCatalog struct {
-	binding         *Binding
-	objects         map[string]Object
-	commitEnableErr error
-	swapImportErr   error
-	createObjectErr error
+	binding          *Binding
+	objects          map[string]Object
+	installCommitErr error
+	swapImportErr    error
+	createObjectErr  error
 }
 
 func (c *internalCatalog) GetBinding(_ context.Context, pluginInstanceID string) (Binding, bool, error) {
@@ -63,11 +63,19 @@ func (c *internalCatalog) ListAllBindingsForMaintenance(ctx context.Context, cur
 	}
 	return items, next, err
 }
-func (c *internalCatalog) CommitEnable(_ context.Context, _ uint64, _ *Binding, next Binding, _ Shape, _ time.Time) error {
-	if c.commitEnableErr != nil {
-		return c.commitEnableErr
+func (c *internalCatalog) commitInstall(expected *Binding, next Binding) error {
+	if c.installCommitErr != nil {
+		return c.installCommitErr
 	}
-	c.binding = &next
+	if expected == nil {
+		if c.binding != nil {
+			return ErrBindingConflict
+		}
+	} else if c.binding == nil || !sameInternalBinding(*c.binding, *expected) {
+		return ErrBindingConflict
+	}
+	cloned := cloneBinding(next)
+	c.binding = &cloned
 	return nil
 }
 func (c *internalCatalog) SwapImport(_ context.Context, _ uint64, _ *Binding, next Binding, _ Shape, _ time.Time) error {
@@ -207,9 +215,7 @@ func TestKeyedLocksAllowIndependentNamespaceProgress(t *testing.T) {
 
 func TestBrokerAllowsIndependentNamespaceProgress(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	if _, err := store.CommitEnable(internalTestContext(), CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, internalTestContext(), "plugini_test", shape)
 	binding, _, _ := catalog.GetBinding(internalTestContext(), "plugini_test")
 	owner, err := resourceScope(internalTestContext(), sessionctx.ScopeUser)
 	if err != nil {
@@ -248,9 +254,7 @@ func TestBrokerAllowsIndependentNamespaceProgress(t *testing.T) {
 func TestBrokerPersistsNamespaceTransactionsAcrossReopen(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, InitialSettings: map[string]json.RawMessage{}, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	fileWrite, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "notes/committed.txt", Data: []byte("committed")})
 	if err != nil || fileWrite.Usage.UsageBytes != 9 || fileWrite.Usage.UsageFiles != 2 {
 		t.Fatalf("WriteFile() = %#v, err = %v", fileWrite, err)
@@ -280,9 +284,7 @@ func TestBrokerPersistsNamespaceTransactionsAcrossReopen(t *testing.T) {
 
 func TestCloseWaitsForInFlightExportAndRejectsFutureCalls(t *testing.T) {
 	store, _, shape := newInternalStore(t)
-	if _, err := store.CommitEnable(internalTestContext(), CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, internalTestContext(), "plugini_test", shape)
 	originalCopy := store.ops.copyDir
 	started := make(chan struct{})
 	releaseCopy := make(chan struct{})
@@ -322,9 +324,7 @@ func TestCloseWaitsForInFlightExportAndRejectsFutureCalls(t *testing.T) {
 func TestExportPreservesCallerCancellationDuringWorkspaceValidation(t *testing.T) {
 	store, _, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err := store.Export(canceled, ExportRequest{PluginInstanceID: "plugini_test"}); !errors.Is(err, context.Canceled) {
@@ -335,9 +335,7 @@ func TestExportPreservesCallerCancellationDuringWorkspaceValidation(t *testing.T
 func TestWorkspaceSnapshotRejectsSettingsMutationBeforeSemanticValidation(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	binding, found, err := catalog.GetBinding(ctx, "plugini_test")
 	if err != nil || !found {
 		t.Fatalf("GetBinding() found = %v, err = %v", found, err)
@@ -374,9 +372,7 @@ func TestWorkspaceSnapshotRejectsSettingsMutationBeforeSemanticValidation(t *tes
 func TestExportReportsSnapshotHashAndPhysicalSize(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "notes/value.txt", Data: []byte("snapshot-value")}); err != nil {
 		t.Fatal(err)
 	}
@@ -422,9 +418,7 @@ func regularFileTreeSize(root string) (int64, error) {
 func TestImportAndExportDeletionReclaimPublishedObjects(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	oldBinding, _, _ := catalog.GetBinding(ctx, "plugini_test")
 	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "data.txt", Data: []byte("data")}); err != nil {
 		t.Fatal(err)
@@ -450,9 +444,7 @@ func TestImportAndExportDeletionReclaimPublishedObjects(t *testing.T) {
 func TestDeleteRetainedWaitsForReaderLeaseBeforeRemovingWorkspace(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{PluginInstanceID: "plugini_test", ExpectedManagementRevision: 2, Now: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -492,9 +484,7 @@ func TestDeleteRetainedWaitsForReaderLeaseBeforeRemovingWorkspace(t *testing.T) 
 func TestImportWaitsForReaderLeaseBeforeReplacingGeneration(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	oldBinding, _, _ := catalog.GetBinding(ctx, "plugini_test")
 	exported, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"})
 	if err != nil {
@@ -535,9 +525,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 	t.Run("delete retained", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
 		ctx := internalTestContext()
-		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-			t.Fatal(err)
-		}
+		installInternalStore(t, store, ctx, "plugini_test", shape)
 		if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{PluginInstanceID: "plugini_test", ExpectedManagementRevision: 2, Now: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
@@ -550,9 +538,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 	t.Run("uninstall delete", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
 		ctx := internalTestContext()
-		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-			t.Fatal(err)
-		}
+		installInternalStore(t, store, ctx, "plugini_test", shape)
 		binding, _, _ := catalog.GetBinding(ctx, "plugini_test")
 		assertDeletionFailureConverges(t, store, store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID), func() error {
 			_, err := store.CommitUninstall(ctx, CommitUninstallRequest{PluginInstanceID: binding.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: 2, Now: time.Now()})
@@ -565,9 +551,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 		ctx := internalTestContext()
 		now := time.Now().UTC()
 		expiresAt := now.Add(time.Minute)
-		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-			t.Fatal(err)
-		}
+		installInternalStore(t, store, ctx, "plugini_test", shape)
 		if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{PluginInstanceID: "plugini_test", ExpectedManagementRevision: 2, RetainUntil: &expiresAt, Now: now}); err != nil {
 			t.Fatal(err)
 		}
@@ -584,9 +568,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 	t.Run("delete export", func(t *testing.T) {
 		store, _, shape := newInternalStore(t)
 		ctx := internalTestContext()
-		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-			t.Fatal(err)
-		}
+		installInternalStore(t, store, ctx, "plugini_test", shape)
 		exported, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"})
 		if err != nil {
 			t.Fatal(err)
@@ -599,9 +581,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 	t.Run("import replacement", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
 		ctx := internalTestContext()
-		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-			t.Fatal(err)
-		}
+		installInternalStore(t, store, ctx, "plugini_test", shape)
 		oldBinding, _, _ := catalog.GetBinding(ctx, "plugini_test")
 		exported, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"})
 		if err != nil {
@@ -623,19 +603,21 @@ func TestCatalogFailureRollbackPreservesCleanupErrorAndCollectorConverges(t *tes
 	ctx := internalTestContext()
 	catalogErr := errors.New("catalog commit failed")
 	cleanupErr := errors.New("published directory cleanup failed")
-	catalog.commitEnableErr = catalogErr
+	catalog.installCommitErr = catalogErr
 	originalRemoveAll := store.ops.removeAll
 	var publishedWorkspace string
 	store.ops.removeAll = func(path string) error {
 		publishedWorkspace = path
 		return cleanupErr
 	}
-	_, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1})
+	_, err := store.InstallCommit(ctx, InstallCommitRequest{PluginInstanceID: "plugini_test", Shape: shape}, func(_ context.Context, expected *Binding, binding Binding, _ Shape, _ time.Time) error {
+		return catalog.commitInstall(expected, binding)
+	})
 	if !errors.Is(err, catalogErr) || !errors.Is(err, cleanupErr) {
-		t.Fatalf("CommitEnable() error = %v, want catalog and cleanup failures", err)
+		t.Fatalf("InstallCommit() error = %v, want catalog and cleanup failures", err)
 	}
 	if outcome := mutation.ForError(err); outcome != mutation.OutcomeUnknown {
-		t.Fatalf("CommitEnable() outcome = %q, err = %v", outcome, err)
+		t.Fatalf("InstallCommit() outcome = %q, err = %v", outcome, err)
 	}
 	if publishedWorkspace == "" {
 		t.Fatal("rollback did not attempt to remove published workspace")
@@ -652,13 +634,181 @@ func TestCatalogFailureRollbackPreservesCleanupErrorAndCollectorConverges(t *tes
 	}
 }
 
+func TestInstallCommitCatalogFailureRemovesPublishedDefaults(t *testing.T) {
+	store, catalog, shape := newInternalStore(t)
+	shape.Settings = settingsdomain.Schema{
+		SchemaVersion: 1,
+		Fields: []settingsdomain.Field{{
+			Key: "theme", Type: settingsdomain.FieldString, Scope: string(sessionctx.ScopeUser), Default: json.RawMessage(`"dark"`),
+		}},
+	}
+	ctx := internalTestContext()
+	commitErr := errors.New("install catalog commit failed")
+	callbackCalled := false
+	_, err := store.InstallCommit(ctx, InstallCommitRequest{
+		PluginInstanceID: "plugini_install",
+		Shape:            shape,
+	}, func(_ context.Context, _ *Binding, binding Binding, _ Shape, _ time.Time) error {
+		callbackCalled = true
+		settingsPath := workspaceSettingsPath(store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID), internalUserScope())
+		var document settingsDocument
+		if readErr := readJSON(settingsPath, &document); readErr != nil {
+			t.Fatalf("read published default settings: %v", readErr)
+		}
+		if got := string(document.Values["theme"]); got != `"dark"` {
+			t.Fatalf("published default theme = %s, want dark", got)
+		}
+		return commitErr
+	})
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("InstallCommit() error = %v, want %v", err, commitErr)
+	}
+	if !callbackCalled {
+		t.Fatal("InstallCommit() did not reach the catalog callback")
+	}
+	if _, found, err := catalog.GetBinding(ctx, "plugini_install"); err != nil || found {
+		t.Fatalf("binding after failed install: found=%v err=%v", found, err)
+	}
+	workspaceRoot := filepath.Dir(store.scopedWorkspacePath(internalEnvironmentScope(), "generation"))
+	entries, err := os.ReadDir(workspaceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("published workspaces after failed install = %#v", entries)
+	}
+}
+
+func TestInstallCommitReactivatesRetainedWorkspaceWithoutResettingSettings(t *testing.T) {
+	store, catalog, shape := newInternalStore(t)
+	shape.Settings = settingsdomain.Schema{
+		SchemaVersion: 1,
+		Fields: []settingsdomain.Field{{
+			Key: "theme", Type: settingsdomain.FieldString, Scope: string(sessionctx.ScopeUser), Default: json.RawMessage(`"dark"`),
+		}},
+	}
+	ctx := internalTestContext()
+	installed := installInternalStore(t, store, ctx, "plugini_retained_install", shape)
+	if _, err := store.PatchSettings(ctx, PatchSettingsRequest{
+		PluginInstanceID:       installed.Binding.PluginInstanceID,
+		Scope:                  sessionctx.ScopeUser,
+		ExpectedValuesRevision: 1,
+		Set:                    map[string]json.RawMessage{"theme": json.RawMessage(`"light"`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{
+		PluginInstanceID:           installed.Binding.PluginInstanceID,
+		ExpectedManagementRevision: 1,
+		Now:                        time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retained, found, err := catalog.GetBinding(ctx, installed.Binding.PluginInstanceID)
+	if err != nil || !found || retained.State != BindingRetained {
+		t.Fatalf("retained binding = %#v, found=%v err=%v", retained, found, err)
+	}
+
+	var callbackExpected *Binding
+	reinstalled, err := store.InstallCommit(ctx, InstallCommitRequest{
+		PluginInstanceID: installed.Binding.PluginInstanceID,
+		Shape:            shape,
+	}, func(_ context.Context, expected *Binding, next Binding, _ Shape, _ time.Time) error {
+		if expected != nil {
+			cloned := cloneBinding(*expected)
+			callbackExpected = &cloned
+		}
+		return catalog.commitInstall(expected, next)
+	})
+	if err != nil {
+		t.Fatalf("InstallCommit() retained reinstall error = %v", err)
+	}
+	if reinstalled.Binding.GenerationID != retained.GenerationID || reinstalled.Binding.Revision != retained.Revision+1 || reinstalled.Binding.State != BindingActive {
+		t.Fatalf("reinstalled binding = %#v, retained = %#v", reinstalled.Binding, retained)
+	}
+	if callbackExpected == nil || !sameInternalBinding(*callbackExpected, retained) {
+		t.Fatalf("install callback expected binding = %#v, want %#v", callbackExpected, retained)
+	}
+	settings, err := store.GetSettings(ctx, installed.Binding.PluginInstanceID, sessionctx.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Revision != 2 || string(settings.Values["theme"]) != `"light"` {
+		t.Fatalf("retained settings = %#v", settings)
+	}
+}
+
+func TestInstallCommitRetainedShapeMismatchLeavesWorkspaceUnchanged(t *testing.T) {
+	store, catalog, shape := newInternalStore(t)
+	ctx := internalTestContext()
+	installed := installInternalStore(t, store, ctx, "plugini_retained_shape", shape)
+	if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{
+		PluginInstanceID:           installed.Binding.PluginInstanceID,
+		ExpectedManagementRevision: 1,
+		Now:                        time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retained, _, _ := catalog.GetBinding(ctx, installed.Binding.PluginInstanceID)
+	callbackCalled := false
+	changed := cloneShape(shape)
+	changed.Namespaces[0].SchemaVersion++
+	if _, err := store.InstallCommit(ctx, InstallCommitRequest{
+		PluginInstanceID: installed.Binding.PluginInstanceID,
+		Shape:            changed,
+	}, func(context.Context, *Binding, Binding, Shape, time.Time) error {
+		callbackCalled = true
+		return nil
+	}); !errors.Is(err, ErrShapeMismatch) {
+		t.Fatalf("InstallCommit() error = %v, want ErrShapeMismatch", err)
+	}
+	if callbackCalled {
+		t.Fatal("InstallCommit() called catalog after retained shape mismatch")
+	}
+	actual, found, err := catalog.GetBinding(ctx, retained.PluginInstanceID)
+	if err != nil || !found || actual.GenerationID != retained.GenerationID || actual.State != retained.State || actual.Revision != retained.Revision || actual.ShapeHash != retained.ShapeHash {
+		t.Fatalf("binding after shape mismatch = %#v, found=%v err=%v, want %#v", actual, found, err, retained)
+	}
+	if _, err := os.Stat(store.scopedWorkspacePath(internalEnvironmentScope(), retained.GenerationID)); err != nil {
+		t.Fatalf("retained workspace after shape mismatch: %v", err)
+	}
+}
+
+func TestInstallCommitRetainedCatalogFailureLeavesWorkspaceAndBindingUnchanged(t *testing.T) {
+	store, catalog, shape := newInternalStore(t)
+	ctx := internalTestContext()
+	installed := installInternalStore(t, store, ctx, "plugini_retained_failure", shape)
+	if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{
+		PluginInstanceID:           installed.Binding.PluginInstanceID,
+		ExpectedManagementRevision: 1,
+		Now:                        time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retained, _, _ := catalog.GetBinding(ctx, installed.Binding.PluginInstanceID)
+	commitErr := errors.New("retained install catalog failure")
+	if _, err := store.InstallCommit(ctx, InstallCommitRequest{
+		PluginInstanceID: installed.Binding.PluginInstanceID,
+		Shape:            shape,
+	}, func(context.Context, *Binding, Binding, Shape, time.Time) error {
+		return commitErr
+	}); !errors.Is(err, commitErr) {
+		t.Fatalf("InstallCommit() error = %v, want %v", err, commitErr)
+	}
+	actual, found, err := catalog.GetBinding(ctx, retained.PluginInstanceID)
+	if err != nil || !found || actual.GenerationID != retained.GenerationID || actual.State != retained.State || actual.Revision != retained.Revision || actual.ShapeHash != retained.ShapeHash {
+		t.Fatalf("binding after catalog failure = %#v, found=%v err=%v, want %#v", actual, found, err, retained)
+	}
+	if _, err := os.Stat(store.scopedWorkspacePath(internalEnvironmentScope(), retained.GenerationID)); err != nil {
+		t.Fatalf("retained workspace after catalog failure: %v", err)
+	}
+}
+
 func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 	t.Run("export object", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
 		ctx := internalTestContext()
-		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-			t.Fatal(err)
-		}
+		installInternalStore(t, store, ctx, "plugini_test", shape)
 		catalogErr := errors.New("create object failed")
 		catalog.createObjectErr = catalogErr
 		if _, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"}); !errors.Is(err, catalogErr) {
@@ -673,9 +823,7 @@ func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 	t.Run("import workspace", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
 		ctx := internalTestContext()
-		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-			t.Fatal(err)
-		}
+		installInternalStore(t, store, ctx, "plugini_test", shape)
 		oldBinding, _, _ := catalog.GetBinding(ctx, "plugini_test")
 		exported, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"})
 		if err != nil {
@@ -700,9 +848,7 @@ func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 func TestCommittedDeletionSyncFailureIsUnknownAfterDirectoryDisappears(t *testing.T) {
 	store, _, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	exported, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"})
 	if err != nil {
 		t.Fatal(err)
@@ -759,9 +905,7 @@ func assertDeletionFailureConverges(t *testing.T, store *FileStore, target strin
 func TestExportRejectsUnexpectedPhysicalNamespaceEntries(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	binding, _, _ := catalog.GetBinding(ctx, "plugini_test")
 	workspaceRoot := store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID)
 	dataRoot := filepath.Join(workspaceNamespaceRoot(workspaceRoot, internalUserScope()), "files", namespaceDataName)
@@ -780,9 +924,7 @@ func TestExportRejectsUnexpectedPhysicalNamespaceEntries(t *testing.T) {
 func TestBindRetainedRejectsSamePluginInstance(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
 	ctx := internalTestContext()
-	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
+	installInternalStore(t, store, ctx, "plugini_test", shape)
 	if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{PluginInstanceID: "plugini_test", ExpectedManagementRevision: 2, Now: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -809,4 +951,36 @@ func newInternalStore(t *testing.T) (*FileStore, *internalCatalog, Shape) {
 		{ID: "kv", Kind: NamespaceKV, Scope: "user", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 16},
 	}}
 	return store, catalog, shape
+}
+
+func installInternalStore(t testing.TB, store *FileStore, ctx context.Context, pluginInstanceID string, shape Shape) Dataset {
+	t.Helper()
+	catalog, ok := store.catalog.(*internalCatalog)
+	if !ok {
+		t.Fatalf("catalog type = %T, want *internalCatalog", store.catalog)
+	}
+	dataset, err := store.InstallCommit(ctx, InstallCommitRequest{
+		PluginInstanceID: pluginInstanceID,
+		Shape:            shape,
+	}, func(_ context.Context, expected *Binding, binding Binding, _ Shape, _ time.Time) error {
+		return catalog.commitInstall(expected, binding)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dataset
+}
+
+func sameInternalBinding(left, right Binding) bool {
+	if left.PluginInstanceID != right.PluginInstanceID || left.GenerationID != right.GenerationID || left.State != right.State || left.Revision != right.Revision || left.ShapeHash != right.ShapeHash {
+		return false
+	}
+	return sameInternalTime(left.RetainedAt, right.RetainedAt) && sameInternalTime(left.ExpiresAt, right.ExpiresAt)
+}
+
+func sameInternalTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
 }

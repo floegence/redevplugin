@@ -15,29 +15,28 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/httpadapter"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/secrets"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
-	"github.com/floegence/redevplugin/v2/pkg/version"
-	"github.com/floegence/redevplugin/v2/pkg/websecurity"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/httpadapter"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 	_ "modernc.org/sqlite"
 )
 
@@ -133,7 +132,7 @@ func TestStressGateExecutionCancelOwnershipEvidence(t *testing.T) {
 
 func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
+		t.Skip("the runtime admission stress target requires Linux")
 	}
 	ctx, cancel := context.WithTimeout(stressTestContext(), 15*time.Second)
 	defer cancel()
@@ -146,7 +145,7 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
 		HandshakeTimeout:      15 * time.Second,
 		RuntimePath:           os.Args[0],
-		Descriptor:            stressRuntimeDescriptor(t, os.Args[0], target),
+		ArtifactIdentity:      stressRuntimeArtifactIdentity(t, os.Args[0], target),
 		Args:                  []string{"-test.run=TestMain"},
 		Env:                   append(os.Environ(), "REDEVPLUGIN_STRESS_RUNTIME_HELPER=1"),
 		HeartbeatInterval:     250 * time.Millisecond,
@@ -333,7 +332,7 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	}); !errors.Is(err, plugindata.ErrExportNotFound) {
 		t.Fatalf("cross-plugin import error = %v, want ErrExportNotFound", err)
 	}
-	disabled, err := registryStore.SetEnableState(ctx, ns.PluginInstanceID, registry.EnableDisabled, "stress import", time.Now())
+	disabled, err := registryStore.SetEnableState(ctx, ns.PluginInstanceID, registry.EnableDisabledByUser, "stress import", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,14 +619,28 @@ func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []
 		storeSpec.QuotaFiles = &quotaFiles
 	}
 	pluginManifest := manifest.Manifest{
-		Publisher: manifest.Publisher{PublisherID: "dev.redevplugin.stress", DisplayName: "Stress"},
+		SchemaVersion: manifest.SchemaVersionV9,
+		Publisher:     manifest.Publisher{PublisherID: "dev.redevplugin.stress", DisplayName: "Stress"},
 		Plugin: manifest.Plugin{
-			PluginID:          "dev.redevplugin.stress.data",
-			DisplayName:       "Stress Data",
-			Version:           "1.0.0",
-			APIVersion:        "plugin-v1",
-			MinRuntimeVersion: "0.5.0",
-			UIProtocolVersion: version.PluginUIProtocolVersion,
+			PluginID:    "dev.redevplugin.stress.data",
+			DisplayName: "Stress Data",
+			Version:     "1.0.0",
+		},
+		API:         manifest.PublicAPIRequirement{Major: 1},
+		Permissions: []manifest.PermissionID{},
+		Surfaces: []manifest.SurfaceSpec{{
+			SurfaceID: "main",
+			Kind:      manifest.SurfaceView,
+			Label:     "Stress data",
+			Entry:     "ui/index.html",
+		}},
+		Presentation: manifest.PresentationSpec{
+			DefaultLocale: "en-US",
+			Summary:       "Stress data fixture",
+			Description:   []string{"Stress data fixture"},
+			Highlights:    []string{},
+			Keywords:      []string{"stress"},
+			Localizations: []manifest.PresentationLocalizationSpec{},
 		},
 		Storage: &manifest.StorageSpec{Stores: []manifest.StoreSpec{storeSpec}},
 	}
@@ -643,8 +656,11 @@ func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []
 			PublisherID:      pluginManifest.Publisher.PublisherID,
 			PluginID:         pluginManifest.Plugin.PluginID,
 			Version:          pluginManifest.Plugin.Version,
-			EnableState:      registry.EnableDisabled,
-			Manifest:         pluginManifest,
+			PackageSourceProvenance: registry.PackageSourceProvenance{
+				Kind: registry.PackageSourceLocalGenerated,
+			},
+			EnableState: registry.EnableDisabledByUser,
+			Manifest:    pluginManifest,
 		}, registry.PutOptions{})
 		if err != nil {
 			t.Fatal(err)
@@ -657,11 +673,18 @@ func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []
 		t.Fatal(err)
 	}
 	source := records[pluginInstanceIDs[0]]
-	dataset, err := pluginData.CommitEnable(ctx, plugindata.CommitEnableRequest{
-		PluginInstanceID:           source.PluginInstanceID,
-		Shape:                      shape,
-		InitialSettings:            map[string]json.RawMessage{},
-		ExpectedManagementRevision: source.ManagementRevision,
+	dataset, err := pluginData.InstallCommit(ctx, plugindata.InstallCommitRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		Shape:            shape,
+	}, func(commitCtx context.Context, _ *plugindata.Binding, binding plugindata.Binding, committedShape plugindata.Shape, commitTime time.Time) error {
+		return registryStore.SwapImport(
+			commitCtx,
+			source.ManagementRevision,
+			nil,
+			binding,
+			committedShape,
+			commitTime,
+		)
 	})
 	if err != nil {
 		_ = pluginData.Close()
@@ -807,7 +830,6 @@ func (stressPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Con
 }
 
 type stressIPCFrame struct {
-	IPCVersion          string          `json:"ipc_version"`
 	FrameType           string          `json:"frame_type"`
 	RequestID           string          `json:"request_id"`
 	RuntimeGenerationID string          `json:"runtime_generation_id,omitempty"`
@@ -815,9 +837,12 @@ type stressIPCFrame struct {
 }
 
 type stressHelloPayload struct {
-	Target       string                      `json:"target"`
-	ChannelNonce string                      `json:"channel_nonce"`
-	Limits       runtimeclient.RuntimeLimits `json:"limits"`
+	InternalWire          uint16                      `json:"internal_wire"`
+	PlatformVersion       string                      `json:"platform_version"`
+	RuntimeArtifactSHA256 string                      `json:"runtime_artifact_sha256"`
+	ConnectionNonce       string                      `json:"connection_nonce"`
+	Target                string                      `json:"target"`
+	Limits                runtimeclient.RuntimeLimits `json:"limits"`
 }
 
 type stressHeartbeatPayload struct {
@@ -839,45 +864,48 @@ type stressRuntimeResponsePayload struct {
 }
 
 func runStressRuntimeHelper() {
-	wireFrame, frame, err := readStressRuntimeFrame(os.Stdin)
+	ipcRead := os.NewFile(3, "stress-runtime-ipc-read")
+	ipcWrite := os.NewFile(4, "stress-runtime-ipc-write")
+	controlRead := os.NewFile(5, "stress-runtime-control-read")
+	controlWrite := os.NewFile(6, "stress-runtime-control-write")
+	if ipcRead == nil || ipcWrite == nil || controlRead == nil || controlWrite == nil {
+		os.Exit(7)
+	}
+	defer ipcRead.Close()
+	defer ipcWrite.Close()
+	defer controlRead.Close()
+	defer controlWrite.Close()
+	wireFrame, frame, err := readStressRuntimeFrame(ipcRead)
 	if err != nil {
 		os.Exit(2)
 	}
 	if wireFrame.Type != runtimeclient.IPCFrameHello ||
-		frame.IPCVersion != version.RustIPCVersion ||
 		frame.FrameType != "hello" ||
 		strings.TrimSpace(frame.RequestID) == "" ||
 		strings.TrimSpace(frame.RuntimeGenerationID) == "" {
 		os.Exit(4)
 	}
 	var hello stressHelloPayload
-	if err := json.Unmarshal(frame.Payload, &hello); err != nil || strings.TrimSpace(hello.ChannelNonce) == "" {
+	if err := json.Unmarshal(frame.Payload, &hello); err != nil || hello.InternalWire != runtimeclient.InternalWire ||
+		hello.PlatformVersion != version.CurrentPlatformVersion() ||
+		strings.TrimSpace(hello.RuntimeArtifactSHA256) == "" || strings.TrimSpace(hello.ConnectionNonce) == "" {
 		os.Exit(5)
 	}
-	if err := writeStressRuntimeFrame(os.Stdout, runtimeclient.IPCFrameHelloAck, wireFrame.RequestID, stressIPCFrame{
-		IPCVersion:          version.RustIPCVersion,
+	if err := writeStressRuntimeFrame(ipcWrite, runtimeclient.IPCFrameHelloAck, wireFrame.RequestID, stressIPCFrame{
 		FrameType:           "hello_ack",
 		RequestID:           frame.RequestID,
 		RuntimeGenerationID: frame.RuntimeGenerationID,
 		Payload: stressRawJSON(map[string]any{
-			"runtime_version":     version.CurrentCompatibilityVersion(),
-			"actual_target":       hello.Target,
-			"rust_ipc_version":    version.RustIPCVersion,
-			"wasm_abi_version":    version.WASMABIVersion,
-			"contract_set_sha256": version.ContractSetSHA256,
-			"channel_nonce":       hello.ChannelNonce,
-			"limits":              hello.Limits,
+			"internal_wire":           runtimeclient.InternalWire,
+			"platform_version":        hello.PlatformVersion,
+			"runtime_artifact_sha256": hello.RuntimeArtifactSHA256,
+			"connection_nonce":        hello.ConnectionNonce,
+			"actual_target":           hello.Target,
+			"limits":                  hello.Limits,
 		}),
 	}); err != nil {
 		os.Exit(6)
 	}
-	controlRead := stressRuntimeControlFile("REDEVPLUGIN_CONTROL_READ_FD", "stress-runtime-control-read")
-	controlWrite := stressRuntimeControlFile("REDEVPLUGIN_CONTROL_WRITE_FD", "stress-runtime-control-write")
-	if controlRead == nil || controlWrite == nil {
-		os.Exit(7)
-	}
-	defer controlRead.Close()
-	defer controlWrite.Close()
 	for {
 		wireRequest, request, err := readStressRuntimeFrame(controlRead)
 		if err != nil {
@@ -931,11 +959,11 @@ func runStressRuntimeHelper() {
 }
 
 func readStressRuntimeFrame(reader io.Reader) (runtimeclient.IPCFrame, stressIPCFrame, error) {
-	wireFrame, err := runtimeclient.ReadIPCFrameV7(reader)
+	wireFrame, err := runtimeclient.ReadIPCFrame(reader)
 	if err != nil {
 		return runtimeclient.IPCFrame{}, stressIPCFrame{}, err
 	}
-	if wireFrame.Flags != 0 || wireFrame.ResourceID != 0 || len(wireFrame.Metadata) == 0 || len(wireFrame.Body) != 0 {
+	if wireFrame.Flags != 0 || len(wireFrame.Metadata) == 0 || len(wireFrame.Body) != 0 {
 		return runtimeclient.IPCFrame{}, stressIPCFrame{}, errors.New("invalid stress runtime semantic frame placement")
 	}
 	var frame stressIPCFrame
@@ -950,24 +978,15 @@ func writeStressRuntimeFrame(writer io.Writer, wireType runtimeclient.IPCFrameTy
 	if err != nil {
 		return err
 	}
-	return runtimeclient.WriteIPCFrameV7(writer, runtimeclient.IPCFrame{
+	return runtimeclient.WriteIPCFrame(writer, runtimeclient.IPCFrame{
 		Type:      wireType,
 		RequestID: requestID,
 		Metadata:  metadata,
 	})
 }
 
-func stressRuntimeControlFile(environmentVariable string, name string) *os.File {
-	fileDescriptor, err := strconv.Atoi(os.Getenv(environmentVariable))
-	if err != nil || fileDescriptor < 0 {
-		return nil
-	}
-	return os.NewFile(uintptr(fileDescriptor), name)
-}
-
 func respondStressRuntime(writer io.Writer, requestID uint64, wireType runtimeclient.IPCFrameType, request stressIPCFrame, frameType string, payload json.RawMessage) {
 	if err := writeStressRuntimeFrame(writer, wireType, requestID, stressIPCFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           frameType,
 		RequestID:           request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
@@ -985,7 +1004,7 @@ func stressRawJSON(value any) json.RawMessage {
 	return raw
 }
 
-func stressRuntimeDescriptor(t *testing.T, path string, target runtimetarget.Target) runtimeclient.RuntimeDescriptor {
+func stressRuntimeArtifactIdentity(t *testing.T, path string, target runtimetarget.Target) runtimeclient.RuntimeArtifactIdentity {
 	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
@@ -996,22 +1015,19 @@ func stressRuntimeDescriptor(t *testing.T, path string, target runtimetarget.Tar
 	if _, err := io.Copy(hasher, file); err != nil {
 		t.Fatal(err)
 	}
-	runtimeVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
+	runtimeVersion, err := version.ParseSemVer(version.CurrentPlatformVersion())
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
-		PlatformVersion:   runtimeVersion,
-		Target:            target,
-		RustIPCVersion:    version.RustIPCVersion,
-		WASMABIVersion:    version.WASMABIVersion,
-		ContractSetSHA256: version.ContractSetSHA256,
-		BinarySHA256:      hex.EncodeToString(hasher.Sum(nil)),
+	identity, err := runtimeclient.NewRuntimeArtifactIdentity(runtimeclient.RuntimeArtifactIdentityOptions{
+		PlatformVersion: runtimeVersion,
+		Target:          target,
+		BinarySHA256:    hex.EncodeToString(hasher.Sum(nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return descriptor
+	return identity
 }
 
 func logStressSummary(t *testing.T, summary stressSummary) {

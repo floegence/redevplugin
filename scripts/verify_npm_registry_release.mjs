@@ -73,6 +73,7 @@ export async function verifyNpmRegistryRelease({
   const actualIntegrity = `sha512-${createHash("sha512").update(tarballBytes).digest("base64")}`;
   assertEqual(actualIntegrity, expectedIntegrity, "downloaded npm tarball integrity");
   const tarballSHA512 = createHash("sha512").update(tarballBytes).digest("hex");
+  const tarballSHA256 = createHash("sha256").update(tarballBytes).digest("hex");
 
   assertRecord(dist.attestations, "npm dist attestations");
   assertRecord(dist.attestations.provenance, "npm provenance metadata");
@@ -86,7 +87,7 @@ export async function verifyNpmRegistryRelease({
   const attestationResponse = await fetchJSON(fetchImpl, attestationURL, "npm attestations");
   verifySLSAAttestation(attestationResponse, { packageConfig, version, sourceCommit, tarballSHA512 });
 
-  return { packageName, version, sourceCommit, integrity: actualIntegrity, tarballSHA512 };
+  return { packageName, version, sourceCommit, integrity: actualIntegrity, tarballSHA256, tarballSHA512 };
 }
 
 export class NpmRegistryTransientError extends Error {
@@ -345,6 +346,7 @@ async function main() {
       name: result.packageName,
       version: result.version,
       integrity: result.integrity,
+      tarball_sha256: result.tarballSHA256,
       provenance_subject_sha512: result.tarballSHA512,
       source_commit: result.sourceCommit,
     }, null, 2)}\n`, { flag: "wx" });

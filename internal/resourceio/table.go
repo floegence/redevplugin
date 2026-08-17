@@ -8,7 +8,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 type HandleID uint64

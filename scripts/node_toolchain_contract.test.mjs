@@ -46,10 +46,7 @@ test("local gates and author scaffolds name the Node 26 authority", () => {
 });
 
 test("first-party performance fixtures describe the selected Node 26 runtime", () => {
-  for (const path of [
-    "scripts/performance_contract.test.mjs",
-    "pkg/protocol/performance_evidence_schema_test.go",
-  ]) {
+  for (const path of ["scripts/performance_contract.test.mjs"]) {
     const contents = source(path);
     assert.match(contents, /node_version[^\n]*v26\.7\.0/);
     assert.doesNotMatch(contents, /node_version[^\n]*v24/);

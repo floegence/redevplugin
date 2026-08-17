@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+  assertCurrentWorkerImports,
   assertSourceSnapshotUnchanged,
   buildCanonicalWasmArtifacts,
   canonicalRustImage,
@@ -15,6 +16,20 @@ import {
   selectCanonicalWasmBuildMode,
   snapshotCanonicalCargoSources,
 } from "./canonical_wasm_builder.mjs";
+
+test("generated workers import only the current redevplugin.io functions", async () => {
+  const artifact = await readFile(resolve(import.meta.dirname, "../cmd/redevplugin/scaffold_assets/backend.wasm"));
+  assert.doesNotThrow(() => assertCurrentWorkerImports(artifact, "scaffold worker"));
+
+  const unsupported = Buffer.from(artifact);
+  const moduleOffset = unsupported.indexOf(Buffer.from("redevplugin.io"));
+  assert.notEqual(moduleOffset, -1);
+  unsupported.set(Buffer.from("redevplugin.xx"), moduleOffset);
+  assert.throws(
+    () => assertCurrentWorkerImports(unsupported, "unsupported worker"),
+    /imports unsupported Worker API symbol redevplugin\.xx\./,
+  );
+});
 
 test("native builds use a clean target, pinned rustc, and an environment allowlist", async () => {
   const root = await mkdtemp(join(tmpdir(), "redevplugin-canonical-wasm-"));

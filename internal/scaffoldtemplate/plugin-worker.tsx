@@ -10,7 +10,6 @@ type EchoResult = {
   transport: string;
   method: string;
   worker_id: string;
-  wasm_abi: string;
   message: string;
 };
 

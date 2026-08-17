@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 type assemblyResult struct {
@@ -33,7 +33,7 @@ type preparedRelease struct {
 	policyPreimage              []byte
 	revocationInput             releasecontract.RevocationInput
 	revocationPreimage          []byte
-	metadata                    releasecontract.ReleaseMetadataV8
+	metadata                    releasecontract.ReleaseMetadata
 	metadataBytes               []byte
 	metadataPreimage            []byte
 	releaseMetadataRef          string
@@ -47,9 +47,9 @@ type signedPrimary struct {
 	signedPackage             []byte
 	root                      releasecontract.RootDelegationV1
 	rootBytes                 []byte
-	policy                    releasecontract.SourcePolicyV2
+	policy                    releasecontract.SourcePolicyV3
 	policyBytes               []byte
-	revocation                releasecontract.RevocationV2
+	revocation                releasecontract.RevocationV3
 	revocationBytes           []byte
 	metadataSignature         []byte
 	policyPointerInput        releasecontract.ReleasePointerInput
@@ -60,9 +60,9 @@ type signedPrimary struct {
 
 type signedPointers struct {
 	primary                signedPrimary
-	policyPointer          releasecontract.SourcePolicyPointerV1
+	policyPointer          releasecontract.SourcePolicyPointerV2
 	policyPointerBytes     []byte
-	revocationPointer      releasecontract.RevocationPointerV1
+	revocationPointer      releasecontract.RevocationPointerV2
 	revocationPointerBytes []byte
 }
 
@@ -145,8 +145,7 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 		return preparedRelease{}, err
 	}
 	policyInput := releasecontract.SourcePolicyInput{
-		SchemaVersion: releasecontract.SourcePolicySchemaVersion,
-		SourceID:      config.SourceID, Channel: config.Channel, Epoch: "1", RootEpoch: "1",
+		SourceID: config.SourceID, Channel: config.Channel, Epoch: "1", RootEpoch: "1",
 		SourceType: config.SourceType, SourceClass: config.SourceClass, AllowedPublishers: []string{publisherID},
 		AllowedArtifactHosts: slices.Clone(config.AllowedArtifactHosts),
 		ActiveKeys: releasecontract.SourcePolicyActiveKeys{
@@ -163,8 +162,7 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 		return preparedRelease{}, err
 	}
 	revocationInput := releasecontract.RevocationInput{
-		SchemaVersion: releasecontract.RevocationSchemaVersion,
-		SourceID:      config.SourceID, Channel: config.Channel, Epoch: "1", RootEpoch: "1",
+		SourceID: config.SourceID, Channel: config.Channel, Epoch: "1", RootEpoch: "1",
 		GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, RevokedKeyIDs: []string{},
 		RevokedReleases: []releasecontract.RevokedRelease{}, KeyID: config.Signing.KeyID,
 	}
@@ -172,8 +170,8 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 	if err != nil {
 		return preparedRelease{}, err
 	}
-	metadata := releasecontract.ReleaseMetadataV8{
-		SchemaVersion: metadataSchemaVersion(pkg.Manifest.Plugin.UIProtocolVersion), SourceID: config.SourceID,
+	metadata := releasecontract.ReleaseMetadata{
+		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersion, SourceID: config.SourceID,
 		ReleaseMetadataRef: metadataRef, PublisherID: publisherID, PluginID: pluginID, Version: version,
 		DistributionRef: releasecontract.ReleaseDistributionRef{Distribution: config.Distribution, ArtifactRef: packageArtifactRef},
 		Hashes:          releasecontract.ReleasePackageHashSet{PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash},
@@ -185,12 +183,7 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 			Algorithm: releasecontract.SignatureAlgorithmEd25519, KeyID: config.Signing.KeyID, SignatureBundleRef: packageSignatureRef,
 			SourcePolicyEpoch: "1", RevocationEpoch: "1",
 		},
-		Compatibility: releasecontract.ReleaseCompatibility{
-			MinReDevPluginVersion: config.MinReDevPluginVersion, MinRuntimeVersion: pkg.Manifest.Plugin.MinRuntimeVersion,
-			UIProtocolVersion: pkg.Manifest.Plugin.UIProtocolVersion,
-		},
-		HostRequirements: cloneHostRequirements(config.HostRequirements),
-		ReleaseEvidence:  &releasecontract.ReleaseEvidence{GeneratedAt: config.GeneratedAt},
+		ReleaseEvidence: &releasecontract.ReleaseEvidence{GeneratedAt: config.GeneratedAt},
 	}
 	metadata, err = releasecontract.BuildReleaseMetadata(metadata)
 	if err != nil {
@@ -292,12 +285,12 @@ func buildSignedPrimary(config ConfigV1, prepared preparedRelease, requests []Ex
 	policyRef := fmt.Sprintf("sources/%s/%s/policy/1.json", config.SourceID, config.Channel)
 	revocationRef := fmt.Sprintf("sources/%s/%s/revocation/1.json", config.SourceID, config.Channel)
 	policyPointerInput := releasecontract.ReleasePointerInput{
-		SchemaVersion: releasecontract.SourcePolicyPointerSchemaVersion, SourceID: config.SourceID, Channel: config.Channel,
+		SourceID: config.SourceID, Channel: config.Channel,
 		Epoch: "1",
 		Ref:   policyRef, DocumentSHA256: sha256Hex(policyBytes), GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, KeyID: config.Signing.KeyID,
 	}
 	revocationPointerInput := releasecontract.ReleasePointerInput{
-		SchemaVersion: releasecontract.RevocationPointerSchemaVersion, SourceID: config.SourceID, Channel: config.Channel,
+		SourceID: config.SourceID, Channel: config.Channel,
 		Epoch: "1",
 		Ref:   revocationRef, DocumentSHA256: sha256Hex(revocationBytes), GeneratedAt: config.GeneratedAt, ExpiresAt: config.ExpiresAt, KeyID: config.Signing.KeyID,
 	}
@@ -383,22 +376,6 @@ func signatureForUsage(requests []ExternalSignerRequestV1, responses map[string]
 		}
 	}
 	return nil, ErrWorkspaceIncomplete
-}
-
-func cloneHostRequirements(values []releasecontract.ReleaseHostRequirement) []releasecontract.ReleaseHostRequirement {
-	result := make([]releasecontract.ReleaseHostRequirement, len(values))
-	for index, value := range values {
-		result[index] = value
-		result[index].RequiredCapabilityContracts = slices.Clone(value.RequiredCapabilityContracts)
-	}
-	return result
-}
-
-func metadataSchemaVersion(protocol string) string {
-	if protocol == "plugin-ui-v7" {
-		return releasecontract.ReleaseMetadataSchemaVersionV8
-	}
-	return ""
 }
 
 func parseCanonicalTime(value string) (time.Time, error) {

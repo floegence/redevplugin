@@ -2,20 +2,17 @@ package registry
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func registryTestContext() context.Context {
@@ -51,8 +48,11 @@ func TestStoreIsolatesEnvironmentOwners(t *testing.T) {
 				Version:           "1.0.0",
 				ActiveFingerprint: "sha256:shared-a",
 				TrustState:        TrustVerified,
-				EnableState:       EnableDisabled,
-				Manifest:          manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.shared", Version: "1.0.0"}},
+				PackageSourceProvenance: PackageSourceProvenance{
+					Kind: PackageSourceLocalGenerated,
+				},
+				EnableState: EnableDisabledByUser,
+				Manifest:    currentTestManifest("com.example.shared", "1.0.0"),
 			}
 			storedA, err := store.PutPlugin(environmentA, record, PutOptions{Now: time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)})
 			if err != nil {
@@ -120,115 +120,6 @@ func TestPluginRecordOwnerIsPrivateJSONState(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRequiresAuthenticatedOwner(t *testing.T) {
-	store, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "registry.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	for name, call := range map[string]func() error{
-		"plugins":       func() error { _, err := store.ListPlugins(context.Background()); return err },
-		"authorization": func() error { _, err := store.ListAuthorization(context.Background()); return err },
-		"bindings":      func() error { _, _, err := store.ListBindings(context.Background(), "", 10); return err },
-		"objects": func() error {
-			_, _, err := store.ListObjects(context.Background(), sessionctx.ScopeUser, "plugini_test", "", 10)
-			return err
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := call(); !errors.Is(err, sessionctx.ErrSessionRequired) {
-				t.Fatalf("operation error = %v, want authenticated session", err)
-			}
-		})
-	}
-}
-
-func TestSQLiteStoreReopenPreservesEnvironmentOwners(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	ctxA := registryTestContextFor("owner_user_a", "owner_env_a")
-	ctxB := registryTestContextFor("owner_user_b", "owner_env_b")
-	store, err := NewSQLiteStore(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recordA := putOwnerPlugin(t, store, ctxA, "plugini_shared", "1.0.0")
-	recordB := putOwnerPlugin(t, store, ctxB, "plugini_shared", "2.0.0")
-	grantedA, err := store.GrantPermission(ctxA, permissions.GrantRequest{PluginInstanceID: recordA.PluginInstanceID, PermissionID: "documents.read"}, AuthorizationRevisionsFromRecord(recordA))
-	if err != nil {
-		t.Fatal(err)
-	}
-	grantedB, err := store.GrantPermission(ctxB, permissions.GrantRequest{PluginInstanceID: recordB.PluginInstanceID, PermissionID: "documents.write"}, AuthorizationRevisionsFromRecord(recordB))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range []struct {
-		ctx         context.Context
-		contentHash string
-	}{{ctxA, strings.Repeat("a", 64)}, {ctxB, strings.Repeat("b", 64)}} {
-		if err := store.CreateObject(item.ctx, sessionctx.ScopeUser, plugindata.Object{PluginInstanceID: "plugini_shared", ObjectID: "object_shared", ContentHash: item.contentHash, ShapeHash: strings.Repeat("c", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	shapeA, err := plugindata.ShapeFromManifest(recordA.Manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	shapeHashA, err := plugindata.HashShape(shapeA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	shapeB, err := plugindata.ShapeFromManifest(recordB.Manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	shapeHashB, err := plugindata.HashShape(shapeB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CommitEnable(ctxA, grantedA.Plugin.ManagementRevision, nil, plugindata.Binding{PluginInstanceID: "plugini_shared", GenerationID: "generation_a", State: plugindata.BindingActive, Revision: 1, ShapeHash: shapeHashA}, shapeA, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CommitEnable(ctxB, grantedB.Plugin.ManagementRevision, nil, plugindata.Binding{PluginInstanceID: "plugini_shared", GenerationID: "generation_b", State: plugindata.BindingActive, Revision: 1, ShapeHash: shapeHashB}, shapeB, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := NewSQLiteStore(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	for _, item := range []struct {
-		ctx     context.Context
-		owner   string
-		version string
-		grant   string
-		object  string
-		binding string
-	}{{ctxA, "owner_env_a", "1.0.0", "documents.read", strings.Repeat("a", 64), "generation_a"}, {ctxB, "owner_env_b", "2.0.0", "documents.write", strings.Repeat("b", 64), "generation_b"}} {
-		record, err := reopened.GetPlugin(item.ctx, "plugini_shared")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if record.OwnerEnvHash != item.owner || record.Version != item.version {
-			t.Fatalf("reopened record = %#v", record)
-		}
-		authorization, err := reopened.GetAuthorization(item.ctx, "plugini_shared")
-		if err != nil || len(authorization.Grants) != 1 || authorization.Grants[0].PermissionID != item.grant {
-			t.Fatalf("reopened authorization = %#v err=%v", authorization, err)
-		}
-		object, found, err := reopened.GetObject(item.ctx, sessionctx.ScopeUser, "plugini_shared", "object_shared")
-		if err != nil || !found || object.ContentHash != item.object {
-			t.Fatalf("reopened object = %#v found=%v err=%v", object, found, err)
-		}
-		binding, found, err := reopened.GetBinding(item.ctx, "plugini_shared")
-		if err != nil || !found || binding.GenerationID != item.binding {
-			t.Fatalf("reopened binding = %#v found=%v err=%v", binding, found, err)
-		}
-	}
-}
-
 func TestStoreIsolatesAuthorizationAndBindingsByEnvironment(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -245,11 +136,11 @@ func TestStoreIsolatesAuthorizationAndBindingsByEnvironment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			currentA, err := store.PutSecurityPolicy(ctxA, security.PutPolicyRequest{PluginInstanceID: recordA.PluginInstanceID, DeniedMethods: []string{"documents.delete"}}, AuthorizationRevisionsFromRecord(grantedA.Plugin))
+			_, err = store.PutSecurityPolicy(ctxA, security.PutPolicyRequest{PluginInstanceID: recordA.PluginInstanceID, DeniedMethods: []string{"documents.delete"}}, AuthorizationRevisionsFromRecord(grantedA.Plugin))
 			if err != nil {
 				t.Fatal(err)
 			}
-			currentB, err := store.PutSecurityPolicy(ctxB, security.PutPolicyRequest{PluginInstanceID: recordB.PluginInstanceID, DeniedMethods: []string{"documents.archive"}}, AuthorizationRevisionsFromRecord(grantedB.Plugin))
+			_, err = store.PutSecurityPolicy(ctxB, security.PutPolicyRequest{PluginInstanceID: recordB.PluginInstanceID, DeniedMethods: []string{"documents.archive"}}, AuthorizationRevisionsFromRecord(grantedB.Plugin))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -285,12 +176,8 @@ func TestStoreIsolatesAuthorizationAndBindingsByEnvironment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := store.CommitEnable(ctxA, currentA.Plugin.ManagementRevision, nil, plugindata.Binding{PluginInstanceID: "plugini_shared", GenerationID: "generation_a", State: plugindata.BindingActive, Revision: 1, ShapeHash: shapeHashA}, shapeA, time.Now()); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.CommitEnable(ctxB, currentB.Plugin.ManagementRevision, nil, plugindata.Binding{PluginInstanceID: "plugini_shared", GenerationID: "generation_b", State: plugindata.BindingActive, Revision: 1, ShapeHash: shapeHashB}, shapeB, time.Now()); err != nil {
-				t.Fatal(err)
-			}
+			seedCatalogBinding(t, store, ctxA, plugindata.Binding{PluginInstanceID: "plugini_shared", GenerationID: "generation_a", State: plugindata.BindingActive, Revision: 1, ShapeHash: shapeHashA})
+			seedCatalogBinding(t, store, ctxB, plugindata.Binding{PluginInstanceID: "plugini_shared", GenerationID: "generation_b", State: plugindata.BindingActive, Revision: 1, ShapeHash: shapeHashB})
 			bindingA, found, err := store.GetBinding(ctxA, "plugini_shared")
 			if err != nil || !found || bindingA.GenerationID != "generation_a" {
 				t.Fatalf("environment A binding = %#v, found=%v err=%v", bindingA, found, err)
@@ -407,132 +294,6 @@ func TestStoreEnvironmentScopedObjectsShareOnlyWithinEnvironment(t *testing.T) {
 	}
 }
 
-func TestSQLiteOwnerScopeMigrationFailsClosedForLegacyData(t *testing.T) {
-	for _, populatedTable := range []string{
-		"plugin_records",
-		"plugin_permission_grants",
-		"plugin_security_policies",
-		"plugin_security_policy_allowed_permissions",
-		"plugin_security_policy_denied_methods",
-		"plugin_data_bindings",
-		"plugin_data_objects",
-	} {
-		t.Run(populatedTable, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "registry.sqlite")
-			createLegacyOwnerSchema(t, path, populatedTable)
-			store, err := NewSQLiteStore(context.Background(), path)
-			if store != nil {
-				_ = store.Close()
-			}
-			if !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
-				t.Fatalf("NewSQLiteStore() error = %v, want owner migration required", err)
-			}
-		})
-	}
-}
-
-func TestSQLiteObjectPluginScopeMigrationFailsClosedForExistingRows(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	dsn, err := registrySQLiteDSN(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE plugin_data_objects (
-		owner_env_hash TEXT NOT NULL,
-		owner_user_hash TEXT NOT NULL,
-		object_id TEXT NOT NULL,
-		PRIMARY KEY(owner_env_hash, owner_user_hash, object_id)
-	)`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO plugin_data_objects VALUES ('owner_env', 'owner_user', 'object_legacy')`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewSQLiteStore(context.Background(), path)
-	if store != nil {
-		_ = store.Close()
-	}
-	if !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
-		t.Fatalf("NewSQLiteStore() error = %v, want owner migration required", err)
-	}
-}
-
-func TestSQLiteOwnerScopeMigrationRebuildsEmptyLegacyTables(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	createLegacyOwnerSchema(t, path, "")
-	store, err := NewSQLiteStore(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	record := putOwnerPlugin(t, store, registryTestContextFor("owner_user_a", "owner_env_a"), "plugini_migrated", "1.0.0")
-	if record.OwnerEnvHash != "owner_env_a" {
-		t.Fatalf("migrated record owner = %q", record.OwnerEnvHash)
-	}
-}
-
-func TestSQLiteOwnerScopeMigrationRebuildsEmptyLegacyTableBesideOwnedData(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	ctx := registryTestContextFor("owner_user_a", "owner_env_a")
-	store, err := NewSQLiteStore(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	putOwnerPlugin(t, store, ctx, "plugini_preserved", "1.0.0")
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	dsn, err := registrySQLiteDSN(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DROP TABLE plugin_data_objects`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE plugin_data_objects (object_id TEXT PRIMARY KEY)`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`PRAGMA user_version = 0`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := NewSQLiteStore(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	record, err := reopened.GetPlugin(ctx, "plugini_preserved")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.OwnerEnvHash != "owner_env_a" {
-		t.Fatalf("preserved owner = %q", record.OwnerEnvHash)
-	}
-	if err := reopened.CreateObject(ctx, sessionctx.ScopeUser, plugindata.Object{PluginInstanceID: "plugini_preserved", ObjectID: "object_owned", ContentHash: strings.Repeat("a", 64), ShapeHash: strings.Repeat("b", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func putOwnerPlugin(t *testing.T, store Store, ctx context.Context, instanceID, version string) PluginRecord {
 	t.Helper()
 	record, err := store.PutPlugin(ctx, PluginRecord{
@@ -542,55 +303,14 @@ func putOwnerPlugin(t *testing.T, store Store, ctx context.Context, instanceID, 
 		Version:           version,
 		ActiveFingerprint: "sha256:" + version,
 		TrustState:        TrustVerified,
-		EnableState:       EnableDisabled,
-		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-			Publisher: manifest.Publisher{PublisherID: "example"},
-			Plugin:    manifest.Plugin{PluginID: "com.example.owner", Version: version},
+		PackageSourceProvenance: PackageSourceProvenance{
+			Kind: PackageSourceLocalGenerated,
 		},
+		EnableState: EnableDisabledByUser,
+		Manifest:    currentTestManifest("com.example.owner", version),
 	}, PutOptions{Now: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return record
-}
-
-func createLegacyOwnerSchema(t *testing.T, path, populatedTable string) {
-	t.Helper()
-	dsn, err := registrySQLiteDSN(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	statements := []string{
-		`CREATE TABLE plugin_records (plugin_instance_id TEXT PRIMARY KEY)`,
-		`CREATE TABLE plugin_permission_grants (plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id))`,
-		`CREATE TABLE plugin_security_policies (plugin_instance_id TEXT PRIMARY KEY)`,
-		`CREATE TABLE plugin_security_policy_allowed_permissions (plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id))`,
-		`CREATE TABLE plugin_security_policy_denied_methods (plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, method))`,
-		`CREATE TABLE plugin_data_bindings (plugin_instance_id TEXT PRIMARY KEY)`,
-		`CREATE TABLE plugin_data_objects (object_id TEXT PRIMARY KEY)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	inserts := map[string]string{
-		"plugin_records":                             `INSERT INTO plugin_records VALUES ('plugini_legacy')`,
-		"plugin_permission_grants":                   `INSERT INTO plugin_permission_grants VALUES ('plugini_legacy', 'documents.read')`,
-		"plugin_security_policies":                   `INSERT INTO plugin_security_policies VALUES ('plugini_legacy')`,
-		"plugin_security_policy_allowed_permissions": `INSERT INTO plugin_security_policy_allowed_permissions VALUES ('plugini_legacy', 'documents.read')`,
-		"plugin_security_policy_denied_methods":      `INSERT INTO plugin_security_policy_denied_methods VALUES ('plugini_legacy', 'documents.delete')`,
-		"plugin_data_bindings":                       `INSERT INTO plugin_data_bindings VALUES ('plugini_legacy')`,
-		"plugin_data_objects":                        `INSERT INTO plugin_data_objects VALUES ('object_legacy')`,
-	}
-	if statement := inserts[populatedTable]; statement != "" {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
 }

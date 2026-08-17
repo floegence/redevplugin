@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 const (
@@ -20,6 +20,8 @@ const (
 var ErrInvalidSecretRef = errors.New("secret_ref is invalid")
 
 var ErrSecretScopeMismatch = errors.New("secret owner scope mismatch")
+
+var ErrSecretStoreSchema = errors.New("secret store schema is incompatible")
 
 type Store interface {
 	BindSecretRef(ctx context.Context, req BindRequest) error

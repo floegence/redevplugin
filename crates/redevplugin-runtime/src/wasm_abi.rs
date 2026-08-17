@@ -7,14 +7,11 @@ use std::collections::HashMap;
 use std::fmt;
 use wasmparser::{Encoding, ExternalKind, FuncType, Parser, Payload, RefType, TypeRef, ValType};
 
-pub const WASM_WORKER_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const EXPORT_MEMORY: &str = "memory";
 pub const EXPORT_WORKER_ALLOC: &str = "redevplugin_worker_alloc";
 pub const EXPORT_WORKER_DEALLOC: &str = "redevplugin_worker_dealloc";
 pub const EXPORT_WORKER_INVOKE: &str = "redevplugin_worker_invoke";
 pub const REQUIRED_EXPORT_INVOKE: &str = EXPORT_WORKER_INVOKE;
-pub const IMPORT_STORAGE: &str = "redevplugin.storage";
-pub const IMPORT_NETWORK: &str = "redevplugin.network";
 pub const IMPORT_IO: &str = "redevplugin.io";
 pub const MAX_TABLE_ELEMENTS: u64 = 65_536;
 
@@ -283,15 +280,6 @@ fn require_hostcall(
     function_type: &FuncType,
 ) -> Result<(), ValidationError> {
     let expected = match (module, name) {
-        (IMPORT_STORAGE, "files" | "kv" | "sqlite") | (IMPORT_NETWORK, "execute") => (
-            &[
-                ValueType::I32,
-                ValueType::I32,
-                ValueType::I32,
-                ValueType::I32,
-            ][..],
-            &[ValueType::I32][..],
-        ),
         (IMPORT_IO, "rdp_call_v1") => (
             &[
                 ValueType::I32,
@@ -476,11 +464,11 @@ mod tests {
     fn rejects_unsupported_or_mistyped_imports() {
         for import in [
             "(import \"wasi_snapshot_preview1\" \"fd_write\" (func (param i32 i32 i32 i32) (result i32)))",
-            "(import \"redevplugin.storage\" \"files\" (func (param i32) (result i32)))",
-            "(import \"redevplugin.storage\" \"memory\" (memory 1))",
+            "(import \"redevplugin.io\" \"rdp_call_v1\" (func (param i32) (result i32)))",
+            "(import \"redevplugin.io\" \"memory\" (memory 1))",
         ] {
             let source = valid_worker_wat().replace(
-                "(import \"redevplugin.storage\" \"files\" (func (param i32 i32 i32 i32) (result i32)))",
+                "(import \"redevplugin.io\" \"rdp_call_v1\" (func (param i32 i32 i32 i32) (result i32)))",
                 import,
             );
             let module = wat::parse_str(source).expect("compile worker with invalid import");
@@ -492,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_worker_api_v1_io_import_table() {
+    fn validates_plugin_api_io_import_table() {
         let source = r#"(module
             (import "redevplugin.io" "rdp_call_v1" (func (param i32 i32 i32 i32) (result i32)))
             (import "redevplugin.io" "rdp_read_v1" (func (param i64 i32 i32 i32) (result i32)))
@@ -505,21 +493,51 @@ mod tests {
             (func (export "redevplugin_worker_dealloc") (param i32 i32))
             (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64) i64.const 0)
         )"#;
-        let module = wat::parse_str(source).expect("compile Worker API v1 module");
-        let validated = validate_worker_module(&module).expect("validate Worker API v1 module");
-        assert_eq!(validated.imports.len(), 6);
+        let module = wat::parse_str(source).expect("compile plugin API module");
+        let validated = validate_worker_module(&module).expect("validate plugin API module");
+        assert_eq!(
+            validated
+                .imports
+                .iter()
+                .map(|import| (import.module.as_str(), import.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (IMPORT_IO, "rdp_call_v1"),
+                (IMPORT_IO, "rdp_read_v1"),
+                (IMPORT_IO, "rdp_write_v1"),
+                (IMPORT_IO, "rdp_seek_v1"),
+                (IMPORT_IO, "rdp_close_v1"),
+                (IMPORT_IO, "rdp_last_error_v1"),
+            ]
+        );
 
         let invalid = source.replace(
             "(param i64 i64 i32) (result i64)",
             "(param i64 i32 i32) (result i64)",
         );
-        let module = wat::parse_str(invalid).expect("compile invalid Worker API v1 module");
+        let module = wat::parse_str(invalid).expect("compile invalid plugin API module");
         let error = validate_worker_module(&module).expect_err("reject invalid seek signature");
         assert_eq!(error.category(), ValidationErrorCategory::InvalidSignature);
     }
 
     #[test]
-    fn validates_generated_scaffold_worker_api_v1_imports() {
+    fn rejects_retired_storage_and_network_import_modules() {
+        for import in [
+            r#"(import "redevplugin.storage" "files" (func (param i32 i32 i32 i32) (result i32)))"#,
+            r#"(import "redevplugin.network" "execute" (func (param i32 i32 i32 i32) (result i32)))"#,
+        ] {
+            let source = valid_worker_wat().replace(
+                r#"(import "redevplugin.io" "rdp_call_v1" (func (param i32 i32 i32 i32) (result i32)))"#,
+                import,
+            );
+            let module = wat::parse_str(source).expect("compile worker with retired import");
+            let error = validate_worker_module(&module).expect_err("reject retired import module");
+            assert_eq!(error.category(), ValidationErrorCategory::UnsupportedImport);
+        }
+    }
+
+    #[test]
+    fn validates_generated_scaffold_plugin_api_imports() {
         let module = include_bytes!("../testdata/scaffold-backend.wasm");
         let validated = validate_worker_module(module).expect("validate generated scaffold worker");
         let imports = validated
@@ -567,8 +585,8 @@ mod tests {
 
     fn valid_worker_wat() -> &'static str {
         r#"(module
-            (import "redevplugin.storage" "files" (func (param i32 i32 i32 i32) (result i32)))
-            (import "redevplugin.network" "execute" (func (param i32 i32 i32 i32) (result i32)))
+            (import "redevplugin.io" "rdp_call_v1" (func (param i32 i32 i32 i32) (result i32)))
+            (import "redevplugin.io" "rdp_last_error_v1" (func (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 0)
             (func (export "redevplugin_worker_dealloc") (param i32 i32))

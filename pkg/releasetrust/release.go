@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 var (
@@ -34,7 +34,7 @@ type PreparedRelease struct {
 func (prepared PreparedRelease) SourceTrustKey() SourceTrustKey { return prepared.snapshot.key }
 func (prepared PreparedRelease) VerifiedAt() time.Time          { return prepared.snapshot.verifiedAt }
 func (prepared PreparedRelease) Identity() ReleaseIdentity      { return prepared.identity }
-func (prepared PreparedRelease) SourcePolicy() releasecontract.SourcePolicyV2 {
+func (prepared PreparedRelease) SourcePolicy() releasecontract.SourcePolicyV3 {
 	return prepared.snapshot.SourcePolicy()
 }
 
@@ -47,14 +47,14 @@ func (prepared PreparedRelease) AllowsPackageSigningKey(keyID string) bool {
 
 type VerifiedReleaseMetadata struct {
 	prepared PreparedRelease
-	document releasecontract.ReleaseMetadataV8
+	document releasecontract.ReleaseMetadata
 	raw      []byte
 }
 
 func (verified VerifiedReleaseMetadata) PreparedRelease() PreparedRelease {
 	return clonePreparedRelease(verified.prepared)
 }
-func (verified VerifiedReleaseMetadata) Document() releasecontract.ReleaseMetadataV8 {
+func (verified VerifiedReleaseMetadata) Document() releasecontract.ReleaseMetadata {
 	value, _ := releasecontract.BuildReleaseMetadata(verified.document)
 	return value
 }
@@ -204,7 +204,7 @@ func validReleaseIdentity(identity ReleaseIdentity) bool {
 	return true
 }
 
-func releaseRevoked(revocation releasecontract.RevocationV2, identity ReleaseIdentity, keyID string) bool {
+func releaseRevoked(revocation releasecontract.RevocationV3, identity ReleaseIdentity, keyID string) bool {
 	if keyID != "" && slices.Contains(revocation.RevokedKeyIDs, keyID) {
 		return true
 	}

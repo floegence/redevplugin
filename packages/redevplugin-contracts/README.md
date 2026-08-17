@@ -1,10 +1,11 @@
 # @floegence/redevplugin-contracts
 
-This opt-in package exposes the immutable ReDevPlugin machine-contract registry,
-contract bodies, hashes, and platform package set. It also provides typed,
-domain-separated canonical release-signing DTOs, preimage builders, strict
-decoders, and browser-compatible Ed25519 verifier adapters.
+This opt-in package provides typed, domain-separated canonical release-signing
+DTOs, preimage builders, strict decoders, browser-compatible Ed25519 verifier
+adapters, and verified presentation-evidence types.
 
-Ordinary ReDevPlugin UI imports do not load the raw contract bodies. Host
-products choose their own trusted keys and policy; this package owns only the
-host-neutral wire, canonicalization, and signature-verification request shape.
+Canonical machine contracts ship as exact artifacts named by the signed
+`PlatformReleaseManifest`; this npm package does not embed a second registry or
+package-set index. Host products choose their own trusted keys and policy. This
+package owns only host-neutral canonicalization, verification request shapes,
+and presentation evidence.

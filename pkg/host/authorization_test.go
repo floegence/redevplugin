@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/sessionscope"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionscope"
 )
 
 type recordingAuthorizationAdapter struct {
@@ -65,7 +65,6 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionDowngradePlugin,
 		ManagementActionListPlugins,
 		ManagementActionListFeatures,
-		ManagementActionGetCompatibility,
 		ManagementActionRecoverEnabledPlugins,
 		ManagementActionGrantPermission,
 		ManagementActionRevokePermission,
@@ -87,7 +86,6 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionUninstallPlugin,
 		ManagementActionListRetainedData,
 		ManagementActionDeleteRetainedData,
-		ManagementActionBindRetainedData,
 		ManagementActionCleanupExpiredRetainedData,
 		ManagementActionExportPluginData,
 		ManagementActionDeleteExportedPluginData,
@@ -153,7 +151,6 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"downgrade", ManagementActionDowngradePlugin, func() error { _, err := h.DowngradePlugin(ctx, DowngradeRequest{}); return err }},
 		{"list plugins", ManagementActionListPlugins, func() error { _, err := h.ListPlugins(ctx); return err }},
 		{"list features", ManagementActionListFeatures, func() error { _, err := h.Features(ctx); return err }},
-		{"get compatibility", ManagementActionGetCompatibility, func() error { _, err := h.GetCompatibility(ctx); return err }},
 		{"recover enabled", ManagementActionRecoverEnabledPlugins, func() error { _, err := h.RecoverEnabled(ctx); return err }},
 		{"grant permission", ManagementActionGrantPermission, func() error { _, err := h.GrantPermission(ctx, GrantPermissionRequest{}); return err }},
 		{"revoke permission", ManagementActionRevokePermission, func() error { _, err := h.RevokePermission(ctx, RevokePermissionRequest{}); return err }},
@@ -178,7 +175,6 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"uninstall plugin", ManagementActionUninstallPlugin, func() error { _, err := h.UninstallPlugin(ctx, UninstallRequest{}); return err }},
 		{"list retained data", ManagementActionListRetainedData, func() error { _, err := h.ListRetainedData(ctx, ListRetainedDataRequest{}); return err }},
 		{"delete retained data", ManagementActionDeleteRetainedData, func() error { _, err := h.DeleteRetainedData(ctx, DeleteRetainedDataRequest{}); return err }},
-		{"bind retained data", ManagementActionBindRetainedData, func() error { _, err := h.BindRetainedData(ctx, BindRetainedDataRequest{}); return err }},
 		{"cleanup retained data", ManagementActionCleanupExpiredRetainedData, func() error {
 			_, err := h.CleanupExpiredRetainedData(ctx, CleanupExpiredRetainedDataRequest{})
 			return err

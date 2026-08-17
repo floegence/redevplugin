@@ -1,8 +1,7 @@
 package releasepublisher
 
 import (
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 )
 
 const (
@@ -19,19 +18,17 @@ type PublicKeyV1 struct {
 }
 
 type ConfigV1 struct {
-	SchemaVersion         string                                   `json:"schema_version"`
-	SourceID              string                                   `json:"source_id"`
-	Channel               string                                   `json:"channel"`
-	SourceType            string                                   `json:"source_type"`
-	SourceClass           string                                   `json:"source_class"`
-	GeneratedAt           string                                   `json:"generated_at"`
-	ExpiresAt             string                                   `json:"expires_at"`
-	Root                  PublicKeyV1                              `json:"root"`
-	Signing               PublicKeyV1                              `json:"signing"`
-	AllowedArtifactHosts  []string                                 `json:"allowed_artifact_hosts"`
-	MinReDevPluginVersion string                                   `json:"min_redevplugin_version"`
-	Distribution          string                                   `json:"distribution"`
-	HostRequirements      []releasecontract.ReleaseHostRequirement `json:"host_requirements"`
+	SchemaVersion        string      `json:"schema_version"`
+	SourceID             string      `json:"source_id"`
+	Channel              string      `json:"channel"`
+	SourceType           string      `json:"source_type"`
+	SourceClass          string      `json:"source_class"`
+	GeneratedAt          string      `json:"generated_at"`
+	ExpiresAt            string      `json:"expires_at"`
+	Root                 PublicKeyV1 `json:"root"`
+	Signing              PublicKeyV1 `json:"signing"`
+	AllowedArtifactHosts []string    `json:"allowed_artifact_hosts"`
+	Distribution         string      `json:"distribution"`
 }
 
 type PackageHashSetV1 struct {

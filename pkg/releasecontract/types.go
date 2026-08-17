@@ -1,21 +1,13 @@
 package releasecontract
 
 const (
-	RootDelegationSchemaVersion        = "redevplugin.release_root_delegation.v1"
-	PackageSignatureSchemaVersion      = "redevplugin.package_signature.v1"
-	ReleaseMetadataSchemaVersionV8     = "redevplugin.release_metadata.v8"
-	ReleaseMetadataSchemaVersion       = ReleaseMetadataSchemaVersionV8
-	SourcePolicySchemaVersionV3        = "redevplugin.release_source_policy.v3"
-	SourcePolicySchemaVersion          = SourcePolicySchemaVersionV3
-	SourcePolicyPointerSchemaVersionV1 = "redevplugin.release_source_policy_pointer.v1"
-	SourcePolicyPointerSchemaVersionV2 = "redevplugin.release_source_policy_pointer.v2"
-	SourcePolicyPointerSchemaVersion   = SourcePolicyPointerSchemaVersionV2
-	RevocationSchemaVersionV2          = "redevplugin.release_revocation.v2"
-	RevocationSchemaVersionV3          = "redevplugin.release_revocation.v3"
-	RevocationSchemaVersion            = RevocationSchemaVersionV3
-	RevocationPointerSchemaVersionV1   = "redevplugin.release_revocation_pointer.v1"
-	RevocationPointerSchemaVersionV2   = "redevplugin.release_revocation_pointer.v2"
-	RevocationPointerSchemaVersion     = RevocationPointerSchemaVersionV2
+	RootDelegationSchemaVersion      = "redevplugin.release_root_delegation.v1"
+	PackageSignatureSchemaVersion    = "redevplugin.package_signature.v1"
+	ReleaseMetadataSchemaVersion     = "redevplugin.release_metadata"
+	SourcePolicySchemaVersion        = "redevplugin.release_source_policy.v3"
+	SourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v2"
+	RevocationSchemaVersion          = "redevplugin.release_revocation.v3"
+	RevocationPointerSchemaVersion   = "redevplugin.release_revocation_pointer.v2"
 
 	SignatureAlgorithmEd25519 = "ed25519"
 )
@@ -106,7 +98,7 @@ type PackageSignatureV1 struct {
 	SignedAt      string `json:"signed_at,omitempty"`
 }
 
-type ReleaseMetadataV8 struct {
+type ReleaseMetadata struct {
 	SchemaVersion            string                      `json:"schema_version"`
 	SourceID                 string                      `json:"source_id"`
 	ReleaseMetadataRef       string                      `json:"release_metadata_ref"`
@@ -117,8 +109,6 @@ type ReleaseMetadataV8 struct {
 	Hashes                   ReleasePackageHashSet       `json:"hashes"`
 	ReleaseMetadataSignature ReleaseMetadataSignatureRef `json:"release_metadata_signature"`
 	PackageSignature         PackageReleaseSignatureRef  `json:"package_signature"`
-	Compatibility            ReleaseCompatibility        `json:"compatibility"`
-	HostRequirements         []ReleaseHostRequirement    `json:"host_requirements,omitempty"`
 	ReleaseEvidence          *ReleaseEvidence            `json:"release_evidence,omitempty"`
 	Metadata                 map[string]string           `json:"metadata,omitempty"`
 }
@@ -148,32 +138,6 @@ type PackageReleaseSignatureRef struct {
 	SignatureBundleRef string `json:"signature_bundle_ref"`
 	SourcePolicyEpoch  string `json:"source_policy_epoch"`
 	RevocationEpoch    string `json:"revocation_epoch"`
-}
-
-type ReleaseCompatibility struct {
-	MinReDevPluginVersion string   `json:"min_redevplugin_version"`
-	MinRuntimeVersion     string   `json:"min_runtime_version"`
-	UIProtocolVersion     string   `json:"ui_protocol_version"`
-	SupportedTargets      []string `json:"supported_targets,omitempty"`
-}
-
-type ReleaseHostRequirement struct {
-	HostID                      string                         `json:"host_id"`
-	MinHostVersion              string                         `json:"min_host_version,omitempty"`
-	RequiredCapabilityContracts []HostCapabilityRequirementRef `json:"required_capability_contracts,omitempty"`
-}
-
-type HostCapabilityRequirementRef struct {
-	CapabilityID      string                    `json:"capability_id"`
-	CapabilityVersion string                    `json:"capability_version"`
-	Contract          HostCapabilityContractRef `json:"contract"`
-}
-
-type HostCapabilityContractRef struct {
-	PublisherID     string `json:"publisher_id"`
-	ContractID      string `json:"contract_id"`
-	ContractVersion string `json:"contract_version"`
-	ArtifactSHA256  string `json:"artifact_sha256"`
 }
 
 type ReleaseEvidence struct {
@@ -213,7 +177,6 @@ type SourcePolicyActiveKeys struct {
 }
 
 type SourcePolicyInput struct {
-	SchemaVersion          string
 	SourceID               string
 	Channel                string
 	Epoch                  string
@@ -234,7 +197,7 @@ type SourcePolicyInput struct {
 	KeyID                  string
 }
 
-type SourcePolicyV2 struct {
+type SourcePolicyV3 struct {
 	SchemaVersion          string                 `json:"schema_version"`
 	SourceID               string                 `json:"source_id"`
 	Channel                string                 `json:"channel"`
@@ -258,7 +221,6 @@ type SourcePolicyV2 struct {
 }
 
 type ReleasePointerInput struct {
-	SchemaVersion  string
 	SourceID       string
 	Channel        string
 	Epoch          string
@@ -269,7 +231,7 @@ type ReleasePointerInput struct {
 	KeyID          string
 }
 
-type SourcePolicyPointerV1 struct {
+type SourcePolicyPointerV2 struct {
 	SchemaVersion  string `json:"schema_version"`
 	SourceID       string `json:"source_id"`
 	Channel        string `json:"channel"`
@@ -291,7 +253,6 @@ type RevokedRelease struct {
 }
 
 type RevocationInput struct {
-	SchemaVersion   string
 	SourceID        string
 	Channel         string
 	Epoch           string
@@ -303,7 +264,7 @@ type RevocationInput struct {
 	KeyID           string
 }
 
-type RevocationV2 struct {
+type RevocationV3 struct {
 	SchemaVersion   string           `json:"schema_version"`
 	SourceID        string           `json:"source_id"`
 	Channel         string           `json:"channel"`
@@ -317,7 +278,7 @@ type RevocationV2 struct {
 	Signature       string           `json:"signature"`
 }
 
-type RevocationPointerV1 struct {
+type RevocationPointerV2 struct {
 	SchemaVersion  string `json:"schema_version"`
 	SourceID       string `json:"source_id"`
 	Channel        string `json:"channel"`

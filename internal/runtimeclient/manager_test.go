@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func TestProcessManagerStartsEveryShardAndBindsDeterministically(t *testing.T) {
@@ -168,15 +168,15 @@ func TestProcessManagerBindingWaitsForTheSingleStartupTransition(t *testing.T) {
 }
 
 func TestProcessManagerPreflightRejectsShardDescriptorDrift(t *testing.T) {
-	first := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64))
-	second := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("b", 64))
+	first := testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64))
+	second := testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("b", 64))
 	manager := testProcessManager(t, []*fakeProcessShard{
 		{health: testShardHealth("a"), descriptor: first},
 		{health: testShardHealth("b"), descriptor: second},
 	})
 
-	if _, err := manager.Preflight(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeDescriptorMismatch) {
-		t.Fatalf("Preflight() error = %v, want ErrRuntimeDescriptorMismatch", err)
+	if _, err := manager.Preflight(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeArtifactIdentityMismatch) {
+		t.Fatalf("Preflight() error = %v, want ErrRuntimeArtifactIdentityMismatch", err)
 	}
 }
 
@@ -184,17 +184,17 @@ func TestProcessManagerPreflightRejectsDescriptorForDifferentTarget(t *testing.T
 	wrongTarget := runtimetarget.LinuxARM64
 	manager := testProcessManager(t, []*fakeProcessShard{{
 		health:     testShardHealth("a"),
-		descriptor: testRuntimeDescriptor(wrongTarget, strings.Repeat("a", 64)),
+		descriptor: testRuntimeArtifactIdentity(wrongTarget, strings.Repeat("a", 64)),
 	}})
 
-	if _, err := manager.Preflight(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeDescriptorMismatch) {
-		t.Fatalf("Preflight() error = %v, want ErrRuntimeDescriptorMismatch", err)
+	if _, err := manager.Preflight(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeArtifactIdentityMismatch) {
+		t.Fatalf("Preflight() error = %v, want ErrRuntimeArtifactIdentityMismatch", err)
 	}
 }
 
 func TestProcessManagerStartRejectsReadyShardDescriptorMismatch(t *testing.T) {
-	configured := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64))
-	running := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("b", 64))
+	configured := testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64))
+	running := testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("b", 64))
 	shard := &fakeProcessShard{
 		descriptor: configured,
 		health: Health{
@@ -202,14 +202,14 @@ func TestProcessManagerStartRejectsReadyShardDescriptorMismatch(t *testing.T) {
 			RuntimeGenerationID: "generation_a",
 			IPCChannelID:        "ipc_a",
 			ConnectionNonce:     "nonce_a",
-			Descriptor:          running,
+			ArtifactIdentity:    running,
 			Ready:               true,
 		},
 	}
 	manager := testProcessManager(t, []*fakeProcessShard{shard})
 
-	if _, err := manager.Start(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeDescriptorMismatch) {
-		t.Fatalf("Start() error = %v, want ErrRuntimeDescriptorMismatch", err)
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeArtifactIdentityMismatch) {
+		t.Fatalf("Start() error = %v, want ErrRuntimeArtifactIdentityMismatch", err)
 	}
 	if shard.startCalls.Load() != 0 {
 		t.Fatalf("Start() calls = %d, want zero for mismatched ready shard", shard.startCalls.Load())
@@ -286,7 +286,7 @@ func TestProcessManagerRejectsStaleBindingDescriptorBeforeDispatch(t *testing.T)
 	}
 	lease := leaseForBinding("plugini_1", binding)
 	shard.mu.Lock()
-	shard.health.Descriptor = testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("b", 64))
+	shard.health.ArtifactIdentity = testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("b", 64))
 	shard.mu.Unlock()
 
 	if _, err := manager.InvokeWorker(context.Background(), binding, lease, "worker.echo", nil); !errors.Is(err, ErrRuntimeBindingInvalid) {
@@ -407,7 +407,7 @@ func TestProcessManagerRevokeNeverStartedDoesNotAccessRuntimeArtifact(t *testing
 		ShardCount: 1,
 		Supervisor: ProcessSupervisorOptions{
 			RuntimePath:           filepath.Join(t.TempDir(), "missing-redevplugin-runtime"),
-			Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
+			ArtifactIdentity:      testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64)),
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -649,7 +649,7 @@ func TestProcessManagerBindsRequiredHostServicesBeforeCreatingShards(t *testing.
 		ShardCount: 2,
 		Supervisor: ProcessSupervisorOptions{
 			RuntimePath:           "redevplugin-runtime",
-			Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
+			ArtifactIdentity:      testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64)),
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -696,7 +696,7 @@ func TestProcessManagerRejectsTypedNilHostStreamSinkAndAllowsRetry(t *testing.T)
 		ShardCount: 1,
 		Supervisor: ProcessSupervisorOptions{
 			RuntimePath:           "redevplugin-runtime",
-			Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
+			ArtifactIdentity:      testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64)),
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -733,13 +733,13 @@ func TestProcessManagerRejectsTypedNilHostStreamSinkAndAllowsRetry(t *testing.T)
 
 func testProcessManager(t *testing.T, shards []*fakeProcessShard) *ProcessManager {
 	t.Helper()
-	configuredDescriptor := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64))
+	configuredDescriptor := testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64))
 	for _, shard := range shards {
 		if shard.descriptor.PlatformVersion().String() == "" {
 			shard.descriptor = configuredDescriptor
 		}
-		if shard.health.Descriptor.PlatformVersion().String() == "" {
-			shard.health.Descriptor = shard.descriptor
+		if shard.health.ArtifactIdentity.PlatformVersion().String() == "" {
+			shard.health.ArtifactIdentity = shard.descriptor
 		}
 	}
 	next := 0
@@ -747,7 +747,7 @@ func testProcessManager(t *testing.T, shards []*fakeProcessShard) *ProcessManage
 		ShardCount: len(shards),
 		Supervisor: ProcessSupervisorOptions{
 			RuntimePath:           "redevplugin-runtime",
-			Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
+			ArtifactIdentity:      testRuntimeArtifactIdentity(testRuntimeTarget, strings.Repeat("a", 64)),
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -802,7 +802,7 @@ func leaseForBinding(pluginInstanceID string, binding RuntimeBinding) Lease {
 type fakeProcessShard struct {
 	mu                  sync.Mutex
 	health              Health
-	descriptor          RuntimeDescriptor
+	descriptor          RuntimeArtifactIdentity
 	preflightErr        error
 	startErr            error
 	start               func(context.Context) error
@@ -846,18 +846,18 @@ func (s *fakeProcessShard) Start(ctx context.Context, _ runtimetarget.Target) er
 	}
 	s.mu.Lock()
 	s.health.Ready = true
-	s.health.Descriptor = s.descriptor
+	s.health.ArtifactIdentity = s.descriptor
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *fakeProcessShard) Preflight(_ context.Context, target runtimetarget.Target) (RuntimeDescriptor, error) {
+func (s *fakeProcessShard) Preflight(_ context.Context, target runtimetarget.Target) (RuntimeArtifactIdentity, error) {
 	if s.preflightErr != nil {
-		return RuntimeDescriptor{}, s.preflightErr
+		return RuntimeArtifactIdentity{}, s.preflightErr
 	}
 	descriptor := s.descriptor
 	if descriptor.PlatformVersion().String() == "" {
-		descriptor = testRuntimeDescriptor(target, strings.Repeat("a", 64))
+		descriptor = testRuntimeArtifactIdentity(target, strings.Repeat("a", 64))
 	}
 	s.descriptor = descriptor
 	return descriptor, nil

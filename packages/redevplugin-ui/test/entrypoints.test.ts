@@ -113,9 +113,9 @@ test("plugin worker entrypoint exposes only bridge and generated capability clie
     "callCapabilityStream",
     "callCapabilitySync",
     "isCapabilityBusinessError",
-    "surfaceAPIMajor",
+    "pluginAPIMajor",
   ]);
-  assert.equal(pluginEntrypoint.surfaceAPIMajor, 1);
+  assert.equal(pluginEntrypoint.pluginAPIMajor, 1);
   for (const forbidden of [
     "PluginPlatformClient",
     "PluginSurfaceHost",

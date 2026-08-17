@@ -13,8 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,15 +21,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 type Lease struct {
@@ -79,17 +74,17 @@ type LeaseLimits struct {
 }
 
 type Health struct {
-	RuntimeInstanceID   string             `json:"runtime_instance_id"`
-	RuntimeGenerationID string             `json:"runtime_generation_id"`
-	IPCChannelID        string             `json:"ipc_channel_id,omitempty"`
-	ConnectionNonce     string             `json:"connection_nonce,omitempty"`
-	ContainmentIdentity string             `json:"-"`
-	Descriptor          RuntimeDescriptor  `json:"descriptor"`
-	Ready               bool               `json:"ready"`
-	ActiveInvocations   int                `json:"active_invocations"`
-	QueuedInvocations   int                `json:"queued_invocations"`
-	Limits              RuntimeLimits      `json:"limits"`
-	ModuleCache         ModuleCacheMetrics `json:"module_cache"`
+	RuntimeInstanceID   string                  `json:"runtime_instance_id"`
+	RuntimeGenerationID string                  `json:"runtime_generation_id"`
+	IPCChannelID        string                  `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce     string                  `json:"connection_nonce,omitempty"`
+	ContainmentIdentity string                  `json:"-"`
+	ArtifactIdentity    RuntimeArtifactIdentity `json:"artifact_identity"`
+	Ready               bool                    `json:"ready"`
+	ActiveInvocations   int                     `json:"active_invocations"`
+	QueuedInvocations   int                     `json:"queued_invocations"`
+	Limits              RuntimeLimits           `json:"limits"`
+	ModuleCache         ModuleCacheMetrics      `json:"module_cache"`
 }
 
 type RuntimeLimits struct {
@@ -221,10 +216,6 @@ type ArtifactProvider interface {
 	ReadArtifact(ctx context.Context, req ArtifactRequest) (ArtifactResult, error)
 }
 
-type HandleGrantValidator interface {
-	ValidateHandleGrant(ctx context.Context, req HandleGrantValidationRequest) (HandleGrantValidationResult, error)
-}
-
 type ArtifactRequest struct {
 	PackageHash    string `json:"package_hash"`
 	Artifact       string `json:"artifact"`
@@ -266,15 +257,6 @@ type workerInvocationIdentity struct {
 	SessionChannelIDHash string
 }
 
-func (identity workerInvocationIdentity) authenticatedContext(ctx context.Context) context.Context {
-	return sessionctx.WithContext(ctx, sessionctx.Context{
-		OwnerSessionHash:     identity.OwnerSessionHash,
-		OwnerUserHash:        identity.OwnerUserHash,
-		OwnerEnvHash:         identity.OwnerEnvHash,
-		SessionChannelIDHash: identity.SessionChannelIDHash,
-	})
-}
-
 type workerBrokerAccess struct {
 	Storage []workerStorageBrokerAccess `json:"storage,omitempty"`
 	Network []workerNetworkBrokerAccess `json:"network,omitempty"`
@@ -292,35 +274,6 @@ type workerNetworkBrokerAccess struct {
 	Scope       string   `json:"scope"`
 	Operations  []string `json:"operations"`
 	HTTPMethods []string `json:"http_methods,omitempty"`
-}
-
-type HandleGrantValidationRequest struct {
-	HandleGrantToken     string                   `json:"handle_grant_token"`
-	PluginInstanceID     string                   `json:"plugin_instance_id"`
-	ActiveFingerprint    string                   `json:"active_fingerprint"`
-	RuntimeInstanceID    string                   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID  string                   `json:"runtime_generation_id"`
-	RuntimeShardID       string                   `json:"runtime_shard_id,omitempty"`
-	OwnerSessionHash     string                   `json:"owner_session_hash"`
-	OwnerUserHash        string                   `json:"owner_user_hash"`
-	OwnerEnvHash         string                   `json:"owner_env_hash"`
-	SessionChannelIDHash string                   `json:"session_channel_id_hash"`
-	HandleID             string                   `json:"handle_id"`
-	Method               string                   `json:"method"`
-	ResourceScope        sessionctx.ResourceScope `json:"resource_scope"`
-	PolicyRevision       uint64                   `json:"policy_revision"`
-	ManagementRevision   uint64                   `json:"management_revision"`
-	RevokeEpoch          uint64                   `json:"revoke_epoch"`
-}
-
-type HandleGrantValidationResult struct {
-	HandleGrantID       string                   `json:"handle_grant_id"`
-	HandleID            string                   `json:"handle_id"`
-	Method              string                   `json:"method"`
-	RuntimeGenerationID string                   `json:"runtime_generation_id"`
-	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
-	MaxBytesPerSecond   int64                    `json:"max_bytes_per_second,omitempty"`
-	MaxTotalBytes       int64                    `json:"max_total_bytes,omitempty"`
 }
 
 var (
@@ -376,22 +329,18 @@ func (e *WorkerExecutionError) Unwrap() error {
 // values must be positive, and MaxHeartbeatStaleness must not be less than
 // HeartbeatInterval.
 type ProcessSupervisorOptions struct {
-	RuntimePath           string
-	RuntimeExecutable     *os.File
-	RuntimeExecutionRoot  *os.File
-	Descriptor            RuntimeDescriptor
-	Args                  []string
-	Env                   []string
-	Dir                   string
-	Diagnostics           observability.DiagnosticsSink
-	Artifacts             ArtifactProvider
-	HandleGrants          HandleGrantValidator
-	RuntimeLeaseReplays   RuntimeLeaseReplayStore
-	StorageFiles          storage.FilesBroker
-	StorageKV             storage.KVBroker
-	StorageSQLite         storage.SQLiteBroker
-	Connectivity          connectivity.Broker
-	NetworkExecutor       connectivity.NetworkExecutor
+	RuntimePath          string
+	RuntimeExecutable    *os.File
+	RuntimeExecutionRoot *os.File
+	ArtifactIdentity     RuntimeArtifactIdentity
+	Args                 []string
+	Env                  []string
+	Dir                  string
+	Diagnostics          observability.DiagnosticsSink
+	Artifacts            ArtifactProvider
+
+	RuntimeLeaseReplays RuntimeLeaseReplayStore
+
 	StreamSink            RuntimeStreamSink
 	IOBroker              RuntimeIOBroker
 	Now                   func() time.Time
@@ -421,44 +370,40 @@ type RuntimeIOBroker interface {
 }
 
 type ProcessSupervisor struct {
-	startMu                sync.Mutex
-	controlMu              sync.Mutex
-	mu                     sync.Mutex
-	pendingMu              sync.Mutex
-	path                   string
-	executable             *os.File
-	executionRoot          *os.File
-	descriptor             RuntimeDescriptor
-	args                   []string
-	env                    []string
-	dir                    string
-	diagnostics            observability.DiagnosticsSink
-	artifacts              ArtifactProvider
-	handleGrants           HandleGrantValidator
+	startMu       sync.Mutex
+	controlMu     sync.Mutex
+	mu            sync.Mutex
+	pendingMu     sync.Mutex
+	path          string
+	executable    *os.File
+	executionRoot *os.File
+	descriptor    RuntimeArtifactIdentity
+	args          []string
+	env           []string
+	dir           string
+	diagnostics   observability.DiagnosticsSink
+	artifacts     ArtifactProvider
+
 	runtimeLeaseReplays    RuntimeLeaseReplayStore
 	runtimeLeaseVerifier   RuntimeLeaseVerifier
 	runtimeLeaseSigningKey string
 	runtimeLeasePrivateKey ed25519.PrivateKey
 	runtimeLeasePublicKeys []RuntimeLeasePublicKey
-	storageFiles           storage.FilesBroker
-	storageKV              storage.KVBroker
-	storageSQLite          storage.SQLiteBroker
-	connectivity           connectivity.Broker
-	networkExecutor        connectivity.NetworkExecutor
-	streamSink             RuntimeStreamSink
-	ioBroker               RuntimeIOBroker
-	now                    func() time.Time
-	handshakeTimeout       time.Duration
-	heartbeatInterval      time.Duration
-	maxHeartbeatStaleness  time.Duration
-	seq                    uint64
-	requestSeq             uint64
-	limits                 RuntimeLimits
-	admission              *runtimeAdmissionController
-	pending                map[string]*pendingIPCRequest
-	pendingInvocations     map[string]*pendingIPCRequest
-	compileFlights         map[string]*pendingCompileFlight
-	ioRouteSlots           chan struct{}
+
+	streamSink            RuntimeStreamSink
+	ioBroker              RuntimeIOBroker
+	now                   func() time.Time
+	handshakeTimeout      time.Duration
+	heartbeatInterval     time.Duration
+	maxHeartbeatStaleness time.Duration
+	seq                   uint64
+	requestSeq            uint64
+	limits                RuntimeLimits
+	admission             *runtimeAdmissionController
+	pending               map[string]*pendingIPCRequest
+	pendingInvocations    map[string]*pendingIPCRequest
+	compileFlights        map[string]*pendingCompileFlight
+	ioRouteSlots          chan struct{}
 
 	process          *runtimeProcess
 	cancel           context.CancelFunc
@@ -506,7 +451,6 @@ type pendingCompileFlight struct {
 	parentRequestID   string
 	artifactRequestID string
 	artifact          ArtifactRequest
-	wasmABIVersion    string
 	registered        bool
 	artifactRequested bool
 }
@@ -515,7 +459,7 @@ type runtimeGeneration struct {
 	id          string
 	ctx         context.Context
 	stdin       io.Writer
-	framedStdin *semanticIPCWriteCloserV7
+	framedStdin *semanticIPCWriteCloser
 }
 
 func (e *processExit) finishIPCReader() {
@@ -586,41 +530,37 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 	}
 	keyring := StaticRuntimeLeaseSigningKeyring{Keys: []RuntimeLeaseSigningKey{{KeyID: keyID, PublicKey: publicKey}}}
 	return &ProcessSupervisor{
-		path:                   path,
-		executable:             options.RuntimeExecutable,
-		executionRoot:          options.RuntimeExecutionRoot,
-		descriptor:             options.Descriptor,
-		args:                   append([]string(nil), options.Args...),
-		env:                    append([]string(nil), options.Env...),
-		dir:                    strings.TrimSpace(options.Dir),
-		diagnostics:            options.Diagnostics,
-		artifacts:              options.Artifacts,
-		handleGrants:           options.HandleGrants,
+		path:          path,
+		executable:    options.RuntimeExecutable,
+		executionRoot: options.RuntimeExecutionRoot,
+		descriptor:    options.ArtifactIdentity,
+		args:          append([]string(nil), options.Args...),
+		env:           append([]string(nil), options.Env...),
+		dir:           strings.TrimSpace(options.Dir),
+		diagnostics:   options.Diagnostics,
+		artifacts:     options.Artifacts,
+
 		runtimeLeaseReplays:    options.RuntimeLeaseReplays,
 		runtimeLeaseVerifier:   Ed25519RuntimeLeaseVerifier{Keyring: keyring, Now: now},
 		runtimeLeaseSigningKey: keyID,
 		runtimeLeasePrivateKey: append(ed25519.PrivateKey(nil), privateKey...),
 		runtimeLeasePublicKeys: []RuntimeLeasePublicKey{runtimeLeasePublicKey},
-		storageFiles:           options.StorageFiles,
-		storageKV:              options.StorageKV,
-		storageSQLite:          options.StorageSQLite,
-		connectivity:           options.Connectivity,
-		networkExecutor:        options.NetworkExecutor,
-		streamSink:             options.StreamSink,
-		ioBroker:               options.IOBroker,
-		now:                    now,
-		handshakeTimeout:       options.HandshakeTimeout,
-		heartbeatInterval:      options.HeartbeatInterval,
-		maxHeartbeatStaleness:  options.MaxHeartbeatStaleness,
-		limits:                 options.Limits,
-		admission:              newRuntimeAdmissionController(options.Limits),
-		pending:                map[string]*pendingIPCRequest{},
-		pendingInvocations:     map[string]*pendingIPCRequest{},
-		compileFlights:         map[string]*pendingCompileFlight{},
-		ioRouteSlots:           make(chan struct{}, options.Limits.WorkerCount),
+
+		streamSink:            options.StreamSink,
+		ioBroker:              options.IOBroker,
+		now:                   now,
+		handshakeTimeout:      options.HandshakeTimeout,
+		heartbeatInterval:     options.HeartbeatInterval,
+		maxHeartbeatStaleness: options.MaxHeartbeatStaleness,
+		limits:                options.Limits,
+		admission:             newRuntimeAdmissionController(options.Limits),
+		pending:               map[string]*pendingIPCRequest{},
+		pendingInvocations:    map[string]*pendingIPCRequest{},
+		compileFlights:        map[string]*pendingCompileFlight{},
+		ioRouteSlots:          make(chan struct{}, options.Limits.WorkerCount),
 		health: Health{
-			Descriptor: options.Descriptor,
-			Limits:     options.Limits,
+			ArtifactIdentity: options.ArtifactIdentity,
+			Limits:           options.Limits,
 		},
 	}, nil
 }
@@ -632,10 +572,10 @@ func validateProcessSupervisorOptions(options ProcessSupervisorOptions, requireH
 	if (options.RuntimeExecutable == nil) != (options.RuntimeExecutionRoot == nil) {
 		return ErrRuntimePathRequired
 	}
-	if options.Descriptor.PlatformVersion().String() == "" {
-		return fmt.Errorf("%w: descriptor is required", ErrRuntimeDescriptorInvalid)
+	if options.ArtifactIdentity.PlatformVersion().String() == "" {
+		return fmt.Errorf("%w: descriptor is required", ErrRuntimeArtifactIdentityInvalid)
 	}
-	if err := options.Descriptor.CompatibleWithPlatform(); err != nil {
+	if err := options.ArtifactIdentity.CompatibleWithPlatform(); err != nil {
 		return err
 	}
 	if err := ValidateRuntimeLimits(options.Limits); err != nil {
@@ -706,7 +646,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 		return err
 	}
 	if target != s.descriptor.Target() {
-		return fmt.Errorf("%w: requested target=%q", ErrRuntimeDescriptorMismatch, target.String())
+		return fmt.Errorf("%w: requested target=%q", ErrRuntimeArtifactIdentityMismatch, target.String())
 	}
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
@@ -760,15 +700,15 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 		RuntimeGenerationID: generationID,
 		IPCChannelID:        fmt.Sprintf("ipc_%d_%d", process.pid, s.seq),
 		ContainmentIdentity: process.containmentIdentity,
-		Descriptor:          s.descriptor,
+		ArtifactIdentity:    s.descriptor,
 		Limits:              s.limits,
 	}
 	exit := &processExit{done: make(chan struct{}), ipcReaderDone: make(chan struct{})}
 	s.process = process
 	s.cancel = cancel
 	s.exit = exit
-	semanticStdin := newSemanticIPCWriteCloserV7(process.ipcIn)
-	semanticControlStdin := newSemanticIPCWriteCloserV7(process.controlIn)
+	semanticStdin := newSemanticIPCWriteCloser(process.ipcIn)
+	semanticControlStdin := newSemanticIPCWriteCloser(process.controlIn)
 	generation := &runtimeGeneration{id: generationID, ctx: runtimeCtx, stdin: semanticStdin, framedStdin: semanticStdin}
 	s.ipcIn = semanticStdin
 	s.ipcOut = stdoutReader
@@ -820,7 +760,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 	}
 	s.mu.Lock()
 	if s.process == process && runtimeCtx.Err() == nil {
-		health.ConnectionNonce = ack.ChannelNonce
+		health.ConnectionNonce = ack.ConnectionNonce
 		health.Limits = ack.Limits
 		health.Ready = true
 		s.health = health
@@ -836,40 +776,37 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 	s.emit("plugin.runtime.ipc.handshake", "info", "runtime IPC handshake completed", observability.DiagnosticDetails{
 		RuntimeInstanceID:   health.RuntimeInstanceID,
 		RuntimeGenerationID: health.RuntimeGenerationID,
-		RuntimeVersion:      health.Descriptor.PlatformVersion().String(),
-		RustIPCVersion:      health.Descriptor.RustIPCVersion(),
-		WASMABIVersion:      health.Descriptor.WASMABIVersion(),
-		ContractSetSHA256:   health.Descriptor.ContractSetSHA256(),
-		RuntimeTargetOS:     health.Descriptor.Target().OS(),
-		RuntimeTargetArch:   health.Descriptor.Target().Arch(),
-		RuntimeBinarySHA256: health.Descriptor.BinarySHA256(),
+		RuntimeVersion:      health.ArtifactIdentity.PlatformVersion().String(),
+		RuntimeTargetOS:     health.ArtifactIdentity.Target().OS(),
+		RuntimeTargetArch:   health.ArtifactIdentity.Target().Arch(),
+		RuntimeBinarySHA256: health.ArtifactIdentity.BinarySHA256(),
 	})
 	go s.heartbeatLoop(runtimeCtx, health)
 	return nil
 }
 
-func (s *ProcessSupervisor) Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeDescriptor, error) {
+func (s *ProcessSupervisor) Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeArtifactIdentity, error) {
 	if s == nil {
-		return RuntimeDescriptor{}, ErrRuntimePathRequired
+		return RuntimeArtifactIdentity{}, ErrRuntimePathRequired
 	}
 	if err := ctx.Err(); err != nil {
-		return RuntimeDescriptor{}, err
+		return RuntimeArtifactIdentity{}, err
 	}
 	if err := runtimetarget.Validate(target); err != nil {
-		return RuntimeDescriptor{}, err
+		return RuntimeArtifactIdentity{}, err
 	}
 	if target != s.descriptor.Target() {
-		return RuntimeDescriptor{}, fmt.Errorf("%w: requested target=%q", ErrRuntimeDescriptorMismatch, target.String())
+		return RuntimeArtifactIdentity{}, fmt.Errorf("%w: requested target=%q", ErrRuntimeArtifactIdentityMismatch, target.String())
 	}
 	if err := s.descriptor.CompatibleWithPlatform(); err != nil {
-		return RuntimeDescriptor{}, err
+		return RuntimeArtifactIdentity{}, err
 	}
 	if s.executable != nil {
 		if err := verifyRuntimeExecutableFile(ctx, s.executable, s.descriptor.BinarySHA256()); err != nil {
-			return RuntimeDescriptor{}, err
+			return RuntimeArtifactIdentity{}, err
 		}
 	} else if err := verifyRuntimeExecutable(ctx, s.path, s.descriptor.BinarySHA256()); err != nil {
-		return RuntimeDescriptor{}, err
+		return RuntimeArtifactIdentity{}, err
 	}
 	return s.descriptor, nil
 }
@@ -1077,7 +1014,18 @@ func (s *ProcessSupervisor) Heartbeat(ctx context.Context) (HeartbeatResult, err
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
-	return decodeHeartbeatResponse(frame)
+	result, err := decodeHeartbeatResponse(frame)
+	if err != nil {
+		return HeartbeatResult{}, err
+	}
+	s.mu.Lock()
+	if s.health.Ready && s.health.RuntimeGenerationID == result.RuntimeGenerationID {
+		s.health.ActiveInvocations = result.ActiveInvocations
+		s.health.QueuedInvocations = result.QueuedInvocations
+		s.health.ModuleCache = result.ModuleCache
+	}
+	s.mu.Unlock()
+	return result, nil
 }
 
 func (s *ProcessSupervisor) heartbeatRequest(ctx context.Context) (json.RawMessage, error) {
@@ -1225,7 +1173,6 @@ func (s *ProcessSupervisor) PrewarmWorker(ctx context.Context, req PrewarmWorker
 		"worker_scope":          "environment",
 		"artifact":              req.Artifact.Artifact,
 		"artifact_sha256":       req.Artifact.ArtifactSHA256,
-		"abi":                   version.WASMABIVersion,
 		"method":                "platform.prewarm",
 	})
 	if err != nil {
@@ -1774,29 +1721,21 @@ const (
 	ipcFrameTypeCompileFlightRegister = "compile_flight_register"
 	ipcFrameTypeCompileFlightComplete = "compile_flight_complete"
 	ipcFrameTypeOpenHandle            = "open_handle"
-	ipcFrameTypeValidateHandleGrant   = "validate_handle_grant"
-	ipcFrameTypeStorageFile           = "storage_file"
-	ipcFrameTypeStorageKV             = "storage_kv"
-	ipcFrameTypeStorageSQLite         = "storage_sqlite"
-	ipcFrameTypeNetworkGrant          = "network_grant"
-	ipcFrameTypeNetworkExecute        = "network_execute"
-	ipcFrameTypeRevokeEpoch           = "revoke_epoch"
-	ipcFrameTypeRevokeEpochAck        = "revoke_epoch_ack"
-	ipcFrameTypeSessionRevoke         = "session_revoke"
-	ipcFrameTypeSessionRevokeAck      = "session_revoke_ack"
+
+	ipcFrameTypeRevokeEpoch      = "revoke_epoch"
+	ipcFrameTypeRevokeEpochAck   = "revoke_epoch_ack"
+	ipcFrameTypeSessionRevoke    = "session_revoke"
+	ipcFrameTypeSessionRevokeAck = "session_revoke_ack"
 )
 
 const (
-	defaultRuntimeHostcallTimeout    = 30 * time.Second
-	maxRuntimeHostcallTimeout        = 30 * time.Second
-	defaultRuntimeCancelAckTimeout   = 5 * time.Second
-	maxIPCFrameBytes                 = 64 << 20
-	maxWASMHostcallResponseBytes     = 512 << 10
-	maxSynchronousBrokerPayloadBytes = 384 << 10
+	defaultRuntimeHostcallTimeout  = 30 * time.Second
+	maxRuntimeHostcallTimeout      = 30 * time.Second
+	defaultRuntimeCancelAckTimeout = 5 * time.Second
+	maxIPCFrameBytes               = 64 << 20
 )
 
 type ipcFrame struct {
-	IPCVersion          string          `json:"ipc_version"`
 	FrameType           string          `json:"frame_type"`
 	RequestID           string          `json:"request_id"`
 	ParentRequestID     string          `json:"parent_request_id,omitempty"`
@@ -1805,26 +1744,25 @@ type ipcFrame struct {
 }
 
 type helloRequestPayload struct {
+	InternalWire           uint16                  `json:"internal_wire"`
+	PlatformVersion        string                  `json:"platform_version"`
+	RuntimeArtifactSHA256  string                  `json:"runtime_artifact_sha256"`
+	ConnectionNonce        string                  `json:"connection_nonce"`
 	Target                 string                  `json:"target"`
 	HostProcessID          int                     `json:"host_process_id"`
-	HostIPCVersion         string                  `json:"host_ipc_version"`
-	HostWASMABI            string                  `json:"host_wasm_abi"`
-	ContractSetSHA256      string                  `json:"contract_set_sha256"`
 	StartedUnixNano        int64                   `json:"started_unix_nano"`
-	ChannelNonce           string                  `json:"channel_nonce"`
 	RuntimeLeasePublicKeys []RuntimeLeasePublicKey `json:"runtime_lease_public_keys"`
 	Limits                 RuntimeLimits           `json:"limits"`
 }
 
 type helloAckPayload struct {
-	RuntimeVersion     string                      `json:"runtime_version"`
-	ActualTarget       string                      `json:"actual_target"`
-	RustIPCVersion     string                      `json:"rust_ipc_version"`
-	WASMABIVersion     string                      `json:"wasm_abi_version"`
-	ContractSetSHA256  string                      `json:"contract_set_sha256"`
-	ChannelNonce       string                      `json:"channel_nonce"`
-	Limits             RuntimeLimits               `json:"limits"`
-	ProcessContainment *processContainmentEvidence `json:"process_containment,omitempty"`
+	InternalWire          uint16                      `json:"internal_wire"`
+	PlatformVersion       string                      `json:"platform_version"`
+	RuntimeArtifactSHA256 string                      `json:"runtime_artifact_sha256"`
+	ConnectionNonce       string                      `json:"connection_nonce"`
+	ActualTarget          string                      `json:"actual_target"`
+	Limits                RuntimeLimits               `json:"limits"`
+	ProcessContainment    *processContainmentEvidence `json:"process_containment,omitempty"`
 }
 
 type processContainmentEvidence struct {
@@ -1910,7 +1848,6 @@ type compileFlightLifecyclePayload struct {
 	PackageHash       string `json:"package_hash"`
 	Artifact          string `json:"artifact"`
 	ArtifactSHA256    string `json:"artifact_sha256"`
-	WASMABIVersion    string `json:"wasm_abi_version"`
 }
 
 type artifactHandleResultPayload struct {
@@ -1922,308 +1859,6 @@ type artifactHandleResultPayload struct {
 	Code          string            `json:"code,omitempty"`
 	Message       string            `json:"message,omitempty"`
 	ErrorOrigin   WorkerErrorOrigin `json:"error_origin,omitempty"`
-}
-
-type handleGrantValidationResultPayload struct {
-	OK                  bool                     `json:"ok"`
-	HandleGrantID       string                   `json:"handle_grant_id"`
-	HandleID            string                   `json:"handle_id"`
-	Method              string                   `json:"method"`
-	RuntimeGenerationID string                   `json:"runtime_generation_id"`
-	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
-	MaxBytesPerSecond   int64                    `json:"max_bytes_per_second,omitempty"`
-	MaxTotalBytes       int64                    `json:"max_total_bytes,omitempty"`
-	Code                string                   `json:"code,omitempty"`
-	Message             string                   `json:"message,omitempty"`
-	ErrorOrigin         WorkerErrorOrigin        `json:"error_origin,omitempty"`
-}
-
-type storageFileRequestPayload struct {
-	HandleGrantToken    string                   `json:"handle_grant_token"`
-	PluginInstanceID    string                   `json:"plugin_instance_id"`
-	ActiveFingerprint   string                   `json:"active_fingerprint"`
-	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                   `json:"runtime_generation_id"`
-	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
-	HandleID            string                   `json:"handle_id"`
-	Method              string                   `json:"method"`
-	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
-	PolicyRevision      uint64                   `json:"policy_revision"`
-	ManagementRevision  uint64                   `json:"management_revision"`
-	RevokeEpoch         uint64                   `json:"revoke_epoch"`
-	Operation           string                   `json:"operation"`
-	StoreID             string                   `json:"store_id"`
-	Path                string                   `json:"path,omitempty"`
-	DataBase64          string                   `json:"data_base64,omitempty"`
-	MaxBytes            int64                    `json:"max_bytes,omitempty"`
-	MaxEntries          int                      `json:"max_entries,omitempty"`
-	Recursive           bool                     `json:"recursive,omitempty"`
-}
-
-type storageFileResponsePayload struct {
-	Operation     string              `json:"-"`
-	OK            bool                `json:"ok"`
-	Path          string              `json:"path"`
-	DataBase64    string              `json:"data_base64,omitempty"`
-	SizeBytes     int64               `json:"size_bytes,omitempty"`
-	Entries       []storage.FileEntry `json:"entries,omitempty"`
-	Usage         *storage.Usage      `json:"usage,omitempty"`
-	Code          string              `json:"code,omitempty"`
-	Message       string              `json:"message,omitempty"`
-	ErrorOrigin   WorkerErrorOrigin   `json:"error_origin,omitempty"`
-	InternalError error               `json:"-"`
-}
-
-type storageFileReadSuccessPayload struct {
-	OK         bool          `json:"ok"`
-	Path       string        `json:"path"`
-	DataBase64 string        `json:"data_base64"`
-	SizeBytes  int64         `json:"size_bytes"`
-	Usage      storage.Usage `json:"usage"`
-}
-
-type storageFileWriteSuccessPayload struct {
-	OK        bool          `json:"ok"`
-	Path      string        `json:"path"`
-	SizeBytes int64         `json:"size_bytes"`
-	Usage     storage.Usage `json:"usage"`
-}
-
-type storageFileDeleteSuccessPayload struct {
-	OK   bool   `json:"ok"`
-	Path string `json:"path"`
-}
-
-type storageFileListSuccessPayload struct {
-	OK      bool                `json:"ok"`
-	Path    string              `json:"path"`
-	Entries []storage.FileEntry `json:"entries"`
-	Usage   storage.Usage       `json:"usage"`
-}
-
-type storageKVRequestPayload struct {
-	HandleGrantToken    string                   `json:"handle_grant_token"`
-	PluginInstanceID    string                   `json:"plugin_instance_id"`
-	ActiveFingerprint   string                   `json:"active_fingerprint"`
-	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                   `json:"runtime_generation_id"`
-	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
-	HandleID            string                   `json:"handle_id"`
-	Method              string                   `json:"method"`
-	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
-	PolicyRevision      uint64                   `json:"policy_revision"`
-	ManagementRevision  uint64                   `json:"management_revision"`
-	RevokeEpoch         uint64                   `json:"revoke_epoch"`
-	Operation           string                   `json:"operation"`
-	StoreID             string                   `json:"store_id"`
-	Key                 string                   `json:"key,omitempty"`
-	ValueBase64         string                   `json:"value_base64,omitempty"`
-	Prefix              string                   `json:"prefix,omitempty"`
-	MaxBytes            int64                    `json:"max_bytes,omitempty"`
-	MaxEntries          int                      `json:"max_entries,omitempty"`
-}
-
-type storageKVResponsePayload struct {
-	Operation     string            `json:"-"`
-	OK            bool              `json:"ok"`
-	Key           string            `json:"key,omitempty"`
-	ValueBase64   string            `json:"value_base64,omitempty"`
-	SizeBytes     int64             `json:"size_bytes,omitempty"`
-	Prefix        string            `json:"prefix,omitempty"`
-	Entries       []storage.KVEntry `json:"entries,omitempty"`
-	Usage         *storage.Usage    `json:"usage,omitempty"`
-	Code          string            `json:"code,omitempty"`
-	Message       string            `json:"message,omitempty"`
-	ErrorOrigin   WorkerErrorOrigin `json:"error_origin,omitempty"`
-	InternalError error             `json:"-"`
-}
-
-type storageKVGetSuccessPayload struct {
-	OK          bool          `json:"ok"`
-	Key         string        `json:"key"`
-	ValueBase64 string        `json:"value_base64"`
-	SizeBytes   int64         `json:"size_bytes"`
-	Usage       storage.Usage `json:"usage"`
-}
-
-type storageKVPutSuccessPayload struct {
-	OK        bool          `json:"ok"`
-	Key       string        `json:"key"`
-	SizeBytes int64         `json:"size_bytes"`
-	Usage     storage.Usage `json:"usage"`
-}
-
-type storageKVDeleteSuccessPayload struct {
-	OK  bool   `json:"ok"`
-	Key string `json:"key"`
-}
-
-type storageKVListSuccessPayload struct {
-	OK      bool              `json:"ok"`
-	Prefix  string            `json:"prefix,omitempty"`
-	Entries []storage.KVEntry `json:"entries"`
-	Usage   storage.Usage     `json:"usage"`
-}
-
-type storageSQLiteRequestPayload struct {
-	HandleGrantToken    string                   `json:"handle_grant_token"`
-	PluginInstanceID    string                   `json:"plugin_instance_id"`
-	ActiveFingerprint   string                   `json:"active_fingerprint"`
-	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                   `json:"runtime_generation_id"`
-	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
-	HandleID            string                   `json:"handle_id"`
-	Method              string                   `json:"method"`
-	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
-	PolicyRevision      uint64                   `json:"policy_revision"`
-	ManagementRevision  uint64                   `json:"management_revision"`
-	RevokeEpoch         uint64                   `json:"revoke_epoch"`
-	Operation           string                   `json:"operation"`
-	StoreID             string                   `json:"store_id"`
-	Database            string                   `json:"database,omitempty"`
-	SQL                 string                   `json:"sql"`
-	Args                []storageSQLiteValueIPC  `json:"args,omitempty"`
-	MaxRows             int                      `json:"max_rows,omitempty"`
-	MaxResponseBytes    int64                    `json:"max_response_bytes,omitempty"`
-	TimeoutMillis       int64                    `json:"timeout_ms,omitempty"`
-}
-
-type storageSQLiteResponsePayload struct {
-	Operation     string                     `json:"-"`
-	OK            bool                       `json:"ok"`
-	Database      string                     `json:"database"`
-	RowsAffected  *int64                     `json:"rows_affected,omitempty"`
-	LastInsertID  int64                      `json:"last_insert_id,omitempty"`
-	Columns       *[]string                  `json:"columns,omitempty"`
-	Rows          *[][]storageSQLiteValueIPC `json:"rows,omitempty"`
-	Usage         *storage.Usage             `json:"usage,omitempty"`
-	Code          string                     `json:"code,omitempty"`
-	Message       string                     `json:"message,omitempty"`
-	ErrorOrigin   WorkerErrorOrigin          `json:"error_origin,omitempty"`
-	InternalError error                      `json:"-"`
-}
-
-type storageSQLiteExecSuccessPayload struct {
-	OK           bool          `json:"ok"`
-	Database     string        `json:"database"`
-	RowsAffected int64         `json:"rows_affected"`
-	LastInsertID int64         `json:"last_insert_id,omitempty"`
-	Usage        storage.Usage `json:"usage"`
-}
-
-type storageSQLiteQuerySuccessPayload struct {
-	OK       bool                      `json:"ok"`
-	Database string                    `json:"database"`
-	Columns  []string                  `json:"columns"`
-	Rows     [][]storageSQLiteValueIPC `json:"rows"`
-	Usage    storage.Usage             `json:"usage"`
-}
-
-type storageSQLiteValueIPC struct {
-	Null       *bool    `json:"null,omitempty"`
-	Int        *int64   `json:"int,omitempty"`
-	Float      *float64 `json:"float,omitempty"`
-	Text       *string  `json:"text,omitempty"`
-	BlobBase64 *string  `json:"blob_base64,omitempty"`
-}
-
-type networkGrantRequestPayload struct {
-	PluginInstanceID    string                   `json:"plugin_instance_id"`
-	ActiveFingerprint   string                   `json:"active_fingerprint"`
-	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
-	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                   `json:"runtime_generation_id"`
-	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
-	PolicyRevision      uint64                   `json:"policy_revision"`
-	ManagementRevision  uint64                   `json:"management_revision"`
-	RevokeEpoch         uint64                   `json:"revoke_epoch"`
-	ConnectorID         string                   `json:"connector_id"`
-	Transport           connectivity.Transport   `json:"transport"`
-	Destination         string                   `json:"destination"`
-	TTLMillis           int64                    `json:"ttl_ms,omitempty"`
-}
-
-type networkGrantResponsePayload struct {
-	OK                      bool                     `json:"ok"`
-	GrantID                 string                   `json:"grant_id"`
-	PluginInstanceID        string                   `json:"plugin_instance_id"`
-	ActiveFingerprint       string                   `json:"active_fingerprint"`
-	ResourceScope           sessionctx.ResourceScope `json:"resource_scope"`
-	PolicyRevision          uint64                   `json:"policy_revision"`
-	ManagementRevision      uint64                   `json:"management_revision"`
-	RevokeEpoch             uint64                   `json:"revoke_epoch"`
-	ConnectorID             string                   `json:"connector_id"`
-	Transport               connectivity.Transport   `json:"transport"`
-	Destination             connectivity.Destination `json:"destination"`
-	RuntimeGenerationID     string                   `json:"runtime_generation_id"`
-	TargetClassifierVersion string                   `json:"target_classifier_version"`
-	ExpiresAt               time.Time                `json:"expires_at"`
-	Code                    string                   `json:"code,omitempty"`
-	Message                 string                   `json:"message,omitempty"`
-	ErrorOrigin             WorkerErrorOrigin        `json:"error_origin,omitempty"`
-	InternalError           error                    `json:"-"`
-}
-
-type networkExecuteRequestPayload struct {
-	PluginID             string                   `json:"plugin_id,omitempty"`
-	PluginInstanceID     string                   `json:"plugin_instance_id"`
-	ActiveFingerprint    string                   `json:"active_fingerprint"`
-	ResourceScope        sessionctx.ResourceScope `json:"resource_scope"`
-	RuntimeInstanceID    string                   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID  string                   `json:"runtime_generation_id"`
-	RuntimeShardID       string                   `json:"runtime_shard_id,omitempty"`
-	PolicyRevision       uint64                   `json:"policy_revision"`
-	ManagementRevision   uint64                   `json:"management_revision"`
-	RevokeEpoch          uint64                   `json:"revoke_epoch"`
-	ConnectorID          string                   `json:"connector_id"`
-	Transport            connectivity.Transport   `json:"transport"`
-	Destination          string                   `json:"destination"`
-	TTLMillis            int64                    `json:"ttl_ms,omitempty"`
-	Operation            string                   `json:"operation,omitempty"`
-	Method               string                   `json:"method,omitempty"`
-	Path                 string                   `json:"path,omitempty"`
-	Query                url.Values               `json:"query,omitempty"`
-	Headers              http.Header              `json:"headers,omitempty"`
-	MessageType          string                   `json:"message_type,omitempty"`
-	BodyBase64           string                   `json:"body_base64,omitempty"`
-	PayloadBase64        string                   `json:"payload_base64,omitempty"`
-	MaxRequestBytes      int64                    `json:"max_request_bytes,omitempty"`
-	MaxResponseBytes     int64                    `json:"max_response_bytes,omitempty"`
-	MaxChunkBytes        int64                    `json:"max_chunk_bytes,omitempty"`
-	MaxBufferedBytes     int64                    `json:"max_buffered_bytes,omitempty"`
-	TimeoutMillis        int64                    `json:"timeout_ms,omitempty"`
-	StreamID             string                   `json:"stream_id,omitempty"`
-	StreamMethod         string                   `json:"stream_method,omitempty"`
-	StreamEffect         string                   `json:"stream_effect,omitempty"`
-	StreamExecution      string                   `json:"stream_execution,omitempty"`
-	SurfaceInstanceID    string                   `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string                   `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string                   `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string                   `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string                   `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string                   `json:"bridge_channel_id,omitempty"`
-	ContentType          string                   `json:"content_type,omitempty"`
-}
-
-type networkExecuteResponsePayload struct {
-	OK                bool                     `json:"ok"`
-	Transport         connectivity.Transport   `json:"transport"`
-	Destination       connectivity.Destination `json:"destination"`
-	StatusCode        int                      `json:"status_code,omitempty"`
-	Headers           http.Header              `json:"headers,omitempty"`
-	MessageType       string                   `json:"message_type,omitempty"`
-	BodyBase64        string                   `json:"body_base64,omitempty"`
-	PayloadBase64     string                   `json:"payload_base64,omitempty"`
-	StreamID          string                   `json:"stream_id,omitempty"`
-	BytesRead         int64                    `json:"bytes_read,omitempty"`
-	ChunkCount        int                      `json:"chunk_count,omitempty"`
-	GrantID           string                   `json:"grant_id"`
-	ConnectorID       string                   `json:"connector_id"`
-	RuntimeGeneration string                   `json:"runtime_generation_id"`
-	Code              string                   `json:"code,omitempty"`
-	Message           string                   `json:"message,omitempty"`
-	ErrorOrigin       WorkerErrorOrigin        `json:"error_origin,omitempty"`
-	InternalError     error                    `json:"-"`
 }
 
 func (p runtimeResponsePayload) err() error {
@@ -2257,13 +1892,13 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 		return helloAckPayload{}, err
 	}
 	payload, err := json.Marshal(helloRequestPayload{
+		InternalWire:           InternalWire,
+		PlatformVersion:        health.ArtifactIdentity.PlatformVersion().String(),
+		RuntimeArtifactSHA256:  health.ArtifactIdentity.BinarySHA256(),
+		ConnectionNonce:        channelNonce,
 		Target:                 targetPayload,
 		HostProcessID:          os.Getpid(),
-		HostIPCVersion:         version.RustIPCVersion,
-		HostWASMABI:            version.WASMABIVersion,
-		ContractSetSHA256:      health.Descriptor.ContractSetSHA256(),
 		StartedUnixNano:        s.now().UnixNano(),
-		ChannelNonce:           channelNonce,
 		RuntimeLeasePublicKeys: append([]RuntimeLeasePublicKey(nil), s.runtimeLeasePublicKeys...),
 		Limits:                 s.limits,
 	})
@@ -2271,7 +1906,6 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 		return helloAckPayload{}, err
 	}
 	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeHello,
 		RequestID:           requestID,
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -2338,7 +1972,6 @@ func (s *ProcessSupervisor) callControlIPC(ctx context.Context, frameType string
 		payload = json.RawMessage("null")
 	}
 	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           frameType,
 		RequestID:           requestID,
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -2429,7 +2062,6 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 			parentRequestID:   requestID,
 			artifactRequestID: artifactRequestID,
 			artifact:          allowedInvocation.Artifact,
-			wasmABIVersion:    version.WASMABIVersion,
 		}
 		s.compileFlights[artifactRequestID] = compileFlight
 		if !allowedInvocation.Prewarm {
@@ -2459,7 +2091,6 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 		return ipcFrame{}, ErrRuntimeNotReady
 	}
 	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           frameType,
 		RequestID:           requestID,
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -2532,7 +2163,7 @@ func (s *ProcessSupervisor) runtimeGenerationCurrent(generation *runtimeGenerati
 
 func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtimeGeneration, health Health) {
 	for {
-		framed, err := ReadIPCFrameV7(stdout)
+		framed, err := ReadIPCFrame(stdout)
 		if err != nil {
 			wrapped := fmt.Errorf("%w: read ipc frame: %v", ErrRuntimeIPCUnavailable, err)
 			if errors.Is(err, io.EOF) {
@@ -2550,12 +2181,12 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 			}
 			continue
 		}
-		frame, err := readRuntimeSemanticIPCFrameFromV7(stdout, framed)
+		frame, err := readRuntimeSemanticIPCFrame(stdout, framed)
 		if err != nil {
 			s.invalidateAndFailPending(generation, health, fmt.Errorf("%w: read semantic ipc frame: %v", ErrRuntimeIPCUnavailable, err))
 			return
 		}
-		if frame.IPCVersion != version.RustIPCVersion || frame.RuntimeGenerationID != health.RuntimeGenerationID {
+		if frame.RuntimeGenerationID != health.RuntimeGenerationID {
 			err := fmt.Errorf("%w: invalid runtime frame identity", ErrRuntimeIPCUnavailable)
 			s.invalidateAndFailPending(generation, health, err)
 			return
@@ -2585,16 +2216,6 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 		case ipcFrameTypeInvokeWorkerResult:
 			s.removeUnregisteredCompileFlightIntent(generation, frame.RequestID)
 		}
-		if runtimeOriginFrame(frame.FrameType) {
-			parent, ok := s.activeInvocationParent(generation, frame.ParentRequestID)
-			if !ok {
-				err := fmt.Errorf("%w: runtime hostcall parent_request_id is not an active invocation", ErrRuntimeIPCUnavailable)
-				s.invalidateAndFailPending(generation, health, err)
-				return
-			}
-			s.dispatchRuntimeHostcall(generation, health, frame, parent)
-			continue
-		}
 		s.pendingMu.Lock()
 		pending := s.pending[frame.RequestID]
 		s.pendingMu.Unlock()
@@ -2615,15 +2236,6 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 func (s *ProcessSupervisor) invalidateAndFailPending(generation *runtimeGeneration, health Health, err error) {
 	s.invalidateRuntimeAfterIPCFailure(health, err)
 	s.failPendingGeneration(generation, err)
-}
-
-func runtimeOriginFrame(frameType string) bool {
-	switch frameType {
-	case ipcFrameTypeValidateHandleGrant, ipcFrameTypeStorageFile, ipcFrameTypeStorageKV, ipcFrameTypeStorageSQLite, ipcFrameTypeNetworkGrant, ipcFrameTypeNetworkExecute:
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *ProcessSupervisor) removeCompileFlightIntent(flight *pendingCompileFlight) {
@@ -2663,7 +2275,7 @@ func (s *ProcessSupervisor) registerCompileFlight(generation *runtimeGeneration,
 	flight := s.compileFlights[payload.ArtifactRequestID]
 	if flight == nil || flight.generation != generation || flight.registered ||
 		frame.ParentRequestID != flight.parentRequestID || frame.RequestID != flight.artifactRequestID+":register" ||
-		payload.ArtifactRequestID != flight.artifactRequestID || payload.WASMABIVersion != flight.wasmABIVersion ||
+		payload.ArtifactRequestID != flight.artifactRequestID ||
 		payload.PackageHash != flight.artifact.PackageHash || payload.Artifact != flight.artifact.Artifact ||
 		payload.ArtifactSHA256 != flight.artifact.ArtifactSHA256 {
 		return fmt.Errorf("%w: compile flight registration identity mismatch", ErrRuntimeIPCUnavailable)
@@ -2682,7 +2294,7 @@ func (s *ProcessSupervisor) completeCompileFlight(generation *runtimeGeneration,
 	flight := s.compileFlights[payload.ArtifactRequestID]
 	if flight == nil || flight.generation != generation || !flight.registered ||
 		frame.ParentRequestID != flight.parentRequestID || frame.RequestID != flight.artifactRequestID+":complete" ||
-		payload.ArtifactRequestID != flight.artifactRequestID || payload.WASMABIVersion != flight.wasmABIVersion || payload.PackageHash != flight.artifact.PackageHash ||
+		payload.ArtifactRequestID != flight.artifactRequestID || payload.PackageHash != flight.artifact.PackageHash ||
 		payload.Artifact != flight.artifact.Artifact || payload.ArtifactSHA256 != flight.artifact.ArtifactSHA256 {
 		return fmt.Errorf("%w: compile flight completion identity mismatch", ErrRuntimeIPCUnavailable)
 	}
@@ -2712,45 +2324,6 @@ func (s *ProcessSupervisor) dispatchCompileFlightArtifact(generation *runtimeGen
 		artifactCtx, cancelArtifact := runtimeArtifactHostcallContext(context.Background(), generation.ctx)
 		err := s.respondToOpenHandle(artifactCtx, stdin, health.RuntimeGenerationID, frame, &flight.artifact)
 		cancelArtifact()
-		if err != nil {
-			s.invalidateRuntimeAfterIPCFailure(health, err)
-		}
-	}()
-}
-
-func (s *ProcessSupervisor) activeInvocationParent(generation *runtimeGeneration, parentRequestID string) (*pendingIPCRequest, bool) {
-	if strings.TrimSpace(parentRequestID) == "" {
-		return nil, false
-	}
-	s.pendingMu.Lock()
-	parent := s.pending[parentRequestID]
-	s.pendingMu.Unlock()
-	return parent, parent != nil && parent.generation == generation && parent.invocation != nil && parent.responseFrameType == ipcFrameTypeInvokeWorkerResult
-}
-
-func (s *ProcessSupervisor) dispatchRuntimeHostcall(generation *runtimeGeneration, health Health, frame ipcFrame, parent *pendingIPCRequest) {
-	invocation := parent.invocation
-	ctx := parent.ctx
-	stdin := generation.stdin
-	if stdin == nil {
-		return
-	}
-	go func() {
-		var err error
-		switch frame.FrameType {
-		case ipcFrameTypeValidateHandleGrant:
-			err = s.respondToValidateHandleGrant(ctx, stdin, health.RuntimeGenerationID, frame, invocation)
-		case ipcFrameTypeStorageFile:
-			err = s.respondToStorageFile(ctx, stdin, health, frame, invocation)
-		case ipcFrameTypeStorageKV:
-			err = s.respondToStorageKV(ctx, stdin, health, frame, invocation)
-		case ipcFrameTypeStorageSQLite:
-			err = s.respondToStorageSQLite(ctx, stdin, health, frame, invocation)
-		case ipcFrameTypeNetworkGrant:
-			err = s.respondToNetworkGrant(ctx, stdin, health, frame, invocation)
-		case ipcFrameTypeNetworkExecute:
-			err = s.respondToNetworkExecute(ctx, stdin, health, frame, invocation)
-		}
 		if err != nil {
 			s.invalidateRuntimeAfterIPCFailure(health, err)
 		}
@@ -2915,7 +2488,6 @@ func (s *ProcessSupervisor) writeOpenHandleResponse(stdin io.Writer, runtimeGene
 		return err
 	}
 	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeOpenHandle,
 		RequestID:           request.RequestID,
 		ParentRequestID:     request.ParentRequestID,
@@ -2927,1552 +2499,6 @@ func (s *ProcessSupervisor) writeOpenHandleResponse(stdin io.Writer, runtimeGene
 	return nil
 }
 
-func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
-	if allowedInvocation == nil {
-		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_REQUEST_DENIED",
-			Message: "handle grant validation is only available during worker invocation",
-		})
-	}
-	var req HandleGrantValidationRequest
-	if len(frame.Payload) == 0 {
-		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_REQUEST_INVALID",
-			Message: "missing handle grant validation payload",
-		})
-	}
-	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
-		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_REQUEST_INVALID",
-			Message: "handle grant validation request is invalid",
-		})
-	}
-	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
-		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_REQUEST_DENIED",
-			Message: "runtime_generation_id is not bound to this runtime generation",
-		})
-	}
-	if strings.TrimSpace(req.HandleGrantToken) == "" ||
-		strings.TrimSpace(req.PluginInstanceID) == "" ||
-		strings.TrimSpace(req.ActiveFingerprint) == "" ||
-		strings.TrimSpace(req.OwnerSessionHash) == "" ||
-		strings.TrimSpace(req.OwnerUserHash) == "" ||
-		strings.TrimSpace(req.OwnerEnvHash) == "" ||
-		strings.TrimSpace(req.SessionChannelIDHash) == "" ||
-		strings.TrimSpace(req.HandleID) == "" ||
-		strings.TrimSpace(req.Method) == "" ||
-		req.ResourceScope.Validate() != nil {
-		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_REQUEST_INVALID",
-			Message: "handle grant token, plugin identity, handle id, and method are required",
-		})
-	}
-	trustedScope, trustedScopeOK := allowedInvocation.identity.resourceScope(req.ResourceScope.Kind)
-	if !allowedInvocation.identity.matchesRuntimeHostcall(
-		req.PluginInstanceID,
-		req.ActiveFingerprint,
-		req.RuntimeInstanceID,
-		req.RuntimeGenerationID,
-		req.RuntimeShardID,
-		req.PolicyRevision,
-		req.ManagementRevision,
-		req.RevokeEpoch,
-	) || !allowedInvocation.identity.matchesSessionAudience(
-		req.OwnerSessionHash,
-		req.OwnerUserHash,
-		req.OwnerEnvHash,
-		req.SessionChannelIDHash,
-	) || !trustedScopeOK || !req.ResourceScope.Matches(trustedScope) {
-		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-			OK: false, Code: "HANDLE_GRANT_REQUEST_DENIED", Message: "handle grant request is not bound to the active worker invocation",
-		})
-	}
-	req.ResourceScope = trustedScope
-	if s.handleGrants == nil {
-		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATOR_UNAVAILABLE",
-			Message: "runtime handle grant validator is unavailable",
-		})
-	}
-	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
-	defer cancel()
-	result, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, req)
-	if err != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, runtimeGenerationID, "handle_grant", "HANDLE_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			Method:           req.Method,
-		})
-		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: "handle grant validation failed",
-		})
-	}
-	return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
-		OK:                  true,
-		HandleGrantID:       result.HandleGrantID,
-		HandleID:            result.HandleID,
-		Method:              result.Method,
-		RuntimeGenerationID: result.RuntimeGenerationID,
-		ResourceScope:       result.ResourceScope,
-		MaxBytesPerSecond:   result.MaxBytesPerSecond,
-		MaxTotalBytes:       result.MaxTotalBytes,
-	})
-}
-
-func (s *ProcessSupervisor) writeHandleGrantValidationResponse(stdin io.Writer, runtimeGenerationID string, request ipcFrame, payload handleGrantValidationResultPayload) error {
-	raw, err := marshalHostcallPayload(payload.OK, payload, payload.Code, payload.Message)
-	if err != nil {
-		return err
-	}
-	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeValidateHandleGrant,
-		RequestID:           request.RequestID,
-		ParentRequestID:     request.ParentRequestID,
-		RuntimeGenerationID: runtimeGenerationID,
-		Payload:             raw,
-	}); err != nil {
-		return fmt.Errorf("%w: write validate_handle_grant response: %v", ErrRuntimeIPCUnavailable, err)
-	}
-	return nil
-}
-
-func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
-	if allowedInvocation == nil {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_FILE_REQUEST_DENIED",
-			Message: "storage file access is only available during worker invocation",
-		})
-	}
-	var req storageFileRequestPayload
-	if len(frame.Payload) == 0 {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_FILE_REQUEST_INVALID",
-			Message: "missing storage file payload",
-		})
-	}
-	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_FILE_REQUEST_INVALID",
-			Message: "storage file request is invalid",
-		})
-	}
-	if err := validateStorageFileRequest(req, health.RuntimeGenerationID); err != nil {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_FILE_REQUEST_INVALID",
-			Message: "storage file request is invalid",
-		})
-	}
-	if !allowedInvocation.identity.matchesRuntimeHostcall(
-		req.PluginInstanceID,
-		req.ActiveFingerprint,
-		req.RuntimeInstanceID,
-		req.RuntimeGenerationID,
-		req.RuntimeShardID,
-		req.PolicyRevision,
-		req.ManagementRevision,
-		req.RevokeEpoch,
-	) {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_FILE_REQUEST_DENIED",
-			Message: "storage file request identity is not bound to the active worker invocation",
-		})
-	}
-	declaredScope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID)
-	trustedScope, trustedScopeOK := allowedInvocation.identity.resourceScope(declaredScope)
-	if !ok || !trustedScopeOK || !req.ResourceScope.Matches(trustedScope) {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "storage file resource scope does not match the declared store scope",
-		})
-	}
-	req.ResourceScope = trustedScope
-	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
-		})
-	}
-	if s.storageFiles == nil {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_FILE_BROKER_UNAVAILABLE",
-			Message: "runtime storage files broker is unavailable",
-		})
-	}
-	if s.handleGrants == nil {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATOR_UNAVAILABLE",
-			Message: "runtime handle grant validator is unavailable",
-		})
-	}
-	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
-	defer cancel()
-	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
-		HandleGrantToken:     req.HandleGrantToken,
-		PluginInstanceID:     req.PluginInstanceID,
-		ActiveFingerprint:    req.ActiveFingerprint,
-		RuntimeInstanceID:    req.RuntimeInstanceID,
-		RuntimeGenerationID:  req.RuntimeGenerationID,
-		RuntimeShardID:       req.RuntimeShardID,
-		OwnerSessionHash:     allowedInvocation.identity.OwnerSessionHash,
-		OwnerUserHash:        allowedInvocation.identity.OwnerUserHash,
-		OwnerEnvHash:         allowedInvocation.identity.OwnerEnvHash,
-		SessionChannelIDHash: allowedInvocation.identity.SessionChannelIDHash,
-		HandleID:             req.HandleID,
-		Method:               req.Method,
-		ResourceScope:        req.ResourceScope,
-		PolicyRevision:       req.PolicyRevision,
-		ManagementRevision:   req.ManagementRevision,
-		RevokeEpoch:          req.RevokeEpoch,
-	})
-	if err != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_file", "HANDLE_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			StoreID:          req.StoreID,
-			Operation:        req.Operation,
-		})
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: "handle grant validation failed",
-		})
-	}
-	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: "handle grant validation result did not match storage file request",
-		})
-	}
-	if !grant.ResourceScope.Matches(req.ResourceScope) {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK: false, Code: "HANDLE_GRANT_VALIDATION_FAILED", Message: "handle grant resource scope did not match storage file request",
-		})
-	}
-	payload := dispatchStorageFileRequest(hostcallCtx, s.storageFiles, req)
-	payload.Operation = req.Operation
-	if payload.InternalError != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_file", payload.Code, payload.InternalError, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			StoreID:          req.StoreID,
-			Operation:        req.Operation,
-		})
-	}
-	return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, payload)
-}
-
-func (s *ProcessSupervisor) writeStorageFileResponse(stdin io.Writer, runtimeGenerationID string, request ipcFrame, payload storageFileResponsePayload) error {
-	raw, err := marshalStorageFileHostcallPayload(payload)
-	if err == nil {
-		raw, err = boundHostcallPayload(raw, "STORAGE_FILE_TOO_LARGE", "storage file response exceeds the WASM hostcall limit")
-	}
-	if err != nil {
-		return err
-	}
-	if err := writeIPCResponseFrame(stdin, ipcFrameTypeStorageFile, runtimeGenerationID, request, raw); err != nil {
-		return fmt.Errorf("%w: write storage_file response: %v", ErrRuntimeIPCUnavailable, err)
-	}
-	return nil
-}
-
-func validateStorageFileRequest(req storageFileRequestPayload, runtimeGenerationID string) error {
-	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
-		return errors.New("runtime_generation_id is not bound to this runtime generation")
-	}
-	if strings.TrimSpace(req.HandleGrantToken) == "" ||
-		strings.TrimSpace(req.PluginInstanceID) == "" ||
-		strings.TrimSpace(req.ActiveFingerprint) == "" ||
-		strings.TrimSpace(req.StoreID) == "" ||
-		strings.TrimSpace(req.HandleID) == "" ||
-		strings.TrimSpace(req.Method) == "" ||
-		strings.TrimSpace(req.Operation) == "" {
-		return errors.New("handle grant token, plugin identity, store id, handle id, method, and operation are required")
-	}
-	if req.Method != "storage.files" {
-		return errors.New("storage file access requires method storage.files")
-	}
-	if err := req.ResourceScope.Validate(); err != nil {
-		return errors.New("storage file resource scope is invalid")
-	}
-	if req.HandleID != "storage:"+req.StoreID {
-		return errors.New("storage handle id must match store id")
-	}
-	switch req.Operation {
-	case "read":
-		_, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
-		return err
-	case "write", "delete", "list":
-		return nil
-	default:
-		return errors.New("storage file operation is not supported")
-	}
-}
-
-func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker, req storageFileRequestPayload) storageFileResponsePayload {
-	switch req.Operation {
-	case "read":
-		maxBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
-		if err != nil {
-			return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: "storage file request is invalid"}
-		}
-		result, err := broker.ReadFile(ctx, storage.FileReadRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Path:             req.Path,
-			MaxBytes:         maxBytes,
-		})
-		if err != nil {
-			return storageFileErrorResponse(err)
-		}
-		usage := result.Usage
-		return storageFileResponsePayload{
-			OK:         true,
-			Path:       result.Path,
-			DataBase64: base64.StdEncoding.EncodeToString(result.Data),
-			SizeBytes:  result.SizeBytes,
-			Usage:      &usage,
-		}
-	case "write":
-		data, err := base64.StdEncoding.DecodeString(req.DataBase64)
-		if err != nil {
-			return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: "storage file request is invalid"}
-		}
-		result, err := broker.WriteFile(ctx, storage.FileWriteRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Path:             req.Path,
-			Data:             data,
-		})
-		if err != nil {
-			return storageFileErrorResponse(err)
-		}
-		usage := result.Usage
-		return storageFileResponsePayload{OK: true, Path: result.Path, SizeBytes: result.SizeBytes, Usage: &usage}
-	case "delete":
-		if err := broker.DeleteFile(ctx, storage.FileDeleteRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Path:             req.Path,
-			Recursive:        req.Recursive,
-		}); err != nil {
-			return storageFileErrorResponse(err)
-		}
-		return storageFileResponsePayload{OK: true, Path: req.Path}
-	case "list":
-		result, err := broker.ListFiles(ctx, storage.FileListRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Path:             req.Path,
-			MaxEntries:       req.MaxEntries,
-		})
-		if err != nil {
-			return storageFileErrorResponse(err)
-		}
-		usage := result.Usage
-		return storageFileResponsePayload{OK: true, Path: result.Path, Entries: result.Entries, Usage: &usage}
-	default:
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: "storage file operation is not supported"}
-	}
-}
-
-func storageFileErrorResponse(err error) storageFileResponsePayload {
-	switch {
-	case errors.Is(err, storage.ErrFileNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_NOT_FOUND", Message: "storage file was not found", InternalError: err}
-	case errors.Is(err, storage.ErrInvalidFilePath), errors.Is(err, storage.ErrInvalidNamespace):
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_INVALID_PATH", Message: "storage file path is invalid", InternalError: err}
-	case errors.Is(err, storage.ErrQuotaExceeded):
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_QUOTA_EXCEEDED", Message: "storage file quota was exceeded", InternalError: err}
-	case errors.Is(err, storage.ErrFileTooLarge):
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_TOO_LARGE", Message: "storage file is too large", InternalError: err}
-	default:
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_FAILED", Message: "storage file operation failed", InternalError: err}
-	}
-}
-
-func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
-	if allowedInvocation == nil {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_KV_REQUEST_DENIED",
-			Message: "storage kv access is only available during worker invocation",
-		})
-	}
-	var req storageKVRequestPayload
-	if len(frame.Payload) == 0 {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_KV_REQUEST_INVALID",
-			Message: "missing storage kv payload",
-		})
-	}
-	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_KV_REQUEST_INVALID",
-			Message: "storage kv request is invalid",
-		})
-	}
-	if err := validateStorageKVRequest(req, health.RuntimeGenerationID); err != nil {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_KV_REQUEST_INVALID",
-			Message: "storage kv request is invalid",
-		})
-	}
-	if !allowedInvocation.identity.matchesRuntimeHostcall(
-		req.PluginInstanceID,
-		req.ActiveFingerprint,
-		req.RuntimeInstanceID,
-		req.RuntimeGenerationID,
-		req.RuntimeShardID,
-		req.PolicyRevision,
-		req.ManagementRevision,
-		req.RevokeEpoch,
-	) {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_KV_REQUEST_DENIED",
-			Message: "storage kv request identity is not bound to the active worker invocation",
-		})
-	}
-	declaredScope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID)
-	trustedScope, trustedScopeOK := allowedInvocation.identity.resourceScope(declaredScope)
-	if !ok || !trustedScopeOK || !req.ResourceScope.Matches(trustedScope) {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "storage kv resource scope does not match the declared store scope",
-		})
-	}
-	req.ResourceScope = trustedScope
-	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
-		})
-	}
-	if s.storageKV == nil {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_KV_BROKER_UNAVAILABLE",
-			Message: "runtime storage kv broker is unavailable",
-		})
-	}
-	if s.handleGrants == nil {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATOR_UNAVAILABLE",
-			Message: "runtime handle grant validator is unavailable",
-		})
-	}
-	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
-	defer cancel()
-	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
-		HandleGrantToken:     req.HandleGrantToken,
-		PluginInstanceID:     req.PluginInstanceID,
-		ActiveFingerprint:    req.ActiveFingerprint,
-		RuntimeInstanceID:    req.RuntimeInstanceID,
-		RuntimeGenerationID:  req.RuntimeGenerationID,
-		RuntimeShardID:       req.RuntimeShardID,
-		OwnerSessionHash:     allowedInvocation.identity.OwnerSessionHash,
-		OwnerUserHash:        allowedInvocation.identity.OwnerUserHash,
-		OwnerEnvHash:         allowedInvocation.identity.OwnerEnvHash,
-		SessionChannelIDHash: allowedInvocation.identity.SessionChannelIDHash,
-		HandleID:             req.HandleID,
-		Method:               req.Method,
-		ResourceScope:        req.ResourceScope,
-		PolicyRevision:       req.PolicyRevision,
-		ManagementRevision:   req.ManagementRevision,
-		RevokeEpoch:          req.RevokeEpoch,
-	})
-	if err != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_kv", "HANDLE_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			StoreID:          req.StoreID,
-			Operation:        req.Operation,
-		})
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: "handle grant validation failed",
-		})
-	}
-	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: "handle grant validation result did not match storage kv request",
-		})
-	}
-	if !grant.ResourceScope.Matches(req.ResourceScope) {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK: false, Code: "HANDLE_GRANT_VALIDATION_FAILED", Message: "handle grant resource scope did not match storage kv request",
-		})
-	}
-	payload := dispatchStorageKVRequest(hostcallCtx, s.storageKV, req)
-	payload.Operation = req.Operation
-	if payload.InternalError != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_kv", payload.Code, payload.InternalError, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			StoreID:          req.StoreID,
-			Operation:        req.Operation,
-		})
-	}
-	return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, payload)
-}
-
-func (s *ProcessSupervisor) writeStorageKVResponse(stdin io.Writer, runtimeGenerationID string, request ipcFrame, payload storageKVResponsePayload) error {
-	raw, err := marshalStorageKVHostcallPayload(payload)
-	if err == nil {
-		raw, err = boundHostcallPayload(raw, "STORAGE_KV_VALUE_TOO_LARGE", "storage KV response exceeds the WASM hostcall limit")
-	}
-	if err != nil {
-		return err
-	}
-	if err := writeIPCResponseFrame(stdin, ipcFrameTypeStorageKV, runtimeGenerationID, request, raw); err != nil {
-		return fmt.Errorf("%w: write storage_kv response: %v", ErrRuntimeIPCUnavailable, err)
-	}
-	return nil
-}
-
-func validateStorageKVRequest(req storageKVRequestPayload, runtimeGenerationID string) error {
-	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
-		return errors.New("runtime_generation_id is not bound to this runtime generation")
-	}
-	if strings.TrimSpace(req.HandleGrantToken) == "" ||
-		strings.TrimSpace(req.PluginInstanceID) == "" ||
-		strings.TrimSpace(req.ActiveFingerprint) == "" ||
-		strings.TrimSpace(req.StoreID) == "" ||
-		strings.TrimSpace(req.HandleID) == "" ||
-		strings.TrimSpace(req.Method) == "" ||
-		strings.TrimSpace(req.Operation) == "" {
-		return errors.New("handle grant token, plugin identity, store id, handle id, method, and operation are required")
-	}
-	if req.Method != "storage.kv" {
-		return errors.New("storage kv access requires method storage.kv")
-	}
-	if err := req.ResourceScope.Validate(); err != nil {
-		return errors.New("storage kv resource scope is invalid")
-	}
-	if req.HandleID != "storage:"+req.StoreID {
-		return errors.New("storage handle id must match store id")
-	}
-	switch req.Operation {
-	case "get":
-		if strings.TrimSpace(req.Key) == "" {
-			return errors.New("storage kv key is required")
-		}
-		_, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
-		return err
-	case "put", "delete":
-		if strings.TrimSpace(req.Key) == "" {
-			return errors.New("storage kv key is required")
-		}
-		return nil
-	case "list":
-		return nil
-	default:
-		return errors.New("storage kv operation is not supported")
-	}
-}
-
-func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req storageKVRequestPayload) storageKVResponsePayload {
-	switch req.Operation {
-	case "get":
-		maxBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
-		if err != nil {
-			return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: "storage kv request is invalid"}
-		}
-		result, err := broker.GetKV(ctx, storage.KVGetRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Key:              req.Key,
-			MaxBytes:         maxBytes,
-		})
-		if err != nil {
-			return storageKVErrorResponse(err)
-		}
-		usage := result.Usage
-		return storageKVResponsePayload{
-			OK:          true,
-			Key:         result.Key,
-			ValueBase64: base64.StdEncoding.EncodeToString(result.Value),
-			SizeBytes:   result.SizeBytes,
-			Usage:       &usage,
-		}
-	case "put":
-		value, err := base64.StdEncoding.DecodeString(req.ValueBase64)
-		if err != nil {
-			return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: "storage kv request is invalid"}
-		}
-		result, err := broker.PutKV(ctx, storage.KVPutRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Key:              req.Key,
-			Value:            value,
-		})
-		if err != nil {
-			return storageKVErrorResponse(err)
-		}
-		usage := result.Usage
-		return storageKVResponsePayload{OK: true, Key: result.Key, SizeBytes: result.SizeBytes, Usage: &usage}
-	case "delete":
-		if err := broker.DeleteKV(ctx, storage.KVDeleteRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Key:              req.Key,
-		}); err != nil {
-			return storageKVErrorResponse(err)
-		}
-		return storageKVResponsePayload{OK: true, Key: req.Key}
-	case "list":
-		result, err := broker.ListKV(ctx, storage.KVListRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Prefix:           req.Prefix,
-			MaxEntries:       req.MaxEntries,
-		})
-		if err != nil {
-			return storageKVErrorResponse(err)
-		}
-		usage := result.Usage
-		return storageKVResponsePayload{OK: true, Prefix: result.Prefix, Entries: result.Entries, Usage: &usage}
-	default:
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: "storage kv operation is not supported"}
-	}
-}
-
-func storageKVErrorResponse(err error) storageKVResponsePayload {
-	switch {
-	case errors.Is(err, storage.ErrKVKeyNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_NOT_FOUND", Message: "storage kv key was not found", InternalError: err}
-	case errors.Is(err, storage.ErrInvalidKVKey), errors.Is(err, storage.ErrInvalidNamespace):
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_INVALID_KEY", Message: "storage kv key is invalid", InternalError: err}
-	case errors.Is(err, storage.ErrQuotaExceeded):
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_QUOTA_EXCEEDED", Message: "storage kv quota was exceeded", InternalError: err}
-	case errors.Is(err, storage.ErrKVValueTooLarge):
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_VALUE_TOO_LARGE", Message: "storage kv value is too large", InternalError: err}
-	default:
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_FAILED", Message: "storage kv operation failed", InternalError: err}
-	}
-}
-
-func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
-	if allowedInvocation == nil {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_SQLITE_REQUEST_DENIED",
-			Message: "storage sqlite access is only available during worker invocation",
-		})
-	}
-	var req storageSQLiteRequestPayload
-	if len(frame.Payload) == 0 {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
-			Message: "missing storage sqlite payload",
-		})
-	}
-	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
-			Message: "storage sqlite request is invalid",
-		})
-	}
-	if err := validateStorageSQLiteRequest(req, health.RuntimeGenerationID); err != nil {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
-			Message: "storage sqlite request is invalid",
-		})
-	}
-	if !allowedInvocation.identity.matchesRuntimeHostcall(
-		req.PluginInstanceID,
-		req.ActiveFingerprint,
-		req.RuntimeInstanceID,
-		req.RuntimeGenerationID,
-		req.RuntimeShardID,
-		req.PolicyRevision,
-		req.ManagementRevision,
-		req.RevokeEpoch,
-	) {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_SQLITE_REQUEST_DENIED",
-			Message: "storage sqlite request identity is not bound to the active worker invocation",
-		})
-	}
-	declaredScope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID)
-	trustedScope, trustedScopeOK := allowedInvocation.identity.resourceScope(declaredScope)
-	if !ok || !trustedScopeOK || !req.ResourceScope.Matches(trustedScope) {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "storage sqlite resource scope does not match the declared store scope",
-		})
-	}
-	req.ResourceScope = trustedScope
-	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
-		})
-	}
-	if s.storageSQLite == nil {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "STORAGE_SQLITE_BROKER_UNAVAILABLE",
-			Message: "runtime storage sqlite broker is unavailable",
-		})
-	}
-	if s.handleGrants == nil {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATOR_UNAVAILABLE",
-			Message: "runtime handle grant validator is unavailable",
-		})
-	}
-	hostcallCtx, cancel := runtimeHostcallContext(ctx, time.Duration(req.TimeoutMillis)*time.Millisecond)
-	defer cancel()
-	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
-		HandleGrantToken:     req.HandleGrantToken,
-		PluginInstanceID:     req.PluginInstanceID,
-		ActiveFingerprint:    req.ActiveFingerprint,
-		RuntimeInstanceID:    req.RuntimeInstanceID,
-		RuntimeGenerationID:  req.RuntimeGenerationID,
-		RuntimeShardID:       req.RuntimeShardID,
-		OwnerSessionHash:     allowedInvocation.identity.OwnerSessionHash,
-		OwnerUserHash:        allowedInvocation.identity.OwnerUserHash,
-		OwnerEnvHash:         allowedInvocation.identity.OwnerEnvHash,
-		SessionChannelIDHash: allowedInvocation.identity.SessionChannelIDHash,
-		HandleID:             req.HandleID,
-		Method:               req.Method,
-		ResourceScope:        req.ResourceScope,
-		PolicyRevision:       req.PolicyRevision,
-		ManagementRevision:   req.ManagementRevision,
-		RevokeEpoch:          req.RevokeEpoch,
-	})
-	if err != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_sqlite", "HANDLE_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			StoreID:          req.StoreID,
-			Operation:        req.Operation,
-		})
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: "handle grant validation failed",
-		})
-	}
-	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK:      false,
-			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: "handle grant validation result did not match storage sqlite request",
-		})
-	}
-	if !grant.ResourceScope.Matches(req.ResourceScope) {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK: false, Code: "HANDLE_GRANT_VALIDATION_FAILED", Message: "handle grant resource scope did not match storage sqlite request",
-		})
-	}
-	payload := dispatchStorageSQLiteRequest(hostcallCtx, s.storageSQLite, req)
-	payload.Operation = req.Operation
-	if payload.InternalError != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_sqlite", payload.Code, payload.InternalError, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			StoreID:          req.StoreID,
-			Operation:        req.Operation,
-		})
-	}
-	return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, payload)
-}
-
-func (s *ProcessSupervisor) writeStorageSQLiteResponse(stdin io.Writer, runtimeGenerationID string, request ipcFrame, payload storageSQLiteResponsePayload) error {
-	raw, err := marshalStorageSQLiteHostcallPayload(payload)
-	if err == nil {
-		raw, err = boundHostcallPayload(raw, "STORAGE_SQLITE_RESULT_TOO_LARGE", "storage SQLite response exceeds the WASM hostcall limit")
-	}
-	if err != nil {
-		return err
-	}
-	if err := writeIPCResponseFrame(stdin, ipcFrameTypeStorageSQLite, runtimeGenerationID, request, raw); err != nil {
-		return fmt.Errorf("%w: write storage_sqlite response: %v", ErrRuntimeIPCUnavailable, err)
-	}
-	return nil
-}
-
-func validateStorageSQLiteRequest(req storageSQLiteRequestPayload, runtimeGenerationID string) error {
-	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
-		return errors.New("runtime_generation_id is not bound to this runtime generation")
-	}
-	if strings.TrimSpace(req.HandleGrantToken) == "" ||
-		strings.TrimSpace(req.PluginInstanceID) == "" ||
-		strings.TrimSpace(req.ActiveFingerprint) == "" ||
-		strings.TrimSpace(req.StoreID) == "" ||
-		strings.TrimSpace(req.HandleID) == "" ||
-		strings.TrimSpace(req.Method) == "" ||
-		strings.TrimSpace(req.Operation) == "" ||
-		strings.TrimSpace(req.SQL) == "" {
-		return errors.New("handle grant token, plugin identity, store id, handle id, method, operation, and sql are required")
-	}
-	if req.Method != "storage.sqlite" {
-		return errors.New("storage sqlite access requires method storage.sqlite")
-	}
-	if err := req.ResourceScope.Validate(); err != nil {
-		return errors.New("storage sqlite resource scope is invalid")
-	}
-	if req.HandleID != "storage:"+req.StoreID {
-		return errors.New("storage handle id must match store id")
-	}
-	if req.TimeoutMillis < 0 {
-		return errors.New("timeout_ms must not be negative")
-	}
-	switch req.Operation {
-	case "exec":
-		return nil
-	case "query":
-		_, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
-		return err
-	default:
-		return errors.New("storage sqlite operation is not supported")
-	}
-}
-
-func dispatchStorageSQLiteRequest(ctx context.Context, broker storage.SQLiteBroker, req storageSQLiteRequestPayload) storageSQLiteResponsePayload {
-	args, err := storageSQLiteArgsFromIPC(req.Args)
-	if err != nil {
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: "storage sqlite request is invalid"}
-	}
-	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
-	switch req.Operation {
-	case "exec":
-		result, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Database:         req.Database,
-			SQL:              req.SQL,
-			Args:             args,
-			Timeout:          timeout,
-		})
-		if err != nil {
-			return storageSQLiteErrorResponse(err)
-		}
-		usage := result.Usage
-		rowsAffected := result.RowsAffected
-		return storageSQLiteResponsePayload{
-			OK:           true,
-			Database:     result.Database,
-			RowsAffected: &rowsAffected,
-			LastInsertID: result.LastInsertID,
-			Usage:        &usage,
-		}
-	case "query":
-		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
-		if err != nil {
-			return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: "storage sqlite request is invalid"}
-		}
-		result, err := broker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
-			PluginInstanceID: req.PluginInstanceID,
-			ResourceScope:    req.ResourceScope,
-			StoreID:          req.StoreID,
-			Database:         req.Database,
-			SQL:              req.SQL,
-			Args:             args,
-			MaxRows:          req.MaxRows,
-			MaxResponseBytes: maxResponseBytes,
-			Timeout:          timeout,
-		})
-		if err != nil {
-			return storageSQLiteErrorResponse(err)
-		}
-		usage := result.Usage
-		columns := append([]string{}, result.Columns...)
-		rows := storageSQLiteRowsToIPC(result.Rows)
-		if rows == nil {
-			rows = [][]storageSQLiteValueIPC{}
-		}
-		return storageSQLiteResponsePayload{
-			OK:       true,
-			Database: result.Database,
-			Columns:  &columns,
-			Rows:     &rows,
-			Usage:    &usage,
-		}
-	default:
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: "storage sqlite operation is not supported"}
-	}
-}
-
-func storageSQLiteArgsFromIPC(values []storageSQLiteValueIPC) ([]storage.SQLiteValue, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-	out := make([]storage.SQLiteValue, 0, len(values))
-	for _, value := range values {
-		converted, err := storageSQLiteValueFromIPC(value)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, converted)
-	}
-	return out, nil
-}
-
-func storageSQLiteRowsToIPC(rows [][]storage.SQLiteValue) [][]storageSQLiteValueIPC {
-	if len(rows) == 0 {
-		return nil
-	}
-	out := make([][]storageSQLiteValueIPC, 0, len(rows))
-	for _, row := range rows {
-		converted := make([]storageSQLiteValueIPC, 0, len(row))
-		for _, value := range row {
-			converted = append(converted, storageSQLiteValueToIPC(value))
-		}
-		out = append(out, converted)
-	}
-	return out
-}
-
-func storageSQLiteValueFromIPC(value storageSQLiteValueIPC) (storage.SQLiteValue, error) {
-	if !validStorageSQLiteValueIPC(value) {
-		return storage.SQLiteValue{}, errors.New("storage sqlite value must contain exactly one typed field")
-	}
-	if value.BlobBase64 != nil {
-		data, err := base64.StdEncoding.DecodeString(*value.BlobBase64)
-		if err != nil {
-			return storage.SQLiteValue{}, fmt.Errorf("decode sqlite blob_base64: %v", err)
-		}
-		if data == nil {
-			data = []byte{}
-		}
-		return storage.SQLiteValue{Blob: data}, nil
-	}
-	return storage.SQLiteValue{
-		Null:  value.Null != nil && *value.Null,
-		Int:   value.Int,
-		Float: value.Float,
-		Text:  value.Text,
-	}, nil
-}
-
-func storageSQLiteValueToIPC(value storage.SQLiteValue) storageSQLiteValueIPC {
-	if value.Blob != nil {
-		encoded := base64.StdEncoding.EncodeToString(value.Blob)
-		return storageSQLiteValueIPC{BlobBase64: &encoded}
-	}
-	if value.Null {
-		null := true
-		return storageSQLiteValueIPC{Null: &null}
-	}
-	return storageSQLiteValueIPC{
-		Int:   value.Int,
-		Float: value.Float,
-		Text:  value.Text,
-	}
-}
-
-func validStorageSQLiteValueIPC(value storageSQLiteValueIPC) bool {
-	variants := 0
-	if value.Null != nil {
-		if !*value.Null {
-			return false
-		}
-		variants++
-	}
-	if value.Int != nil {
-		variants++
-	}
-	if value.Float != nil {
-		variants++
-	}
-	if value.Text != nil {
-		variants++
-	}
-	if value.BlobBase64 != nil {
-		variants++
-	}
-	return variants == 1
-}
-
-func storageSQLiteErrorResponse(err error) storageSQLiteResponsePayload {
-	switch {
-	case errors.Is(err, storage.ErrNamespaceNotFound):
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_NOT_FOUND", Message: "storage sqlite database was not found", InternalError: err}
-	case errors.Is(err, storage.ErrInvalidSQLite), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrInvalidFilePath):
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_INVALID_REQUEST", Message: "storage sqlite request is invalid", InternalError: err}
-	case errors.Is(err, storage.ErrQuotaExceeded):
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_QUOTA_EXCEEDED", Message: "storage sqlite quota was exceeded", InternalError: err}
-	case errors.Is(err, storage.ErrSQLiteResultTooLarge):
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_RESULT_TOO_LARGE", Message: "storage sqlite result is too large", InternalError: err}
-	default:
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_FAILED", Message: "storage sqlite operation failed", InternalError: err}
-	}
-}
-
-func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
-	if allowedInvocation == nil {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_GRANT_REQUEST_DENIED",
-			Message: "network grants are only available during worker invocation",
-		})
-	}
-	var req networkGrantRequestPayload
-	if len(frame.Payload) == 0 {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_GRANT_REQUEST_INVALID",
-			Message: "missing network grant payload",
-		})
-	}
-	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_GRANT_REQUEST_INVALID",
-			Message: "network grant request is invalid",
-		})
-	}
-	if err := validateNetworkGrantRequest(req, health.RuntimeGenerationID); err != nil {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_GRANT_REQUEST_INVALID",
-			Message: "network grant request is invalid",
-		})
-	}
-	if !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) ||
-		!allowedInvocation.identity.matchesRuntimeHostcall(
-			req.PluginInstanceID,
-			req.ActiveFingerprint,
-			req.RuntimeInstanceID,
-			req.RuntimeGenerationID,
-			req.RuntimeShardID,
-			req.PolicyRevision,
-			req.ManagementRevision,
-			req.RevokeEpoch,
-		) {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_GRANT_REQUEST_DENIED",
-			Message: "network grant request identity is not bound to the active worker invocation",
-		})
-	}
-	if !allowedInvocation.BrokerAccess.allowsNetworkConnector(req.ConnectorID, string(req.Transport)) {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK: false, Code: "NETWORK_GRANT_REQUEST_DENIED", Message: "worker method is not allowed to use this network connector",
-		})
-	}
-	declaredScope, ok := allowedInvocation.BrokerAccess.networkScope(req.ConnectorID, string(req.Transport))
-	if !ok || req.ResourceScope.Kind != declaredScope {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK: false, Code: "NETWORK_GRANT_REQUEST_DENIED", Message: "network grant resource scope is not bound to the declared connector",
-		})
-	}
-	if s.connectivity == nil {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_BROKER_UNAVAILABLE",
-			Message: "runtime connectivity broker is unavailable",
-		})
-	}
-	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
-	defer cancel()
-	hostcallCtx = allowedInvocation.identity.authenticatedContext(hostcallCtx)
-	ttl := time.Duration(req.TTLMillis) * time.Millisecond
-	grant, err := s.connectivity.MintConnectionGrant(hostcallCtx, connectivity.GrantRequest{
-		PluginInstanceID:    req.PluginInstanceID,
-		ActiveFingerprint:   req.ActiveFingerprint,
-		ResourceScope:       req.ResourceScope,
-		PolicyRevision:      req.PolicyRevision,
-		ManagementRevision:  req.ManagementRevision,
-		RevokeEpoch:         req.RevokeEpoch,
-		ConnectorID:         req.ConnectorID,
-		Transport:           req.Transport,
-		Destination:         req.Destination,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		Now:                 s.now(),
-		TTL:                 ttl,
-	})
-	if err != nil {
-		payload := networkGrantErrorResponse(err)
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_grant", payload.Code, err, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			ConnectorID:      req.ConnectorID,
-			Transport:        string(req.Transport),
-		})
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, payload)
-	}
-	if err := validateNetworkGrantResult(req, grant, health.RuntimeGenerationID); err != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_grant", "NETWORK_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			ConnectorID:      req.ConnectorID,
-			Transport:        string(req.Transport),
-		})
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_GRANT_VALIDATION_FAILED",
-			Message: "network grant validation failed",
-		})
-	}
-	return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
-		OK:                      true,
-		GrantID:                 grant.GrantID,
-		PluginInstanceID:        grant.PluginInstanceID,
-		ActiveFingerprint:       grant.ActiveFingerprint,
-		ResourceScope:           grant.ResourceScope,
-		PolicyRevision:          grant.PolicyRevision,
-		ManagementRevision:      grant.ManagementRevision,
-		RevokeEpoch:             grant.RevokeEpoch,
-		ConnectorID:             grant.ConnectorID,
-		Transport:               grant.Transport,
-		Destination:             grant.Destination,
-		RuntimeGenerationID:     grant.RuntimeGenerationID,
-		TargetClassifierVersion: grant.TargetClassifierVersion,
-		ExpiresAt:               grant.ExpiresAt,
-	})
-}
-
-func (s *ProcessSupervisor) writeNetworkGrantResponse(stdin io.Writer, runtimeGenerationID string, request ipcFrame, payload networkGrantResponsePayload) error {
-	raw, err := marshalHostcallPayload(payload.OK, payload, payload.Code, payload.Message)
-	if err != nil {
-		return err
-	}
-	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeNetworkGrant,
-		RequestID:           request.RequestID,
-		ParentRequestID:     request.ParentRequestID,
-		RuntimeGenerationID: runtimeGenerationID,
-		Payload:             raw,
-	}); err != nil {
-		return fmt.Errorf("%w: write network_grant response: %v", ErrRuntimeIPCUnavailable, err)
-	}
-	return nil
-}
-
-func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
-	if allowedInvocation == nil {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_EXECUTE_REQUEST_DENIED",
-			Message: "network execution is only available during worker invocation",
-		})
-	}
-	var req networkExecuteRequestPayload
-	if len(frame.Payload) == 0 {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
-			Message: "missing network execute payload",
-		})
-	}
-	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
-			Message: "network execute request is invalid",
-		})
-	}
-	if err := validateNetworkExecuteRequest(req, health.RuntimeGenerationID); err != nil {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
-			Message: "network execute request is invalid",
-		})
-	}
-	if !allowedInvocation.identity.matchesNetworkExecute(req) {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_EXECUTE_REQUEST_DENIED",
-			Message: "network execute request identity is not bound to the active worker invocation",
-		})
-	}
-	if !allowedInvocation.BrokerAccess.allowsNetwork(req.ConnectorID, string(req.Transport), req.Operation, req.Method) {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK: false, Code: "NETWORK_EXECUTE_REQUEST_DENIED", Message: "worker method is not allowed to perform this network operation",
-		})
-	}
-	declaredScope, ok := allowedInvocation.BrokerAccess.networkScope(req.ConnectorID, string(req.Transport))
-	if !ok || req.ResourceScope.Kind != declaredScope {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK: false, Code: "NETWORK_EXECUTE_REQUEST_DENIED", Message: "network execute resource scope is not bound to the declared connector",
-		})
-	}
-	if s.connectivity == nil {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_BROKER_UNAVAILABLE",
-			Message: "runtime connectivity broker is unavailable",
-		})
-	}
-	if s.networkExecutor == nil {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_EXECUTOR_UNAVAILABLE",
-			Message: "runtime network executor is unavailable",
-		})
-	}
-	hostcallCtx, cancel := runtimeHostcallContext(ctx, time.Duration(req.TimeoutMillis)*time.Millisecond)
-	defer cancel()
-	hostcallCtx = allowedInvocation.identity.authenticatedContext(hostcallCtx)
-	grant, err := s.mintGrantForNetworkExecute(hostcallCtx, req)
-	if err != nil {
-		payload := networkExecuteErrorResponse(err)
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_execute", payload.Code, err, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			ConnectorID:      req.ConnectorID,
-			Transport:        string(req.Transport),
-			Operation:        req.Operation,
-		})
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, payload)
-	}
-	if err := validateNetworkGrantResult(networkGrantRequestPayload{
-		PluginInstanceID:    req.PluginInstanceID,
-		ActiveFingerprint:   req.ActiveFingerprint,
-		ResourceScope:       req.ResourceScope,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		PolicyRevision:      req.PolicyRevision,
-		ManagementRevision:  req.ManagementRevision,
-		RevokeEpoch:         req.RevokeEpoch,
-		ConnectorID:         req.ConnectorID,
-		Transport:           req.Transport,
-		Destination:         req.Destination,
-		TTLMillis:           req.TTLMillis,
-	}, grant, health.RuntimeGenerationID); err != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_execute", "NETWORK_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			ConnectorID:      req.ConnectorID,
-			Transport:        string(req.Transport),
-			Operation:        req.Operation,
-		})
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
-			OK:      false,
-			Code:    "NETWORK_GRANT_VALIDATION_FAILED",
-			Message: "network grant validation failed",
-		})
-	}
-	payload := dispatchNetworkExecute(hostcallCtx, s.networkExecutor, s.streamSink, grant, req, s.now())
-	if payload.InternalError != nil {
-		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_execute", payload.Code, payload.InternalError, observability.DiagnosticDetails{
-			PluginInstanceID: req.PluginInstanceID,
-			ConnectorID:      req.ConnectorID,
-			Transport:        string(req.Transport),
-			Operation:        req.Operation,
-		})
-	}
-	if payload.OK {
-		payload.GrantID = grant.GrantID
-		payload.ConnectorID = grant.ConnectorID
-		payload.RuntimeGeneration = grant.RuntimeGenerationID
-		payload.Transport = grant.Transport
-		payload.Destination = grant.Destination
-	}
-	return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, payload)
-}
-
-func (s *ProcessSupervisor) mintGrantForNetworkExecute(ctx context.Context, req networkExecuteRequestPayload) (connectivity.ConnectionGrant, error) {
-	ttl := time.Duration(req.TTLMillis) * time.Millisecond
-	return s.connectivity.MintConnectionGrant(ctx, connectivity.GrantRequest{
-		PluginInstanceID:    req.PluginInstanceID,
-		ActiveFingerprint:   req.ActiveFingerprint,
-		ResourceScope:       req.ResourceScope,
-		PolicyRevision:      req.PolicyRevision,
-		ManagementRevision:  req.ManagementRevision,
-		RevokeEpoch:         req.RevokeEpoch,
-		ConnectorID:         req.ConnectorID,
-		Transport:           req.Transport,
-		Destination:         req.Destination,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		Now:                 s.now(),
-		TTL:                 ttl,
-	})
-}
-
-func (s *ProcessSupervisor) writeNetworkExecuteResponse(stdin io.Writer, runtimeGenerationID string, request ipcFrame, payload networkExecuteResponsePayload) error {
-	raw, err := marshalBoundedHostcallPayload(payload.OK, payload, payload.Code, payload.Message, "NETWORK_RESPONSE_TOO_LARGE", "network response exceeds the WASM hostcall limit")
-	if err != nil {
-		return err
-	}
-	if err := writeIPCResponseFrame(stdin, ipcFrameTypeNetworkExecute, runtimeGenerationID, request, raw); err != nil {
-		return fmt.Errorf("%w: write network_execute response: %v", ErrRuntimeIPCUnavailable, err)
-	}
-	return nil
-}
-
-func validateNetworkGrantResult(req networkGrantRequestPayload, grant connectivity.ConnectionGrant, runtimeGenerationID string) error {
-	if strings.TrimSpace(grant.GrantID) == "" ||
-		strings.TrimSpace(grant.PluginInstanceID) != strings.TrimSpace(req.PluginInstanceID) ||
-		strings.TrimSpace(grant.ActiveFingerprint) != strings.TrimSpace(req.ActiveFingerprint) ||
-		!grant.ResourceScope.Matches(req.ResourceScope) ||
-		grant.PolicyRevision != req.PolicyRevision ||
-		grant.ManagementRevision != req.ManagementRevision ||
-		grant.RevokeEpoch != req.RevokeEpoch ||
-		strings.TrimSpace(grant.ConnectorID) != strings.TrimSpace(req.ConnectorID) ||
-		grant.Transport != req.Transport ||
-		strings.TrimSpace(grant.RuntimeGenerationID) != runtimeGenerationID ||
-		strings.TrimSpace(grant.TargetClassifierVersion) != version.TargetClassifierVersion {
-		return errors.New("network grant result did not match request audience")
-	}
-	requested, err := connectivity.ParseDestination(req.Transport, req.Destination)
-	if err != nil {
-		return err
-	}
-	if grant.Destination != requested {
-		return errors.New("network grant destination did not match request")
-	}
-	if grant.ExpiresAt.IsZero() {
-		return errors.New("network grant expires_at is required")
-	}
-	return nil
-}
-
-func validateNetworkGrantRequest(req networkGrantRequestPayload, runtimeGenerationID string) error {
-	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
-		return errors.New("runtime_generation_id is not bound to this runtime generation")
-	}
-	if strings.TrimSpace(req.PluginInstanceID) == "" ||
-		strings.TrimSpace(req.ActiveFingerprint) == "" ||
-		strings.TrimSpace(req.ConnectorID) == "" ||
-		strings.TrimSpace(req.Destination) == "" {
-		return errors.New("plugin identity, connector id, and destination are required")
-	}
-	if err := req.ResourceScope.Validate(); err != nil {
-		return errors.New("network grant resource scope is invalid")
-	}
-	if !connectivity.ValidTransport(req.Transport) {
-		return errors.New("network transport is not supported")
-	}
-	if req.TTLMillis < 0 {
-		return errors.New("ttl_ms must not be negative")
-	}
-	return nil
-}
-
-func validateNetworkExecuteRequest(req networkExecuteRequestPayload, runtimeGenerationID string) error {
-	grantReq := networkGrantRequestPayload{
-		PluginInstanceID:    req.PluginInstanceID,
-		ActiveFingerprint:   req.ActiveFingerprint,
-		ResourceScope:       req.ResourceScope,
-		RuntimeInstanceID:   req.RuntimeInstanceID,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		RuntimeShardID:      req.RuntimeShardID,
-		PolicyRevision:      req.PolicyRevision,
-		ManagementRevision:  req.ManagementRevision,
-		RevokeEpoch:         req.RevokeEpoch,
-		ConnectorID:         req.ConnectorID,
-		Transport:           req.Transport,
-		Destination:         req.Destination,
-		TTLMillis:           req.TTLMillis,
-	}
-	if err := validateNetworkGrantRequest(grantReq, runtimeGenerationID); err != nil {
-		return err
-	}
-	if req.TimeoutMillis < 0 {
-		return errors.New("timeout_ms must not be negative")
-	}
-	if req.MaxRequestBytes < 0 || req.MaxResponseBytes < 0 || req.MaxChunkBytes < 0 || req.MaxBufferedBytes < 0 {
-		return errors.New("max request, response, chunk, and buffered bytes must not be negative")
-	}
-	operation := strings.TrimSpace(req.Operation)
-	switch req.Transport {
-	case connectivity.TransportHTTP:
-		if operation != "" && operation != "http" && operation != "http_stream" {
-			return errors.New("http network execution operation must be http or http_stream")
-		}
-		if operation == "http_stream" {
-			if strings.TrimSpace(req.PluginID) == "" ||
-				strings.TrimSpace(req.StreamMethod) == "" ||
-				strings.TrimSpace(req.StreamExecution) == "" ||
-				strings.TrimSpace(req.SurfaceInstanceID) == "" ||
-				strings.TrimSpace(req.OwnerSessionHash) == "" ||
-				strings.TrimSpace(req.OwnerUserHash) == "" ||
-				strings.TrimSpace(req.OwnerEnvHash) == "" ||
-				strings.TrimSpace(req.SessionChannelIDHash) == "" ||
-				strings.TrimSpace(req.BridgeChannelID) == "" {
-				return errors.New("http_stream network execution requires plugin and stream audience fields")
-			}
-		}
-	case connectivity.TransportWebSocket:
-		if operation != "" && operation != "websocket_round_trip" {
-			return errors.New("websocket network execution operation must be websocket_round_trip")
-		}
-	case connectivity.TransportTCP:
-		if operation != "" && operation != "tcp_round_trip" {
-			return errors.New("tcp network execution operation must be tcp_round_trip")
-		}
-	case connectivity.TransportUDP:
-		if operation != "" && operation != "udp_round_trip" {
-			return errors.New("udp network execution operation must be udp_round_trip")
-		}
-	}
-	if operation != "http_stream" {
-		if _, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkExecutor, streamSink RuntimeStreamSink, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, now time.Time) networkExecuteResponsePayload {
-	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
-	switch req.Transport {
-	case connectivity.TransportHTTP:
-		body, err := decodeOptionalBase64(req.BodyBase64)
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
-		}
-		if strings.TrimSpace(req.Operation) == "http_stream" {
-			if streamSink == nil {
-				return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_SINK_UNAVAILABLE", Message: "runtime stream sink is unavailable"}
-			}
-			return dispatchHTTPStreamExecute(ctx, executor, streamSink, grant, req, body, timeout, now)
-		}
-		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
-		}
-		result, err := executor.DoHTTP(ctx, connectivity.HTTPRequest{
-			Grant:            grant,
-			Method:           req.Method,
-			Path:             req.Path,
-			Query:            req.Query,
-			Headers:          req.Headers,
-			Body:             body,
-			MaxRequestBytes:  req.MaxRequestBytes,
-			MaxResponseBytes: maxResponseBytes,
-			Timeout:          timeout,
-			Now:              now,
-		})
-		if err != nil {
-			return networkExecuteErrorResponse(err)
-		}
-		return networkExecuteResponsePayload{OK: true, StatusCode: result.StatusCode, Headers: result.Headers, BodyBase64: base64.StdEncoding.EncodeToString(result.Body)}
-	case connectivity.TransportWebSocket:
-		payload, err := decodeOptionalBase64(req.PayloadBase64)
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
-		}
-		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
-		}
-		result, err := executor.WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
-			Grant:            grant,
-			Path:             req.Path,
-			Headers:          req.Headers,
-			MessageType:      connectivity.WebSocketMessageType(strings.TrimSpace(req.MessageType)),
-			Payload:          payload,
-			MaxRequestBytes:  req.MaxRequestBytes,
-			MaxResponseBytes: maxResponseBytes,
-			Timeout:          timeout,
-			Now:              now,
-		})
-		if err != nil {
-			return networkExecuteErrorResponse(err)
-		}
-		return networkExecuteResponsePayload{OK: true, MessageType: string(result.MessageType), PayloadBase64: base64.StdEncoding.EncodeToString(result.Payload)}
-	case connectivity.TransportTCP:
-		payload, err := decodeOptionalBase64(req.PayloadBase64)
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
-		}
-		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
-		}
-		result, err := executor.TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
-			Grant:           grant,
-			Payload:         payload,
-			MaxRequestBytes: req.MaxRequestBytes,
-			MaxReadBytes:    maxResponseBytes,
-			Timeout:         timeout,
-			Now:             now,
-		})
-		if err != nil {
-			return networkExecuteErrorResponse(err)
-		}
-		return networkExecuteResponsePayload{OK: true, PayloadBase64: base64.StdEncoding.EncodeToString(result.Payload)}
-	case connectivity.TransportUDP:
-		payload, err := decodeOptionalBase64(req.PayloadBase64)
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
-		}
-		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
-		}
-		result, err := executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
-			Grant:        grant,
-			Payload:      payload,
-			MaxReadBytes: maxResponseBytes,
-			Timeout:      timeout,
-			Now:          now,
-		})
-		if err != nil {
-			return networkExecuteErrorResponse(err)
-		}
-		return networkExecuteResponsePayload{OK: true, PayloadBase64: base64.StdEncoding.EncodeToString(result.Payload)}
-	default:
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network transport is not supported"}
-	}
-}
-
-func dispatchHTTPStreamExecute(ctx context.Context, executor connectivity.NetworkExecutor, streamSink RuntimeStreamSink, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, body []byte, timeout time.Duration, now time.Time) networkExecuteResponsePayload {
-	streamID := strings.TrimSpace(req.StreamID)
-	if streamID == "" {
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_FAILED", Message: "host-owned stream_id is required"}
-	}
-	result, err := executor.StreamHTTP(ctx, connectivity.HTTPRequest{
-		Grant:            grant,
-		Method:           req.Method,
-		Path:             req.Path,
-		Query:            req.Query,
-		Headers:          req.Headers,
-		Body:             body,
-		MaxRequestBytes:  req.MaxRequestBytes,
-		MaxResponseBytes: req.MaxResponseBytes,
-		MaxChunkBytes:    req.MaxChunkBytes,
-		Timeout:          timeout,
-		Now:              now,
-	}, func(chunk connectivity.HTTPResponseChunk) error {
-		return streamSink.AppendRuntimeStream(ctx, streamID, "data", chunk.Data)
-	})
-	if err != nil {
-		response := networkExecuteErrorResponse(err)
-		_ = streamSink.FailRuntimeStream(ctx, streamID, capability.ExecutionFailurePlatformFailed, err)
-		return response
-	}
-	if err := streamSink.CloseRuntimeStream(ctx, streamID); err != nil {
-		return networkExecuteErrorResponse(err)
-	}
-	return networkExecuteResponsePayload{
-		OK:         true,
-		StatusCode: result.StatusCode,
-		Headers:    result.Headers,
-		StreamID:   streamID,
-		BytesRead:  result.BytesRead,
-		ChunkCount: result.ChunkCount,
-	}
-}
-
 func runtimeHostcallContext(parent context.Context, requested time.Duration) (context.Context, context.CancelFunc) {
 	timeout := requested
 	if timeout <= 0 {
@@ -4482,139 +2508,6 @@ func runtimeHostcallContext(parent context.Context, requested time.Duration) (co
 		timeout = maxRuntimeHostcallTimeout
 	}
 	return context.WithTimeout(parent, timeout)
-}
-
-func boundedSynchronousBrokerPayloadBytes(requested int64) (int64, error) {
-	if requested < 0 {
-		return 0, errors.New("response byte limit must not be negative")
-	}
-	if requested == 0 {
-		return maxSynchronousBrokerPayloadBytes, nil
-	}
-	if requested > maxSynchronousBrokerPayloadBytes {
-		return 0, fmt.Errorf("response byte limit must not exceed %d", maxSynchronousBrokerPayloadBytes)
-	}
-	return requested, nil
-}
-
-func decodeOptionalBase64(value string) ([]byte, error) {
-	if strings.TrimSpace(value) == "" {
-		return nil, nil
-	}
-	data, err := base64.StdEncoding.DecodeString(value)
-	if err != nil {
-		return nil, fmt.Errorf("decode base64 payload: %v", err)
-	}
-	return data, nil
-}
-
-func networkGrantErrorResponse(err error) networkGrantResponsePayload {
-	switch {
-	case errors.Is(err, connectivity.ErrResourceScopeMismatch):
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: "network connector resource scope did not match", InternalError: err}
-	case errors.Is(err, connectivity.ErrInvalidConnector):
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_REQUEST_INVALID", Message: "network grant request is invalid", InternalError: err}
-	case errors.Is(err, connectivity.ErrTargetDenied):
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_TARGET_DENIED", Message: "network target was denied", InternalError: err}
-	case errors.Is(err, connectivity.ErrConnectorDenied):
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: "network connector was denied", InternalError: err}
-	default:
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_FAILED", Message: "network grant operation failed", InternalError: err}
-	}
-}
-
-func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
-	switch {
-	case errors.Is(err, connectivity.ErrResourceScopeMismatch):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: "network connector resource scope did not match", InternalError: err}
-	case errors.Is(err, connectivity.ErrInvalidConnector):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid", InternalError: err}
-	case errors.Is(err, connectivity.ErrTargetDenied):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_TARGET_DENIED", Message: "network target was denied", InternalError: err}
-	case errors.Is(err, connectivity.ErrConnectorDenied):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: "network connector was denied", InternalError: err}
-	case errors.Is(err, connectivity.ErrGrantExpired):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_GRANT_EXPIRED", Message: "network grant has expired", InternalError: err}
-	case errors.Is(err, connectivity.ErrRequestTooLarge):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_REQUEST_TOO_LARGE", Message: "network request is too large", InternalError: err}
-	case errors.Is(err, connectivity.ErrResponseTooLarge):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RESPONSE_TOO_LARGE", Message: "network response is too large", InternalError: err}
-	case errors.Is(err, connectivity.ErrRateLimited):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RATE_LIMITED", Message: "network request was rate limited", InternalError: err}
-	case errors.Is(err, connectivity.ErrConnectionClosed):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTION_CLOSED", Message: "network connection was closed", InternalError: err}
-	case errors.Is(err, connectivity.ErrWebSocketFailed):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_WEBSOCKET_FAILED", Message: "network websocket operation failed", InternalError: err}
-	case errors.Is(err, capability.ErrQuotaExceeded):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_BACKPRESSURE", Message: "network stream is backpressured", InternalError: err}
-	case errors.Is(err, execution.ErrInvalidTransition):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_INVALID", Message: "network stream is invalid", InternalError: err}
-	case errors.Is(err, capability.ErrExecutionRevoked):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_NOT_FOUND", Message: "network stream was not found", InternalError: err}
-	case errors.Is(err, execution.ErrTerminal):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_CLOSED", Message: "network stream is closed", InternalError: err}
-	default:
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_FAILED", Message: "network execute operation failed", InternalError: err}
-	}
-}
-
-func (identity workerInvocationIdentity) matchesRuntimeHostcall(
-	pluginInstanceID string,
-	activeFingerprint string,
-	runtimeInstanceID string,
-	runtimeGenerationID string,
-	runtimeShardID string,
-	policyRevision uint64,
-	managementRevision uint64,
-	revokeEpoch uint64,
-) bool {
-	return pluginInstanceID == identity.PluginInstanceID &&
-		activeFingerprint == identity.ActiveFingerprint &&
-		runtimeInstanceID == identity.RuntimeInstanceID &&
-		runtimeGenerationID == identity.RuntimeGenerationID &&
-		runtimeShardID == identity.RuntimeShardID &&
-		policyRevision == identity.PolicyRevision &&
-		managementRevision == identity.ManagementRevision &&
-		revokeEpoch == identity.RevokeEpoch
-}
-
-func (identity workerInvocationIdentity) matchesNetworkExecute(req networkExecuteRequestPayload) bool {
-	return identity.matchesRuntimeHostcall(
-		req.PluginInstanceID,
-		req.ActiveFingerprint,
-		req.RuntimeInstanceID,
-		req.RuntimeGenerationID,
-		req.RuntimeShardID,
-		req.PolicyRevision,
-		req.ManagementRevision,
-		req.RevokeEpoch,
-	) &&
-		identity.matchesResourceScope(req.ResourceScope) &&
-		req.PluginID == identity.PluginID &&
-		req.OwnerSessionHash == identity.OwnerSessionHash &&
-		req.OwnerUserHash == identity.OwnerUserHash &&
-		req.OwnerEnvHash == identity.OwnerEnvHash &&
-		req.SessionChannelIDHash == identity.SessionChannelIDHash
-}
-
-func (identity workerInvocationIdentity) matchesResourceScope(scope sessionctx.ResourceScope) bool {
-	expected, ok := identity.resourceScope(scope.Kind)
-	return ok && scope.Matches(expected)
-}
-
-func (identity workerInvocationIdentity) resourceScope(kind sessionctx.ScopeKind) (sessionctx.ResourceScope, bool) {
-	expected := sessionctx.ResourceScope{Kind: kind, OwnerEnvHash: identity.OwnerEnvHash}
-	if kind == sessionctx.ScopeUser {
-		expected.OwnerUserHash = identity.OwnerUserHash
-	}
-	return expected, expected.Valid()
-}
-
-func (identity workerInvocationIdentity) matchesSessionAudience(ownerSessionHash, ownerUserHash, ownerEnvHash, sessionChannelIDHash string) bool {
-	return ownerSessionHash == identity.OwnerSessionHash &&
-		ownerUserHash == identity.OwnerUserHash &&
-		ownerEnvHash == identity.OwnerEnvHash &&
-		sessionChannelIDHash == identity.SessionChannelIDHash
 }
 
 func workerInvocationContextFromInvocation(lease Lease, invocation json.RawMessage) (workerInvocationContext, error) {
@@ -4724,74 +2617,6 @@ func workerInvocationContextFromInvocation(lease Lease, invocation json.RawMessa
 	}, nil
 }
 
-func (access workerBrokerAccess) allowsStorage(storeID string, operation string) bool {
-	for _, item := range access.Storage {
-		if item.StoreID == storeID && stringSliceContains(item.Operations, operation) {
-			return true
-		}
-	}
-	return false
-}
-
-func (access workerBrokerAccess) storageScope(storeID string) (sessionctx.ScopeKind, bool) {
-	for _, item := range access.Storage {
-		if item.StoreID != storeID {
-			continue
-		}
-		scope := sessionctx.ScopeKind(strings.TrimSpace(item.Scope))
-		if scope == sessionctx.ScopeUser || scope == sessionctx.ScopeEnvironment {
-			return scope, true
-		}
-		return "", false
-	}
-	return "", false
-}
-
-func (access workerBrokerAccess) allowsNetworkConnector(connectorID string, transport string) bool {
-	for _, item := range access.Network {
-		if item.ConnectorID == connectorID && item.Transport == transport {
-			return true
-		}
-	}
-	return false
-}
-
-func (access workerBrokerAccess) networkScope(connectorID string, transport string) (sessionctx.ScopeKind, bool) {
-	for _, item := range access.Network {
-		if item.ConnectorID != connectorID || item.Transport != transport {
-			continue
-		}
-		scope := sessionctx.ScopeKind(strings.TrimSpace(item.Scope))
-		if scope == sessionctx.ScopeUser || scope == sessionctx.ScopeEnvironment {
-			return scope, true
-		}
-		return "", false
-	}
-	return "", false
-}
-
-func (access workerBrokerAccess) allowsNetwork(connectorID string, transport string, operation string, httpMethod string) bool {
-	for _, item := range access.Network {
-		if item.ConnectorID != connectorID || item.Transport != transport || !stringSliceContains(item.Operations, operation) {
-			continue
-		}
-		if transport == string(connectivity.TransportHTTP) && !stringSliceContains(item.HTTPMethods, httpMethod) {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-func stringSliceContains(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
-}
-
 func artifactRequestMatches(got ArtifactRequest, want ArtifactRequest) bool {
 	return strings.TrimSpace(got.PackageHash) == strings.TrimSpace(want.PackageHash) &&
 		strings.TrimSpace(got.Artifact) == strings.TrimSpace(want.Artifact) &&
@@ -4827,7 +2652,7 @@ func isWorkerArtifactPath(value string) bool {
 }
 
 func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {
-	return readSemanticIPCFrameV7(reader)
+	return readSemanticIPCFrame(reader)
 }
 
 func readBoundedIPCLine(reader *bufio.Reader, maxBytes int) ([]byte, error) {
@@ -4864,168 +2689,8 @@ func marshalHostcallPayload(ok bool, successPayload any, code string, message st
 	})
 }
 
-func marshalStorageFileHostcallPayload(payload storageFileResponsePayload) ([]byte, error) {
-	if !payload.OK {
-		return marshalHostcallPayload(false, nil, payload.Code, payload.Message)
-	}
-	if payload.Usage != nil && !validStorageUsage(*payload.Usage) {
-		return nil, errors.New("storage file success response has invalid usage")
-	}
-	switch payload.Operation {
-	case "read":
-		if payload.Usage == nil || payload.SizeBytes < 0 || payload.Entries != nil {
-			return nil, errors.New("storage file read success response violates its closed contract")
-		}
-		return json.Marshal(storageFileReadSuccessPayload{
-			OK: true, Path: payload.Path, DataBase64: payload.DataBase64,
-			SizeBytes: payload.SizeBytes, Usage: *payload.Usage,
-		})
-	case "write":
-		if payload.Usage == nil || payload.SizeBytes < 0 || payload.DataBase64 != "" || payload.Entries != nil {
-			return nil, errors.New("storage file write success response violates its closed contract")
-		}
-		return json.Marshal(storageFileWriteSuccessPayload{
-			OK: true, Path: payload.Path, SizeBytes: payload.SizeBytes, Usage: *payload.Usage,
-		})
-	case "delete":
-		if payload.DataBase64 != "" || payload.SizeBytes != 0 || payload.Entries != nil || payload.Usage != nil {
-			return nil, errors.New("storage file delete success response violates its closed contract")
-		}
-		return json.Marshal(storageFileDeleteSuccessPayload{OK: true, Path: payload.Path})
-	case "list":
-		if payload.Usage == nil || payload.DataBase64 != "" || payload.SizeBytes != 0 {
-			return nil, errors.New("storage file list success response violates its closed contract")
-		}
-		entries := payload.Entries
-		if entries == nil {
-			entries = []storage.FileEntry{}
-		}
-		return json.Marshal(storageFileListSuccessPayload{
-			OK: true, Path: payload.Path, Entries: entries, Usage: *payload.Usage,
-		})
-	default:
-		return nil, errors.New("storage file success response operation is invalid")
-	}
-}
-
-func marshalStorageKVHostcallPayload(payload storageKVResponsePayload) ([]byte, error) {
-	if !payload.OK {
-		return marshalHostcallPayload(false, nil, payload.Code, payload.Message)
-	}
-	if payload.Usage != nil && !validStorageUsage(*payload.Usage) {
-		return nil, errors.New("storage KV success response has invalid usage")
-	}
-	switch payload.Operation {
-	case "get":
-		if payload.Usage == nil || payload.SizeBytes < 0 || payload.Prefix != "" || payload.Entries != nil {
-			return nil, errors.New("storage KV get success response violates its closed contract")
-		}
-		return json.Marshal(storageKVGetSuccessPayload{
-			OK: true, Key: payload.Key, ValueBase64: payload.ValueBase64,
-			SizeBytes: payload.SizeBytes, Usage: *payload.Usage,
-		})
-	case "put":
-		if payload.Usage == nil || payload.SizeBytes < 0 || payload.ValueBase64 != "" || payload.Prefix != "" || payload.Entries != nil {
-			return nil, errors.New("storage KV put success response violates its closed contract")
-		}
-		return json.Marshal(storageKVPutSuccessPayload{
-			OK: true, Key: payload.Key, SizeBytes: payload.SizeBytes, Usage: *payload.Usage,
-		})
-	case "delete":
-		if payload.ValueBase64 != "" || payload.SizeBytes != 0 || payload.Prefix != "" || payload.Entries != nil || payload.Usage != nil {
-			return nil, errors.New("storage KV delete success response violates its closed contract")
-		}
-		return json.Marshal(storageKVDeleteSuccessPayload{OK: true, Key: payload.Key})
-	case "list":
-		if payload.Usage == nil || payload.Key != "" || payload.ValueBase64 != "" || payload.SizeBytes != 0 {
-			return nil, errors.New("storage KV list success response violates its closed contract")
-		}
-		entries := payload.Entries
-		if entries == nil {
-			entries = []storage.KVEntry{}
-		}
-		return json.Marshal(storageKVListSuccessPayload{
-			OK: true, Prefix: payload.Prefix, Entries: entries, Usage: *payload.Usage,
-		})
-	default:
-		return nil, errors.New("storage KV success response operation is invalid")
-	}
-}
-
-func marshalStorageSQLiteHostcallPayload(payload storageSQLiteResponsePayload) ([]byte, error) {
-	if !payload.OK {
-		return marshalHostcallPayload(false, nil, payload.Code, payload.Message)
-	}
-	if payload.Usage == nil || !validStorageUsage(*payload.Usage) {
-		return nil, errors.New("storage SQLite success response has invalid usage")
-	}
-	switch payload.Operation {
-	case "exec":
-		if payload.RowsAffected == nil || *payload.RowsAffected < 0 || payload.LastInsertID < 0 || payload.Columns != nil || payload.Rows != nil {
-			return nil, errors.New("storage SQLite exec success response violates its closed contract")
-		}
-		return json.Marshal(storageSQLiteExecSuccessPayload{
-			OK: true, Database: payload.Database, RowsAffected: *payload.RowsAffected,
-			LastInsertID: payload.LastInsertID, Usage: *payload.Usage,
-		})
-	case "query":
-		if payload.RowsAffected != nil || payload.LastInsertID != 0 || payload.Columns == nil || payload.Rows == nil {
-			return nil, errors.New("storage SQLite query success response violates its closed contract")
-		}
-		columns := *payload.Columns
-		if columns == nil {
-			columns = []string{}
-		}
-		rows := *payload.Rows
-		if rows == nil {
-			rows = [][]storageSQLiteValueIPC{}
-		}
-		for _, row := range rows {
-			for _, value := range row {
-				if !validStorageSQLiteValueIPC(value) {
-					return nil, errors.New("storage SQLite query success response contains an invalid typed value")
-				}
-			}
-		}
-		return json.Marshal(storageSQLiteQuerySuccessPayload{
-			OK: true, Database: payload.Database, Columns: columns, Rows: rows, Usage: *payload.Usage,
-		})
-	default:
-		return nil, errors.New("storage SQLite success response operation is invalid")
-	}
-}
-
-func validStorageUsage(usage storage.Usage) bool {
-	return strings.TrimSpace(usage.PluginInstanceID) != "" &&
-		strings.TrimSpace(usage.StoreID) != "" &&
-		usage.UsageBytes >= 0 && usage.QuotaBytes >= 0 && usage.UsageFiles >= 0 && usage.QuotaFiles >= 0
-}
-
-func marshalBoundedHostcallPayload(ok bool, successPayload any, code string, message string, oversizedCode string, oversizedMessage string) ([]byte, error) {
-	raw, err := marshalHostcallPayload(ok, successPayload, code, message)
-	if err != nil {
-		return nil, err
-	}
-	return boundHostcallPayload(raw, oversizedCode, oversizedMessage)
-}
-
-func boundHostcallPayload(raw []byte, oversizedCode string, oversizedMessage string) ([]byte, error) {
-	if len(raw) <= maxWASMHostcallResponseBytes {
-		return raw, nil
-	}
-	raw, err := marshalHostcallPayload(false, nil, oversizedCode, oversizedMessage)
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > maxWASMHostcallResponseBytes {
-		return nil, errors.New("bounded broker error payload exceeds the WASM hostcall limit")
-	}
-	return raw, nil
-}
-
 func writeIPCResponseFrame(stdin io.Writer, frameType string, runtimeGenerationID string, request ipcFrame, payload []byte) error {
 	return json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
 		FrameType:           frameType,
 		RequestID:           request.RequestID,
 		ParentRequestID:     request.ParentRequestID,
@@ -5035,9 +2700,6 @@ func writeIPCResponseFrame(stdin io.Writer, frameType string, runtimeGenerationI
 }
 
 func validateIPCResponse(requestID string, runtimeGenerationID string, responseFrameType string, frame ipcFrame) error {
-	if frame.IPCVersion != version.RustIPCVersion {
-		return fmt.Errorf("%w: ipc_version %q", ErrRuntimeIPCUnavailable, frame.IPCVersion)
-	}
 	if frame.FrameType != responseFrameType {
 		return fmt.Errorf("%w: frame_type %q", ErrRuntimeIPCUnavailable, frame.FrameType)
 	}
@@ -5285,10 +2947,7 @@ func dereferenceJSONType(targetType reflect.Type) reflect.Type {
 	return targetType
 }
 
-func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce string, expectedDescriptor RuntimeDescriptor, expectedLimits RuntimeLimits, frame ipcFrame, containmentRequired ...bool) (helloAckPayload, error) {
-	if frame.IPCVersion != version.RustIPCVersion {
-		return helloAckPayload{}, fmt.Errorf("%w: ipc_version %q", ErrRuntimeHandshake, frame.IPCVersion)
-	}
+func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce string, expectedDescriptor RuntimeArtifactIdentity, expectedLimits RuntimeLimits, frame ipcFrame, containmentRequired ...bool) (helloAckPayload, error) {
 	if frame.FrameType != ipcFrameTypeHelloAck {
 		return helloAckPayload{}, fmt.Errorf("%w: frame_type %q", ErrRuntimeHandshake, frame.FrameType)
 	}
@@ -5302,36 +2961,29 @@ func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce
 	if err := decodeStrictJSON(frame.Payload, &ack); err != nil {
 		return helloAckPayload{}, fmt.Errorf("%w: decode payload: %v", ErrRuntimeHandshake, err)
 	}
-	runtimeVersion, err := version.ParseSemVer(ack.RuntimeVersion)
+	if ack.InternalWire != InternalWire {
+		return helloAckPayload{}, fmt.Errorf("%w: internal_wire %d", ErrRuntimeHandshake, ack.InternalWire)
+	}
+	runtimeVersion, err := version.ParseSemVer(ack.PlatformVersion)
 	if err != nil {
-		return helloAckPayload{}, fmt.Errorf("%w: runtime version: %v", ErrRuntimeHandshake, err)
+		return helloAckPayload{}, fmt.Errorf("%w: platform version: %v", ErrRuntimeHandshake, err)
 	}
 	actualTarget, err := parseRuntimeAdmissionTarget(ack.ActualTarget)
 	if err != nil {
 		return helloAckPayload{}, fmt.Errorf("%w: actual_target: %v", ErrRuntimeHandshake, err)
 	}
-	actualDescriptor, err := NewRuntimeDescriptor(RuntimeDescriptorOptions{
-		PlatformVersion:   runtimeVersion,
-		Target:            actualTarget,
-		RustIPCVersion:    ack.RustIPCVersion,
-		WASMABIVersion:    ack.WASMABIVersion,
-		ContractSetSHA256: ack.ContractSetSHA256,
-		BinarySHA256:      expectedDescriptor.BinarySHA256(),
-	})
-	if err != nil || actualDescriptor != expectedDescriptor {
+	if runtimeVersion != expectedDescriptor.PlatformVersion() || actualTarget != expectedDescriptor.Target() || ack.RuntimeArtifactSHA256 != expectedDescriptor.BinarySHA256() {
 		return helloAckPayload{}, fmt.Errorf(
-			"%w: %w: runtime=%q target=%s ipc=%q wasm=%q contracts=%q",
+			"%w: %w: platform=%q target=%s artifact=%q",
 			ErrRuntimeHandshake,
-			ErrRuntimeDescriptorMismatch,
-			ack.RuntimeVersion,
+			ErrRuntimeArtifactIdentityMismatch,
+			ack.PlatformVersion,
 			ack.ActualTarget,
-			ack.RustIPCVersion,
-			ack.WASMABIVersion,
-			ack.ContractSetSHA256,
+			ack.RuntimeArtifactSHA256,
 		)
 	}
-	if ack.ChannelNonce != channelNonce {
-		return helloAckPayload{}, fmt.Errorf("%w: channel_nonce mismatch", ErrRuntimeHandshake)
+	if ack.ConnectionNonce != channelNonce {
+		return helloAckPayload{}, fmt.Errorf("%w: connection_nonce mismatch", ErrRuntimeHandshake)
 	}
 	if ack.Limits != expectedLimits {
 		return helloAckPayload{}, fmt.Errorf("%w: runtime limits mismatch", ErrRuntimeHandshake)

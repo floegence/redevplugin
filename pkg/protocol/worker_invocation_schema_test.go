@@ -9,7 +9,7 @@ import (
 
 func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v3.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,9 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	}
 
 	properties := requireNestedObject(t, schema, "properties")
-	requireConst(t, map[string]any{"worker_invocation": map[string]any{"properties": properties}}, "worker_invocation", "abi", "redevplugin-wasm-worker-v2")
+	if _, ok := properties["abi"]; ok {
+		t.Fatal("worker invocation must not expose a second ABI version axis")
+	}
 
 	for name, want := range map[string][]string{
 		"effect":    {"read", "write", "execute", "delete", "admin"},
@@ -88,7 +90,7 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 
 func TestWorkerInvocationSchemaBindsOneExecutionIdentityForAsyncWork(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v3.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +125,15 @@ func TestWorkerInvocationSchemaBindsOneExecutionIdentityForAsyncWork(t *testing.
 	}
 }
 
+func TestWorkerInvocationSchemaHasNoVersionedPredecessor(t *testing.T) {
+	root := repoRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "spec", "plugin", "worker-invocation-v3.schema.json")); err == nil {
+		t.Fatal("retired versioned worker invocation schema still exists")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func stringSetEqual(got []string, want []string) bool {
 	if len(got) != len(want) {
 		return false
@@ -143,4 +154,13 @@ func stringSetEqual(got []string, want []string) bool {
 		}
 	}
 	return true
+}
+
+func containsRequiredString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

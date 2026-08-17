@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -25,32 +24,32 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/controlstore"
-	"github.com/floegence/redevplugin/v2/internal/resourceio"
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/externalsource"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
-	"github.com/floegence/redevplugin/v2/pkg/releasetrust"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/secrets"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/sessionscope"
-	"github.com/floegence/redevplugin/v2/pkg/settings"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/internal/controlstore"
+	"github.com/floegence/redevplugin/v3/internal/resourceio"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/externalsource"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionscope"
+	"github.com/floegence/redevplugin/v3/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 type AuditSink = observability.AuditSink
@@ -71,9 +70,6 @@ type DiagnosticDetails struct {
 	RuntimeInstanceID         string                                  `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID       string                                  `json:"runtime_generation_id,omitempty"`
 	RuntimeVersion            string                                  `json:"runtime_version,omitempty"`
-	RustIPCVersion            string                                  `json:"rust_ipc_version,omitempty"`
-	WASMABIVersion            string                                  `json:"wasm_abi_version,omitempty"`
-	ContractSetSHA256         string                                  `json:"contract_set_sha256,omitempty"`
 	RuntimeTargetOS           string                                  `json:"runtime_target_os,omitempty"`
 	RuntimeTargetArch         string                                  `json:"runtime_target_arch,omitempty"`
 	RuntimeBinarySHA256       string                                  `json:"runtime_binary_sha256,omitempty"`
@@ -138,7 +134,6 @@ var (
 	ErrPluginAlreadyInstalled        = errors.New("plugin instance is already installed")
 	ErrPluginTrustUnavailable        = errors.New("plugin trust is unavailable")
 	ErrPluginTrustDenied             = errors.New("plugin trust does not allow execution")
-	ErrPluginUIProtocolUnsupported   = errors.New("plugin UI protocol is unsupported")
 	ErrPluginRuntimeNotConfigured    = errors.New("plugin runtime is not configured")
 	ErrPluginRuntimeIncompatible     = errors.New("plugin runtime is incompatible")
 	ErrSecurityEventPersistence      = errors.New("plugin security event persistence failed")
@@ -352,44 +347,8 @@ type PluginPackageRelease struct {
 	ReleaseMetadataSignature *ReleaseMetadataSignature `json:"release_metadata_signature,omitempty"`
 	Hashes                   PackageHashSet            `json:"hashes"`
 	PackageSignature         *PackageReleaseSignature  `json:"package_signature,omitempty"`
-	Compatibility            *ReleaseCompatibility     `json:"compatibility,omitempty"`
-	HostRequirements         []HostRequirement         `json:"host_requirements,omitempty"`
 	ReleaseEvidence          *ReleaseEvidence          `json:"release_evidence,omitempty"`
 	Metadata                 map[string]string         `json:"metadata,omitempty"`
-}
-
-type ReleaseCompatibility struct {
-	MinReDevPluginVersion string                 `json:"min_redevplugin_version,omitempty"`
-	MinRuntimeVersion     string                 `json:"min_runtime_version,omitempty"`
-	UIProtocolVersion     string                 `json:"ui_protocol_version,omitempty"`
-	SupportedTargets      []runtimetarget.Target `json:"supported_targets,omitempty"`
-}
-
-type HostRequirement struct {
-	HostID                      string                      `json:"host_id"`
-	MinHostVersion              string                      `json:"min_host_version,omitempty"`
-	RequiredCapabilityContracts []HostCapabilityRequirement `json:"required_capability_contracts,omitempty"`
-}
-
-type HostCapabilityRequirement struct {
-	CapabilityID      string `json:"capability_id"`
-	CapabilityVersion string `json:"capability_version"`
-}
-
-type HostRequirementSelectionRequest struct {
-	SourceID      string            `json:"source_id"`
-	PublisherID   string            `json:"publisher_id"`
-	PluginID      string            `json:"plugin_id"`
-	PluginVersion string            `json:"plugin_version"`
-	Requirements  []HostRequirement `json:"requirements"`
-}
-
-type HostRequirementSelection struct {
-	HostID string `json:"host_id"`
-}
-
-type HostRequirementPolicy interface {
-	SelectHostRequirement(ctx context.Context, req HostRequirementSelectionRequest) (HostRequirementSelection, error)
 }
 
 type ReleaseEvidence struct {
@@ -401,7 +360,7 @@ type ReleaseEvidence struct {
 type ReleaseArtifactResolveRequest struct {
 	Action           PackageTrustAction             `json:"action"`
 	ReleaseRef       PluginReleaseRef               `json:"release_ref"`
-	SourcePolicy     releasecontract.SourcePolicyV2 `json:"source_policy"`
+	SourcePolicy     releasecontract.SourcePolicyV3 `json:"source_policy"`
 	CurrentRecord    *registry.PluginRecord         `json:"current_record,omitempty"`
 	PluginInstanceID string                         `json:"plugin_instance_id,omitempty"`
 	Now              time.Time                      `json:"-"`
@@ -483,7 +442,6 @@ type CoreAdapters struct {
 type ReleaseModule struct {
 	Trust                   *releasetrust.ServiceSet
 	ReleaseArtifactResolver ReleaseArtifactResolver
-	HostRequirements        HostRequirementPolicy
 }
 
 type RuntimeModule struct {
@@ -557,7 +515,6 @@ type normalizedAdapters struct {
 	PackageTrustVerifier             PackageTrustVerifier
 	ReleaseTrust                     *releasetrust.ServiceSet
 	ReleaseArtifactResolver          ReleaseArtifactResolver
-	HostRequirements                 HostRequirementPolicy
 	Audit                            AuditSink
 	SecurityAudit                    observability.SecurityAuditJournal
 	Diagnostics                      DiagnosticsSink
@@ -623,13 +580,6 @@ type Host struct {
 	recoveryRevision     int64
 	recoverySnapshot     *RecoverySnapshot
 	runtimeIO            *hostRuntimeIOBroker
-	manifestModelMu      sync.Mutex
-	manifestModelCache   map[string]manifestModelProjection
-}
-
-type manifestModelProjection struct {
-	API         manifest.PublicAPIRequirement
-	Permissions []manifest.PermissionID
 }
 
 type ImportLocalPackageRequest struct {
@@ -664,7 +614,7 @@ type packageTrustInput struct {
 	LocalImport     bool
 	ReleaseRef      *PluginReleaseRef
 	Release         *PluginPackageRelease
-	SourcePolicy    *releasecontract.SourcePolicyV2
+	SourcePolicy    *releasecontract.SourcePolicyV3
 	VerifiedRelease *releasetrust.VerifiedPackage
 	Observe         func(ReleaseArtifactProgress)
 }
@@ -704,14 +654,6 @@ type ListRetainedDataRequest struct {
 type DeleteRetainedDataRequest struct {
 	PluginInstanceID        string `json:"plugin_instance_id"`
 	ExpectedBindingRevision uint64 `json:"expected_binding_revision"`
-}
-
-type BindRetainedDataRequest struct {
-	SourcePluginInstanceID           string    `json:"source_plugin_instance_id"`
-	ExpectedSourceBindingRevision    uint64    `json:"expected_source_binding_revision"`
-	TargetPluginInstanceID           string    `json:"target_plugin_instance_id"`
-	TargetExpectedManagementRevision uint64    `json:"target_expected_management_revision"`
-	Now                              time.Time `json:"-"`
 }
 
 type CleanupExpiredRetainedDataRequest struct {
@@ -1005,7 +947,6 @@ type workerInvocationPayload struct {
 	WorkerScope          string             `json:"worker_scope"`
 	Artifact             string             `json:"artifact"`
 	ArtifactSHA256       string             `json:"artifact_sha256"`
-	ABI                  string             `json:"abi"`
 	Method               string             `json:"method"`
 	Effect               string             `json:"effect"`
 	Execution            string             `json:"execution"`
@@ -1031,6 +972,7 @@ type workerBrokerAccess struct {
 
 type workerStorageBrokerAccess struct {
 	StoreID    string   `json:"store_id"`
+	Kind       string   `json:"-"`
 	Scope      string   `json:"scope"`
 	Operations []string `json:"operations"`
 }
@@ -1091,7 +1033,6 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 	if module := config.Release; module != nil {
 		adapters.ReleaseTrust = module.Trust
 		adapters.ReleaseArtifactResolver = module.ReleaseArtifactResolver
-		adapters.HostRequirements = module.HostRequirements
 		features[FeatureRelease] = struct{}{}
 	}
 	if module := config.Runtime; module != nil {
@@ -1165,7 +1106,6 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 		}{
 			{"trust service", module.Trust},
 			{"artifact resolver", module.ReleaseArtifactResolver},
-			{"host requirements", module.HostRequirements},
 		}
 		for _, check := range checks {
 			if isNilInterfaceValue(check.value) {
@@ -1364,57 +1304,7 @@ func openControlStore(ctx context.Context, config Config) (*controlstore.Store, 
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create state root: %w", err)
 	}
-	if _, err := os.Stat(path); err == nil {
-		return controlstore.Open(ctx, controlstore.Config{Path: path})
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
-	sources, err := discoverControlMigrationSources(root)
-	if err != nil {
-		return nil, err
-	}
-	if len(sources) != 0 {
-		return controlstore.Migrate(ctx, controlstore.Config{Path: path, Sources: sources})
-	}
 	return controlstore.Open(ctx, controlstore.Config{Path: path})
-}
-
-func discoverControlMigrationSources(root string) ([]controlstore.Source, error) {
-	type candidate struct{ path, kind string }
-	candidates := []candidate{
-		{"registry.sqlite", "registry"}, {"operations.sqlite", "operation"}, {"streams.sqlite", "stream"},
-		{"confirmation_intents.sqlite", "confirmation"}, {"session-scopes.sqlite", "session"}, {"session_scopes.sqlite", "session"},
-		{"db/registry.sqlite", "registry"}, {"db/operations.sqlite", "operation"}, {"db/streams.sqlite", "stream"},
-		{"db/confirmation_intents.sqlite", "confirmation"}, {"db/session_scopes.sqlite", "session"},
-	}
-	seenKind := map[string]string{}
-	var sources []controlstore.Source
-	for _, candidate := range candidates {
-		path := filepath.Join(root, filepath.FromSlash(candidate.path))
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			return nil, fmt.Errorf("%w: inspect legacy %s: %v", controlstore.ErrMigration, candidate.path, err)
-		}
-		if previous := seenKind[candidate.kind]; previous != "" {
-			return nil, fmt.Errorf("%w: ambiguous %s sources %s and %s", controlstore.ErrMigration, candidate.kind, previous, candidate.path)
-		}
-		version := 0
-		if candidate.kind != "confirmation" {
-			db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String())
-			if err != nil {
-				return nil, fmt.Errorf("%w: open legacy %s: %v", controlstore.ErrMigration, candidate.path, err)
-			}
-			err = db.QueryRow(`PRAGMA user_version`).Scan(&version)
-			db.Close()
-			if err != nil {
-				return nil, fmt.Errorf("%w: inspect legacy %s version: %v", controlstore.ErrMigration, candidate.path, err)
-			}
-		}
-		seenKind[candidate.kind] = candidate.path
-		sources = append(sources, controlstore.Source{Name: candidate.kind, Path: path, Kind: candidate.kind, Version: version})
-	}
-	return sources, nil
 }
 
 func bindInternalPlatformState(config Config, control *controlstore.Store, adapters *normalizedAdapters) error {
@@ -1718,14 +1608,6 @@ func (h *Host) Features(ctx context.Context) ([]Feature, error) {
 	return h.configuredFeatures(), nil
 }
 
-// GetCompatibility returns the current platform contract after host authorization.
-func (h *Host) GetCompatibility(ctx context.Context) (version.CompatibilityManifest, error) {
-	if _, err := h.authorizeManagement(ctx, ManagementActionGetCompatibility, authorizationTarget(ResourcePlatform, "compatibility")); err != nil {
-		return version.CompatibilityManifest{}, err
-	}
-	return version.CurrentCompatibilityManifest(), nil
-}
-
 func (h *Host) requireFeature(feature Feature) error {
 	return h.requireFeatures([]Feature{feature})
 }
@@ -1752,8 +1634,7 @@ func (h *Host) featureConfigured(feature Feature) bool {
 	}
 	switch feature {
 	case FeatureRelease:
-		return h.adapters.ReleaseTrust != nil && h.adapters.ReleaseArtifactResolver != nil &&
-			h.adapters.HostRequirements != nil
+		return h.adapters.ReleaseTrust != nil && h.adapters.ReleaseArtifactResolver != nil
 	case FeatureRuntime:
 		return h.adapters.RuntimeManager != nil
 	case FeatureCapability:
@@ -1875,13 +1756,13 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	if !version.SupportsPluginUIProtocol(record.Manifest.Plugin.UIProtocolVersion) {
-		return bridge.SurfaceBootstrap{}, fmt.Errorf("%w: installed %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion)
-	}
 	if record.EnableState != registry.EnableEnabled {
 		return bridge.SurfaceBootstrap{}, errors.New("plugin is not enabled")
 	}
 	if err := h.canRun(ctx, record); err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
+	if err := h.pluginAuthorizationError(ctx, record); err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
 	surface, ok := manifestSurfaceByID(record.Manifest, req.SurfaceID)
@@ -1901,7 +1782,6 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
 		PluginVersion:        record.Version,
-		UIProtocolVersion:    record.Manifest.Plugin.UIProtocolVersion,
 		SurfaceID:            req.SurfaceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		ActiveFingerprint:    record.ActiveFingerprint,
@@ -3018,6 +2898,10 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 	if err != nil {
 		return resolvedMethodCall{}, err
 	}
+	requiredPermissions, err := h.requiredPermissionsForMethod(record, method)
+	if err != nil {
+		return resolvedMethodCall{}, err
+	}
 	revision := bridge.RevisionBinding{
 		PolicyRevision:     record.PolicyRevision,
 		ManagementRevision: record.ManagementRevision,
@@ -3038,6 +2922,9 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 	if err != nil {
 		return resolvedMethodCall{}, err
 	}
+	if err := h.requireCurrentPermissionGrants(ctx, record.PluginInstanceID, requiredPermissions); err != nil {
+		return resolvedMethodCall{}, err
+	}
 	audience := token.Audience
 	if err := h.requireSurfaceGeneration(audience.SurfaceInstanceID, audience.RuntimeGenerationID, req.Now); err != nil {
 		return resolvedMethodCall{}, err
@@ -3048,10 +2935,6 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 	}
 	if decision != PolicyAllow {
 		return resolvedMethodCall{}, fmt.Errorf("%w: local policy denied plugin method", security.ErrPolicyDenied)
-	}
-	requiredPermissions, err := h.requiredPermissionsForMethod(record, method)
-	if err != nil {
-		return resolvedMethodCall{}, err
 	}
 	authorization, err := h.authorizePlugin(ctx, registry.AuthorizeRequest{
 		PluginInstanceID: record.PluginInstanceID,
@@ -3219,7 +3102,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	if pluginInstanceID == "" {
 		return registry.PluginRecord{}, errors.New("plugin_instance_id is required")
 	}
-	if err := h.preflightPackageFeatures(pkg.ManifestModel, trustInput); err != nil {
+	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if existing, err := h.getPluginRecord(ctx, pluginInstanceID); err == nil {
@@ -3227,11 +3110,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	} else if !errors.Is(err, registry.ErrNotFound) {
 		return registry.PluginRecord{}, err
 	}
-	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, trustInput)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest, RuntimeRequirement: runtimeRequirement}); err != nil {
+	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest}); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.installed", PluginID: pkg.Manifest.PluginID(), PluginInstanceID: pluginInstanceID})
@@ -3244,26 +3123,29 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 		return registry.PluginRecord{}, err
 	}
 	observeReleaseInstallPhase(trustInput.Observe, "fetch_capability_evidence")
-	capabilityPins, err := h.resolvePackageCapabilityPins(ctx, pkg.Manifest, trustInput)
+	capabilityPins, err := h.resolvePackageCapabilityPins(pkg.Manifest)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	metadata := cloneStringMap(trustAssessment.Metadata)
 	metadata = mergeStringMap(baseMetadata, metadata)
 	observeReleaseInstallPhase(trustInput.Observe, "commit")
-	record := packageRecord(pkg, trustAssessment, pluginInstanceID, metadata, capabilityPins)
-	record.RuntimeRequirement = runtimeRequirement
+	provenance, err := packageSourceProvenanceForTrust(pkg, trustInput)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record := packageRecord(pkg, trustAssessment, pluginInstanceID, metadata, provenance, capabilityPins)
 	if trustInput.LocalImport {
 		record.LocalImportProvenance = localImportProvenance(now)
 	}
 	if trustInput.VerifiedRelease != nil {
 		record.ReleaseTrustBinding = releaseTrustBinding(*trustInput.VerifiedRelease)
 	}
-	record.EnableState = registry.EnableDisabled
+	record.EnableState = registry.EnableEnabled
 	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	stored, err := h.putPluginRecord(ctx, record, now)
+	stored, err := h.commitInstall(ctx, record, now)
 	if err != nil {
 		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
 		return registry.PluginRecord{}, err
@@ -3271,6 +3153,42 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	h.rememberVerifiedRelease(stored.PluginInstanceID, stored.ReleaseTrustBinding, trustInput.VerifiedRelease)
 	if stored.ReleaseTrustBinding == nil {
 		h.verifiedReleases.delete(stored.PluginInstanceID)
+	}
+	if err := errors.Join(
+		h.prepareEnabledRuntimeState(ctx, stored),
+		h.publishEnabledSurfaces(ctx, stored),
+	); err != nil {
+		committedErr := mutation.Committed(err)
+		h.reportLifecycleDiagnostic(
+			ctx,
+			stored,
+			"plugin.install.derived_state_failed",
+			"plugin installed but its runtime state is not ready",
+			committedErr,
+			refreshFailureDiagnosticDetails(err),
+		)
+		return stored, committedErr
+	}
+	return stored, nil
+}
+
+func (h *Host) commitInstall(ctx context.Context, record registry.PluginRecord, now time.Time) (registry.PluginRecord, error) {
+	shape, err := plugindata.ShapeFromManifest(record.Manifest)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	var stored registry.PluginRecord
+	_, err = h.adapters.PluginData.InstallCommit(ctx, plugindata.InstallCommitRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		Shape:            shape,
+		Now:              now,
+	}, func(ctx context.Context, expected *plugindata.Binding, binding plugindata.Binding, committedShape plugindata.Shape, commitTime time.Time) error {
+		var commitErr error
+		stored, commitErr = h.controlStore.InstallCommit(ctx, record, expected, binding, committedShape, commitTime)
+		return commitErr
+	})
+	if err != nil {
+		return registry.PluginRecord{}, err
 	}
 	return stored, nil
 }
@@ -3352,25 +3270,21 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 }
 
 func (h *Host) updateResolvedPackage(ctx context.Context, current registry.PluginRecord, pkg pluginpkg.Package, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (result registry.PluginRecord, retErr error) {
-	activationSnapshot := h.snapshotReleaseActivation(current)
-	activationChanged := false
+	verifiedReleaseSnapshot := h.snapshotVerifiedRelease(current)
+	verifiedReleaseChanged := false
 	updateCommitted := false
 	defer func() {
-		if updateCommitted || !activationChanged {
+		if updateCommitted || !verifiedReleaseChanged {
 			return
 		}
-		if err := h.restoreReleaseActivation(current, activationSnapshot); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("restore release activation after failed update: %w", err))
+		if err := h.restoreVerifiedRelease(current, verifiedReleaseSnapshot); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("restore verified release after failed update: %w", err))
 		}
 	}()
-	if err := h.preflightPackageFeatures(pkg.ManifestModel, trustInput); err != nil {
+	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, trustInput)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest, RuntimeRequirement: runtimeRequirement}); err != nil {
+	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest}); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.updated", PluginID: current.PluginID, PluginInstanceID: current.PluginInstanceID})
@@ -3382,14 +3296,17 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	capabilityPins, err := h.resolvePackageCapabilityPins(ctx, pkg.Manifest, trustInput)
+	capabilityPins, err := h.resolvePackageCapabilityPins(pkg.Manifest)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	metadata := cloneStringMap(trustAssessment.Metadata)
 	metadata = mergeStringMap(baseMetadata, metadata)
-	next := packageRecord(pkg, trustAssessment, current.PluginInstanceID, metadata, capabilityPins)
-	next.RuntimeRequirement = runtimeRequirement
+	provenance, err := packageSourceProvenanceForTrust(pkg, trustInput)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	next := packageRecord(pkg, trustAssessment, current.PluginInstanceID, metadata, provenance, capabilityPins)
 	if trustInput.LocalImport {
 		next.LocalImportProvenance = localImportProvenance(now)
 	}
@@ -3404,8 +3321,12 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	}
 	next.VersionHistory = current.VersionHistory
 	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, now), now)
+	next, err = registry.PreparePluginPut(current.OwnerEnvHash, next, &current, now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if next.EnableState == registry.EnableEnabled {
-		activationChanged = true
+		verifiedReleaseChanged = true
 		h.rememberVerifiedRelease(next.PluginInstanceID, next.ReleaseTrustBinding, trustInput.VerifiedRelease)
 		if err := h.validateEnabledRuntimeState(ctx, next); err != nil {
 			return registry.PluginRecord{}, err
@@ -3422,7 +3343,7 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
 		return registry.PluginRecord{}, err
 	}
-	activationChanged = true
+	verifiedReleaseChanged = true
 	h.rememberVerifiedRelease(stored.PluginInstanceID, stored.ReleaseTrustBinding, trustInput.VerifiedRelease)
 	if err := h.publishEnabledSurfaces(ctx, stored); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
@@ -3447,15 +3368,15 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	return stored, nil
 }
 
-func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAction, ref PluginReleaseRef, current *registry.PluginRecord, pluginInstanceID string, now time.Time, observe ...func(ReleaseArtifactProgress)) (pluginpkg.Package, PluginPackageRelease, releasecontract.SourcePolicyV2, releasetrust.VerifiedPackage, map[string]string, error) {
+func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAction, ref PluginReleaseRef, current *registry.PluginRecord, pluginInstanceID string, now time.Time, observe ...func(ReleaseArtifactProgress)) (pluginpkg.Package, PluginPackageRelease, releasecontract.SourcePolicyV3, releasetrust.VerifiedPackage, map[string]string, error) {
 	if err := h.requireFeature(FeatureRelease); err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	if h.adapters.ReleaseTrust == nil || h.adapters.ReleaseArtifactResolver == nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, ErrReleaseModuleRequired
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, ErrReleaseModuleRequired
 	}
 	if err := validateReleaseRef(ref); err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	var progressObserver func(ReleaseArtifactProgress)
 	if len(observe) > 0 {
@@ -3468,11 +3389,11 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 		PluginID: ref.PluginID, Version: ref.Version,
 	})
 	if err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, releaseTrustBoundaryError(err)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, releaseTrustBoundaryError(err)
 	}
 	sourcePolicy := prepared.SourcePolicy()
 	if err := enforceReleaseSourcePolicy(action, current, ref, sourcePolicy); err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	observeReleaseInstallPhase(progressObserver, "fetch_release_evidence")
 	resolved, err := h.adapters.ReleaseArtifactResolver.ResolveReleaseArtifact(ctx, ReleaseArtifactResolveRequest{
@@ -3480,58 +3401,55 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 		PluginInstanceID: pluginInstanceID, Now: now, Observe: releaseInstallResolverObserver(progressObserver),
 	})
 	if err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	if resolved.Reader == nil || resolved.Size <= 0 || resolved.Size > maxReleasePackageBytes {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact size is invalid", ErrReleaseRefVerificationFailed)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact size is invalid", ErrReleaseRefVerificationFailed)
 	}
 	if len(resolved.ReleaseMetadataBytes) == 0 || int64(len(resolved.ReleaseMetadataBytes)) > maxReleaseMetadataBytes {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: release metadata exceeds size limit", ErrReleaseRefVerificationFailed)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: release metadata exceeds size limit", ErrReleaseRefVerificationFailed)
 	}
 	if len(resolved.ReleaseMetadataSignature) != ed25519.SignatureSize {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: release metadata signature size is invalid", ErrReleaseRefVerificationFailed)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: release metadata signature size is invalid", ErrReleaseRefVerificationFailed)
 	}
 	observeReleaseInstallPhase(progressObserver, "download_package")
 	observeReleaseInstallPhase(progressObserver, "verify_hashes")
 	expectedArtifactSHA := strings.TrimPrefix(strings.TrimSpace(resolved.ArtifactSHA256), "sha256:")
 	if !isLowerHexSHA256(expectedArtifactSHA) {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact sha256 is required", ErrReleaseRefVerificationFailed)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact sha256 is required", ErrReleaseRefVerificationFailed)
 	}
 	hasher := sha256.New()
 	if _, err := io.CopyN(hasher, io.NewSectionReader(resolved.Reader, 0, resolved.Size), resolved.Size); err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact read failed: %v", ErrReleaseRefVerificationFailed, err)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact read failed: %v", ErrReleaseRefVerificationFailed, err)
 	}
 	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != expectedArtifactSHA {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact sha256 mismatch", ErrReleaseRefVerificationFailed)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact sha256 mismatch", ErrReleaseRefVerificationFailed)
 	}
 	observeReleaseInstallPhase(progressObserver, "verify_signatures")
 	verifiedMetadata, err := h.adapters.ReleaseTrust.VerifyReleaseMetadata(ctx, prepared, resolved.ReleaseMetadataBytes, resolved.ReleaseMetadataSignature)
 	if err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, releaseTrustBoundaryError(err)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, releaseTrustBoundaryError(err)
 	}
 	release, err := pluginPackageReleaseFromDocument(verifiedMetadata.Document(), ref.ReleaseMetadataSHA256)
 	if err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	if err := validateResolvedRelease(ref, release); err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	pkg, err := pluginpkg.Read(ctx, resolved.Reader, resolved.Size, pluginpkg.DefaultReadLimits())
 	if err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	if err := validateReleasePackage(ref, pkg); err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
-	}
-	if err := validateReleaseCompatibility(pkg, release); err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	if pkg.PackageSignature == nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package signature is required", ErrReleaseRefVerificationFailed)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package signature is required", ErrReleaseRefVerificationFailed)
 	}
 	verifiedPackage, err := h.adapters.ReleaseTrust.VerifyPackage(ctx, verifiedMetadata, releasePackageSignature(*pkg.PackageSignature))
 	if err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, releaseTrustBoundaryError(err)
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, releaseTrustBoundaryError(err)
 	}
 	distribution := release.DistributionRef.Distribution
 	metadata := map[string]string{
@@ -3572,7 +3490,7 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	}
 	metadata["release.metadata_ref"] = ref.ReleaseMetadataRef
 	if err := mergePrefixedMetadata(metadata, "release.", release.Metadata); err != nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
+		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV3{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	return pkg, release, sourcePolicy, verifiedPackage, metadata, nil
 }
@@ -3614,27 +3532,7 @@ func releaseTrustBoundaryError(err error) error {
 	return err
 }
 
-func pluginPackageReleaseFromDocument(document releasecontract.ReleaseMetadataV8, metadataSHA256 string) (PluginPackageRelease, error) {
-	supportedTargets := make([]runtimetarget.Target, len(document.Compatibility.SupportedTargets))
-	for index, value := range document.Compatibility.SupportedTargets {
-		target, err := runtimetarget.Parse(value)
-		if err != nil {
-			return PluginPackageRelease{}, fmt.Errorf("%w: release target is invalid", ErrReleaseRefVerificationFailed)
-		}
-		supportedTargets[index] = target
-	}
-	hostRequirements := make([]HostRequirement, len(document.HostRequirements))
-	for index, value := range document.HostRequirements {
-		requirements := make([]HostCapabilityRequirement, len(value.RequiredCapabilityContracts))
-		for requirementIndex, requirement := range value.RequiredCapabilityContracts {
-			requirements[requirementIndex] = HostCapabilityRequirement{
-				CapabilityID: requirement.CapabilityID, CapabilityVersion: requirement.CapabilityVersion,
-			}
-		}
-		hostRequirements[index] = HostRequirement{
-			HostID: value.HostID, MinHostVersion: value.MinHostVersion, RequiredCapabilityContracts: requirements,
-		}
-	}
+func pluginPackageReleaseFromDocument(document releasecontract.ReleaseMetadata, metadataSHA256 string) (PluginPackageRelease, error) {
 	var evidence *ReleaseEvidence
 	if document.ReleaseEvidence != nil {
 		evidence = &ReleaseEvidence{
@@ -3665,13 +3563,7 @@ func pluginPackageReleaseFromDocument(document releasecontract.ReleaseMetadataV8
 			SourcePolicyEpoch:  document.PackageSignature.SourcePolicyEpoch,
 			RevocationEpoch:    document.PackageSignature.RevocationEpoch,
 		},
-		Compatibility: &ReleaseCompatibility{
-			MinReDevPluginVersion: document.Compatibility.MinReDevPluginVersion,
-			MinRuntimeVersion:     document.Compatibility.MinRuntimeVersion,
-			UIProtocolVersion:     document.Compatibility.UIProtocolVersion,
-			SupportedTargets:      supportedTargets,
-		},
-		HostRequirements: hostRequirements, ReleaseEvidence: evidence, Metadata: cloneStringMap(document.Metadata),
+		ReleaseEvidence: evidence, Metadata: cloneStringMap(document.Metadata),
 	}, nil
 }
 
@@ -3750,10 +3642,10 @@ func validateResolvedRelease(ref PluginReleaseRef, release PluginPackageRelease)
 	if err := validateReleaseDistributionRef(release.DistributionRef); err != nil {
 		return err
 	}
-	return validateReleaseHostRequirements(release.HostRequirements)
+	return nil
 }
 
-func enforceReleaseSourcePolicy(action PackageTrustAction, current *registry.PluginRecord, ref PluginReleaseRef, policy releasecontract.SourcePolicyV2) error {
+func enforceReleaseSourcePolicy(action PackageTrustAction, current *registry.PluginRecord, ref PluginReleaseRef, policy releasecontract.SourcePolicyV3) error {
 	nextVersion, err := version.ParseSemVer(ref.Version)
 	if err != nil {
 		return fmt.Errorf("%w: release version is invalid: %v", ErrReleaseRefVerificationFailed, err)
@@ -3798,89 +3690,12 @@ func validateReleaseDistributionRef(distributionRef PackageDistributionRef) erro
 	}
 }
 
-func validateReleaseHostRequirements(requirements []HostRequirement) error {
-	seenHosts := make(map[string]struct{}, len(requirements))
-	for hostIndex, requirement := range requirements {
-		prefix := fmt.Sprintf("host_requirements[%d]", hostIndex)
-		hostID := strings.TrimSpace(requirement.HostID)
-		if hostID == "" {
-			return fmt.Errorf("%w: %s.host_id is required", ErrReleaseRefVerificationFailed, prefix)
-		}
-		if _, exists := seenHosts[hostID]; exists {
-			return fmt.Errorf("%w: %s.host_id is duplicated", ErrReleaseRefVerificationFailed, prefix)
-		}
-		seenHosts[hostID] = struct{}{}
-		if requirement.MinHostVersion != "" {
-			if _, err := version.ParseSemVer(requirement.MinHostVersion); err != nil {
-				return fmt.Errorf("%w: %s.min_host_version is invalid: %v", ErrReleaseRefVerificationFailed, prefix, err)
-			}
-		}
-		seenContracts := make(map[string]struct{}, len(requirement.RequiredCapabilityContracts))
-		for contractIndex, contract := range requirement.RequiredCapabilityContracts {
-			contractPrefix := fmt.Sprintf("%s.required_capability_contracts[%d]", prefix, contractIndex)
-			if strings.TrimSpace(contract.CapabilityID) == "" {
-				return fmt.Errorf("%w: %s.capability_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
-			}
-			if _, err := version.ParseSemVer(contract.CapabilityVersion); err != nil {
-				return fmt.Errorf("%w: %s.capability_version is invalid: %v", ErrReleaseRefVerificationFailed, contractPrefix, err)
-			}
-			contractKey := contract.CapabilityID + "\x00" + contract.CapabilityVersion
-			if _, exists := seenContracts[contractKey]; exists {
-				return fmt.Errorf("%w: %s contains a duplicate capability contract", ErrReleaseRefVerificationFailed, contractPrefix)
-			}
-			seenContracts[contractKey] = struct{}{}
-		}
-	}
-	return nil
-}
-
 func validateReleasePackage(ref PluginReleaseRef, pkg pluginpkg.Package) error {
 	if pkg.Manifest.Publisher.PublisherID != ref.PublisherID || pkg.Manifest.PluginID() != ref.PluginID || pkg.Manifest.Version() != ref.Version {
 		return fmt.Errorf("%w: package identity does not match release ref", ErrReleaseRefVerificationFailed)
 	}
 	if !hashEqual(pkg.PackageHash, ref.ExpectedHashes.PackageSHA256) || !hashEqual(pkg.ManifestHash, ref.ExpectedHashes.ManifestSHA256) || !hashEqual(pkg.EntriesHash, ref.ExpectedHashes.EntriesSHA256) {
 		return fmt.Errorf("%w: package hashes do not match release ref", ErrReleaseRefVerificationFailed)
-	}
-	return nil
-}
-
-func validateReleaseCompatibility(pkg pluginpkg.Package, release PluginPackageRelease) error {
-	if release.Compatibility == nil {
-		return fmt.Errorf("%w: release compatibility is required", ErrReleaseRefVerificationFailed)
-	}
-	compatibility := release.Compatibility
-	minimumReDevPluginVersion, err := version.ParseSemVer(compatibility.MinReDevPluginVersion)
-	if err != nil {
-		return fmt.Errorf("%w: release compatibility min_redevplugin_version is invalid: %v", ErrReleaseRefVerificationFailed, err)
-	}
-	if _, err := version.ParseSemVer(compatibility.MinRuntimeVersion); err != nil {
-		return fmt.Errorf("%w: release compatibility min_runtime_version is invalid: %v", ErrReleaseRefVerificationFailed, err)
-	}
-	if strings.TrimSpace(compatibility.UIProtocolVersion) == "" {
-		return fmt.Errorf("%w: release compatibility ui_protocol_version is required", ErrReleaseRefVerificationFailed)
-	}
-	if compatibility.MinRuntimeVersion != pkg.Manifest.Plugin.MinRuntimeVersion {
-		return fmt.Errorf("%w: release compatibility min_runtime_version does not match package manifest", ErrReleaseRefVerificationFailed)
-	}
-	if compatibility.UIProtocolVersion != pkg.Manifest.Plugin.UIProtocolVersion {
-		return fmt.Errorf("%w: release compatibility ui_protocol_version does not match package manifest", ErrReleaseRefVerificationFailed)
-	}
-	currentReDevPluginVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
-	if err != nil {
-		return fmt.Errorf("%w: current redevplugin version is invalid: %v", ErrReleaseRefVerificationFailed, err)
-	}
-	if currentReDevPluginVersion.Compare(minimumReDevPluginVersion) < 0 {
-		return fmt.Errorf("%w: release requires newer redevplugin go version", ErrReleaseRefVerificationFailed)
-	}
-	seenTargets := make(map[runtimetarget.Target]struct{}, len(compatibility.SupportedTargets))
-	for _, target := range compatibility.SupportedTargets {
-		if err := runtimetarget.Validate(target); err != nil {
-			return fmt.Errorf("%w: release compatibility supported target %q is invalid", ErrReleaseRefVerificationFailed, target.String())
-		}
-		if _, exists := seenTargets[target]; exists {
-			return fmt.Errorf("%w: release compatibility supported target %q is duplicated", ErrReleaseRefVerificationFailed, target.String())
-		}
-		seenTargets[target] = struct{}{}
 	}
 	return nil
 }
@@ -4056,7 +3871,7 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := h.preflightPackageFeatures(next.ManifestModel, packageTrustInput{}); err != nil {
+	if err := h.preflightPackageFeatures(next.Manifest, packageTrustInput{}); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if err := h.preflightWorkerRuntime(ctx, next); err != nil {
@@ -4178,29 +3993,52 @@ func normalizeTrustAssessmentForPackage(pkg pluginpkg.Package, assessment regist
 	return assessment
 }
 
-func packageRecord(pkg pluginpkg.Package, trust registry.TrustAssessment, instanceID string, metadata map[string]string, capabilityPins []capabilitycontract.Pin) registry.PluginRecord {
+func packageSourceProvenanceForTrust(pkg pluginpkg.Package, input packageTrustInput) (registry.PackageSourceProvenance, error) {
+	if input.LocalImport {
+		return registry.PackageSourceProvenance{
+			Kind:            registry.PackageSourceLocalGenerated,
+			PackageSHA256:   pkg.PackageHash,
+			SourceReference: string(PackageDistributionLocalImport),
+		}, nil
+	}
+	if input.ReleaseRef == nil || input.SourcePolicy == nil || input.VerifiedRelease == nil {
+		return registry.PackageSourceProvenance{}, errors.New("verified release source provenance is required")
+	}
+	kind := registry.PackageSourceApprovedCatalog
+	if input.SourcePolicy.SourceClass == "official" {
+		kind = registry.PackageSourceOfficialCatalog
+	}
+	return registry.PackageSourceProvenance{
+		Kind:            kind,
+		PackageSHA256:   pkg.PackageHash,
+		SourceReference: input.ReleaseRef.SourceID + "/" + input.ReleaseRef.Channel + "/" + input.ReleaseRef.ReleaseMetadataRef,
+		CatalogEntryID:  input.ReleaseRef.ReleaseMetadataRef,
+	}, nil
+}
+
+func packageRecord(pkg pluginpkg.Package, trust registry.TrustAssessment, instanceID string, metadata map[string]string, provenance registry.PackageSourceProvenance, capabilityPins []capabilitycontract.Pin) registry.PluginRecord {
 	instanceID = strings.TrimSpace(instanceID)
 	trust = normalizeTrustAssessmentForPackage(pkg, trust, packageTrustInput{})
 	metadata = cloneStringMap(metadata)
 	metadata = mergeStringMap(trust.Metadata, metadata)
 	return registry.PluginRecord{
-		PluginInstanceID:    instanceID,
-		PublisherID:         pkg.Manifest.Publisher.PublisherID,
-		PluginID:            pkg.Manifest.PluginID(),
-		Version:             pkg.Manifest.Version(),
-		ActiveFingerprint:   activeFingerprintForPackage(pkg, instanceID, trust, capabilityPins),
-		PackageHash:         pkg.PackageHash,
-		ManifestHash:        pkg.ManifestHash,
-		EntriesHash:         pkg.EntriesHash,
-		TrustState:          trust.TrustState,
-		TrustAssessment:     trust,
-		EnableState:         registry.EnableDisabled,
-		Manifest:            pkg.Manifest,
-		ManifestModel:       pkg.ManifestModel,
-		ManifestSource:      pkg.ManifestSource,
-		PackageEntries:      pkg.Entries,
-		CapabilityContracts: append([]capabilitycontract.Pin(nil), capabilityPins...),
-		Metadata:            cloneStringMap(metadata),
+		PluginInstanceID:        instanceID,
+		PublisherID:             pkg.Manifest.Publisher.PublisherID,
+		PluginID:                pkg.Manifest.PluginID(),
+		Version:                 pkg.Manifest.Version(),
+		ActiveFingerprint:       activeFingerprintForPackage(pkg, instanceID, trust, capabilityPins),
+		PackageHash:             pkg.PackageHash,
+		ManifestHash:            pkg.ManifestHash,
+		EntriesHash:             pkg.EntriesHash,
+		TrustState:              trust.TrustState,
+		TrustAssessment:         trust,
+		PackageSourceProvenance: provenance,
+		EnableState:             registry.EnableEnabled,
+		Manifest:                pkg.Manifest,
+		CanonicalManifest:       pkg.CanonicalManifest,
+		PackageEntries:          pkg.Entries,
+		CapabilityContracts:     append([]capabilitycontract.Pin(nil), capabilityPins...),
+		Metadata:                cloneStringMap(metadata),
 	}
 }
 
@@ -4270,11 +4108,6 @@ func prepareVersionSwitchRecord(current registry.PluginRecord, next registry.Plu
 	next.RevokeEpoch = current.RevokeEpoch
 	next.InstalledAt = current.InstalledAt
 	next.EnabledAt = cloneTimePtr(current.EnabledAt)
-	if current.EnableState == registry.EnableDisabledIncompatible && version.SupportsPluginUIProtocol(next.Manifest.Plugin.UIProtocolVersion) {
-		next.EnableState = registry.EnableDisabled
-		next.DisabledReason = "updated to the current UI protocol; explicit enable is required"
-		next.EnabledAt = nil
-	}
 	next.DeletedAt = cloneTimePtr(current.DeletedAt)
 	next.Metadata = mergeStringMap(current.Metadata, next.Metadata)
 	if previous.PackageHash != "" && previous.PackageHash != next.PackageHash {
@@ -4308,12 +4141,8 @@ func versionSnapshot(record registry.PluginRecord, now time.Time) registry.Plugi
 		LocalImportProvenance:     cloneLocalImportProvenance(record.LocalImportProvenance),
 		CapabilityContracts:       append([]capabilitycontract.Pin(nil), record.CapabilityContracts...),
 		Manifest:                  record.Manifest,
-		ManifestModel:             record.ManifestModel,
-		ManifestSource:            record.ManifestSource,
-		ManifestAPI:               record.ManifestModel.API,
-		ManifestPermissions:       append([]manifest.PermissionID(nil), record.ManifestModel.Permissions...),
+		CanonicalManifest:         record.CanonicalManifest,
 		PackageEntries:            cloneEntries(record.PackageEntries),
-		RuntimeRequirement:        cloneRuntimeRequirement(record.RuntimeRequirement),
 		ActivatedAt:               now,
 		Metadata:                  cloneStringMap(record.Metadata),
 	}
@@ -4337,17 +4166,8 @@ func recordFromVersionSnapshot(current registry.PluginRecord, snapshot registry.
 	next.LocalImportProvenance = cloneLocalImportProvenance(snapshot.LocalImportProvenance)
 	next.CapabilityContracts = append([]capabilitycontract.Pin(nil), snapshot.CapabilityContracts...)
 	next.Manifest = snapshot.Manifest
-	next.ManifestModel = snapshot.ManifestModel
-	next.ManifestSource = snapshot.ManifestSource
-	if next.ManifestModel.PluginID() == "" {
-		var err error
-		next.ManifestModel, err = manifest.RestoreModel(snapshot.Manifest, snapshot.ManifestSource, snapshot.ManifestAPI, snapshot.ManifestPermissions)
-		if err != nil {
-			return registry.PluginRecord{}, err
-		}
-	}
+	next.CanonicalManifest = snapshot.CanonicalManifest
 	next.PackageEntries = cloneEntries(snapshot.PackageEntries)
-	next.RuntimeRequirement = cloneRuntimeRequirement(snapshot.RuntimeRequirement)
 	next.Metadata = cloneStringMap(snapshot.Metadata)
 	return next, nil
 }
@@ -4368,21 +4188,11 @@ func cloneReleaseTrustBinding(binding *registry.ReleaseTrustBinding) *registry.R
 	return &clone
 }
 
-func cloneRuntimeRequirement(requirement *registry.RuntimeRequirement) *registry.RuntimeRequirement {
-	if requirement == nil {
-		return nil
-	}
-	return &registry.RuntimeRequirement{
-		MinVersion:       requirement.MinVersion,
-		SupportedTargets: append([]runtimetarget.Target(nil), requirement.SupportedTargets...),
-	}
-}
-
-func (h *Host) preflightPackageFeatures(pluginManifest manifest.Model, input packageTrustInput) error {
+func (h *Host) preflightPackageFeatures(pluginManifest manifest.Manifest, input packageTrustInput) error {
 	return h.requireFeatures(requiredPackageFeatures(pluginManifest, input))
 }
 
-func requiredPackageFeatures(pluginManifest manifest.Model, input packageTrustInput) []Feature {
+func requiredPackageFeatures(pluginManifest manifest.Manifest, input packageTrustInput) []Feature {
 	required := make([]Feature, 0, 6)
 	if input.ReleaseRef != nil || input.Release != nil {
 		required = append(required, FeatureRelease)
@@ -4390,13 +4200,13 @@ func requiredPackageFeatures(pluginManifest manifest.Model, input packageTrustIn
 	if len(pluginManifest.Workers) > 0 {
 		required = append(required, FeatureRuntime)
 	}
-	if len(pluginManifest.CapabilityBindings) > 0 || releaseRequiresCapabilities(input.Release) {
+	if len(pluginManifest.CapabilityBindings) > 0 {
 		required = append(required, FeatureCapability)
 	}
-	if modelRequiresConnectivity(pluginManifest) {
+	if manifestRequiresConnectivity(pluginManifest) {
 		required = append(required, FeatureConnectivity)
 	}
-	if manifestRequiresSecrets(pluginManifest.Manifest) {
+	if manifestRequiresSecrets(pluginManifest) {
 		required = append(required, FeatureSecrets)
 	}
 	for _, method := range pluginManifest.Methods {
@@ -4408,29 +4218,13 @@ func requiredPackageFeatures(pluginManifest manifest.Model, input packageTrustIn
 	return required
 }
 
-func releaseRequiresCapabilities(release *PluginPackageRelease) bool {
-	if release == nil {
-		return false
-	}
-	for _, requirement := range release.HostRequirements {
-		if len(requirement.RequiredCapabilityContracts) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func modelRequiresConnectivity(pluginManifest manifest.Model) bool {
+func manifestRequiresConnectivity(pluginManifest manifest.Manifest) bool {
 	for _, feature := range pluginManifest.API.RequiredFeatures {
 		switch feature {
 		case manifest.FeatureNetHTTP, manifest.FeatureNetWebSocket, manifest.FeatureNetTCP, manifest.FeatureNetUDP:
 			return true
 		}
 	}
-	return manifestRequiresConnectivity(pluginManifest.Manifest)
-}
-
-func manifestRequiresConnectivity(pluginManifest manifest.Manifest) bool {
 	if pluginManifest.NetworkAccess != nil && len(pluginManifest.NetworkAccess.Connectors) > 0 {
 		return true
 	}
@@ -4483,48 +4277,13 @@ func mapContainsSecretRef(values map[string]any) bool {
 	return false
 }
 
-func runtimeRequirementForPackage(pluginManifest manifest.Manifest, input packageTrustInput) (*registry.RuntimeRequirement, error) {
-	if !pluginHasWorkers(pluginManifest) {
-		return nil, nil
-	}
-	minimumVersion, err := version.ParseSemVer(pluginManifest.Plugin.MinRuntimeVersion)
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid minimum runtime version: %v", ErrPluginRuntimeIncompatible, err)
-	}
-	requirement := &registry.RuntimeRequirement{MinVersion: minimumVersion.String()}
-	if input.Release != nil && input.Release.Compatibility != nil {
-		requirement.SupportedTargets = append([]runtimetarget.Target(nil), input.Release.Compatibility.SupportedTargets...)
-	}
-	seenTargets := make(map[runtimetarget.Target]struct{}, len(requirement.SupportedTargets))
-	for _, target := range requirement.SupportedTargets {
-		if err := runtimetarget.Validate(target); err != nil {
-			return nil, fmt.Errorf("%w: supported target is invalid: %v", ErrPluginRuntimeIncompatible, err)
-		}
-		if _, exists := seenTargets[target]; exists {
-			return nil, fmt.Errorf("%w: supported target %q is duplicated", ErrPluginRuntimeIncompatible, target.String())
-		}
-		seenTargets[target] = struct{}{}
-	}
-	sort.Slice(requirement.SupportedTargets, func(left, right int) bool {
-		return requirement.SupportedTargets[left].String() < requirement.SupportedTargets[right].String()
-	})
-	return requirement, nil
-}
-
 func pluginHasWorkers(pluginManifest manifest.Manifest) bool {
 	return len(pluginManifest.Workers) > 0
 }
 
-func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor runtimeclient.RuntimeDescriptor, expectedTarget runtimetarget.Target) error {
+func validateWorkerRuntimeArtifactIdentity(record registry.PluginRecord, descriptor runtimeclient.RuntimeArtifactIdentity, expectedTarget runtimetarget.Target) error {
 	if !pluginHasWorkers(record.Manifest) {
 		return nil
-	}
-	if record.RuntimeRequirement == nil {
-		return fmt.Errorf("%w: worker runtime requirement is missing", ErrPluginRuntimeIncompatible)
-	}
-	minimumVersion, err := version.ParseSemVer(record.RuntimeRequirement.MinVersion)
-	if err != nil {
-		return fmt.Errorf("%w: invalid minimum runtime version: %v", ErrPluginRuntimeIncompatible, err)
 	}
 	if err := descriptor.CompatibleWithPlatform(); err != nil {
 		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
@@ -4536,38 +4295,6 @@ func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor ru
 			descriptor.Target().String(),
 			expectedTarget.String(),
 		)
-	}
-	if descriptor.PlatformVersion().Compare(minimumVersion) < 0 {
-		return fmt.Errorf(
-			"%w: runtime %s is below required %s",
-			ErrPluginRuntimeIncompatible,
-			descriptor.PlatformVersion().String(),
-			minimumVersion.String(),
-		)
-	}
-	if len(record.RuntimeRequirement.SupportedTargets) > 0 {
-		actualTarget := descriptor.Target()
-		supported := false
-		for _, target := range record.RuntimeRequirement.SupportedTargets {
-			if target == actualTarget {
-				supported = true
-				break
-			}
-		}
-		if !supported {
-			return fmt.Errorf("%w: runtime target %s is unsupported by the package", ErrPluginRuntimeIncompatible, actualTarget.String())
-		}
-	}
-	for _, worker := range record.Manifest.Workers {
-		if worker.ABI != descriptor.WASMABIVersion() {
-			return fmt.Errorf(
-				"%w: worker %q ABI %s does not match runtime %s",
-				ErrPluginRuntimeIncompatible,
-				worker.WorkerID,
-				worker.ABI,
-				descriptor.WASMABIVersion(),
-			)
-		}
 	}
 	return nil
 }
@@ -4583,12 +4310,12 @@ func (h *Host) preflightWorkerRuntime(ctx context.Context, record registry.Plugi
 	if healthErr != nil {
 		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, healthErr)
 	}
-	target := health.Descriptor.Target()
+	target := health.ArtifactIdentity.Target()
 	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, target)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
 	}
-	return validateWorkerRuntimeDescriptor(record, descriptor, target)
+	return validateWorkerRuntimeArtifactIdentity(record, descriptor, target)
 }
 
 func (h *Host) bindCompatibleWorkerRuntime(ctx context.Context, record registry.PluginRecord) (runtimeclient.RuntimeBinding, error) {
@@ -4605,18 +4332,18 @@ func (h *Host) bindCompatibleWorkerRuntime(ctx context.Context, record registry.
 	if err != nil {
 		return runtimeclient.RuntimeBinding{}, err
 	}
-	if err := validateRuntimeManagerHealth(health, health.Descriptor); err != nil {
+	if err := validateRuntimeManagerHealth(health, health.ArtifactIdentity); err != nil {
 		return runtimeclient.RuntimeBinding{}, err
 	}
-	target := health.Descriptor.Target()
-	if err := validateWorkerRuntimeDescriptor(record, health.Descriptor, target); err != nil {
+	target := health.ArtifactIdentity.Target()
+	if err := validateWorkerRuntimeArtifactIdentity(record, health.ArtifactIdentity, target); err != nil {
 		return runtimeclient.RuntimeBinding{}, err
 	}
 	binding, err := h.adapters.RuntimeManager.BindPlugin(ctx, record.PluginInstanceID)
 	if err != nil {
 		return runtimeclient.RuntimeBinding{}, err
 	}
-	if binding.Descriptor != health.Descriptor {
+	if binding.ArtifactIdentity != health.ArtifactIdentity {
 		return runtimeclient.RuntimeBinding{}, fmt.Errorf("%w: runtime binding descriptor changed", ErrPluginRuntimeIncompatible)
 	}
 	if strings.TrimSpace(binding.RuntimeGenerationID) == "" {
@@ -4625,18 +4352,18 @@ func (h *Host) bindCompatibleWorkerRuntime(ctx context.Context, record registry.
 	return binding, nil
 }
 
-func validateRuntimeManagerHealth(health runtimeclient.ManagerHealth, expected runtimeclient.RuntimeDescriptor) error {
+func validateRuntimeManagerHealth(health runtimeclient.ManagerHealth, expected runtimeclient.RuntimeArtifactIdentity) error {
 	if len(health.Shards) == 0 {
 		return runtimeclient.ErrRuntimeNotReady
 	}
 	if err := expected.CompatibleWithPlatform(); err != nil {
 		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
 	}
-	if health.Descriptor != expected {
+	if health.ArtifactIdentity != expected {
 		return fmt.Errorf("%w: manager descriptor mismatch", ErrPluginRuntimeIncompatible)
 	}
 	for _, shard := range health.Shards {
-		if shard.Descriptor != expected {
+		if shard.ArtifactIdentity != expected {
 			return fmt.Errorf("%w: runtime shard %q descriptor mismatch", ErrPluginRuntimeIncompatible, shard.RuntimeShardID)
 		}
 	}
@@ -4706,6 +4433,9 @@ func (h *Host) recoverEnabledRuntimeState(ctx context.Context, record registry.P
 		return nil
 	}
 	if err := h.refreshInstalledReleaseTrust(ctx, record); err != nil {
+		return err
+	}
+	if err := h.canRun(ctx, record); err != nil {
 		return err
 	}
 	if pluginHasWorkers(record.Manifest) {
@@ -4825,7 +4555,7 @@ func (h *Host) getPluginRecord(ctx context.Context, pluginInstanceID string) (re
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	return h.hydratePluginManifestModel(ctx, record)
+	return record, nil
 }
 
 func (h *Host) listPluginRecords(ctx context.Context) ([]registry.PluginRecord, error) {
@@ -4839,12 +4569,6 @@ func (h *Host) listPluginRecords(ctx context.Context) ([]registry.PluginRecord, 
 	records, err := h.controlStore.Registry().ListPlugins(ctx, session.OwnerEnvHash)
 	if err != nil {
 		return nil, err
-	}
-	for index := range records {
-		records[index], err = h.hydratePluginManifestModel(ctx, records[index])
-		if err != nil {
-			return nil, err
-		}
 	}
 	return records, nil
 }
@@ -4872,7 +4596,22 @@ func (h *Host) setPluginEnableState(ctx context.Context, pluginInstanceID string
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	return h.hydratePluginManifestModel(ctx, record)
+	return record, nil
+}
+
+func (h *Host) bumpPluginRevokeEpoch(ctx context.Context, pluginInstanceID string, now time.Time) (registry.PluginRecord, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if h.controlStore == nil {
+		return registry.PluginRecord{}, ErrControlStoreRequired
+	}
+	record, err := h.controlStore.Registry().BumpRevokeEpoch(ctx, session.OwnerEnvHash, pluginInstanceID, now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	return record, nil
 }
 
 func (h *Host) getAuthorizationSnapshot(ctx context.Context, pluginInstanceID string) (registry.AuthorizationSnapshot, error) {
@@ -4884,8 +4623,7 @@ func (h *Host) getAuthorizationSnapshot(ctx context.Context, pluginInstanceID st
 	if err != nil {
 		return registry.AuthorizationSnapshot{}, err
 	}
-	snapshot.Plugin, err = h.hydratePluginManifestModel(ctx, snapshot.Plugin)
-	return snapshot, err
+	return snapshot, nil
 }
 
 func (h *Host) listAuthorizationSnapshots(ctx context.Context) ([]registry.AuthorizationSnapshot, error) {
@@ -4897,63 +4635,7 @@ func (h *Host) listAuthorizationSnapshots(ctx context.Context) ([]registry.Autho
 	if err != nil {
 		return nil, err
 	}
-	for index := range snapshots {
-		snapshots[index].Plugin, err = h.hydratePluginManifestModel(ctx, snapshots[index].Plugin)
-		if err != nil {
-			return nil, err
-		}
-	}
 	return snapshots, nil
-}
-
-func (h *Host) hydratePluginManifestModel(ctx context.Context, record registry.PluginRecord) (registry.PluginRecord, error) {
-	if record.ManifestModel.PluginID() != "" || record.ManifestSource != manifest.SchemaVersionV9 {
-		return record, nil
-	}
-	cacheKey := record.PackageHash + "\x00" + record.ManifestHash
-	h.manifestModelMu.Lock()
-	defer h.manifestModelMu.Unlock()
-	if cached, ok := h.manifestModelCache[cacheKey]; ok {
-		model, err := manifest.RestoreModel(record.Manifest, manifest.SchemaVersionV9, cached.API, cached.Permissions)
-		if err != nil {
-			return registry.PluginRecord{}, fmt.Errorf("%w: restore cached v9 manifest model: %v", controlstore.ErrIncompatible, err)
-		}
-		record.ManifestModel = model
-		return record, nil
-	}
-	asset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, "manifest.json")
-	if err != nil {
-		return registry.PluginRecord{}, fmt.Errorf("%w: read v9 manifest recovery asset for plugin %q: %v", controlstore.ErrIncompatible, record.PluginInstanceID, err)
-	}
-	assetSum := sha256.Sum256(asset.Content)
-	if asset.Entry.Path != "manifest.json" || asset.Entry.Size != int64(len(asset.Content)) || !hashEqual(asset.Entry.SHA256, "sha256:"+hex.EncodeToString(assetSum[:])) {
-		return registry.PluginRecord{}, fmt.Errorf("%w: v9 manifest recovery asset evidence mismatch for plugin %q", controlstore.ErrIncompatible, record.PluginInstanceID)
-	}
-	canonical, err := manifest.CanonicalJSON(asset.Content)
-	if err != nil {
-		return registry.PluginRecord{}, fmt.Errorf("%w: canonicalize v9 manifest recovery asset for plugin %q: %v", controlstore.ErrIncompatible, record.PluginInstanceID, err)
-	}
-	manifestSum := sha256.Sum256(canonical)
-	if !hashEqual(record.ManifestHash, "sha256:"+hex.EncodeToString(manifestSum[:])) {
-		return registry.PluginRecord{}, fmt.Errorf("%w: v9 manifest recovery hash mismatch for plugin %q", controlstore.ErrIncompatible, record.PluginInstanceID)
-	}
-	model, err := manifest.DecodeModel(bytes.NewReader(asset.Content))
-	if err != nil {
-		return registry.PluginRecord{}, fmt.Errorf("%w: decode v9 manifest recovery asset for plugin %q: %v", controlstore.ErrIncompatible, record.PluginInstanceID, err)
-	}
-	if model.SchemaSource != manifest.SchemaVersionV9 || model.Publisher.PublisherID != record.PublisherID ||
-		model.PluginID() != record.PluginID || model.Plugin.Version != record.Version || !reflect.DeepEqual(model.Manifest, record.Manifest) {
-		return registry.PluginRecord{}, fmt.Errorf("%w: v9 manifest recovery identity mismatch for plugin %q", controlstore.ErrIncompatible, record.PluginInstanceID)
-	}
-	if h.manifestModelCache == nil {
-		h.manifestModelCache = make(map[string]manifestModelProjection)
-	}
-	h.manifestModelCache[cacheKey] = manifestModelProjection{
-		API:         model.API,
-		Permissions: append([]manifest.PermissionID(nil), model.Permissions...),
-	}
-	record.ManifestModel = model
-	return record, nil
 }
 
 func (h *Host) replaceAuthorizationSnapshot(ctx context.Context, snapshot registry.AuthorizationSnapshot, expected registry.AuthorizationRevisions) error {
@@ -5674,9 +5356,7 @@ func publicDiagnosticDetails(details observability.DiagnosticDetails) Diagnostic
 		RuntimeProcessFailureCode: details.RuntimeProcessFailureCode,
 		ExecutionID:               details.ExecutionID, RuntimeInstanceID: details.RuntimeInstanceID,
 		RuntimeGenerationID: details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
-		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
-		ContractSetSHA256: details.ContractSetSHA256,
-		RuntimeTargetOS:   details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
+		RuntimeTargetOS: details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
 		RuntimeBinarySHA256: details.RuntimeBinarySHA256, OS: details.OS, Arch: details.Arch,
 		Stream: details.Stream, PackageHash: details.PackageHash, Artifact: details.Artifact,
 		PluginInstanceID: details.PluginInstanceID, StoreID: details.StoreID, Operation: details.Operation,
@@ -5717,7 +5397,7 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (resul
 		if record.EnableState != registry.EnableEnabled || !pluginHasWorkers(record.Manifest) {
 			continue
 		}
-		if err := validateWorkerRuntimeDescriptor(record, descriptor, target); err != nil {
+		if err := validateWorkerRuntimeArtifactIdentity(record, descriptor, target); err != nil {
 			return RuntimeHealth{}, fmt.Errorf("plugin %q: %w", record.PluginInstanceID, err)
 		}
 	}
@@ -5840,7 +5520,7 @@ func (h *Host) RuntimeHealth(ctx context.Context) (RuntimeHealth, error) {
 	if err != nil || !health.Ready {
 		return publicRuntimeHealth(health), err
 	}
-	if err := validateRuntimeManagerHealth(health, health.Descriptor); err != nil {
+	if err := validateRuntimeManagerHealth(health, health.ArtifactIdentity); err != nil {
 		return RuntimeHealth{}, err
 	}
 	return publicRuntimeHealth(health), nil
@@ -6148,59 +5828,23 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 // enablePluginLocked performs the authoritative enable transaction after the
 // caller has acquired the plugin lifecycle write lock.
 func (h *Host) enablePluginLocked(ctx context.Context, record registry.PluginRecord, now time.Time) (result registry.PluginRecord, retErr error) {
-	if !version.SupportsPluginUIProtocol(record.Manifest.Plugin.UIProtocolVersion) {
-		return registry.PluginRecord{}, fmt.Errorf("%w: installed %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion)
+	if record.EnableState == registry.EnableEnabled {
+		return record, nil
 	}
-	if err := h.canRun(ctx, record); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if _, _, err := compileConnectivityPolicy(record); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if err := h.preflightWorkerRuntime(ctx, record); err != nil {
-		return registry.PluginRecord{}, err
+	if record.EnableState != registry.EnableDisabledByUser {
+		return registry.PluginRecord{}, fmt.Errorf("plugin has invalid enable state %q", record.EnableState)
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.enabled", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	shape, err := plugindata.ShapeFromManifest(record.Manifest)
+	enabled, err := h.setPluginEnableState(ctx, record.PluginInstanceID, registry.EnableEnabled, "", now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	initialSettings, err := settings.DefaultValues(shape.Settings.Fields)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if _, err := h.adapters.PluginData.CommitEnable(ctx, plugindata.CommitEnableRequest{
-		PluginInstanceID:           record.PluginInstanceID,
-		Shape:                      shape,
-		InitialSettings:            initialSettings,
-		ExpectedManagementRevision: record.ManagementRevision,
-		Now:                        now,
-	}); err != nil {
-		return registry.PluginRecord{}, managementMutationError(record, err)
-	}
-	enabled, err := h.getPluginRecord(ctx, record.PluginInstanceID)
-	if err != nil {
-		return registry.PluginRecord{}, mutation.Unknown(err)
-	}
-	connectivityPolicy, hasConnectivityPolicy, err := compileConnectivityPolicy(enabled)
-	if err != nil {
-		return registry.PluginRecord{}, mutation.Unknown(err)
-	}
-	if err := h.installConnectivityPolicy(ctx, enabled, connectivityPolicy, hasConnectivityPolicy); err != nil {
-		return registry.PluginRecord{}, mutation.Unknown(err)
-	}
-	if h.adapters.SurfaceCatalog != nil {
-		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
-			PluginInstanceID:  enabled.PluginInstanceID,
-			ActiveFingerprint: enabled.ActiveFingerprint,
-			Surfaces:          enabled.Manifest.Surfaces,
-		}); err != nil {
-			return registry.PluginRecord{}, mutation.Unknown(err)
-		}
+	if err := h.refreshEnabledRuntimeState(ctx, enabled); err != nil {
+		return enabled, mutation.Committed(err)
 	}
 	return enabled, nil
 }
@@ -6232,7 +5876,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 		return registry.PluginRecord{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	disabled, err := h.setPluginEnableState(ctx, req.PluginInstanceID, registry.EnableDisabled, reason, req.Now)
+	disabled, err := h.setPluginEnableState(ctx, req.PluginInstanceID, registry.EnableDisabledByUser, reason, req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -6300,8 +5944,6 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 	if err != nil {
 		return registry.PluginRecord{}, managementMutationError(record, err)
 	}
-	record.EnableState = registry.EnableDisabled
-	record.DisabledReason = "uninstalled"
 	record.ManagementRevision = commit.ManagementRevision
 	record.RevokeEpoch = commit.RevokeEpoch
 	record.EnabledAt = nil
@@ -6370,57 +6012,6 @@ func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataReq
 		return plugindata.Binding{}, err
 	}
 	return records[0], nil
-}
-
-func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest) (result plugindata.Binding, retErr error) {
-	req.SourcePluginInstanceID = strings.TrimSpace(req.SourcePluginInstanceID)
-	req.TargetPluginInstanceID = strings.TrimSpace(req.TargetPluginInstanceID)
-	if _, err := h.authorizeManagement(ctx, ManagementActionBindRetainedData,
-		scopedAuthorizationTarget(ResourceRetainedData, req.SourcePluginInstanceID, sessionctx.ScopeEnvironment),
-		scopedAuthorizationTarget(ResourcePlugin, req.TargetPluginInstanceID, sessionctx.ScopeEnvironment),
-	); err != nil {
-		return plugindata.Binding{}, err
-	}
-	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
-	if strings.TrimSpace(req.SourcePluginInstanceID) == "" || targetPluginInstanceID == "" || req.ExpectedSourceBindingRevision == 0 || req.TargetExpectedManagementRevision == 0 {
-		return plugindata.Binding{}, plugindata.ErrInvalidArgument
-	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireWriteMany(ctx, req.SourcePluginInstanceID, targetPluginInstanceID)
-	if err != nil {
-		return plugindata.Binding{}, err
-	}
-	defer releaseLifecycle()
-	target, err := h.getPluginRecord(ctx, targetPluginInstanceID)
-	if err != nil {
-		return plugindata.Binding{}, err
-	}
-	if err := requireManagementRevision(target, req.TargetExpectedManagementRevision); err != nil {
-		return plugindata.Binding{}, err
-	}
-	if err := h.canRun(ctx, target); err != nil {
-		return plugindata.Binding{}, err
-	}
-	shape, err := plugindata.ShapeFromManifest(target.Manifest)
-	if err != nil {
-		return plugindata.Binding{}, err
-	}
-	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.retained_data.bound", PluginID: target.PluginID, PluginInstanceID: target.PluginInstanceID, Details: map[string]any{"source_plugin_instance_id": req.SourcePluginInstanceID}})
-	if err != nil {
-		return plugindata.Binding{}, err
-	}
-	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	dataset, err := h.adapters.PluginData.BindRetained(ctx, plugindata.BindRetainedRequest{
-		SourcePluginInstanceID:           req.SourcePluginInstanceID,
-		ExpectedSourceBindingRevision:    req.ExpectedSourceBindingRevision,
-		TargetPluginInstanceID:           target.PluginInstanceID,
-		TargetExpectedManagementRevision: target.ManagementRevision,
-		ExpectedShape:                    shape,
-		Now:                              req.Now,
-	})
-	if err != nil {
-		return plugindata.Binding{}, managementMutationError(target, err)
-	}
-	return dataset.Binding, nil
 }
 
 func (h *Host) CleanupExpiredRetainedData(ctx context.Context, req CleanupExpiredRetainedDataRequest) (RetainedDataCleanupResult, error) {
@@ -6793,50 +6384,6 @@ func (p runtimeArtifactProvider) ReadArtifact(ctx context.Context, req runtimecl
 		return runtimeclient.ArtifactResult{}, fmt.Errorf("artifact %q sha256 mismatch", req.Artifact)
 	}
 	return runtimeclient.ArtifactResult{Content: asset.Content, SHA256: asset.Entry.SHA256}, nil
-}
-
-type runtimeHandleGrantValidator struct {
-	tokens *bridge.SurfaceTokenService
-}
-
-func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req runtimeclient.HandleGrantValidationRequest) (runtimeclient.HandleGrantValidationResult, error) {
-	if v.tokens == nil {
-		return runtimeclient.HandleGrantValidationResult{}, errors.New("surface token service is required")
-	}
-	record, err := v.tokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
-		HandleGrantToken: req.HandleGrantToken,
-		Audience: bridge.Audience{
-			PluginInstanceID:     req.PluginInstanceID,
-			ActiveFingerprint:    req.ActiveFingerprint,
-			RuntimeInstanceID:    req.RuntimeInstanceID,
-			RuntimeGenerationID:  req.RuntimeGenerationID,
-			RuntimeShardID:       req.RuntimeShardID,
-			OwnerSessionHash:     req.OwnerSessionHash,
-			OwnerUserHash:        req.OwnerUserHash,
-			OwnerEnvHash:         req.OwnerEnvHash,
-			SessionChannelIDHash: req.SessionChannelIDHash,
-			HandleID:             req.HandleID,
-			Method:               req.Method,
-			ResourceScope:        req.ResourceScope,
-		},
-		Revision: bridge.RevisionBinding{
-			PolicyRevision:     req.PolicyRevision,
-			ManagementRevision: req.ManagementRevision,
-			RevokeEpoch:        req.RevokeEpoch,
-		},
-	})
-	if err != nil {
-		return runtimeclient.HandleGrantValidationResult{}, err
-	}
-	return runtimeclient.HandleGrantValidationResult{
-		HandleGrantID:       record.TokenID,
-		HandleID:            record.Audience.HandleID,
-		Method:              record.Audience.Method,
-		RuntimeGenerationID: record.Audience.RuntimeGenerationID,
-		ResourceScope:       record.Audience.ResourceScope,
-		MaxBytesPerSecond:   record.Limits.MaxBytesPerSecond,
-		MaxTotalBytes:       record.Limits.MaxTotalBytes,
-	}, nil
 }
 
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (response CallMethodResult, responseErr error) {
@@ -7240,7 +6787,6 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		WorkerScope:          worker.Scope,
 		Artifact:             worker.Artifact,
 		ArtifactSHA256:       workerEntry.SHA256,
-		ABI:                  worker.ABI,
 		Method:               method.Method,
 		Effect:               string(method.Effect),
 		Execution:            string(method.Execution),
@@ -7346,11 +6892,11 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
-	grantedPermissions := make(map[string]bool, len(record.ManifestModel.Permissions))
-	for _, permissionID := range record.ManifestModel.PermissionIDs() {
+	grantedPermissions := make(map[string]bool, len(record.Manifest.Permissions))
+	for _, permissionID := range record.Manifest.PermissionIDs() {
 		grantedPermissions[string(permissionID)] = true
 	}
-	if err := h.runtimeIO.register(invocationID, resourceio.Invocation{
+	runtimeIORegistration, err := newHostRuntimeIORegistration(resourceio.Invocation{
 		Owner: resourceio.Owner{
 			PluginInstanceID:   record.PluginInstanceID,
 			ActiveFingerprint:  record.ActiveFingerprint,
@@ -7370,7 +6916,11 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Permissions: grantedPermissions,
 		CanRead:     req.session.CanRead,
 		CanWrite:    req.session.CanWrite,
-	}); err != nil {
+	}, brokerAccess, payload.StorageHandleGrants)
+	if err != nil {
+		return dispatch, err
+	}
+	if err := h.runtimeIO.register(invocationID, runtimeIORegistration); err != nil {
 		return dispatch, err
 	}
 	defer func() {
@@ -7459,12 +7009,13 @@ func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *mani
 		Network: make([]workerNetworkBrokerAccess, len(access.Network)),
 	}
 	for i, item := range access.Storage {
-		scope, ok := declaredStoreScope(pluginManifest, item.StoreID)
+		kind, scope, ok := declaredStoreKindAndScope(pluginManifest, item.StoreID)
 		if !ok {
 			return workerBrokerAccess{}, fmt.Errorf("%w: store %q is not declared", storage.ErrNamespaceNotFound, item.StoreID)
 		}
 		normalized.Storage[i] = workerStorageBrokerAccess{
 			StoreID:    item.StoreID,
+			Kind:       kind,
 			Scope:      scope,
 			Operations: append([]string(nil), item.Operations...),
 		}
@@ -7490,16 +7041,16 @@ func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *mani
 	return normalized, nil
 }
 
-func declaredStoreScope(pluginManifest manifest.Manifest, storeID string) (string, bool) {
+func declaredStoreKindAndScope(pluginManifest manifest.Manifest, storeID string) (string, string, bool) {
 	if pluginManifest.Storage == nil {
-		return "", false
+		return "", "", false
 	}
 	for _, store := range pluginManifest.Storage.Stores {
 		if strings.TrimSpace(store.StoreID) == strings.TrimSpace(storeID) {
-			return strings.TrimSpace(store.Scope), true
+			return strings.TrimSpace(store.Kind), strings.TrimSpace(store.Scope), true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 func declaredConnectorScope(pluginManifest manifest.Manifest, connectorID, transport string) (string, bool) {
@@ -7548,7 +7099,6 @@ func workerInvocationTargetHash(payload workerInvocationPayload) (string, error)
 		payload.WorkerScope,
 		payload.Artifact,
 		payload.ArtifactSHA256,
-		payload.ABI,
 		payload.Method,
 		payload.Effect,
 		payload.Execution,
@@ -7725,14 +7275,32 @@ func (h *Host) requiredPermissionsForMethod(record registry.PluginRecord, method
 	}
 }
 
+func (h *Host) requireCurrentPermissionGrants(ctx context.Context, pluginInstanceID string, required []string) error {
+	if len(required) == 0 {
+		return nil
+	}
+	snapshot, err := h.getAuthorizationSnapshot(ctx, pluginInstanceID)
+	if err != nil {
+		return err
+	}
+	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
+		PluginInstanceID: pluginInstanceID,
+		PermissionIDs:    required,
+	})
+	if err != nil {
+		return err
+	}
+	if !granted {
+		return fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func (h *Host) declaredRequiredPermissions(record registry.PluginRecord, method manifest.MethodSpec) ([]string, error) {
 	switch method.Route.Kind {
 	case manifest.MethodRouteWorker:
-		if record.ManifestModel.SchemaSource != manifest.SchemaVersionV9 {
-			return nil, nil
-		}
-		permissions := make([]string, 0, len(record.ManifestModel.Permissions))
-		for _, permissionID := range record.ManifestModel.PermissionIDs() {
+		permissions := make([]string, 0, len(record.Manifest.Permissions))
+		for _, permissionID := range record.Manifest.PermissionIDs() {
 			permissions = append(permissions, string(permissionID))
 		}
 		return normalizeStringSet(permissions), nil
@@ -8295,7 +7863,7 @@ func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
 	if record.TrustState == registry.TrustUnsignedLocal {
 		if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
 			now := time.Now().UTC()
-			if cleanupErr := h.disablePluginForPolicyFailure(ctx, record, "developer mode or local generated plugins disabled", now); cleanupErr != nil {
+			if cleanupErr := h.revokeDeniedPluginRuntime(ctx, record, now); cleanupErr != nil {
 				return errors.Join(err, cleanupErr)
 			}
 			return err
@@ -8323,15 +7891,32 @@ func (h *Host) enforceUnsignedLocalPluginPolicy(ctx context.Context) error {
 	return nil
 }
 
-func (h *Host) disablePluginForPolicyFailure(ctx context.Context, record registry.PluginRecord, reason string, now time.Time) error {
+func (h *Host) revokeDeniedPluginRuntime(ctx context.Context, record registry.PluginRecord, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	disabled, err := h.setPluginEnableState(ctx, record.PluginInstanceID, registry.EnableDisabledByPolicy, reason, now)
-	if err != nil {
-		return err
+	revokedRecord, persistErr := h.bumpPluginRevokeEpoch(ctx, record.PluginInstanceID, now)
+	if persistErr != nil {
+		revokedRecord = record
+		revokedRecord.RevokeEpoch++
 	}
-	return h.revokePluginRuntimeCapabilities(ctx, disabled, now)
+	var surfaceErr error
+	if h.adapters.SurfaceCatalog != nil {
+		surfaceErr = h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
+			PluginInstanceID:  record.PluginInstanceID,
+			ActiveFingerprint: record.ActiveFingerprint,
+		})
+	}
+	var connectivityErr error
+	if h.adapters.Connectivity != nil {
+		connectivityErr = h.adapters.Connectivity.RemovePolicy(ctx, record.PluginInstanceID)
+	}
+	return errors.Join(
+		persistErr,
+		surfaceErr,
+		connectivityErr,
+		h.revokePluginRuntimeCapabilities(ctx, revokedRecord, now),
+	)
 }
 
 func compileConnectivityPolicy(record registry.PluginRecord) (connectivity.PolicySet, bool, error) {

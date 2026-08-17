@@ -53,7 +53,6 @@ const (
 	PackageSourceOfficialCatalog  PackageSourceKind = "official_catalog"
 	PackageSourceApprovedCatalog  PackageSourceKind = "approved_catalog"
 	PackageSourceLocalGenerated   PackageSourceKind = "local_generated"
-	PackageSourceLegacyRegistry   PackageSourceKind = "legacy_registry"
 )
 
 type PackageSourceProvenance struct {
@@ -238,7 +237,7 @@ func validSignatureAssessmentStatus(status SignatureAssessmentStatus) bool {
 func validPackageSourceKind(kind PackageSourceKind) bool {
 	switch kind {
 	case PackageSourceGitHubRepository, PackageSourcePackageURL, PackageSourcePackageUpload, PackageSourceOfficialCatalog,
-		PackageSourceApprovedCatalog, PackageSourceLocalGenerated, PackageSourceLegacyRegistry:
+		PackageSourceApprovedCatalog, PackageSourceLocalGenerated:
 		return true
 	default:
 		return false
@@ -431,13 +430,6 @@ func normalizePluginSecurityFacts(record PluginRecord) PluginRecord {
 	if record.SignatureAssessment.RevocationEpoch == "" {
 		record.SignatureAssessment.RevocationEpoch = record.TrustAssessment.RevocationEpoch
 	}
-	if record.PackageSourceProvenance.Kind == "" {
-		if record.TrustState == TrustUnsignedLocal {
-			record.PackageSourceProvenance.Kind = PackageSourceLocalGenerated
-		} else {
-			record.PackageSourceProvenance.Kind = PackageSourceLegacyRegistry
-		}
-	}
 	if record.PackageSourceProvenance.PackageSHA256 == "" {
 		record.PackageSourceProvenance.PackageSHA256 = record.PackageHash
 	}
@@ -467,7 +459,6 @@ func normalizePluginSecurityFacts(record PluginRecord) PluginRecord {
 			PackageSourceProvenance: version.PackageSourceProvenance,
 			ExecutionApproval:       version.ExecutionApproval,
 			UpdateEligibility:       version.UpdateEligibility,
-			EnableState:             EnableDisabled,
 		}
 		carrier = normalizePluginSecurityFactsWithoutHistory(carrier)
 		version.TrustState = carrier.TrustState
@@ -477,6 +468,38 @@ func normalizePluginSecurityFacts(record PluginRecord) PluginRecord {
 		version.ExecutionApproval = carrier.ExecutionApproval
 		version.UpdateEligibility = carrier.UpdateEligibility
 		record.VersionHistory[index] = version
+	}
+	return record
+}
+
+func approveExplicitLocalImport(record PluginRecord) PluginRecord {
+	provenance := record.LocalImportProvenance
+	if record.EnableState != EnableEnabled || record.TrustState != TrustUnsignedLocal ||
+		record.ExecutionApproval.Status != ExecutionApprovalPending ||
+		record.PackageSourceProvenance.Kind != PackageSourceLocalGenerated ||
+		record.PackageSourceProvenance.PackageSHA256 != record.PackageHash || provenance == nil {
+		return record
+	}
+	importID := strings.TrimSpace(provenance.ImportID)
+	distribution := strings.TrimSpace(provenance.Distribution)
+	if importID == "" || importID != distribution ||
+		distribution != strings.TrimSpace(record.PackageSourceProvenance.SourceReference) ||
+		strings.TrimSpace(provenance.PolicyEpoch) == "" || strings.TrimSpace(provenance.UnsignedPolicy) == "" {
+		return record
+	}
+	assessedAt, err := time.Parse(time.RFC3339Nano, provenance.AssessedAt)
+	if err != nil || assessedAt.IsZero() {
+		return record
+	}
+	record.ExecutionApproval = ExecutionApproval{
+		Status:            ExecutionApprovalUserApproved,
+		OwnerEnvHash:      record.OwnerEnvHash,
+		PackageSHA256:     record.PackageHash,
+		ReasonCodes:       []string{"explicit_local_import"},
+		EvidenceReference: importID,
+		PolicyEpoch:       provenance.PolicyEpoch,
+		AssessedAt:        assessedAt,
+		ApprovedAt:        assessedAt,
 	}
 	return record
 }

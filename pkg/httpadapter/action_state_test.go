@@ -22,11 +22,14 @@ func TestCatalogProjectsHostActionStateWithoutRecomputingIt(t *testing.T) {
 		t.Fatalf("catalog plugins = %#v", records.Plugins)
 	}
 	action := records.Plugins[0].ActionState
-	if got, ok := action["can_open"].(bool); !ok || got {
-		t.Fatalf("disabled Host action_state.can_open = %#v, want false", action["can_open"])
+	if got, ok := action["can_open"].(bool); !ok || !got {
+		t.Fatalf("enabled Host action_state.can_open = %#v, want true", action["can_open"])
 	}
-	if reason, _ := action["blocked_reason"].(string); reason != "disabled" {
-		t.Fatalf("disabled Host action_state.blocked_reason = %q", reason)
+	if got, ok := action["can_disable"].(bool); !ok || !got {
+		t.Fatalf("enabled Host action_state.can_disable = %#v, want true", action["can_disable"])
+	}
+	if reason, _ := action["blocked_reason"].(string); reason != "" {
+		t.Fatalf("enabled Host action_state.blocked_reason = %q", reason)
 	}
 	if _, ok := action["trust_state"]; ok {
 		t.Fatalf("catalog action_state leaked derived trust state: %s", mustJSON(t, action))
@@ -49,8 +52,8 @@ func TestRecoveryHTTPResponseUsesSingleHostSnapshotShape(t *testing.T) {
 	if response.Revision == 0 || response.Results == nil {
 		t.Fatalf("recovery response is not a Host snapshot: %#v", response)
 	}
-	if !response.Complete || len(response.Results) != 0 {
-		t.Fatalf("empty enabled recovery should be complete: %#v", response)
+	if !response.Complete || len(response.Results) != 1 || response.Results[0].PluginInstanceID != "plugini_http_recovery" || response.Results[0].Status != "ready" {
+		t.Fatalf("enabled recovery should report the installed plugin ready: %#v", response)
 	}
 }
 

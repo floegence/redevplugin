@@ -15,7 +15,6 @@ const (
 
 type wasmInspectionCacheKey struct {
 	artifactSHA256 [sha256.Size]byte
-	wasmABI        string
 	parserVersion  string
 }
 
@@ -58,17 +57,16 @@ func newWASMInspectionCache(capacity int, inspector wasmModuleInspector) *wasmIn
 	}
 }
 
-func (c *wasmInspectionCache) inspect(ctx context.Context, module []byte, wasmABI string) (wasmModuleContract, error) {
-	return c.inspectWithParserVersion(ctx, module, wasmABI, wasmInspectionParserVersion)
+func (c *wasmInspectionCache) inspect(ctx context.Context, module []byte) (wasmModuleContract, error) {
+	return c.inspectWithParserVersion(ctx, module, wasmInspectionParserVersion)
 }
 
-func (c *wasmInspectionCache) inspectWithParserVersion(ctx context.Context, module []byte, wasmABI string, parserVersion string) (wasmModuleContract, error) {
+func (c *wasmInspectionCache) inspectWithParserVersion(ctx context.Context, module []byte, parserVersion string) (wasmModuleContract, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	key := wasmInspectionCacheKey{
 		artifactSHA256: sha256.Sum256(module),
-		wasmABI:        wasmABI,
 		parserVersion:  parserVersion,
 	}
 	for {

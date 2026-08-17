@@ -77,7 +77,6 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-performance.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT
 MEASUREMENTS="$TMP_DIR/measurements.ndjson"
 COMPARISONS="$TMP_DIR/comparisons.ndjson"
-COMPATIBILITY="$TMP_DIR/compatibility.json"
 ROUTE_AUTHORIZATION_DIAGNOSTIC="${OUTPUT%.json}.route-authorization-diagnostic.json"
 
 run_runtime_performance_tests() {
@@ -146,7 +145,7 @@ run_runtime_performance_tests() {
     go test ./pkg/host -run '^TestPerformanceRuntime' -count=1
 }
 
-npm run contracts:check
+npm run ui-contracts:check
 npm --prefix packages/redevplugin-ui run build
 if [[ -z "$RUNTIME_PATH" && "$(uname -s)" == "Linux" ]]; then
   cargo build --release -p redevplugin-runtime
@@ -180,13 +179,10 @@ node scripts/measure_http_route_authorization_performance.mjs \
   --gate "$MODE"
 node scripts/measure_redevplugin_ui_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"
 node scripts/measure_redevplugin_renderer_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"
-GOWORK=off go run ./cmd/redevplugin version >"$COMPATIBILITY"
-
 ARGS=(
   --output "$OUTPUT"
   --measurements "$MEASUREMENTS"
   --comparisons "$COMPARISONS"
-  --compatibility "$COMPATIBILITY"
   --version "$VERSION"
   --source-commit "$SOURCE_COMMIT"
   --gate "$MODE"

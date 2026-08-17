@@ -46,7 +46,7 @@ ReDevPlugin rejects:
   configuration, and Cargo dependency sections;
 - package sizes and paths that exceed configured limits.
 
-Every manifest v8 method must provide request and response JSON Schemas whose
+Every manifest v9 method must provide request and response JSON Schemas whose
 root is a closed object. Every nested schema that declares `type: object` must
 also set `additionalProperties: false`. ReDevPlugin rejects remote `$ref`
 resources, schema documents over 256 KiB, excessive schema depth/node counts,
@@ -417,8 +417,8 @@ after cancellation. Queued cancellation removes work before execution; running
 cancellation is checked at hostcall and completion boundaries without killing
 the shared runtime process.
 
-Compiled modules are cached only by verified artifact SHA-256 and WASM ABI
-version. The cache contains no plugin grant or session authority, so revoke does
+Compiled modules are cached only by verified artifact SHA-256 under the current
+`plugin_api=1` WASM contract. The cache contains no plugin grant or session authority, so revoke does
 not change module identity; every Store, Linker, memory limiter, fuel budget,
 lease check, and broker audience remains invocation-local. Artifact bytes are
 read and rehashed on cache miss, compilation failures are not retained, and a
@@ -438,10 +438,11 @@ that were actually closed. The current Rust runtime backs these counters with
 an in-process registry for brokered storage handles, network socket leases, and
 Host stream-store bridge stream IDs.
 
-Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant,
-performance evidence, and compatibility manifests are versioned contracts.
-Legacy IPC and UI version identifiers are rejected; runtime drift must fail
-closed through tests, compatibility checks, or diagnostics.
+Plugins declare only `plugin_api=1`. The Host and Rust runtime bind
+`internal_wire=1` once during Hello/HelloAck, then use the canonical worker,
+error-code, network-grant, and WASM contracts without a second compatibility
+axis. Legacy identifiers are rejected; runtime drift fails closed before normal
+frames or plugin work are accepted.
 
 ## Surface Diagnostics
 
@@ -461,7 +462,7 @@ Host products must:
 - implement all four `websecurity.Guard` stages, return a complete authenticated
   session, validate trusted-host origin and CSRF policy, and authorize the closed
   route action without adding product roles to the ReDevPlugin adapter;
-- verify compatibility manifests and release artifacts before upgrades;
+- verify the signed `PlatformReleaseManifest` and every exact release artifact before upgrades;
 - avoid local sibling dependency wiring;
 - present policy decisions and confirmations through product UI without
   bypassing ReDevPlugin permission, token, lease, broker, audit, and lifecycle

@@ -14,11 +14,11 @@ var (
 	canonicalUnsignedDecimalPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
 	positiveEpochPattern            = regexp.MustCompile(`^[1-9][0-9]*$`)
 	newContractIDPattern            = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,127}$`)
-	legacyIDPattern                 = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	releaseIDPattern                = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	hostnamePattern                 = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$`)
 	sha256Pattern                   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	prefixedSHA256Pattern           = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	legacySHA256Pattern             = regexp.MustCompile(`^(?:sha256:)?[0-9a-f]{64}$`)
+	packageSHA256Pattern            = regexp.MustCompile(`^(?:sha256:)?[0-9a-f]{64}$`)
 	artifactRefPattern              = regexp.MustCompile(`^[A-Za-z0-9._/@+-]+$`)
 	semverPattern                   = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 	canonicalTimePattern            = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`)
@@ -110,7 +110,7 @@ func validatePackageInput(value PackageSigningInput) error {
 	if value.Algorithm != SignatureAlgorithmEd25519 || !newContractIDPattern.MatchString(value.KeyID) {
 		return invalid("package signing key")
 	}
-	if !legacyIDPattern.MatchString(value.PublisherID) || !legacyIDPattern.MatchString(value.PluginID) || !semverPattern.MatchString(value.Version) {
+	if !releaseIDPattern.MatchString(value.PublisherID) || !releaseIDPattern.MatchString(value.PluginID) || !semverPattern.MatchString(value.Version) {
 		return invalid("package signing subject")
 	}
 	if !prefixedSHA256Pattern.MatchString(value.PackageHash) || !prefixedSHA256Pattern.MatchString(value.ManifestHash) || !prefixedSHA256Pattern.MatchString(value.EntriesHash) {
@@ -136,11 +136,11 @@ func validatePackageSignature(context PackageSigningInput, value PackageSignatur
 	return validateSignatureString(value.Signature, requireSignature)
 }
 
-func validateReleaseMetadata(value ReleaseMetadataV8) error {
-	if !validReleaseMetadataUIProtocolPair(value.SchemaVersion, value.Compatibility.UIProtocolVersion) || !newContractIDPattern.MatchString(value.SourceID) {
+func validateReleaseMetadata(value ReleaseMetadata) error {
+	if value.SchemaVersion != ReleaseMetadataSchemaVersion || !newContractIDPattern.MatchString(value.SourceID) {
 		return invalid("release metadata schema or source")
 	}
-	if !legacyIDPattern.MatchString(value.PublisherID) || !legacyIDPattern.MatchString(value.PluginID) || !semverPattern.MatchString(value.Version) {
+	if !releaseIDPattern.MatchString(value.PublisherID) || !releaseIDPattern.MatchString(value.PluginID) || !semverPattern.MatchString(value.Version) {
 		return invalid("release metadata subject")
 	}
 	if !validArtifactRef(value.ReleaseMetadataRef) || !validArtifactRef(value.DistributionRef.ArtifactRef) {
@@ -149,9 +149,9 @@ func validateReleaseMetadata(value ReleaseMetadataV8) error {
 	if value.DistributionRef.Distribution != "registry_ref" && value.DistributionRef.Distribution != "host_artifact_ref" {
 		return invalid("release metadata distribution")
 	}
-	if !legacySHA256Pattern.MatchString(value.Hashes.PackageSHA256) ||
-		!legacySHA256Pattern.MatchString(value.Hashes.ManifestSHA256) ||
-		!legacySHA256Pattern.MatchString(value.Hashes.EntriesSHA256) {
+	if !packageSHA256Pattern.MatchString(value.Hashes.PackageSHA256) ||
+		!packageSHA256Pattern.MatchString(value.Hashes.ManifestSHA256) ||
+		!packageSHA256Pattern.MatchString(value.Hashes.EntriesSHA256) {
 		return invalid("release metadata hashes")
 	}
 	if err := validateReleaseMetadataSignatureRef(value.ReleaseMetadataSignature); err != nil {
@@ -160,21 +160,11 @@ func validateReleaseMetadata(value ReleaseMetadataV8) error {
 	if err := validatePackageReleaseSignatureRef(value.PackageSignature); err != nil {
 		return err
 	}
-	if !semverPattern.MatchString(value.Compatibility.MinReDevPluginVersion) ||
-		!semverPattern.MatchString(value.Compatibility.MinRuntimeVersion) {
-		return invalid("release metadata compatibility")
-	}
-	if err := validateSortedTargets(value.Compatibility.SupportedTargets); err != nil {
-		return err
-	}
-	if err := validateHostRequirements(value.HostRequirements); err != nil {
-		return err
-	}
 	if value.ReleaseEvidence != nil {
-		if value.ReleaseEvidence.NoticesSHA256 != "" && !legacySHA256Pattern.MatchString(value.ReleaseEvidence.NoticesSHA256) {
+		if value.ReleaseEvidence.NoticesSHA256 != "" && !packageSHA256Pattern.MatchString(value.ReleaseEvidence.NoticesSHA256) {
 			return invalid("release metadata notices digest")
 		}
-		if value.ReleaseEvidence.ProvenanceSHA256 != "" && !legacySHA256Pattern.MatchString(value.ReleaseEvidence.ProvenanceSHA256) {
+		if value.ReleaseEvidence.ProvenanceSHA256 != "" && !packageSHA256Pattern.MatchString(value.ReleaseEvidence.ProvenanceSHA256) {
 			return invalid("release metadata provenance digest")
 		}
 		if value.ReleaseEvidence.GeneratedAt != "" {
@@ -194,10 +184,6 @@ func validateReleaseMetadata(value ReleaseMetadataV8) error {
 	return nil
 }
 
-func validReleaseMetadataUIProtocolPair(schemaVersion, uiProtocolVersion string) bool {
-	return schemaVersion == ReleaseMetadataSchemaVersionV8 && uiProtocolVersion == "plugin-ui-v7"
-}
-
 func validateReleaseMetadataSignatureRef(value ReleaseMetadataSignatureRef) error {
 	if value.Algorithm != SignatureAlgorithmEd25519 || !newContractIDPattern.MatchString(value.KeyID) || !validArtifactRef(value.SignatureRef) ||
 		!canonicalUnsignedDecimalPattern.MatchString(value.SourcePolicyEpoch) || !canonicalUnsignedDecimalPattern.MatchString(value.RevocationEpoch) {
@@ -214,63 +200,8 @@ func validatePackageReleaseSignatureRef(value PackageReleaseSignatureRef) error 
 	return nil
 }
 
-func validateSortedTargets(values []string) error {
-	allowed := map[string]bool{
-		"darwin/amd64": true,
-		"darwin/arm64": true,
-		"linux/amd64":  true,
-		"linux/arm64":  true,
-	}
-	previous := ""
-	for _, value := range values {
-		if !allowed[value] || value <= previous {
-			return invalid("release metadata supported target order")
-		}
-		previous = value
-	}
-	return nil
-}
-
-func validateHostRequirements(values []ReleaseHostRequirement) error {
-	previous := ""
-	for _, value := range values {
-		if !legacyIDPattern.MatchString(value.HostID) || value.HostID <= previous {
-			return invalid("release metadata host requirement order")
-		}
-		if value.MinHostVersion != "" && !semverPattern.MatchString(value.MinHostVersion) {
-			return invalid("release metadata host requirement version")
-		}
-		previousCapability := ""
-		for _, requirement := range value.RequiredCapabilityContracts {
-			key := requirement.CapabilityID + "\x00" + requirement.CapabilityVersion
-			if !legacyIDPattern.MatchString(requirement.CapabilityID) || !semverPattern.MatchString(requirement.CapabilityVersion) || key <= previousCapability {
-				return invalid("release metadata capability requirement order")
-			}
-			if err := validateCapabilityContractRef(requirement.Contract); err != nil {
-				return err
-			}
-			previousCapability = key
-		}
-		previous = value.HostID
-	}
-	return nil
-}
-
-func validateCapabilityContractRef(value HostCapabilityContractRef) error {
-	for _, id := range []string{value.PublisherID, value.ContractID} {
-		if !legacyIDPattern.MatchString(id) {
-			return invalid("release metadata capability contract identity")
-		}
-	}
-	if !semverPattern.MatchString(value.ContractVersion) || !sha256Pattern.MatchString(value.ArtifactSHA256) {
-		return invalid("release metadata capability contract version or digest")
-	}
-	return nil
-}
-
-func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
-	limits, maxLifetime, ok := sourcePolicyProfile(value.SchemaVersion)
-	if !ok || !newContractIDPattern.MatchString(value.SourceID) ||
+func validateSourcePolicy(value SourcePolicyV3, requireSignature bool) error {
+	if value.SchemaVersion != SourcePolicySchemaVersion || !newContractIDPattern.MatchString(value.SourceID) ||
 		!newContractIDPattern.MatchString(value.Channel) || !newContractIDPattern.MatchString(value.KeyID) {
 		return invalid("source policy schema or identity")
 	}
@@ -316,40 +247,38 @@ func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
 	if value.DowngradePolicy != "review_required" && value.DowngradePolicy != "block" {
 		return invalid("source policy downgrade_policy")
 	}
-	if value.Limits != limits {
+	if value.Limits != PersonalMaintainerSourcePolicyLimits() {
 		return invalid("source policy limits")
 	}
-	if _, _, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, maxLifetime); err != nil {
+	if _, _, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, 90*24*time.Hour); err != nil {
 		return err
 	}
 	return validateSignatureString(value.Signature, requireSignature)
 }
 
 func validatePointer(schemaVersion string, expectedSchemaVersion string, sourceID string, channel string, epoch string, ref string, documentDigest string, generatedAt string, expiresAt string, keyID string, signature string, requireSignature bool) error {
-	maxLifetime, ok := pointerMaxLifetime(schemaVersion, expectedSchemaVersion)
-	if !ok || !newContractIDPattern.MatchString(sourceID) ||
+	if schemaVersion != expectedSchemaVersion || !newContractIDPattern.MatchString(sourceID) ||
 		!newContractIDPattern.MatchString(channel) || !newContractIDPattern.MatchString(keyID) {
 		return invalid("release pointer schema or identity")
 	}
 	if !positiveEpochPattern.MatchString(epoch) || !validArtifactRef(ref) || !sha256Pattern.MatchString(documentDigest) || documentDigest == strings.Repeat("0", 64) {
 		return invalid("release pointer document ref or digest")
 	}
-	if _, _, err := validateTimeRange(generatedAt, expiresAt, maxLifetime); err != nil {
+	if _, _, err := validateTimeRange(generatedAt, expiresAt, 90*24*time.Hour); err != nil {
 		return err
 	}
 	return validateSignatureString(signature, requireSignature)
 }
 
-func validateRevocation(value RevocationV2, requireSignature bool) error {
-	maxLifetime, ok := revocationMaxLifetime(value.SchemaVersion)
-	if !ok || !newContractIDPattern.MatchString(value.SourceID) ||
+func validateRevocation(value RevocationV3, requireSignature bool) error {
+	if value.SchemaVersion != RevocationSchemaVersion || !newContractIDPattern.MatchString(value.SourceID) ||
 		!newContractIDPattern.MatchString(value.Channel) || !newContractIDPattern.MatchString(value.KeyID) {
 		return invalid("revocation schema or identity")
 	}
 	if !positiveEpochPattern.MatchString(value.Epoch) || !positiveEpochPattern.MatchString(value.RootEpoch) {
 		return invalid("revocation root_epoch")
 	}
-	generatedAt, expiresAt, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, maxLifetime)
+	generatedAt, expiresAt, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, 90*24*time.Hour)
 	if err != nil {
 		return err
 	}
@@ -363,7 +292,7 @@ func validateRevocation(value RevocationV2, requireSignature bool) error {
 	previous := ""
 	for _, revoked := range value.RevokedReleases {
 		key := revoked.PublisherID + "\x00" + revoked.PluginID + "\x00" + revoked.Version + "\x00" + revoked.ReleaseMetadataSHA256
-		if !legacyIDPattern.MatchString(revoked.PublisherID) || !legacyIDPattern.MatchString(revoked.PluginID) ||
+		if !releaseIDPattern.MatchString(revoked.PublisherID) || !releaseIDPattern.MatchString(revoked.PluginID) ||
 			!semverPattern.MatchString(revoked.Version) || !sha256Pattern.MatchString(revoked.ReleaseMetadataSHA256) || key <= previous {
 			return invalid("revocation revoked release identity or order")
 		}
@@ -374,40 +303,6 @@ func validateRevocation(value RevocationV2, requireSignature bool) error {
 		previous = key
 	}
 	return validateSignatureString(value.Signature, requireSignature)
-}
-
-func sourcePolicyProfile(schemaVersion string) (SourcePolicyLimits, time.Duration, bool) {
-	switch schemaVersion {
-	case SourcePolicySchemaVersionV3:
-		return PersonalMaintainerSourcePolicyLimits(), 90 * 24 * time.Hour, true
-	default:
-		return SourcePolicyLimits{}, 0, false
-	}
-}
-
-func pointerMaxLifetime(schemaVersion string, currentSchemaVersion string) (time.Duration, bool) {
-	legacySchemaVersion := SourcePolicyPointerSchemaVersionV1
-	if currentSchemaVersion == RevocationPointerSchemaVersion {
-		legacySchemaVersion = RevocationPointerSchemaVersionV1
-	}
-	if schemaVersion == legacySchemaVersion {
-		return 24 * time.Hour, true
-	}
-	if schemaVersion == currentSchemaVersion {
-		return 90 * 24 * time.Hour, true
-	}
-	return 0, false
-}
-
-func revocationMaxLifetime(schemaVersion string) (time.Duration, bool) {
-	switch schemaVersion {
-	case RevocationSchemaVersionV2:
-		return 24 * time.Hour, true
-	case RevocationSchemaVersionV3:
-		return 90 * 24 * time.Hour, true
-	default:
-		return 0, false
-	}
 }
 
 func validateTimeRange(generated string, expires string, maxLifetime time.Duration) (time.Time, time.Time, error) {
@@ -453,7 +348,7 @@ func validateSortedIDs(values []string, minimum int, maximum int, lower bool) er
 	}
 	previous := ""
 	for _, value := range values {
-		pattern := legacyIDPattern
+		pattern := releaseIDPattern
 		if lower {
 			pattern = newContractIDPattern
 		}

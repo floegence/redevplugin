@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/releasetrust"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
 )
 
 type verifiedReleaseRegistry struct {
@@ -33,15 +33,14 @@ func (h *Host) refreshInstalledReleaseTrust(ctx context.Context, record registry
 		err = releasetrust.ErrReleasePolicyDenied
 	}
 	if errors.Is(err, releasetrust.ErrReleaseTrustRevoked) || errors.Is(err, releasetrust.ErrReleasePolicyDenied) {
-		_, disableErr := h.setPluginEnableState(context.WithoutCancel(ctx), record.PluginInstanceID, registry.EnableDisabledByPolicy, "release trust revoked", time.Now().UTC())
-		if disableErr != nil {
-			return errors.Join(err, disableErr)
+		if revokeErr := h.revokeDeniedPluginRuntime(context.WithoutCancel(ctx), record, time.Now().UTC()); revokeErr != nil {
+			return errors.Join(err, revokeErr)
 		}
 	}
 	return err
 }
 
-type releaseActivationSnapshot struct {
+type verifiedReleaseSnapshot struct {
 	binding     *registry.ReleaseTrustBinding
 	verified    releasetrust.VerifiedPackage
 	hadVerified bool
@@ -102,18 +101,18 @@ func (h *Host) rememberVerifiedRelease(pluginInstanceID string, binding *registr
 	h.verifiedReleases.put(pluginInstanceID, *binding, *verified)
 }
 
-func (h *Host) snapshotReleaseActivation(record registry.PluginRecord) releaseActivationSnapshot {
+func (h *Host) snapshotVerifiedRelease(record registry.PluginRecord) verifiedReleaseSnapshot {
 	if h == nil || record.ReleaseTrustBinding == nil {
-		return releaseActivationSnapshot{}
+		return verifiedReleaseSnapshot{}
 	}
 	binding := *record.ReleaseTrustBinding
 	verified, hadVerified := h.verifiedReleases.get(record.PluginInstanceID, binding)
-	return releaseActivationSnapshot{
+	return verifiedReleaseSnapshot{
 		binding: &binding, verified: verified, hadVerified: hadVerified,
 	}
 }
 
-func (h *Host) restoreReleaseActivation(record registry.PluginRecord, snapshot releaseActivationSnapshot) error {
+func (h *Host) restoreVerifiedRelease(record registry.PluginRecord, snapshot verifiedReleaseSnapshot) error {
 	if h == nil {
 		return nil
 	}

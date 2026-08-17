@@ -1,0 +1,23 @@
+{
+  "schema_kind": "redevplugin.runtime_wire_fixtures",
+  "frames": [
+    {
+      "name": "heartbeat_metadata",
+      "encoded_hex": "52445046030000000000000000000100000006000000027b7d",
+      "frame_type": 3,
+      "flags": 0,
+      "request_id": 1,
+      "metadata_hex": "7b7d",
+      "body_hex": ""
+    },
+    {
+      "name": "io_read_result_body",
+      "encoded_hex": "524450460b0000000000000000002a000000120000000b7b226f6b223a747275657d010203",
+      "frame_type": 11,
+      "flags": 0,
+      "request_id": 42,
+      "metadata_hex": "7b226f6b223a747275657d",
+      "body_hex": "010203"
+    }
+  ]
+}

@@ -45,6 +45,7 @@ type runtimeProcess struct {
 	wait                func() error
 	kill                func() error
 	alive               func() bool
+	cleanup             func()
 	closeOnce           sync.Once
 }
 
@@ -57,6 +58,10 @@ func (process *runtimeProcess) Wait() error {
 		if process.pidfd >= 0 {
 			_ = closeRuntimePIDFD(process.pidfd)
 			process.pidfd = -1
+		}
+		if process.cleanup != nil {
+			process.cleanup()
+			process.cleanup = nil
 		}
 	})
 	return err
@@ -76,7 +81,7 @@ func (process *runtimeProcess) Alive() bool {
 	return process.alive()
 }
 
-func launchLegacyRuntimeProcess(options runtimeProcessLaunchOptions) (*runtimeProcess, error) {
+func launchPortableRuntimeProcess(options runtimeProcessLaunchOptions) (*runtimeProcess, error) {
 	if options.context == nil {
 		return nil, errors.New("runtime process context is required")
 	}
@@ -85,66 +90,73 @@ func launchLegacyRuntimeProcess(options runtimeProcessLaunchOptions) (*runtimePr
 	if len(commandEnv) == 0 {
 		commandEnv = os.Environ()
 	}
+	ipcRuntimeRead, ipcHostWrite, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	ipcHostRead, ipcRuntimeWrite, err := os.Pipe()
+	if err != nil {
+		_ = ipcRuntimeRead.Close()
+		_ = ipcHostWrite.Close()
+		return nil, err
+	}
 	controlRuntimeRead, controlHostWrite, err := os.Pipe()
 	if err != nil {
+		_ = ipcRuntimeRead.Close()
+		_ = ipcHostWrite.Close()
+		_ = ipcHostRead.Close()
+		_ = ipcRuntimeWrite.Close()
 		return nil, err
 	}
 	controlHostRead, controlRuntimeWrite, err := os.Pipe()
 	if err != nil {
+		_ = ipcRuntimeRead.Close()
+		_ = ipcHostWrite.Close()
+		_ = ipcHostRead.Close()
+		_ = ipcRuntimeWrite.Close()
 		_ = controlRuntimeRead.Close()
 		_ = controlHostWrite.Close()
 		return nil, err
 	}
-	closeControl := func() {
+	closeChild := func() {
+		_ = ipcRuntimeRead.Close()
+		_ = ipcRuntimeWrite.Close()
 		_ = controlRuntimeRead.Close()
-		_ = controlHostWrite.Close()
-		_ = controlHostRead.Close()
 		_ = controlRuntimeWrite.Close()
 	}
-	controlReadFD := 3
-	extraFiles := make([]*os.File, 0, 3)
-	if options.executable != nil {
-		inheritedExecutable, duplicateErr := duplicateRuntimeExecutableForChild(options.executable)
-		if duplicateErr != nil {
-			closeControl()
-			return nil, duplicateErr
-		}
-		defer inheritedExecutable.Close()
-		extraFiles = append(extraFiles, inheritedExecutable)
-		controlReadFD++
+	closeParent := func() {
+		_ = ipcHostWrite.Close()
+		_ = ipcHostRead.Close()
+		_ = controlHostWrite.Close()
+		_ = controlHostRead.Close()
 	}
-	cmd.Env = append(commandEnv,
-		fmt.Sprintf("REDEVPLUGIN_CONTROL_READ_FD=%d", controlReadFD),
-		fmt.Sprintf("REDEVPLUGIN_CONTROL_WRITE_FD=%d", controlReadFD+1),
-	)
-	cmd.ExtraFiles = append(extraFiles, controlRuntimeRead, controlRuntimeWrite)
+	cmd.Env = commandEnv
+	cmd.ExtraFiles = []*os.File{ipcRuntimeRead, ipcRuntimeWrite, controlRuntimeRead, controlRuntimeWrite}
 	cmd.Dir = options.dir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		closeControl()
-		return nil, err
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		closeControl()
+		closeChild()
+		closeParent()
 		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		closeControl()
+		closeChild()
+		closeParent()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		closeControl()
+		closeChild()
+		closeParent()
 		return nil, err
 	}
-	_ = controlRuntimeRead.Close()
-	_ = controlRuntimeWrite.Close()
+	closeChild()
 	return &runtimeProcess{
 		pid:           cmd.Process.Pid,
 		pidfd:         -1,
-		ipcIn:         stdin,
-		ipcOut:        stdout,
+		ipcIn:         ipcHostWrite,
+		ipcOut:        ipcHostRead,
+		diagnosticOut: stdout,
 		diagnosticErr: stderr,
 		controlIn:     controlHostWrite,
 		controlOut:    controlHostRead,

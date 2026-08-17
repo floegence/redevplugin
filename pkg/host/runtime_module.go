@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 )
 
 const (
@@ -57,7 +57,7 @@ const (
 type runtimeModuleCapability struct {
 	mu              sync.Mutex
 	state           runtimeModuleState
-	descriptor      RuntimeDescriptor
+	descriptor      RuntimeArtifactIdentity
 	executable      *os.File
 	executionRoot   *os.File
 	executableOwner *VerifiedExecutable
@@ -122,14 +122,14 @@ func normalizeRuntimeModuleOptions(options RuntimeModuleOptions) (RuntimeModuleO
 	return options, nil
 }
 
-func (module *RuntimeModule) Descriptor() RuntimeDescriptor {
+func (module *RuntimeModule) ArtifactIdentity() RuntimeArtifactIdentity {
 	if module == nil || module.capability == nil {
-		return RuntimeDescriptor{}
+		return RuntimeArtifactIdentity{}
 	}
 	module.capability.mu.Lock()
 	defer module.capability.mu.Unlock()
 	if module.capability.state == runtimeModuleClosed {
-		return RuntimeDescriptor{}
+		return RuntimeArtifactIdentity{}
 	}
 	return module.capability.descriptor
 }
@@ -285,13 +285,10 @@ func newRuntimeManagerFromCapability(capability *runtimeModuleCapability, adapte
 	startupTimeout := capability.startupTimeout
 	capability.mu.Unlock()
 
-	internalDescriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
-		PlatformVersion:   descriptor.PlatformVersion(),
-		Target:            descriptor.Target().classifierTarget(),
-		RustIPCVersion:    descriptor.RustIPCVersion().String(),
-		WASMABIVersion:    descriptor.WASMABIVersion().String(),
-		ContractSetSHA256: descriptor.ContractSetSHA256().String(),
-		BinarySHA256:      descriptor.BinarySHA256().String(),
+	internalIdentity, err := runtimeclient.NewRuntimeArtifactIdentity(runtimeclient.RuntimeArtifactIdentityOptions{
+		PlatformVersion: descriptor.PlatformVersion(),
+		Target:          descriptor.Target(),
+		BinarySHA256:    descriptor.BinarySHA256().String(),
 	})
 	if err != nil {
 		return nil, err
@@ -301,15 +298,9 @@ func newRuntimeManagerFromCapability(capability *runtimeModuleCapability, adapte
 		Supervisor: runtimeclient.ProcessSupervisorOptions{
 			RuntimeExecutable:     executable,
 			RuntimeExecutionRoot:  capability.executionRoot,
-			Descriptor:            internalDescriptor,
+			ArtifactIdentity:      internalIdentity,
 			Diagnostics:           adapters.Diagnostics,
 			Artifacts:             runtimeArtifactProvider{assets: adapters.Assets},
-			HandleGrants:          runtimeHandleGrantValidator{tokens: adapters.SurfaceTokens},
-			StorageFiles:          adapters.PluginData,
-			StorageKV:             adapters.PluginData,
-			StorageSQLite:         adapters.PluginData,
-			Connectivity:          adapters.Connectivity,
-			NetworkExecutor:       adapters.NetworkExecutor,
 			HandshakeTimeout:      startupTimeout,
 			HeartbeatInterval:     2 * time.Second,
 			MaxHeartbeatStaleness: 5 * time.Second,

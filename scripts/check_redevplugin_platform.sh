@@ -40,7 +40,6 @@ export GOWORK=off
   go list ./cmd/... ./examples/... ./pkg/...
   # Keep process-supervisor handshakes isolated from fresh Cargo builds.
   go test -p=1 ./cmd/... ./examples/... ./pkg/...
-  tmp_compatibility_manifest=$(mktemp "${TMPDIR:-/tmp}/redevplugin-compatibility.XXXXXX.json")
   tmp_scaffold_dir=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-scaffold.XXXXXX")
   tmp_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal.XXXXXX.redevplugin")
   tmp_fixture_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-generated-fixture.XXXXXX.redevplugin")
@@ -50,9 +49,7 @@ export GOWORK=off
   tmp_private_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-private.XXXXXX.json")
   tmp_public_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-public.XXXXXX.json")
   tmp_dev_state_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-dev-root.XXXXXX")
-  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_fixture_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
-  go run ./cmd/redevplugin version >"$tmp_compatibility_manifest"
-  go run ./cmd/redevplugin verify-compatibility "$tmp_compatibility_manifest" . | grep -q '"ok": true'
+  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_dev_state_root"; rm -f "$tmp_package" "$tmp_fixture_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
   for generated_fixture in testdata/generated_plugins/minimal testdata/generated_plugins/networked testdata/generated_plugins/storage testdata/generated_plugins/method-contract; do
     go run ./cmd/redevplugin validate "$generated_fixture/manifest.json" >/dev/null
     rm -f "$tmp_fixture_package"
@@ -89,7 +86,7 @@ export GOWORK=off
   go run ./cmd/redevplugin enable "$tmp_fixture_package" >/dev/null
   go run ./cmd/redevplugin disable "$tmp_fixture_package" >/dev/null
   go run ./cmd/redevplugin uninstall "$tmp_fixture_package" >/dev/null
-  go run ./cmd/redevplugin dev-install "$tmp_dev_state_root" "$tmp_fixture_package" | grep -q '"enable_state": "disabled"'
+  go run ./cmd/redevplugin dev-install "$tmp_dev_state_root" "$tmp_fixture_package" | grep -q '"enable_state": "enabled"'
   test -f "$tmp_dev_state_root/control.sqlite"
   test -d "$tmp_dev_state_root/plugin-data"
   test -f "$tmp_dev_state_root/secrets.sqlite"
@@ -100,14 +97,13 @@ export GOWORK=off
     echo "dev state root contains a JSON authority mirror" >&2
     exit 1
   fi
-  go run ./cmd/redevplugin dev-enable "$tmp_dev_state_root" | grep -q '"enable_state": "enabled"'
   go run ./cmd/redevplugin inspect-data "$tmp_dev_state_root" | grep -q '"binding_count": 1'
   dev_open_output=$(go run ./cmd/redevplugin dev-open "$tmp_dev_state_root" "minimal.view")
   grep -q '"surface_instance_id":' <<<"$dev_open_output"
   grep -q '"bridge_nonce":' <<<"$dev_open_output"
   grep -q '"asset_ticket_id":' <<<"$dev_open_output"
-  go run ./cmd/redevplugin dev-disable "$tmp_dev_state_root" | grep -q '"enable_state": "disabled"'
-  go run ./cmd/redevplugin dev-uninstall "$tmp_dev_state_root" | grep -q '"enable_state": "disabled"'
+  go run ./cmd/redevplugin dev-disable "$tmp_dev_state_root" | grep -q '"enable_state": "disabled_by_user"'
+  go run ./cmd/redevplugin dev-uninstall "$tmp_dev_state_root" | grep -q '"enable_state": "disabled_by_user"'
   ./scripts/check_redevplugin_ui_bridge.sh
 )
 

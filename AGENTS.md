@@ -39,7 +39,7 @@ This repository owns:
 - CLI commands, plugin templates, host-neutral Flower-generation-compatible scaffolds,
   package/validate/dev-harness tools, replay fixtures, and cross-language tests;
 - package publication evidence, registry checksums and provenance, license
-  notices, and compatibility manifests for all published platform components.
+  notices, and the canonical platform release manifest for each release.
 
 The repository must be usable as a library/runtime product, not just as a
 collection of specifications. When a platform feature is declared supported, it
@@ -53,8 +53,8 @@ must provide the host-importable implementation surface that products need:
 - published Rust source crates for `redevplugin-runtime` and
   `redevplugin-worker-sdk`, plus a Go-managed supervisor contract for
   admission, launch, health, shutdown, restart, and diagnostics;
-- generated contracts, fixtures, compatibility hashes, and release metadata that
-  let host products validate the exact behavior they are consuming.
+- generated contracts, fixtures, and release metadata that let host products
+  validate the exact artifacts they are consuming.
 
 The Go, TypeScript, and Rust pieces are one platform contract. ReDevPlugin
 publishes the Rust runtime as source crates. A host product must be able to
@@ -124,8 +124,8 @@ handling, audit/error shape, and generated client/contract behavior.
 The intended host integration shape is:
 
 - the host imports released ReDevPlugin Go and TypeScript packages;
-- the host pins the released ReDevPlugin package set and builds the runtime
-  binary from verified published source crates with a fixed product toolchain;
+- the host verifies the signed `PlatformReleaseManifest` and builds the runtime
+  binary from its exact published source crates with a fixed product toolchain;
 - the host verifies, signs, and bundles that product-owned runtime binary;
 - the host mounts ReDevPlugin HTTP handlers or calls the embeddable lifecycle
   APIs instead of reimplementing endpoint behavior;
@@ -178,7 +178,7 @@ boundary must stay explicit in both directions:
   model, trust and enable state machines, lifecycle API, sandbox bootstrap,
   bridge protocol, token/ticket rules, permission evaluation, confirmation
   intents, storage/network broker contracts, runtime manager/supervisor, Rust
-  runtime IPC, WASM ABI, CLI validators, templates, and compatibility manifests.
+  runtime wire, WASM author ABI, CLI validators, templates, and release manifest.
 - Redeven defines product policy and host adapters: session metadata mapping,
   CSRF/origin enforcement, local policy caps, state-root selection, audit and
   diagnostics sinks, secret vault integration, Env App placement, Workbench and
@@ -201,7 +201,7 @@ boundary must stay explicit in both directions:
   registered by Redeven. They are not plugin runtime mechanisms and must not be
   implemented as generic ReDevPlugin core unless the capability becomes
   host-neutral by design.
-- Capability schemas ship in the ReDevPlugin package set. Host adapters register
+- Capability schemas ship as exact artifacts in the platform release manifest. Host adapters register
   known capability contracts, and release requirements bind only to that closed
   local registry; no independent capability publisher or remote admission chain
   exists.
@@ -218,7 +218,7 @@ Use this responsibility matrix as the default decision rule:
 
 | Area | ReDevPlugin owns | Host product owns |
 | --- | --- | --- |
-| Package and trust | Package layout, canonical hashes, signing rules, manifest validation, trust state contracts, compatibility manifests | Which registries or local sources are allowed, product review UX, enterprise policy caps |
+| Package and trust | Package layout, canonical hashes, signing rules, manifest validation, trust state contracts, release artifact identity | Which registries or local sources are allowed, product review UX, enterprise policy caps |
 | Lifecycle | Install, enable, open, disable, uninstall, update, downgrade, export/import, diagnostics, and data-retention APIs; durable owner-scoped release-install operations with idempotent request recovery, restart reconciliation, progress, and stable failure codes | Where those actions appear in product UI, who may invoke them, and how they are audited in the host product |
 | UI runtime | Sandboxed iframe bootstrap, asset ticket/session protocol, bridge SDK, opaque-origin-safe source/port-bound MessageChannel messaging, settings and intent contracts | Activity Bar, Workbench, Settings, Desktop shell, route mounting, native product chrome, and product copy |
 | Backend runtime | Rust `redevplugin-runtime` source crates, runtime admission and manager/supervisor, WASM actor/job model, IPC, leases, quotas, revocation, hostcall contracts, stream envelopes | Fixed package coordinates and toolchain, verified source build, product binary/SBOM/provenance/signature, process placement, and diagnostics presentation |
@@ -236,11 +236,12 @@ inspect and explicitly install a package from any supported public HTTPS package
 URL or GitHub repository even when the package is unsigned, the signer is
 unknown, or signature assessment is temporarily unavailable. Those outcomes do
 not grant trust or automatic-update eligibility. After the user confirms the
-exact inspected bytes and explicitly approves every required permission, a new
-plugin activates through the same Host lifecycle by default; missing approvals
-produce `needs_attention` without silent grants. An invalid signature or a
-signature from a revoked key is an integrity failure and must block commit and
-execution.
+exact inspected bytes and the package passes integrity and scope validation,
+`InstallCommit` persists the plugin as `enabled`. Missing grants remain an
+open/capability authorization boundary: the affected action returns
+`permission_required`, while the plugin stays enabled and visible. An invalid
+signature or a signature from a revoked key is an integrity failure and must
+block commit and execution.
 
 The platform owns the process-local `inspect -> install` transaction, immutable
 package and source evidence, exact owner/session binding before installation,
@@ -306,12 +307,13 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   not plugin backend mechanisms.
 - If runtime process lifecycle code is needed, it belongs in ReDevPlugin as a
   host-neutral admission layer and manager/supervisor with explicit hooks for a
-  host-provided trusted directory handle, expected descriptor, logging, health
-  reporting, and shutdown deadlines. Host products build the product binary and
-  may call those hooks, but must not implement a parallel supervisor.
+  host-provided trusted directory handle, expected runtime artifact identity,
+  logging, health reporting, and shutdown deadlines. Host products build the
+  product binary and may call those hooks, but must not implement a parallel
+  supervisor.
 - If a contract is observable by a host product or plugin author, update the
-  schema, generated types, fixtures, compatibility manifest, release metadata,
-  and tests in the same change.
+  canonical schema, generated types, fixtures, release-manifest generator,
+  release metadata, and tests in the same change.
 - Tests for host integration should use a small fake host adapter inside this
   repository. Do not import Redeven tests, fixtures, package paths, or product
   configuration as the ReDevPlugin test oracle.
@@ -325,7 +327,8 @@ Host products consume ReDevPlugin through published artifacts only:
 - Rust source crate versions and registry checksums for `redevplugin-runtime`
   and `redevplugin-worker-sdk`;
 - package publication evidence and the closed Cargo dependency metadata;
-- released OpenAPI/schema/IPC/WASM ABI/token/classifier contract hashes.
+- the signed `PlatformReleaseManifest` release asset, whose exact artifact
+  hashes bind the released canonical contracts and packages.
 
 Do not require host products to use local `../redevplugin` checkouts. Do not
 document or support `go.work`, `go.work.sum`, `replace`, `file:`, `link:`,
@@ -333,16 +336,16 @@ document or support `go.work`, `go.work.sum`, `replace`, `file:`, `link:`,
 paths, copied source trees, or build aliases as a host-product integration path.
 Run dependency and contract checks that touch Go with `GOWORK=off`.
 
-When ReDevPlugin changes a public contract, update the schema, generated types,
-fixtures, compatibility manifest, release notes, and tests in the same feature
-change. Host products should be able to validate compatibility from released
-artifact versions and contract hashes without reading this repository's source.
+When ReDevPlugin changes a public contract, update the canonical schema,
+generated types, fixtures, release-manifest generator, release notes, and tests
+in the same feature change. Host products validate the one platform release and
+its exact artifact hashes without reconstructing a compatibility matrix.
 
 Do not publish a feature as "implemented" for a host product until the Go/npm
-libraries, Rust source crates, generated SDKs, contracts, compatibility
-metadata, and package publication evidence that the host consumes are released
-together. The host-built OS runtime binary is a product artifact and is not a
-ReDevPlugin release artifact.
+libraries, Rust source crates, generated SDKs, canonical contracts, signed
+platform release manifest, and package publication evidence that the host
+consumes are released together. The host-built OS runtime binary is a product
+artifact and is not a ReDevPlugin release artifact.
 
 ## Durable Schema Migration
 
@@ -351,16 +354,25 @@ layout that ReDevPlugin defines. Host products select the state root and invoke
 released migration APIs, but they must not copy ReDevPlugin schemas, SQL, file
 layout rules, or migration state machines into host code.
 
-### Pre-Release Plugin Package Baseline
+### ReDevPlugin 3 Current-Only Baseline
 
-The manifest v8 and release metadata v8 transition for ReDevPlugin 0.7.2 is a
-user-approved pre-release current-only baseline. No supported public release
-used the retired manifest v5-v7 or release metadata v5-v7 package formats, so
-the current source tree, generated contracts, CLI, and compatibility matrix
-accept only `redevplugin.manifest.v8`, `redevplugin.release_metadata.v8`, and
-`plugin-ui-v7`. Retired package schemas remain available only from historical
-Git tags and must not be restored as active union members, compatibility
-decoders, scaffold targets, or generated-contract inputs.
+ReDevPlugin 3 has one platform SemVer, one plugin author compatibility input,
+and one internal Host/runtime wire. The root `VERSION` file is the only editable
+platform-version source. The Go module major is `/v3`; npm and Cargo package
+versions, OpenAPI `info.version`, generated version constants, release tags,
+and registry readback must equal that source. Plugin packages declare only
+manifest v9 with `plugin_api=1`. Go Host and Rust runtime use
+`internal_wire=1`, carried only by the exact Hello/HelloAck handshake; normal
+frames do not carry or negotiate a version.
+
+The canonical contract sources use fixed names, including
+`spec/openapi/plugin-platform.yaml`,
+`spec/internal/runtime-wire.schema.json`, and the current plugin/WASM author
+contracts. Do not restore versioned predecessor files, aliases, fallback
+decoders, compatibility ranges, or a second ABI/version axis. The staging-only
+`PlatformReleaseManifest` is the sole platform artifact index; it is generated
+after package artifacts, signed as a release asset, and is not checked into any
+package whose hash it contains.
 
 Manifest presentation is author-owned signed package content. ReDevPlugin owns
 its validation, canonicalization, locale resolution, inspection, and installed
@@ -374,13 +386,12 @@ only the published versioned evidence and extracted bytes; they must not parse a
 identity. A market may retain only the current evidence-bound derived image and
 must not treat it as package or installation authority.
 
-If ReDevPlugin-owned persistent state contains a retired manifest, opening or
-reading that state must return a stable incompatibility error without deleting,
-rewriting, migrating, or synthesizing presentation for the old record. This is
-the narrow pre-release exception to the normal migration rules below. Once
-0.7.0 is released or distributed, manifest v8 and release metadata v8 begin the
-permanent supported lineage; future changes must append explicit migrations and
-must not invoke this exception again.
+The 3.0 control database kind is `redevplugin_control_v3` at schema version 1.
+The Host accepts only an explicit state root and never discovers or imports a
+2.x sibling root. A wrong, legacy, drifted, or future root fails closed without
+changing its bytes. The v3 kind is the permanent lineage once 3.0 is released;
+future supported changes append contiguous migrations instead of resetting the
+kind or silently importing an older lineage.
 
 - Every change to a released ReDevPlugin-owned durable schema or layout must
   include an automatic, versioned, idempotent, and crash-recoverable migration
@@ -420,8 +431,8 @@ must not invoke this exception again.
   the cross-repository boundary remains explicit even when their state roots are
   colocated by a product.
 - Migration behavior is a released platform contract. Update the public Go API,
-  machine contracts and fixtures when observable, compatibility metadata,
-  release notes, and package-set evidence together before a host consumes it.
+  machine contracts and fixtures when observable, release notes, and the exact
+  `PlatformReleaseManifest` artifact set together before a host consumes it.
 
 ## Git Workflow (Worktree, Required)
 
@@ -599,8 +610,8 @@ git diff origin/main...HEAD
 ```
 
 Then rerun the relevant local quality gate from this file. For public contracts,
-also inspect the generated contract diff and compatibility manifest so the
-feature still represents the intended API surface after replaying on latest
+also inspect the generated contract diff and staged release-manifest fixture so
+the feature still represents the intended API surface after replaying on latest
 `main`.
 
 Do not continue after a failed or uncertain rebase by manually deleting conflict
@@ -733,7 +744,7 @@ remove it before integration.
 Maintained documentation for ReDevPlugin belongs in intentional repository files
 such as `README.md`, `AGENTS.md`, public specs, generated contracts, release
 notes, or future canonical docs. Do not leave stale planning drafts that compete
-with machine-readable schemas or the released compatibility manifest.
+with machine-readable schemas or the signed platform release manifest.
 
 ## Cross-Repository Rule Synchronization
 
@@ -751,9 +762,9 @@ with Redeven at the responsibility-boundary level:
   both files before landing dependent integration. For ReDevPlugin work, this
   file remains the local authority; do not resolve the disagreement by adding a
   convenience path in either repository.
-- Treat boundary changes like contract changes: update tests, fixtures,
-  compatibility metadata, and release notes when the rule implies an observable
-  platform behavior.
+- Treat boundary changes like contract changes: update tests, fixtures, release
+  metadata, and release notes when the rule implies observable platform
+  behavior.
 
 ## Cross-Repository Release Discipline
 
@@ -771,8 +782,8 @@ Release-bound changes must keep these artifacts aligned:
   `redevplugin-worker-sdk`;
 - OpenAPI, JSON schema, IPC, WASM ABI, token/ticket, and classifier contract
   hashes;
-- compatibility manifest, release notes, package publication evidence, registry
-  provenance, and third-party notices.
+- signed platform release manifest, release notes, package publication evidence,
+  registry provenance, and third-party notices.
 
 ReDevPlugin publishes versioned source crates, not OS runtime binaries. Host
 products build the runtime binary from exact published crates, then own the
@@ -796,7 +807,7 @@ Release publication uses three explicit gates:
   publication/readback, attestation, and GitHub Release.
 - After publication starts, registry readbacks must use bounded retries with
   backoff only for temporary availability, rate-limit, and propagation failures.
-  A source commit, tag ref, package digest, checksum, provenance, package set, or
+  A source commit, tag ref, package digest, checksum, provenance, platform release manifest, or
   module identity mismatch is immutable evidence of the wrong coordinate and
   must fail immediately without retry. A retry or recovery run must reconcile
   the original immutable tag, source commit, and package artifact; it must never
@@ -861,10 +872,12 @@ Core invariants:
   automatic-update entitlement;
 - invalid or revoked signatures fail closed, while absent, unknown-signer, and
   temporarily unavailable signature assessments may proceed only through
-  explicit user confirmation and remain manual-update-only. New installs
-  activate by default only after all required permission IDs are explicitly
-  approved; otherwise they remain disabled with `needs_attention` and zero
-  unapproved grants.
+  explicit user confirmation and remain manual-update-only. A successful
+  `InstallCommit` always persists `enable_state=enabled`; missing grants make
+  only the affected open/capability call return `permission_required`. Only an
+  explicit user disable writes `disabled_by_user`. Trust, policy, permission,
+  readiness, or runtime failures revoke the relevant leases, tokens, handles,
+  or surfaces without rewriting lifecycle state.
 
 ## First-Principles And Occam Review
 
@@ -915,7 +928,7 @@ complete repository gate for every check that does not require GitHub credential
 artifact storage, tag/ref identity, registry readback, Sigstore signing, or a
 hosted multi-platform runner. It includes Go, TypeScript, browser, canonical
 WASM, bridge, performance, Rust, audit, full stress, property, contract, platform,
-and platform-package publication smoke gates. The hook behavior itself is
+and release-package/manifest smoke gates. The hook behavior itself is
 covered by
 `scripts/test_redevplugin_pre_push_hook.sh`. The main-branch `Quick CI` invokes
 only `scripts/check_redevplugin_quick_ci.sh`; it must remain bounded to five
@@ -942,9 +955,9 @@ Expected gates for platform changes:
   coverage, and contract hash generation.
 - Release: registry package closure and readback, package checksums/provenance,
   packaged-source extraction and conformance, reproducible source builds,
-  third-party notices, exact-one `platform-package-publication-v2` completion
-  evidence, version matrix consistency, and host-consumable compatibility
-  manifest validation. Registry verifier fixtures must prove bounded retry of
+  third-party notices, exact-one signed `platform-release-manifest.json` asset,
+  exact platform-version equality, and canonical contract hashes. Registry
+  verifier fixtures must prove bounded retry of
   temporary failures and immediate rejection of immutable identity, digest,
   checksum, source, or provenance mismatches.
 

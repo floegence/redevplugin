@@ -11,16 +11,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/sessionscope"
+	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionscope"
 )
 
 var ErrRecordNotFound = errors.New("control store record not found")
@@ -54,118 +56,110 @@ type ExecutionPruneRequest struct {
 type ExecutionPruneResult struct{ Deleted int }
 
 const releaseInstallPayloadKind = "release_install_v1"
-const externalInstallActivationPayloadKind = "external_install_activation_v1"
 
 type releaseInstallPayload struct {
-	Kind              string                                   `json:"kind"`
-	Operation         registry.ReleaseInstallOperation         `json:"operation"`
-	Release           registry.ReleaseInstallIdentity          `json:"release"`
-	ActivationRequest registry.ReleaseInstallActivationRequest `json:"activation_request"`
-}
-
-type ExternalInstallActivation struct {
-	Execution                   execution.Execution                      `json:"execution"`
-	PluginInstanceID            string                                   `json:"plugin_instance_id"`
-	PackageSHA256               string                                   `json:"package_sha256"`
-	ManifestSHA256              string                                   `json:"manifest_sha256"`
-	EntriesSHA256               string                                   `json:"entries_sha256"`
-	InstalledManagementRevision uint64                                   `json:"installed_management_revision"`
-	ActivationRequest           registry.ReleaseInstallActivationRequest `json:"activation_request"`
-}
-
-type ExternalInstallActivationRequest struct {
-	ExecutionID string
-	Owner       ExecutionOwner
-	Activation  registry.ReleaseInstallActivationRequest
-	Now         time.Time
-}
-
-type externalInstallActivationPayload struct {
-	Kind                        string                                   `json:"kind"`
-	PluginInstanceID            string                                   `json:"plugin_instance_id"`
-	PackageSHA256               string                                   `json:"package_sha256"`
-	ManifestSHA256              string                                   `json:"manifest_sha256"`
-	EntriesSHA256               string                                   `json:"entries_sha256"`
-	InstalledManagementRevision uint64                                   `json:"installed_management_revision"`
-	ActivationRequest           registry.ReleaseInstallActivationRequest `json:"activation_request"`
-}
-
-type durableManifestModel struct {
-	SchemaSource string                        `json:"schema_source"`
-	API          manifest.PublicAPIRequirement `json:"api"`
-	Permissions  []manifest.PermissionID       `json:"permissions,omitempty"`
+	Kind      string                           `json:"kind"`
+	Operation registry.ReleaseInstallOperation `json:"operation"`
+	Release   registry.ReleaseInstallIdentity  `json:"release"`
 }
 
 type durableRegistryPluginRecord struct {
 	registry.PluginRecord
-	ManifestModel *durableManifestModel `json:"_control_manifest_model_v1,omitempty"`
+	Manifest       json.RawMessage        `json:"manifest"`
+	VersionHistory []durablePluginVersion `json:"version_history,omitempty"`
+}
+
+type durablePluginVersion struct {
+	registry.PluginVersion
+	Manifest json.RawMessage `json:"manifest"`
 }
 
 func encodeRegistryPluginRecord(record registry.PluginRecord) ([]byte, error) {
-	durable := durableRegistryPluginRecord{PluginRecord: record}
-	if record.ManifestModel.PluginID() != "" {
-		source := record.ManifestModel.SchemaSource
-		if source == "" {
-			source = record.ManifestSource
-		}
-		model, err := manifest.RestoreModel(record.Manifest, source, record.ManifestModel.API, record.ManifestModel.Permissions)
-		if err != nil {
-			return nil, fmt.Errorf("persist plugin manifest model: %w", err)
-		}
-		if err := validateV9ManifestModelIdentity(record, model); err != nil {
-			return nil, err
-		}
-		durable.ManifestModel = &durableManifestModel{
-			SchemaSource: model.SchemaSource,
-			API:          model.API,
-			Permissions:  append([]manifest.PermissionID(nil), model.Permissions...),
-		}
+	canonical, err := exactCanonicalManifest(record.Manifest, record.CanonicalManifest)
+	if err != nil {
+		return nil, err
 	}
-	return json.Marshal(durable)
+	versions := make([]durablePluginVersion, len(record.VersionHistory))
+	for index := range record.VersionHistory {
+		versionCanonical, err := exactCanonicalManifest(record.VersionHistory[index].Manifest, record.VersionHistory[index].CanonicalManifest)
+		if err != nil {
+			return nil, fmt.Errorf("version history %d: %w", index, err)
+		}
+		versions[index] = durablePluginVersion{PluginVersion: record.VersionHistory[index], Manifest: versionCanonical}
+	}
+	return json.Marshal(durableRegistryPluginRecord{
+		PluginRecord:   record,
+		Manifest:       canonical,
+		VersionHistory: versions,
+	})
 }
 
 func decodeRegistryPluginRecord(raw []byte) (registry.PluginRecord, error) {
 	var durable durableRegistryPluginRecord
-	if err := json.Unmarshal(raw, &durable); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&durable); err != nil {
 		return registry.PluginRecord{}, fmt.Errorf("%w: plugin record JSON: %v", ErrIncompatible, err)
 	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return registry.PluginRecord{}, fmt.Errorf("%w: plugin record JSON trailing value", ErrIncompatible)
+	}
 	record := durable.PluginRecord
-	if durable.ManifestModel != nil {
-		model, err := manifest.RestoreModel(record.Manifest, durable.ManifestModel.SchemaSource, durable.ManifestModel.API, durable.ManifestModel.Permissions)
+	current, canonical, err := decodeExactCanonicalManifest(durable.Manifest)
+	if err != nil {
+		return registry.PluginRecord{}, fmt.Errorf("%w: current manifest: %v", ErrIncompatible, err)
+	}
+	record.Manifest = current
+	record.CanonicalManifest = canonical
+	record.VersionHistory = make([]registry.PluginVersion, len(durable.VersionHistory))
+	for index, version := range durable.VersionHistory {
+		decoded, versionCanonical, err := decodeExactCanonicalManifest(version.Manifest)
 		if err != nil {
-			return registry.PluginRecord{}, fmt.Errorf("%w: plugin manifest model: %v", ErrIncompatible, err)
+			return registry.PluginRecord{}, fmt.Errorf("%w: version history %d manifest: %v", ErrIncompatible, index, err)
 		}
-		if err := validateV9ManifestModelIdentity(record, model); err != nil {
-			return registry.PluginRecord{}, err
-		}
-		record.ManifestModel = model
-		record.ManifestSource = model.SchemaSource
-	} else if record.ManifestSource != manifest.SchemaVersionV9 && record.Manifest.PluginID() != "" {
-		model, err := manifest.RestoreModel(record.Manifest, record.ManifestSource, manifest.PublicAPIRequirement{}, nil)
-		if err != nil {
-			return registry.PluginRecord{}, fmt.Errorf("%w: plugin manifest model: %v", ErrIncompatible, err)
-		}
-		record.ManifestModel = model
-		record.ManifestSource = model.SchemaSource
+		record.VersionHistory[index] = version.PluginVersion
+		record.VersionHistory[index].Manifest = decoded
+		record.VersionHistory[index].CanonicalManifest = versionCanonical
 	}
 	return record, nil
 }
 
-func validateV9ManifestModelIdentity(record registry.PluginRecord, model manifest.Model) error {
-	if model.SchemaSource != manifest.SchemaVersionV9 {
-		return nil
+func exactCanonicalManifest(value manifest.Manifest, supplied string) (json.RawMessage, error) {
+	if supplied != "" {
+		_, canonical, err := decodeExactCanonicalManifest(json.RawMessage(supplied))
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(canonical), nil
 	}
-	if (record.ManifestSource != "" && record.ManifestSource != model.SchemaSource) ||
-		model.Publisher.PublisherID != record.PublisherID || model.PluginID() != record.PluginID || model.Plugin.Version != record.Version {
-		return fmt.Errorf("%w: v9 plugin manifest model identity mismatch", ErrIncompatible)
+	canonical, err := manifest.MarshalCanonical(value)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return json.RawMessage(canonical), nil
+}
+
+func decodeExactCanonicalManifest(raw json.RawMessage) (manifest.Manifest, string, error) {
+	if len(raw) == 0 {
+		return manifest.Manifest{}, "", errors.New("canonical manifest is required")
+	}
+	decoded, err := manifest.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return manifest.Manifest{}, "", err
+	}
+	canonical, err := manifest.CanonicalJSON(raw)
+	if err != nil {
+		return manifest.Manifest{}, "", err
+	}
+	if !bytes.Equal(raw, canonical) {
+		return manifest.Manifest{}, "", errors.New("manifest JSON is not canonical")
+	}
+	return decoded, string(canonical), nil
 }
 
 func encodeReleaseInstallOperation(operation registry.ReleaseInstallOperation) ([]byte, error) {
 	return json.Marshal(releaseInstallPayload{
-		Kind: releaseInstallPayloadKind, Operation: operation,
-		Release: operation.Release, ActivationRequest: operation.ActivationRequest,
+		Kind: releaseInstallPayloadKind, Operation: operation, Release: operation.Release,
 	})
 }
 
@@ -232,31 +226,12 @@ type PluginSnapshot struct {
 // previous grants and policy in the same control-DB transaction. Inspection
 // identifiers and receipts never enter this store.
 func (v RegistryView) InstallExternalPackage(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
-	record, _, err := v.installExternalPackage(ctx, ownerEnvHash, req, nil)
-	return record, err
-}
-
-// InstallExternalPackageWithActivation atomically commits the package and its
-// Host-owned activation intent. The execution is completed after activation or
-// recovered on the next Host startup if the process exits in between.
-func (v RegistryView) InstallExternalPackageWithActivation(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest, activation ExternalInstallActivationRequest) (registry.PluginRecord, ExternalInstallActivation, error) {
-	record, pending, err := v.installExternalPackage(ctx, ownerEnvHash, req, &activation)
-	if err != nil {
-		return registry.PluginRecord{}, ExternalInstallActivation{}, err
-	}
-	return record, *pending, nil
-}
-
-func (v RegistryView) installExternalPackage(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest, activation *ExternalInstallActivationRequest) (registry.PluginRecord, *ExternalInstallActivation, error) {
 	if err := v.ready(); err != nil {
-		return registry.PluginRecord{}, nil, err
-	}
-	if activation != nil && (activation.ExecutionID == "" || !activation.Owner.Valid() || activation.Owner.OwnerEnvHash != ownerEnvHash || !validExternalInstallActivationRequest(activation.Activation)) {
-		return registry.PluginRecord{}, nil, errors.New("external install activation request is invalid")
+		return registry.PluginRecord{}, err
 	}
 	tx, err := v.store.db.BeginTx(ctx, nil)
 	if err != nil {
-		return registry.PluginRecord{}, nil, err
+		return registry.PluginRecord{}, err
 	}
 	defer tx.Rollback()
 	var existing *registry.PluginRecord
@@ -265,80 +240,34 @@ func (v RegistryView) installExternalPackage(ctx context.Context, ownerEnvHash s
 	if err == nil {
 		current, decodeErr := decodeRegistryPluginRecord([]byte(raw))
 		if decodeErr != nil {
-			return registry.PluginRecord{}, nil, decodeErr
+			return registry.PluginRecord{}, decodeErr
 		}
 		existing = &current
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return registry.PluginRecord{}, nil, err
+		return registry.PluginRecord{}, err
 	}
 	record, err := registry.PrepareExternalPackageInstall(ownerEnvHash, req, existing)
 	if err != nil {
-		return registry.PluginRecord{}, nil, err
+		return registry.PluginRecord{}, err
 	}
 	recordJSON, err := encodeRegistryPluginRecord(record)
 	if err != nil {
-		return registry.PluginRecord{}, nil, err
+		return registry.PluginRecord{}, err
 	}
 	controlRecord := controlPluginRecord(record, recordJSON)
 	if err := upsertControlPlugin(ctx, tx, controlRecord); err != nil {
-		return registry.PluginRecord{}, nil, err
+		return registry.PluginRecord{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM permission_grants WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID); err != nil {
-		return registry.PluginRecord{}, nil, err
+		return registry.PluginRecord{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM security_policies WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID); err != nil {
-		return registry.PluginRecord{}, nil, err
-	}
-	var pending *ExternalInstallActivation
-	if activation != nil {
-		now := activation.Now.UTC()
-		if now.IsZero() {
-			now = time.Now().UTC()
-		}
-		control, err := execution.New(execution.Execution{
-			ID: activation.ExecutionID, PluginInstanceID: record.PluginInstanceID,
-			Kind: execution.KindSync, Status: execution.StatusRunning, CreatedAt: now, UpdatedAt: now,
-		})
-		if err != nil {
-			return registry.PluginRecord{}, nil, err
-		}
-		value := ExternalInstallActivation{
-			Execution: control, PluginInstanceID: record.PluginInstanceID,
-			PackageSHA256: record.PackageHash, ManifestSHA256: record.ManifestHash, EntriesSHA256: record.EntriesHash,
-			InstalledManagementRevision: record.ManagementRevision, ActivationRequest: activation.Activation,
-		}
-		encoded, err := json.Marshal(externalInstallActivationPayload{
-			Kind: externalInstallActivationPayloadKind, PluginInstanceID: value.PluginInstanceID,
-			PackageSHA256: value.PackageSHA256, ManifestSHA256: value.ManifestSHA256, EntriesSHA256: value.EntriesSHA256,
-			InstalledManagementRevision: value.InstalledManagementRevision, ActivationRequest: value.ActivationRequest,
-		})
-		if err != nil {
-			return registry.PluginRecord{}, nil, err
-		}
-		owner := activation.Owner
-		if _, err := tx.ExecContext(ctx, `INSERT INTO execution(execution_id,plugin_instance_id,owner_session_hash,owner_user_hash,owner_env_hash,session_channel_id_hash,kind,status,cursor,failure_code,cancelable,created_at,updated_at,cancel_requested_at,terminal_at,operation_json,stream_json) VALUES(?,?,?,?,?,?,?,?,0,'',0,?,?,NULL,NULL,?,'null')`, control.ID, control.PluginInstanceID, owner.OwnerSessionHash, owner.OwnerUserHash, owner.OwnerEnvHash, owner.SessionChannelIDHash, control.Kind, control.Status, control.CreatedAt.UnixNano(), control.UpdatedAt.UnixNano(), string(encoded)); err != nil {
-			return registry.PluginRecord{}, nil, err
-		}
-		pending = &value
+		return registry.PluginRecord{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return registry.PluginRecord{}, nil, err
+		return registry.PluginRecord{}, err
 	}
-	return record, pending, nil
-}
-
-func validExternalInstallActivationRequest(request registry.ReleaseInstallActivationRequest) bool {
-	if request.Mode != registry.ReleaseInstallActivationAutomatic && request.Mode != registry.ReleaseInstallActivationRequested {
-		return false
-	}
-	previous := ""
-	for _, permissionID := range request.ApprovedPermissionIDs {
-		if permissionID == "" || permissionID != strings.TrimSpace(permissionID) || permissionID <= previous {
-			return false
-		}
-		previous = permissionID
-	}
-	return true
+	return record, nil
 }
 
 func (v RegistryView) GetPlugin(ctx context.Context, ownerEnvHash, pluginInstanceID string) (registry.PluginRecord, error) {
@@ -467,19 +396,22 @@ func (v RegistryView) PutPlugin(ctx context.Context, ownerEnvHash string, record
 		return registry.PluginRecord{}, err
 	}
 	defer tx.Rollback()
-	var existing *registry.PluginRecord
 	var raw string
 	err = tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID).Scan(&raw)
-	if err == nil {
-		current, decodeErr := decodeRegistryPluginRecord([]byte(raw))
-		if decodeErr != nil {
-			return registry.PluginRecord{}, decodeErr
-		}
-		existing = &current
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
+		return registry.PluginRecord{}, registry.ErrNotFound
+	}
+	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	record, err = registry.PreparePluginPut(ownerEnvHash, record, existing, now)
+	existing, err := decodeRegistryPluginRecord([]byte(raw))
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if existing.DeletedAt != nil {
+		return registry.PluginRecord{}, registry.ErrNotFound
+	}
+	record, err = registry.PreparePluginPut(ownerEnvHash, record, &existing, now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -487,8 +419,15 @@ func (v RegistryView) PutPlugin(ctx context.Context, ownerEnvHash string, record
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := upsertControlPlugin(ctx, tx, controlPluginRecord(record, recordJSON)); err != nil {
+	control := controlPluginRecord(record, recordJSON)
+	result, err := tx.ExecContext(ctx, `UPDATE plugin_records SET publisher_id=?,plugin_id=?,version=?,active_fingerprint=?,package_sha256=?,manifest_sha256=?,entries_sha256=?,state=?,disabled_reason=?,policy_revision=?,management_revision=?,revoke_epoch=?,installed_at=?,enabled_at=?,updated_at=?,deleted_at=?,record_json=? WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL`, control.PublisherID, control.PluginID, control.Version, control.ActiveFingerprint, control.PackageSHA256, control.ManifestSHA256, control.EntriesSHA256, control.State, control.DisabledReason, control.PolicyRevision, control.ManagementRevision, control.RevokeEpoch, control.InstalledAt, optionalInt64(control.EnabledAt), control.UpdatedAt, optionalInt64(control.DeletedAt), string(control.RawJSON), control.OwnerEnvHash, control.PluginInstanceID)
+	if err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if changed, rowsErr := result.RowsAffected(); rowsErr != nil {
+		return registry.PluginRecord{}, rowsErr
+	} else if changed != 1 {
+		return registry.PluginRecord{}, registry.ErrNotFound
 	}
 	if err := tx.Commit(); err != nil {
 		return registry.PluginRecord{}, err
@@ -501,7 +440,10 @@ func (v RegistryView) SetEnableState(ctx context.Context, ownerEnvHash, pluginIn
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	record = registry.PrepareEnableState(record, state, reason, now)
+	record, err = registry.PrepareEnableState(record, state, reason, now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
 	raw, err := encodeRegistryPluginRecord(record)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -513,6 +455,49 @@ func (v RegistryView) SetEnableState(ctx context.Context, ownerEnvHash, pluginIn
 	}
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return registry.PluginRecord{}, registry.ErrNotFound
+	}
+	return record, nil
+}
+
+func (v RegistryView) BumpRevokeEpoch(ctx context.Context, ownerEnvHash, pluginInstanceID string, now time.Time) (registry.PluginRecord, error) {
+	if err := v.ready(); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := v.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer tx.Rollback()
+	var raw string
+	if err := tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL`, ownerEnvHash, pluginInstanceID).Scan(&raw); errors.Is(err, sql.ErrNoRows) {
+		return registry.PluginRecord{}, registry.ErrNotFound
+	} else if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record, err := decodeRegistryPluginRecord([]byte(raw))
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record.OwnerEnvHash = ownerEnvHash
+	previousEpoch := record.RevokeEpoch
+	record.RevokeEpoch++
+	record.UpdatedAt = now
+	encoded, err := encodeRegistryPluginRecord(record)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE plugin_records SET revoke_epoch=?,updated_at=?,record_json=? WHERE owner_env_hash=? AND plugin_instance_id=? AND revoke_epoch=? AND deleted_at IS NULL`, record.RevokeEpoch, record.UpdatedAt.UnixNano(), string(encoded), ownerEnvHash, pluginInstanceID, previousEpoch)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return registry.PluginRecord{}, ErrRevisionConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return registry.PluginRecord{}, err
 	}
 	return record, nil
 }
@@ -825,56 +810,6 @@ func (v ExecutionView) ListReleaseInstalls(ctx context.Context, ownerEnvHash str
 	return result, rows.Err()
 }
 
-func (v ExecutionView) ListPendingExternalInstallActivations(ctx context.Context, owner ExecutionOwner) ([]ExternalInstallActivation, error) {
-	if err := v.ready(); err != nil {
-		return nil, err
-	}
-	if !owner.Valid() {
-		return nil, errors.New("execution owner is invalid")
-	}
-	rows, err := v.store.db.QueryContext(ctx, releaseInstallSelect+` WHERE owner_session_hash=? AND owner_user_hash=? AND owner_env_hash=? AND session_channel_id_hash=? AND kind=? AND status=? ORDER BY created_at,execution_id`,
-		owner.OwnerSessionHash, owner.OwnerUserHash, owner.OwnerEnvHash, owner.SessionChannelIDHash, execution.KindSync, execution.StatusRunning)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []ExternalInstallActivation
-	for rows.Next() {
-		var control execution.Execution
-		var raw string
-		var createdAt, updatedAt int64
-		var cancelRequestedAt, terminalAt sql.NullInt64
-		if err := rows.Scan(&control.ID, &control.PluginInstanceID, &control.Kind, &control.Status, &control.Cursor, &control.FailureCode, &control.Cancelable, &createdAt, &updatedAt, &cancelRequestedAt, &terminalAt, &raw); err != nil {
-			return nil, err
-		}
-		control.CreatedAt = time.Unix(0, createdAt).UTC()
-		control.UpdatedAt = time.Unix(0, updatedAt).UTC()
-		control.CancelRequestedAt = nullTimePointer(cancelRequestedAt)
-		control.TerminalAt = nullTimePointer(terminalAt)
-		var payload externalInstallActivationPayload
-		if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload.Kind != externalInstallActivationPayloadKind {
-			continue
-		}
-		value := ExternalInstallActivation{
-			Execution: control, PluginInstanceID: payload.PluginInstanceID,
-			PackageSHA256: payload.PackageSHA256, ManifestSHA256: payload.ManifestSHA256, EntriesSHA256: payload.EntriesSHA256,
-			InstalledManagementRevision: payload.InstalledManagementRevision, ActivationRequest: payload.ActivationRequest,
-		}
-		if !validExternalInstallActivation(value) {
-			return nil, fmt.Errorf("%w: external install activation payload", ErrIncompatible)
-		}
-		result = append(result, value)
-	}
-	return result, rows.Err()
-}
-
-func validExternalInstallActivation(value ExternalInstallActivation) bool {
-	return value.Execution.Kind == execution.KindSync && value.Execution.Status == execution.StatusRunning &&
-		value.PluginInstanceID == value.Execution.PluginInstanceID && value.PluginInstanceID != "" &&
-		value.PackageSHA256 != "" && value.ManifestSHA256 != "" && value.EntriesSHA256 != "" &&
-		value.InstalledManagementRevision > 0 && validExternalInstallActivationRequest(value.ActivationRequest)
-}
-
 func (v ExecutionView) UpdateReleaseInstall(ctx context.Context, ownerEnvHash string, req registry.UpdateReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
 	tx, err := v.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -971,7 +906,6 @@ func decodeReleaseInstallOperation(raw string) (registry.ReleaseInstallOperation
 	}
 	operation := payload.Operation
 	operation.Release = payload.Release
-	operation.ActivationRequest = payload.ActivationRequest
 	return operation, true
 }
 
@@ -1705,55 +1639,9 @@ func scanConfirmationIntentRecord(row confirmationIntentScanner) (security.Confi
 	} else if err != nil {
 		return security.ConfirmationIntentRecord{}, err
 	}
-	var shape map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &shape); err != nil {
-		return security.ConfirmationIntentRecord{}, fmt.Errorf("%w: invalid confirmation record", ErrStateConflict)
-	}
 	var record security.ConfirmationIntentRecord
-	if _, migrated := shape["scope_json"]; !migrated {
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
-			return security.ConfirmationIntentRecord{}, fmt.Errorf("%w: invalid confirmation record", ErrStateConflict)
-		}
-	} else {
-		var legacy struct {
-			ConfirmationID      string `json:"confirmation_id"`
-			ConfirmationTokenID string `json:"confirmation_token_id"`
-			PluginID            string `json:"plugin_id"`
-			PluginInstanceID    string `json:"plugin_instance_id"`
-			SurfaceInstanceID   string `json:"surface_instance_id"`
-			BridgeChannelID     string `json:"bridge_channel_id"`
-			Method              string `json:"method"`
-			RequestHash         string `json:"request_hash"`
-			PlanHash            string `json:"plan_hash"`
-			ScopeJSON           string `json:"scope_json"`
-			IssuedAt            int64  `json:"issued_at"`
-			ExpiresAt           int64  `json:"expires_at"`
-		}
-		var legacyScope struct {
-			ActiveFingerprint      string `json:"active_fingerprint"`
-			OwnerSessionHash       string `json:"owner_session_hash"`
-			OwnerUserHash          string `json:"owner_user_hash"`
-			OwnerEnvHash           string `json:"owner_env_hash"`
-			SessionChannelIDHash   string `json:"session_channel_id_hash"`
-			PolicyRevision         uint64 `json:"policy_revision"`
-			ManagementRevision     uint64 `json:"management_revision"`
-			RevokeEpoch            uint64 `json:"revoke_epoch"`
-			TargetDescriptorSHA256 string `json:"target_descriptor_sha256"`
-		}
-		if legacyErr := json.Unmarshal([]byte(raw), &legacy); legacyErr != nil || legacy.ConfirmationID == "" || json.Unmarshal([]byte(legacy.ScopeJSON), &legacyScope) != nil {
-			return security.ConfirmationIntentRecord{}, fmt.Errorf("%w: invalid confirmation record", ErrStateConflict)
-		}
-		record.ConfirmationID, record.ConfirmationTokenID, record.PluginID = legacy.ConfirmationID, legacy.ConfirmationTokenID, legacy.PluginID
-		record.PluginInstanceID, record.SurfaceInstanceID, record.BridgeChannelID = legacy.PluginInstanceID, legacy.SurfaceInstanceID, legacy.BridgeChannelID
-		record.Method, record.RequestHash, record.PlanHash = legacy.Method, legacy.RequestHash, legacy.PlanHash
-		record.IssuedAt, record.ExpiresAt = time.Unix(0, legacy.IssuedAt).UTC(), time.Unix(0, legacy.ExpiresAt).UTC()
-		record.Scope = security.ConfirmationScope{
-			ActiveFingerprint: legacyScope.ActiveFingerprint, OwnerSessionHash: legacyScope.OwnerSessionHash,
-			OwnerUserHash: legacyScope.OwnerUserHash, OwnerEnvHash: legacyScope.OwnerEnvHash,
-			SessionChannelIDHash: legacyScope.SessionChannelIDHash, PolicyRevision: legacyScope.PolicyRevision,
-			ManagementRevision: legacyScope.ManagementRevision, RevokeEpoch: legacyScope.RevokeEpoch,
-			TargetDescriptorSHA256: legacyScope.TargetDescriptorSHA256,
-		}
+	if err := jsonvalue.DecodeClosed([]byte(raw), &record); err != nil {
+		return security.ConfirmationIntentRecord{}, fmt.Errorf("%w: invalid confirmation record", ErrStateConflict)
 	}
 	if record.Scope.OwnerSessionHash == "" && record.Scope.OwnerUserHash == "" && record.Scope.OwnerEnvHash == "" && record.Scope.SessionChannelIDHash == "" {
 		record.Scope.OwnerSessionHash, record.Scope.OwnerUserHash = ownerSession, ownerUser
@@ -2192,49 +2080,12 @@ func scanSessionControlRecord(row sessionControlScanner) (sessionscope.ControlRe
 	} else if err != nil {
 		return sessionscope.ControlRecord{}, err
 	}
-	var shape map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &shape); err != nil {
+	var record sessionscope.ControlRecord
+	if err := jsonvalue.DecodeClosed([]byte(raw), &record); err != nil {
 		return sessionscope.ControlRecord{}, sessionscope.ErrInvalidState
 	}
-	var record sessionscope.ControlRecord
-	if _, current := shape["counts"]; current {
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
-			return sessionscope.ControlRecord{}, sessionscope.ErrInvalidState
-		}
-		if record.State != sessionscope.State(state) || !bytes.Equal(record.ProofSHA256, proof) {
-			return sessionscope.ControlRecord{}, sessionscope.ErrInvalidState
-		}
-	} else {
-		var legacy struct {
-			TeardownOperationID   string `json:"teardown_operation_id"`
-			Surfaces              uint64 `json:"surfaces"`
-			AssetTickets          uint64 `json:"asset_tickets"`
-			AssetSessions         uint64 `json:"asset_sessions"`
-			PluginGatewayTokens   uint64 `json:"plugin_gateway_tokens"`
-			ConfirmationTokens    uint64 `json:"confirmation_tokens"`
-			HandleGrants          uint64 `json:"handle_grants"`
-			Confirmations         uint64 `json:"confirmations"`
-			Executions            uint64 `json:"executions"`
-			Operations            uint64 `json:"operations"`
-			Streams               uint64 `json:"streams"`
-			RuntimeExecutions     uint64 `json:"runtime_executions"`
-			ActiveNetworkRequests uint64 `json:"active_network_requests"`
-			Sockets               uint64 `json:"sockets"`
-			NetworkStreams        uint64 `json:"network_streams"`
-			StorageHostcalls      uint64 `json:"storage_hostcalls"`
-			CreatedAt             int64  `json:"created_at"`
-			UpdatedAt             int64  `json:"updated_at"`
-		}
-		if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
-			return sessionscope.ControlRecord{}, sessionscope.ErrInvalidState
-		}
-		executions := legacy.Executions
-		if executions == 0 {
-			executions = max(legacy.Operations, legacy.Streams, legacy.RuntimeExecutions)
-		}
-		record.TeardownOperationID = legacy.TeardownOperationID
-		record.Counts = sessionscope.Counts{Surfaces: legacy.Surfaces, AssetTickets: legacy.AssetTickets, AssetSessions: legacy.AssetSessions, PluginGatewayTokens: legacy.PluginGatewayTokens, ConfirmationTokens: legacy.ConfirmationTokens, HandleGrants: legacy.HandleGrants, Confirmations: legacy.Confirmations, Executions: executions, ActiveNetworkRequests: legacy.ActiveNetworkRequests, Sockets: legacy.Sockets, NetworkStreams: legacy.NetworkStreams, StorageHostcalls: legacy.StorageHostcalls}
-		record.CreatedAt, record.UpdatedAt = time.Unix(0, legacy.CreatedAt).UTC(), time.Unix(0, legacy.UpdatedAt).UTC()
+	if record.State != sessionscope.State(state) || !bytes.Equal(record.ProofSHA256, proof) {
+		return sessionscope.ControlRecord{}, sessionscope.ErrInvalidState
 	}
 	record.Scope = sessionctx.SessionScope{OwnerSessionHash: ownerSession, OwnerUserHash: ownerUser, OwnerEnvHash: ownerEnv, SessionChannelIDHash: channel}
 	record.State, record.ProofSHA256 = sessionscope.State(state), append([]byte(nil), proof...)
@@ -2276,41 +2127,9 @@ func listSessionControlPhases(ctx context.Context, query interface {
 
 func decodeSessionPhaseCounts(raw string, phase sessionscope.Phase) (sessionscope.Counts, error) {
 	var counts sessionscope.Counts
-	if err := json.Unmarshal([]byte(raw), &counts); err == nil && counts.Valid() {
-		return counts, nil
-	}
-	var legacy struct {
-		CountsJSON string `json:"counts_json"`
-	}
-	if err := json.Unmarshal([]byte(raw), &legacy); err != nil || legacy.CountsJSON == "" {
+	if err := jsonvalue.DecodeClosed([]byte(raw), &counts); err != nil || !counts.Valid() {
 		return sessionscope.Counts{}, sessionscope.ErrInvalidCounts
 	}
-	var old struct {
-		Surfaces              uint64 `json:"surfaces"`
-		AssetTickets          uint64 `json:"asset_tickets"`
-		AssetSessions         uint64 `json:"asset_sessions"`
-		PluginGatewayTokens   uint64 `json:"plugin_gateway_tokens"`
-		ConfirmationTokens    uint64 `json:"confirmation_tokens"`
-		HandleGrants          uint64 `json:"handle_grants"`
-		Confirmations         uint64 `json:"confirmations"`
-		Operations            uint64 `json:"operations"`
-		Streams               uint64 `json:"streams"`
-		RuntimeExecutions     uint64 `json:"runtime_executions"`
-		Executions            uint64 `json:"executions"`
-		ActiveNetworkRequests uint64 `json:"active_network_requests"`
-		Sockets               uint64 `json:"sockets"`
-		NetworkStreams        uint64 `json:"network_streams"`
-		StorageHostcalls      uint64 `json:"storage_hostcalls"`
-	}
-	if err := json.Unmarshal([]byte(legacy.CountsJSON), &old); err != nil {
-		return sessionscope.Counts{}, sessionscope.ErrInvalidCounts
-	}
-	counts.Executions = max(old.Executions, old.Operations, old.Streams, old.RuntimeExecutions)
-	counts.Surfaces, counts.AssetTickets, counts.AssetSessions = old.Surfaces, old.AssetTickets, old.AssetSessions
-	counts.PluginGatewayTokens, counts.ConfirmationTokens = old.PluginGatewayTokens, old.ConfirmationTokens
-	counts.HandleGrants, counts.Confirmations = old.HandleGrants, old.Confirmations
-	counts.ActiveNetworkRequests, counts.Sockets = old.ActiveNetworkRequests, old.Sockets
-	counts.NetworkStreams, counts.StorageHostcalls = old.NetworkStreams, old.StorageHostcalls
 	return counts, nil
 }
 

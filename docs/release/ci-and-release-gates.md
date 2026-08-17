@@ -1,9 +1,9 @@
 # CI And Release Gates
 
-Published registries and machine contracts are the only supported ReDevPlugin
-integration surface for host products. ReDevPlugin publishes versioned source
-crates together with a matching Go module, npm packages, compatibility metadata,
-contract hashes, and package publication evidence. Host products build the
+Published registries and canonical machine contracts are the only supported
+ReDevPlugin integration surface for host products. ReDevPlugin publishes exact
+Rust source crates together with a matching Go module, npm packages, contract
+hashes, and a signed `PlatformReleaseManifest`. Host products build the
 runtime binary from exact published Rust source crates; local checkout wiring
 and upstream OS runtime downloads are not supported.
 
@@ -77,7 +77,7 @@ the same transaction logic.
 `scripts/check_redevplugin_release_metadata.mjs` keeps the source release
 coordinate closed before packaging. The local complete gate derives the intended
 version from the first `CHANGELOG.md` release section, then requires the Go
-development compatibility floor and the canonical `redevplugin-worker-sdk`
+minimum version and the canonical `redevplugin-worker-sdk`
 Cargo metadata to match. Tagged preflight repeats the same check against the
 actual `vX.Y.Z` tag. Mutation tests reject tag, changelog, Go compatibility,
 Worker SDK version, and canonical manifest-path drift.
@@ -92,18 +92,17 @@ the same command shape.
 
 `scripts/check_redevplugin_runtime_contract.sh --ci` validates:
 
-- the still-active compatibility-v7 release manifest v4 Worker SDK identity
-  until the atomic v8 activation removes that runtime-bundle contract; the
-  staged v2 package registry excludes it and is not exposed by the current Host
-  compatibility API;
+- exact `VERSION`, plugin API, and internal wire projections without fallback
+  decoders or compatibility ranges;
 - OpenAPI/HTTP route/TypeScript SDK binding coverage, including release-reference
   install/update routes that keep official package bytes out of trusted browser
   requests;
 - generated opaque render-policy consistency across the bridge schema, Go
   package builder, and TypeScript trusted renderer;
-- compatibility manifest schema and emitted compatibility manifest shape;
+- the platform release manifest schema, deterministic external-staging
+  generator, and exact canonical contract set;
 - manifest, package signature, token/ticket, bridge, error-code, release
-  manifest, performance evidence, IPC, WASM ABI, worker invocation, network
+  metadata, runtime wire, WASM ABI, worker invocation, network
   grant, the capability contract/pin schemas, and target classifier
   contract snippets;
 - shared Go/TypeScript restricted-schema conformance fixtures, typed capability
@@ -117,7 +116,7 @@ the same command shape.
 - event-driven observation and cursor-aware waiting, bounded event and byte
   backpressure, failure retry, and atomic Execution/Event terminal state across
   SQLite reopen;
-- package-set/publication verifier behavior, including exact registry package
+- release-package/readback verifier behavior, including exact registry package
   closure, safe `.crate` structure, immutable tag documentation, and rejection
   of extra or mismatched packages;
 - npm registry readback mutation fixtures for tarball SHA-512, SLSA subject,
@@ -134,7 +133,7 @@ the same command shape.
   npm dependency fields, Cargo build scripts, proc macros, native linker config,
   and Cargo dependency sections;
 - CLI validate/package/sign/install/dev lifecycle smoke paths;
-- compatibility manifest verification;
+- canonical platform identity and release-manifest generator verification;
 - bridge SDK checks;
 - TypeScript typecheck;
 - browser harness contract and smoke tests;
@@ -197,19 +196,11 @@ sink boundary.
 and full measurements. Release evidence rejects that override and always builds
 `redevplugin-runtime` from exact packaged source bytes bound to `source_commit`.
 
-`performance-contract-v4.json` is the single machine-readable definition of the
-25 required scenarios and each scenario's sample count, metric name, unit,
-comparator, and limit. The generator and bundle verifier both consume that
-contract and reject any missing, extra, duplicate, or drifted metric. Route
-authorization evidence also embeds the pinned v0.5.1 and candidate profiles;
-the verifier checks their canonical hashes, fixed AB/BA order, contiguous
-attempt identities, and noise qualification, then recomputes all comparison
-metrics before accepting the bundle. The v1-v3 contract and evidence files remain
-immutable historical release inputs; the current compatibility matrix and
-contract registry select only v4. The
-exact-main pre-push gate generates release-identity evidence from the clean
-checked-out source. Registry conformance independently validates published
-package bytes and identities without treating transient performance output as a
+Performance scenarios, limits, and evidence are local quality-gate inputs. They
+do not appear in the public `spec/` artifact set or platform release manifest.
+The exact-main pre-push gate runs the measurements from the clean checked-out
+source, while registry conformance independently validates published package
+bytes and identities without treating transient performance output as a
 publication artifact.
 
 Route authorization alternates the pinned baseline and candidate process order
@@ -251,9 +242,9 @@ alternating paired high-cardinality P95 repetitions. Release evidence is emitted
 only by the owning Go package or Rust runtime test after its behavioral
 assertions pass.
 
-## Platform Package Set
+## Platform Release Artifacts
 
-ReDevPlugin publishes one versioned platform package set:
+ReDevPlugin publishes one exact set of artifacts at the version in `VERSION`:
 
 - the Go module containing the Host library, adapters, HTTP integration, and
   generated DTOs;
@@ -263,10 +254,9 @@ ReDevPlugin publishes one versioned platform package set:
   `redevplugin-worker-sdk` on crates.io. Runtime-owned IPC and WASM ABI
   modules are private implementation details and are not published as
   standalone coordinates;
-- generated OpenAPI, JSON schemas, compatibility metadata, contract hashes, and
-  conformance fixtures.
+- canonical OpenAPI, JSON schemas, contract hashes, and conformance fixtures.
 
-The package set contains no OS runtime binary, target archive, installer,
+The platform release manifest contains no OS runtime binary, target archive, installer,
 product checksum, or product signature. Every Rust package is extracted into a
 clean directory and checked with exact registry dependencies. Higher-level
 crates resolve lower-level packages through an isolated registry fixture before
@@ -283,9 +273,9 @@ quotas, revocation, and diagnostics contracts.
 
 The contracts npm package exposes one explicit root surface:
 
-- `@floegence/redevplugin-contracts` contains the immutable canonical contract
-  bodies, registry metadata, package set, synthetic registry contract, and
-  typed lookup API. It is the only npm entrypoint that loads raw schemas.
+- `@floegence/redevplugin-contracts` contains the current release-signing types,
+  strict decoders, and canonical signing helpers. It does not publish another
+  contract registry or release index.
 
 The UI npm package exposes four deliberate import surfaces:
 
@@ -335,39 +325,36 @@ commit. A mismatch or missing provenance fails closed. Both immutable packing an
 run with pinned `npm@11.18.0`, so tarball identity does not depend on the runner's
 ambient npm version.
 
-## Package Publication And Compatibility
+## Package Publication
 
-`platform-package-set-v3` is the canonical coordinate set for Go, npm, and Rust
-packages. It does not contain registry checksums or the source commit, avoiding
-self-reference; those identities are verified from the registries and recorded
-in `platform-package-publication-v2` only after readback succeeds.
+`VERSION` is the one editable platform version. Go `/v3`, npm, and Rust package
+versions must match it exactly. Their registry readback SHA-256 values and the
+canonical `spec/` contract hashes are recorded only after readback succeeds in
+the externally staged `PlatformReleaseManifest`.
 
 The public Rust set is exactly `redevplugin-runtime` and
 `redevplugin-worker-sdk`. IPC and WASM ABI implementations are private runtime
 modules and do not have separate registry coordinates.
 
-The compatibility manifest includes contract artifact IDs, versions, paths, and
-hashes for released OpenAPI, plugin schemas, release metadata, source policy,
-source revocations, performance evidence, IPC/WASM contracts, package-set and
-publication schemas, error codes,
-network grants, the capability contract and exact-pin schemas, worker
-invocation payloads, and target classifier fixtures. The classifier fixture is
-executed by the Go connectivity owner and is not a separately published crate.
+The release manifest contains sorted `{name, sha256}` entries. Contract names
+are derived from the `spec/` path, so no hand-maintained contract registry or
+per-artifact compatibility version exists. Performance results remain local
+quality evidence and are not publication artifacts.
 
 Any change to the release-reference install/update request schema, route set,
 trust-state enum, token/ticket schema, or bridge contract must update the
-machine-readable contract, route fixtures, SDK bindings, compatibility hash, and
+machine-readable contract, route fixtures, SDK bindings, release hash, and
 focused contract tests in the same feature change.
 
-Host products verify the package publication attestation, independently read
-back every registry package, validate the compatibility digest, and only then
+Host products verify the platform release-manifest attestation, independently read
+back every registry package, validate the exact hashes, and only then
 build a product runtime binary.
 
 ## GitHub Release Completion
 
 Tagged GitHub Releases publish exactly one machine asset:
 
-- `platform-package-publication-v2.json`, with the fixed publication content
+- `platform-release-manifest.json`, with the fixed publication content
   type and an OIDC artifact attestation bound to the exact release workflow and
   source commit.
 
@@ -385,8 +372,8 @@ main ancestry are rechecked immediately before every mutation.
 
 After publication, the release verifier downloads the Go module, both npm
 packages, and all Rust crates from their formal registries, verifies checksums,
-provenance, source commit, dependency closure, contract digest, and package-set
-identity, then runs the registry-only fake-host E2E offline. Only after that gate
+provenance, source commit, dependency closure, and exact artifact identity,
+then runs the registry-only fake-host E2E offline. Only after that gate
 passes is the completion manifest generated, attested, uploaded, and read back
 by exact bytes. Partial or conflicting publication permanently fails that
 version; existing package bytes are never overwritten.
@@ -407,14 +394,13 @@ let the script install the pinned `cargo-deny@0.19.9` for the run.
 Host products must not build ReDevPlugin from an unpublished sibling checkout or
 consume local path dependencies. A release-ready host integration should:
 
-1. select the published Go, npm, and Rust source crate versions from one package
-   set;
+1. select the published Go, npm, and Rust source crate versions named by one
+   signed `PlatformReleaseManifest`;
 2. verify registry checksums, provenance, source identity, dependency closure,
-   publication completion evidence, and compatibility hashes;
+   publication completion evidence, and exact artifact hashes;
 3. build the runtime binary from verified registry source with a fixed,
    reproducible product toolchain and no sibling/path overrides;
-4. generate and verify the product-owned binary descriptor, SBOM, provenance,
-   and signature;
+4. generate and verify the product-owned binary evidence, SBOM, provenance, and signature;
 5. bundle that product runtime into the host installer or desktop package;
 6. keep host-side release gates aligned with the consumed ReDevPlugin version
    while continuing to use the ReDevPlugin admission and supervisor APIs.

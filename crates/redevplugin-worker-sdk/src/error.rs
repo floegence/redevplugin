@@ -24,6 +24,29 @@ pub enum ErrorCode {
     Unknown,
 }
 
+impl ErrorCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "INVALID_ARGUMENT",
+            Self::PermissionDenied => "PERMISSION_DENIED",
+            Self::NotFound => "NOT_FOUND",
+            Self::AlreadyExists => "ALREADY_EXISTS",
+            Self::ResourceClosed => "RESOURCE_CLOSED",
+            Self::Canceled => "CANCELED",
+            Self::Timeout => "TIMEOUT",
+            Self::WouldBlock => "WOULD_BLOCK",
+            Self::IoError => "IO_ERROR",
+            Self::MountUnavailable => "MOUNT_UNAVAILABLE",
+            Self::NetworkError => "NETWORK_ERROR",
+            Self::ResourceLimit => "RESOURCE_LIMIT",
+            Self::Internal => "INTERNAL",
+            Self::RuntimeUnavailable => "RUNTIME_UNAVAILABLE",
+            Self::RedirectRequiresReplay => "REDIRECT_REQUIRES_REPLAY",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Error {
     pub code: ErrorCode,

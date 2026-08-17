@@ -15,9 +15,7 @@
     "root",
     "signing",
     "allowed_artifact_hosts",
-    "min_redevplugin_version",
-    "distribution",
-    "host_requirements"
+    "distribution"
   ],
   "properties": {
     "schema_version": { "const": "redevplugin.release_publisher_config.v1" },
@@ -35,13 +33,7 @@
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/host" }
     },
-    "min_redevplugin_version": { "$ref": "#/$defs/semver" },
-    "distribution": { "enum": ["registry_ref", "host_artifact_ref"] },
-    "host_requirements": {
-      "type": "array",
-      "maxItems": 128,
-      "items": { "$ref": "#/$defs/host_requirement" }
-    }
+    "distribution": { "enum": ["registry_ref", "host_artifact_ref"] }
   },
   "$defs": {
     "id": {
@@ -71,34 +63,6 @@
       "minLength": 1,
       "maxLength": 253,
       "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$"
-    },
-    "semver": {
-      "type": "string",
-      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
-    },
-    "host_requirement": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["host_id"],
-      "properties": {
-        "host_id": { "$ref": "#/$defs/id" },
-        "min_host_version": { "$ref": "#/$defs/semver" },
-        "required_capability_contracts": {
-          "type": "array",
-          "maxItems": 256,
-          "items": { "$ref": "#/$defs/capability_requirement" }
-        }
-      }
-    },
-    "capability_requirement": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["capability_id", "capability_version", "contract"],
-      "properties": {
-        "capability_id": { "$ref": "#/$defs/id" },
-        "capability_version": { "$ref": "#/$defs/semver" },
-        "contract": { "$ref": "host-capability-pin-v1.schema.json" }
-      }
     }
   }
 }

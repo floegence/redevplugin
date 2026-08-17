@@ -16,7 +16,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
 
 const (
@@ -210,7 +210,7 @@ func refreshWorkspace(ctx context.Context, workspace string, state workspaceStat
 
 func validateConfig(config ConfigV1) (map[string]ed25519.PublicKey, error) {
 	if config.SchemaVersion != ConfigSchemaVersion || config.SourceID == "" || config.Channel == "" || config.SourceType == "" ||
-		config.SourceClass == "" || config.GeneratedAt == "" || config.ExpiresAt == "" || config.MinReDevPluginVersion == "" ||
+		config.SourceClass == "" || config.GeneratedAt == "" || config.ExpiresAt == "" ||
 		config.Distribution == "" {
 		return nil, ErrInvalidPublisherConfig
 	}

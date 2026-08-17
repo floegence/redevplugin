@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 const defaultMethodSchemaCacheEntries = 1024

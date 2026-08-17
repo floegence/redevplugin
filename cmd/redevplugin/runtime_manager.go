@@ -2,38 +2,49 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
-func loadCommandRuntimeDescriptor(path string, target runtimetarget.Target) (host.RuntimeDescriptor, error) {
-	raw, err := os.ReadFile(path)
+func inspectCommandRuntimeArtifact(path string, target runtimetarget.Target) (host.RuntimeArtifactIdentity, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return host.RuntimeDescriptor{}, fmt.Errorf("read runtime descriptor: %w", err)
+		return host.RuntimeArtifactIdentity{}, fmt.Errorf("open runtime artifact: %w", err)
 	}
-	descriptor, err := host.UnmarshalRuntimeDescriptorJSON(raw)
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return host.RuntimeArtifactIdentity{}, fmt.Errorf("hash runtime artifact: %w", err)
+	}
+	platform, err := version.ParseSemVer(version.CurrentPlatformVersion())
 	if err != nil {
-		return host.RuntimeDescriptor{}, fmt.Errorf("decode runtime descriptor: %w", err)
+		return host.RuntimeArtifactIdentity{}, err
 	}
-	if err := descriptor.CompatibleWithPlatform(); err != nil {
-		return host.RuntimeDescriptor{}, err
+	digest, err := host.ParseSHA256Digest(hex.EncodeToString(hasher.Sum(nil)))
+	if err != nil {
+		return host.RuntimeArtifactIdentity{}, err
 	}
-	if descriptor.Target().String() != target.String() {
-		return host.RuntimeDescriptor{}, host.ErrRuntimeDescriptorMismatch
-	}
-	return descriptor, nil
+	return host.NewRuntimeArtifactIdentity(host.RuntimeArtifactIdentityOptions{
+		PlatformVersion: platform,
+		Target:          target,
+		BinarySHA256:    digest,
+	})
 }
 
 func newCommandRuntimeModule(
 	ctx context.Context,
 	runtimePath string,
 	executionRootPath string,
-	descriptor host.RuntimeDescriptor,
+	identity host.RuntimeArtifactIdentity,
 	startupTimeout time.Duration,
 ) (*host.RuntimeModule, error) {
 	root, err := os.Open(filepath.Dir(runtimePath))
@@ -51,10 +62,10 @@ func newCommandRuntimeModule(
 		return nil, err
 	}
 	executable, err := host.OpenVerifiedExecutable(ctx, host.VerifiedExecutableOptions{
-		RootDir:            root,
-		ExecutionRoot:      executionRoot,
-		RelativeName:       name,
-		ExpectedDescriptor: descriptor,
+		RootDir:                  root,
+		ExecutionRoot:            executionRoot,
+		RelativeName:             name,
+		ExpectedArtifactIdentity: identity,
 	})
 	if err != nil {
 		return nil, err

@@ -2,15 +2,16 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 // PluginActionBlockedReason is the closed set of reasons an installed plugin
@@ -143,16 +144,9 @@ func (h *Host) pluginActionState(ctx context.Context, record registry.PluginReco
 		state.RecoveryAction = "retry"
 	} else {
 		if state.BlockedReason == "" {
-			switch record.EnableState {
-			case registry.EnableDisabledByPolicy:
-				state.BlockedReason = PluginActionBlockedPolicy
-			case registry.EnableDisabledIncompatible:
-				state.BlockedReason = PluginActionBlockedIncompatible
-			default:
-				state.BlockedReason = PluginActionBlockedDisabled
-			}
+			state.BlockedReason = PluginActionBlockedDisabled
 		}
-		state.CanEnable = state.BlockedReason == PluginActionBlockedDisabled
+		state.CanEnable = record.EnableState == registry.EnableDisabledByUser && state.BlockedReason == PluginActionBlockedDisabled
 	}
 	if state.BlockedReason == PluginActionBlockedRuntimeUnavailable ||
 		state.BlockedReason == PluginActionBlockedIncompatible ||
@@ -164,39 +158,54 @@ func (h *Host) pluginActionState(ctx context.Context, record registry.PluginReco
 }
 
 func (h *Host) pluginAuthorizationBlockedReason(ctx context.Context, record registry.PluginRecord) PluginActionBlockedReason {
-	type methodRequirement struct {
-		method      string
-		permissions []string
+	err := h.pluginAuthorizationError(ctx, record)
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, permissions.ErrPermissionDenied):
+		return PluginActionBlockedPermission
+	case errors.Is(err, security.ErrPolicyDenied):
+		return PluginActionBlockedPolicy
+	default:
+		return PluginActionBlockedIncompatible
 	}
-	methods := make([]methodRequirement, 0, len(record.Manifest.Methods))
+}
+
+type pluginMethodRequirement struct {
+	method      string
+	permissions []string
+}
+
+func (h *Host) pluginAuthorizationError(ctx context.Context, record registry.PluginRecord) error {
+	methods := make([]pluginMethodRequirement, 0, len(record.Manifest.Methods))
 	requiredPermissions := make([]string, 0)
 	for _, declared := range record.Manifest.Methods {
 		required, err := h.declaredRequiredPermissions(record, declared)
 		if err != nil {
-			return PluginActionBlockedIncompatible
+			return err
 		}
 		if len(required) == 0 {
 			continue
 		}
-		methods = append(methods, methodRequirement{method: declared.Method, permissions: required})
+		methods = append(methods, pluginMethodRequirement{method: declared.Method, permissions: required})
 		requiredPermissions = append(requiredPermissions, required...)
 	}
 	if len(methods) == 0 {
-		return ""
+		return nil
 	}
 	snapshot, err := h.getAuthorizationSnapshot(ctx, record.PluginInstanceID)
 	if err != nil {
-		return PluginActionBlockedPolicy
+		return err
 	}
-	granted, _, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
+	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
 		PluginInstanceID: record.PluginInstanceID,
 		PermissionIDs:    normalizeStringSet(requiredPermissions),
 	})
 	if err != nil {
-		return PluginActionBlockedPolicy
+		return err
 	}
 	if !granted {
-		return PluginActionBlockedPermission
+		return fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
 	}
 	for _, method := range methods {
 		evaluation, err := security.Evaluate(snapshot.Policy, security.EvaluatePolicyRequest{
@@ -205,10 +214,13 @@ func (h *Host) pluginAuthorizationBlockedReason(ctx context.Context, record regi
 			RequiredPermissions: method.permissions,
 		})
 		if err != nil || !evaluation.Allowed {
-			return PluginActionBlockedPolicy
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: method %q", security.ErrPolicyDenied, method.method)
 		}
 	}
-	return ""
+	return nil
 }
 
 // RecoverEnabled reconciles enabled plugin runtime state once per Host startup
@@ -274,13 +286,13 @@ func (h *Host) startEnabledWorkerRuntime(ctx context.Context) error {
 	}
 
 	health, healthErr := h.adapters.RuntimeManager.Health(ctx)
-	if healthErr == nil && validateRuntimeManagerHealth(health, health.Descriptor) == nil {
+	if healthErr == nil && validateRuntimeManagerHealth(health, health.ArtifactIdentity) == nil {
 		return nil
 	}
-	target := health.Descriptor.Target()
+	target := health.ArtifactIdentity.Target()
 	if h.runtimeModule != nil {
-		if moduleDescriptor := h.runtimeModule.Descriptor(); moduleDescriptor.PlatformVersion().String() != "" {
-			target = moduleDescriptor.Target().classifierTarget()
+		if moduleDescriptor := h.runtimeModule.ArtifactIdentity(); moduleDescriptor.PlatformVersion().String() != "" {
+			target = moduleDescriptor.Target()
 		}
 	}
 	if err := runtimetarget.Validate(target); err != nil {

@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 func (service *ReleaseTrustService) RefreshSource(ctx context.Context, key SourceTrustKey) (VerifiedSourceSnapshot, error) {
@@ -59,86 +59,86 @@ func (service *ReleaseTrustService) fetchRoot(ctx context.Context, key SourceTru
 	return document, nil
 }
 
-func (service *ReleaseTrustService) fetchPolicy(ctx context.Context, key SourceTrustKey, root releasecontract.RootDelegationV1, now time.Time) (releasecontract.SourcePolicyV2, error) {
+func (service *ReleaseTrustService) fetchPolicy(ctx context.Context, key SourceTrustKey, root releasecontract.RootDelegationV1, now time.Time) (releasecontract.SourcePolicyV3, error) {
 	pointerRequest, err := fixedReleaseDocumentRequest(service.options.sourceConfiguration, key, ReleaseDocumentSourcePolicyPointer)
 	if err != nil {
-		return releasecontract.SourcePolicyV2{}, err
+		return releasecontract.SourcePolicyV3{}, err
 	}
 	pointerRaw, err := service.fetchReleaseDocument(ctx, pointerRequest)
 	if err != nil {
-		return releasecontract.SourcePolicyV2{}, err
+		return releasecontract.SourcePolicyV3{}, err
 	}
 	pointer, err := releasecontract.DecodeSourcePolicyPointer(pointerRaw)
 	if err != nil || pointer.SourceID != key.sourceID || pointer.Channel != key.channel {
-		return releasecontract.SourcePolicyV2{}, ErrReleaseTrustVerification
+		return releasecontract.SourcePolicyV3{}, ErrReleaseTrustVerification
 	}
 	verifier, err := delegatedVerifier(root, releasecontract.DelegatedKeyUsageSourcePolicyPointer, key.channel, now, []string{pointer.KeyID})
 	if err != nil || releasecontract.VerifySourcePolicyPointer(pointer, verifier) != nil {
-		return releasecontract.SourcePolicyV2{}, ErrReleaseTrustVerification
+		return releasecontract.SourcePolicyV3{}, ErrReleaseTrustVerification
 	}
 	if err := validateDocumentWindow(pointer.GeneratedAt, pointer.ExpiresAt, now, releasecontract.DefaultSourcePolicyLimits().FutureSkewSeconds); err != nil {
-		return releasecontract.SourcePolicyV2{}, err
+		return releasecontract.SourcePolicyV3{}, err
 	}
 	request, err := releaseDocumentRequestForSignedRef(key, ReleaseDocumentSourcePolicy, pointer.Ref)
 	if err != nil {
-		return releasecontract.SourcePolicyV2{}, err
+		return releasecontract.SourcePolicyV3{}, err
 	}
 	raw, err := service.fetchReleaseDocument(ctx, request)
 	if err != nil || digestHex(raw) != pointer.DocumentSHA256 {
-		return releasecontract.SourcePolicyV2{}, ErrReleaseTrustVerification
+		return releasecontract.SourcePolicyV3{}, ErrReleaseTrustVerification
 	}
 	document, err := releasecontract.DecodeSourcePolicy(raw)
 	if err != nil || document.SourceID != key.sourceID || document.Channel != key.channel || document.Epoch != pointer.Epoch || document.RootEpoch != root.RootEpoch {
-		return releasecontract.SourcePolicyV2{}, ErrReleaseTrustVerification
+		return releasecontract.SourcePolicyV3{}, ErrReleaseTrustVerification
 	}
 	verifier, err = delegatedVerifier(root, releasecontract.DelegatedKeyUsageSourcePolicy, key.channel, now, []string{document.KeyID})
 	if err != nil || releasecontract.VerifySourcePolicy(document, verifier) != nil {
-		return releasecontract.SourcePolicyV2{}, ErrReleaseTrustVerification
+		return releasecontract.SourcePolicyV3{}, ErrReleaseTrustVerification
 	}
 	if err := validateDocumentWindow(document.GeneratedAt, document.ExpiresAt, now, document.Limits.FutureSkewSeconds); err != nil {
-		return releasecontract.SourcePolicyV2{}, err
+		return releasecontract.SourcePolicyV3{}, err
 	}
 	return document, nil
 }
 
-func (service *ReleaseTrustService) fetchRevocation(ctx context.Context, key SourceTrustKey, root releasecontract.RootDelegationV1, policy releasecontract.SourcePolicyV2, now time.Time) (releasecontract.RevocationV2, error) {
+func (service *ReleaseTrustService) fetchRevocation(ctx context.Context, key SourceTrustKey, root releasecontract.RootDelegationV1, policy releasecontract.SourcePolicyV3, now time.Time) (releasecontract.RevocationV3, error) {
 	pointerRequest, err := fixedReleaseDocumentRequest(service.options.sourceConfiguration, key, ReleaseDocumentRevocationPointer)
 	if err != nil {
-		return releasecontract.RevocationV2{}, err
+		return releasecontract.RevocationV3{}, err
 	}
 	pointerRaw, err := service.fetchReleaseDocument(ctx, pointerRequest)
 	if err != nil {
-		return releasecontract.RevocationV2{}, err
+		return releasecontract.RevocationV3{}, err
 	}
 	pointer, err := releasecontract.DecodeRevocationPointer(pointerRaw)
 	if err != nil || pointer.SourceID != key.sourceID || pointer.Channel != key.channel || !slices.Contains(policy.ActiveKeys.RevocationPointer, pointer.KeyID) {
-		return releasecontract.RevocationV2{}, ErrReleaseTrustVerification
+		return releasecontract.RevocationV3{}, ErrReleaseTrustVerification
 	}
 	verifier, err := delegatedVerifier(root, releasecontract.DelegatedKeyUsageRevocationPointer, key.channel, now, []string{pointer.KeyID})
 	if err != nil || releasecontract.VerifyRevocationPointer(pointer, verifier) != nil {
-		return releasecontract.RevocationV2{}, ErrReleaseTrustVerification
+		return releasecontract.RevocationV3{}, ErrReleaseTrustVerification
 	}
 	if err := validateDocumentWindow(pointer.GeneratedAt, pointer.ExpiresAt, now, policy.Limits.FutureSkewSeconds); err != nil {
-		return releasecontract.RevocationV2{}, err
+		return releasecontract.RevocationV3{}, err
 	}
 	request, err := releaseDocumentRequestForSignedRef(key, ReleaseDocumentRevocation, pointer.Ref)
 	if err != nil {
-		return releasecontract.RevocationV2{}, err
+		return releasecontract.RevocationV3{}, err
 	}
 	raw, err := service.fetchReleaseDocument(ctx, request)
 	if err != nil || digestHex(raw) != pointer.DocumentSHA256 {
-		return releasecontract.RevocationV2{}, ErrReleaseTrustVerification
+		return releasecontract.RevocationV3{}, ErrReleaseTrustVerification
 	}
 	document, err := releasecontract.DecodeRevocation(raw)
 	if err != nil || document.SourceID != key.sourceID || document.Channel != key.channel || document.Epoch != pointer.Epoch || document.RootEpoch != root.RootEpoch || !slices.Contains(policy.ActiveKeys.Revocation, document.KeyID) {
-		return releasecontract.RevocationV2{}, ErrReleaseTrustVerification
+		return releasecontract.RevocationV3{}, ErrReleaseTrustVerification
 	}
 	verifier, err = delegatedVerifier(root, releasecontract.DelegatedKeyUsageRevocation, key.channel, now, []string{document.KeyID})
 	if err != nil || releasecontract.VerifyRevocation(document, verifier) != nil {
-		return releasecontract.RevocationV2{}, ErrReleaseTrustVerification
+		return releasecontract.RevocationV3{}, ErrReleaseTrustVerification
 	}
 	if err := validateDocumentWindow(document.GeneratedAt, document.ExpiresAt, now, policy.Limits.FutureSkewSeconds); err != nil {
-		return releasecontract.RevocationV2{}, err
+		return releasecontract.RevocationV3{}, err
 	}
 	return document, nil
 }

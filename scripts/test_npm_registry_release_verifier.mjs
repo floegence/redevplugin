@@ -14,6 +14,7 @@ const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
 const tarball = Buffer.from("deterministic redevplugin npm registry fixture\n");
 const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
 const tarballSHA512 = createHash("sha512").update(tarball).digest("hex");
+const tarballSHA256 = createHash("sha256").update(tarball).digest("hex");
 let mutation = () => undefined;
 let temporaryFailure = null;
 let partialBodyFailure = null;
@@ -59,7 +60,8 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const registryBaseURL = `http://127.0.0.1:${server.address().port}`;
 
 try {
-  await verify();
+  const verified = await verify();
+  assert.equal(verified.tarballSHA256, tarballSHA256);
   await recoversFromTemporaryFailure("metadata", 404);
   await recoversFromTemporaryFailure("metadata", 408);
   await recoversFromTemporaryFailure("metadata", 425);

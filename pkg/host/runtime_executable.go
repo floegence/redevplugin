@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 )
 
 var (
@@ -24,10 +24,10 @@ const (
 )
 
 type VerifiedExecutableOptions struct {
-	RootDir            *os.File
-	ExecutionRoot      *os.File
-	RelativeName       RuntimeBinaryName
-	ExpectedDescriptor RuntimeDescriptor
+	RootDir                  *os.File
+	ExecutionRoot            *os.File
+	RelativeName             RuntimeBinaryName
+	ExpectedArtifactIdentity RuntimeArtifactIdentity
 }
 
 type verifiedExecutableState uint8
@@ -43,7 +43,7 @@ const (
 type VerifiedExecutable struct {
 	mu            sync.Mutex
 	state         verifiedExecutableState
-	descriptor    RuntimeDescriptor
+	descriptor    RuntimeArtifactIdentity
 	executable    *os.File
 	executionRoot *os.File
 	journal       runtimeExecJournal
@@ -59,14 +59,14 @@ func OpenVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 	return openVerifiedExecutable(ctx, options)
 }
 
-func (executable *VerifiedExecutable) Descriptor() RuntimeDescriptor {
+func (executable *VerifiedExecutable) ArtifactIdentity() RuntimeArtifactIdentity {
 	if executable == nil {
-		return RuntimeDescriptor{}
+		return RuntimeArtifactIdentity{}
 	}
 	executable.mu.Lock()
 	defer executable.mu.Unlock()
 	if executable.state == verifiedExecutableClosed {
-		return RuntimeDescriptor{}
+		return RuntimeArtifactIdentity{}
 	}
 	return executable.descriptor
 }

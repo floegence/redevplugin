@@ -9,7 +9,6 @@ import {
   pluginBridgeCapabilityEffect,
   type PluginBridgeCapabilityRequestOptions,
 } from "./bridge-capability.js";
-import { pluginUIProtocolVersion } from "./contracts.gen.js";
 import {
   opaqueSurfaceAllowedTags,
   opaqueSurfaceGlobalAttributes,
@@ -52,8 +51,6 @@ export const pluginRiskPlanSchemaVersion = "redevplugin.capability.risk_plan.v1"
 
 export type PluginJSONValue = null | boolean | number | string | PluginJSONValue[] | PluginJSONObject;
 export type PluginJSONObject = { [key: string]: PluginJSONValue };
-export type PluginUIProtocolVersion = typeof pluginUIProtocolVersion;
-
 export const pluginSurfaceContextSchemaVersion = "redevplugin.surface_context.v1" as const;
 
 export type PluginSurfaceContext = Readonly<{
@@ -94,7 +91,6 @@ export type TrustedParentBridgeHandshake = {
   asset_session_nonce: string;
   management_revision: number;
   revoke_epoch: number;
-  ui_protocol_version: PluginUIProtocolVersion;
 };
 
 export type TrustedParentBridgeTokenRequest = {
@@ -1063,7 +1059,6 @@ export async function trustedParentBridgeHandshakeTranscriptSHA256(
     handshake.asset_session_nonce,
     String(handshake.management_revision),
     String(handshake.revoke_epoch),
-    handshake.ui_protocol_version,
     bridgeChannelID,
   ];
   const chunks: Uint8Array[] = [];
@@ -1138,7 +1133,6 @@ export type PluginSurfaceHostBootstrap = {
   pluginId: string;
   pluginInstanceId: string;
   pluginVersion: string;
-  uiProtocolVersion: PluginUIProtocolVersion;
   surfaceId: string;
   surfaceInstanceId: string;
   activeFingerprint: string;
@@ -1324,7 +1318,6 @@ async function revokeSurfaceBootstrap(
 
 export type OpaquePluginBootstrapHTMLOptions = {
   scriptNonce?: string;
-  uiProtocolVersion?: PluginUIProtocolVersion;
 };
 
 type PluginGatewayTokenResult = {
@@ -1398,10 +1391,6 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(scriptNonce)) {
     throw new Error("scriptNonce must contain 8-128 URL-safe characters");
   }
-  const uiProtocolVersion = options.uiProtocolVersion ?? pluginUIProtocolVersion;
-  if (uiProtocolVersion !== pluginUIProtocolVersion) {
-    throw new Error(`uiProtocolVersion must be ${pluginUIProtocolVersion}`);
-  }
   const csp = [
     "default-src 'none'",
     `script-src 'nonce-${scriptNonce}'`,
@@ -1420,7 +1409,6 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   ].join("; ");
   const bootstrapScript = `(() => {
   "use strict";
-  const protocolVersion = ${JSON.stringify(uiProtocolVersion)};
   const documentSchema = ${JSON.stringify(opaqueSurfaceDocumentSchemaVersion)};
   const workerGlobalKey = ${JSON.stringify(opaquePluginBridgeGlobalKey)};
   const scriptNonce = ${JSON.stringify(scriptNonce)};
@@ -2495,7 +2483,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     'const __rpTimer = setTimeout(() => close(), 30000);',
     'const __rpListener = (event) => {',
     '    const value = event.data;',
-    '    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "port_roles,surface_handle,type,ui_protocol_version" || value.type !== "redevplugin.worker.initialize" || value.ui_protocol_version !== ' + JSON.stringify(protocolVersion) + ' || typeof value.surface_handle !== "string" || !Array.isArray(value.port_roles) || value.port_roles.join(",") !== "runtime_control,plugin_bridge" || !event.ports || event.ports.length !== 2) return;',
+    '    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "port_roles,surface_handle,type" || value.type !== "redevplugin.worker.initialize" || typeof value.surface_handle !== "string" || !Array.isArray(value.port_roles) || value.port_roles.join(",") !== "runtime_control,plugin_bridge" || !event.ports || event.ports.length !== 2) return;',
     '    clearTimeout(__rpTimer); removeEventListener("message", __rpListener);',
     '    const __rpSurfaceHandle = value.surface_handle;',
     '    const __rpControlPort = event.ports[0];',
@@ -2662,7 +2650,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     workerPort = pluginChannel.port1;
     workerPort.addEventListener("message", onWorkerMessage);
     workerPort.start();
-    worker.postMessage({ type: "redevplugin.worker.initialize", surface_handle: surfaceHandle, ui_protocol_version: protocolVersion, port_roles: ["runtime_control", "plugin_bridge"] }, [controlChannel.port2, pluginChannel.port2]);
+    worker.postMessage({ type: "redevplugin.worker.initialize", surface_handle: surfaceHandle, port_roles: ["runtime_control", "plugin_bridge"] }, [controlChannel.port2, pluginChannel.port2]);
     if (currentContext) sendWorker({ type: "redevplugin.bridge.context", context: currentContext });
   };
   const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
@@ -3075,7 +3063,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const onWindowMessage = (event) => {
     if (accepted || event.source !== parent || !event.ports || event.ports.length !== 1) return;
     const message = event.data;
-    if (!exactKeys(message, ["type", "frame_generation_id", "ui_protocol_version"]) || message.type !== "redevplugin.surface.port" || message.ui_protocol_version !== protocolVersion || !validOpaqueHandle(message.frame_generation_id, "frame")) return;
+    if (!exactKeys(message, ["type", "frame_generation_id"]) || message.type !== "redevplugin.surface.port" || !validOpaqueHandle(message.frame_generation_id, "frame")) return;
     accepted = true;
     frameGenerationID = message.frame_generation_id;
     removeEventListener("message", onWindowMessage);
@@ -3221,7 +3209,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#initialFrameLoad = initialFrameLoad;
     this.#iframe.addEventListener("load", this.#onFrameLoad);
     hardenPluginSurfaceFrame(this.#iframe);
-    this.#iframe.srcdoc = createOpaquePluginBootstrapHTML({ scriptNonce, uiProtocolVersion: this.bootstrap.uiProtocolVersion });
+    this.#iframe.srcdoc = createOpaquePluginBootstrapHTML({ scriptNonce });
 
     try {
       await withTimeout(
@@ -3264,7 +3252,6 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     iframeWindow.postMessage({
       type: "redevplugin.surface.port",
       frame_generation_id: this.frameGenerationId,
-      ui_protocol_version: this.bootstrap.uiProtocolVersion,
     }, "*", [channel.port2]);
 
     await signals.portAcknowledged.promise;
@@ -3743,7 +3730,6 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       asset_session_nonce: this.bootstrap.assetSessionNonce,
       management_revision: this.bootstrap.managementRevision,
       revoke_epoch: this.bootstrap.revokeEpoch,
-      ui_protocol_version: this.bootstrap.uiProtocolVersion,
     };
   }
 
@@ -4681,7 +4667,6 @@ function validateHostBootstrap(bootstrap: PluginSurfaceHostBootstrap): void {
     bootstrap.pluginId,
     bootstrap.pluginInstanceId,
     bootstrap.pluginVersion,
-    bootstrap.uiProtocolVersion,
     bootstrap.surfaceId,
     bootstrap.surfaceInstanceId,
     bootstrap.activeFingerprint,
@@ -4695,9 +4680,6 @@ function validateHostBootstrap(bootstrap: PluginSurfaceHostBootstrap): void {
     if (typeof value !== "string" || value.length === 0) {
       throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface bootstrap is incomplete");
     }
-  }
-  if (bootstrap.uiProtocolVersion !== pluginUIProtocolVersion) {
-    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface UI protocol is unsupported");
   }
   if (!Number.isSafeInteger(bootstrap.managementRevision) || bootstrap.managementRevision < 1 ||
       !Number.isSafeInteger(bootstrap.revokeEpoch) || bootstrap.revokeEpoch < 1) {

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
 
 type panicReader struct{}

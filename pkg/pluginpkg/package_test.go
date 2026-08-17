@@ -98,41 +98,33 @@ func TestBuildPackageIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestV9UnknownFieldChangesSignedManifestHashWithoutChangingBehavior(t *testing.T) {
+func TestV9RejectsUnknownManifestField(t *testing.T) {
 	base := `{
-		"schema_version":"redevplugin.manifest.v9",
-		"publisher":{"publisher_id":"example","display_name":"Example"},
-		"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},
-		"api":{"surface":1,"worker":1},
+			"schema_version":"redevplugin.manifest.v9",
+			"publisher":{"publisher_id":"example","display_name":"Example"},
+			"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},
+			"api":{"major":1},
 		"permissions":[],
 		"presentation":{"locales":{"default":"en-US"}},
 		"surfaces":[{"surface_id":"v9.view","kind":"view","label":"V9","entry":"ui/index.html"}],
 		"workers":[],
 		"methods":[]%s
 	}`
-	build := func(suffix string) Package {
+	build := func(suffix string) (Package, error) {
 		t.Helper()
 		dir := t.TempDir()
 		mustWrite(t, filepath.Join(dir, "manifest.json"), fmt.Sprintf(base, suffix))
 		mustWrite(t, filepath.Join(dir, "ui", "index.html"), fixtureSurfaceHTML)
 		mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), fixtureWorkerJS)
 		var output bytes.Buffer
-		pkg, err := BuildFromDir(context.Background(), dir, &output, DefaultReadLimits())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return pkg
+		return BuildFromDir(context.Background(), dir, &output, DefaultReadLimits())
 	}
 
-	withoutExtension := build("")
-	withExtension := build(`,"future":{"opaque":true}`)
-	if withoutExtension.ManifestHash == withExtension.ManifestHash || withoutExtension.PackageHash == withExtension.PackageHash {
-		t.Fatal("v9 unknown field was omitted from signed hash input")
+	if _, err := build(""); err != nil {
+		t.Fatalf("BuildFromDir() rejected current manifest: %v", err)
 	}
-	if withoutExtension.ManifestModel.SchemaSource != "redevplugin.manifest.v9" ||
-		withExtension.ManifestModel.SchemaSource != withoutExtension.ManifestModel.SchemaSource ||
-		withExtension.ManifestModel.Plugin != withoutExtension.ManifestModel.Plugin {
-		t.Fatalf("v9 unknown field changed normalized behavior: before=%#v after=%#v", withoutExtension.ManifestModel, withExtension.ManifestModel)
+	if _, err := build(`,"future":{"opaque":true}`); err == nil {
+		t.Fatal("BuildFromDir() accepted an unknown manifest field")
 	}
 }
 
@@ -1124,14 +1116,43 @@ func TestBuildRejectsUnsupportedWorkerImport(t *testing.T) {
 	}
 }
 
-func TestBuildAcceptsSupportedWorkerImport(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
-	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithHostcallForTest("redevplugin.network", "execute"))
+func TestBuildAcceptsCurrentIOImports(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  []byte
+		results []byte
+	}{
+		{"rdp_call_v1", []byte{0x7f, 0x7f, 0x7f, 0x7f}, []byte{0x7f}},
+		{"rdp_read_v1", []byte{0x7e, 0x7f, 0x7f, 0x7f}, []byte{0x7f}},
+		{"rdp_write_v1", []byte{0x7e, 0x7f, 0x7f, 0x7f}, []byte{0x7f}},
+		{"rdp_seek_v1", []byte{0x7e, 0x7e, 0x7f}, []byte{0x7e}},
+		{"rdp_close_v1", []byte{0x7e}, []byte{0x7f}},
+		{"rdp_last_error_v1", []byte{0x7f, 0x7f}, []byte{0x7f}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
+			mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithTypedHostcallForTest("redevplugin.io", test.name, test.params, test.results))
+			var buf bytes.Buffer
+			if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err != nil {
+				t.Fatalf("BuildFromDir() worker import error = %v", err)
+			}
+		})
+	}
+}
 
-	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err != nil {
-		t.Fatalf("BuildFromDir() worker import error = %v", err)
+func TestBuildRejectsRetiredStorageAndNetworkImports(t *testing.T) {
+	for _, hostcall := range [][2]string{{"redevplugin.storage", "files"}, {"redevplugin.network", "execute"}} {
+		t.Run(hostcall[0]+"/"+hostcall[1], func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
+			mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithHostcallForTest(hostcall[0], hostcall[1]))
+			var buf bytes.Buffer
+			if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err == nil {
+				t.Fatal("BuildFromDir() accepted a retired worker import")
+			}
+		})
 	}
 }
 
@@ -1517,15 +1538,21 @@ func minimalWorkerWASMForTest(exportName string) []byte {
 }
 
 func workerWASMWithHostcallForTest(moduleName string, functionName string) []byte {
+	return workerWASMWithTypedHostcallForTest(moduleName, functionName, []byte{0x7f, 0x7f, 0x7f, 0x7f}, []byte{0x7f})
+}
+
+func workerWASMWithTypedHostcallForTest(moduleName string, functionName string, params, results []byte) []byte {
 	module := []byte{
 		0x00, 0x61, 0x73, 0x6d,
 		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x19, 0x04,
-		0x60, 0x01, 0x7f, 0x01, 0x7f,
-		0x60, 0x02, 0x7f, 0x7f, 0x00,
-		0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e,
-		0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
 	}
+	types := []byte{0x04, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x60, 0x02, 0x7f, 0x7f, 0x00, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e, 0x60, byte(len(params))}
+	types = append(types, params...)
+	types = append(types, byte(len(results)))
+	types = append(types, results...)
+	module = append(module, 0x01)
+	module = append(module, encodeWASMVarUint32ForTest(uint32(len(types)))...)
+	module = append(module, types...)
 	importPayload := []byte{0x01, byte(len(moduleName))}
 	importPayload = append(importPayload, moduleName...)
 	importPayload = append(importPayload, byte(len(functionName)))
@@ -1636,50 +1663,36 @@ func packageSignatureJSON(t *testing.T, pkg Package, signature string) []byte {
 
 func validManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.pkg",
 			"display_name": "Package",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "pkg.view", "kind": "view", "label": "Package", "entry": "ui/index.html"}
-		]
+		],
+		"workers": [],
+		"methods": []
 	}`
 }
 
 func workerManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
 			"display_name": "Worker",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
@@ -1687,7 +1700,6 @@ func workerManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216

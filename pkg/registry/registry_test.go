@@ -1,265 +1,38 @@
 package registry
 
 import (
-	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 )
 
-func TestSQLiteStorePersistsV9NormalizedManifestProjection(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	model, err := manifest.DecodeModel(strings.NewReader(`{
-		"schema_version":"redevplugin.manifest.v9",
-		"publisher":{"publisher_id":"example","display_name":"Example"},
-		"plugin":{"plugin_id":"com.example.v9","display_name":"V9","version":"1.0.0"},
-		"api":{"surface":1,"worker":1,"required_features":["fs.workspace.v1"],"optional_features":["fs.watch.v1","future.optional"]},
-		"permissions":["fs.workspace.read"],
-		"presentation":{"locales":{"default":"en-US"}},
-		"surfaces":[{"surface_id":"v9.view","kind":"view","label":"V9","entry":"ui/index.html"}],
-		"workers":[],"methods":[]
-	}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := store.PutPlugin(ctx, PluginRecord{
-		PluginInstanceID: "plugini_v9_projection", PublisherID: "example", PluginID: "com.example.v9", Version: "1.0.0",
-		ActiveFingerprint: "sha256:v9", TrustState: TrustVerified, EnableState: EnableEnabled,
-		Manifest: model.Manifest, ManifestModel: model, ManifestSource: model.SchemaSource,
-	}, PutOptions{Now: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	got, err := reopened.GetPlugin(ctx, stored.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ManifestSource != manifest.SchemaVersionV9 || got.ManifestModel.SchemaSource != manifest.SchemaVersionV9 ||
-		len(got.ManifestModel.API.RequiredFeatures) != 1 || got.ManifestModel.API.RequiredFeatures[0] != manifest.FeatureFSWorkspace ||
-		len(got.ManifestModel.API.OptionalFeatures) != 1 || got.ManifestModel.API.OptionalFeatures[0] != manifest.FeatureFSWatch ||
-		len(got.ManifestModel.Permissions) != 1 || got.ManifestModel.Permissions[0] != manifest.PermissionFSWorkspaceRead {
-		t.Fatalf("persisted v9 projection mismatch: %#v", got.ManifestModel)
-	}
-}
-
-func TestSQLiteStoreMigratesV6ManifestProjectionWithoutChangingAuthority(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := store.PutPlugin(ctx, PluginRecord{
-		PluginInstanceID: "plugini_v6_projection", PublisherID: "example", PluginID: "com.example.v8", Version: "1.0.0",
-		ActiveFingerprint: "sha256:frozen", PackageHash: "sha256:package", ManifestHash: "sha256:manifest", EntriesHash: "sha256:entries",
-		TrustState: TrustVerified, EnableState: EnableEnabled,
-		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.v8", Version: "1.0.0"},
-			NetworkAccess: &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{{ConnectorID: "api", Transport: "http"}}}},
-	}, PutOptions{Now: time.Date(2026, 8, 15, 1, 0, 0, 0, time.UTC)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.GrantPermission(ctx, permissions.GrantRequest{PluginInstanceID: record.PluginInstanceID, PermissionID: "legacy.permission", Now: time.Now()}, AuthorizationRevisionsFromRecord(record)); err != nil {
-		t.Fatal(err)
-	}
-	for _, column := range []string{"permissions_json", "optional_features_json", "required_features_json", "worker_api_major", "surface_api_major", "manifest_schema_source"} {
-		if _, err := store.db.ExecContext(context.Background(), `ALTER TABLE plugin_records DROP COLUMN `+column); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 6`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	migrated, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer migrated.Close()
-	got, err := migrated.GetPlugin(ctx, record.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ActiveFingerprint != record.ActiveFingerprint || got.EnableState != EnableEnabled || got.ManifestSource != manifest.SchemaVersionV8 ||
-		len(got.ManifestModel.API.RequiredFeatures) != 1 || got.ManifestModel.API.RequiredFeatures[0] != manifest.FeatureNetHTTP ||
-		len(got.ManifestModel.Permissions) != 1 || got.ManifestModel.Permissions[0] != manifest.PermissionNetworkClient {
-		t.Fatalf("v6 migration changed authority or projection: %#v", got)
-	}
-	authorization, err := migrated.GetAuthorization(ctx, record.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(authorization.Grants) != 1 || authorization.Grants[0].PermissionID != "legacy.permission" {
-		t.Fatalf("v6 migration lost permission grants: %#v", authorization.Grants)
-	}
-}
-
-func TestSQLiteStoreV6ManifestProjectionMigrationRollsBackOnInvalidRecord(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := store.PutPlugin(ctx, PluginRecord{
-		PluginInstanceID: "plugini_v6_invalid", PublisherID: "example", PluginID: "com.example.invalid", Version: "1.0.0",
-		TrustState: TrustVerified, EnableState: EnableDisabled,
-		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.invalid", Version: "1.0.0"}},
-	}, PutOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	invalidManifest := `{"schema_version":"redevplugin.manifest.v9","plugin":{"plugin_id":"com.example.invalid","version":"1.0.0"}}`
-	if _, err := store.db.ExecContext(ctx, `UPDATE plugin_records SET manifest_json = ? WHERE owner_env_hash = ? AND plugin_instance_id = ?`, invalidManifest, record.OwnerEnvHash, record.PluginInstanceID); err != nil {
-		t.Fatal(err)
-	}
-	for _, column := range []string{"permissions_json", "optional_features_json", "required_features_json", "worker_api_major", "surface_api_major", "manifest_schema_source"} {
-		if _, err := store.db.ExecContext(ctx, `ALTER TABLE plugin_records DROP COLUMN `+column); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 6`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := NewSQLiteStore(ctx, path)
-	if reopened != nil {
-		_ = reopened.Close()
-	}
-	if !errors.Is(err, ErrIncompatiblePersistedManifest) {
-		t.Fatalf("migration error = %v, want %v", err, ErrIncompatiblePersistedManifest)
-	}
-	dsn, err := registrySQLiteDSN(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var version int
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 6 {
-		t.Fatalf("failed migration changed schema version to %d", version)
-	}
-	var persisted string
-	if err := db.QueryRowContext(ctx, `SELECT manifest_json FROM plugin_records WHERE owner_env_hash = ? AND plugin_instance_id = ?`, record.OwnerEnvHash, record.PluginInstanceID).Scan(&persisted); err != nil {
-		t.Fatal(err)
-	}
-	if persisted != invalidManifest {
-		t.Fatalf("failed migration changed manifest: %s", persisted)
-	}
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info(plugin_records)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, typeName string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &pk); err != nil {
-			t.Fatal(err)
-		}
-		if name == "manifest_schema_source" {
-			t.Fatal("failed migration committed normalized manifest columns")
-		}
-	}
-}
-
-func TestSQLiteStoreRejectsRetiredPersistedManifestWithoutMutation(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		persisted string
-	}{
-		{name: "retired v7", persisted: `{"schema_version":"redevplugin.manifest.v7","publisher":{"publisher_id":"example"},"plugin":{"plugin_id":"com.example.retired","version":"1.0.0"}}`},
-		{name: "missing schema version", persisted: `{"publisher":{"publisher_id":"example"},"plugin":{"plugin_id":"com.example.retired","version":"1.0.0"}}`},
-		{name: "future v9", persisted: `{"schema_version":"redevplugin.manifest.v9","publisher":{"publisher_id":"example"},"plugin":{"plugin_id":"com.example.retired","version":"1.0.0"}}`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ctx := registryTestContext()
-			path := filepath.Join(t.TempDir(), "registry.sqlite")
-			store, err := NewSQLiteStore(ctx, path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			record, err := store.PutPlugin(ctx, PluginRecord{
-				PluginInstanceID: "plugini_retired_manifest",
-				PublisherID:      "example",
-				PluginID:         "com.example.retired",
-				Version:          "1.0.0",
-				TrustState:       TrustVerified,
-				EnableState:      EnableDisabled,
-				Manifest:         manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.retired", Version: "1.0.0"}},
-			}, PutOptions{Now: time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.db.ExecContext(ctx, `UPDATE plugin_records SET manifest_json = ? WHERE owner_env_hash = ? AND plugin_instance_id = ?`, test.persisted, record.OwnerEnvHash, record.PluginInstanceID); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.Close(); err != nil {
-				t.Fatal(err)
-			}
-
-			reopened, err := NewSQLiteStore(ctx, path)
-			if reopened != nil {
-				_ = reopened.Close()
-			}
-			if !errors.Is(err, ErrIncompatiblePersistedManifest) {
-				t.Fatalf("NewSQLiteStore() error = %v, want %v", err, ErrIncompatiblePersistedManifest)
-			}
-
-			dsn, err := registrySQLiteDSN(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			db, err := sql.Open("sqlite", dsn)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			var persisted string
-			if err := db.QueryRowContext(ctx, `SELECT manifest_json FROM plugin_records WHERE owner_env_hash = ? AND plugin_instance_id = ?`, record.OwnerEnvHash, record.PluginInstanceID).Scan(&persisted); err != nil {
-				t.Fatal(err)
-			}
-			if persisted != test.persisted {
-				t.Fatalf("incompatible manifest changed from %q to %q", test.persisted, persisted)
-			}
-		})
+func currentTestManifest(pluginID, version string) manifest.Manifest {
+	return manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersionV9,
+		Publisher:     manifest.Publisher{PublisherID: "example"},
+		Plugin:        manifest.Plugin{PluginID: pluginID, DisplayName: "Test Plugin", Version: version},
+		API:           manifest.PublicAPIRequirement{Major: manifest.PluginAPIMajor},
+		Permissions:   []manifest.PermissionID{},
+		Presentation: manifest.PresentationSpec{
+			DefaultLocale: "en-US",
+			Summary:       "Test plugin",
+			Description:   []string{"Test plugin"},
+			Highlights:    []string{},
+			Keywords:      []string{"test"},
+			Localizations: []manifest.PresentationLocalizationSpec{},
+		},
+		Surfaces: []manifest.SurfaceSpec{{
+			SurfaceID: "main",
+			Kind:      manifest.SurfaceView,
+			Label:     "Test",
+			Entry:     "ui/index.html",
+		}},
 	}
 }
 
@@ -275,8 +48,11 @@ func TestStoreRevisionsAndList(t *testing.T) {
 				Version:           "1.0.0",
 				ActiveFingerprint: "sha256:test",
 				TrustState:        TrustVerified,
-				EnableState:       EnableDisabled,
-				Manifest:          manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.test", Version: "1.0.0"}},
+				PackageSourceProvenance: PackageSourceProvenance{
+					Kind: PackageSourceLocalGenerated,
+				},
+				EnableState: EnableDisabledByUser,
+				Manifest:    currentTestManifest("com.example.test", "1.0.0"),
 			}
 			stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{Now: now})
 			if err != nil {
@@ -351,9 +127,12 @@ func TestStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
 				ActiveFingerprint: "sha256:v1",
 				PackageHash:       "sha256:v1",
 				TrustState:        TrustVerified,
-				EnableState:       EnableEnabled,
-				Manifest:          manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.test", Version: "1.0.0"}},
-				Metadata:          map[string]string{"trust.key_id": "publisher-key"},
+				PackageSourceProvenance: PackageSourceProvenance{
+					Kind: PackageSourceLocalGenerated,
+				},
+				EnableState: EnableEnabled,
+				Manifest:    currentTestManifest("com.example.test", "1.0.0"),
+				Metadata:    map[string]string{"trust.key_id": "publisher-key"},
 			}
 			stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{Now: now})
 			if err != nil {
@@ -363,10 +142,14 @@ func TestStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
 			stored.ActiveFingerprint = "sha256:v2"
 			stored.PackageHash = "sha256:v2"
 			stored.SignatureAssessment = SignatureAssessment{}
-			stored.PackageSourceProvenance = PackageSourceProvenance{}
+			stored.PackageSourceProvenance.PackageSHA256 = "sha256:v2"
 			stored.ExecutionApproval = ExecutionApproval{}
 			stored.UpdateEligibility = ""
-			stored.VersionHistory = []PluginVersion{{Version: "1.0.0", PackageHash: "sha256:v1"}}
+			stored.VersionHistory = []PluginVersion{{
+				Version: "1.0.0", PackageHash: "sha256:v1",
+				PackageSourceProvenance: PackageSourceProvenance{Kind: PackageSourceLocalGenerated},
+				Manifest:                currentTestManifest("com.example.test", "1.0.0"),
+			}}
 			updated, err := store.PutPlugin(registryTestContext(), stored, PutOptions{Now: now.Add(time.Second)})
 			if err != nil {
 				t.Fatal(err)
@@ -398,9 +181,12 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 					ReasonCodes: []string{"verified"},
 					Metadata:    map[string]string{"key": "original"},
 				},
-				PackageHash:           "sha256:package-current",
-				ManifestHash:          "sha256:manifest-current",
-				EntriesHash:           "sha256:entries-current",
+				PackageHash:  "sha256:package-current",
+				ManifestHash: "sha256:manifest-current",
+				EntriesHash:  "sha256:entries-current",
+				PackageSourceProvenance: PackageSourceProvenance{
+					Kind: PackageSourceLocalGenerated,
+				},
 				ReleaseTrustBinding:   testReleaseTrustBinding("source.original", "1.0.0"),
 				LocalImportProvenance: &LocalImportProvenance{ImportID: "import_original", Distribution: "local_import"},
 				CapabilityContracts: []capabilitycontract.Pin{{
@@ -409,28 +195,50 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 					ContractVersion: "1.0.0",
 					ArtifactSHA256:  strings.Repeat("1", 64),
 				}},
-				EnableState: EnableDisabled,
-				Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-					Plugin: manifest.Plugin{PluginID: "com.example.clone", Version: "1.0.0"},
+				EnableState: EnableEnabled,
+				Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV9,
+					Publisher: manifest.Publisher{PublisherID: "example"},
+					Plugin:    manifest.Plugin{PluginID: "com.example.clone", DisplayName: "Clone", Version: "1.0.0"},
+					API:       manifest.PublicAPIRequirement{Major: manifest.PluginAPIMajor},
+					Presentation: manifest.PresentationSpec{DefaultLocale: "en-US", Summary: "Clone", Description: []string{"Clone"},
+						Keywords: []string{"clone"}},
+					Surfaces: []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Clone", Entry: "ui/index.html"}},
 					Methods: []manifest.MethodSpec{{
 						Method:        "documents.get",
-						RequestSchema: map[string]any{"type": "object", "properties": map[string]any{"document_id": map[string]any{"type": "string"}}},
+						Effect:        manifest.MethodEffectRead,
+						Execution:     manifest.MethodExecutionSync,
+						RequestSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"document_id": map[string]any{"type": "string"}}},
+						ResponseSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+							"document_id": map[string]any{"type": "string"},
+						}},
+						Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteCoreAction, ActionID: "documents.get"},
 					}},
 				},
 				VersionHistory: []PluginVersion{{
-					Version:             "0.9.0",
-					ActiveFingerprint:   "sha256:history-fingerprint",
-					PackageHash:         "sha256:package-history",
-					ManifestHash:        "sha256:manifest-history",
-					EntriesHash:         "sha256:entries-history",
+					Version:           "0.9.0",
+					ActiveFingerprint: "sha256:history-fingerprint",
+					PackageHash:       "sha256:package-history",
+					ManifestHash:      "sha256:manifest-history",
+					EntriesHash:       "sha256:entries-history",
+					PackageSourceProvenance: PackageSourceProvenance{
+						Kind: PackageSourceLocalGenerated,
+					},
 					ReleaseTrustBinding: testReleaseTrustBinding("history.original", "0.9.0"),
-					Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-						Publisher: manifest.Publisher{PublisherID: "example.publisher"},
-						Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "0.9.0"}},
-					Metadata: map[string]string{"history": "original"},
+					Manifest:            currentTestManifest("com.example.clone", "0.9.0"),
+					Metadata:            map[string]string{"history": "original"},
 				}},
 				Metadata: map[string]string{"record": "original"},
 			}
+			canonical, err := manifest.MarshalCanonical(record.Manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			historyCanonical, err := manifest.MarshalCanonical(record.VersionHistory[0].Manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.CanonicalManifest = string(canonical)
+			record.VersionHistory[0].CanonicalManifest = string(historyCanonical)
 			stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -448,7 +256,9 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 			}
 			if got.ReleaseTrustBinding.SourceID != "source.original" ||
 				got.TrustAssessment.Metadata["key"] != "original" ||
+				got.CanonicalManifest != string(canonical) ||
 				got.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["type"] != "string" ||
+				got.VersionHistory[0].CanonicalManifest != string(historyCanonical) ||
 				got.VersionHistory[0].Metadata["history"] != "original" {
 				t.Fatalf("stored plugin record was mutated through an input or return boundary: %#v", got)
 			}
@@ -490,8 +300,11 @@ func TestStoreAbortInstall(t *testing.T) {
 				Version:           "1.0.0",
 				ActiveFingerprint: "sha256:delete",
 				TrustState:        TrustVerified,
-				EnableState:       EnableDisabled,
-				Manifest:          manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.delete", Version: "1.0.0"}},
+				PackageSourceProvenance: PackageSourceProvenance{
+					Kind: PackageSourceLocalGenerated,
+				},
+				EnableState: EnableEnabled,
+				Manifest:    currentTestManifest("com.example.delete", "1.0.0"),
 			}
 			if _, err := store.PutPlugin(registryTestContext(), record, PutOptions{}); err != nil {
 				t.Fatal(err)
@@ -509,503 +322,6 @@ func TestStoreAbortInstall(t *testing.T) {
 	}
 }
 
-func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	now := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
-	store, err := NewSQLiteStore(registryTestContext(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := PluginRecord{
-		PluginInstanceID:  "plugini_persist",
-		PublisherID:       "example",
-		PluginID:          "com.example.persist",
-		Version:           "1.0.0",
-		ActiveFingerprint: "sha256:persist",
-		PackageHash:       "sha256:pkg",
-		ManifestHash:      "sha256:manifest",
-		EntriesHash:       "sha256:entries",
-		TrustState:        TrustVerified,
-		TrustAssessment: TrustAssessment{
-			TrustState:  TrustVerified,
-			ReasonCodes: []string{"sqlite_round_trip"},
-			VerifiedHashes: TrustHashSet{
-				PackageSHA256:  "sha256:pkg",
-				ManifestSHA256: "sha256:manifest",
-				EntriesSHA256:  "sha256:entries",
-			},
-			VerifiedSignature:    &VerifiedSignature{Algorithm: "ed25519", KeyID: "official"},
-			TrustAssessmentEpoch: "trust_epoch_1",
-			PolicyEpoch:          "1",
-			RevocationEpoch:      "1",
-			Metadata:             map[string]string{"trust.key_id": "official"},
-		},
-		LocalImportProvenance: &LocalImportProvenance{
-			ImportID:       "local_import",
-			Distribution:   "local_import",
-			PolicyEpoch:    "local_import",
-			UnsignedPolicy: "dev_only",
-			AssessedAt:     "2026-06-29T00:00:00Z",
-		},
-		EnableState: EnableEnabled,
-		Manifest:    manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.persist", Version: "1.0.0"}},
-		RuntimeRequirement: &RuntimeRequirement{
-			MinVersion:       "0.5.0",
-			SupportedTargets: []runtimetarget.Target{runtimetarget.DarwinARM64, runtimetarget.LinuxAMD64},
-		},
-		VersionHistory: []PluginVersion{{
-			Version:  "0.9.0",
-			Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8},
-			RuntimeRequirement: &RuntimeRequirement{
-				MinVersion:       "0.4.3",
-				SupportedTargets: []runtimetarget.Target{runtimetarget.LinuxAMD64},
-			},
-		}},
-		Metadata: map[string]string{"source": "sqlite-test"},
-	}
-	stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{Now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := NewSQLiteStore(registryTestContext(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = reopened.Close()
-	})
-	got, err := reopened.GetPlugin(registryTestContext(), stored.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.PluginID != record.PluginID ||
-		got.PackageHash != "sha256:pkg" ||
-		got.Manifest.Plugin.PluginID != record.PluginID ||
-		got.Metadata["source"] != "sqlite-test" ||
-		got.TrustAssessment.TrustState != TrustVerified ||
-		got.TrustAssessment.ReasonCodes[0] != "sqlite_round_trip" ||
-		got.TrustAssessment.VerifiedSignature == nil ||
-		got.TrustAssessment.VerifiedSignature.KeyID != "official" ||
-		got.TrustAssessment.PolicyEpoch != "1" ||
-		got.TrustAssessment.RevocationEpoch != "1" ||
-		got.TrustAssessment.Metadata["trust.key_id"] != "official" ||
-		got.LocalImportProvenance == nil ||
-		got.LocalImportProvenance.UnsignedPolicy != "dev_only" ||
-		got.RuntimeRequirement == nil ||
-		got.RuntimeRequirement.MinVersion != "0.5.0" ||
-		len(got.RuntimeRequirement.SupportedTargets) != 2 ||
-		len(got.VersionHistory) != 1 ||
-		got.VersionHistory[0].RuntimeRequirement == nil ||
-		got.VersionHistory[0].RuntimeRequirement.MinVersion != "0.4.3" ||
-		!got.InstalledAt.Equal(now) {
-		t.Fatalf("persisted record mismatch: %#v", got)
-	}
-	listed, err := reopened.ListPlugins(registryTestContext())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(listed) != 1 || listed[0].TrustAssessment.VerifiedSignature == nil || listed[0].TrustAssessment.VerifiedSignature.KeyID != "official" {
-		t.Fatalf("ListPlugins() trust assessment mismatch: %#v", listed)
-	}
-	authorization, err := reopened.ListAuthorization(registryTestContext())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(authorization) != 1 || authorization[0].Plugin.RuntimeRequirement == nil || authorization[0].Plugin.RuntimeRequirement.MinVersion != "0.5.0" {
-		t.Fatalf("ListAuthorization() runtime requirement mismatch: %#v", authorization)
-	}
-}
-
-func TestSQLiteStoreMigratesRuntimeRequirementColumn(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	legacy, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyRecord := PluginRecord{
-		PluginInstanceID:  "plugini_runtime_migration",
-		PublisherID:       "example",
-		PluginID:          "com.example.runtime-migration",
-		Version:           "1.0.0",
-		ActiveFingerprint: "sha256:runtime-migration",
-		TrustState:        TrustVerified,
-		EnableState:       EnableDisabled,
-		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-			Plugin:  manifest.Plugin{PluginID: "com.example.runtime-migration", Version: "1.0.0", MinRuntimeVersion: "0.5.0"},
-			Workers: []manifest.WorkerSpec{{WorkerID: "current-worker"}},
-		},
-		VersionHistory: []PluginVersion{{
-			Version: "0.4.3",
-			Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-				Plugin:  manifest.Plugin{PluginID: "com.example.runtime-migration", Version: "0.4.3", MinRuntimeVersion: "0.4.3"},
-				Workers: []manifest.WorkerSpec{{WorkerID: "historic-worker"}},
-			},
-		}},
-	}
-	if _, err := legacy.PutPlugin(ctx, legacyRecord, PutOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.db.ExecContext(ctx, `ALTER TABLE plugin_records DROP COLUMN runtime_requirement_json`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 0`); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	migrated, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = migrated.Close() })
-	got, err := migrated.GetPlugin(ctx, legacyRecord.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.RuntimeRequirement == nil || got.RuntimeRequirement.MinVersion != "0.5.0" || len(got.RuntimeRequirement.SupportedTargets) != 0 {
-		t.Fatalf("migrated current runtime requirement = %#v", got.RuntimeRequirement)
-	}
-	if len(got.VersionHistory) != 1 || got.VersionHistory[0].RuntimeRequirement == nil || got.VersionHistory[0].RuntimeRequirement.MinVersion != "0.4.3" || len(got.VersionHistory[0].RuntimeRequirement.SupportedTargets) != 0 {
-		t.Fatalf("migrated historic runtime requirement = %#v", got.VersionHistory)
-	}
-}
-
-func TestSQLiteStoreMigratesReleaseBindingV5ToV6WithoutLosingPluginData(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	legacy, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := PluginRecord{
-		PluginInstanceID: "plugini_activation_migration", PublisherID: "example.publisher",
-		PluginID: "com.example.clone", Version: "1.0.0", ActiveFingerprint: "sha256:current-fingerprint",
-		PackageHash: "sha256:package-current", ManifestHash: "sha256:manifest-current", EntriesHash: "sha256:entries-current",
-		TrustState: TrustVerified, EnableState: EnableEnabled,
-		ReleaseTrustBinding: testReleaseTrustBinding("source.current", "1.0.0"),
-		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-			Publisher: manifest.Publisher{PublisherID: "example.publisher"},
-			Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "1.0.0"}},
-		VersionHistory: []PluginVersion{{
-			Version: "0.9.0", ActiveFingerprint: "sha256:history-fingerprint",
-			PackageHash: "sha256:package-history", ManifestHash: "sha256:manifest-history", EntriesHash: "sha256:entries-history",
-			ReleaseTrustBinding: testReleaseTrustBinding("source.history", "0.9.0"),
-			Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-				Publisher: manifest.Publisher{PublisherID: "example.publisher"},
-				Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "0.9.0"}},
-		}},
-		Metadata: map[string]string{"preserved": "yes"},
-	}
-	stored, err := legacy.PutPlugin(ctx, record, PutOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindingJSON := addLegacyReleaseProof(t, stored.ReleaseTrustBinding, strings.Repeat("2", 64), strings.Repeat("3", 64))
-	historyJSON := addLegacyHistoryReleaseProof(t, stored.VersionHistory, strings.Repeat("4", 64), strings.Repeat("5", 64))
-	if _, err := legacy.db.ExecContext(ctx, `
-UPDATE plugin_records
-SET source_policy_snapshot_hash = ?, source_policy_snapshot_json = ?, version_history_json = ?
-WHERE owner_env_hash = ? AND plugin_instance_id = ?`, "legacy-proof", bindingJSON, historyJSON, stored.OwnerEnvHash, stored.PluginInstanceID); err != nil {
-		t.Fatal(err)
-	}
-	createHistoricalV5ExternalPackageReceiptTable(t, legacy.db)
-	createHistoricalV5ReleaseInstallOperationTable(t, legacy.db)
-	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	migrated, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = migrated.Close() })
-	got, err := migrated.GetPlugin(ctx, record.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ActiveFingerprint != record.ActiveFingerprint || got.PackageHash != record.PackageHash || got.EnableState != record.EnableState ||
-		got.Metadata["preserved"] != "yes" || got.ReleaseTrustBinding.SourceID != "source.current" ||
-		len(got.VersionHistory) != 1 || got.VersionHistory[0].ReleaseTrustBinding.SourceID != "source.history" {
-		t.Fatalf("migration changed plugin state: %#v", got)
-	}
-	var migratedBindingJSON, migratedHistoryJSON string
-	if err := migrated.db.QueryRowContext(ctx, `SELECT source_policy_snapshot_json, version_history_json FROM plugin_records WHERE owner_env_hash = ? AND plugin_instance_id = ?`, stored.OwnerEnvHash, stored.PluginInstanceID).Scan(&migratedBindingJSON, &migratedHistoryJSON); err != nil {
-		t.Fatal(err)
-	}
-	for _, raw := range []string{migratedBindingJSON, migratedHistoryJSON} {
-		for _, removed := range []string{"verified_state_sha256", "activation_evidence_schema_version", "activation_evidence_sha256"} {
-			if strings.Contains(raw, removed) {
-				t.Fatalf("migrated release binding retained %q: %s", removed, raw)
-			}
-		}
-	}
-	var retiredTables int
-	if err := migrated.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='external_package_commit_receipts'`).Scan(&retiredTables); err != nil {
-		t.Fatal(err)
-	}
-	if retiredTables != 0 {
-		t.Fatalf("v5 external receipt tables remaining = %d", retiredTables)
-	}
-	var version int
-	if err := migrated.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != registrySQLiteSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", version, registrySQLiteSchemaVersion)
-	}
-}
-
-func createHistoricalV5ExternalPackageReceiptTable(t *testing.T, db *sql.DB) {
-	t.Helper()
-	if _, err := db.Exec(`
-CREATE TABLE external_package_commit_receipts (
-    owner_env_hash TEXT NOT NULL,
-    inspection_id TEXT NOT NULL,
-    commit_id TEXT NOT NULL,
-    intent TEXT NOT NULL,
-    confirmation_digest TEXT NOT NULL,
-    request_sha256 TEXT NOT NULL,
-    expected_management_revision INTEGER NOT NULL,
-    intended_fingerprint TEXT NOT NULL,
-    intended_package_sha256 TEXT NOT NULL,
-    plugin_instance_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    mutation_outcome TEXT NOT NULL,
-    record_snapshot_json TEXT NOT NULL DEFAULT 'null',
-    failure_code TEXT NOT NULL DEFAULT '',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY(owner_env_hash, inspection_id),
-    UNIQUE(owner_env_hash, commit_id)
-)`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func createHistoricalV5ReleaseInstallOperationTable(t *testing.T, db *sql.DB) {
-	t.Helper()
-	if _, err := db.Exec(`
-CREATE TABLE release_install_operations (
-    owner_env_hash TEXT NOT NULL,
-    request_id TEXT NOT NULL,
-    operation_id TEXT NOT NULL,
-    plugin_instance_id TEXT NOT NULL,
-    request_sha256 TEXT NOT NULL,
-    release_identity_json TEXT NOT NULL,
-    activation_request_json TEXT NOT NULL DEFAULT '{"mode":"disabled"}',
-    status TEXT NOT NULL,
-    phase TEXT NOT NULL,
-    progress_kind TEXT NOT NULL,
-    progress_completed INTEGER NOT NULL,
-    progress_total INTEGER NOT NULL,
-    attempt INTEGER NOT NULL,
-    retry_after_ms INTEGER NOT NULL,
-    mutation_outcome TEXT NOT NULL,
-    failure_code TEXT NOT NULL,
-    failure_retryable INTEGER NOT NULL,
-    plugin_record_json TEXT NOT NULL DEFAULT 'null',
-    activation_json TEXT NOT NULL DEFAULT '{"status":"not_requested"}',
-    phase_diagnostics_json TEXT NOT NULL DEFAULT '[]',
-    revision INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    terminal_at INTEGER,
-    PRIMARY KEY(owner_env_hash, request_id),
-    UNIQUE(owner_env_hash, operation_id)
-)`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSQLiteStoreReleaseBindingMigrationRollsBackOnDrift(t *testing.T) {
-	ctx := registryTestContext()
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	legacy, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := PluginRecord{
-		PluginInstanceID: "plugini_activation_drift", PublisherID: "example.publisher",
-		PluginID: "com.example.clone", Version: "1.0.0", ActiveFingerprint: "sha256:current-fingerprint",
-		PackageHash: "sha256:package-current", ManifestHash: "sha256:manifest-current", EntriesHash: "sha256:entries-current",
-		TrustState: TrustVerified, EnableState: EnableEnabled,
-		ReleaseTrustBinding: testReleaseTrustBinding("source.current", "1.0.0"),
-		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-			Publisher: manifest.Publisher{PublisherID: "example.publisher"},
-			Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "1.0.0"}},
-	}
-	stored, err := legacy.PutPlugin(ctx, record, PutOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	driftedJSON := addLegacyReleaseProof(t, stored.ReleaseTrustBinding, strings.Repeat("2", 64), strings.Repeat("f", 64))
-	var drifted map[string]any
-	if err := json.Unmarshal([]byte(driftedJSON), &drifted); err != nil {
-		t.Fatal(err)
-	}
-	drifted["activation_evidence_schema_version"] = "redevplugin.release_activation_evidence.v999"
-	raw, err := json.Marshal(drifted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	driftedJSON = string(raw)
-	if _, err := legacy.db.ExecContext(ctx, `
-UPDATE plugin_records SET source_policy_snapshot_json = ?
-WHERE owner_env_hash = ? AND plugin_instance_id = ?`, driftedJSON, stored.OwnerEnvHash, stored.PluginInstanceID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
-		_ = reopened.Close()
-		t.Fatal("NewSQLiteStore() accepted drifted v5 activation evidence")
-	}
-	dsn, err := registrySQLiteDSN(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var version int
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 5 {
-		t.Fatalf("failed migration changed schema version to %d", version)
-	}
-	var afterJSON string
-	if err := db.QueryRowContext(ctx, `
-SELECT source_policy_snapshot_json FROM plugin_records
-WHERE owner_env_hash = ? AND plugin_instance_id = ?`, stored.OwnerEnvHash, stored.PluginInstanceID).Scan(&afterJSON); err != nil {
-		t.Fatal(err)
-	}
-	if afterJSON != driftedJSON {
-		t.Fatal("failed migration mutated drifted activation evidence")
-	}
-}
-
-func addLegacyReleaseProof(t *testing.T, binding *ReleaseTrustBinding, stateDigest, evidenceDigest string) string {
-	t.Helper()
-	raw, err := json.Marshal(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var value map[string]any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		t.Fatal(err)
-	}
-	value["verified_state_sha256"] = stateDigest
-	value["activation_evidence_schema_version"] = ReleaseActivationEvidenceSchemaVersionV1
-	value["activation_evidence_sha256"] = evidenceDigest
-	raw, err = json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(raw)
-}
-
-func addLegacyHistoryReleaseProof(t *testing.T, history []PluginVersion, stateDigest, evidenceDigest string) string {
-	t.Helper()
-	raw, err := json.Marshal(history)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var values []map[string]any
-	if err := json.Unmarshal(raw, &values); err != nil {
-		t.Fatal(err)
-	}
-	for index := range values {
-		binding, ok := values[index]["release_trust_binding"].(map[string]any)
-		if !ok {
-			continue
-		}
-		binding["verified_state_sha256"] = stateDigest
-		binding["activation_evidence_schema_version"] = ReleaseActivationEvidenceSchemaVersionV1
-		binding["activation_evidence_sha256"] = evidenceDigest
-	}
-	raw, err = json.Marshal(values)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(raw)
-}
-
-func TestSQLiteStoreRejectsUnknownPersistedRuntimeTargets(t *testing.T) {
-	ctx := registryTestContext()
-	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "registry.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	record, err := store.PutPlugin(ctx, PluginRecord{
-		PluginInstanceID: "plugini_unknown_target",
-		PublisherID:      "example",
-		PluginID:         "com.example.unknown-target",
-		Version:          "1.0.0",
-		TrustState:       TrustVerified,
-		EnableState:      EnableDisabled,
-		Manifest:         manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.unknown-target", Version: "1.0.0"}},
-		RuntimeRequirement: &RuntimeRequirement{
-			MinVersion:       "0.5.0",
-			SupportedTargets: []runtimetarget.Target{runtimetarget.LinuxAMD64},
-		},
-	}, PutOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, test := range []struct {
-		column string
-		value  string
-	}{
-		{column: "runtime_requirement_json", value: `{"min_version":"0.5.0","supported_targets":["windows/amd64"]}`},
-		{column: "version_history_json", value: `[{"version":"0.9.0","runtime_requirement":{"min_version":"0.5.0","supported_targets":["linux/x86_64"]}}]`},
-	} {
-		t.Run(test.column, func(t *testing.T) {
-			if _, err := store.db.ExecContext(ctx, `UPDATE plugin_records SET runtime_requirement_json = ?, version_history_json = ? WHERE plugin_instance_id = ?`, `{"min_version":"0.5.0","supported_targets":["linux/amd64"]}`, `[]`, record.PluginInstanceID); err != nil {
-				t.Fatal(err)
-			}
-			query := "UPDATE plugin_records SET " + test.column + " = ? WHERE plugin_instance_id = ?"
-			if _, err := store.db.ExecContext(ctx, query, test.value, record.PluginInstanceID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.GetPlugin(ctx, record.PluginInstanceID); !errors.Is(err, runtimetarget.ErrUnsupported) {
-				t.Fatalf("GetPlugin() error = %v, want ErrUnsupported", err)
-			}
-		})
-	}
-}
-
-func TestRunnableTrustState(t *testing.T) {
-	for _, state := range []TrustState{TrustVerified, TrustUnsignedLocal} {
-		if !RunnableTrustState(state) {
-			t.Fatalf("%s should be runnable", state)
-		}
-	}
-	for _, state := range []TrustState{TrustUntrusted, TrustNeedsReview, TrustUnavailable, TrustBlockedSecurity} {
-		if RunnableTrustState(state) {
-			t.Fatalf("%s should not be runnable", state)
-		}
-	}
-}
-
 type registryStoreCase struct {
 	name string
 	open func(t *testing.T) Store
@@ -1018,20 +334,6 @@ func registryStoreCases() []registryStoreCase {
 			open: func(t *testing.T) Store {
 				t.Helper()
 				return NewMemoryStore()
-			},
-		},
-		{
-			name: "sqlite",
-			open: func(t *testing.T) Store {
-				t.Helper()
-				store, err := NewSQLiteStore(registryTestContext(), filepath.Join(t.TempDir(), "registry.sqlite"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					_ = store.Close()
-				})
-				return store
 			},
 		},
 	}

@@ -15,21 +15,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/releasepublisher"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/secrets"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/settings"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
-	"github.com/floegence/redevplugin/v2/pkg/trust"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasepublisher"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/settings"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/trust"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 func TestScaffoldEchoResponseSchemaIsClosedAndMinimal(t *testing.T) {
@@ -46,7 +46,6 @@ func TestScaffoldEchoResponseSchemaIsClosedAndMinimal(t *testing.T) {
 		"worker_id": "backend",
 		"backend":   "executed wasm worker scaffold",
 		"transport": "rust runtime ipc",
-		"wasm_abi":  "redevplugin-wasm-worker-v2",
 		"message":   "hello",
 	}); err != nil {
 		t.Fatalf("scaffold echo response schema rejected valid data: %v", err)
@@ -56,7 +55,6 @@ func TestScaffoldEchoResponseSchemaIsClosedAndMinimal(t *testing.T) {
 		"worker_id":       "backend",
 		"backend":         "executed wasm worker scaffold",
 		"transport":       "rust runtime ipc",
-		"wasm_abi":        "redevplugin-wasm-worker-v2",
 		"message":         "hello",
 		"network_execute": map[string]any{},
 	}); err == nil {
@@ -68,27 +66,21 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "plugin")
 	writeCLITestFile(t, filepath.Join(srcDir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.cli",
 			"display_name": "CLI",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "cli.view", "kind": "view", "label": "CLI", "entry": "ui/index.html"}
-		]
+		],
+		"workers": [],
+		"methods": []
 	}`)
 	writeCLITestFile(t, filepath.Join(srcDir, "ui", "index.html"), `<!doctype html><title>CLI</title><body><main>CLI</main><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`)
 	writeCLITestFile(t, filepath.Join(srcDir, "ui", "assets", "app.js"), "void 0;")
@@ -158,7 +150,7 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
 		t.Fatalf("install-verified output decode error = %v: %s", err, installOutput)
 	}
-	if installSummary.TrustState != registry.TrustVerified || installSummary.EnableState != registry.EnableDisabled {
+	if installSummary.TrustState != registry.TrustVerified || installSummary.EnableState != registry.EnableEnabled {
 		t.Fatalf("install-verified summary mismatch: %#v", installSummary)
 	}
 }
@@ -300,9 +292,6 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 }
 
 func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
-	if goruntime.GOOS != "linux" {
-		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
-	}
 	repoRoot := cliRepoRoot(t)
 	runtimePath := buildExamplesRuntime(t, repoRoot)
 
@@ -326,7 +315,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		ctx,
 		runtimePath,
 		dir,
-		mustDescribeCommandRuntime(t, runtimePath),
+		mustInspectCommandRuntimeArtifact(t, runtimePath),
 		15*time.Second,
 	)
 	if err != nil {
@@ -342,7 +331,8 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		Target: mustCurrentCommandRuntimeTarget(t),
 	})
 	if err != nil {
-		t.Fatalf("StartRuntime() error = %v", err)
+		diagnostics, diagnosticsErr := h.ListDiagnosticEvents(ctx, host.ListDiagnosticEventsRequest{Limit: 50})
+		t.Fatalf("StartRuntime() error = %v, diagnostics = %#v (error = %v)", err, diagnostics, diagnosticsErr)
 	}
 	if !health.Ready || len(health.Shards) != 1 {
 		t.Fatalf("runtime health mismatch: %#v", health)
@@ -364,18 +354,13 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
+	if installed.EnableState != registry.EnableEnabled {
+		t.Fatalf("installed enable state = %q, want %q", installed.EnableState, registry.EnableEnabled)
+	}
 	now := time.Now().UTC()
-	enabled, err := h.EnablePlugin(ctx, host.EnableRequest{
+	bootstrap, err := h.OpenSurface(ctx, host.OpenSurfaceRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		ExpectedManagementRevision: installed.ManagementRevision,
-		Now:                        now,
-	})
-	if err != nil {
-		t.Fatalf("EnablePlugin() error = %v", err)
-	}
-	bootstrap, err := h.OpenSurface(ctx, host.OpenSurfaceRequest{
-		PluginInstanceID:           enabled.PluginInstanceID,
-		ExpectedManagementRevision: enabled.ManagementRevision,
 		SurfaceID:                  "com.example.generated.runtime.view",
 		SurfaceInstanceID:          "surface_generated_runtime",
 
@@ -405,7 +390,6 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v5",
 	}
 	gateway, err := h.MintBridgeToken(ctx, host.MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -444,35 +428,31 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 
 }
 
-func TestLoadCommandRuntimeDescriptorUsesExternalExpectedDigest(t *testing.T) {
+func TestInspectCommandRuntimeArtifactCapturesExactBytes(t *testing.T) {
 	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
 	content := []byte("runtime artifact\n")
 	if err := os.WriteFile(runtimePath, content, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	target := mustCurrentCommandRuntimeTarget(t)
-	descriptorPath := writeTestRuntimeDescriptor(t, runtimePath)
+	identity, err := inspectCommandRuntimeArtifact(runtimePath, target)
+	if err != nil {
+		t.Fatalf("inspectCommandRuntimeArtifact() error = %v", err)
+	}
 	if err := os.WriteFile(runtimePath, []byte("replaced runtime artifact\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := loadCommandRuntimeDescriptor(descriptorPath, target)
-	if err != nil {
-		t.Fatalf("loadCommandRuntimeDescriptor() error = %v", err)
-	}
 	sum := sha256.Sum256(content)
-	if descriptor.PlatformVersion().String() != version.CurrentCompatibilityVersion() ||
-		descriptor.Target().String() != target.String() ||
-		descriptor.RustIPCVersion().String() != version.RustIPCVersion ||
-		descriptor.WASMABIVersion().String() != version.WASMABIVersion ||
-		descriptor.ContractSetSHA256().String() != version.ContractSetSHA256 ||
-		descriptor.BinarySHA256().String() != fmt.Sprintf("%x", sum) {
-		t.Fatalf("runtime descriptor mismatch: %#v", descriptor)
+	if identity.PlatformVersion().String() != version.CurrentPlatformVersion() ||
+		identity.Target().String() != target.String() ||
+		identity.BinarySHA256().String() != fmt.Sprintf("%x", sum) {
+		t.Fatalf("runtime artifact identity mismatch: %#v", identity)
 	}
 }
 
-func TestCommandRuntimeModuleRejectsReplacedBinaryAgainstPublishedDescriptor(t *testing.T) {
-	if goruntime.GOOS != "linux" {
-		t.Skip("verified runtime executable admission is supported on Linux")
+func TestCommandRuntimeModuleRejectsBinaryReplacedAfterInspection(t *testing.T) {
+	if goruntime.GOOS != "linux" && goruntime.GOOS != "darwin" {
+		t.Skip("verified runtime executable admission is unsupported on this platform")
 	}
 	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
 	original, err := os.ReadFile(os.Args[0])
@@ -482,28 +462,27 @@ func TestCommandRuntimeModuleRejectsReplacedBinaryAgainstPublishedDescriptor(t *
 	if err := os.WriteFile(runtimePath, original, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	descriptorPath := writeTestRuntimeDescriptor(t, runtimePath)
-	descriptor, err := loadCommandRuntimeDescriptor(descriptorPath, mustCurrentCommandRuntimeTarget(t))
+	identity, err := inspectCommandRuntimeArtifact(runtimePath, mustCurrentCommandRuntimeTarget(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(runtimePath, append(original, '\n'), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err = newCommandRuntimeModule(context.Background(), runtimePath, t.TempDir(), descriptor, time.Second)
-	if !errors.Is(err, host.ErrRuntimeDescriptorMismatch) {
-		t.Fatalf("newCommandRuntimeModule(replaced binary) error = %v, want %v", err, host.ErrRuntimeDescriptorMismatch)
+	_, err = newCommandRuntimeModule(context.Background(), runtimePath, t.TempDir(), identity, time.Second)
+	if !errors.Is(err, host.ErrRuntimeArtifactIdentityMismatch) {
+		t.Fatalf("newCommandRuntimeModule(replaced binary) error = %v, want %v", err, host.ErrRuntimeArtifactIdentityMismatch)
 	}
 }
 
-func TestLoadCommandRuntimeDescriptorRejectsTargetMismatch(t *testing.T) {
+func TestInspectCommandRuntimeArtifactRejectsUnsupportedTarget(t *testing.T) {
 	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
 	if err := os.WriteFile(runtimePath, []byte("runtime artifact\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadCommandRuntimeDescriptor(writeTestRuntimeDescriptor(t, runtimePath), runtimetarget.DarwinARM64)
-	if !errors.Is(err, host.ErrRuntimeDescriptorMismatch) {
-		t.Fatalf("loadCommandRuntimeDescriptor() error = %v, want %v", err, host.ErrRuntimeDescriptorMismatch)
+	_, err := inspectCommandRuntimeArtifact(runtimePath, runtimetarget.Target(255))
+	if !errors.Is(err, host.ErrRuntimeArtifactIdentityInvalid) {
+		t.Fatalf("inspectCommandRuntimeArtifact() error = %v, want %v", err, host.ErrRuntimeArtifactIdentityInvalid)
 	}
 }
 
@@ -519,63 +498,18 @@ func newTestEphemeralCLIAdapters(t *testing.T, ctx context.Context, stateRoot st
 	return config
 }
 
-func mustDescribeCommandRuntime(t *testing.T, path string) host.RuntimeDescriptor {
+func mustInspectCommandRuntimeArtifact(t *testing.T, path string) host.RuntimeArtifactIdentity {
 	t.Helper()
-	raw, err := os.ReadFile(path)
+	identity, err := inspectCommandRuntimeArtifact(path, mustCurrentCommandRuntimeTarget(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(raw)
-	runtimeVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, err := host.ParseRuntimeAdmissionTarget(mustCurrentCommandRuntimeTarget(t).String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ipc, err := host.ParseRustIPCVersion(version.RustIPCVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wasm, err := host.ParseWASMABIVersion(version.WASMABIVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contracts, err := host.ParseSHA256Digest(version.ContractSetSHA256)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary, err := host.ParseSHA256Digest(fmt.Sprintf("%x", sum))
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptor, err := host.NewRuntimeDescriptor(host.RuntimeDescriptorOptions{
-		PlatformVersion: runtimeVersion, Target: target, RustIPCVersion: ipc,
-		WASMABIVersion: wasm, ContractSetSHA256: contracts, BinarySHA256: binary,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return descriptor
-}
-
-func writeTestRuntimeDescriptor(t *testing.T, runtimePath string) string {
-	t.Helper()
-	raw, err := host.MarshalRuntimeDescriptorJSON(mustDescribeCommandRuntime(t, runtimePath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "runtime-descriptor.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return identity
 }
 
 func mustCurrentCommandRuntimeTarget(t *testing.T) runtimetarget.Target {
 	t.Helper()
-	target, err := runtimetarget.FromParts("linux", goruntime.GOARCH)
+	target, err := runtimetarget.Current()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +539,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
 		t.Fatalf("dev-install output decode error = %v: %s", err, installOutput)
 	}
-	if installSummary.EnableState != registry.EnableDisabled || installSummary.StateRoot != stateRoot || installSummary.PluginDataRoot != filepath.Join(stateRoot, devPluginDataDir) {
+	if installSummary.EnableState != registry.EnableEnabled || installSummary.StateRoot != stateRoot || installSummary.PluginDataRoot != filepath.Join(stateRoot, devPluginDataDir) {
 		t.Fatalf("dev-install summary mismatch: %#v", installSummary)
 	}
 	for _, filename := range []string{devPackageFile, "control.sqlite", devSecretsFile} {
@@ -626,23 +560,11 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.EnableState != registry.EnableDisabled {
+	if record.EnableState != registry.EnableEnabled {
 		t.Fatalf("Host record after install = %#v", record)
 	}
 	if err := harness.Close(); err != nil {
 		t.Fatal(err)
-	}
-
-	enableOutput, err := captureCLIOutput(t, "dev-enable", stateRoot)
-	if err != nil {
-		t.Fatalf("dev-enable error = %v", err)
-	}
-	var enableSummary devLifecycleSummary
-	if err := json.Unmarshal(enableOutput, &enableSummary); err != nil {
-		t.Fatal(err)
-	}
-	if enableSummary.EnableState != registry.EnableEnabled || enableSummary.ManagementRevision <= installSummary.ManagementRevision {
-		t.Fatalf("dev-enable summary mismatch: %#v", enableSummary)
 	}
 
 	openOutput, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view")
@@ -679,7 +601,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(uninstallOutput, &uninstallSummary); err != nil {
 		t.Fatalf("dev-uninstall output decode error = %v: %s", err, uninstallOutput)
 	}
-	if uninstallSummary.EnableState != registry.EnableDisabled {
+	if uninstallSummary.EnableState != registry.EnableDisabledByUser {
 		t.Fatalf("dev-uninstall summary mismatch: %#v", uninstallSummary)
 	}
 	if _, err := os.Stat(filepath.Join(stateRoot, devPackageFile)); !errors.Is(err, os.ErrNotExist) {
@@ -1115,46 +1037,17 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	}
 }
 
-func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
+func TestCLIVersionPrintsCurrentPlatformIdentity(t *testing.T) {
 	output, err := captureCLIOutput(t, "version")
 	if err != nil {
 		t.Fatalf("version command error = %v", err)
 	}
-	var manifest version.CompatibilityManifest
-	if err := json.Unmarshal(output, &manifest); err != nil {
+	var identity platformVersionSummary
+	if err := json.Unmarshal(output, &identity); err != nil {
 		t.Fatalf("version output decode error = %v: %s", err, output)
 	}
-	if manifest.SchemaVersion != version.CompatibilityManifestVersion {
-		t.Fatalf("schema_version = %q, want %q", manifest.SchemaVersion, version.CompatibilityManifestVersion)
-	}
-	if manifest.Matrix.BridgeSchemaVersion != version.BridgeSchemaVersion {
-		t.Fatalf("bridge schema version = %q, want %q", manifest.Matrix.BridgeSchemaVersion, version.BridgeSchemaVersion)
-	}
-	contracts := map[string]version.ContractArtifact{}
-	for _, contract := range manifest.Contracts {
-		contracts[contract.ID] = contract
-	}
-	bridge := contracts["iframe-bridge-schema"]
-	if bridge.Path != "spec/plugin/bridge-v7.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
-		t.Fatalf("bridge contract mismatch: %#v", bridge)
-	}
-	openapi := contracts["plugin-platform-openapi"]
-	if openapi.Version != version.PluginPlatformOpenAPIVersion || openapi.SHA256 == "" {
-		t.Fatalf("openapi contract mismatch: %#v", openapi)
-	}
-	for _, contract := range []struct {
-		id      string
-		path    string
-		version string
-	}{
-		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v8.schema.json", version: version.ReleaseMetadataSchemaVersion},
-		{id: "release-source-policy-schema", path: "spec/plugin/release-source-policy-v3.schema.json", version: version.ReleaseSourcePolicySchemaVersion},
-		{id: "release-revocation-schema", path: "spec/plugin/release-revocation-v3.schema.json", version: version.ReleaseRevocationSchemaVersion},
-	} {
-		got := contracts[contract.id]
-		if got.Path != contract.path || got.Version != contract.version || got.SHA256 == "" {
-			t.Fatalf("%s contract mismatch: %#v", contract.id, got)
-		}
+	if identity.PlatformVersion != version.CurrentPlatformVersion() || identity.PluginAPI != 1 || identity.InternalWire != 1 {
+		t.Fatalf("version identity mismatch: %#v", identity)
 	}
 }
 
@@ -1171,7 +1064,6 @@ func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
 		},
 		ManifestSHA256:     "sha256:manifest",
 		PresentationSHA256: "sha256:presentation",
-		ContractSetSHA256:  "sha256:contracts",
 		VerifierVersion:    "1.0.0",
 	}
 	raw, err := json.Marshal(summary)
@@ -1183,14 +1075,14 @@ func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, field := range []string{
-		"ok", "phase", "output", "presentation", "presentation_icon", "manifest_sha256", "presentation_sha256", "contract_set_sha256", "verifier_version",
+		"ok", "phase", "output", "presentation", "presentation_icon", "manifest_sha256", "presentation_sha256", "verifier_version",
 	} {
 		value, exists := output[field]
 		if !exists || len(value) == 0 || string(value) == `""` || string(value) == "null" {
 			t.Fatalf("release verify JSON field %q = %s", field, value)
 		}
 	}
-	if len(output) != 9 {
+	if len(output) != 8 {
 		t.Fatalf("release verify JSON fields = %#v", output)
 	}
 }
@@ -1203,7 +1095,7 @@ func TestReleaseIconExtractionJSONContract(t *testing.T) {
 			Path:          "ui/assets/plugin.png", MediaType: "image/png", Width: 128, Height: 128,
 			SHA256: "sha256:" + strings.Repeat("a", 64), Size: 1024,
 		},
-		ContractSetSHA256: "sha256:contracts", VerifierVersion: "1.0.0",
+		VerifierVersion: "1.0.0",
 	}
 	raw, err := json.Marshal(summary)
 	if err != nil {
@@ -1214,56 +1106,15 @@ func TestReleaseIconExtractionJSONContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, field := range []string{
-		"ok", "phase", "output", "icon_output", "presentation_icon", "contract_set_sha256", "verifier_version",
+		"ok", "phase", "output", "icon_output", "presentation_icon", "verifier_version",
 	} {
 		value, exists := output[field]
 		if !exists || len(value) == 0 || string(value) == `""` || string(value) == "null" {
 			t.Fatalf("release icon extraction JSON field %q = %s", field, value)
 		}
 	}
-	if len(output) != 7 {
+	if len(output) != 6 {
 		t.Fatalf("release icon extraction JSON fields = %#v", output)
-	}
-}
-
-func TestCLIVerifyCompatibilityManifest(t *testing.T) {
-	dir := t.TempDir()
-	versionOutput, err := captureCLIOutput(t, "version")
-	if err != nil {
-		t.Fatalf("version command error = %v", err)
-	}
-	manifestFile := filepath.Join(dir, "compatibility.json")
-	if err := os.WriteFile(manifestFile, versionOutput, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	verifyOutput, err := captureCLIOutput(t, "verify-compatibility", manifestFile, cliRepoRoot(t))
-	if err != nil {
-		t.Fatalf("verify-compatibility command error = %v", err)
-	}
-	var summary compatibilityVerifySummary
-	if err := json.Unmarshal(verifyOutput, &summary); err != nil {
-		t.Fatalf("verify-compatibility output decode error = %v: %s", err, verifyOutput)
-	}
-	if !summary.OK || summary.SchemaVersion != version.CompatibilityManifestVersion || summary.Contracts == 0 {
-		t.Fatalf("verify-compatibility summary mismatch: %#v", summary)
-	}
-
-	var manifest version.CompatibilityManifest
-	if err := json.Unmarshal(versionOutput, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	manifest.Matrix.PluginHostProtocolVersion = "plugin-host-v999"
-	tamperedFile := filepath.Join(dir, "tampered.json")
-	raw, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tamperedFile, raw, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := captureCLIOutput(t, "verify-compatibility", tamperedFile, cliRepoRoot(t)); err == nil {
-		t.Fatal("verify-compatibility accepted tampered manifest")
 	}
 }
 
@@ -1403,7 +1254,7 @@ func makeScaffoldUIOnly(t *testing.T, filename string) {
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatal(err)
 	}
-	delete(document, "workers")
+	document["workers"] = []any{}
 	methods, _ := document["methods"].([]any)
 	uiMethods := make([]any, 0, len(methods))
 	for _, item := range methods {
@@ -1418,7 +1269,7 @@ func makeScaffoldUIOnly(t *testing.T, filename string) {
 		uiMethods = append(uiMethods, method)
 	}
 	if len(uiMethods) == 0 {
-		delete(document, "methods")
+		document["methods"] = []any{}
 	} else {
 		document["methods"] = uiMethods
 	}

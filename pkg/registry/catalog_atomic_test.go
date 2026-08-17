@@ -1,21 +1,19 @@
 package registry
 
 import (
-	"database/sql"
+	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
-func TestCatalogManagementMutationsAreAtomic(t *testing.T) {
+func TestCatalogImportMutationIsAtomic(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := registryTestContext()
@@ -31,33 +29,27 @@ func TestCatalogManagementMutationsAreAtomic(t *testing.T) {
 				t.Fatal(err)
 			}
 			binding := plugindata.Binding{PluginInstanceID: record.PluginInstanceID, GenerationID: "gen_atomic", State: plugindata.BindingActive, Revision: 1, ShapeHash: hash}
-			if err := store.CommitEnable(ctx, record.ManagementRevision+1, nil, binding, shape, now.Add(time.Second)); !errors.Is(err, ErrManagementRevisionConflict) {
-				t.Fatalf("stale CommitEnable() error = %v", err)
-			}
-			if _, found, err := store.GetBinding(ctx, record.PluginInstanceID); err != nil || found {
-				t.Fatalf("binding found = %v, err = %v", found, err)
-			}
-			unchanged, err := store.GetPlugin(ctx, record.PluginInstanceID)
-			if err != nil || unchanged.EnableState != EnableDisabled || unchanged.ManagementRevision != record.ManagementRevision {
-				t.Fatalf("unchanged = %#v, err = %v", unchanged, err)
-			}
-			if err := store.CommitEnable(ctx, record.ManagementRevision, nil, binding, shape, now.Add(2*time.Second)); err != nil {
-				t.Fatal(err)
-			}
-			enabled, _ := store.GetPlugin(ctx, record.PluginInstanceID)
-			if enabled.EnableState != EnableEnabled || enabled.ManagementRevision != record.ManagementRevision+1 || enabled.RevokeEpoch != record.RevokeEpoch+1 {
-				t.Fatalf("enabled = %#v", enabled)
-			}
-
+			seedCatalogBinding(t, store, ctx, binding)
 			next := binding
 			next.GenerationID = "gen_import"
 			next.Revision++
-			if err := store.SwapImport(ctx, enabled.ManagementRevision, &binding, next, shape, now.Add(3*time.Second)); !errors.Is(err, plugindata.ErrBindingConflict) {
-				t.Fatalf("enabled SwapImport() error = %v", err)
+			if err := store.SwapImport(ctx, record.ManagementRevision+1, &binding, next, shape, now.Add(time.Second)); !errors.Is(err, ErrManagementRevisionConflict) {
+				t.Fatalf("stale SwapImport() error = %v", err)
 			}
 			actual, _, _ := store.GetBinding(ctx, record.PluginInstanceID)
 			if actual.GenerationID != binding.GenerationID || actual.Revision != binding.Revision {
-				t.Fatalf("binding changed after rejected import: %#v", actual)
+				t.Fatalf("binding changed after stale import: %#v", actual)
+			}
+			if err := store.SwapImport(ctx, record.ManagementRevision, &binding, next, shape, now.Add(2*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := store.GetPlugin(ctx, record.PluginInstanceID)
+			if err != nil || stored.EnableState != EnableDisabledByUser || stored.ManagementRevision != record.ManagementRevision+1 || stored.RevokeEpoch != record.RevokeEpoch+1 {
+				t.Fatalf("stored = %#v, err = %v", stored, err)
+			}
+			actual, _, _ = store.GetBinding(ctx, record.PluginInstanceID)
+			if actual.GenerationID != next.GenerationID || actual.Revision != next.Revision {
+				t.Fatalf("binding after import = %#v", actual)
 			}
 		})
 	}
@@ -99,9 +91,7 @@ func TestCatalogPagesBindingsAndObjects(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := store.CommitEnable(ctx, record.ManagementRevision, nil, plugindata.Binding{PluginInstanceID: instanceID, GenerationID: fmt.Sprintf("gen_page_%02d", i), State: plugindata.BindingActive, Revision: 1, ShapeHash: shapeHash}, shape, time.Now()); err != nil {
-					t.Fatal(err)
-				}
+				seedCatalogBinding(t, store, ctx, plugindata.Binding{PluginInstanceID: instanceID, GenerationID: fmt.Sprintf("gen_page_%02d", i), State: plugindata.BindingActive, Revision: 1, ShapeHash: shapeHash})
 				objectID := fmt.Sprintf("obj_page_%02d", i)
 				if err := store.CreateObject(ctx, sessionctx.ScopeUser, plugindata.Object{PluginInstanceID: objectPluginInstanceID, ObjectID: objectID, ContentHash: strings.Repeat("a", 64), ShapeHash: strings.Repeat("b", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
 					t.Fatal(err)
@@ -142,36 +132,26 @@ func TestCatalogPagesBindingsAndObjects(t *testing.T) {
 	}
 }
 
-func TestSQLiteCommitUninstallReportsUnknownAndKeepsCommittedState(t *testing.T) {
-	ctx := registryTestContext()
-	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "registry.sqlite"))
+func seedCatalogBinding(t testing.TB, store Store, ctx context.Context, binding plugindata.Binding) {
+	t.Helper()
+	ownerEnvHash, err := environmentOwner(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	record := putCatalogPlugin(t, store, "plugini_unknown", time.Now())
-	shape, _ := plugindata.ShapeFromManifest(record.Manifest)
-	hash, _ := plugindata.HashShape(shape)
-	binding := plugindata.Binding{PluginInstanceID: record.PluginInstanceID, GenerationID: "gen_unknown", State: plugindata.BindingActive, Revision: 1, ShapeHash: hash}
-	if err := store.CommitEnable(ctx, record.ManagementRevision, nil, binding, shape, time.Now()); err != nil {
+	if err := validateDataBinding(binding); err != nil {
 		t.Fatal(err)
 	}
-	enabled, _ := store.GetPlugin(ctx, record.PluginInstanceID)
-	store.commitTx = func(tx *sql.Tx) error {
-		if err := tx.Commit(); err != nil {
-			return err
+	switch concrete := store.(type) {
+	case *MemoryStore:
+		concrete.mu.Lock()
+		defer concrete.mu.Unlock()
+		key := environmentRecordKey(ownerEnvHash, binding.PluginInstanceID)
+		if _, exists := concrete.dataBindings[key]; exists {
+			t.Fatalf("binding %q already exists", binding.PluginInstanceID)
 		}
-		return errors.New("commit acknowledgement lost")
-	}
-	_, err = store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: enabled.ManagementRevision, DeleteData: true, Now: time.Now()})
-	if outcome := mutation.ForError(err); outcome != mutation.OutcomeUnknown {
-		t.Fatalf("outcome = %q, err = %v", outcome, err)
-	}
-	if _, err := store.GetPlugin(ctx, record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetPlugin() error = %v, want committed deletion", err)
-	}
-	if _, found, err := store.GetBinding(ctx, record.PluginInstanceID); err != nil || found {
-		t.Fatalf("binding found = %v, err = %v", found, err)
+		concrete.dataBindings[key] = cloneDataBinding(binding)
+	default:
+		t.Fatalf("unsupported catalog type %T", store)
 	}
 }
 
@@ -185,12 +165,19 @@ func putCatalogPlugin(t *testing.T, store Store, instanceID string, now time.Tim
 		Version:           "1.0.0",
 		ActiveFingerprint: "sha256:" + instanceID,
 		TrustState:        TrustVerified,
-		EnableState:       EnableDisabled,
-		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
+		PackageSourceProvenance: PackageSourceProvenance{
+			Kind: PackageSourceLocalGenerated,
+		},
+		EnableState: EnableDisabledByUser,
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV9,
 			Publisher: manifest.Publisher{PublisherID: "example"},
-			Plugin:    manifest.Plugin{PluginID: "com.example.atomic", Version: "1.0.0"},
-			Settings:  &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{{Key: "theme", Type: "string", Scope: "user", Label: "Theme"}}},
-			Storage:   &manifest.StorageSpec{Stores: []manifest.StoreSpec{{StoreID: "files", Kind: "files", Scope: "user", QuotaBytes: 1024, QuotaFiles: &quotaFiles, SchemaVersion: 1}}},
+			Plugin:    manifest.Plugin{PluginID: "com.example.atomic", DisplayName: "Atomic", Version: "1.0.0"},
+			API:       manifest.PublicAPIRequirement{Major: manifest.PluginAPIMajor},
+			Presentation: manifest.PresentationSpec{DefaultLocale: "en-US", Summary: "Atomic", Description: []string{"Atomic"},
+				Keywords: []string{"atomic"}},
+			Surfaces: []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Atomic", Entry: "ui/index.html"}},
+			Settings: &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{{Key: "theme", Type: "string", Scope: "user", Label: "Theme"}}},
+			Storage:  &manifest.StorageSpec{Stores: []manifest.StoreSpec{{StoreID: "files", Kind: "files", Scope: "user", QuotaBytes: 1024, QuotaFiles: &quotaFiles, SchemaVersion: 1}}},
 		},
 	}, PutOptions{Now: now})
 	if err != nil {

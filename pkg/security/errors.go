@@ -22,7 +22,6 @@ const (
 	ErrInstallStateConflict          ErrorCode = "PLUGIN_INSTALL_STATE_CONFLICT"
 	ErrInternalFailure               ErrorCode = "PLUGIN_INTERNAL_FAILURE"
 	ErrDisabled                      ErrorCode = "PLUGIN_DISABLED"
-	ErrDisabledByPolicy              ErrorCode = "PLUGIN_DISABLED_BY_POLICY"
 	ErrPermissionDenied              ErrorCode = "PLUGIN_PERMISSION_DENIED"
 	ErrOriginDenied                  ErrorCode = "PLUGIN_ORIGIN_DENIED"
 	ErrActionDenied                  ErrorCode = "PLUGIN_ACTION_DENIED"
@@ -58,7 +57,6 @@ const (
 	ErrRuntimeUnavailable            ErrorCode = "PLUGIN_RUNTIME_UNAVAILABLE"
 	ErrRuntimeVersionMismatch        ErrorCode = "PLUGIN_RUNTIME_VERSION_MISMATCH"
 	ErrRuntimeContractMismatch       ErrorCode = "PLUGIN_RUNTIME_CONTRACT_MISMATCH"
-	ErrUIProtocolUnsupported         ErrorCode = "PLUGIN_UI_PROTOCOL_UNSUPPORTED"
 	ErrUIProtocolViolation           ErrorCode = "PLUGIN_UI_PROTOCOL_VIOLATION"
 	ErrSurfaceQuiesceTimeout         ErrorCode = "PLUGIN_SURFACE_QUIESCE_TIMEOUT"
 	ErrJSONLimitExceeded             ErrorCode = "PLUGIN_JSON_LIMIT_EXCEEDED"
@@ -102,7 +100,6 @@ var platformErrorCodes = []ErrorCode{
 	ErrInstallStateConflict,
 	ErrInternalFailure,
 	ErrDisabled,
-	ErrDisabledByPolicy,
 	ErrPermissionDenied,
 	ErrOriginDenied,
 	ErrActionDenied,
@@ -137,7 +134,6 @@ var platformErrorCodes = []ErrorCode{
 	ErrRuntimeUnavailable,
 	ErrRuntimeVersionMismatch,
 	ErrRuntimeContractMismatch,
-	ErrUIProtocolUnsupported,
 	ErrUIProtocolViolation,
 	ErrSurfaceQuiesceTimeout,
 	ErrJSONLimitExceeded,

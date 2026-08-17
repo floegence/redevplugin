@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   isTransientGoModuleReadbackFailure,
+  moduleZipSHA256,
   retryGoModuleReadback,
   validateModuleIdentity,
 } from "./verify_go_module_readback.mjs";
@@ -94,9 +99,18 @@ test("immutable module and checksum failures are terminal", async () => {
     GoModSum: "h1:valid=",
   }, "direct", "v9.8.7"), /module identity mismatch/);
   assert.throws(() => validateModuleIdentity({
-    Path: "github.com/floegence/redevplugin/v2",
+    Path: "github.com/floegence/redevplugin/v3",
     Version: "v9.8.7",
     Sum: "tampered",
     GoModSum: "h1:valid=",
   }, "proxy", "v9.8.7"), /Sum is invalid/);
+});
+
+test("Go module readback hashes the exact proxy zip bytes", () => {
+  const root = mkdtempSync(join(tmpdir(), "redevplugin-go-zip-"));
+  const zip = join(root, "module.zip");
+  const bytes = Buffer.from("exact proxy module zip bytes\n");
+  writeFileSync(zip, bytes);
+  assert.equal(moduleZipSHA256({ Zip: zip }), createHash("sha256").update(bytes).digest("hex"));
+  assert.throws(() => moduleZipSHA256({}), /module zip path is missing/);
 });

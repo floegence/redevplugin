@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	_ "modernc.org/sqlite"
 )
 
@@ -84,15 +84,15 @@ func (s *SQLiteConfirmationIntentStore) PutConfirmationIntent(ctx context.Contex
 		return ConfirmationIntentRecord{}, ErrInvalidConfirmationIntent
 	}
 	scope := confirmationSessionScope(record.Scope)
-	total, err := countSQLiteConfirmationIntents(ctx, tx, `migration_required = 0`)
+	total, err := countSQLiteConfirmationIntents(ctx, tx, ``)
 	if err != nil {
 		return ConfirmationIntentRecord{}, err
 	}
-	ownerPlugin, err := countSQLiteConfirmationIntents(ctx, tx, `migration_required = 0 AND owner_env_hash = ? AND plugin_instance_id = ?`, scope.OwnerEnvHash, record.PluginInstanceID)
+	ownerPlugin, err := countSQLiteConfirmationIntents(ctx, tx, `owner_env_hash = ? AND plugin_instance_id = ?`, scope.OwnerEnvHash, record.PluginInstanceID)
 	if err != nil {
 		return ConfirmationIntentRecord{}, err
 	}
-	sessionCount, err := countSQLiteConfirmationIntents(ctx, tx, `migration_required = 0 AND owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?`, scope.OwnerSessionHash, scope.OwnerUserHash, scope.OwnerEnvHash, scope.SessionChannelIDHash)
+	sessionCount, err := countSQLiteConfirmationIntents(ctx, tx, `owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?`, scope.OwnerSessionHash, scope.OwnerUserHash, scope.OwnerEnvHash, scope.SessionChannelIDHash)
 	if err != nil {
 		return ConfirmationIntentRecord{}, err
 	}
@@ -208,10 +208,10 @@ func (s *SQLiteConfirmationIntentStore) ListConfirmationIntents(ctx context.Cont
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	query := confirmationIntentSelectColumns + ` FROM plugin_confirmation_intents WHERE migration_required = 0`
+	query := confirmationIntentSelectColumns + ` FROM plugin_confirmation_intents`
 	args := []any{}
 	if pluginInstanceID != "" {
-		query += ` AND plugin_instance_id = ?`
+		query += ` WHERE plugin_instance_id = ?`
 		args = append(args, pluginInstanceID)
 	}
 	query += ` ORDER BY issued_at ASC, confirmation_id ASC`
@@ -248,7 +248,7 @@ func (s *SQLiteConfirmationIntentStore) RevokePluginConfirmationIntents(ctx cont
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result, err := s.db.ExecContext(ctx, `DELETE FROM plugin_confirmation_intents WHERE migration_required = 0 AND owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM plugin_confirmation_intents WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID)
 	if err != nil {
 		return 0, err
 	}
@@ -299,7 +299,7 @@ WHERE owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND 
 	}
 	result, err := tx.ExecContext(ctx, `
 DELETE FROM plugin_confirmation_intents
-WHERE migration_required = 0 AND owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?`,
+WHERE owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?`,
 		req.SessionScope.OwnerSessionHash,
 		req.SessionScope.OwnerUserHash,
 		req.SessionScope.OwnerEnvHash,
@@ -378,10 +378,12 @@ CREATE TABLE IF NOT EXISTS plugin_confirmation_intents (
 		owner_user_hash TEXT NOT NULL DEFAULT '',
 		owner_env_hash TEXT NOT NULL DEFAULT '',
 		session_channel_id_hash TEXT NOT NULL DEFAULT '',
-		migration_required INTEGER NOT NULL DEFAULT 0,
 		issued_at INTEGER NOT NULL,
 	expires_at INTEGER NOT NULL
 )`); err != nil {
+		return err
+	}
+	if err := validateSQLiteConfirmationSchema(ctx, tx); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -396,22 +398,13 @@ CREATE TABLE IF NOT EXISTS plugin_confirmation_session_revocations (
 )`); err != nil {
 		return err
 	}
-	if err := ensureSQLiteConfirmationOwnerColumns(ctx, tx); err != nil {
-		return err
-	}
-	if err := migrateSQLiteConfirmationOwners(ctx, tx); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS idx_plugin_confirmation_intents_plugin_instance`); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_confirmation_intents_owner_plugin ON plugin_confirmation_intents(owner_env_hash, plugin_instance_id, issued_at, confirmation_id) WHERE migration_required = 0`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_confirmation_intents_owner_plugin ON plugin_confirmation_intents(owner_env_hash, plugin_instance_id, issued_at, confirmation_id)`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_confirmation_intents_expires_at ON plugin_confirmation_intents(expires_at)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_confirmation_intents_session_scope ON plugin_confirmation_intents(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, confirmation_id) WHERE migration_required = 0`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_confirmation_intents_session_scope ON plugin_confirmation_intents(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, confirmation_id)`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -422,7 +415,7 @@ SELECT
 	confirmation_id, confirmation_token_id, plugin_id, plugin_instance_id,
 	surface_instance_id, bridge_channel_id, method, request_hash, plan_hash,
 	scope_json, owner_session_hash, owner_user_hash, owner_env_hash,
-	session_channel_id_hash, migration_required, issued_at, expires_at`
+	session_channel_id_hash, issued_at, expires_at`
 
 func deleteSQLiteExpiredConfirmationIntents(ctx context.Context, q sqliteConfirmationIntentQuerier, now time.Time) error {
 	_, err := q.ExecContext(ctx, `DELETE FROM plugin_confirmation_intents WHERE expires_at <= ?`, now.UTC().UnixNano())
@@ -463,8 +456,8 @@ func upsertSQLiteConfirmationIntent(ctx context.Context, tx *sql.Tx, record Conf
 		confirmation_id, confirmation_token_id, plugin_id, plugin_instance_id,
 		surface_instance_id, bridge_channel_id, method, request_hash, plan_hash, scope_json,
 		owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash,
-		migration_required, issued_at, expires_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+		issued_at, expires_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(confirmation_id) DO UPDATE SET
 	confirmation_token_id = excluded.confirmation_token_id,
 	plugin_id = excluded.plugin_id,
@@ -479,7 +472,6 @@ func upsertSQLiteConfirmationIntent(ctx context.Context, tx *sql.Tx, record Conf
 		owner_user_hash = excluded.owner_user_hash,
 		owner_env_hash = excluded.owner_env_hash,
 		session_channel_id_hash = excluded.session_channel_id_hash,
-		migration_required = 0,
 		issued_at = excluded.issued_at,
 	expires_at = excluded.expires_at`,
 		record.ConfirmationID,
@@ -523,7 +515,6 @@ func scanSQLiteConfirmationIntent(scanner sqliteConfirmationIntentScanner) (Conf
 	var ownerUserHash string
 	var ownerEnvHash string
 	var sessionChannelIDHash string
-	var migrationRequired int
 	var issuedAt int64
 	var expiresAt int64
 	if err := scanner.Scan(
@@ -541,28 +532,24 @@ func scanSQLiteConfirmationIntent(scanner sqliteConfirmationIntentScanner) (Conf
 		&ownerUserHash,
 		&ownerEnvHash,
 		&sessionChannelIDHash,
-		&migrationRequired,
 		&issuedAt,
 		&expiresAt,
 	); err != nil {
 		return ConfirmationIntentRecord{}, err
 	}
-	if migrationRequired != 0 {
-		return ConfirmationIntentRecord{}, sessionctx.ErrOwnerScopeMigrationRequired
-	}
 	if err := decodeClosedConfirmationScope(scopeJSON, &record.Scope); err != nil {
-		return ConfirmationIntentRecord{}, sessionctx.ErrOwnerScopeMigrationRequired
+		return ConfirmationIntentRecord{}, ErrInvalidConfirmationIntent
 	}
 	if record.Scope.OwnerSessionHash != ownerSessionHash || record.Scope.OwnerUserHash != ownerUserHash ||
 		record.Scope.OwnerEnvHash != ownerEnvHash || record.Scope.SessionChannelIDHash != sessionChannelIDHash {
-		return ConfirmationIntentRecord{}, sessionctx.ErrOwnerScopeMigrationRequired
+		return ConfirmationIntentRecord{}, ErrInvalidConfirmationIntent
 	}
 	record.IssuedAt = time.Unix(0, issuedAt).UTC()
 	record.ExpiresAt = time.Unix(0, expiresAt).UTC()
 	return record, nil
 }
 
-func ensureSQLiteConfirmationOwnerColumns(ctx context.Context, tx *sql.Tx) error {
+func validateSQLiteConfirmationSchema(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_confirmation_intents)`)
 	if err != nil {
 		return err
@@ -584,80 +571,18 @@ func ensureSQLiteConfirmationOwnerColumns(ctx context.Context, tx *sql.Tx) error
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	for _, column := range []struct {
-		name string
-		sql  string
-	}{
-		{"owner_session_hash", `ALTER TABLE plugin_confirmation_intents ADD COLUMN owner_session_hash TEXT NOT NULL DEFAULT ''`},
-		{"owner_user_hash", `ALTER TABLE plugin_confirmation_intents ADD COLUMN owner_user_hash TEXT NOT NULL DEFAULT ''`},
-		{"owner_env_hash", `ALTER TABLE plugin_confirmation_intents ADD COLUMN owner_env_hash TEXT NOT NULL DEFAULT ''`},
-		{"session_channel_id_hash", `ALTER TABLE plugin_confirmation_intents ADD COLUMN session_channel_id_hash TEXT NOT NULL DEFAULT ''`},
-		{"migration_required", `ALTER TABLE plugin_confirmation_intents ADD COLUMN migration_required INTEGER NOT NULL DEFAULT 0`},
-	} {
-		if _, ok := columns[column.name]; ok {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, column.sql); err != nil {
-			return err
-		}
+	want := []string{
+		"confirmation_id", "confirmation_token_id", "plugin_id", "plugin_instance_id",
+		"surface_instance_id", "bridge_channel_id", "method", "request_hash", "plan_hash",
+		"scope_json", "owner_session_hash", "owner_user_hash", "owner_env_hash",
+		"session_channel_id_hash", "issued_at", "expires_at",
 	}
-	return nil
-}
-
-func migrateSQLiteConfirmationOwners(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, `
-SELECT confirmation_id, scope_json, owner_session_hash, owner_user_hash, owner_env_hash,
-       session_channel_id_hash, migration_required
-FROM plugin_confirmation_intents`)
-	if err != nil {
-		return err
+	if len(columns) != len(want) {
+		return ErrConfirmationStoreSchema
 	}
-	type candidate struct {
-		id                string
-		scopeJSON         string
-		ownerSessionHash  string
-		ownerUserHash     string
-		ownerEnvHash      string
-		sessionChannelID  string
-		migrationRequired int
-	}
-	var candidates []candidate
-	for rows.Next() {
-		var item candidate
-		if err := rows.Scan(&item.id, &item.scopeJSON, &item.ownerSessionHash, &item.ownerUserHash, &item.ownerEnvHash, &item.sessionChannelID, &item.migrationRequired); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		candidates = append(candidates, item)
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	for _, item := range candidates {
-		if item.migrationRequired != 0 {
-			continue
-		}
-		var scope ConfirmationScope
-		if err := decodeClosedConfirmationScope(item.scopeJSON, &scope); err != nil || !confirmationSessionScope(scope).Valid() {
-			if _, updateErr := tx.ExecContext(ctx, `UPDATE plugin_confirmation_intents SET migration_required = 1 WHERE confirmation_id = ?`, item.id); updateErr != nil {
-				return updateErr
-			}
-			continue
-		}
-		if item.ownerSessionHash != "" || item.ownerUserHash != "" || item.ownerEnvHash != "" || item.sessionChannelID != "" {
-			if item.ownerSessionHash != scope.OwnerSessionHash || item.ownerUserHash != scope.OwnerUserHash ||
-				item.ownerEnvHash != scope.OwnerEnvHash || item.sessionChannelID != scope.SessionChannelIDHash {
-				if _, updateErr := tx.ExecContext(ctx, `UPDATE plugin_confirmation_intents SET migration_required = 1 WHERE confirmation_id = ?`, item.id); updateErr != nil {
-					return updateErr
-				}
-			}
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `
-UPDATE plugin_confirmation_intents
-SET owner_session_hash = ?, owner_user_hash = ?, owner_env_hash = ?, session_channel_id_hash = ?
-WHERE confirmation_id = ?`, scope.OwnerSessionHash, scope.OwnerUserHash, scope.OwnerEnvHash, scope.SessionChannelIDHash, item.id); err != nil {
-			return err
+	for _, name := range want {
+		if _, ok := columns[name]; !ok {
+			return ErrConfirmationStoreSchema
 		}
 	}
 	return nil

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/externalsource"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/externalsource"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 type memoryFetcher struct {
@@ -288,14 +288,13 @@ func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 	packageBytes := []byte("package bytes")
 	packageTransportDigest := digest(packageBytes)
 	packageIdentityDigest := strings.Repeat("3", 64)
-	metadata := releasecontract.ReleaseMetadataV8{
+	metadata := releasecontract.ReleaseMetadata{
 		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersion,
 		SourceID:      sourceID, ReleaseMetadataRef: metaRef, PublisherID: publisher, PluginID: pluginID, Version: version,
 		DistributionRef:          releasecontract.ReleaseDistributionRef{Distribution: "registry_ref", ArtifactRef: pkgRef},
 		Hashes:                   releasecontract.ReleasePackageHashSet{PackageSHA256: "sha256:" + packageIdentityDigest, ManifestSHA256: "sha256:" + strings.Repeat("1", 64), EntriesSHA256: "sha256:" + strings.Repeat("2", 64)},
 		ReleaseMetadataSignature: releasecontract.ReleaseMetadataSignatureRef{Algorithm: "ed25519", KeyID: "example_signing", SignatureRef: sigRef, SourcePolicyEpoch: "1", RevocationEpoch: "1"},
 		PackageSignature:         releasecontract.PackageReleaseSignatureRef{Algorithm: "ed25519", KeyID: "example_signing", SignatureBundleRef: "sources/example_official/stable/releases/weather-1.2.3.package-signature.json", SourcePolicyEpoch: "1", RevocationEpoch: "1"},
-		Compatibility:            releasecontract.ReleaseCompatibility{MinReDevPluginVersion: "0.6.21", MinRuntimeVersion: "0.6.21", UIProtocolVersion: "plugin-ui-v7"},
 	}
 	metadataBytes, err := releasecontract.CanonicalReleaseMetadata(metadata)
 	if err != nil {
@@ -325,7 +324,7 @@ func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 			PublisherID: publisher, PluginID: pluginID, Version: version,
 			ExpectedHashes: host.PackageHashSet{PackageSHA256: "sha256:" + packageIdentityDigest, ManifestSHA256: "sha256:" + strings.Repeat("1", 64), EntriesSHA256: "sha256:" + strings.Repeat("2", 64)},
 		},
-		SourcePolicy: releasecontract.SourcePolicyV2{SourceType: "registry", AllowedArtifactHosts: []string{"artifacts.example.test"}},
+		SourcePolicy: releasecontract.SourcePolicyV3{SourceType: "registry", AllowedArtifactHosts: []string{"artifacts.example.test"}},
 	})
 	if err != nil {
 		t.Fatal(err)

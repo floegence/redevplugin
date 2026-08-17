@@ -37,7 +37,7 @@ func TestServiceWatchUsesInotifyAndCloseWakesWaiter(t *testing.T) {
 
 	waiting := make(chan []byte, 1)
 	go func() {
-		raw, _ := service.Control(context.Background(), invocation, []byte(`{"api":1,"operation":"fs.watch_next","arguments":{"handle":`+jsonNumber(handle)+`,"timeout_ms":5000}}`))
+		raw, _ := service.Control(context.Background(), invocation, []byte(`{"plugin_api":1,"operation":"fs.watch_next","arguments":{"handle":`+jsonNumber(handle)+`,"timeout_ms":5000}}`))
 		waiting <- raw
 	}()
 	time.Sleep(25 * time.Millisecond)

@@ -16,16 +16,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/controlstore"
-	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/internal/controlstore"
+	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 type resolvedCapabilityMethod struct {
@@ -42,27 +42,20 @@ type methodExecutionAuthorization struct {
 	targetHash   string
 }
 
-func (h *Host) resolvePackageCapabilityPins(ctx context.Context, pkg manifest.Manifest, trustInput packageTrustInput) ([]capabilitycontract.Pin, error) {
-	if len(pkg.CapabilityBindings) == 0 && !releaseRequiresCapabilities(trustInput.Release) {
+func (h *Host) resolvePackageCapabilityPins(pkg manifest.Manifest) ([]capabilitycontract.Pin, error) {
+	if len(pkg.CapabilityBindings) == 0 {
 		return nil, nil
 	}
 	if err := h.requireFeature(FeatureCapability); err != nil {
 		return nil, err
 	}
 	pins := make([]capabilitycontract.Pin, 0, len(pkg.CapabilityBindings))
-	contracts := make([]capabilitycontract.KnownContract, 0, len(pkg.CapabilityBindings))
 	for _, binding := range pkg.CapabilityBindings {
 		contract, err := h.adapters.Capabilities.RequireContract(binding.Contract)
 		if err != nil {
 			return nil, fmt.Errorf("resolve registered capability contract %s@%s: %w", binding.Contract.ContractID, binding.Contract.ContractVersion, err)
 		}
 		pins = append(pins, contract.Pin)
-		contracts = append(contracts, contract)
-	}
-	if trustInput.Release != nil {
-		if err := h.ensureReleaseCapabilityContracts(ctx, *trustInput.Release, contracts); err != nil {
-			return nil, err
-		}
 	}
 	if err := h.validateManifestCapabilityContracts(pkg, pins); err != nil {
 		return nil, err
@@ -74,74 +67,6 @@ func (h *Host) resolvePackageCapabilityPins(ctx context.Context, pkg manifest.Ma
 		return pins[i].ContractID < pins[j].ContractID
 	})
 	return pins, nil
-}
-
-func (h *Host) ensureReleaseCapabilityContracts(ctx context.Context, release PluginPackageRelease, contracts []capabilitycontract.KnownContract) error {
-	requirement, err := h.selectHostRequirement(ctx, release)
-	if err != nil {
-		return err
-	}
-	if requirement == nil || len(requirement.RequiredCapabilityContracts) == 0 {
-		return nil
-	}
-	for _, required := range requirement.RequiredCapabilityContracts {
-		matches := 0
-		for _, verified := range contracts {
-			if verified.Contract.CapabilityID == required.CapabilityID && verified.Contract.CapabilityVersion == required.CapabilityVersion {
-				matches++
-			}
-		}
-		if matches != 1 {
-			return fmt.Errorf("%w: capability requirement %s@%s must match exactly one manifest-pinned registered contract", ErrReleaseRefVerificationFailed, required.CapabilityID, required.CapabilityVersion)
-		}
-	}
-	return nil
-}
-
-func (h *Host) selectHostRequirement(ctx context.Context, release PluginPackageRelease) (*HostRequirement, error) {
-	requirements := release.HostRequirements
-	if len(requirements) == 0 {
-		return nil, nil
-	}
-	if h.adapters.HostRequirements == nil {
-		return nil, fmt.Errorf("%w: host requirement policy is required", ErrReleaseRefVerificationFailed)
-	}
-	cloned := cloneHostRequirements(requirements)
-	selection, err := h.adapters.HostRequirements.SelectHostRequirement(ctx, HostRequirementSelectionRequest{
-		SourceID: release.SourceID, PublisherID: release.PublisherID, PluginID: release.PluginID,
-		PluginVersion: release.Version, Requirements: cloned,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%w: host requirement policy rejected the release: %v", ErrReleaseRefVerificationFailed, err)
-	}
-	hostID := strings.TrimSpace(selection.HostID)
-	if hostID == "" {
-		return nil, fmt.Errorf("%w: host requirement policy returned an empty host_id", ErrReleaseRefVerificationFailed)
-	}
-	var selected *HostRequirement
-	for index := range requirements {
-		if requirements[index].HostID != hostID {
-			continue
-		}
-		if selected != nil {
-			return nil, fmt.Errorf("%w: host requirement is duplicated", ErrReleaseRefVerificationFailed)
-		}
-		copy := requirements[index]
-		selected = &copy
-	}
-	if selected == nil {
-		return nil, fmt.Errorf("%w: host requirement policy selected undeclared host %q", ErrReleaseRefVerificationFailed, hostID)
-	}
-	return selected, nil
-}
-
-func cloneHostRequirements(requirements []HostRequirement) []HostRequirement {
-	cloned := make([]HostRequirement, len(requirements))
-	for index, requirement := range requirements {
-		cloned[index] = requirement
-		cloned[index].RequiredCapabilityContracts = append([]HostCapabilityRequirement(nil), requirement.RequiredCapabilityContracts...)
-	}
-	return cloned
 }
 
 func (h *Host) validateManifestCapabilityContracts(plugin manifest.Manifest, pins []capabilitycontract.Pin) error {
@@ -639,10 +564,7 @@ func (h *Host) reconcileDurableExecutionStates(ctx context.Context) error {
 	if h.controlStore == nil {
 		return ErrControlStoreRequired
 	}
-	if err := h.reconcileCommittedExternalInstallActivations(ctx); err != nil {
-		return err
-	}
-	if err := h.reconcileCommittedReleaseInstallActivations(ctx); err != nil {
+	if err := h.reconcileCommittedReleaseInstalls(ctx); err != nil {
 		return err
 	}
 	result, err := h.controlStore.Executions().ReconcileOrphans(ctx, time.Now().UTC())

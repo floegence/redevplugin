@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/jsonvalue"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 )
 
 const (
@@ -52,12 +52,12 @@ type RuntimeHostServices struct {
 }
 
 type RuntimeBinding struct {
-	RuntimeShardID      string            `json:"runtime_shard_id"`
-	RuntimeInstanceID   string            `json:"runtime_instance_id"`
-	RuntimeGenerationID string            `json:"runtime_generation_id"`
-	IPCChannelID        string            `json:"ipc_channel_id"`
-	ConnectionNonce     string            `json:"connection_nonce"`
-	Descriptor          RuntimeDescriptor `json:"descriptor"`
+	RuntimeShardID      string                  `json:"runtime_shard_id"`
+	RuntimeInstanceID   string                  `json:"runtime_instance_id"`
+	RuntimeGenerationID string                  `json:"runtime_generation_id"`
+	IPCChannelID        string                  `json:"ipc_channel_id"`
+	ConnectionNonce     string                  `json:"connection_nonce"`
+	ArtifactIdentity    RuntimeArtifactIdentity `json:"artifact_identity"`
 }
 
 type ShardHealth struct {
@@ -66,9 +66,9 @@ type ShardHealth struct {
 }
 
 type ManagerHealth struct {
-	Ready      bool              `json:"ready"`
-	Descriptor RuntimeDescriptor `json:"descriptor"`
-	Shards     []ShardHealth     `json:"shards"`
+	Ready            bool                    `json:"ready"`
+	ArtifactIdentity RuntimeArtifactIdentity `json:"artifact_identity"`
+	Shards           []ShardHealth           `json:"shards"`
 }
 
 // Manager owns the runtime shard lifecycle for exactly one Host. A new Manager
@@ -81,7 +81,7 @@ type Manager interface {
 	// manager unbound and retryable; a successful call makes every later call
 	// return ErrRuntimeHostServicesBound.
 	BindHostServices(services RuntimeHostServices) error
-	Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeDescriptor, error)
+	Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeArtifactIdentity, error)
 	Start(ctx context.Context, target runtimetarget.Target) (ManagerHealth, error)
 	Stop(ctx context.Context) error
 	Health(ctx context.Context) (ManagerHealth, error)
@@ -106,7 +106,7 @@ type ProcessManagerOptions struct {
 }
 
 type processShard interface {
-	Preflight(context.Context, runtimetarget.Target) (RuntimeDescriptor, error)
+	Preflight(context.Context, runtimetarget.Target) (RuntimeArtifactIdentity, error)
 	Start(context.Context, runtimetarget.Target) error
 	Stop(context.Context) error
 	Health(context.Context) (Health, error)
@@ -231,9 +231,9 @@ func (m *ProcessManager) Start(ctx context.Context, target runtimetarget.Target)
 			)
 		}
 		if health.Ready {
-			if health.Descriptor != descriptor {
+			if health.ArtifactIdentity != descriptor {
 				rollbackErr := rollbackProcessShards(started)
-				return ManagerHealth{}, managerStartError(ErrRuntimeDescriptorMismatch, rollbackErr)
+				return ManagerHealth{}, managerStartError(ErrRuntimeArtifactIdentityMismatch, rollbackErr)
 			}
 			continue
 		}
@@ -255,54 +255,54 @@ func (m *ProcessManager) Start(ctx context.Context, target runtimetarget.Target)
 		rollbackErr := rollbackProcessShards(started)
 		return ManagerHealth{}, managerStartError(ErrRuntimeNotReady, rollbackErr)
 	}
-	if health.Descriptor != descriptor {
+	if health.ArtifactIdentity != descriptor {
 		rollbackErr := rollbackProcessShards(started)
-		return ManagerHealth{}, managerStartError(ErrRuntimeDescriptorMismatch, rollbackErr)
+		return ManagerHealth{}, managerStartError(ErrRuntimeArtifactIdentityMismatch, rollbackErr)
 	}
 	return health, nil
 }
 
-func (m *ProcessManager) Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeDescriptor, error) {
+func (m *ProcessManager) Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeArtifactIdentity, error) {
 	if m == nil {
-		return RuntimeDescriptor{}, ErrRuntimePathRequired
+		return RuntimeArtifactIdentity{}, ErrRuntimePathRequired
 	}
 	if err := ctx.Err(); err != nil {
-		return RuntimeDescriptor{}, err
+		return RuntimeArtifactIdentity{}, err
 	}
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	if !m.bound {
-		return RuntimeDescriptor{}, ErrRuntimeHostServicesRequired
+		return RuntimeArtifactIdentity{}, ErrRuntimeHostServicesRequired
 	}
 	return m.preflight(ctx, target)
 }
 
-func (m *ProcessManager) preflight(ctx context.Context, target runtimetarget.Target) (RuntimeDescriptor, error) {
+func (m *ProcessManager) preflight(ctx context.Context, target runtimetarget.Target) (RuntimeArtifactIdentity, error) {
 	if err := runtimetarget.Validate(target); err != nil {
-		return RuntimeDescriptor{}, err
+		return RuntimeArtifactIdentity{}, err
 	}
-	var expected RuntimeDescriptor
+	var expected RuntimeArtifactIdentity
 	for _, shard := range m.shards {
 		descriptor, err := shard.process.Preflight(ctx, target)
 		if err != nil {
-			return RuntimeDescriptor{}, fmt.Errorf("preflight runtime shard %s: %w", shard.id, err)
+			return RuntimeArtifactIdentity{}, fmt.Errorf("preflight runtime shard %s: %w", shard.id, err)
 		}
 		if descriptor.Target() != target {
-			return RuntimeDescriptor{}, fmt.Errorf("%w: runtime shard %s target", ErrRuntimeDescriptorMismatch, shard.id)
+			return RuntimeArtifactIdentity{}, fmt.Errorf("%w: runtime shard %s target", ErrRuntimeArtifactIdentityMismatch, shard.id)
 		}
 		if err := descriptor.CompatibleWithPlatform(); err != nil {
-			return RuntimeDescriptor{}, fmt.Errorf("preflight runtime shard %s: %w", shard.id, err)
+			return RuntimeArtifactIdentity{}, fmt.Errorf("preflight runtime shard %s: %w", shard.id, err)
 		}
 		if expected.PlatformVersion().String() == "" {
 			expected = descriptor
 			continue
 		}
 		if descriptor != expected {
-			return RuntimeDescriptor{}, fmt.Errorf("%w: runtime shard %s", ErrRuntimeDescriptorMismatch, shard.id)
+			return RuntimeArtifactIdentity{}, fmt.Errorf("%w: runtime shard %s", ErrRuntimeArtifactIdentityMismatch, shard.id)
 		}
 	}
 	if expected.PlatformVersion().String() == "" {
-		return RuntimeDescriptor{}, ErrRuntimeNotReady
+		return RuntimeArtifactIdentity{}, ErrRuntimeNotReady
 	}
 	return expected, nil
 }
@@ -348,10 +348,10 @@ func (m *ProcessManager) health(ctx context.Context) (ManagerHealth, error) {
 		health.Ready = health.Ready && processHealth.Ready
 	}
 	if len(health.Shards) != 0 {
-		health.Descriptor = health.Shards[0].Descriptor
+		health.ArtifactIdentity = health.Shards[0].ArtifactIdentity
 		for _, shard := range health.Shards[1:] {
-			if shard.Descriptor != health.Descriptor {
-				return ManagerHealth{}, fmt.Errorf("%w: runtime shard %s health", ErrRuntimeDescriptorMismatch, shard.RuntimeShardID)
+			if shard.ArtifactIdentity != health.ArtifactIdentity {
+				return ManagerHealth{}, fmt.Errorf("%w: runtime shard %s health", ErrRuntimeArtifactIdentityMismatch, shard.RuntimeShardID)
 			}
 		}
 	}
@@ -625,7 +625,7 @@ func runtimeBinding(shardID string, health Health) RuntimeBinding {
 		RuntimeGenerationID: health.RuntimeGenerationID,
 		IPCChannelID:        health.IPCChannelID,
 		ConnectionNonce:     health.ConnectionNonce,
-		Descriptor:          health.Descriptor,
+		ArtifactIdentity:    health.ArtifactIdentity,
 	}
 }
 
@@ -639,10 +639,10 @@ func validateReadyHealth(health Health) error {
 		strings.TrimSpace(health.ConnectionNonce) == "" {
 		return fmt.Errorf("%w: ready shard health is incomplete", ErrRuntimeBindingInvalid)
 	}
-	if health.Descriptor.PlatformVersion().String() == "" {
+	if health.ArtifactIdentity.PlatformVersion().String() == "" {
 		return fmt.Errorf("%w: ready shard health descriptor is missing", ErrRuntimeBindingInvalid)
 	}
-	if err := health.Descriptor.CompatibleWithPlatform(); err != nil {
+	if err := health.ArtifactIdentity.CompatibleWithPlatform(); err != nil {
 		return fmt.Errorf("%w: %v", ErrRuntimeBindingInvalid, err)
 	}
 	return nil

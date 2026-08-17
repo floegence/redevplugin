@@ -10,12 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/controlstore"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/internal/controlstore"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func TestOpenOwnsControlStoreLifecycle(t *testing.T) {
@@ -197,80 +195,46 @@ func executionOwnerScope(ctx context.Context) controlstore.ExecutionOwner {
 	}
 }
 
-func TestOpenAutomaticallyDiscoversLegacyControlSources(t *testing.T) {
+func TestOpenDoesNotDiscoverLegacySiblingDatabases(t *testing.T) {
 	stateRoot := t.TempDir()
-	legacyPath := filepath.Join(stateRoot, "registry.sqlite")
-	legacyConfig := modularTestConfig(t)
-	if err := os.WriteFile(legacyPath, []byte("not a sqlite store"), 0o600); err != nil {
-		t.Fatal(err)
+	legacyPaths := []string{
+		filepath.Join(stateRoot, "registry.sqlite"),
+		filepath.Join(stateRoot, "operations.sqlite"),
+		filepath.Join(stateRoot, "db", "registry.sqlite"),
 	}
-	legacyConfig.StateRoot = stateRoot
-	if _, err := Open(context.Background(), legacyConfig); !errors.Is(err, controlstore.ErrMigration) {
-		t.Fatalf("Open() error = %v, want automatically discovered migration failure", err)
-	}
-	if got, err := os.ReadFile(legacyPath); err != nil || string(got) != "not a sqlite store" {
-		t.Fatalf("legacy source was modified: data=%q err=%v", got, err)
-	}
-}
-
-func TestOpenAutomaticallyMigratesLegacyRegistryData(t *testing.T) {
-	stateRoot := t.TempDir()
-	legacyPath := filepath.Join(stateRoot, "registry.sqlite")
-	legacy, err := registry.NewSQLiteStore(hostTestContext(), legacyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = legacy.PutPlugin(hostTestContext(), registry.PluginRecord{
-		PluginInstanceID: "legacy-instance", PublisherID: "legacy-publisher", PluginID: "com.example.legacy",
-		Version: "1.0.0", ActiveFingerprint: "sha256:fingerprint", PackageHash: "sha256:package",
-		ManifestHash: "sha256:manifest", EntriesHash: "sha256:entries", TrustState: registry.TrustVerified,
-		EnableState: registry.EnableDisabled, Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
-			Plugin: manifest.Plugin{PluginID: "com.example.legacy", Version: "1.0.0"}},
-	}, registry.PutOptions{Now: time.Now().UTC()})
-	if err != nil {
-		legacy.Close()
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.ReadFile(legacyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config := modularTestConfig(t)
-	config.StateRoot = stateRoot
-	h, err := Open(hostTestContext(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer h.Close()
-	records, err := h.ListPlugins(hostTestContext())
-	if err != nil || len(records) != 1 || records[0].PluginInstanceID != "legacy-instance" || records[0].PluginID != "com.example.legacy" {
-		t.Fatalf("migrated plugins = %#v, err=%v", records, err)
-	}
-	after, err := os.ReadFile(legacyPath)
-	if err != nil || !bytes.Equal(after, before) {
-		t.Fatalf("legacy source changed: err=%v", err)
-	}
-}
-
-func TestOpenRejectsAmbiguousLegacyControlOwners(t *testing.T) {
-	stateRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(stateRoot, "db"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{filepath.Join(stateRoot, "registry.sqlite"), filepath.Join(stateRoot, "db", "registry.sqlite")} {
-		if err := os.WriteFile(path, []byte("ambiguous"), 0o600); err != nil {
+	before := make(map[string][]byte, len(legacyPaths))
+	for index, path := range legacyPaths {
+		payload := []byte{byte(index + 1), 0x52, 0x50, 0x32}
+		if err := os.WriteFile(path, payload, 0o600); err != nil {
 			t.Fatal(err)
 		}
+		before[path] = payload
 	}
+
 	config := modularTestConfig(t)
 	config.StateRoot = stateRoot
-	if _, err := Open(context.Background(), config); !errors.Is(err, controlstore.ErrMigration) {
-		t.Fatalf("Open() error = %v, want ambiguous migration failure", err)
+	host, err := Open(hostTestContext(), config)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(stateRoot, "control.sqlite")); !os.IsNotExist(err) {
-		t.Fatalf("ambiguous migration published control DB: %v", err)
+	defer host.Close()
+	records, err := host.ListPlugins(hostTestContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("fresh v3 control store imported legacy plugins: %#v", records)
+	}
+	for _, path := range legacyPaths {
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(after, before[path]) {
+			t.Fatalf("legacy sibling changed: %s", path)
+		}
 	}
 }

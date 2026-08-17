@@ -10,8 +10,6 @@ import (
 	"testing"
 )
 
-const testWASMABI = "redevplugin-wasm-worker-v2"
-
 func TestWASMInspectionCacheHitReturnsOwnedContractClones(t *testing.T) {
 	module := workerWASMWithTableForTest(1)
 	var calls atomic.Int64
@@ -24,7 +22,7 @@ func TestWASMInspectionCacheHitReturnsOwnedContractClones(t *testing.T) {
 		}
 		return contract, err
 	})
-	first, err := cache.inspect(context.Background(), module, testWASMABI)
+	first, err := cache.inspect(context.Background(), module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +33,7 @@ func TestWASMInspectionCacheHitReturnsOwnedContractClones(t *testing.T) {
 	*first.TableLimits[0].Maximum = 99
 	first.MemoryInitialPage[0] = 99
 
-	second, err := cache.inspect(context.Background(), module, testWASMABI)
+	second, err := cache.inspect(context.Background(), module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +58,7 @@ func TestWASMInspectionCacheUsesBoundedLRU(t *testing.T) {
 		return wasmModuleContract{Exports: map[string]wasmExportDefinition{string(module): {Kind: 0}}}, nil
 	})
 	for _, module := range [][]byte{[]byte("a"), []byte("b"), []byte("a"), []byte("c"), []byte("b")} {
-		if _, err := cache.inspect(context.Background(), module, testWASMABI); err != nil {
+		if _, err := cache.inspect(context.Background(), module); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -94,7 +92,7 @@ func TestWASMInspectionCacheSingleFlightSharesSuccess(t *testing.T) {
 	for index := 0; index < waiterCount; index++ {
 		go func() {
 			defer waiters.Done()
-			contract, err := cache.inspect(context.Background(), []byte("same-module"), testWASMABI)
+			contract, err := cache.inspect(context.Background(), []byte("same-module"))
 			results <- contract
 			errorsCh <- err
 		}()
@@ -115,7 +113,7 @@ func TestWASMInspectionCacheSingleFlightSharesSuccess(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("inspector calls = %d, want one single-flight leader", calls.Load())
 	}
-	contract, err := cache.inspect(context.Background(), []byte("same-module"), testWASMABI)
+	contract, err := cache.inspect(context.Background(), []byte("same-module"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +128,8 @@ func TestWASMInspectionCacheCachesStableInvalidArtifactError(t *testing.T) {
 		calls.Add(1)
 		return inspectWASMModule(module)
 	})
-	_, firstErr := cache.inspect(context.Background(), []byte("invalid wasm"), testWASMABI)
-	_, secondErr := cache.inspect(context.Background(), []byte("invalid wasm"), testWASMABI)
+	_, firstErr := cache.inspect(context.Background(), []byte("invalid wasm"))
+	_, secondErr := cache.inspect(context.Background(), []byte("invalid wasm"))
 	if firstErr == nil || secondErr == nil {
 		t.Fatalf("invalid artifact errors = %v, %v", firstErr, secondErr)
 	}
@@ -158,7 +156,7 @@ func TestWASMInspectionCacheSingleFlightSharesStableError(t *testing.T) {
 	errorsCh := make(chan error, waiterCount)
 	for index := 0; index < waiterCount; index++ {
 		go func() {
-			_, err := cache.inspect(context.Background(), []byte("invalid-module"), testWASMABI)
+			_, err := cache.inspect(context.Background(), []byte("invalid-module"))
 			errorsCh <- err
 		}()
 	}
@@ -181,28 +179,20 @@ func TestWASMInspectionCacheSingleFlightSharesStableError(t *testing.T) {
 	}
 }
 
-func TestWASMInspectionCacheSeparatesABIAndParserVersions(t *testing.T) {
+func TestWASMInspectionCacheSeparatesParserVersions(t *testing.T) {
 	var calls atomic.Int64
 	cache := newWASMInspectionCache(8, func([]byte) (wasmModuleContract, error) {
 		calls.Add(1)
 		return wasmModuleContract{Exports: map[string]wasmExportDefinition{}}, nil
 	})
 	module := []byte("same-artifact")
-	for _, key := range []struct {
-		abi    string
-		parser string
-	}{
-		{abi: "abi-v1", parser: "parser-v1"},
-		{abi: "abi-v1", parser: "parser-v2"},
-		{abi: "abi-v2", parser: "parser-v1"},
-		{abi: "abi-v1", parser: "parser-v1"},
-	} {
-		if _, err := cache.inspectWithParserVersion(context.Background(), module, key.abi, key.parser); err != nil {
+	for _, parser := range []string{"parser-v1", "parser-v2", "parser-v1"} {
+		if _, err := cache.inspectWithParserVersion(context.Background(), module, parser); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if calls.Load() != 3 {
-		t.Fatalf("inspector calls = %d, want 3 isolated ABI/parser keys", calls.Load())
+	if calls.Load() != 2 {
+		t.Fatalf("inspector calls = %d, want 2 isolated parser keys", calls.Load())
 	}
 }
 
@@ -218,20 +208,20 @@ func TestWASMInspectionCacheCanceledWaiterDoesNotCancelLeader(t *testing.T) {
 	})
 	leaderDone := make(chan error, 1)
 	go func() {
-		_, err := cache.inspect(context.Background(), []byte("same-module"), testWASMABI)
+		_, err := cache.inspect(context.Background(), []byte("same-module"))
 		leaderDone <- err
 	}()
 	<-started
 	waiterCtx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := cache.inspect(waiterCtx, []byte("same-module"), testWASMABI); !errors.Is(err, context.Canceled) {
+	if _, err := cache.inspect(waiterCtx, []byte("same-module")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled waiter error = %v, want context.Canceled", err)
 	}
 	close(release)
 	if err := <-leaderDone; err != nil {
 		t.Fatalf("leader error = %v", err)
 	}
-	if _, err := cache.inspect(context.Background(), []byte("same-module"), testWASMABI); err != nil {
+	if _, err := cache.inspect(context.Background(), []byte("same-module")); err != nil {
 		t.Fatalf("cached leader result error = %v", err)
 	}
 	if calls.Load() != 1 {
@@ -271,13 +261,13 @@ func BenchmarkWASMInspectionCache(b *testing.B) {
 	})
 	b.Run("cached_hit", func(b *testing.B) {
 		cache := newWASMInspectionCache(8, inspectWASMModule)
-		if _, err := cache.inspect(context.Background(), module, testWASMABI); err != nil {
+		if _, err := cache.inspect(context.Background(), module); err != nil {
 			b.Fatal(err)
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
 		for index := 0; index < b.N; index++ {
-			if _, err := cache.inspect(context.Background(), module, testWASMABI); err != nil {
+			if _, err := cache.inspect(context.Background(), module); err != nil {
 				b.Fatal(err)
 			}
 		}

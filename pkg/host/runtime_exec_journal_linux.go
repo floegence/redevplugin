@@ -12,31 +12,31 @@ import (
 	"regexp"
 	"sync"
 
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"golang.org/x/sys/unix"
 )
 
 var runtimeExecJournalIdentifier = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,256}$`)
 
 type linuxRuntimeExecJournal struct {
-	mu               sync.Mutex
-	rootFD           int
-	moduleID         string
-	descriptorDigest string
-	sequence         uint64
-	closed           bool
+	mu             sync.Mutex
+	rootFD         int
+	moduleID       string
+	artifactSHA256 string
+	sequence       uint64
+	closed         bool
 }
 
 type runtimeExecJournalRecord struct {
 	SchemaVersion       string `json:"schema_version"`
 	ModuleID            string `json:"module_id"`
-	DescriptorDigest    string `json:"descriptor_digest"`
+	ArtifactSHA256      string `json:"artifact_sha256"`
 	State               string `json:"state"`
 	ContainmentIdentity string `json:"containment_identity"`
 	MutationOutcome     string `json:"mutation_outcome"`
 }
 
-func newRuntimeExecJournal(root *os.File, descriptor RuntimeDescriptor) (runtimeExecJournal, error) {
+func newRuntimeExecJournal(root *os.File, descriptor RuntimeArtifactIdentity) (runtimeExecJournal, error) {
 	if root == nil || !descriptor.valid() {
 		return nil, ErrRuntimeAdmissionInvalid
 	}
@@ -45,9 +45,9 @@ func newRuntimeExecJournal(root *os.File, descriptor RuntimeDescriptor) (runtime
 		return nil, fmt.Errorf("%w: duplicate runtime execution root", ErrRuntimeAdmissionInvalid)
 	}
 	journal := &linuxRuntimeExecJournal{
-		rootFD:           rootFD,
-		moduleID:         "runtime-" + descriptor.BinarySHA256().String(),
-		descriptorDigest: descriptor.BinarySHA256().String(),
+		rootFD:         rootFD,
+		moduleID:       "runtime-" + descriptor.BinarySHA256().String(),
+		artifactSHA256: descriptor.BinarySHA256().String(),
 	}
 	if err := journal.reconcilePrevious(); err != nil {
 		_ = unix.Close(rootFD)
@@ -77,7 +77,7 @@ func (journal *linuxRuntimeExecJournal) transition(state, containmentIdentity st
 	return journal.writeLocked(runtimeExecJournalRecord{
 		SchemaVersion:       runtimeExecJournalSchemaVersion,
 		ModuleID:            journal.moduleID,
-		DescriptorDigest:    journal.descriptorDigest,
+		ArtifactSHA256:      journal.artifactSHA256,
 		State:               state,
 		ContainmentIdentity: containmentIdentity,
 		MutationOutcome:     string(outcome),
@@ -113,7 +113,7 @@ func (journal *linuxRuntimeExecJournal) reconcilePrevious() error {
 	if err := journal.writeLocked(runtimeExecJournalRecord{
 		SchemaVersion:       runtimeExecJournalSchemaVersion,
 		ModuleID:            previous.ModuleID,
-		DescriptorDigest:    previous.DescriptorDigest,
+		ArtifactSHA256:      previous.ArtifactSHA256,
 		State:               runtimeExecJournalReconcileRequired,
 		ContainmentIdentity: previous.ContainmentIdentity,
 		MutationOutcome:     string(mutation.OutcomeUnknown),
@@ -123,7 +123,7 @@ func (journal *linuxRuntimeExecJournal) reconcilePrevious() error {
 	return journal.writeLocked(runtimeExecJournalRecord{
 		SchemaVersion:       runtimeExecJournalSchemaVersion,
 		ModuleID:            previous.ModuleID,
-		DescriptorDigest:    previous.DescriptorDigest,
+		ArtifactSHA256:      previous.ArtifactSHA256,
 		State:               runtimeExecJournalClosed,
 		ContainmentIdentity: previous.ContainmentIdentity,
 		MutationOutcome:     string(mutation.OutcomeCommitted),
@@ -255,7 +255,7 @@ func rejectDuplicateRuntimeExecJournalFields(payload []byte) error {
 func validRuntimeExecJournalRecord(record runtimeExecJournalRecord) bool {
 	return record.SchemaVersion == runtimeExecJournalSchemaVersion &&
 		runtimeExecJournalIdentifier.MatchString(record.ModuleID) &&
-		len(record.DescriptorDigest) == 64 && lowerSHA256Pattern.MatchString(record.DescriptorDigest) &&
+		len(record.ArtifactSHA256) == 64 && lowerSHA256Pattern.MatchString(record.ArtifactSHA256) &&
 		validRuntimeExecJournalState(record.State) &&
 		runtimeExecJournalIdentifier.MatchString(record.ContainmentIdentity) &&
 		(record.MutationOutcome == string(mutation.OutcomeCommitted) || record.MutationOutcome == string(mutation.OutcomeNotCommitted) || record.MutationOutcome == string(mutation.OutcomeUnknown))

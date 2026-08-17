@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 )
 
 // AddressResolver permits host products and tests to supply DNS while keeping

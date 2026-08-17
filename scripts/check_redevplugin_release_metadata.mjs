@@ -10,14 +10,11 @@ const scriptPath = fileURLToPath(import.meta.url);
 const defaultRoot = resolve(dirname(scriptPath), "..");
 const releaseVersionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$/;
 
-export function validateReleaseMetadataSources({ version, versionSource, changelog, cargoMetadata, root }) {
+export function validateReleaseMetadataSources({ version, versionFile, changelog, cargoMetadata, root }) {
   const normalizedVersion = normalizeReleaseVersion(version);
-  const compatibilityVersions = [...versionSource.matchAll(/developmentCompatibilityVersion\s*=\s*"([^"]+)"/g)];
-  if (compatibilityVersions.length !== 1) {
-    throw new Error("pkg/version/version.go must contain one developmentCompatibilityVersion assignment");
-  }
-  if (compatibilityVersions[0][1] !== normalizedVersion) {
-    throw new Error(`Go compatibility version ${compatibilityVersions[0][1]} does not match release ${normalizedVersion}`);
+  const sourceVersion = versionFile.trim();
+  if (sourceVersion !== normalizedVersion || versionFile !== `${sourceVersion}\n`) {
+    throw new Error(`VERSION ${JSON.stringify(versionFile)} does not exactly match release ${normalizedVersion}`);
   }
 
   const changelogVersion = changelog.match(/^## v([^\s]+)\s*$/m)?.[1];
@@ -70,7 +67,7 @@ function main() {
   const version = rawVersion === "--source" ? sourceReleaseVersion(changelog) : normalizeReleaseVersion(rawVersion);
   validateReleaseMetadataSources({
     version,
-    versionSource: readFileSync(join(root, "pkg", "version", "version.go"), "utf8"),
+    versionFile: readFileSync(join(root, "VERSION"), "utf8"),
     changelog,
     cargoMetadata: cargoMetadata(root),
     root,

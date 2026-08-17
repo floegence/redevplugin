@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/testsupport/releasetrustfixture"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/externalsource"
-	"github.com/floegence/redevplugin/v2/pkg/host"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/remoterelease"
+	"github.com/floegence/redevplugin/v3/internal/testsupport/releasetrustfixture"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/externalsource"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/remoterelease"
 )
 
 type smokeAssetFetcher struct {
@@ -45,12 +44,6 @@ func (fetcher *smokeAssetFetcher) requestCount() int {
 	fetcher.mu.Lock()
 	defer fetcher.mu.Unlock()
 	return len(fetcher.requests)
-}
-
-type unusedHostRequirementPolicy struct{}
-
-func (unusedHostRequirementPolicy) SelectHostRequirement(context.Context, host.HostRequirementSelectionRequest) (host.HostRequirementSelection, error) {
-	return host.HostRequirementSelection{}, errors.New("unexpected host requirement selection")
 }
 
 func TestReleaseInstallOperationsReuseAssetCacheAndRecoverDiagnostics(t *testing.T) {
@@ -107,7 +100,6 @@ func TestReleaseInstallOperationsReuseAssetCacheAndRecoverDiagnostics(t *testing
 	}
 	config.Release = &host.ReleaseModule{
 		Trust: fixture.ServiceSet, ReleaseArtifactResolver: assetSet,
-		HostRequirements: unusedHostRequirementPolicy{},
 	}
 	installedHost, err := host.Open(ctx, config)
 	if err != nil {
@@ -195,7 +187,7 @@ func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx 
 	}
 	wantPhases := []string{
 		"fetch_trust_evidence", "fetch_release_evidence", "download_package", "verify_hashes",
-		"verify_signatures", "fetch_capability_evidence", "commit", "enable", "complete",
+		"verify_signatures", "fetch_capability_evidence", "commit", "complete",
 	}
 	gotPhases := make([]string, 0, len(events))
 	var packageProgress map[string]any

@@ -9,8 +9,6 @@ import {
   PluginPlatformClient,
   PluginPlatformRequestError,
   PluginSurfaceReloadLimiter,
-  redevPluginContractArtifacts,
-  redevPluginContractVersions,
   type FetchInitLike,
   type FetchLike,
   type FetchResponseLike,
@@ -159,18 +157,6 @@ test("stable error-code exports separate platform, bridge, and client-only codes
   assert.equal(pluginClientErrorCodes.includes("PLUGIN_PLATFORM_REQUEST_FAILED"), true);
   assert.equal((pluginPlatformErrorCodes as readonly string[]).includes("PLUGIN_PLATFORM_REQUEST_FAILED"), false);
   assert.equal((pluginBridgeErrorCodes as readonly string[]).includes("PLUGIN_STREAM_FAILED"), false);
-});
-
-test("generated contract registry exports immutable artifact hashes", () => {
-  assert.equal(redevPluginContractArtifacts.length > 0, true);
-  assert.equal(new Set(redevPluginContractArtifacts.map((artifact) => artifact.id)).size, redevPluginContractArtifacts.length);
-  assert.equal(new Set(redevPluginContractArtifacts.map((artifact) => artifact.path)).size, redevPluginContractArtifacts.length);
-  for (const artifact of redevPluginContractArtifacts) {
-    assert.equal(/^[a-z][a-z0-9-]+$/.test(artifact.id), true);
-    assert.equal(/^(spec\/openapi|spec\/plugin)\/[A-Za-z0-9._/-]+$/.test(artifact.path), true);
-    assert.equal(artifact.version.length > 0, true);
-    assert.equal(/^[a-f0-9]{64}$/.test(artifact.sha256), true);
-  }
 });
 
 test("platform client revokes the authenticated session scope without caller-supplied identity", async () => {
@@ -569,77 +555,6 @@ test("surface reload limiter rejects invalid timing options", () => {
   assert.throws(() => limiter.recordCrash(Number.NaN), /nowMs/);
 });
 
-test("platform client reads compatibility manifest through host API", async () => {
-  const fetch = new FakeFetch();
-  const matrix: Record<string, unknown> = { ...redevPluginContractVersions };
-  delete matrix.compatibility_manifest_version;
-  const contractSetSHA256 = "a".repeat(64);
-  fetch.push({
-    ok: true,
-    data: {
-      schema_version: "redevplugin.compatibility.v20",
-      package_set: {
-        schema_version: "redevplugin.platform_package_set.v3",
-        platform_version: "2.0.10",
-        go_module: { module: "github.com/floegence/redevplugin/v2", version: "v2.0.10" },
-        npm_packages: [
-          { name: "@floegence/redevplugin-contracts", version: "2.0.10" },
-          { name: "@floegence/redevplugin-ui", version: "2.0.10" },
-        ],
-        rust_crates: [
-          { name: "redevplugin-runtime", version: "2.0.10", role: "runtime" },
-          { name: "redevplugin-worker-sdk", version: "2.0.10", role: "worker_sdk" },
-        ],
-        contract_registry_version: "contract-registry-v2",
-        contract_set_sha256: contractSetSHA256,
-      },
-      matrix,
-      contract_set_sha256: contractSetSHA256,
-      contracts: [
-        {
-          id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v17.yaml",
-          version: "plugin-platform-v17",
-          sha256: "sha256-openapi",
-        },
-        {
-          id: "rust-ipc-schema",
-          path: "spec/plugin/ipc-v7.schema.json",
-          version: "rust-ipc-v7",
-          sha256: "sha256-ipc",
-        },
-      ],
-    },
-  });
-  const client = new PluginPlatformClient({
-    apiBaseURL: "https://host.example/",
-    fetch: fetch.fetch,
-  });
-
-  const compatibility = await client.getCompatibility();
-
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v20");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v17");
-  assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v8");
-  assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v3");
-  assert.equal(compatibility.matrix.release_source_policy_pointer_schema_version, "release-source-policy-pointer-v2");
-  assert.equal(compatibility.matrix.release_revocation_schema_version, "release-revocation-v3");
-  assert.equal(compatibility.matrix.release_revocation_pointer_schema_version, "release-revocation-pointer-v2");
-  assert.equal(compatibility.matrix.resource_scope_schema_version, "resource-scope-v1");
-  assert.equal("session_scope_maintenance_schema_version" in compatibility.matrix, false);
-  assert.equal(compatibility.matrix.host_capability_contract_schema_version, "host-capability-contract-v1");
-  assert.equal(compatibility.matrix.host_capability_pin_schema_version, "host-capability-pin-v1");
-  assert.deepEqual(compatibility.contracts.map((contract) => contract.id), ["plugin-platform-openapi", "rust-ipc-schema"]);
-  assert.equal(compatibility.contracts[0]?.sha256, "sha256-openapi");
-  assert.equal(fetch.calls.length, 1);
-  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/platform/compatibility/query");
-  assert.equal(fetch.calls[0]?.init.method, "POST");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {});
-  assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
-  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/json");
-  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
-});
-
 test("platform client forwards per-call abort signals without changing absolute API bases", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { plugins: [] } });
@@ -927,8 +842,6 @@ test("installing an inspected external package binds the exact package hash and 
   const result = await client.installInspectedPackage({
     inspection_id: "inspection_install",
     expected_package_sha256: inspection.inspected_hashes.package_sha256,
-    activate_after_install: true,
-    approved_permission_ids: ["containers.read"],
   });
 
   assert.equal(result.plugin.plugin_instance_id, "plugin_instance_target");
@@ -938,8 +851,6 @@ test("installing an inspected external package binds the exact package hash and 
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
     inspection_id: "inspection_install",
     expected_package_sha256: inspection.inspected_hashes.package_sha256,
-    activate_after_install: true,
-    approved_permission_ids: ["containers.read"],
   });
   unregisterUnrelated();
 });
@@ -1146,12 +1057,12 @@ test("platform client reads and patches plugin settings through host API", async
 
 test("platform client manages plugin lifecycle routes", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled", disabled_reason: "admin" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled_by_user", disabled_reason: "admin" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled_by_user" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const localImportClient = new PluginLocalImportClient({ fetch: fetch.fetch });
   const uploadController = new AbortController();
@@ -1168,12 +1079,12 @@ test("platform client manages plugin lifecycle routes", async () => {
   const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 4, reason: "admin" });
   const uninstalled = await client.uninstallPlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 5, delete_data: true });
 
-  assert.equal(installed.enable_state, "disabled");
+  assert.equal(installed.enable_state, "enabled");
   assert.equal(updated.version, "2.0.0");
   assert.equal(downgraded.version, "1.0.0");
   assert.equal(enabled.enable_state, "enabled");
   assert.equal(disabled.disabled_reason, "admin");
-  assert.equal(uninstalled.enable_state, "disabled");
+  assert.equal(uninstalled.enable_state, "disabled_by_user");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import");
   assert.equal(fetch.calls[0]?.init.body instanceof Blob, true);
   assert.equal(fetch.calls[0]?.init.signal, uploadController.signal);
@@ -1194,7 +1105,7 @@ test("platform client manages plugin lifecycle routes", async () => {
 
 test("local import update canonicalizes identity for transport and teardown", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "enabled" } });
   const scope = createPluginSurfaceScope();
   let disposed = 0;
   registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
@@ -1431,8 +1342,8 @@ test("platform cleanup failures preserve the original unknown mutation outcome",
 
 test("platform client installs and updates plugin release refs without package bytes", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "enabled" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const releaseRef = {
     source_id: "official",
@@ -1497,31 +1408,19 @@ test("platform client inspects an exact release package before confirmation", as
 
 test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();
-  const descriptor: PluginRuntimeHealth["descriptor"] = {
-    schema_version: "runtime-descriptor-v3",
-    platform_version: "0.6.0",
+  const artifactIdentity: PluginRuntimeHealth["artifact_identity"] = {
+    platform_version: "3.0.0",
     target: "linux/arm64",
-    internal: {
-      rust_ipc: "rust-ipc-v7",
-      contract_set_sha256: "b".repeat(64),
-    },
-    public_api: {
-      worker_majors: [1],
-      features: [
-        "fs.environment.v1", "fs.home.v1", "fs.watch.v1", "fs.workspace.v1",
-        "io.stream.v1", "net.http.v1", "net.tcp.v1", "net.udp.v1", "net.websocket.v1",
-      ],
-    },
     binary_sha256: "a".repeat(64),
   };
   const runtimeHealth = {
     ready: true,
-    descriptor,
+    artifact_identity: artifactIdentity,
     shards: [{
       runtime_shard_id: "runtime_shard_00",
       runtime_instance_id: "runtime_1",
       runtime_generation_id: "gen_1",
-      descriptor,
+      artifact_identity: artifactIdentity,
       ready: true,
       active_invocations: 0,
       queued_invocations: 0,
@@ -1599,10 +1498,9 @@ test("platform client covers operation and data lifecycle routes", async () => {
   });
   fetch.push({ ok: true, data: { bundle_ref: "bundle_ref_1" } });
   fetch.push({ ok: true, data: { deleted: true } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled_by_user" } });
   fetch.push({ ok: true, data: { retained_data: [{ plugin_instance_id: "plugin_instance_1", generation_id: "generation_1", state: "retained", revision: 3, shape_hash: "a".repeat(64) }] } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", generation_id: "generation_1", state: "retained", revision: 3, shape_hash: "a".repeat(64) } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_2", generation_id: "generation_1", state: "active", revision: 1, shape_hash: "a".repeat(64) } });
   fetch.push({ ok: true, data: { deleted: [{ plugin_instance_id: "plugin_instance_3", generation_id: "generation_3", state: "retained", revision: 4, shape_hash: "b".repeat(64) }] } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
@@ -1617,12 +1515,6 @@ test("platform client covers operation and data lifecycle routes", async () => {
   });
   const retained = await client.listRetainedData({ plugin_instance_id: "plugin_instance_1" });
   const deleted = await client.deleteRetainedData({ plugin_instance_id: "plugin_instance_1", expected_binding_revision: 3 });
-  const bound = await client.bindRetainedData({
-    source_plugin_instance_id: "plugin_instance_1",
-    expected_source_binding_revision: 3,
-    target_plugin_instance_id: "plugin_instance_2",
-    target_expected_management_revision: 5,
-  });
   const cleanup = await client.cleanupExpiredRetainedData({});
 
   assert.equal(executions.executions?.[0]?.status, "running");
@@ -1634,7 +1526,6 @@ test("platform client covers operation and data lifecycle routes", async () => {
   assert.equal(imported.plugin_instance_id, "plugin_instance_1");
   assert.equal(retained.retained_data[0]?.generation_id, "generation_1");
   assert.equal(deleted.revision, 3);
-  assert.equal(bound.plugin_instance_id, "plugin_instance_2");
   assert.equal(cleanup.deleted[0]?.generation_id, "generation_3");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/executions/query");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", cursor: 0, limit: 25 });
@@ -1657,15 +1548,8 @@ test("platform client covers operation and data lifecycle routes", async () => {
   assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
   assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/retained-data/delete");
   assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_binding_revision: 3 });
-  assert.equal(fetch.calls[7]?.input, "/_redevplugin/api/plugins/retained-data/bind");
-  assert.deepEqual(JSON.parse(fetch.calls[7]?.init.body ?? ""), {
-    source_plugin_instance_id: "plugin_instance_1",
-    expected_source_binding_revision: 3,
-    target_plugin_instance_id: "plugin_instance_2",
-    target_expected_management_revision: 5,
-  });
-  assert.equal(fetch.calls[8]?.input, "/_redevplugin/api/plugins/retained-data/cleanup-expired");
-  assert.deepEqual(JSON.parse(fetch.calls[8]?.init.body ?? ""), {});
+  assert.equal(fetch.calls[7]?.input, "/_redevplugin/api/plugins/retained-data/cleanup-expired");
+  assert.deepEqual(JSON.parse(fetch.calls[7]?.init.body ?? ""), {});
 });
 
 test("platform client lists and invokes host-mediated intents", async () => {

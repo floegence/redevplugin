@@ -14,7 +14,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"golang.org/x/sys/unix"
 )
 
@@ -83,7 +83,7 @@ func TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimeExecutable:     executable,
 		RuntimeExecutionRoot:  executionRoot,
-		Descriptor:            testRuntimeDescriptor(target, hex.EncodeToString(hasher.Sum(nil))),
+		ArtifactIdentity:      testRuntimeArtifactIdentity(target, hex.EncodeToString(hasher.Sum(nil))),
 		StreamSink:            &recordingRuntimeStreamSink{},
 		IOBroker:              testRuntimeIOBroker{},
 		HandshakeTimeout:      10 * time.Second,

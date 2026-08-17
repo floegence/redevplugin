@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { validateTarGzipArchive } from "./archive_contract.mjs";
-import { parseStrictJSON } from "./generate_platform_package_contracts.mjs";
+import { parseStrictJSON } from "./strict_json.mjs";
 import { rustSourcePackages } from "./rust_source_packages.mjs";
 
 const maxIndexBytes = 8 * 1024 * 1024;

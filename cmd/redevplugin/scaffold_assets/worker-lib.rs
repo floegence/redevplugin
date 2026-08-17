@@ -1,8 +1,6 @@
 #[cfg(target_arch = "wasm32")]
-use redevplugin_worker_sdk::api;
-use redevplugin_worker_sdk::{
-    WORKER_ABI_VERSION, WorkerError, WorkerRequest, WorkerResult, export_worker,
-};
+use redevplugin_worker_sdk::{PLUGIN_API, api};
+use redevplugin_worker_sdk::{WorkerError, WorkerRequest, WorkerResult, export_worker};
 use serde_json::{Value, json};
 
 fn handle(request: WorkerRequest) -> WorkerResult {
@@ -15,7 +13,7 @@ fn handle(request: WorkerRequest) -> WorkerResult {
 }
 
 fn echo(params: Value) -> WorkerResult {
-    require_worker_api_v1()?;
+    require_current_plugin_api()?;
     let message = params
         .get("message")
         .and_then(Value::as_str)
@@ -31,23 +29,22 @@ fn echo(params: Value) -> WorkerResult {
         "transport": "rust runtime ipc",
         "method": "worker.echo",
         "worker_id": "backend",
-        "wasm_abi": WORKER_ABI_VERSION,
         "message": message
     }))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn require_worker_api_v1() -> Result<(), WorkerError> {
+fn require_current_plugin_api() -> Result<(), WorkerError> {
     let capabilities = api::capabilities()
-        .map_err(|error| WorkerError::hostcall(format!("discover Worker API: {error}")))?;
-    if capabilities.worker_api != 1 {
-        return Err(WorkerError::hostcall("Worker API 1 is unavailable"));
+        .map_err(|error| WorkerError::hostcall(format!("discover Plugin API: {error}")))?;
+    if capabilities.plugin_api != PLUGIN_API {
+        return Err(WorkerError::hostcall("Current Plugin API is unavailable"));
     }
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn require_worker_api_v1() -> Result<(), WorkerError> {
+fn require_current_plugin_api() -> Result<(), WorkerError> {
     Ok(())
 }
 
@@ -64,9 +61,8 @@ mod tests {
     }
 
     #[test]
-    fn echo_returns_the_v2_worker_identity() {
+    fn echo_returns_the_worker_result() {
         let response = echo(json!({"message": "hello"})).expect("echo response");
-        assert_eq!(response["wasm_abi"], WORKER_ABI_VERSION);
         assert_eq!(response["message"], "hello");
     }
 }

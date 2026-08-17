@@ -1,11 +1,10 @@
 export const rootDelegationSchemaVersion = "redevplugin.release_root_delegation.v1" as const;
 export const packageSignatureSchemaVersion = "redevplugin.package_signature.v1" as const;
-export const releaseMetadataSchemaVersionV8 = "redevplugin.release_metadata.v8" as const;
-export const releaseMetadataSchemaVersion = releaseMetadataSchemaVersionV8;
+export const releaseMetadataSchemaVersion = "redevplugin.release_metadata" as const;
 export const sourcePolicySchemaVersion = "redevplugin.release_source_policy.v3" as const;
-export const sourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v1" as const;
-export const revocationSchemaVersion = "redevplugin.release_revocation.v2" as const;
-export const revocationPointerSchemaVersion = "redevplugin.release_revocation_pointer.v1" as const;
+export const sourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v2" as const;
+export const revocationSchemaVersion = "redevplugin.release_revocation.v3" as const;
+export const revocationPointerSchemaVersion = "redevplugin.release_revocation_pointer.v2" as const;
 export const signatureAlgorithmEd25519 = "ed25519" as const;
 export const genesisPreviousDocumentSHA256 = "0".repeat(64);
 
@@ -111,40 +110,14 @@ export type PackageReleaseSignatureRef = Readonly<{
   revocation_epoch: string;
 }>;
 
-export type ReleaseCompatibility = Readonly<{
-  min_redevplugin_version: string;
-  min_runtime_version: string;
-  ui_protocol_version: "plugin-ui-v7";
-  supported_targets?: readonly ("darwin/amd64" | "darwin/arm64" | "linux/amd64" | "linux/arm64")[];
-}>;
-
-export type HostCapabilityContractRef = Readonly<{
-  publisher_id: string;
-  contract_id: string;
-  contract_version: string;
-  artifact_sha256: string;
-}>;
-
-export type HostCapabilityRequirementRef = Readonly<{
-  capability_id: string;
-  capability_version: string;
-  contract: HostCapabilityContractRef;
-}>;
-
-export type ReleaseHostRequirement = Readonly<{
-  host_id: string;
-  min_host_version?: string;
-  required_capability_contracts?: readonly HostCapabilityRequirementRef[];
-}>;
-
 export type ReleaseEvidence = Readonly<{
   notices_sha256?: string;
   provenance_sha256?: string;
   generated_at?: string;
 }>;
 
-export type ReleaseMetadataV8 = Readonly<{
-  schema_version: typeof releaseMetadataSchemaVersionV8;
+export type ReleaseMetadata = Readonly<{
+  schema_version: typeof releaseMetadataSchemaVersion;
   source_id: string;
   release_metadata_ref: string;
   publisher_id: string;
@@ -154,8 +127,6 @@ export type ReleaseMetadataV8 = Readonly<{
   hashes: ReleasePackageHashSet;
   release_metadata_signature: ReleaseMetadataSignatureRef;
   package_signature: PackageReleaseSignatureRef;
-  compatibility: ReleaseCompatibility;
-  host_requirements?: readonly ReleaseHostRequirement[];
   release_evidence?: ReleaseEvidence;
   metadata?: Readonly<Record<string, string>>;
 }>;
@@ -182,7 +153,7 @@ export type SourcePolicyActiveKeys = Readonly<{
   revocation_pointer: readonly string[];
 }>;
 
-export type SourcePolicyV2 = Readonly<{
+export type SourcePolicyV3 = Readonly<{
   schema_version: typeof sourcePolicySchemaVersion;
   source_id: string;
   channel: string;
@@ -205,7 +176,7 @@ export type SourcePolicyV2 = Readonly<{
   signature: string;
 }>;
 
-export type SourcePolicyInput = Omit<SourcePolicyV2, "schema_version" | "signature">;
+export type SourcePolicyInput = Omit<SourcePolicyV3, "schema_version" | "signature">;
 
 export type ReleasePointerInput = Readonly<{
   source_id: string;
@@ -218,7 +189,7 @@ export type ReleasePointerInput = Readonly<{
   key_id: string;
 }>;
 
-export type SourcePolicyPointerV1 = Readonly<ReleasePointerInput & {
+export type SourcePolicyPointerV2 = Readonly<ReleasePointerInput & {
   schema_version: typeof sourcePolicyPointerSchemaVersion;
   signature: string;
 }>;
@@ -231,7 +202,7 @@ export type RevokedRelease = Readonly<{
   revoked_at: string;
 }>;
 
-export type RevocationV2 = Readonly<{
+export type RevocationV3 = Readonly<{
   schema_version: typeof revocationSchemaVersion;
   source_id: string;
   channel: string;
@@ -245,9 +216,9 @@ export type RevocationV2 = Readonly<{
   signature: string;
 }>;
 
-export type RevocationInput = Omit<RevocationV2, "schema_version" | "signature">;
+export type RevocationInput = Omit<RevocationV3, "schema_version" | "signature">;
 
-export type RevocationPointerV1 = Readonly<ReleasePointerInput & {
+export type RevocationPointerV2 = Readonly<ReleasePointerInput & {
   schema_version: typeof revocationPointerSchemaVersion;
   signature: string;
 }>;
@@ -283,12 +254,12 @@ const maximumDocumentBytes = 1024 * 1024;
 const maximumPatternValueCodeUnits = 4096;
 const signingPrefix = textEncoder.encode("REDEVPLUGIN-SIGNING-V1\0");
 const newIDPattern = /^[a-z][a-z0-9._-]{0,127}$/;
-const legacyIDPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const releaseIDPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const epochPattern = /^(0|[1-9][0-9]*)$/;
 const positiveEpochPattern = /^[1-9][0-9]*$/;
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const prefixedSHA256Pattern = /^sha256:[0-9a-f]{64}$/;
-const legacySHA256Pattern = /^(?:sha256:)?[0-9a-f]{64}$/;
+const packageSHA256Pattern = /^(?:sha256:)?[0-9a-f]{64}$/;
 const artifactRefPattern = /^[A-Za-z0-9._/@+-]+$/;
 const hostnamePattern = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
 const semverPattern = { test: isCanonicalSemver };
@@ -503,7 +474,7 @@ function validateTimeRange(generatedAt: string, expiresAt: string, maximumMillis
 function validateSortedIDs(values: unknown, minimum: number, maximum: number, lower = true): void {
   if (!Array.isArray(values) || values.length < minimum || values.length > maximum) invalidDocument();
   let previous = "";
-  const pattern = lower ? newIDPattern : legacyIDPattern;
+  const pattern = lower ? newIDPattern : releaseIDPattern;
   for (const value of values) {
     if (!matchesPattern(pattern, value) || compareUTF8(value, previous) <= 0) invalidDocument();
     previous = value;
@@ -548,7 +519,7 @@ function validatePackageInput(value: PackageSigningInput): void {
   assertRecord(value);
   exactKeys(value, ["source_id", "channel", "version", "algorithm", "key_id", "publisher_id", "plugin_id", "package_hash", "manifest_hash", "entries_hash", "signed_at"]);
   if (!matchesPattern(newIDPattern, value.source_id) || !matchesPattern(newIDPattern, value.channel) || value.algorithm !== signatureAlgorithmEd25519 || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
-  if (!matchesPattern(legacyIDPattern, value.publisher_id) || !matchesPattern(legacyIDPattern, value.plugin_id) || !matchesPattern(semverPattern, value.version)) invalidDocument();
+  if (!matchesPattern(releaseIDPattern, value.publisher_id) || !matchesPattern(releaseIDPattern, value.plugin_id) || !matchesPattern(semverPattern, value.version)) invalidDocument();
   if (!matchesPattern(prefixedSHA256Pattern, value.package_hash) || !matchesPattern(prefixedSHA256Pattern, value.manifest_hash) || !matchesPattern(prefixedSHA256Pattern, value.entries_hash)) invalidDocument();
   parseCanonicalTime(value.signed_at);
 }
@@ -578,44 +549,20 @@ function validatePackageSignature(context: PackageVerificationContext, value: Pa
   else if (value.signature !== "") invalidDocument();
 }
 
-function validateReleaseMetadata(value: ReleaseMetadataV8): void {
+function validateReleaseMetadata(value: ReleaseMetadata): void {
   assertRecord(value);
   closeReleaseMetadata(value);
-  if (!validReleaseMetadataUIProtocolPair(value.schema_version, value.compatibility.ui_protocol_version) || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
-  if (!matchesPattern(legacyIDPattern, value.publisher_id) || !matchesPattern(legacyIDPattern, value.plugin_id) || !matchesPattern(semverPattern, value.version) || !validArtifactRef(value.release_metadata_ref)) invalidDocument();
+  if (value.schema_version !== releaseMetadataSchemaVersion || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
+  if (!matchesPattern(releaseIDPattern, value.publisher_id) || !matchesPattern(releaseIDPattern, value.plugin_id) || !matchesPattern(semverPattern, value.version) || !validArtifactRef(value.release_metadata_ref)) invalidDocument();
   if ((value.distribution_ref.distribution !== "registry_ref" && value.distribution_ref.distribution !== "host_artifact_ref") || !validArtifactRef(value.distribution_ref.artifact_ref)) invalidDocument();
-  if (!legacySHA256Pattern.test(value.hashes.package_sha256) || !legacySHA256Pattern.test(value.hashes.manifest_sha256) || !legacySHA256Pattern.test(value.hashes.entries_sha256)) invalidDocument();
+  if (!packageSHA256Pattern.test(value.hashes.package_sha256) || !packageSHA256Pattern.test(value.hashes.manifest_sha256) || !packageSHA256Pattern.test(value.hashes.entries_sha256)) invalidDocument();
   const metadataSignature = value.release_metadata_signature;
   if (metadataSignature.algorithm !== signatureAlgorithmEd25519 || !matchesPattern(newIDPattern, metadataSignature.key_id) || !validArtifactRef(metadataSignature.signature_ref) || !matchesPattern(epochPattern, metadataSignature.source_policy_epoch) || !matchesPattern(epochPattern, metadataSignature.revocation_epoch)) invalidDocument();
   const packageSignature = value.package_signature;
   if (packageSignature.algorithm !== signatureAlgorithmEd25519 || !matchesPattern(newIDPattern, packageSignature.key_id) || !validArtifactRef(packageSignature.signature_bundle_ref) || !matchesPattern(epochPattern, packageSignature.source_policy_epoch) || !matchesPattern(epochPattern, packageSignature.revocation_epoch)) invalidDocument();
-  if (!matchesPattern(semverPattern, value.compatibility.min_redevplugin_version) || !matchesPattern(semverPattern, value.compatibility.min_runtime_version)) invalidDocument();
-  if (value.compatibility.supported_targets !== undefined) {
-    if (!Array.isArray(value.compatibility.supported_targets)) invalidDocument();
-    const allowed = new Set(["darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"]);
-    let previous = "";
-    for (const target of value.compatibility.supported_targets) {
-      if (typeof target !== "string" || !allowed.has(target) || compareUTF8(target, previous) <= 0) invalidDocument();
-      previous = target;
-    }
-  }
-  let previousHost = "";
-  for (const requirement of value.host_requirements ?? []) {
-    if (!matchesPattern(legacyIDPattern, requirement.host_id) || compareUTF8(requirement.host_id, previousHost) <= 0) invalidDocument();
-    if (requirement.min_host_version !== undefined && !matchesPattern(semverPattern, requirement.min_host_version)) invalidDocument();
-    let previousCapability = "";
-    for (const capability of requirement.required_capability_contracts ?? []) {
-      if (!matchesPattern(legacyIDPattern, capability.capability_id) || !matchesPattern(semverPattern, capability.capability_version)) invalidDocument();
-      const identity = `${capability.capability_id}\0${capability.capability_version}`;
-      if (compareUTF8(identity, previousCapability) <= 0) invalidDocument();
-      validateCapabilityContractRef(capability.contract);
-      previousCapability = identity;
-    }
-    previousHost = requirement.host_id;
-  }
   if (value.release_evidence !== undefined) {
-    if (value.release_evidence.notices_sha256 !== undefined && !legacySHA256Pattern.test(value.release_evidence.notices_sha256)) invalidDocument();
-    if (value.release_evidence.provenance_sha256 !== undefined && !legacySHA256Pattern.test(value.release_evidence.provenance_sha256)) invalidDocument();
+    if (value.release_evidence.notices_sha256 !== undefined && !packageSHA256Pattern.test(value.release_evidence.notices_sha256)) invalidDocument();
+    if (value.release_evidence.provenance_sha256 !== undefined && !packageSHA256Pattern.test(value.release_evidence.provenance_sha256)) invalidDocument();
     if (value.release_evidence.generated_at !== undefined) parseCanonicalTime(value.release_evidence.generated_at);
   }
   if (value.metadata !== undefined) {
@@ -629,16 +576,7 @@ function validateReleaseMetadata(value: ReleaseMetadataV8): void {
   }
 }
 
-function validReleaseMetadataUIProtocolPair(schemaVersion: string, uiProtocolVersion: string): boolean {
-  return schemaVersion === releaseMetadataSchemaVersionV8 && uiProtocolVersion === "plugin-ui-v7";
-}
-
-function validateCapabilityContractRef(value: HostCapabilityContractRef): void {
-  if (![value.publisher_id, value.contract_id].every((item) => matchesPattern(legacyIDPattern, item)) ||
-      !matchesPattern(semverPattern, value.contract_version) || !sha256Pattern.test(value.artifact_sha256)) invalidDocument();
-}
-
-function validateSourcePolicy(value: SourcePolicyV2, requireSignature: boolean): void {
+function validateSourcePolicy(value: SourcePolicyV3, requireSignature: boolean): void {
   assertRecord(value);
   closeSourcePolicy(value);
   if (value.schema_version !== sourcePolicySchemaVersion || !matchesPattern(newIDPattern, value.source_id) || !matchesPattern(newIDPattern, value.channel) || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
@@ -684,7 +622,7 @@ function validatePointer(
   else if (value.signature !== "") invalidDocument();
 }
 
-function validateRevocation(value: RevocationV2, requireSignature: boolean): void {
+function validateRevocation(value: RevocationV3, requireSignature: boolean): void {
   assertRecord(value);
   closeRevocation(value);
   if (value.schema_version !== revocationSchemaVersion || !matchesPattern(newIDPattern, value.source_id) || !matchesPattern(newIDPattern, value.channel) || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
@@ -695,7 +633,7 @@ function validateRevocation(value: RevocationV2, requireSignature: boolean): voi
   if (!Array.isArray(value.revoked_releases) || value.revoked_releases.length > 16384) invalidDocument();
   let previous = "";
   for (const revoked of value.revoked_releases) {
-    if (!matchesPattern(legacyIDPattern, revoked.publisher_id) || !matchesPattern(legacyIDPattern, revoked.plugin_id) || !matchesPattern(semverPattern, revoked.version) || !matchesPattern(sha256Pattern, revoked.release_metadata_sha256)) invalidDocument();
+    if (!matchesPattern(releaseIDPattern, revoked.publisher_id) || !matchesPattern(releaseIDPattern, revoked.plugin_id) || !matchesPattern(semverPattern, revoked.version) || !matchesPattern(sha256Pattern, revoked.release_metadata_sha256)) invalidDocument();
     const identity = `${revoked.publisher_id}\0${revoked.plugin_id}\0${revoked.version}\0${revoked.release_metadata_sha256}`;
     if (compareUTF8(identity, previous) <= 0) invalidDocument();
     if (parseCanonicalTime(revoked.revoked_at) > parseCanonicalTime(value.expires_at)) invalidDocument();
@@ -745,7 +683,7 @@ function closePackageSignature(value: Record<string, unknown>): void {
 }
 
 function closeReleaseMetadata(value: Record<string, unknown>): void {
-  exactOptionalKeys(value, ["schema_version", "source_id", "release_metadata_ref", "publisher_id", "plugin_id", "version", "distribution_ref", "hashes", "release_metadata_signature", "package_signature", "compatibility"], ["host_requirements", "release_evidence", "metadata"]);
+  exactOptionalKeys(value, ["schema_version", "source_id", "release_metadata_ref", "publisher_id", "plugin_id", "version", "distribution_ref", "hashes", "release_metadata_signature", "package_signature"], ["release_evidence", "metadata"]);
   for (const [key, keys] of [
     ["distribution_ref", ["distribution", "artifact_ref"]],
     ["hashes", ["package_sha256", "manifest_sha256", "entries_sha256"]],
@@ -754,24 +692,6 @@ function closeReleaseMetadata(value: Record<string, unknown>): void {
   ] as const) {
     assertRecord(value[key]);
     exactKeys(value[key], keys);
-  }
-  assertRecord(value.compatibility);
-  exactOptionalKeys(value.compatibility, ["min_redevplugin_version", "min_runtime_version", "ui_protocol_version"], ["supported_targets"]);
-  if (value.host_requirements !== undefined) {
-    if (!Array.isArray(value.host_requirements)) invalidDocument();
-    for (const host of value.host_requirements) {
-      assertRecord(host);
-      exactOptionalKeys(host, ["host_id"], ["min_host_version", "required_capability_contracts"]);
-      if (host.required_capability_contracts !== undefined) {
-        if (!Array.isArray(host.required_capability_contracts)) invalidDocument();
-        for (const requirement of host.required_capability_contracts) {
-          assertRecord(requirement);
-          exactKeys(requirement, ["capability_id", "capability_version", "contract"]);
-          assertRecord(requirement.contract);
-          exactKeys(requirement.contract, ["publisher_id", "contract_id", "contract_version", "artifact_sha256"]);
-        }
-      }
-    }
   }
   if (value.release_evidence !== undefined) {
     assertRecord(value.release_evidence);
@@ -881,25 +801,25 @@ export async function verifyPackageSignature(
   await verifyEncoded(signingUsages.package, document.key_id, packageSigningPreimage(input), document.signature, verifier);
 }
 
-export function buildReleaseMetadata(document: ReleaseMetadataV8): ReleaseMetadataV8 {
+export function buildReleaseMetadata(document: ReleaseMetadata): ReleaseMetadata {
   const cloned = cloneJSON(document);
   validateReleaseMetadata(cloned);
   return deepFreeze(cloned);
 }
 
-export function releaseMetadataSigningPreimage(channel: string, document: ReleaseMetadataV8): Uint8Array {
+export function releaseMetadataSigningPreimage(channel: string, document: ReleaseMetadata): Uint8Array {
   if (!matchesPattern(newIDPattern, channel)) invalidDocument();
   const built = buildReleaseMetadata(document);
   return signingPreimage(signingUsages.releaseMetadata, { channel, release_metadata: built });
 }
 
-export function canonicalReleaseMetadata(document: ReleaseMetadataV8): Uint8Array {
+export function canonicalReleaseMetadata(document: ReleaseMetadata): Uint8Array {
   return canonicalJSON(buildReleaseMetadata(document));
 }
 
 export async function verifyReleaseMetadata(
   channel: string,
-  document: ReleaseMetadataV8,
+  document: ReleaseMetadata,
   signature: Uint8Array,
   verifier: SignatureVerifier,
 ): Promise<void> {
@@ -909,9 +829,9 @@ export async function verifyReleaseMetadata(
   await verifyRaw(signingUsages.releaseMetadata, document.release_metadata_signature.key_id, releaseMetadataSigningPreimage(channel, document), signature, verifier);
 }
 
-export function buildSourcePolicy(input: SourcePolicyInput, signature: Uint8Array): SourcePolicyV2 {
+export function buildSourcePolicy(input: SourcePolicyInput, signature: Uint8Array): SourcePolicyV3 {
   requireSignatureBytes(signature);
-  const document: SourcePolicyV2 = {
+  const document: SourcePolicyV3 = {
     schema_version: sourcePolicySchemaVersion,
     ...cloneJSON(input),
     signature: encodeBase64(signature),
@@ -921,23 +841,23 @@ export function buildSourcePolicy(input: SourcePolicyInput, signature: Uint8Arra
 }
 
 export function sourcePolicySigningPreimage(input: SourcePolicyInput): Uint8Array {
-  const document = { schema_version: sourcePolicySchemaVersion, ...cloneJSON(input), signature: "" } satisfies SourcePolicyV2;
+  const document = { schema_version: sourcePolicySchemaVersion, ...cloneJSON(input), signature: "" } satisfies SourcePolicyV3;
   validateSourcePolicy(document, false);
   return preimageWithoutTopLevelSignature(signingUsages.sourcePolicy, document);
 }
 
-export function canonicalSourcePolicy(document: SourcePolicyV2): Uint8Array {
+export function canonicalSourcePolicy(document: SourcePolicyV3): Uint8Array {
   validateSourcePolicy(document, true);
   return canonicalJSON(document);
 }
 
-export async function verifySourcePolicy(document: SourcePolicyV2, verifier: SignatureVerifier): Promise<void> {
+export async function verifySourcePolicy(document: SourcePolicyV3, verifier: SignatureVerifier): Promise<void> {
   await verifyEncoded(signingUsages.sourcePolicy, document.key_id, sourcePolicySigningPreimage(unsignedDocument<SourcePolicyInput>(document)), document.signature, verifier);
 }
 
-export function buildSourcePolicyPointer(input: ReleasePointerInput, signature: Uint8Array): SourcePolicyPointerV1 {
+export function buildSourcePolicyPointer(input: ReleasePointerInput, signature: Uint8Array): SourcePolicyPointerV2 {
   requireSignatureBytes(signature);
-  const document: SourcePolicyPointerV1 = {
+  const document: SourcePolicyPointerV2 = {
     schema_version: sourcePolicyPointerSchemaVersion,
     ...cloneJSON(input),
     signature: encodeBase64(signature),
@@ -947,23 +867,23 @@ export function buildSourcePolicyPointer(input: ReleasePointerInput, signature: 
 }
 
 export function sourcePolicyPointerSigningPreimage(input: ReleasePointerInput): Uint8Array {
-  const document = { schema_version: sourcePolicyPointerSchemaVersion, ...cloneJSON(input), signature: "" } satisfies SourcePolicyPointerV1;
+  const document = { schema_version: sourcePolicyPointerSchemaVersion, ...cloneJSON(input), signature: "" } satisfies SourcePolicyPointerV2;
   validatePointer(document, sourcePolicyPointerSchemaVersion, false);
   return preimageWithoutTopLevelSignature(signingUsages.sourcePolicyPointer, document);
 }
 
-export function canonicalSourcePolicyPointer(document: SourcePolicyPointerV1): Uint8Array {
+export function canonicalSourcePolicyPointer(document: SourcePolicyPointerV2): Uint8Array {
   validatePointer(document, sourcePolicyPointerSchemaVersion, true);
   return canonicalJSON(document);
 }
 
-export async function verifySourcePolicyPointer(document: SourcePolicyPointerV1, verifier: SignatureVerifier): Promise<void> {
+export async function verifySourcePolicyPointer(document: SourcePolicyPointerV2, verifier: SignatureVerifier): Promise<void> {
   await verifyEncoded(signingUsages.sourcePolicyPointer, document.key_id, sourcePolicyPointerSigningPreimage(unsignedDocument<ReleasePointerInput>(document)), document.signature, verifier);
 }
 
-export function buildRevocation(input: RevocationInput, signature: Uint8Array): RevocationV2 {
+export function buildRevocation(input: RevocationInput, signature: Uint8Array): RevocationV3 {
   requireSignatureBytes(signature);
-  const document: RevocationV2 = {
+  const document: RevocationV3 = {
     schema_version: revocationSchemaVersion,
     ...cloneJSON(input),
     signature: encodeBase64(signature),
@@ -973,23 +893,23 @@ export function buildRevocation(input: RevocationInput, signature: Uint8Array): 
 }
 
 export function revocationSigningPreimage(input: RevocationInput): Uint8Array {
-  const document = { schema_version: revocationSchemaVersion, ...cloneJSON(input), signature: "" } satisfies RevocationV2;
+  const document = { schema_version: revocationSchemaVersion, ...cloneJSON(input), signature: "" } satisfies RevocationV3;
   validateRevocation(document, false);
   return preimageWithoutTopLevelSignature(signingUsages.revocation, document);
 }
 
-export function canonicalRevocation(document: RevocationV2): Uint8Array {
+export function canonicalRevocation(document: RevocationV3): Uint8Array {
   validateRevocation(document, true);
   return canonicalJSON(document);
 }
 
-export async function verifyRevocation(document: RevocationV2, verifier: SignatureVerifier): Promise<void> {
+export async function verifyRevocation(document: RevocationV3, verifier: SignatureVerifier): Promise<void> {
   await verifyEncoded(signingUsages.revocation, document.key_id, revocationSigningPreimage(unsignedDocument<RevocationInput>(document)), document.signature, verifier);
 }
 
-export function buildRevocationPointer(input: ReleasePointerInput, signature: Uint8Array): RevocationPointerV1 {
+export function buildRevocationPointer(input: ReleasePointerInput, signature: Uint8Array): RevocationPointerV2 {
   requireSignatureBytes(signature);
-  const document: RevocationPointerV1 = {
+  const document: RevocationPointerV2 = {
     schema_version: revocationPointerSchemaVersion,
     ...cloneJSON(input),
     signature: encodeBase64(signature),
@@ -999,17 +919,17 @@ export function buildRevocationPointer(input: ReleasePointerInput, signature: Ui
 }
 
 export function revocationPointerSigningPreimage(input: ReleasePointerInput): Uint8Array {
-  const document = { schema_version: revocationPointerSchemaVersion, ...cloneJSON(input), signature: "" } satisfies RevocationPointerV1;
+  const document = { schema_version: revocationPointerSchemaVersion, ...cloneJSON(input), signature: "" } satisfies RevocationPointerV2;
   validatePointer(document, revocationPointerSchemaVersion, false);
   return preimageWithoutTopLevelSignature(signingUsages.revocationPointer, document);
 }
 
-export function canonicalRevocationPointer(document: RevocationPointerV1): Uint8Array {
+export function canonicalRevocationPointer(document: RevocationPointerV2): Uint8Array {
   validatePointer(document, revocationPointerSchemaVersion, true);
   return canonicalJSON(document);
 }
 
-export async function verifyRevocationPointer(document: RevocationPointerV1, verifier: SignatureVerifier): Promise<void> {
+export async function verifyRevocationPointer(document: RevocationPointerV2, verifier: SignatureVerifier): Promise<void> {
   await verifyEncoded(signingUsages.revocationPointer, document.key_id, revocationPointerSigningPreimage(unsignedDocument<ReleasePointerInput>(document)), document.signature, verifier);
 }
 
@@ -1021,23 +941,23 @@ export function decodePackageSignature(raw: Uint8Array | string, context: Packag
   return decodeCanonicalDocument(raw, closePackageSignature, (value) => validatePackageSignature(context, value, true));
 }
 
-export function decodeReleaseMetadata(raw: Uint8Array | string): ReleaseMetadataV8 {
+export function decodeReleaseMetadata(raw: Uint8Array | string): ReleaseMetadata {
   return decodeCanonicalDocument(raw, closeReleaseMetadata, validateReleaseMetadata);
 }
 
-export function decodeSourcePolicy(raw: Uint8Array | string): SourcePolicyV2 {
+export function decodeSourcePolicy(raw: Uint8Array | string): SourcePolicyV3 {
   return decodeCanonicalDocument(raw, closeSourcePolicy, (value) => validateSourcePolicy(value, true));
 }
 
-export function decodeSourcePolicyPointer(raw: Uint8Array | string): SourcePolicyPointerV1 {
+export function decodeSourcePolicyPointer(raw: Uint8Array | string): SourcePolicyPointerV2 {
   return decodeCanonicalDocument(raw, closePointer, (value) => validatePointer(value, sourcePolicyPointerSchemaVersion, true));
 }
 
-export function decodeRevocation(raw: Uint8Array | string): RevocationV2 {
+export function decodeRevocation(raw: Uint8Array | string): RevocationV3 {
   return decodeCanonicalDocument(raw, closeRevocation, (value) => validateRevocation(value, true));
 }
 
-export function decodeRevocationPointer(raw: Uint8Array | string): RevocationPointerV1 {
+export function decodeRevocationPointer(raw: Uint8Array | string): RevocationPointerV2 {
   return decodeCanonicalDocument(raw, closePointer, (value) => validatePointer(value, revocationPointerSchemaVersion, true));
 }
 

@@ -19,27 +19,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v2/pkg/bridge"
-	"github.com/floegence/redevplugin/v2/pkg/capability"
-	"github.com/floegence/redevplugin/v2/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/v2/pkg/connectivity"
-	"github.com/floegence/redevplugin/v2/pkg/execution"
-	"github.com/floegence/redevplugin/v2/pkg/manifest"
-	"github.com/floegence/redevplugin/v2/pkg/mutation"
-	"github.com/floegence/redevplugin/v2/pkg/observability"
-	"github.com/floegence/redevplugin/v2/pkg/permissions"
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
-	"github.com/floegence/redevplugin/v2/pkg/releasetrust"
-	"github.com/floegence/redevplugin/v2/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v2/pkg/secrets"
-	"github.com/floegence/redevplugin/v2/pkg/security"
-	"github.com/floegence/redevplugin/v2/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v2/pkg/sessionscope"
-	"github.com/floegence/redevplugin/v2/pkg/storage"
-	"github.com/floegence/redevplugin/v2/pkg/version"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/security"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/sessionscope"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
 var testPluginInstanceSequence atomic.Uint64
@@ -166,7 +166,7 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 	}
 }
 
-func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
+func TestLifecycleInstallDisableUninstall(t *testing.T) {
 	host, surfaces, audits := newTestHost(t, true, true)
 	packageBytes := buildFixturePackage(t)
 
@@ -174,8 +174,8 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
-	if installed.EnableState != registry.EnableDisabled {
-		t.Fatalf("install EnableState = %s", installed.EnableState)
+	if installed.EnableState != registry.EnableEnabled {
+		t.Fatalf("install EnableState = %s, want enabled", installed.EnableState)
 	}
 	if installed.PolicyRevision == 0 || installed.ManagementRevision == 0 {
 		t.Fatalf("revision fields not initialized: %#v", installed)
@@ -186,13 +186,6 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 		t.Fatalf("local import provenance mismatch: %#v", installed.LocalImportProvenance)
 	}
 
-	enabled, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)})
-	if err != nil {
-		t.Fatalf("EnablePlugin() error = %v", err)
-	}
-	if enabled.EnableState != registry.EnableEnabled {
-		t.Fatalf("enable EnableState = %s", enabled.EnableState)
-	}
 	if len(surfaces.snapshots) != 1 || len(surfaces.snapshots[0].Surfaces) != 1 {
 		t.Fatalf("surface publish mismatch: %#v", surfaces.snapshots)
 	}
@@ -201,8 +194,8 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
-	if disabled.EnableState != registry.EnableDisabled {
-		t.Fatalf("disable EnableState = %s", disabled.EnableState)
+	if disabled.EnableState != registry.EnableDisabledByUser {
+		t.Fatalf("disable EnableState = %s, want disabled_by_user", disabled.EnableState)
 	}
 	if len(surfaces.snapshots) != 2 || len(surfaces.snapshots[1].Surfaces) != 0 {
 		t.Fatalf("disable did not clear surfaces: %#v", surfaces.snapshots)
@@ -215,7 +208,7 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	if _, err := host.getPluginRecord(hostTestContext(), installed.PluginInstanceID); err != registry.ErrNotFound {
 		t.Fatalf("GetPlugin after uninstall error = %v", err)
 	}
-	for _, eventType := range []string{"plugin.installed", "plugin.enabled", "plugin.disabled", "plugin.uninstalled"} {
+	for _, eventType := range []string{"plugin.installed", "plugin.disabled", "plugin.uninstalled"} {
 		if !audits.hasEvent(eventType) {
 			t.Fatalf("missing audit event %q: %#v", eventType, audits.events)
 		}
@@ -354,6 +347,7 @@ func TestManagementRevisionFailsClosedWithoutSideEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	initialAuditCount := len(audits.events)
+	initialSurfaceCount := len(surfaces.snapshots)
 
 	for _, managementRevision := range []uint64{0, installed.ManagementRevision + 1} {
 		if _, err := h.EnablePlugin(ctx, EnableRequest{
@@ -367,23 +361,31 @@ func TestManagementRevisionFailsClosedWithoutSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || records[0].EnableState != registry.EnableDisabled || records[0].ManagementRevision != installed.ManagementRevision {
+	if len(records) != 1 || records[0].EnableState != registry.EnableEnabled || records[0].ManagementRevision != installed.ManagementRevision {
 		t.Fatalf("failed enable mutated registry: %#v", records)
 	}
-	if len(surfaces.snapshots) != 0 || len(audits.events) != initialAuditCount {
+	if len(surfaces.snapshots) != initialSurfaceCount || len(audits.events) != initialAuditCount {
 		t.Fatalf("failed enable produced side effects: surfaces=%#v audits=%#v", surfaces.snapshots, audits.events)
 	}
 
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+	disabled, err := h.DisablePlugin(ctx, DisableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "test stale revision",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: disabled.ManagementRevision,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
 		PluginInstanceID:           enabled.PluginInstanceID,
-		ExpectedManagementRevision: installed.ManagementRevision,
+		ExpectedManagementRevision: disabled.ManagementRevision,
 		SurfaceID:                  "lifecycle.view",
 		SurfaceInstanceID:          "surface_management_revision",
 	}); !errors.Is(err, ErrManagementRevisionMismatch) {
@@ -414,9 +416,17 @@ func TestManagementRevisionFailsClosedWithoutSideEffects(t *testing.T) {
 	}
 }
 
-func TestEnableReportsUnknownOutcomeAfterRegistryCommit(t *testing.T) {
+func TestEnableReportsCommittedOutcomeAfterRegistryCommit(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "test derived failure",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,13 +434,13 @@ func TestEnableReportsUnknownOutcomeAfterRegistryCommit(t *testing.T) {
 
 	_, err = h.EnablePlugin(hostTestContext(), EnableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
-		ExpectedManagementRevision: installed.ManagementRevision,
+		ExpectedManagementRevision: disabled.ManagementRevision,
 	})
 	if err == nil {
 		t.Fatal("EnablePlugin() expected surface catalog error")
 	}
-	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
-		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
+	if got := mutation.ForError(err); got != mutation.OutcomeCommitted {
+		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeCommitted)
 	}
 	record, getErr := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if getErr != nil {
@@ -460,6 +470,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
+	grantDeclaredPermissions(t, h, installed)
 	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceID:         "rpc.view",
@@ -483,7 +494,6 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -594,37 +604,6 @@ func TestUpdateRejectsPluginDataContractChanges(t *testing.T) {
 			installed.PluginInstanceID),
 	}); !errors.Is(err, ErrPluginDataContractChanged) {
 		t.Fatalf("UpdateLocalPackage() error = %v, want ErrPluginDataContractChanged", err)
-	}
-}
-
-func TestEnableRejectsUntrusted(t *testing.T) {
-	host, _, _ := newTestHost(t, true, true)
-	pkg := readTestPackage(t, buildFixturePackage(t))
-	installed, err := host.putPluginRecord(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, nextTestPluginInstanceID(t), nil, nil), time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)}); err == nil {
-		t.Fatal("EnablePlugin() expected untrusted error")
-	}
-}
-
-func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
-	host, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: false, localGenerated: true})
-	pkg := readTestPackage(t, buildFixturePackage(t))
-	installed, err := host.putPluginRecord(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUnsignedLocal}, nextTestPluginInstanceID(t), nil, nil), time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)}); err == nil {
-		t.Fatal("EnablePlugin() expected policy error")
-	}
-	record, err := host.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.EnableState != registry.EnableDisabledByPolicy {
-		t.Fatalf("EnableState = %s", record.EnableState)
 	}
 }
 
@@ -808,10 +787,7 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow(), ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
-	if err != nil {
-		t.Fatalf("EnablePlugin() error = %v", err)
-	}
+	enabled := installed
 	now := stableRecentTestNow().Add(time.Minute)
 	handle, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
 		PluginInstanceID:    enabled.PluginInstanceID,
@@ -841,8 +817,8 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.EnableState != registry.EnableDisabledByPolicy {
-		t.Fatalf("EnableState = %s, want disabled_by_policy", current.EnableState)
+	if current.EnableState != registry.EnableEnabled {
+		t.Fatalf("policy failure rewrote enable state: %s", current.EnableState)
 	}
 	if runtime.revokeCalls != 1 || runtime.lastRevokedPlugin != enabled.PluginInstanceID || runtime.lastRevokeEpoch != current.RevokeEpoch {
 		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d current=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, current)
@@ -937,7 +913,6 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 	gateway, err := host.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -1038,7 +1013,6 @@ func TestMintBridgeTokenSurvivesRuntimeGenerationChanges(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 	gateway, err := h.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -1243,10 +1217,18 @@ func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	disabled, err := host.DisablePlugin(hostTestContext(), DisableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "test disabled surface",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := host.OpenSurface(hostTestContext(), OpenSurfaceRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		SurfaceID:        "lifecycle.view", ExpectedManagementRevision: mustManagementRevision(t, host,
-			installed.PluginInstanceID),
+			disabled.PluginInstanceID),
 	}); err == nil {
 		t.Fatal("OpenSurface() expected disabled plugin error")
 	}
@@ -1701,7 +1683,33 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 		capabilityAdapter: capabilityAdapter,
 		diagnostics:       diagnostics,
 	})
-	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, buildRPCFixturePackage(t), "rpc.view")
+	installed := installAndEnablePlugin(t, h, buildRPCFixturePackage(t))
+	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		SurfaceID:                  "rpc.view",
+		SurfaceInstanceID:          "surface_without_permission",
+		ExpectedManagementRevision: installed.ManagementRevision,
+	}); !errors.Is(err, permissions.ErrPermissionDenied) {
+		t.Fatalf("OpenSurface() without grant error = %v, want ErrPermissionDenied", err)
+	}
+	grantNow := time.Now().UTC()
+	expiresAt := grantNow.Add(time.Minute)
+	beforeGrant, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		PermissionID:               "read",
+		ExpectedPolicyRevision:     beforeGrant.PolicyRevision,
+		ExpectedManagementRevision: beforeGrant.ManagementRevision,
+		ExpectedRevokeEpoch:        beforeGrant.RevokeEpoch,
+		Now:                        grantNow,
+		ExpiresAt:                  expiresAt,
+	}); err != nil {
+		t.Fatalf("GrantPermission() error = %v", err)
+	}
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
 	call := CallMethodRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceInstanceID: "surface_rpc",
@@ -1709,9 +1717,10 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 		BridgeChannelID: "bridge_rpc",
 		GatewayToken:    gateway.GatewayToken,
 		Method:          "echo.ping",
+		Now:             expiresAt.Add(time.Second),
 	}
 	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
-		t.Fatalf("CallPluginMethod() without grant error = %v, want ErrPermissionDenied", err)
+		t.Fatalf("CallPluginMethod() with expired grant error = %v, want ErrPermissionDenied", err)
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called before permission grant: %d", capabilityAdapter.calls)
@@ -1723,7 +1732,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 		t.Fatalf("missing permission rejection diagnostic: %#v", diagnostics.events)
 	}
 
-	beforeGrant, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
+	beforeGrant, err = h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1733,6 +1742,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 		ExpectedPolicyRevision:     beforeGrant.PolicyRevision,
 		ExpectedManagementRevision: beforeGrant.ManagementRevision,
 		ExpectedRevokeEpoch:        beforeGrant.RevokeEpoch,
+		Now:                        expiresAt.Add(2 * time.Second),
 	}); err != nil {
 		t.Fatalf("GrantPermission() error = %v", err)
 	}
@@ -1748,6 +1758,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	}
 	_, freshGateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
 	call.GatewayToken = freshGateway.GatewayToken
+	call.Now = time.Time{}
 	if _, err := h.CallPluginMethod(hostTestContext(), call); err != nil {
 		t.Fatalf("CallPluginMethod() after grant error = %v", err)
 	}
@@ -1779,10 +1790,13 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("CallPluginMethod() after revoke with stale token error = %v, want ErrTokenRevoked", err)
 	}
-	_, freshGateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
-	call.GatewayToken = freshGateway.GatewayToken
-	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
-		t.Fatalf("CallPluginMethod() after revoke error = %v, want ErrPermissionDenied", err)
+	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		SurfaceID:                  "rpc.view",
+		SurfaceInstanceID:          "surface_after_revoke",
+		ExpectedManagementRevision: afterRevoke.ManagementRevision,
+	}); !errors.Is(err, permissions.ErrPermissionDenied) {
+		t.Fatalf("OpenSurface() after revoke error = %v, want ErrPermissionDenied", err)
 	}
 	if !audits.hasEvent("plugin.permission.granted") || !audits.hasEvent("plugin.permission.revoked") {
 		t.Fatalf("missing permission audit events: %#v", audits.events)
@@ -2685,6 +2699,7 @@ func TestCallPluginMethodAuditsTrustUnavailable(t *testing.T) {
 	}
 	record.TrustState = registry.TrustUnavailable
 	record.TrustAssessment.TrustState = registry.TrustUnavailable
+	record.ExecutionApproval.Status = registry.ExecutionApprovalPending
 	if _, err := h.putPluginRecord(hostTestContext(), record, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
@@ -2748,7 +2763,7 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 	beforePolicy, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
@@ -2774,7 +2789,17 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 	if afterPolicy.PolicyRevision <= beforePolicy.PolicyRevision || afterPolicy.RevokeEpoch <= beforePolicy.RevokeEpoch {
 		t.Fatalf("security policy update did not bump policy/revoke revisions: before=%#v after=%#v", beforePolicy, afterPolicy)
 	}
-	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
+	if afterPolicy.EnableState != registry.EnableEnabled {
+		t.Fatalf("security policy changed enable state to %q", afterPolicy.EnableState)
+	}
+	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		SurfaceID:                  "rpc.view",
+		SurfaceInstanceID:          "surface_policy_denied",
+		ExpectedManagementRevision: afterPolicy.ManagementRevision,
+	}); !errors.Is(err, security.ErrPolicyDenied) {
+		t.Fatalf("OpenSurface() error = %v, want ErrPolicyDenied", err)
+	}
 	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceInstanceID: "surface_rpc",
@@ -2782,8 +2807,8 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 		BridgeChannelID: "bridge_rpc",
 		GatewayToken:    gateway.GatewayToken,
 		Method:          "echo.ping",
-	}); !errors.Is(err, security.ErrPolicyDenied) {
-		t.Fatalf("CallPluginMethod() error = %v, want ErrPolicyDenied", err)
+	}); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("CallPluginMethod() with pre-policy token error = %v, want ErrTokenRevoked", err)
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called before security policy allowed it: %d", capabilityAdapter.calls)
@@ -3589,7 +3614,15 @@ func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "test explicit audit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: disabled.ManagementRevision}); err != nil {
 		t.Fatal(err)
 	}
 	grantDeclaredPermissions(t, h, installed)
@@ -4580,25 +4613,15 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 	}
 }
 
-func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T) {
-	audits := &auditSink{}
+func TestExplicitDiagnosticsSinkReceivesScopedDiagnostics(t *testing.T) {
 	diagnostics := observability.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, audit: audits, diagnostics: diagnostics,
+		developerMode: true, localGenerated: true, diagnostics: diagnostics,
 	})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-
-	auditEvent, ok := audits.lastEvent("plugin.enabled")
-	if !ok || auditEvent.PluginID != installed.PluginID || auditEvent.PluginInstanceID != installed.PluginInstanceID {
-		t.Fatalf("audit sink event mismatch: %#v", auditEvent)
-	}
-
 	h.diagnostic(hostTestContext(), observability.DiagnosticEvent{
 		Type:              "plugin.surface.renderer_error",
 		Severity:          "warning",
@@ -4644,7 +4667,7 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 		ExecutionID:       "execution_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-		RustIPCVersion: "rust-ipc-v7", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
+		RuntimeTargetOS:   "linux",
 		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
 		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -4656,7 +4679,7 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 		ExecutionID:       "execution_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-		RustIPCVersion: "rust-ipc-v7", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
+		RuntimeTargetOS:   "linux",
 		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
 		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -4796,7 +4819,6 @@ type testHostOptions struct {
 	secrets                 SecretStoreAdapter
 	audit                   AuditSink
 	diagnostics             DiagnosticsSink
-	hostRequirements        HostRequirementPolicy
 	capabilities            *capability.Registry
 	capabilityID            string
 	capabilityContract      *capabilitycontract.KnownContract
@@ -4824,22 +4846,6 @@ type testRuntimeManagerDependencies struct {
 type lateBindingPluginData struct{ PluginData }
 
 func (p *lateBindingPluginData) bind(store PluginData) { p.PluginData = store }
-
-type fixedHostRequirementPolicy struct {
-	hostID string
-	err    error
-	calls  int
-	last   HostRequirementSelectionRequest
-}
-
-func (p *fixedHostRequirementPolicy) SelectHostRequirement(_ context.Context, req HostRequirementSelectionRequest) (HostRequirementSelection, error) {
-	p.calls++
-	p.last = req
-	if p.err != nil {
-		return HostRequirementSelection{}, p.err
-	}
-	return HostRequirementSelection{HostID: p.hostID}, nil
-}
 
 func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surfaceSink, *auditSink) {
 	t.Helper()
@@ -4875,10 +4881,6 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		trustVerifier = &recordingPackageTrustVerifier{}
 	}
 	releaseArtifactResolver := opts.releaseArtifactResolver
-	hostRequirements := opts.hostRequirements
-	if hostRequirements == nil {
-		hostRequirements = &fixedHostRequirementPolicy{hostID: "test-host"}
-	}
 	diagnostics := opts.diagnostics
 	if diagnostics == nil {
 		diagnostics = observability.NewMemoryStore()
@@ -4969,7 +4971,6 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		releaseModule = &ReleaseModule{
 			Trust:                   opts.releaseTrust,
 			ReleaseArtifactResolver: releaseArtifactResolver,
-			HostRequirements:        hostRequirements,
 		}
 	}
 	stateRoot := opts.stateRoot
@@ -5246,8 +5247,20 @@ func buildFixturePackage(t *testing.T) []byte {
 func buildPresentationIconFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
-	manifestJSON := strings.Replace(fixtureManifestJSON(), `"localizations": []`, `"localizations": [], "icon": {"path": "ui/assets/status.png"}`, 1)
-	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	var document map[string]any
+	if err := json.Unmarshal([]byte(fixtureManifestJSON()), &document); err != nil {
+		t.Fatal(err)
+	}
+	presentation, ok := document["presentation"].(map[string]any)
+	if !ok {
+		t.Fatal("fixture manifest presentation is missing")
+	}
+	presentation["icon"] = map[string]any{"path": "ui/assets/status.png"}
+	manifestJSON, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "manifest.json"), string(manifestJSON))
 	writeSurfaceFixture(t, dir, "Plugin Icon")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
@@ -5672,63 +5685,6 @@ func buildWorkerNetworkFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-func buildWorkerNetworkSubscriptionFixturePackage(t *testing.T) []byte {
-	t.Helper()
-	dir := t.TempDir()
-	manifestJSON := strings.Replace(workerNetworkFixtureManifestJSON(), `"execution": "sync"`, `"execution": "subscription"`, 1)
-	manifestJSON = strings.Replace(manifestJSON, `"route": {"kind": "worker"`, `"cancel_policy": {"cancelable": true, "disable_behavior": "orphan", "uninstall_behavior": "force_cleanup_allowed", "ack_timeout_ms": 2000}, "route": {"kind": "worker"`, 1)
-	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
-	writeSurfaceFixture(t, dir, "Worker Network Stream")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-func buildWorkerNetworkSubscriptionMemoryHostcallFixturePackage(t *testing.T) []byte {
-	t.Helper()
-	dir := t.TempDir()
-	manifestJSON := strings.Replace(workerNetworkFixtureManifestJSON(), `"execution": "sync"`, `"execution": "subscription"`, 1)
-	manifestJSON = strings.Replace(manifestJSON, `"route": {"kind": "worker"`, `"cancel_policy": {"cancelable": true, "disable_behavior": "orphan", "uninstall_behavior": "force_cleanup_allowed", "ack_timeout_ms": 2000}, "route": {"kind": "worker"`, 1)
-	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
-	writeSurfaceFixture(t, dir, "Worker Network Stream Memory Hostcall")
-	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"max_chunk_bytes":4,"max_buffered_bytes":65536,"timeout_ms":1000,"content_type":"text/plain"}`)
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", "redevplugin_worker_invoke", request))
-	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-func buildWorkerNetworkMemoryHostcallFixturePackage(t *testing.T) []byte {
-	t.Helper()
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
-	writeSurfaceFixture(t, dir, "Worker Network Memory Hostcall")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-func buildWorkerNetworkTransportMemoryHostcallFixturePackage(t *testing.T, transport connectivity.Transport) []byte {
-	t.Helper()
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkTransportFixtureManifestJSON(transport))
-	writeSurfaceFixture(t, dir, "Worker Network Transport Memory Hostcall")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkTransportMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke", transport))
-	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
 func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -5852,7 +5808,7 @@ func addIntentToManifestJSON(t *testing.T, manifestJSON string, dangerous bool) 
 
 func minimalWorkerWASMForTest(exportName string) []byte {
 	response := []byte(`{"ok":true,"data":{"backend":"executed wasm worker scaffold","transport":"rust runtime ipc","method":"worker.echo","worker_id":"echo_worker"}}`)
-	return abiV2WorkerWASMForTest(exportName, response, nil)
+	return currentWorkerWASMForTest(exportName, response, nil)
 }
 
 type wasmHostcallFixture struct {
@@ -5862,43 +5818,23 @@ type wasmHostcallFixture struct {
 	request       []byte
 }
 
-func networkMemoryHostcallWorkerWASMForTest(exportName string) []byte {
-	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", exportName, request)
-}
-
-func networkTransportMemoryHostcallWorkerWASMForTest(exportName string, transport connectivity.Transport) []byte {
-	var request []byte
-	switch transport {
-	case connectivity.TransportWebSocket:
-		request = []byte(`{"connector_id":"stream","transport":"websocket","destination":"wss://stream.example.com","operation":"websocket_round_trip","message_type":"text","payload_base64":"aGVsbG8gd2Vic29ja2V0","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
-	case connectivity.TransportTCP:
-		request = []byte(`{"connector_id":"mysql","transport":"tcp","destination":"db.example.com:3306","operation":"tcp_round_trip","payload_base64":"aGVsbG8gdGNw","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
-	case connectivity.TransportUDP:
-		request = []byte(`{"connector_id":"metrics","transport":"udp","destination":"metrics.example.com:8125","operation":"udp_round_trip","payload_base64":"aGVsbG8gdWRw","max_response_bytes":4096,"timeout_ms":1000}`)
-	default:
-		request = []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","body_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
-	}
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", exportName, request)
-}
-
 func storageMemoryHostcallWorkerWASMForTest(exportName string) []byte {
-	request := []byte(`{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8gZnJvbSBtZW1vcnkgc3RvcmFnZSBob3N0Y2FsbA==","max_bytes":0,"max_entries":0,"recursive":false}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "files", "storage_file", exportName, request)
+	request := []byte(`{"plugin_api":1,"operation":"storage.files","arguments":{"operation":"write","store_id":"workspace","path":"notes/from-memory.txt","data_base64":"aGVsbG8gZnJvbSBtZW1vcnkgc3RvcmFnZSBob3N0Y2FsbA=="}}`)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.io", "rdp_call_v1", "storage", exportName, request)
 }
 
 func storageKVMemoryHostcallWorkerWASMForTest(exportName string) []byte {
-	request := []byte(`{"store_id":"cache","operation":"put","key":"runs/latest","value_base64":"aGVsbG8gZnJvbSBtZW1vcnkga3YgaG9zdGNhbGw=","max_bytes":0,"max_entries":0}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "kv", "storage_kv", exportName, request)
+	request := []byte(`{"plugin_api":1,"operation":"storage.kv","arguments":{"operation":"put","store_id":"cache","key":"runs/latest","value_base64":"aGVsbG8gZnJvbSBtZW1vcnkga3YgaG9zdGNhbGw="}}`)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.io", "rdp_call_v1", "storage", exportName, request)
 }
 
 func storageSQLiteMemoryHostcallWorkerWASMForTest(exportName string) []byte {
-	request := []byte(`{"store_id":"db","operation":"exec","database":"plugin.sqlite","sql":"CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)","args":[],"timeout_ms":1000}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "sqlite", "storage_sqlite", exportName, request)
+	request := []byte(`{"plugin_api":1,"operation":"storage.sqlite","arguments":{"operation":"exec","store_id":"db","database":"plugin.sqlite","sql":"CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)","args":[],"timeout_ms":1000}}`)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.io", "rdp_call_v1", "storage", exportName, request)
 }
 
 func importedMemoryHostcallWorkerWASMForTest(importModule string, importName string, responseField string, exportName string, request []byte) []byte {
-	return abiV2WorkerWASMForTest(exportName, nil, &wasmHostcallFixture{
+	return currentWorkerWASMForTest(exportName, nil, &wasmHostcallFixture{
 		importModule:  importModule,
 		importName:    importName,
 		responseField: responseField,
@@ -5906,11 +5842,11 @@ func importedMemoryHostcallWorkerWASMForTest(importModule string, importName str
 	})
 }
 
-func abiV2WorkerWASMForTest(exportName string, staticResponse []byte, hostcall *wasmHostcallFixture) []byte {
+func currentWorkerWASMForTest(exportName string, staticResponse []byte, hostcall *wasmHostcallFixture) []byte {
 	const (
 		outputPointer            = int32(64 * 1024)
 		requestAllocationPointer = int32(512 * 1024)
-		hostcallResponseCapacity = int32(256 * 1024)
+		hostcallResponseCapacity = int32(64 * 1024)
 	)
 	module := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 
@@ -6085,53 +6021,44 @@ func lifecycleManifestJSON(version string, title string) string {
 		title = "Lifecycle"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.lifecycle",
 			"display_name": ` + strconv.Quote(title) + `,
-			"version": ` + strconv.Quote(version) + `,
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": ` + strconv.Quote(version) + `
 		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
 		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
+			"locales": {"default": "en-US"}
 		},
 		"surfaces": [
 			{"surface_id": "lifecycle.view", "kind": "view", "label": "Lifecycle", "entry": "ui/index.html"}
-		]
+		],
+		"workers": [],
+		"methods": [],
+		"storage": {"stores": []}
 	}`
 }
 
 func storageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.storage",
 			"display_name": "Storage",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "storage.view", "kind": "view", "label": "Storage", "entry": "ui/index.html"}
 		],
+		"workers": [],
+		"methods": [],
 		"storage": {
 			"stores": [
 				{
@@ -6157,27 +6084,21 @@ func storageFixtureManifestJSON() string {
 
 func settingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.settings",
 			"display_name": "Settings",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "settings.view", "kind": "view", "label": "Settings", "entry": "ui/index.html"}
 		],
+		"workers": [],
+		"methods": [],
 		"settings": {
 			"schema_version": 1,
 			"fields": [
@@ -6195,27 +6116,21 @@ func dataShapeFixtureManifestJSON(opts dataShapeFixtureOptions) string {
 		version = "1.0.0"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.data-shape",
 			"display_name": "Data Shape",
-			"version": ` + strconv.Quote(version) + `,
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": ` + strconv.Quote(version) + `
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "data-shape.view", "kind": "view", "label": "Data Shape", "entry": "ui/index.html"}
 		],
+		"workers": [],
+		"methods": [],
 		"storage": {
 			"stores": [
 				{
@@ -6241,30 +6156,23 @@ func rpcFixtureManifestJSON(version string, title string) string {
 		title = "RPC"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.rpc",
 			"display_name": ` + strconv.Quote(title) + `,
-			"version": ` + strconv.Quote(version) + `,
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": ` + strconv.Quote(version) + `
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
 		],
+		"workers": [],
 		"methods": [
 			{
 				"method": "echo.ping",
@@ -6276,30 +6184,23 @@ func rpcFixtureManifestJSON(version string, title string) string {
 
 func dangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.danger",
 			"display_name": "Danger",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
 		],
+		"workers": [],
 		"methods": [
 			{
 				"method": "danger.run",
@@ -6311,30 +6212,23 @@ func dangerousRPCFixtureManifestJSON() string {
 
 func operationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.operation",
 			"display_name": "Operation",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
 		],
+		"workers": [],
 		"methods": [
 			{
 				"method": "documents.archive",
@@ -6346,30 +6240,23 @@ func operationRPCFixtureManifestJSON() string {
 
 func subscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.subscription",
 			"display_name": "Subscription",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
 		],
+		"workers": [],
 		"methods": [
 			{
 				"method": "logs.tail",
@@ -6381,27 +6268,20 @@ func subscriptionRPCFixtureManifestJSON() string {
 
 func coreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.core",
 			"display_name": "Core Action",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "core.view", "kind": "view", "label": "Core", "entry": "ui/index.html"}
 		],
+		"workers": [],
 		"methods": [
 			{
 				"method": "core.open",
@@ -6435,36 +6315,6 @@ func workerMethodSchemasJSON() string {
 				"type": "object",
 				"additionalProperties": false,
 				"$defs": {
-					"network_result": {
-						"type": "object",
-						"additionalProperties": false,
-						"properties": {
-							"ok": {"type": "boolean"},
-							"status_code": {"type": "integer"},
-							"connector_id": {"type": "string"},
-							"grant_id": {"type": "string"},
-							"destination": {
-								"type": "object",
-								"additionalProperties": false,
-								"required": ["transport", "host", "port"],
-								"properties": {
-									"transport": {"type": "string"},
-									"scheme": {"type": "string"},
-									"host": {"type": "string"},
-									"port": {"type": "integer"}
-								}
-							},
-							"runtime_generation_id": {"type": "string"},
-							"headers": {"type": "object", "additionalProperties": false, "patternProperties": {"^[!#$%&'*+.^_\u0060|~0-9A-Za-z-]+$": {"type": "array", "items": {"type": "string"}}}},
-							"body_base64": {"type": "string"},
-							"stream_id": {"type": "string"},
-							"bytes_read": {"type": "integer"},
-							"chunk_count": {"type": "integer"},
-							"transport": {"type": "string"},
-							"message_type": {"type": "string"},
-							"payload_base64": {"type": "string"}
-						}
-					},
 					"storage_usage": {
 						"type": "object",
 						"additionalProperties": false,
@@ -6477,9 +6327,8 @@ func workerMethodSchemasJSON() string {
 							"quota_files": {"type": "integer", "minimum": 0}
 						}
 					},
-					"storage_file_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "path": {"type": "string"}, "size_bytes": {"type": "integer"}, "usage": {"$ref": "#/$defs/storage_usage"}}},
-					"storage_kv_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "key": {"type": "string"}, "size_bytes": {"type": "integer"}, "usage": {"$ref": "#/$defs/storage_usage"}}},
-						"storage_sqlite_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "database": {"type": "string"}, "rows_affected": {"type": "integer", "minimum": 0}, "last_insert_id": {"type": "integer", "minimum": 0}, "usage": {"$ref": "#/$defs/storage_usage"}}}
+					"storage_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "path": {"type": "string"}, "key": {"type": "string"}, "database": {"type": "string"}, "size_bytes": {"type": "integer"}, "rows_affected": {"type": "integer", "minimum": 0}, "last_insert_id": {"type": "integer", "minimum": 0}, "usage": {"$ref": "#/$defs/storage_usage"}}},
+					"control_response": {"type": "object", "additionalProperties": false, "required": ["ok", "result"], "properties": {"ok": {"const": true}, "result": {"$ref": "#/$defs/storage_result"}}}
 				},
 				"properties": {
 					"from_worker": {"type": "boolean"},
@@ -6487,40 +6336,26 @@ func workerMethodSchemasJSON() string {
 					"transport": {"type": "string"},
 					"method": {"type": "string"},
 					"worker_id": {"type": "string"},
-					"wasm_abi": {"type": "string"},
 					"wasm_byte_len": {"type": "integer", "minimum": 0},
-						"network_execute": {"$ref": "#/$defs/network_result"},
-						"network_execute_http": {"$ref": "#/$defs/network_result"},
-						"network_execute_websocket": {"$ref": "#/$defs/network_result"},
-						"network_execute_tcp": {"$ref": "#/$defs/network_result"},
-						"network_execute_udp": {"$ref": "#/$defs/network_result"},
 					"stream_id": {"type": "string"},
-						"storage_file": {"$ref": "#/$defs/storage_file_result"},
-						"storage_kv": {"$ref": "#/$defs/storage_kv_result"},
-						"storage_sqlite": {"$ref": "#/$defs/storage_sqlite_result"}
+					"storage": {"$ref": "#/$defs/control_response"}
 				}
 			},`
 }
 
 func workerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
 			"display_name": "Worker",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
 		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
+			"locales": {"default": "en-US"}
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -6529,11 +6364,9 @@ func workerFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
-				"memory_limit_bytes": 16777216,
-				"idle_timeout_ms": 0
+				"memory_limit_bytes": 16777216
 			}
 		],
 		"methods": [
@@ -6550,24 +6383,16 @@ func workerFixtureManifestJSON() string {
 
 func workerNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network",
 			"display_name": "Worker Network",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": ["net.http.v1"], "optional_features": []},
+		"permissions": ["network.client"],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
@@ -6575,11 +6400,9 @@ func workerNetworkFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
-				"memory_limit_bytes": 16777216,
-				"idle_timeout_ms": 0
+				"memory_limit_bytes": 16777216
 			}
 		],
 		"methods": [
@@ -6613,85 +6436,18 @@ func workerNetworkBrokerAccessJSON(transport connectivity.Transport) string {
 	}
 }
 
-func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport) string {
-	connectors := map[connectivity.Transport]string{
-		connectivity.TransportWebSocket: `{"connector_id": "stream", "transport": "websocket", "scope": "user", "destinations": ["wss://stream.example.com"]}`,
-		connectivity.TransportTCP:       `{"connector_id": "mysql", "transport": "tcp", "scope": "environment", "destinations": ["db.example.com:3306"]}`,
-		connectivity.TransportUDP:       `{"connector_id": "metrics", "transport": "udp", "scope": "environment", "destinations": ["metrics.example.com:8125"]}`,
-	}
-	connector, ok := connectors[transport]
-	if !ok {
-		connector = `{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}`
-	}
-	return `{
-		"schema_version": "redevplugin.manifest.v8",
-		"publisher": {"publisher_id": "example", "display_name": "Example"},
-		"plugin": {
-			"plugin_id": "com.example.worker.network.transport",
-			"display_name": "Worker Network Transport",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v7"
-		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
-		"surfaces": [
-			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
-		],
-		"workers": [
-			{
-				"worker_id": "echo_worker",
-				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v2",
-				"mode": "job",
-				"scope": "user",
-				"memory_limit_bytes": 16777216,
-				"idle_timeout_ms": 0
-			}
-		],
-		"methods": [
-			{
-				"method": "worker.echo",
-				"effect": "write",
-				"execution": "sync",
-				` + workerMethodSchemasJSON() + `
-				` + workerNetworkBrokerAccessJSON(transport) + `
-				"route": {"kind": "worker", "worker_id": "echo_worker"}
-			}
-		],
-		"network_access": {
-			"connectors": [` + connector + `]
-		}
-	}`
-}
-
 func workerStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage",
 			"display_name": "Worker Storage",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
@@ -6699,11 +6455,9 @@ func workerStorageFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
-				"memory_limit_bytes": 16777216,
-				"idle_timeout_ms": 0
+				"memory_limit_bytes": 16777216
 			}
 		],
 		"methods": [
@@ -6732,24 +6486,16 @@ func workerStorageFixtureManifestJSON() string {
 
 func workerStorageKVFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.kv",
 			"display_name": "Worker Storage KV",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
@@ -6757,11 +6503,9 @@ func workerStorageKVFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
-				"memory_limit_bytes": 16777216,
-				"idle_timeout_ms": 0
+				"memory_limit_bytes": 16777216
 			}
 		],
 		"methods": [
@@ -6790,24 +6534,16 @@ func workerStorageKVFixtureManifestJSON() string {
 
 func workerStorageSQLiteFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.sqlite",
 			"display_name": "Worker Storage SQLite",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": [], "optional_features": []},
+		"permissions": [],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
@@ -6815,11 +6551,9 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
-				"memory_limit_bytes": 16777216,
-				"idle_timeout_ms": 0
+				"memory_limit_bytes": 16777216
 			}
 		],
 		"methods": [
@@ -6852,27 +6586,21 @@ func networkFixtureManifestJSON(blocked bool) string {
 		httpDestination = "http://localhost"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v8",
+		"schema_version": "redevplugin.manifest.v9",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.network",
 			"display_name": "Network",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v7"
+			"version": "1.0.0"
 		},
-		"presentation": {
-			"default_locale": "en-US",
-			"summary": "Test plugin presentation.",
-			"description": ["Test plugin presentation used by the current manifest contract."],
-			"highlights": [],
-			"keywords": ["test"],
-			"localizations": []
-		},
+		"api": {"major": 1, "required_features": ["net.http.v1", "net.websocket.v1", "net.tcp.v1", "net.udp.v1"], "optional_features": []},
+		"permissions": ["network.client"],
+		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
 			{"surface_id": "network.view", "kind": "view", "label": "Network", "entry": "ui/index.html"}
 		],
+		"workers": [],
+		"methods": [],
 		"storage": {
 			"stores": [
 				{
@@ -6908,26 +6636,17 @@ func installEnableAndMintGatewayForAudience(t *testing.T, h *Host, packageBytes 
 	return installed, gateway
 }
 
-func installEnableAndMintGatewayWithoutPermissions(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
-	t.Helper()
-	installed := installAndEnablePlugin(t, h, packageBytes)
-	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
-	return installed, gateway
-}
-
 func installAndEnablePlugin(t *testing.T, h *Host, packageBytes []byte) registry.PluginRecord {
 	t.Helper()
 	ctx := hostTestContext()
-	now := stableRecentTestNow()
 	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
-	if err != nil {
-		t.Fatal(err)
+	if installed.EnableState != registry.EnableEnabled {
+		t.Fatalf("installed plugin enable state = %q, want %q", installed.EnableState, registry.EnableEnabled)
 	}
-	return enabled
+	return installed
 }
 
 func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, surfaceID string) (bridge.SurfaceBootstrap, bridge.GatewayTokenResult) {
@@ -6969,7 +6688,6 @@ func openSurfaceAndMintGatewayForAudience(t *testing.T, h *Host, pluginInstanceI
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -7363,8 +7081,8 @@ type recordingRuntimeManager struct {
 	revokeCalls         int
 	startedTarget       runtimetarget.Target
 	health              runtimeclient.Health
-	descriptor          runtimeclient.RuntimeDescriptor
-	bindingDescriptor   runtimeclient.RuntimeDescriptor
+	descriptor          runtimeclient.RuntimeArtifactIdentity
+	bindingDescriptor   runtimeclient.RuntimeArtifactIdentity
 	result              capability.Result
 	preflightErr        error
 	healthErr           error
@@ -7389,7 +7107,7 @@ type recordingRuntimeManager struct {
 }
 
 func newRecordingRuntimeManager() *recordingRuntimeManager {
-	descriptor := hostTestRuntimeDescriptor()
+	descriptor := hostTestRuntimeArtifactIdentity()
 	return &recordingRuntimeManager{
 		descriptor: descriptor,
 		health: runtimeclient.Health{
@@ -7397,7 +7115,7 @@ func newRecordingRuntimeManager() *recordingRuntimeManager {
 			RuntimeGenerationID: "runtime_gen_test",
 			IPCChannelID:        "ipc_test",
 			ConnectionNonce:     "connection_nonce_test_1234567890",
-			Descriptor:          descriptor,
+			ArtifactIdentity:    descriptor,
 			Ready:               true,
 		},
 	}
@@ -7405,20 +7123,19 @@ func newRecordingRuntimeManager() *recordingRuntimeManager {
 
 func newRecordingRuntimeManagerWithHealth(health runtimeclient.Health) *recordingRuntimeManager {
 	manager := newRecordingRuntimeManager()
-	health.Descriptor = manager.descriptor
+	health.ArtifactIdentity = manager.descriptor
 	manager.health = health
 	return manager
 }
 
-func hostTestRuntimeDescriptor() runtimeclient.RuntimeDescriptor {
-	runtimeVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
+func hostTestRuntimeArtifactIdentity() runtimeclient.RuntimeArtifactIdentity {
+	runtimeVersion, err := version.ParseSemVer(version.CurrentPlatformVersion())
 	if err != nil {
 		panic(err)
 	}
-	descriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+	descriptor, err := runtimeclient.NewRuntimeArtifactIdentity(runtimeclient.RuntimeArtifactIdentityOptions{
 		PlatformVersion: runtimeVersion, Target: runtimetarget.LinuxAMD64,
-		RustIPCVersion: version.RustIPCVersion, WASMABIVersion: version.WASMABIVersion,
-		ContractSetSHA256: version.ContractSetSHA256, BinarySHA256: strings.Repeat("a", 64),
+		BinarySHA256: strings.Repeat("a", 64),
 	})
 	if err != nil {
 		panic(err)
@@ -7582,16 +7299,16 @@ func (r *recordingRuntimeManager) Start(_ context.Context, target runtimetarget.
 	return r.managerHealth(), r.startErr
 }
 
-func (r *recordingRuntimeManager) Preflight(_ context.Context, target runtimetarget.Target) (runtimeclient.RuntimeDescriptor, error) {
+func (r *recordingRuntimeManager) Preflight(_ context.Context, target runtimetarget.Target) (runtimeclient.RuntimeArtifactIdentity, error) {
 	r.preflightCalls++
 	if r.preflightErr != nil {
-		return runtimeclient.RuntimeDescriptor{}, r.preflightErr
+		return runtimeclient.RuntimeArtifactIdentity{}, r.preflightErr
 	}
 	if r.descriptor.PlatformVersion().String() == "" {
-		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorInvalid
+		return runtimeclient.RuntimeArtifactIdentity{}, runtimeclient.ErrRuntimeArtifactIdentityInvalid
 	}
 	if r.descriptor.Target() != target {
-		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorMismatch
+		return runtimeclient.RuntimeArtifactIdentity{}, runtimeclient.ErrRuntimeArtifactIdentityMismatch
 	}
 	return r.descriptor, nil
 }
@@ -7600,8 +7317,8 @@ func (r *recordingRuntimeManager) BindHostServices(services runtimeclient.Runtim
 	if services.StreamSink == nil {
 		return runtimeclient.ErrRuntimeHostServicesInvalid
 	}
-	if r.descriptor.PlatformVersion().String() == "" || r.health.Descriptor != r.descriptor {
-		return runtimeclient.ErrRuntimeDescriptorInvalid
+	if r.descriptor.PlatformVersion().String() == "" || r.health.ArtifactIdentity != r.descriptor {
+		return runtimeclient.ErrRuntimeArtifactIdentityInvalid
 	}
 	r.hostServices = services
 	return nil
@@ -7625,14 +7342,14 @@ func (r *recordingRuntimeManager) Health(context.Context) (runtimeclient.Manager
 }
 
 func (r *recordingRuntimeManager) managerHealth() runtimeclient.ManagerHealth {
-	return runtimeclient.ManagerHealth{Ready: r.health.Ready, Descriptor: r.health.Descriptor, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: r.health}}}
+	return runtimeclient.ManagerHealth{Ready: r.health.Ready, ArtifactIdentity: r.health.ArtifactIdentity, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: r.health}}}
 }
 
 func (r *recordingRuntimeManager) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
 	if r.bindErr != nil {
 		return runtimeclient.RuntimeBinding{}, r.bindErr
 	}
-	descriptor := r.health.Descriptor
+	descriptor := r.health.ArtifactIdentity
 	if r.bindingDescriptor.PlatformVersion().String() != "" {
 		descriptor = r.bindingDescriptor
 	}
@@ -7642,7 +7359,7 @@ func (r *recordingRuntimeManager) BindPlugin(context.Context, string) (runtimecl
 		RuntimeGenerationID: r.health.RuntimeGenerationID,
 		IPCChannelID:        r.health.IPCChannelID,
 		ConnectionNonce:     r.health.ConnectionNonce,
-		Descriptor:          descriptor,
+		ArtifactIdentity:    descriptor,
 	}, nil
 }
 

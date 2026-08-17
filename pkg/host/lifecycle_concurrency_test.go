@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v2/pkg/plugindata"
-	"github.com/floegence/redevplugin/v2/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
 
 func TestImportPluginDataSerializesPluginUpdate(t *testing.T) {
@@ -68,103 +67,10 @@ func TestImportPluginDataSerializesPluginUpdate(t *testing.T) {
 	}
 }
 
-func TestBindRetainedDataSerializesTargetDisable(t *testing.T) {
-	packageBytes := buildDataShapeFixturePackage(t, dataShapeFixtureOptions{Version: "1.0.0", SettingsSchema: 1, StorageSchema: 1})
-	h, _, _ := newTestHost(t, true, true)
-	source, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PluginInstanceID: "plugini_retained_source", PackageReader: bytes.NewReader(packageBytes), PackageSize: int64(len(packageBytes)),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{
-		PluginInstanceID: source.PluginInstanceID, ExpectedManagementRevision: source.ManagementRevision,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.UninstallPlugin(hostTestContext(), UninstallRequest{
-		PluginInstanceID:           source.PluginInstanceID,
-		ExpectedManagementRevision: mustManagementRevision(t, h, source.PluginInstanceID),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	retained, err := h.ListRetainedData(hostTestContext(), ListRetainedDataRequest{PluginInstanceID: source.PluginInstanceID})
-	if err != nil || len(retained) != 1 {
-		t.Fatalf("ListRetainedData() = %#v, %v", retained, err)
-	}
-	target, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PluginInstanceID: "plugini_retained_target", PackageReader: bytes.NewReader(packageBytes), PackageSize: int64(len(packageBytes)),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pluginData := &blockingPluginData{
-		PluginData:  h.adapters.PluginData,
-		bindEntered: make(chan struct{}), bindRelease: make(chan struct{}),
-	}
-	h.adapters.PluginData = pluginData
-
-	bindDone := make(chan error, 1)
-	go func() {
-		_, bindErr := h.BindRetainedData(hostTestContext(), BindRetainedDataRequest{
-			SourcePluginInstanceID:           source.PluginInstanceID,
-			ExpectedSourceBindingRevision:    retained[0].Revision,
-			TargetPluginInstanceID:           target.PluginInstanceID,
-			TargetExpectedManagementRevision: target.ManagementRevision,
-		})
-		bindDone <- bindErr
-	}()
-	waitForConcurrencyTestSignal(t, pluginData.bindEntered, "retained data bind")
-
-	cancelQueuedLifecycleOperation(t, h, []string{target.PluginInstanceID}, "target disable", func(ctx context.Context) error {
-		_, disableErr := h.DisablePlugin(ctx, DisableRequest{
-			PluginInstanceID:           target.PluginInstanceID,
-			ExpectedManagementRevision: target.ManagementRevision,
-			Reason:                     "concurrency test",
-		})
-		return disableErr
-	})
-	cancelQueuedLifecycleOperation(t, h, []string{source.PluginInstanceID}, "source retained data delete", func(ctx context.Context) error {
-		_, deleteErr := h.DeleteRetainedData(ctx, DeleteRetainedDataRequest{
-			PluginInstanceID: source.PluginInstanceID, ExpectedBindingRevision: retained[0].Revision,
-		})
-		return deleteErr
-	})
-	if calls := pluginData.listRetainedCalls.Load(); calls != 0 {
-		t.Fatalf("PluginData.ListRetained() calls before bind release = %d, want 0", calls)
-	}
-	close(pluginData.bindRelease)
-	if err := <-bindDone; err != nil {
-		t.Fatalf("BindRetainedData() error = %v", err)
-	}
-	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{
-		PluginInstanceID:           target.PluginInstanceID,
-		ExpectedManagementRevision: mustManagementRevision(t, h, target.PluginInstanceID),
-		Reason:                     "concurrency test",
-	}); err != nil {
-		t.Fatalf("DisablePlugin() after bind error = %v", err)
-	}
-	disabled, err := h.getPluginRecord(hostTestContext(), target.PluginInstanceID)
-	if err != nil || disabled.EnableState != registry.EnableDisabled {
-		t.Fatalf("disabled target = %#v, err=%v", disabled, err)
-	}
-	if _, err := h.DeleteRetainedData(hostTestContext(), DeleteRetainedDataRequest{
-		PluginInstanceID: source.PluginInstanceID, ExpectedBindingRevision: retained[0].Revision,
-	}); !errors.Is(err, plugindata.ErrBindingNotFound) {
-		t.Fatalf("DeleteRetainedData() error = %v, want %v", err, plugindata.ErrBindingNotFound)
-	}
-	if calls := pluginData.listRetainedCalls.Load(); calls != 1 {
-		t.Fatalf("PluginData.ListRetained() calls after bind = %d, want 1", calls)
-	}
-}
-
 type blockingPluginData struct {
 	PluginData
-	importEntered     chan struct{}
-	importRelease     chan struct{}
-	bindEntered       chan struct{}
-	bindRelease       chan struct{}
-	listRetainedCalls atomic.Int64
+	importEntered chan struct{}
+	importRelease chan struct{}
 }
 
 func (s *blockingPluginData) Import(ctx context.Context, req plugindata.ImportRequest) (plugindata.Dataset, error) {
@@ -175,21 +81,6 @@ func (s *blockingPluginData) Import(ctx context.Context, req plugindata.ImportRe
 	case <-s.importRelease:
 		return s.PluginData.Import(ctx, req)
 	}
-}
-
-func (s *blockingPluginData) BindRetained(ctx context.Context, req plugindata.BindRetainedRequest) (plugindata.Dataset, error) {
-	close(s.bindEntered)
-	select {
-	case <-ctx.Done():
-		return plugindata.Dataset{}, ctx.Err()
-	case <-s.bindRelease:
-		return s.PluginData.BindRetained(ctx, req)
-	}
-}
-
-func (s *blockingPluginData) ListRetained(ctx context.Context, filter plugindata.RetainedFilter) ([]plugindata.Binding, error) {
-	s.listRetainedCalls.Add(1)
-	return s.PluginData.ListRetained(ctx, filter)
 }
 
 func waitForConcurrencyTestSignal(t *testing.T, signal <-chan struct{}, operation string) {

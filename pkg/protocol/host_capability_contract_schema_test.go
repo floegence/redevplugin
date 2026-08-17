@@ -41,20 +41,16 @@ func TestKnownHostCapabilitySchemasContainOnlyContractAndLocalIdentity(t *testin
 	}
 }
 
-func TestReleaseMetadataReferencesKnownHostCapabilityIdentity(t *testing.T) {
+func TestReleaseMetadataDoesNotRepublishHostCapabilityIdentity(t *testing.T) {
 	root := hostCapabilityRepositoryRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-metadata-v8.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-metadata.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var schema map[string]any
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		t.Fatal(err)
-	}
-	contractRef := requireNestedObject(t, schema, "$defs", "host_capability_contract_ref")
-	want := []any{"publisher_id", "contract_id", "contract_version", "artifact_sha256"}
-	if got, ok := contractRef["required"].([]any); !ok || len(got) != len(want) {
-		t.Fatalf("release capability identity fields = %#v", contractRef["required"])
+	for _, retired := range [][]byte{[]byte("host_requirements"), []byte("required_capability_contracts"), []byte("host_capability_contract_ref")} {
+		if bytes.Contains(raw, retired) {
+			t.Fatalf("release metadata retains capability projection %q", retired)
+		}
 	}
 }
 
