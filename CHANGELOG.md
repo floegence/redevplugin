@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.10
+
+- Expose Host-derived activation requiredness and method effects for every
+  permission returned by official and external package inspection so host
+  products can present an accurate permission review before installation.
+
 ## v2.0.9
 
 - Preserve the required `bytes_read` field on successful zero-byte runtime I/O
