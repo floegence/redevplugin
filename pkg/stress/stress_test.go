@@ -847,6 +847,11 @@ type stressIPCFrame struct {
 	Payload             json.RawMessage `json:"payload,omitempty"`
 }
 
+const (
+	stressSemanticChunkedFlag = uint16(1 << 15)
+	stressSemanticMoreFlag    = uint16(1 << 14)
+)
+
 type stressHelloPayload struct {
 	InternalWire          uint16                      `json:"internal_wire"`
 	PlatformVersion       string                      `json:"platform_version"`
@@ -974,26 +979,61 @@ func readStressRuntimeFrame(reader io.Reader) (runtimeclient.IPCFrame, stressIPC
 	if err != nil {
 		return runtimeclient.IPCFrame{}, stressIPCFrame{}, err
 	}
-	if wireFrame.Flags != 0 || len(wireFrame.Metadata) == 0 || len(wireFrame.Body) != 0 {
-		return runtimeclient.IPCFrame{}, stressIPCFrame{}, errors.New("invalid stress runtime semantic frame placement")
+	if wireFrame.Flags&stressSemanticChunkedFlag == 0 || wireFrame.Flags&^(stressSemanticChunkedFlag|stressSemanticMoreFlag) != 0 {
+		return runtimeclient.IPCFrame{}, stressIPCFrame{}, errors.New("invalid stress runtime semantic frame flags")
+	}
+	var semantic []byte
+	for index := uint32(0); ; index++ {
+		var envelope struct {
+			Encoding string `json:"encoding"`
+			Index    uint32 `json:"index"`
+		}
+		if err := json.Unmarshal(wireFrame.Metadata, &envelope); err != nil || envelope.Encoding != "semantic_json" || envelope.Index != index || len(wireFrame.Body) == 0 {
+			return runtimeclient.IPCFrame{}, stressIPCFrame{}, errors.New("invalid stress runtime semantic frame envelope")
+		}
+		semantic = append(semantic, wireFrame.Body...)
+		if wireFrame.Flags&stressSemanticMoreFlag == 0 {
+			break
+		}
+		next, err := runtimeclient.ReadIPCFrame(reader)
+		if err != nil || next.Type != wireFrame.Type || next.RequestID != wireFrame.RequestID {
+			return runtimeclient.IPCFrame{}, stressIPCFrame{}, errors.New("invalid stress runtime semantic frame continuation")
+		}
+		wireFrame = next
 	}
 	var frame stressIPCFrame
-	if err := json.Unmarshal(wireFrame.Metadata, &frame); err != nil {
+	if err := json.Unmarshal(semantic, &frame); err != nil {
 		return runtimeclient.IPCFrame{}, stressIPCFrame{}, err
 	}
 	return wireFrame, frame, nil
 }
 
 func writeStressRuntimeFrame(writer io.Writer, wireType runtimeclient.IPCFrameType, requestID uint64, frame stressIPCFrame) error {
-	metadata, err := json.Marshal(frame)
+	semantic, err := json.Marshal(frame)
 	if err != nil {
 		return err
 	}
-	return runtimeclient.WriteIPCFrame(writer, runtimeclient.IPCFrame{
-		Type:      wireType,
-		RequestID: requestID,
-		Metadata:  metadata,
-	})
+	for index, offset := uint32(0), 0; offset < len(semantic); index++ {
+		end := offset + int(runtimeclient.IPCBodyMax)
+		if end > len(semantic) {
+			end = len(semantic)
+		}
+		envelope, err := json.Marshal(map[string]any{"encoding": "semantic_json", "index": index})
+		if err != nil {
+			return err
+		}
+		flags := stressSemanticChunkedFlag
+		if end < len(semantic) {
+			flags |= stressSemanticMoreFlag
+		}
+		if err := runtimeclient.WriteIPCFrame(writer, runtimeclient.IPCFrame{
+			Type: wireType, Flags: flags, RequestID: requestID, Metadata: envelope, Body: semantic[offset:end],
+		}); err != nil {
+			return err
+		}
+		offset = end
+	}
+	return nil
 }
 
 func respondStressRuntime(writer io.Writer, requestID uint64, wireType runtimeclient.IPCFrameType, request stressIPCFrame, frameType string, payload json.RawMessage) {
