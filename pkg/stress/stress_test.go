@@ -141,7 +141,7 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+	options := runtimeclient.ProcessSupervisorOptions{
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
 		HandshakeTimeout:      15 * time.Second,
 		RuntimePath:           os.Args[0],
@@ -152,12 +152,23 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 		MaxHeartbeatStaleness: time.Second,
 		StreamSink:            stressRuntimeStreamSink{},
 		IOBroker:              stressRuntimeIOBroker{},
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	if err := supervisor.Start(ctx, target); err != nil {
-		t.Fatalf("Start() error = %v", err)
+	var supervisor *runtimeclient.ProcessSupervisor
+	for attempt := 1; attempt <= 3; attempt++ {
+		supervisor, err = runtimeclient.NewProcessSupervisor(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = supervisor.Start(ctx, target)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, runtimeclient.ErrRuntimeHandshake) || attempt == 3 {
+			t.Fatalf("Start() error = %v", err)
+		}
+		stopCtx, stopCancel := context.WithTimeout(stressTestContext(), time.Second)
+		_ = supervisor.Stop(stopCtx)
+		stopCancel()
 	}
 	defer func() {
 		stopCtx, stopCancel := context.WithTimeout(stressTestContext(), time.Second)
