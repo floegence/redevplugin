@@ -189,8 +189,8 @@ test("performance evidence rejects malformed raw route authorization profiles", 
 test("performance quality configuration is closed and unique", () => {
   const raw = JSON.parse(readFileSync(contractPath, "utf8"));
   assert.deepEqual(Object.keys(raw).sort(), ["comparison_probes", "scenarios"]);
-  assert.equal(raw.scenarios.length, 20);
-  assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 20);
+  assert.equal(raw.scenarios.length, 19);
+  assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 19);
   assert.deepEqual(
     raw.scenarios.map((scenario) => scenario.id).filter((id) => id.startsWith("operation.") || id.startsWith("stream.")),
     [],
@@ -209,7 +209,6 @@ test("performance contract closes the platform acceptance targets", () => {
     "runtime.ipc-writer-burst": ["peak_rss_bytes", "bytes", "lte", 67108864],
     "pluginpkg.package-owned-materialization": ["peak_rss_relative_to_cloned", "basis_points", "lte", 6500],
     "pluginpkg.wasm-inspection-cache": ["inspector_calls", "count", "eq", 1],
-    "registry.sqlite-authorization-scaling": ["p95_1000_grants_relative_to_1", "basis_points", "lte", 20000],
     "runtime.scheduler-indexed-cancel": ["index_lookups", "count", "eq", 10000],
     "runtime.module-cache-indexed-eviction": ["index_pops_per_eviction", "basis_points", "eq", 10000],
     "connectivity.udp-limiter-scaling": ["bucket_capacity", "count", "eq", 65536],

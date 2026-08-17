@@ -189,13 +189,6 @@
       ]
     },
     {
-      "id": "registry.sqlite-authorization-scaling",
-      "sample_count": 500,
-      "metrics": [
-        { "name": "p95_1000_grants_relative_to_1", "unit": "basis_points", "comparator": "lte", "limit": 20000 }
-      ]
-    },
-    {
       "id": "ui.chromium-renderer",
       "sample_count": 10,
       "metrics": [

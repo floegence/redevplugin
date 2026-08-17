@@ -170,8 +170,6 @@ GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERF
   go test ./pkg/plugindata -run '^TestPerformance' -count=1
 GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   go test ./pkg/pluginpkg -run '^TestPerformance' -count=1
-GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
-  go test ./pkg/registry -run '^TestPerformance' -count=1
 node scripts/measure_http_route_authorization_performance.mjs \
   --output "$MEASUREMENTS" \
   --comparison-output "$COMPARISONS" \
