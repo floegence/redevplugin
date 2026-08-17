@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.1
+
+- Publish the filesystem-path canonicalization security fix from the current
+  v3 main line as a complete Go, npm, Rust source-crate, and contract package
+  set.
+
 ## v3.0.0
 
 - Replace the compatibility matrix, contract registry, package-set publication,

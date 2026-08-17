@@ -18,7 +18,7 @@ test("VERSION is the exact platform version projected by every package", async (
     readFile(join(root, "spec/openapi/plugin-platform.yaml"), "utf8"),
   ]);
   const version = versionBytes.trim();
-  assert.equal(version, "3.0.0");
+  assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
   assert.match(goMod, /^module github\.com\/floegence\/redevplugin\/v3$/m);
   assert.match(cargoToml, new RegExp(`^version = ${JSON.stringify(version)}$`, "m"));
   for (const crate of ["redevplugin-runtime", "redevplugin-worker-sdk"]) {

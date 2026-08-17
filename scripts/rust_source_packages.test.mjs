@@ -186,6 +186,7 @@ test("temporary registry coordinates are create-only", () => {
 });
 
 test("all Rust source crates package deterministically and test from an isolated registry", async () => {
+  const version = readFileSync(new URL("../VERSION", import.meta.url), "utf8").trim();
   const result = await buildRustSourcePackages({ allowDirty: true });
   try {
     assert.deepEqual(result.artifacts.map(({ name, version, size, sha256 }) => ({
@@ -195,7 +196,7 @@ test("all Rust source crates package deterministically and test from an isolated
       validDigest: /^[0-9a-f]{64}$/.test(sha256),
     })), rustSourcePackages.map(({ name }) => ({
       name,
-      version: "3.0.0",
+      version,
       validSize: true,
       validDigest: true,
     })));

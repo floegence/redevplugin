@@ -3634,7 +3634,7 @@ mod tests {
         assert!(frame.contains(r#""runtime_generation_id":"g1""#));
         assert!(frame.contains(r#""actual_target":"linux/amd64""#));
         assert!(frame.contains(r#""internal_wire":1"#));
-        assert!(frame.contains(r#""platform_version":"3.0.0""#));
+        assert!(frame.contains(&format!(r#""platform_version":"{}""#, env!("CARGO_PKG_VERSION"))));
         assert!(frame.contains(r#""connection_nonce":"nonce_1""#));
         assert!(frame.contains(r#""worker_count":8"#));
         assert!(frame.contains(r#""module_cache_source_bytes":134217728"#));

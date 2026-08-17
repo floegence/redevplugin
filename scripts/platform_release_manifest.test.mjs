@@ -66,6 +66,7 @@ test("release manifest is canonical, sorted, and derived from VERSION", async ()
   const staging = await mkdtemp(join(tmpdir(), "redevplugin-release-manifest-"));
   const npm = join(staging, "ui.tgz");
   await writeFile(npm, "npm artifact");
+  const version = (await readFile(join(root, "VERSION"), "utf8")).trim();
 
   const first = join(staging, "first.json");
   const second = join(staging, "second.json");
@@ -88,7 +89,7 @@ test("release manifest is canonical, sorted, and derived from VERSION", async ()
   assert.equal(firstBytes.endsWith("\n"), true);
   const manifest = JSON.parse(firstBytes);
   assert.deepEqual(manifest, {
-    platform_version: "3.0.0",
+    platform_version: version,
     plugin_api: 1,
     internal_wire: 1,
     artifacts: [

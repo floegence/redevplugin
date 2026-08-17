@@ -16,8 +16,8 @@ func TestCurrentPlatformVersionUsesReleaseOrSourceVersion(t *testing.T) {
 		t.Fatalf("release version = %q, want 3.1.2", got)
 	}
 	goModuleVersionOverride = devVersion
-	if got := CurrentPlatformVersion(); got != "3.0.0" {
-		t.Fatalf("development version = %q, want 3.0.0", got)
+	if got := CurrentPlatformVersion(); got != developmentPlatformVersion {
+		t.Fatalf("development version = %q, want %q", got, developmentPlatformVersion)
 	}
 }
 
