@@ -37,9 +37,9 @@ func TestV9ExternalPackagePermissionConfirmationCoversWorkerIO(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantPermissions := []ExternalPackagePermissionSummary{
-				{PermissionID: "fs.environment.read", Methods: []string{"io.run"}},
-				{PermissionID: "fs.environment.write", Methods: []string{"io.run"}},
-				{PermissionID: "network.client", Methods: []string{"io.run"}},
+				{PermissionID: "fs.environment.read", Methods: []string{"io.run"}, Required: true, Effects: []string{"execute"}},
+				{PermissionID: "fs.environment.write", Methods: []string{"io.run"}, Required: true, Effects: []string{"execute"}},
+				{PermissionID: "network.client", Methods: []string{"io.run"}, Required: true, Effects: []string{"execute"}},
 			}
 			if !reflect.DeepEqual(inspection.SecuritySummary.Permissions, wantPermissions) {
 				t.Fatalf("inspection permissions = %#v, want %#v", inspection.SecuritySummary.Permissions, wantPermissions)
