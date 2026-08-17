@@ -298,7 +298,7 @@ jobs:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
           path: dist/platform-packages
           merge-multiple: true
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.0.0
         with:
           python-version: "3.13"
       - name: Verify immutable package artifact
@@ -533,7 +533,7 @@ jobs:
                   raise SystemExit(f"Rust publication dependency metadata mismatch for {name}")
           print("verified immutable Rust package bytes")
           PY
-      - uses: rust-lang/crates-io-auth-action@275b31c2bd0ae2dc5fc5b03747ab8c88d6e3b1c6 # main
+      - uses: rust-lang/crates-io-auth-action@f14f407dad32919804d8e0550a5e471a82249cee # main
         id: crates-auth
       - name: Publish exact crate graph in dependency order
         env:
@@ -899,7 +899,7 @@ jobs:
           artifact-ids: ${{ needs.create-publication.outputs.artifact-id }}
           path: dist/publication
           merge-multiple: true
-      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/publication/platform-package-publication-v2.json
 
