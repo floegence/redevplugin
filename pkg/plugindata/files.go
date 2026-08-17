@@ -19,6 +19,11 @@ import (
 )
 
 func ensurePrivateDirectory(path string) error {
+	var err error
+	path, err = sanitizeFilesystemPath(path)
+	if err != nil {
+		return err
+	}
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("%w: %s is not a private directory", ErrUnsafeFilesystem, path)
@@ -86,6 +91,11 @@ func writeFile(path string, data []byte, mode fs.FileMode) error {
 }
 
 func writeFileWithSync(path string, data []byte, mode fs.FileMode, syncDir func(string) error) error {
+	var err error
+	path, err = sanitizeFilesystemPath(path)
+	if err != nil {
+		return err
+	}
 	parent := filepath.Dir(path)
 	if err := ensurePrivateDirectory(parent); err != nil {
 		return err
@@ -121,6 +131,15 @@ func writeFileWithSync(path string, data []byte, mode fs.FileMode, syncDir func(
 }
 
 func (s *FileStore) copyDirectory(source, destination string) error {
+	var err error
+	source, err = sanitizeFilesystemPath(source)
+	if err != nil {
+		return err
+	}
+	destination, err = sanitizeFilesystemPath(destination)
+	if err != nil {
+		return err
+	}
 	info, err := os.Lstat(source)
 	if err != nil {
 		return err
@@ -162,6 +181,15 @@ func (s *FileStore) copyDirectory(source, destination string) error {
 }
 
 func copyRegularFile(source, destination string, mode fs.FileMode) error {
+	var err error
+	source, err = sanitizeFilesystemPath(source)
+	if err != nil {
+		return err
+	}
+	destination, err = sanitizeFilesystemPath(destination)
+	if err != nil {
+		return err
+	}
 	input, err := os.Open(source)
 	if err != nil {
 		return err
@@ -216,7 +244,27 @@ type rootedTreeSnapshot struct {
 	entries     []rootedTreeEntry
 }
 
+// sanitizeFilesystemPath is the single boundary for paths that reach the OS.
+// Callers construct these paths from the store root and validated identifiers;
+// reject anything that is not already a canonical absolute path so a request
+// cannot introduce traversal or change the selected root.
+func sanitizeFilesystemPath(path string) (string, error) {
+	if path == "" || !filepath.IsAbs(path) {
+		return "", fmt.Errorf("%w: filesystem path must be absolute", ErrUnsafeFilesystem)
+	}
+	clean := filepath.Clean("/" + path)
+	if clean != path {
+		return "", fmt.Errorf("%w: filesystem path is not canonical", ErrUnsafeFilesystem)
+	}
+	return clean, nil
+}
+
 func snapshotRootedTree(path string, options rootedTreeSnapshotOptions) (rootedTreeSnapshot, error) {
+	var err error
+	path, err = sanitizeFilesystemPath(path)
+	if err != nil {
+		return rootedTreeSnapshot{}, err
+	}
 	namedRoot, err := os.Lstat(path)
 	if err != nil {
 		return rootedTreeSnapshot{}, err
@@ -398,6 +446,11 @@ func snapshotRootedTree(path string, options rootedTreeSnapshotOptions) (rootedT
 }
 
 func (snapshot rootedTreeSnapshot) validateRoot(path string) error {
+	var err error
+	path, err = sanitizeFilesystemPath(path)
+	if err != nil {
+		return err
+	}
 	current, err := os.Lstat(path)
 	if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !sameSnapshotInfo(snapshot.rootInfo, current) {
 		return fmt.Errorf("%w: dataset root changed after snapshot", ErrUnsafeFilesystem)
@@ -406,6 +459,11 @@ func (snapshot rootedTreeSnapshot) validateRoot(path string) error {
 }
 
 func (snapshot rootedTreeSnapshot) revalidate(path string) error {
+	var err error
+	path, err = sanitizeFilesystemPath(path)
+	if err != nil {
+		return err
+	}
 	if err := snapshot.validateRoot(path); err != nil {
 		return err
 	}
@@ -452,6 +510,11 @@ func writeHashRecord(hasher hash.Hash, kind byte, path string, size int64) {
 }
 
 func syncTree(root string) error {
+	var err error
+	root, err = sanitizeFilesystemPath(root)
+	if err != nil {
+		return err
+	}
 	var directories []string
 	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -488,6 +551,11 @@ func syncTree(root string) error {
 }
 
 func syncDirectory(path string) error {
+	var err error
+	path, err = sanitizeFilesystemPath(path)
+	if err != nil {
+		return err
+	}
 	directory, err := os.Open(path)
 	if err != nil {
 		return err
@@ -497,6 +565,11 @@ func syncDirectory(path string) error {
 }
 
 func removeDirectoryContents(root string) error {
+	var err error
+	root, err = sanitizeFilesystemPath(root)
+	if err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return err

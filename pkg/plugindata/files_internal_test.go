@@ -934,6 +934,19 @@ func TestBindRetainedRejectsSamePluginInstance(t *testing.T) {
 	}
 }
 
+func TestSanitizeFilesystemPathRejectsTraversalAndRelativeInput(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "tmp", "redevplugin")
+	for _, path := range []string{"relative", "", root + string(filepath.Separator) + ".." + string(filepath.Separator) + "escape"} {
+		if _, err := sanitizeFilesystemPath(path); !errors.Is(err, ErrUnsafeFilesystem) {
+			t.Fatalf("sanitizeFilesystemPath(%q) error = %v, want ErrUnsafeFilesystem", path, err)
+		}
+	}
+	clean, err := sanitizeFilesystemPath(root + "/data")
+	if err != nil || clean != root+"/data" {
+		t.Fatalf("sanitizeFilesystemPath() = %q, %v", clean, err)
+	}
+}
+
 func newInternalStore(t *testing.T) (*FileStore, *internalCatalog, Shape) {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())

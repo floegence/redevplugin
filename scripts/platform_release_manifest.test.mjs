@@ -4,6 +4,7 @@ import { mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import Ajv2020 from "ajv/dist/2020.js";
 import {
   generatePlatformReleaseManifest,
@@ -11,6 +12,16 @@ import {
 } from "./generate_platform_release_manifest.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+
+test("manifest module can be imported from a stdin Node program", () => {
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    cwd: root,
+    input: "import { listCanonicalContractArtifacts } from './scripts/generate_platform_release_manifest.mjs';\nprocess.stdout.write(String((await listCanonicalContractArtifacts()).length));\n",
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, String(expectedCanonicalContracts.length));
+});
 
 const expectedCanonicalContracts = [
   "contract:internal/runtime-wire-fixtures.json",

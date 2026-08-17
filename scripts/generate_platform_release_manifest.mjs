@@ -161,7 +161,11 @@ function parseArgs(argv) {
   return { artifacts, output };
 }
 
-const invokedPath = process.argv[1] ? await realpath(process.argv[1]) : "";
+// Node uses `-` as argv[1] when this module is imported by a stdin script.
+// It is not a filesystem path and must not be resolved as one.
+const invokedPath = process.argv[1] && process.argv[1] !== "-"
+  ? await realpath(process.argv[1])
+  : "";
 if (invokedPath === await realpath(new URL(import.meta.url))) {
   try {
     await generatePlatformReleaseManifest(parseArgs(process.argv.slice(2)));

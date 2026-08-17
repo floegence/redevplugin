@@ -87,6 +87,11 @@ func initializeNamespaceDatabase(ctx context.Context, root string, kind Namespac
 }
 
 func openNamespaceDatabase(ctx context.Context, root string, readOnly bool) (*sql.DB, error) {
+	var err error
+	root, err = sanitizeFilesystemPath(root)
+	if err != nil {
+		return nil, storage.ErrInvalidNamespace
+	}
 	path := filepath.Join(root, namespaceDatabaseName)
 	existing := false
 	if info, err := os.Lstat(path); err == nil {
