@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.4
+
+- Preserve manifest-declared worker permissions in execution bindings so
+  authorized worker calls remain valid through runtime execution validation.
+
 ## v3.0.3
 
 - Preserve remote release asset missing, integrity, and resolver failures as
