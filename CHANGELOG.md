@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.3
+
+- Preserve remote release asset missing, integrity, and resolver failures as
+  stable platform errors instead of collapsing them into an internal failure.
+
 ## v3.0.2
 
 - Derive final public release-manifest verification from the canonical contract
