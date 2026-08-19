@@ -6681,6 +6681,10 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if !ok {
 		return workerMethodDispatch{}, fmt.Errorf("worker %q is not declared", method.Route.WorkerID)
 	}
+	requiredPermissions, err := h.requiredPermissionsForMethod(record, method)
+	if err != nil {
+		return workerMethodDispatch{}, err
+	}
 	runtimeBinding, err := h.bindCompatibleWorkerRuntime(ctx, record)
 	if err != nil {
 		return workerMethodDispatch{}, err
@@ -6736,28 +6740,31 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		return workerMethodDispatch{}, err
 	}
 	binding := capability.ExecutionBinding{
-		InvocationID:           invocationID,
-		AuditCorrelationID:     auditID,
-		PublisherID:            record.PublisherID,
-		PluginID:               record.PluginID,
-		PluginInstanceID:       record.PluginInstanceID,
-		PluginVersion:          record.Version,
-		ActiveFingerprint:      record.ActiveFingerprint,
-		SurfaceInstanceID:      req.SurfaceInstanceID,
-		OwnerSessionHash:       req.session.OwnerSessionHash,
-		OwnerUserHash:          req.session.OwnerUserHash,
-		OwnerEnvHash:           req.session.OwnerEnvHash,
-		SessionChannelIDHash:   req.session.SessionChannelIDHash,
-		BridgeChannelID:        req.BridgeChannelID,
-		RouteKind:              capability.RouteWorker,
-		CapabilityID:           "redevplugin.worker",
-		CapabilityVersion:      "1",
-		BindingID:              worker.WorkerID,
-		Method:                 method.Method,
-		TargetMethod:           method.Method,
-		Effect:                 capability.Effect(method.Effect),
-		Execution:              string(method.Execution),
-		Permissions:            capability.PermissionEvidence{Required: []string{}, Granted: []string{}},
+		InvocationID:         invocationID,
+		AuditCorrelationID:   auditID,
+		PublisherID:          record.PublisherID,
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		PluginVersion:        record.Version,
+		ActiveFingerprint:    record.ActiveFingerprint,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     req.session.OwnerSessionHash,
+		OwnerUserHash:        req.session.OwnerUserHash,
+		OwnerEnvHash:         req.session.OwnerEnvHash,
+		SessionChannelIDHash: req.session.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		RouteKind:            capability.RouteWorker,
+		CapabilityID:         "redevplugin.worker",
+		CapabilityVersion:    "1",
+		BindingID:            worker.WorkerID,
+		Method:               method.Method,
+		TargetMethod:         method.Method,
+		Effect:               capability.Effect(method.Effect),
+		Execution:            string(method.Execution),
+		Permissions: capability.PermissionEvidence{
+			Required: append([]string{}, requiredPermissions...),
+			Granted:  append([]string{}, requiredPermissions...),
+		},
 		Confirmation:           req.executionAuthorization.confirmation,
 		Revision:               capability.RevisionEvidence{PolicyRevision: record.PolicyRevision, ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch},
 		Target:                 target,

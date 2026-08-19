@@ -1984,6 +1984,62 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	assertAuditDetail(t, leaseAudit, "target_descriptor_hashes", runtime.lastLease.TargetDescriptorHashes)
 }
 
+func TestWorkerExecutionBindingCarriesManifestPermissions(t *testing.T) {
+	runtime := &permissionInspectingRuntimeManager{
+		recordingRuntimeManager: newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
+			RuntimeInstanceID:   "runtime_1",
+			RuntimeGenerationID: "runtime_gen_1",
+			IPCChannelID:        "ipc_1",
+			ConnectionNonce:     "connection_nonce_1234567890",
+			Ready:               true,
+		}),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		runtimeManager: runtime,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildPermissionWorkerFixturePackage(t), "worker.view")
+
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+			Method: "worker.echo", Params: map[string]any{"message": "hello"},
+		})
+		callDone <- err
+	}()
+
+	select {
+	case <-runtime.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker runtime was not invoked")
+	}
+
+	h.executions.mu.Lock()
+	var bindings []capability.ExecutionBinding
+	for _, lease := range h.executions.leases {
+		bindings = append(bindings, lease.binding)
+	}
+	h.executions.mu.Unlock()
+	if len(bindings) != 1 {
+		t.Fatalf("active execution bindings = %d, want 1", len(bindings))
+	}
+	if !slices.Equal(bindings[0].Permissions.Required, []string{"fs.environment.read"}) ||
+		!slices.Equal(bindings[0].Permissions.Granted, []string{"fs.environment.read"}) {
+		t.Fatalf("worker permission evidence = %#v, want required and granted fs.environment.read", bindings[0].Permissions)
+	}
+
+	close(runtime.release)
+	if err := <-callDone; err != nil {
+		t.Fatalf("worker call error = %v", err)
+	}
+}
+
 func TestCallPluginMethodEnvironmentWorkerLeaseKeepsSessionOwnerUser(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1",
@@ -5597,6 +5653,20 @@ func buildWorkerFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildPermissionWorkerFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"permissions": []`, `"permissions": ["fs.environment.read"]`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Worker")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildEnvironmentWorkerFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -7104,6 +7174,25 @@ type recordingRuntimeManager struct {
 	lastRevokeEpoch     uint64
 	invokeContext       context.Context
 	hostServices        runtimeclient.RuntimeHostServices
+}
+
+type permissionInspectingRuntimeManager struct {
+	*recordingRuntimeManager
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *permissionInspectingRuntimeManager) InvokeWorker(ctx context.Context, binding runtimeclient.RuntimeBinding, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {
+	select {
+	case r.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return r.recordingRuntimeManager.InvokeWorker(ctx, binding, lease, method, payload)
 }
 
 func newRecordingRuntimeManager() *recordingRuntimeManager {
