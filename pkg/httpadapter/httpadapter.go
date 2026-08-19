@@ -32,6 +32,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/remoterelease"
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -3427,6 +3428,12 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrPackageInvalid
 	}
 	switch {
+	case errors.Is(err, remoterelease.ErrAssetMissing):
+		return security.ErrReleaseAssetMissing
+	case errors.Is(err, remoterelease.ErrAssetMismatch):
+		return security.ErrReleaseAssetIntegrity
+	case errors.Is(err, remoterelease.ErrInvalidAssetSet):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrExternalPackageInstallBlocked):
@@ -3538,6 +3545,10 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	}
 	switch {
+	case errors.Is(err, remoterelease.ErrAssetMissing), errors.Is(err, remoterelease.ErrInvalidAssetSet):
+		return http.StatusBadGateway
+	case errors.Is(err, remoterelease.ErrAssetMismatch):
+		return http.StatusBadRequest
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, host.ErrActionDenied),

@@ -39,6 +39,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
+	"github.com/floegence/redevplugin/v3/pkg/remoterelease"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -1586,6 +1587,37 @@ func TestHandlerInstallReleaseRefPolicyDeniedUsesReleaseRefErrorCode(t *testing.
 	}, http.StatusForbidden)
 	if envelope.Code != string(security.ErrReleaseRefPolicyDenied) {
 		t.Fatalf("error_code = %q, want %q body = %#v", envelope.Code, security.ErrReleaseRefPolicyDenied, envelope)
+	}
+}
+
+func TestHandlerInspectReleasePackagePreservesRemoteReleaseErrors(t *testing.T) {
+	fixture, ref := newHTTPReleaseTrustFixture(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), releasetrustfixture.Options{SourceID: "official"})
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   security.ErrorCode
+	}{
+		{name: "missing", err: remoterelease.ErrAssetMissing, wantStatus: http.StatusBadGateway, wantCode: security.ErrReleaseAssetMissing},
+		{name: "mismatch", err: remoterelease.ErrAssetMismatch, wantStatus: http.StatusBadRequest, wantCode: security.ErrReleaseAssetIntegrity},
+		{name: "invalid adapter", err: remoterelease.ErrInvalidAssetSet, wantStatus: http.StatusBadGateway, wantCode: security.ErrAdapterFailure},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+				releaseTrust:            fixture.ServiceSet,
+				releaseArtifactResolver: &httpRecordingReleaseArtifactResolver{err: tt.err},
+			})
+			handler := mustNewHandler(t, h, allowHTTPTestGuard())
+
+			envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/release-packages/inspect", map[string]any{
+				"plugin_instance_id": nextHTTPTestPluginInstanceID(t),
+				"release_ref":        ref,
+			}, tt.wantStatus)
+			if envelope.Code != string(tt.wantCode) {
+				t.Fatalf("inspect release error code = %q, want %q body = %#v", envelope.Code, tt.wantCode, envelope)
+			}
+		})
 	}
 }
 
@@ -3478,6 +3510,9 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 		{name: "management install conflict", err: registry.ErrReleaseInstallOperationConflict, code: security.ErrInstallStateConflict, status: http.StatusConflict, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management install missing", err: registry.ErrReleaseInstallOperationNotFound, code: security.ErrExecutionNotFound, status: http.StatusNotFound, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management install invalid", err: registry.ErrInvalidReleaseInstallOperation, code: security.ErrInvalidRequest, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management remote release missing", err: remoterelease.ErrAssetMissing, code: security.ErrReleaseAssetMissing, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management remote release mismatch", err: remoterelease.ErrAssetMismatch, code: security.ErrReleaseAssetIntegrity, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management remote release invalid adapter", err: remoterelease.ErrInvalidAssetSet, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management unknown", err: errors.New("unknown internal failure"), code: security.ErrInternalFailure, status: http.StatusInternalServerError, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "secret scope", err: host.ErrSecretScopeMismatch, code: security.ErrSecretScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
 		{name: "secret owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
