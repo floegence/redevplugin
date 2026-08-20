@@ -127,6 +127,41 @@ func TestInstallCommitReactivatesExactRetainedBindingAtomically(t *testing.T) {
 	}
 }
 
+func TestInstallCommitReplacesDeletedTombstoneAfterDeleteDataUninstall(t *testing.T) {
+	ctx := pluginDataCatalogContext("env-delete-data-reinstall", "user-delete-data-reinstall")
+	store := openPluginDataCatalogStore(t)
+	defer store.Close()
+	record, binding, shape := freshPluginDataCatalogInstall(t, "env-delete-data-reinstall", "plugini_delete_data_reinstall")
+	installed, err := store.InstallCommit(ctx, record, nil, binding, shape, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		DeleteData:                 true,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		Now:                        time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.GetBinding(ctx, installed.PluginInstanceID); err != nil || found {
+		t.Fatalf("binding after delete-data uninstall: found=%v err=%v", found, err)
+	}
+
+	reinstall, next, _ := freshPluginDataCatalogInstall(t, "env-delete-data-reinstall", installed.PluginInstanceID)
+	reinstalled, err := store.InstallCommit(ctx, reinstall, nil, next, shape, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("delete-data reinstall error = %v", err)
+	}
+	if reinstalled.EnableState != registry.EnableEnabled || reinstalled.ManagementRevision != 1 || reinstalled.RevokeEpoch != 1 {
+		t.Fatalf("reinstalled record = %#v", reinstalled)
+	}
+	active, found, err := store.GetBinding(ctx, installed.PluginInstanceID)
+	if err != nil || !found || active.State != plugindata.BindingActive || active.Revision != 1 {
+		t.Fatalf("reinstalled binding = %#v, found=%v err=%v", active, found, err)
+	}
+}
+
 func TestInstallCommitRetainedBindingUpdateFailureRollsBackPluginRecord(t *testing.T) {
 	ctx := pluginDataCatalogContext("env-retained-failure", "user-retained-failure")
 	store := openPluginDataCatalogStore(t)

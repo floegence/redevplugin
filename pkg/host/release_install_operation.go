@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/security"
@@ -381,6 +382,9 @@ func releaseInstallFailureCode(err error) string {
 		return string(security.ErrReleaseAssetIntegrity)
 	}
 	if errors.Is(err, registry.ErrReleaseInstallOperationConflict) || errors.Is(err, ErrPluginAlreadyInstalled) {
+		return releaseInstallFailureConflict
+	}
+	if errors.Is(err, plugindata.ErrShapeMismatch) {
 		return releaseInstallFailureConflict
 	}
 	if errors.Is(err, ErrReleaseRefVerificationFailed) {

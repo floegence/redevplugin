@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
@@ -536,6 +537,12 @@ func TestReleaseInstallFailureClassifiesPackageValidationErrors(t *testing.T) {
 				t.Fatalf("releaseInstallFailureCode() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestReleaseInstallFailureClassifiesRetainedDataShapeMismatch(t *testing.T) {
+	if got := releaseInstallFailureCode(plugindata.ErrShapeMismatch); got != string(security.ErrInstallStateConflict) {
+		t.Fatalf("releaseInstallFailureCode() = %q, want %q", got, security.ErrInstallStateConflict)
 	}
 }
 

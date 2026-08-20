@@ -136,6 +136,13 @@ func (s *Store) InstallCommit(ctx context.Context, record registry.PluginRecord,
 			return err
 		}
 		if expected == nil {
+			// A delete-data uninstall leaves a tombstone for lifecycle history,
+			// but the next install must be able to reuse the stable instance ID.
+			// Remove only that deleted row inside this transaction; active records
+			// are still rejected above and retained bindings use the reactivation path.
+			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NOT NULL`, owner, record.PluginInstanceID); err != nil {
+				return err
+			}
 			if err := insertControlPluginRecord(ctx, tx, prepared); err != nil {
 				return err
 			}
