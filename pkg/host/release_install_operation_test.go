@@ -541,8 +541,8 @@ func TestReleaseInstallFailureClassifiesPackageValidationErrors(t *testing.T) {
 }
 
 func TestReleaseInstallFailureClassifiesRetainedDataShapeMismatch(t *testing.T) {
-	if got := releaseInstallFailureCode(plugindata.ErrShapeMismatch); got != string(security.ErrInstallStateConflict) {
-		t.Fatalf("releaseInstallFailureCode() = %q, want %q", got, security.ErrInstallStateConflict)
+	if got := releaseInstallFailureCode(plugindata.ErrShapeMismatch); got != string(security.ErrRetainedDataIncompatible) {
+		t.Fatalf("releaseInstallFailureCode() = %q, want %q", got, security.ErrRetainedDataIncompatible)
 	}
 }
 

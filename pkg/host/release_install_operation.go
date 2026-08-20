@@ -385,7 +385,7 @@ func releaseInstallFailureCode(err error) string {
 		return releaseInstallFailureConflict
 	}
 	if errors.Is(err, plugindata.ErrShapeMismatch) {
-		return releaseInstallFailureConflict
+		return string(security.ErrRetainedDataIncompatible)
 	}
 	if errors.Is(err, ErrReleaseRefVerificationFailed) {
 		return string(security.ErrReleaseRefVerificationFailed)

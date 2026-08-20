@@ -20,6 +20,7 @@ const (
 	ErrReleaseAssetIntegrity         ErrorCode = "PLUGIN_RELEASE_ASSET_INTEGRITY"
 	ErrInstallInterrupted            ErrorCode = "PLUGIN_INSTALL_INTERRUPTED"
 	ErrInstallStateConflict          ErrorCode = "PLUGIN_INSTALL_STATE_CONFLICT"
+	ErrRetainedDataIncompatible      ErrorCode = "PLUGIN_RETAINED_DATA_INCOMPATIBLE"
 	ErrInternalFailure               ErrorCode = "PLUGIN_INTERNAL_FAILURE"
 	ErrDisabled                      ErrorCode = "PLUGIN_DISABLED"
 	ErrPermissionDenied              ErrorCode = "PLUGIN_PERMISSION_DENIED"
@@ -98,6 +99,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrReleaseAssetIntegrity,
 	ErrInstallInterrupted,
 	ErrInstallStateConflict,
+	ErrRetainedDataIncompatible,
 	ErrInternalFailure,
 	ErrDisabled,
 	ErrPermissionDenied,
