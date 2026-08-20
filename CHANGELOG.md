@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.5
+
+- Validate execution authorization snapshots using the security facts they
+  carry, so externally uploaded plugins remain runnable after explicit grants.
+
 ## v3.0.4
 
 - Preserve manifest-declared worker permissions in execution bindings so
