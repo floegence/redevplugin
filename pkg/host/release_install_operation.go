@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -387,6 +388,19 @@ func releaseInstallFailureCode(err error) string {
 	}
 	if errors.Is(err, ErrReleaseRefPolicyDenied) {
 		return string(security.ErrReleaseRefPolicyDenied)
+	}
+	var packageValidationErr *pluginpkg.ValidationError
+	if errors.As(err, &packageValidationErr) {
+		switch packageValidationErr.Code {
+		case pluginpkg.ValidationCodeManifestInvalid:
+			return string(security.ErrManifestInvalid)
+		case pluginpkg.ValidationCodePackageInvalid:
+			return string(security.ErrPackageInvalid)
+		case pluginpkg.ValidationCodePackageTooLarge:
+			return string(security.ErrPackageTooLarge)
+		case pluginpkg.ValidationCodePackagePathForbidden:
+			return string(security.ErrPackagePathForbidden)
+		}
 	}
 	return releaseInstallFailureInternal
 }

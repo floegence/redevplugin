@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
 	"github.com/floegence/redevplugin/v3/pkg/security"
@@ -513,6 +514,26 @@ func TestReleaseInstallFailureClassifiesReleaseTrustErrors(t *testing.T) {
 			}
 			if releaseInstallFailureRetryable(boundaryErr) {
 				t.Fatal("release trust failure was marked retryable")
+			}
+		})
+	}
+}
+
+func TestReleaseInstallFailureClassifiesPackageValidationErrors(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		code pluginpkg.ValidationErrorCode
+		want security.ErrorCode
+	}{
+		{name: "manifest", code: pluginpkg.ValidationCodeManifestInvalid, want: security.ErrManifestInvalid},
+		{name: "package", code: pluginpkg.ValidationCodePackageInvalid, want: security.ErrPackageInvalid},
+		{name: "too large", code: pluginpkg.ValidationCodePackageTooLarge, want: security.ErrPackageTooLarge},
+		{name: "path", code: pluginpkg.ValidationCodePackagePathForbidden, want: security.ErrPackagePathForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := &pluginpkg.ValidationError{Code: test.code, Message: "invalid package"}
+			if got := releaseInstallFailureCode(err); got != string(test.want) {
+				t.Fatalf("releaseInstallFailureCode() = %q, want %q", got, test.want)
 			}
 		})
 	}
