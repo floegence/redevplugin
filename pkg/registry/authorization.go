@@ -59,12 +59,16 @@ func authorizationStateFromRecord(record PluginRecord) AuthorizationState {
 }
 
 func RunnableAuthorizationState(state AuthorizationState) bool {
-	return RunnablePluginRecord(PluginRecord{
-		TrustState:              state.TrustState,
-		SignatureAssessment:     state.SignatureAssessment,
-		PackageSourceProvenance: PackageSourceProvenance{Kind: state.PackageSourceKind},
-		ExecutionApproval:       state.ExecutionApproval,
-	})
+	if !validPackageSourceKind(state.PackageSourceKind) ||
+		!validSignatureAssessmentStatus(state.SignatureAssessment.Status) ||
+		!validExecutionApprovalStatus(state.ExecutionApproval.Status) {
+		return false
+	}
+	if state.SignatureAssessment.Status == SignatureInvalid || state.SignatureAssessment.Status == SignatureRevoked {
+		return false
+	}
+	return state.ExecutionApproval.Status == ExecutionApprovalUserApproved ||
+		state.ExecutionApproval.Status == ExecutionApprovalPolicyApproved
 }
 
 type AuthorizeRequest struct {

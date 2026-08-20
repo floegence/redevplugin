@@ -2016,6 +2016,8 @@ func TestWorkerExecutionBindingCarriesManifestPermissions(t *testing.T) {
 
 	select {
 	case <-runtime.entered:
+	case err := <-callDone:
+		t.Fatalf("worker call failed before runtime dispatch: %v", err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker runtime was not invoked")
 	}
@@ -2034,6 +2036,60 @@ func TestWorkerExecutionBindingCarriesManifestPermissions(t *testing.T) {
 		t.Fatalf("worker permission evidence = %#v, want required and granted fs.environment.read", bindings[0].Permissions)
 	}
 
+	close(runtime.release)
+	if err := <-callDone; err != nil {
+		t.Fatalf("worker call error = %v", err)
+	}
+}
+
+func TestWorkerExecutionBindingWithMultipleGrantedManifestPermissions(t *testing.T) {
+	runtime := &permissionInspectingRuntimeManager{
+		recordingRuntimeManager: newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
+			RuntimeInstanceID:   "runtime_multi",
+			RuntimeGenerationID: "runtime_gen_multi",
+			IPCChannelID:        "ipc_multi",
+			ConnectionNonce:     "connection_nonce_multi_1234567890",
+			Ready:               true,
+		}),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		runtimeManager: runtime,
+	})
+	packageBytes := buildMultiPermissionWorkerFixturePackage(t)
+	installed := installAndEnablePlugin(t, h, packageBytes)
+	for _, permissionID := range []string{"fs.environment.read", "fs.environment.write", "network.client"} {
+		expected := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+		if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
+			PluginInstanceID:           installed.PluginInstanceID,
+			PermissionID:               permissionID,
+			ExpectedPolicyRevision:     expected.PolicyRevision,
+			ExpectedManagementRevision: expected.ManagementRevision,
+			ExpectedRevokeEpoch:        expected.RevokeEpoch,
+		}); err != nil {
+			t.Fatalf("GrantPermission(%s): %v", permissionID, err)
+		}
+	}
+	_, gateway := openSurfaceAndMintGatewayForAudience(t, h, installed.PluginInstanceID, "worker.view", "surface_rpc", "bridge_rpc")
+
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+			Method: "worker.echo", Params: map[string]any{"message": "hello"},
+		})
+		callDone <- err
+	}()
+	select {
+	case <-runtime.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker runtime was not invoked")
+	}
 	close(runtime.release)
 	if err := <-callDone; err != nil {
 		t.Fatalf("worker call error = %v", err)
@@ -5657,6 +5713,20 @@ func buildPermissionWorkerFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"permissions": []`, `"permissions": ["fs.environment.read"]`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Worker")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildMultiPermissionWorkerFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"permissions": []`, `"permissions": ["fs.environment.read", "fs.environment.write", "network.client"]`, 1)
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))

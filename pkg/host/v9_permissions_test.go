@@ -6,8 +6,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
@@ -120,6 +123,74 @@ func TestV9WorkerMethodRequiresGrantedPackagePermissions(t *testing.T) {
 	}
 	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("CallPluginMethod() after v9 package grant revoke error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}
+}
+
+func TestV9ExternalPackageWorkerRunsAfterExplicitGrants(t *testing.T) {
+	runtime := &permissionInspectingRuntimeManager{
+		recordingRuntimeManager: newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
+			RuntimeInstanceID: "runtime_external", RuntimeGenerationID: "runtime_gen_external",
+			IPCChannelID: "ipc_external", ConnectionNonce: "connection_nonce_external_1234567890", Ready: true,
+		}),
+		entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
+	diagnostics := &diagnosticSink{}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: runtime, diagnostics: diagnostics,
+	})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildMultiPermissionWorkerFixturePackage(t))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	inspection, err := h.InspectUploadedExternalPackage(hostTestContext(), InspectUploadedExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"}, Package: bytes.NewReader([]byte("package")), DeclaredSize: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
+	})
+	if err != nil || installed.Plugin == nil {
+		t.Fatalf("install external package: plugin=%#v err=%v", installed.Plugin, err)
+	}
+	for _, permissionID := range []string{"fs.environment.read", "fs.environment.write", "network.client"} {
+		revisions := mustAuthorizationRevisions(t, h, installed.Plugin.PluginInstanceID)
+		if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
+			PluginInstanceID: installed.Plugin.PluginInstanceID, PermissionID: permissionID,
+			ExpectedPolicyRevision: revisions.PolicyRevision, ExpectedManagementRevision: revisions.ManagementRevision,
+			ExpectedRevokeEpoch: revisions.RevokeEpoch,
+		}); err != nil {
+			t.Fatalf("grant %s: %v", permissionID, err)
+		}
+	}
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.Plugin.PluginInstanceID, "worker.view")
+	beforeCall, _ := h.getAuthorizationSnapshot(hostTestContext(), installed.Plugin.PluginInstanceID)
+	decision, decisionErr := registry.EvaluateAuthorizationSnapshot(beforeCall, registry.AuthorizeRequest{
+		PluginInstanceID: installed.Plugin.PluginInstanceID, Method: "worker.echo",
+		PermissionIDs: []string{"fs.environment.read", "fs.environment.write", "network.client"},
+		Expected:      registry.AuthorizationRevisionsFromRecord(beforeCall.Plugin),
+	})
+	if decisionErr != nil || !decision.Allowed {
+		t.Fatalf("authorization before call: decision=%#v err=%v record=%#v grants=%#v", decision, decisionErr, beforeCall.Plugin, beforeCall.Grants)
+	}
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+			PluginInstanceID: installed.Plugin.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "worker.echo", Params: map[string]any{"message": "hello"},
+		})
+		callDone <- err
+	}()
+	select {
+	case <-runtime.entered:
+	case err := <-callDone:
+		t.Fatalf("external worker call failed before runtime dispatch: %v diagnostics=%#v", err, diagnostics.events)
+	case <-time.After(2 * time.Second):
+		t.Fatal("external worker runtime was not invoked")
+	}
+	close(runtime.release)
+	if err := <-callDone; err != nil {
+		t.Fatalf("external worker call error: %v diagnostics=%#v", err, diagnostics.events)
 	}
 }
 
