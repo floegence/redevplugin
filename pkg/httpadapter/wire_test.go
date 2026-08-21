@@ -456,7 +456,7 @@ func TestReleaseRefWireRequestRejectsNestedUnknownFields(t *testing.T) {
 			}
 		}
 	}`)
-	var request installReleaseRefRequest
+	var request inspectReleasePackageRequest
 	if err := decodeStrictJSON(raw, &request); err == nil || !strings.Contains(err.Error(), "owner_env_hash") {
 		t.Fatalf("decodeStrictJSON() error = %v, want nested unknown field rejection", err)
 	}

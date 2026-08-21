@@ -38,6 +38,13 @@ func (prepared PreparedRelease) SourcePolicy() releasecontract.SourcePolicyV3 {
 	return prepared.snapshot.SourcePolicy()
 }
 
+// AllowsReleaseMetadataSigningKey reports whether the freshly prepared source
+// state still authorizes a release-metadata signing key and has not revoked it.
+func (prepared PreparedRelease) AllowsReleaseMetadataSigningKey(keyID string) bool {
+	return keyID != "" && slices.Contains(prepared.snapshot.policy.ActiveKeys.ReleaseMetadata, keyID) &&
+		!slices.Contains(prepared.snapshot.revocation.RevokedKeyIDs, keyID)
+}
+
 // AllowsPackageSigningKey reports whether the freshly prepared source state
 // still authorizes a package signing key and has not revoked it.
 func (prepared PreparedRelease) AllowsPackageSigningKey(keyID string) bool {

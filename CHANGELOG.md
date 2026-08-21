@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.0.8
+
+- Make official release inspection the single installation entry point, reuse
+  its short-lived owner-bound verified package during commit, and remove the
+  obsolete synchronous release-install route.
+- Fetch the release signature and package concurrently after metadata
+  verification, keep inspection free of lifecycle and runtime preflight work,
+  and derive permission review from verified capability contracts without
+  requiring a live business adapter.
+- Preserve stable inspection, package, trust, runtime, and retained-data errors
+  with the exact failed installation phase.
+
 ## v3.0.7
 
 - Add an environment-level reset API with a canonical ownership manifest,

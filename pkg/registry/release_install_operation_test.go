@@ -124,12 +124,15 @@ func TestReleaseInstallExecutionPayloadProgressAndTerminalCAS(t *testing.T) {
 	}
 	failed, err := ApplyReleaseInstallOperationUpdate(running, UpdateReleaseInstallOperationRequest{
 		ExecutionID: running.Execution.ID, ExpectedCursor: running.Execution.Cursor,
-		Status: execution.StatusFailed, Phase: "failed", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate},
+		Status: execution.StatusFailed, Phase: "download_package", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate},
 		Attempt: 2, MutationOutcome: mutation.OutcomeNotCommitted,
 		Failure: &ReleaseInstallFailure{Code: "PLUGIN_INSTALL_INTERRUPTED", Retryable: true}, Now: req.Now.Add(2 * time.Second),
 	})
 	if err != nil || failed.Execution.TerminalAt != nil || failed.Failure == nil || !failed.Failure.Retryable {
 		t.Fatalf("failed payload = %#v, %v", failed, err)
+	}
+	if failed.Phase != "download_package" {
+		t.Fatalf("failure phase = %q, want download_package", failed.Phase)
 	}
 }
 
@@ -200,6 +203,7 @@ func TestReleaseInstallExecutionPayloadAcceptsPublisherReleaseRefDigestShapes(t 
 	}
 	req := StartReleaseInstallOperationRequest{
 		RequestID: "request_install_containers", ExecutionID: "operation_install_containers", PluginInstanceID: "plugini_containers",
+		InspectionID: "inspection_install_containers",
 		Release: ReleaseInstallIdentity{
 			SourceID: reference.SourceID, Channel: reference.Channel, ReleaseMetadataRef: reference.ReleaseMetadataRef,
 			ReleaseMetadataSHA256: reference.ReleaseMetadataSHA256, PublisherID: reference.PublisherID,
@@ -216,6 +220,7 @@ func TestReleaseInstallExecutionPayloadAcceptsPublisherReleaseRefDigestShapes(t 
 func releaseInstallExecutionRequest(now time.Time) StartReleaseInstallOperationRequest {
 	return StartReleaseInstallOperationRequest{
 		RequestID: "request_install_example", ExecutionID: "operation_install_example", PluginInstanceID: "plugini_example",
+		InspectionID: "inspection_install_example",
 		Release: ReleaseInstallIdentity{
 			SourceID: "official", Channel: "stable", ReleaseMetadataRef: "example-1.2.3",
 			ReleaseMetadataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

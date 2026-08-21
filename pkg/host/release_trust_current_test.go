@@ -47,12 +47,25 @@ func testRecoverEnabledRefreshesCurrentRevocationBeforeRuntime(t *testing.T, rev
 	first, _, _ := newTestHostWithOptions(t, testHostOptions{
 		stateRoot: stateRoot, releaseTrust: fixture.ServiceSet, releaseArtifactResolver: resolver,
 	})
-	installed, err := first.InstallReleaseRef(hostTestContext(), InstallReleaseRefRequest{
-		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+	ctx := hostTestContext()
+	pluginInstanceID := nextTestPluginInstanceID(t)
+	ref := releaseTrustFixtureRef(fixture)
+	inspection, err := first.InspectReleasePackage(ctx, InspectReleasePackageRequest{PluginInstanceID: pluginInstanceID, ReleaseRef: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := first.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
+		RequestID: "request_current_revocation", PluginInstanceID: pluginInstanceID,
+		InspectionID: inspection.InspectionID, ReleaseRef: ref,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	terminal := waitForReleaseInstallOperation(t, first, ctx, started.Execution.ID)
+	if terminal.PluginRecord == nil {
+		t.Fatalf("release install terminal = %#v", terminal)
+	}
+	installed := *terminal.PluginRecord
 	if installed.EnableState != registry.EnableEnabled {
 		t.Fatalf("install enable state = %q", installed.EnableState)
 	}

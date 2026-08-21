@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.0.7
+  version: 3.0.8
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -97,20 +97,11 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/InstalledExternalPackageResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/install-release-ref:
-    post:
-      operationId: installReleaseRef
-      x-redevplugin-route-effect: mutation
-      requestBody:
-        $ref: "#/components/requestBodies/InstallReleaseRefRequest"
-      responses:
-        "200": { $ref: "#/components/responses/PluginRecordResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/release-packages/inspect:
     post:
       operationId: inspectReleasePackage
       x-redevplugin-route-effect: mutation
-      description: Resolves and fully verifies an exact release reference before installation so one user confirmation can review the Host-derived permissions and package identity. The inspection does not install a plugin, and installation re-verifies the exact release and hashes.
+      description: Resolves and fully verifies an exact release reference before installation so one user confirmation can review the Host-derived permissions and package identity. The inspection does not perform runtime or lifecycle preflight and returns short-lived session-bound evidence that installation consumes without downloading or parsing the package again.
       requestBody:
         $ref: "#/components/requestBodies/InspectReleasePackageRequest"
       responses:
@@ -916,12 +907,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/InstallInspectedPackageRequest"
-    InstallReleaseRefRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/InstallReleaseRefRequest"
     InspectReleasePackageRequest:
       required: true
       content:
@@ -1794,6 +1779,8 @@ components:
         - PLUGIN_RELEASE_TIMEOUT
         - PLUGIN_RELEASE_ASSET_MISSING
         - PLUGIN_RELEASE_ASSET_INTEGRITY
+        - PLUGIN_RELEASE_INSPECTION_EXPIRED
+        - PLUGIN_RELEASE_INSPECTION_STALE
         - PLUGIN_INSTALL_INTERRUPTED
         - PLUGIN_INSTALL_STATE_CONFLICT
         - PLUGIN_RETAINED_DATA_INCOMPATIBLE
@@ -2837,9 +2824,11 @@ components:
         security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
     ReleasePackageInspection:
       type: object
-      required: [plugin_instance_id, release_ref, inspected_hashes, presentation, presentation_sha256, security_summary]
+      required: [inspection_id, expires_at, plugin_instance_id, release_ref, inspected_hashes, presentation, presentation_sha256, security_summary]
       additionalProperties: false
       properties:
+        inspection_id: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
         plugin_instance_id: { type: string, minLength: 1 }
         release_ref: { $ref: "#/components/schemas/PluginReleaseRef" }
         inspected_hashes: { $ref: "#/components/schemas/TrustHashSet" }
@@ -3032,14 +3021,6 @@ components:
         version: { $ref: "#/components/schemas/StrictSemVer" }
         expected_hashes:
           $ref: "#/components/schemas/PackageHashSet"
-    InstallReleaseRefRequest:
-      type: object
-      required: [plugin_instance_id, release_ref]
-      additionalProperties: false
-      properties:
-        release_ref:
-          $ref: "#/components/schemas/PluginReleaseRef"
-        plugin_instance_id: { type: string, minLength: 1 }
     UpdateReleaseRefRequest:
       type: object
       required: [plugin_instance_id, release_ref, expected_management_revision]
@@ -3117,11 +3098,12 @@ components:
         limit: { type: integer, minimum: 1, maximum: 500 }
     StartReleaseInstallExecutionRequest:
       type: object
-      required: [request_id, plugin_instance_id, release_ref]
+      required: [request_id, plugin_instance_id, inspection_id, release_ref]
       additionalProperties: false
       properties:
         request_id: { type: string, minLength: 1, maxLength: 256 }
         plugin_instance_id: { type: string, minLength: 1 }
+        inspection_id: { type: string, minLength: 1 }
         release_ref:
           $ref: "#/components/schemas/PluginReleaseRef"
     ListRetainedDataQueryRequest:

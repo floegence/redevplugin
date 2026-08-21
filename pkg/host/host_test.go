@@ -7213,6 +7213,7 @@ func (s *failingSecretListStore) List(context.Context, secrets.ListRequest) ([]s
 type recordingRuntimeManager struct {
 	calls               int
 	preflightCalls      int
+	healthCalls         int
 	startCalls          int
 	prewarmCalls        int
 	prewarmRequests     []runtimeclient.PrewarmWorkerRequest
@@ -7494,6 +7495,7 @@ func (r *recordingRuntimeManager) Stop(context.Context) error {
 }
 
 func (r *recordingRuntimeManager) Health(context.Context) (runtimeclient.ManagerHealth, error) {
+	r.healthCalls++
 	if r.healthErr != nil {
 		return runtimeclient.ManagerHealth{}, r.healthErr
 	}

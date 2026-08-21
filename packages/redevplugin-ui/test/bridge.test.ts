@@ -961,6 +961,7 @@ test("release installation starts through the unified execution route", async ()
   const request = {
     request_id: "request_1",
     plugin_instance_id: "plugin_instance_1",
+    inspection_id: "release_inspection_1",
     release_ref: {
       source_id: "official",
       channel: "stable",
@@ -1340,9 +1341,8 @@ test("platform cleanup failures preserve the original unknown mutation outcome",
   );
 });
 
-test("platform client installs and updates plugin release refs without package bytes", async () => {
+test("platform client updates plugin release refs without package bytes", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "enabled" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const releaseRef = {
@@ -1360,13 +1360,10 @@ test("platform client installs and updates plugin release refs without package b
     },
   };
 
-	await client.installReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: releaseRef });
   await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "2.0.0" }, expected_management_revision: 1 });
 
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/install-release-ref");
-	assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: releaseRef });
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update-release-ref");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "2.0.0" }, expected_management_revision: 1 });
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/update-release-ref");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "2.0.0" }, expected_management_revision: 1 });
 });
 
 test("platform client inspects an exact release package before confirmation", async () => {

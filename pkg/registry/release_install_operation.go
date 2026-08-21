@@ -62,6 +62,7 @@ type StartReleaseInstallOperationRequest struct {
 	RequestID        string                 `json:"request_id"`
 	ExecutionID      string                 `json:"execution_id"`
 	PluginInstanceID string                 `json:"plugin_instance_id"`
+	InspectionID     string                 `json:"inspection_id"`
 	Release          ReleaseInstallIdentity `json:"release"`
 	Now              time.Time              `json:"-"`
 }
@@ -86,6 +87,7 @@ type ReleaseInstallOperation struct {
 	Execution        execution.Execution             `json:"-"`
 	RequestID        string                          `json:"request_id"`
 	PluginInstanceID string                          `json:"plugin_instance_id"`
+	InspectionID     string                          `json:"inspection_id"`
 	RequestSHA256    string                          `json:"request_sha256"`
 	Phase            string                          `json:"phase"`
 	Progress         ReleaseInstallProgress          `json:"progress"`
@@ -111,8 +113,9 @@ func releaseInstallRequestSHA256(req StartReleaseInstallOperationRequest) (strin
 	canonical := struct {
 		RequestID        string                 `json:"request_id"`
 		PluginInstanceID string                 `json:"plugin_instance_id"`
+		InspectionID     string                 `json:"inspection_id"`
 		Release          ReleaseInstallIdentity `json:"release"`
-	}{RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, Release: req.Release}
+	}{RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, InspectionID: req.InspectionID, Release: req.Release}
 	raw, err := json.Marshal(canonical)
 	if err != nil {
 		return "", err
@@ -135,6 +138,7 @@ func PrepareReleaseInstallOperation(req StartReleaseInstallOperationRequest) (Re
 			Status: execution.StatusRunning, CreatedAt: now, UpdatedAt: now,
 		},
 		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID,
+		InspectionID:  req.InspectionID,
 		RequestSHA256: requestSHA256, Phase: "queued",
 		Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, Attempt: 1,
 		MutationOutcome: mutation.OutcomeNotCommitted, Release: req.Release,
@@ -146,7 +150,7 @@ func PrepareReleaseInstallOperation(req StartReleaseInstallOperationRequest) (Re
 
 func validateStartReleaseInstallOperation(req StartReleaseInstallOperationRequest) error {
 	values := map[string]string{
-		"request_id": req.RequestID, "execution_id": req.ExecutionID, "plugin_instance_id": req.PluginInstanceID,
+		"request_id": req.RequestID, "execution_id": req.ExecutionID, "plugin_instance_id": req.PluginInstanceID, "inspection_id": req.InspectionID,
 		"source_id": req.Release.SourceID, "channel": req.Release.Channel, "release_metadata_ref": req.Release.ReleaseMetadataRef,
 		"release_metadata_sha256": req.Release.ReleaseMetadataSHA256, "publisher_id": req.Release.PublisherID,
 		"plugin_id": req.Release.PluginID, "version": req.Release.Version,
@@ -254,8 +258,9 @@ func updateReleaseInstallPhaseDiagnostics(current ReleaseInstallOperation, req U
 
 func validReleaseInstallPhase(phase string) bool {
 	switch phase {
-	case "queued", "fetch_trust_evidence", "fetch_release_evidence", "download_package", "verify_hashes",
-		"verify_signatures", "fetch_capability_evidence", "commit", "complete", "failed", "reconciling":
+	case "queued", "validate_inspection", "refresh_trust", "fetch_trust_evidence", "fetch_release_evidence",
+		"download_package", "verify_hashes", "verify_signatures", "validate_install", "runtime_preflight",
+		"fetch_capability_evidence", "commit", "complete", "reconciling":
 		return true
 	default:
 		return false

@@ -91,11 +91,6 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/install-release-ref",
-    "effect": "mutation"
-  },
-  {
-    "method": "POST",
     "path": "/_redevplugin/api/plugins/intents/invoke",
     "effect": "mutation"
   },

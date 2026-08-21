@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,24 +20,61 @@ import (
 )
 
 type memoryFetcher struct {
+	mu       sync.Mutex
 	values   map[string][]byte
 	requests []externalsource.ArtifactFetchRequest
 	failures []error
 	block    bool
 }
 
-func (fetcher *memoryFetcher) FetchArtifact(ctx context.Context, request externalsource.ArtifactFetchRequest) (externalsource.ArtifactFetchResult, error) {
+type parallelReleaseFetcher struct {
+	mu       sync.Mutex
+	values   map[string][]byte
+	requests []externalsource.ArtifactFetchRequest
+	started  chan string
+	release  chan struct{}
+}
+
+func (fetcher *parallelReleaseFetcher) FetchArtifact(ctx context.Context, request externalsource.ArtifactFetchRequest) (externalsource.ArtifactFetchResult, error) {
+	fetcher.mu.Lock()
 	fetcher.requests = append(fetcher.requests, request)
+	fetcher.mu.Unlock()
+	if !strings.HasSuffix(request.URL, "/metadata.json") {
+		fetcher.started <- request.URL
+		select {
+		case <-fetcher.release:
+		case <-ctx.Done():
+			return externalsource.ArtifactFetchResult{}, ctx.Err()
+		}
+	}
+	value := fetcher.values[request.URL]
+	if request.Progress != nil {
+		request.Progress(int64(len(value)), int64(len(value)))
+	}
+	return externalsource.ArtifactFetchResult{Bytes: bytes.Clone(value), Source: request.URL, Final: request.URL}, nil
+}
+
+func (fetcher *parallelReleaseFetcher) requestSnapshot() []externalsource.ArtifactFetchRequest {
+	fetcher.mu.Lock()
+	defer fetcher.mu.Unlock()
+	return append([]externalsource.ArtifactFetchRequest(nil), fetcher.requests...)
+}
+
+func (fetcher *memoryFetcher) FetchArtifact(ctx context.Context, request externalsource.ArtifactFetchRequest) (externalsource.ArtifactFetchResult, error) {
+	fetcher.mu.Lock()
+	fetcher.requests = append(fetcher.requests, request)
+	var failure error
+	if len(fetcher.failures) > 0 {
+		failure = fetcher.failures[0]
+		fetcher.failures = fetcher.failures[1:]
+	}
+	fetcher.mu.Unlock()
 	if fetcher.block {
 		<-ctx.Done()
 		return externalsource.ArtifactFetchResult{}, ctx.Err()
 	}
-	if len(fetcher.failures) > 0 {
-		err := fetcher.failures[0]
-		fetcher.failures = fetcher.failures[1:]
-		if err != nil {
-			return externalsource.ArtifactFetchResult{}, err
-		}
+	if failure != nil {
+		return externalsource.ArtifactFetchResult{}, failure
 	}
 	value := fetcher.values[request.URL]
 	if request.Progress != nil {
@@ -274,7 +312,7 @@ func TestAssetSetSingleFlightFailureIsNotCached(t *testing.T) {
 	}
 }
 
-func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
+func TestAssetSetResolvesExactReleaseArtifactsWithParallelSignatureAndPackageFetches(t *testing.T) {
 	const (
 		sourceID  = "example_official"
 		channel   = "stable"
@@ -306,7 +344,7 @@ func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 		"https://artifacts.example.test/metadata.sig":  signatureBytes,
 		"https://artifacts.example.test/package.zip":   packageBytes,
 	}
-	fetcher := &memoryFetcher{values: values}
+	fetcher := &parallelReleaseFetcher{values: values, started: make(chan string, 2), release: make(chan struct{})}
 	set, err := NewAssetSet(AssetSetOptions{
 		SourceID: sourceID, Channel: channel, AllowedHosts: []string{"artifacts.example.test"}, Fetcher: fetcher,
 		Assets: []Asset{
@@ -318,28 +356,55 @@ func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := set.ResolveReleaseArtifact(context.Background(), host.ReleaseArtifactResolveRequest{
-		ReleaseRef: host.PluginReleaseRef{
-			SourceID: sourceID, Channel: channel, ReleaseMetadataRef: metaRef, ReleaseMetadataSHA256: digest(metadataBytes),
-			PublisherID: publisher, PluginID: pluginID, Version: version,
-			ExpectedHashes: host.PackageHashSet{PackageSHA256: "sha256:" + packageIdentityDigest, ManifestSHA256: "sha256:" + strings.Repeat("1", 64), EntriesSHA256: "sha256:" + strings.Repeat("2", 64)},
-		},
-		SourcePolicy: releasecontract.SourcePolicyV3{SourceType: "registry", AllowedArtifactHosts: []string{"artifacts.example.test"}},
-	})
+	type resolveResult struct {
+		artifact host.ResolvedPackageArtifact
+		err      error
+	}
+	resolvedResult := make(chan resolveResult, 1)
+	go func() {
+		resolved, resolveErr := set.ResolveReleaseArtifact(context.Background(), host.ReleaseArtifactResolveRequest{
+			ReleaseRef: host.PluginReleaseRef{
+				SourceID: sourceID, Channel: channel, ReleaseMetadataRef: metaRef, ReleaseMetadataSHA256: digest(metadataBytes),
+				PublisherID: publisher, PluginID: pluginID, Version: version,
+				ExpectedHashes: host.PackageHashSet{PackageSHA256: "sha256:" + packageIdentityDigest, ManifestSHA256: "sha256:" + strings.Repeat("1", 64), EntriesSHA256: "sha256:" + strings.Repeat("2", 64)},
+			},
+			SourcePolicy: releasecontract.SourcePolicyV3{SourceType: "registry", AllowedArtifactHosts: []string{"artifacts.example.test"}},
+		})
+		resolvedResult <- resolveResult{artifact: resolved, err: resolveErr}
+	}()
+	started := map[string]bool{}
+	for len(started) < 2 {
+		select {
+		case rawURL := <-fetcher.started:
+			started[rawURL] = true
+		case <-time.After(time.Second):
+			t.Fatalf("signature and package fetches did not overlap: started=%#v", started)
+		}
+	}
+	close(fetcher.release)
+	result := <-resolvedResult
+	resolved, err := result.artifact, result.err
 	if err != nil {
 		t.Fatal(err)
 	}
+	requests := fetcher.requestSnapshot()
 	readback, err := io.ReadAll(io.NewSectionReader(resolved.Reader, 0, resolved.Size))
-	if err != nil || string(readback) != string(packageBytes) || resolved.ArtifactSHA256 != packageTransportDigest || len(fetcher.requests) != 3 {
-		t.Fatalf("resolved = %#v, readback = %q, requests = %d, err = %v", resolved, readback, len(fetcher.requests), err)
+	if err != nil || string(readback) != string(packageBytes) || resolved.ArtifactSHA256 != packageTransportDigest || len(requests) != 3 {
+		t.Fatalf("resolved = %#v, readback = %q, requests = %d, err = %v", resolved, readback, len(requests), err)
 	}
-	for _, request := range fetcher.requests {
+	for _, request := range requests {
 		if len(request.AllowedHosts) != 1 || request.AllowedHosts[0] != "artifacts.example.test" {
 			t.Fatalf("allowed hosts = %#v", request.AllowedHosts)
 		}
 	}
-	if fetcher.requests[2].ExpectedSHA256 != packageTransportDigest {
-		t.Fatalf("package transport digest = %s, want %s", fetcher.requests[2].ExpectedSHA256, packageTransportDigest)
+	var packageRequests int
+	for _, request := range requests {
+		if request.ExpectedSHA256 == packageTransportDigest {
+			packageRequests++
+		}
+	}
+	if packageRequests != 1 {
+		t.Fatalf("package transport digest requests = %d, want one request for %s", packageRequests, packageTransportDigest)
 	}
 }
 

@@ -196,7 +196,8 @@ func (set *AssetSet) ResolveReleaseArtifact(ctx context.Context, request host.Re
 	if err != nil {
 		return host.ResolvedPackageArtifact{}, err
 	}
-	metadataBytes, _, err := set.fetch(ctx, request.ReleaseRef.ReleaseMetadataRef, "release_metadata", releasetrust.MaxReleaseDocumentBytes, hosts, request.ReleaseRef.ReleaseMetadataSHA256, request.Observe)
+	observe := serializedProgressObserver(request.Observe)
+	metadataBytes, _, err := set.fetch(ctx, request.ReleaseRef.ReleaseMetadataRef, "release_metadata", releasetrust.MaxReleaseDocumentBytes, hosts, request.ReleaseRef.ReleaseMetadataSHA256, observe)
 	if err != nil {
 		return host.ResolvedPackageArtifact{}, err
 	}
@@ -206,21 +207,62 @@ func (set *AssetSet) ResolveReleaseArtifact(ctx context.Context, request host.Re
 		metadata.DistributionRef.Distribution != string(host.PackageDistributionRegistryRef) {
 		return host.ResolvedPackageArtifact{}, ErrAssetMismatch
 	}
-	signature, _, err := set.fetch(ctx, metadata.ReleaseMetadataSignature.SignatureRef, "release_metadata_signature", maxReleaseSignatureBytes, hosts, "", request.Observe)
-	if err != nil {
-		return host.ResolvedPackageArtifact{}, err
+	// Once release metadata is verified, its signature and package locators are
+	// independent. Fetch both concurrently, but retain the existing validation
+	// order after the bytes have arrived.
+	fetchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type fetchResult struct {
+		role   string
+		value  []byte
+		digest string
+		err    error
 	}
-	if len(signature) != 64 {
+	results := make(chan fetchResult, 2)
+	go func() {
+		value, _, err := set.fetch(fetchCtx, metadata.ReleaseMetadataSignature.SignatureRef, "release_metadata_signature", maxReleaseSignatureBytes, hosts, "", observe)
+		results <- fetchResult{role: "signature", value: value, err: err}
+	}()
+	go func() {
+		value, digest, err := set.fetch(fetchCtx, metadata.DistributionRef.ArtifactRef, "package", externalsource.MaxArtifactBytes, hosts, "", observe)
+		results <- fetchResult{role: "package", value: value, digest: digest, err: err}
+	}()
+	var signatureResult, packageResult fetchResult
+	var firstErr error
+	for range 2 {
+		result := <-results
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			cancel()
+		}
+		if result.role == "signature" {
+			signatureResult = result
+		} else {
+			packageResult = result
+		}
+	}
+	if firstErr != nil {
+		return host.ResolvedPackageArtifact{}, firstErr
+	}
+	if len(signatureResult.value) != 64 {
 		return host.ResolvedPackageArtifact{}, ErrAssetMismatch
 	}
-	packageBytes, digest, err := set.fetch(ctx, metadata.DistributionRef.ArtifactRef, "package", externalsource.MaxArtifactBytes, hosts, "", request.Observe)
-	if err != nil {
-		return host.ResolvedPackageArtifact{}, err
-	}
 	return host.ResolvedPackageArtifact{
-		ReleaseMetadataBytes: metadataBytes, ReleaseMetadataSignature: signature,
-		Reader: bytes.NewReader(packageBytes), Size: int64(len(packageBytes)), ArtifactSHA256: digest,
+		ReleaseMetadataBytes: metadataBytes, ReleaseMetadataSignature: signatureResult.value,
+		Reader: bytes.NewReader(packageResult.value), Size: int64(len(packageResult.value)), ArtifactSHA256: packageResult.digest,
 	}, nil
+}
+
+func serializedProgressObserver(observe func(host.ReleaseArtifactProgress)) func(host.ReleaseArtifactProgress) {
+	if observe == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	return func(progress host.ReleaseArtifactProgress) {
+		mu.Lock()
+		defer mu.Unlock()
+		observe(progress)
+	}
 }
 
 func (set *AssetSet) matches(sourceID, channel string) bool {

@@ -203,6 +203,8 @@ type installedExternalPackageResponse struct {
 }
 
 type releasePackageInspectionResponse struct {
+	InspectionID       string                              `json:"inspection_id"`
+	ExpiresAt          time.Time                           `json:"expires_at"`
 	PluginInstanceID   string                              `json:"plugin_instance_id"`
 	ReleaseRef         host.PluginReleaseRef               `json:"release_ref"`
 	InspectedHashes    host.PackageHashSet                 `json:"inspected_hashes"`
@@ -213,6 +215,8 @@ type releasePackageInspectionResponse struct {
 
 func publicReleasePackageInspection(value host.ReleasePackageInspection) releasePackageInspectionResponse {
 	return releasePackageInspectionResponse{
+		InspectionID:     value.InspectionID,
+		ExpiresAt:        value.ExpiresAt,
 		PluginInstanceID: value.PluginInstanceID, ReleaseRef: value.ReleaseRef,
 		InspectedHashes: value.InspectedHashes, Presentation: publicPresentationCatalog(value.Presentation),
 		PresentationSHA256: value.PresentationSHA256, SecuritySummary: value.SecuritySummary,

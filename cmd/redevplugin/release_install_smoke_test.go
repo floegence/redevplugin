@@ -111,13 +111,13 @@ func TestReleaseInstallOperationsReuseAssetCacheAndRecoverDiagnostics(t *testing
 	if got := fetcher.requestCount(); got != 3 {
 		t.Fatalf("first install network fetches = %d, want 3", got)
 	}
-	assertReleaseInstallSmokeEvidence(t, installedHost, ctx, first, int64(len(fixture.PackageBytes)))
+	assertReleaseInstallSmokeEvidence(t, installedHost, ctx, first)
 
 	second := runReleaseInstallSmokeExecution(t, installedHost, ctx, "request_install_smoke_second", "plugini_install_smoke_second", ref)
 	if got := fetcher.requestCount(); got != 3 {
 		t.Fatalf("second install network fetches = %d, want cache reuse with 3 total", got)
 	}
-	assertReleaseInstallSmokeEvidence(t, installedHost, ctx, second, int64(len(fixture.PackageBytes)))
+	assertReleaseInstallSmokeEvidence(t, installedHost, ctx, second)
 
 	if err := installedHost.Close(); err != nil {
 		t.Fatal(err)
@@ -155,8 +155,17 @@ func TestReleaseInstallOperationsReuseAssetCacheAndRecoverDiagnostics(t *testing
 
 func runReleaseInstallSmokeExecution(t *testing.T, pluginHost *host.Host, ctx context.Context, requestID, pluginInstanceID string, ref host.PluginReleaseRef) execution.Execution {
 	t.Helper()
+	inspection, err := pluginHost.InspectReleasePackage(ctx, host.InspectReleasePackageRequest{
+		PluginInstanceID: pluginInstanceID,
+		ReleaseRef:       ref,
+		Now:              time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	started, err := pluginHost.StartReleaseInstallExecution(ctx, host.StartReleaseInstallExecutionRequest{
-		RequestID: requestID, PluginInstanceID: pluginInstanceID, ReleaseRef: ref, Now: time.Now().UTC(),
+		RequestID: requestID, PluginInstanceID: pluginInstanceID, ReleaseRef: ref,
+		InspectionID: inspection.InspectionID, Now: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +185,7 @@ func runReleaseInstallSmokeExecution(t *testing.T, pluginHost *host.Host, ctx co
 	return execution.Execution{}
 }
 
-func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx context.Context, current execution.Execution, packageSize int64) {
+func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx context.Context, current execution.Execution) {
 	t.Helper()
 	if current.Status != execution.StatusCompleted || current.TerminalAt == nil || current.FailureCode != "" {
 		t.Fatalf("terminal execution = %#v", current)
@@ -186,19 +195,12 @@ func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx 
 		t.Fatal(err)
 	}
 	wantPhases := []string{
-		"fetch_trust_evidence", "fetch_release_evidence", "download_package", "verify_hashes",
-		"verify_signatures", "fetch_capability_evidence", "commit", "complete",
+		"refresh_trust", "verify_signatures", "validate_install", "runtime_preflight",
+		"fetch_capability_evidence", "commit", "complete",
 	}
 	gotPhases := make([]string, 0, len(events))
-	var packageProgress map[string]any
 	for _, event := range events {
 		phase, _ := event.Payload["phase"].(string)
-		if phase == "download_package" {
-			progress, _ := event.Payload["progress"].(map[string]any)
-			if progress["completed"] == float64(packageSize) {
-				packageProgress = progress
-			}
-		}
 		if phase == "" || (len(gotPhases) > 0 && gotPhases[len(gotPhases)-1] == phase) {
 			continue
 		}
@@ -206,10 +208,6 @@ func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx 
 	}
 	if !reflect.DeepEqual(gotPhases, wantPhases) {
 		t.Fatalf("phase history = %#v, want %#v", gotPhases, wantPhases)
-	}
-	if packageProgress == nil || packageProgress["kind"] != string(registry.ReleaseInstallProgressBytes) ||
-		packageProgress["completed"] != float64(packageSize) || packageProgress["total"] != float64(packageSize) {
-		t.Fatalf("package download progress = %#v, want bytes=%d", packageProgress, packageSize)
 	}
 	assertInstalledPluginsEnabled(t, pluginHost, ctx, current.PluginInstanceID)
 }

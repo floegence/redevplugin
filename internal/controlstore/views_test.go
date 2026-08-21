@@ -473,7 +473,7 @@ func TestReleaseInstallPayloadDefersIdentityStateAndCursorToExecution(t *testing
 	view := store.Executions()
 	now := time.Unix(20, 0).UTC()
 	request := registry.StartReleaseInstallOperationRequest{
-		RequestID: "request_install", ExecutionID: "execution_install", PluginInstanceID: "plugin_install",
+		RequestID: "request_install", ExecutionID: "execution_install", PluginInstanceID: "plugin_install", InspectionID: "release_inspection_install",
 		Release: registry.ReleaseInstallIdentity{
 			SourceID: "official", Channel: "stable", ReleaseMetadataRef: "release.json",
 			ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0",

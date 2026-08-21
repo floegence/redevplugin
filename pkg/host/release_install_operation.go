@@ -3,6 +3,8 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +33,7 @@ type StartReleaseInstallExecutionRequest struct {
 	RequestID        string           `json:"request_id"`
 	PluginInstanceID string           `json:"plugin_instance_id"`
 	ReleaseRef       PluginReleaseRef `json:"release_ref"`
+	InspectionID     string           `json:"inspection_id"`
 	Now              time.Time        `json:"-"`
 }
 
@@ -41,6 +44,8 @@ type InspectReleasePackageRequest struct {
 }
 
 type ReleasePackageInspection struct {
+	InspectionID       string                         `json:"inspection_id"`
+	ExpiresAt          time.Time                      `json:"expires_at"`
 	PluginInstanceID   string                         `json:"plugin_instance_id"`
 	ReleaseRef         PluginReleaseRef               `json:"release_ref"`
 	InspectedHashes    PackageHashSet                 `json:"inspected_hashes"`
@@ -55,18 +60,18 @@ func (h *Host) InspectReleasePackage(ctx context.Context, req InspectReleasePack
 		return ReleasePackageInspection{}, err
 	}
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	if req.PluginInstanceID == "" {
+		return ReleasePackageInspection{}, fmt.Errorf("%w: plugin_instance_id is required", ErrMethodRequestContract)
+	}
 	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallReleaseRef,
 		scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
 		return ReleasePackageInspection{}, err
-	}
-	if req.PluginInstanceID == "" {
-		return ReleasePackageInspection{}, errors.New("plugin_instance_id is required")
 	}
 	now := req.Now.UTC()
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	pkg, release, sourcePolicy, verifiedRelease, _, err := h.resolveReleasePackage(
+	pkg, release, sourcePolicy, verifiedRelease, metadata, err := h.resolveReleasePackage(
 		ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, now,
 	)
 	if err != nil {
@@ -74,12 +79,6 @@ func (h *Host) InspectReleasePackage(ctx context.Context, req InspectReleasePack
 	}
 	trustInput := packageTrustInput{
 		ReleaseRef: &req.ReleaseRef, Release: &release, SourcePolicy: &sourcePolicy, VerifiedRelease: &verifiedRelease,
-	}
-	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest}); err != nil {
-		return ReleasePackageInspection{}, err
 	}
 	trustAssessment, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, trustInput, nil, req.PluginInstanceID, now)
 	if err != nil {
@@ -107,11 +106,26 @@ func (h *Host) InspectReleasePackage(ctx context.Context, req InspectReleasePack
 	if err != nil {
 		return ReleasePackageInspection{}, err
 	}
-	return ReleasePackageInspection{
-		PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef,
+	inspectionID, err := newExternalPackageID("release_inspection")
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	inspection := ReleasePackageInspection{
+		InspectionID: inspectionID, ExpiresAt: now.Add(releasePackageInspectionTTL), PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef,
 		InspectedHashes: packageHashSetForPackage(pkg), Presentation: presentation,
 		PresentationSHA256: presentationSHA256, SecuritySummary: securitySummary,
-	}, nil
+	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		return ReleasePackageInspection{}, err
+	}
+	h.releaseInspections.put(pendingReleasePackageInspection{
+		Scope: scope, Inspection: inspection, ReleaseRef: req.ReleaseRef,
+		Package: pkg, Release: release,
+		SourcePolicy: sourcePolicy, Verified: verifiedRelease,
+		Metadata: cloneReleasePackageInspectionMetadata(metadata),
+	})
+	return inspection, nil
 }
 
 func (h *Host) StartReleaseInstallExecution(ctx context.Context, req StartReleaseInstallExecutionRequest) (execution.Execution, error) {
@@ -135,6 +149,9 @@ func (h *Host) startReleaseInstallOperation(ctx context.Context, req startReleas
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	if req.PluginInstanceID == "" {
+		return registry.ReleaseInstallOperation{}, fmt.Errorf("%w: plugin_instance_id is required", ErrMethodRequestContract)
+	}
 	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallReleaseRef,
 		scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
 		return registry.ReleaseInstallOperation{}, err
@@ -142,39 +159,52 @@ func (h *Host) startReleaseInstallOperation(ctx context.Context, req startReleas
 	if err := validateReleaseRef(req.ReleaseRef); err != nil {
 		return registry.ReleaseInstallOperation{}, err
 	}
+	if strings.TrimSpace(req.InspectionID) == "" {
+		return registry.ReleaseInstallOperation{}, ErrReleasePackageInspectionNotFound
+	}
 	operationID, err := newExternalPackageID("release_install")
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, err
 	}
 	operation, created, err := h.controlStore.Executions().StartReleaseInstall(ctx, releaseInstallOwner(session), registry.StartReleaseInstallOperationRequest{
 		RequestID: req.RequestID, ExecutionID: operationID, PluginInstanceID: req.PluginInstanceID,
-		Release: releaseInstallIdentity(req.ReleaseRef), Now: req.Now,
+		Release: releaseInstallIdentity(req.ReleaseRef), InspectionID: req.InspectionID, Now: req.Now,
 	})
 	if err != nil || !created {
 		return operation, err
+	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		return h.failReleaseInstallOperationAtPhase(context.WithoutCancel(ctx), operation, "validate_inspection", releaseInstallFailureInternal, false, mutation.ForError(err))
+	}
+	pending, err := h.releaseInspections.claim(req.InspectionID, scope, req.PluginInstanceID, req.ReleaseRef, time.Now().UTC())
+	if err != nil {
+		return h.failReleaseInstallOperationAtPhase(context.WithoutCancel(ctx), operation, "validate_inspection", releasePackageInspectionFailureCode(err), false, mutation.OutcomeNotCommitted)
 	}
 	if !h.startLifecycleJob(func(lifecycleCtx context.Context) {
 		jobCtx := sessionctx.WithContext(lifecycleCtx, session)
 		jobCtx, cancel := context.WithTimeout(jobCtx, releaseInstallOperationTimeout)
 		defer cancel()
-		h.runReleaseInstallOperation(jobCtx, operation, req.ReleaseRef)
+		h.runReleaseInstallOperation(jobCtx, operation, req.ReleaseRef, pending)
 	}) {
 		return h.failReleaseInstallOperation(context.WithoutCancel(ctx), operation, releaseInstallFailureInterrupted, true, mutation.OutcomeNotCommitted)
 	}
 	return operation, nil
 }
 
-func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registry.ReleaseInstallOperation, ref PluginReleaseRef) {
-	running, err := h.updateReleaseInstallOperation(ctx, operation, execution.StatusRunning, "fetch_trust_evidence",
+func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registry.ReleaseInstallOperation, ref PluginReleaseRef, pending pendingReleasePackageInspection) {
+	running, err := h.updateReleaseInstallOperation(ctx, operation, execution.StatusRunning, "refresh_trust",
 		registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate}, mutation.OutcomeNotCommitted, nil, nil)
 	if err != nil {
 		_, _ = h.failReleaseInstallOperation(context.WithoutCancel(ctx), operation, releaseInstallFailureCode(err), false, mutation.ForError(err))
 		return
 	}
 	tracker := &releaseInstallProgressTracker{host: h, ctx: ctx, current: running}
-	pkg, release, sourcePolicy, verifiedRelease, metadata, err := h.resolveReleasePackage(
-		ctx, PackageTrustActionInstall, ref, nil, operation.PluginInstanceID, time.Now().UTC(), tracker.observe,
-	)
+	pkg, release := pending.Package, pending.Release
+	sourcePolicy, verifiedRelease, metadata := pending.SourcePolicy, pending.Verified, pending.Metadata
+	if err = h.refreshReleaseInspectionTrust(ctx, ref, pending); err == nil {
+		tracker.observe(ReleaseArtifactProgress{Phase: "verify_signatures", Attempt: 1, CacheHit: true})
+	}
 	running, progressErr := tracker.snapshot()
 	if progressErr != nil {
 		h.finishFailedReleaseInstall(ctx, running, progressErr)
@@ -184,6 +214,7 @@ func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registr
 		h.finishFailedReleaseInstall(ctx, running, err)
 		return
 	}
+	tracker.observe(ReleaseArtifactProgress{Phase: "validate_install", Attempt: 1, CacheHit: true})
 	unlock, err := h.lifecycleLocks.acquireWrite(ctx, operation.PluginInstanceID)
 	if err == nil {
 		defer unlock()
@@ -340,7 +371,11 @@ func releaseInstallOwner(session sessionctx.Context) controlstore.ExecutionOwner
 }
 
 func (h *Host) failReleaseInstallOperation(ctx context.Context, current registry.ReleaseInstallOperation, code string, retryable bool, outcome mutation.Outcome) (registry.ReleaseInstallOperation, error) {
-	return h.updateReleaseInstallOperation(ctx, current, execution.StatusFailed, "failed",
+	return h.failReleaseInstallOperationAtPhase(ctx, current, current.Phase, code, retryable, outcome)
+}
+
+func (h *Host) failReleaseInstallOperationAtPhase(ctx context.Context, current registry.ReleaseInstallOperation, phase string, code string, retryable bool, outcome mutation.Outcome) (registry.ReleaseInstallOperation, error) {
+	return h.updateReleaseInstallOperation(ctx, current, execution.StatusFailed, phase,
 		registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate}, outcome,
 		&registry.ReleaseInstallFailure{Code: code, Retryable: retryable}, nil)
 }
@@ -392,6 +427,31 @@ func releaseInstallFailureCode(err error) string {
 	}
 	if errors.Is(err, ErrReleaseRefPolicyDenied) {
 		return string(security.ErrReleaseRefPolicyDenied)
+	}
+	if errors.Is(err, ErrReleasePackageInspectionExpired) {
+		return string(security.ErrReleaseInspectionExpired)
+	}
+	if errors.Is(err, ErrReleasePackageInspectionStale) {
+		return string(security.ErrReleaseInspectionStale)
+	}
+	if errors.Is(err, ErrPluginRuntimeNotConfigured) {
+		return string(security.ErrRuntimeUnavailable)
+	}
+	if errors.Is(err, ErrPluginRuntimeIncompatible) {
+		return string(security.ErrRuntimeVersionMismatch)
+	}
+	var missingFeatures FeatureNotConfiguredError
+	if errors.As(err, &missingFeatures) {
+		if slices.Contains(missingFeatures.MissingFeatures(), FeatureRuntime) {
+			return string(security.ErrRuntimeUnavailable)
+		}
+		return string(security.ErrFeatureNotConfigured)
+	}
+	if errors.Is(err, ErrPackageTrustVerificationInvalid) {
+		return string(security.ErrTrustVerificationInvalid)
+	}
+	if errors.Is(err, ErrPackageTrustVerifierRequired) {
+		return string(security.ErrTrustVerificationRequired)
 	}
 	var packageValidationErr *pluginpkg.ValidationError
 	if errors.As(err, &packageValidationErr) {

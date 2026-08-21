@@ -191,9 +191,12 @@ client do not expose them.
 
 Trusted product UI should not transport official `.redevplugin` package bytes
 through browser state. For official or registry-backed installs, call
-`installReleaseRef` or `updateReleaseRef`; the host-side resolver and Host
-library perform artifact resolution, hash verification, trust assessment,
-staged install/update, and registry mutation server-side.
+`inspectReleasePackage`, review its verified presentation and permission
+requirements, then pass its short-lived `inspection_id` to
+`startReleaseInstallExecution`. The Host reuses the verified package instead of
+downloading or parsing it again. Updates use `updateReleaseRef`; artifact
+resolution, hash verification, trust assessment, staged install/update, and
+registry mutation stay server-side.
 
 Raw package import is intentionally not part of `PluginPlatformClient`. Explicit
 local or developer import flows must opt into `PluginLocalImportClient` from

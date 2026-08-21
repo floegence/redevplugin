@@ -836,6 +836,9 @@ func (v ExecutionView) UpdateReleaseInstall(ctx context.Context, ownerEnvHash st
 	if status != execution.StatusRunning {
 		eventPayload["status"] = status
 	}
+	if status == execution.StatusFailed {
+		eventPayload["failure_phase"] = updated.Phase
+	}
 	payload, err := json.Marshal(eventPayload)
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, err

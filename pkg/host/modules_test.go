@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
 func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {
@@ -328,8 +329,22 @@ func TestReleaseInstallPreflightRejectsMissingRuntimeBeforeRegistryMutation(t *t
 	assets.resetWrites()
 	disableModuleFeatures(h, FeatureRuntime)
 
-	_, err = h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref})
-	assertMissingFeatures(t, err, FeatureRuntime)
+	pluginInstanceID := nextTestPluginInstanceID(t)
+	inspection, err := h.InspectReleasePackage(ctx, InspectReleasePackageRequest{PluginInstanceID: pluginInstanceID, ReleaseRef: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
+		RequestID: "request_missing_runtime", PluginInstanceID: pluginInstanceID,
+		InspectionID: inspection.InspectionID, ReleaseRef: ref,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
+	if terminal.Execution.FailureCode != string(security.ErrRuntimeUnavailable) {
+		t.Fatalf("runtime preflight failure = %#v", terminal)
+	}
 	assertModulePreflightHasNoWrites(t, h, assets, 0)
 }
 

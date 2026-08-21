@@ -18,6 +18,8 @@ const (
 	ErrReleaseTimeout                ErrorCode = "PLUGIN_RELEASE_TIMEOUT"
 	ErrReleaseAssetMissing           ErrorCode = "PLUGIN_RELEASE_ASSET_MISSING"
 	ErrReleaseAssetIntegrity         ErrorCode = "PLUGIN_RELEASE_ASSET_INTEGRITY"
+	ErrReleaseInspectionExpired      ErrorCode = "PLUGIN_RELEASE_INSPECTION_EXPIRED"
+	ErrReleaseInspectionStale        ErrorCode = "PLUGIN_RELEASE_INSPECTION_STALE"
 	ErrInstallInterrupted            ErrorCode = "PLUGIN_INSTALL_INTERRUPTED"
 	ErrInstallStateConflict          ErrorCode = "PLUGIN_INSTALL_STATE_CONFLICT"
 	ErrRetainedDataIncompatible      ErrorCode = "PLUGIN_RETAINED_DATA_INCOMPATIBLE"
@@ -97,6 +99,8 @@ var platformErrorCodes = []ErrorCode{
 	ErrReleaseTimeout,
 	ErrReleaseAssetMissing,
 	ErrReleaseAssetIntegrity,
+	ErrReleaseInspectionExpired,
+	ErrReleaseInspectionStale,
 	ErrInstallInterrupted,
 	ErrInstallStateConflict,
 	ErrRetainedDataIncompatible,

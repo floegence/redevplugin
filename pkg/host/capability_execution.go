@@ -109,6 +109,19 @@ func (h *Host) validateManifestCapabilityContracts(plugin manifest.Manifest, pin
 }
 
 func (h *Host) resolveCapabilityMethod(record registry.PluginRecord, method manifest.MethodSpec) (resolvedCapabilityMethod, error) {
+	resolved, err := h.resolveCapabilityContractMethod(record, method)
+	if err != nil {
+		return resolvedCapabilityMethod{}, err
+	}
+	registration, err := h.adapters.Capabilities.Resolve(resolved.pin)
+	if err != nil {
+		return resolvedCapabilityMethod{}, err
+	}
+	resolved.registration = registration
+	return resolved, nil
+}
+
+func (h *Host) resolveCapabilityContractMethod(record registry.PluginRecord, method manifest.MethodSpec) (resolvedCapabilityMethod, error) {
 	if err := h.requireFeature(FeatureCapability); err != nil {
 		return resolvedCapabilityMethod{}, err
 	}
@@ -124,18 +137,14 @@ func (h *Host) resolveCapabilityMethod(record registry.PluginRecord, method mani
 	if !ok {
 		return resolvedCapabilityMethod{}, fmt.Errorf("capability target method %q is not published", method.Route.TargetMethod)
 	}
-	registration, err := h.adapters.Capabilities.Resolve(verified.Pin)
-	if err != nil {
-		return resolvedCapabilityMethod{}, err
-	}
-	return resolvedCapabilityMethod{binding: binding, pin: verified.Pin, contract: verified, method: contractMethod, registration: registration}, nil
+	return resolvedCapabilityMethod{binding: binding, pin: verified.Pin, contract: verified, method: contractMethod}, nil
 }
 
 func (h *Host) effectiveMethod(record registry.PluginRecord, declared manifest.MethodSpec) (manifest.MethodSpec, error) {
 	if declared.Route.Kind != manifest.MethodRouteCapability {
 		return declared, nil
 	}
-	resolved, err := h.resolveCapabilityMethod(record, declared)
+	resolved, err := h.resolveCapabilityContractMethod(record, declared)
 	if err != nil {
 		return manifest.MethodSpec{}, err
 	}

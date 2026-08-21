@@ -288,7 +288,6 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"manifest_field",
 		"path:",
 		"pointer:",
-		"InstallReleaseRefRequest:",
 		"UpdateReleaseRefRequest:",
 		"PluginReleaseRef:",
 		"PackageHashSet:",
@@ -814,11 +813,6 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"updateLocalPackage(pluginInstanceId: string", "/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import"},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/install-release-ref"},
-			Owner:        "PluginPlatformClient.installReleaseRef",
-			Snippets:     []string{"installReleaseRef(request: PluginInstallReleaseRefRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref"`},
-		},
-		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/release-packages/inspect"},
 			Owner:        "PluginPlatformClient.inspectReleasePackage",
 			Snippets:     []string{"inspectReleasePackage(request: PluginInspectReleasePackageRequest", `#requestMutation("POST", "/_redevplugin/api/plugins/release-packages/inspect"`},
@@ -1102,7 +1096,8 @@ func routesWithoutTypeScriptSDKBindings() []routeWithoutTypeScriptSDKBinding {
 
 func requiredJSONRequestBodyRoutes() []routeFixture {
 	return []routeFixture{
-		{Method: "POST", Path: "/_redevplugin/api/plugins/install-release-ref"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/release-packages/inspect"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/executions/release-installs"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/inspect"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/install"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},

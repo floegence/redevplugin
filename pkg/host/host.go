@@ -563,6 +563,7 @@ type Host struct {
 	lifecycleLocks       *pluginLifecycleLockRegistry
 	executions           *executionLeaseRegistry
 	verifiedReleases     *verifiedReleaseRegistry
+	releaseInspections   *releasePackageInspectionStore
 	sessionScopes        *sessionscope.Coordinator
 	sessionMaintenance   *sessionScopeMaintenanceLockRegistry
 	lifecycleCtx         context.Context
@@ -596,12 +597,6 @@ type UpdateLocalPackageRequest struct {
 	PackageReader              io.ReaderAt `json:"-"`
 	PackageSize                int64       `json:"-"`
 	Now                        time.Time   `json:"-"`
-}
-
-type InstallReleaseRefRequest struct {
-	ReleaseRef       PluginReleaseRef `json:"release_ref"`
-	PluginInstanceID string           `json:"plugin_instance_id"`
-	Now              time.Time        `json:"-"`
 }
 
 type UpdateReleaseRefRequest struct {
@@ -1464,6 +1459,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		lifecycleLocks:       newPluginLifecycleLockRegistry(),
 		executions:           newExecutionLeaseRegistry(),
 		verifiedReleases:     newVerifiedReleaseRegistry(),
+		releaseInspections:   newReleasePackageInspectionStore(),
 		sessionScopes:        adapters.SessionScopes,
 		sessionMaintenance:   newSessionScopeMaintenanceLockRegistry(),
 		lifecycleCtx:         lifecycleCtx,
@@ -1560,6 +1556,9 @@ func (h *Host) Close() error {
 			externalStageCloseErr = h.externalStage.Close()
 		}
 		h.verifiedReleases.clear()
+		if h.releaseInspections != nil {
+			h.releaseInspections.clear()
+		}
 		var runtimeCloseErr error
 		if h.runtimeModule != nil {
 			shutdownTimeout := DefaultRuntimeShutdownTimeout
@@ -3086,37 +3085,12 @@ func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageReq
 	return h.installResolvedPackage(ctx, pkg, pluginInstanceID, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
 }
 
-func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefRequest) (registry.PluginRecord, error) {
-	session, err := requireUserSession(ctx)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallReleaseRef,
-		scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment),
-	); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	pkg, release, sourcePolicy, verifiedRelease, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, req.Now)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	defer unlockLifecycle()
-	releaseRef := req.ReleaseRef
-	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{
-		ReleaseRef: &releaseRef, Release: &release, SourcePolicy: &sourcePolicy, VerifiedRelease: &verifiedRelease,
-	}, req.Now, metadata)
-}
-
 func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package, pluginInstanceID string, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (result registry.PluginRecord, retErr error) {
 	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
 	if pluginInstanceID == "" {
 		return registry.PluginRecord{}, errors.New("plugin_instance_id is required")
 	}
+	observeReleaseInstallPhase(trustInput.Observe, "validate_install")
 	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -3125,6 +3099,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	} else if !errors.Is(err, registry.ErrNotFound) {
 		return registry.PluginRecord{}, err
 	}
+	observeReleaseInstallPhase(trustInput.Observe, "runtime_preflight")
 	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest}); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -7287,7 +7262,7 @@ func (h *Host) requiredPermissionsForMethod(record registry.PluginRecord, method
 	case manifest.MethodRouteWorker:
 		return h.declaredRequiredPermissions(record, method)
 	case manifest.MethodRouteCapability:
-		resolved, err := h.resolveCapabilityMethod(record, method)
+		resolved, err := h.resolveCapabilityContractMethod(record, method)
 		if err != nil {
 			return nil, err
 		}
