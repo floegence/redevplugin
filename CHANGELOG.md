@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.6
+
+- Allow reinstall after deleting plugin data and expose a stable error when
+  retained plugin data is incompatible with the package being installed.
+
 ## v3.0.5
 
 - Validate execution authorization snapshots using the security facts they
