@@ -14,7 +14,11 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
-const releasePackageInspectionTTL = 5 * time.Minute
+const (
+	releasePackageInspectionTTL             = 5 * time.Minute
+	maxPendingReleasePackageInspections     = 128
+	maxPendingReleasePackageInspectionBytes = int64(256 << 20)
+)
 
 var (
 	ErrReleasePackageInspectionNotFound = errors.New("release package inspection not found")
@@ -31,24 +35,53 @@ type pendingReleasePackageInspection struct {
 	SourcePolicy releasecontract.SourcePolicyV3
 	Verified     releasetrust.VerifiedPackage
 	Metadata     map[string]string
+	PackageBytes int64
 }
 
 type releasePackageInspectionStore struct {
-	mu      sync.Mutex
-	records map[string]pendingReleasePackageInspection
+	mu           sync.Mutex
+	records      map[string]pendingReleasePackageInspection
+	expiryTimers map[string]*time.Timer
+	packageBytes int64
 }
 
 func newReleasePackageInspectionStore() *releasePackageInspectionStore {
-	return &releasePackageInspectionStore{records: make(map[string]pendingReleasePackageInspection)}
+	return &releasePackageInspectionStore{
+		records:      make(map[string]pendingReleasePackageInspection),
+		expiryTimers: make(map[string]*time.Timer),
+	}
 }
 
-func (s *releasePackageInspectionStore) put(record pendingReleasePackageInspection) {
+func (s *releasePackageInspectionStore) put(record pendingReleasePackageInspection, now time.Time) {
 	if s == nil || strings.TrimSpace(record.Inspection.InspectionID) == "" {
 		return
 	}
+	record.PackageBytes = releasePackageOwnedBytes(record.Package)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneExpiredLocked(now)
+	if _, exists := s.records[record.Inspection.InspectionID]; exists {
+		s.deleteLocked(record.Inspection.InspectionID)
+	}
+	for len(s.records) >= maxPendingReleasePackageInspections ||
+		s.packageBytes+record.PackageBytes > maxPendingReleasePackageInspectionBytes {
+		oldestID := s.oldestLocked()
+		if oldestID == "" {
+			break
+		}
+		s.deleteLocked(oldestID)
+	}
 	s.records[record.Inspection.InspectionID] = record
-	s.mu.Unlock()
+	s.packageBytes += record.PackageBytes
+	delay := record.Inspection.ExpiresAt.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	id := record.Inspection.InspectionID
+	expiresAt := record.Inspection.ExpiresAt
+	s.expiryTimers[id] = time.AfterFunc(delay, func() {
+		s.expire(id, expiresAt)
+	})
 }
 
 func (s *releasePackageInspectionStore) claim(
@@ -66,15 +99,60 @@ func (s *releasePackageInspectionStore) claim(
 		return pendingReleasePackageInspection{}, ErrReleasePackageInspectionNotFound
 	}
 	if !now.Before(record.Inspection.ExpiresAt) {
-		delete(s.records, id)
+		s.deleteLocked(id)
 		return record, ErrReleasePackageInspectionExpired
 	}
 	if record.Inspection.PluginInstanceID != strings.TrimSpace(pluginInstanceID) ||
 		!releasePackageInspectionMatches(record.ReleaseRef, ref) {
 		return record, ErrReleasePackageInspectionStale
 	}
-	delete(s.records, id)
+	s.deleteLocked(id)
 	return record, nil
+}
+
+func (s *releasePackageInspectionStore) expire(id string, expiresAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[id]
+	if !ok || !record.Inspection.ExpiresAt.Equal(expiresAt) {
+		return
+	}
+	s.deleteLocked(id)
+}
+
+func (s *releasePackageInspectionStore) pruneExpiredLocked(now time.Time) {
+	for id, record := range s.records {
+		if !now.Before(record.Inspection.ExpiresAt) {
+			s.deleteLocked(id)
+		}
+	}
+}
+
+func (s *releasePackageInspectionStore) oldestLocked() string {
+	oldestID := ""
+	var oldestExpiry time.Time
+	for id, record := range s.records {
+		if oldestID == "" || record.Inspection.ExpiresAt.Before(oldestExpiry) {
+			oldestID = id
+			oldestExpiry = record.Inspection.ExpiresAt
+		}
+	}
+	return oldestID
+}
+
+func (s *releasePackageInspectionStore) deleteLocked(id string) {
+	record, ok := s.records[id]
+	if ok {
+		delete(s.records, id)
+		s.packageBytes -= record.PackageBytes
+		if s.packageBytes < 0 {
+			s.packageBytes = 0
+		}
+	}
+	if timer := s.expiryTimers[id]; timer != nil {
+		timer.Stop()
+		delete(s.expiryTimers, id)
+	}
 }
 
 func (s *releasePackageInspectionStore) clear() {
@@ -82,8 +160,24 @@ func (s *releasePackageInspectionStore) clear() {
 		return
 	}
 	s.mu.Lock()
+	for _, timer := range s.expiryTimers {
+		timer.Stop()
+	}
 	clear(s.records)
+	clear(s.expiryTimers)
+	s.packageBytes = 0
 	s.mu.Unlock()
+}
+
+func releasePackageOwnedBytes(pkg pluginpkg.Package) int64 {
+	total := int64(len(pkg.CanonicalManifestBytes))
+	for path, content := range pkg.Files {
+		total += int64(len(path) + len(content))
+	}
+	for path, content := range pkg.SignatureFiles {
+		total += int64(len(path) + len(content))
+	}
+	return total
 }
 
 func releasePackageInspectionMatches(left, right PluginReleaseRef) bool {

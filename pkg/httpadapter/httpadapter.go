@@ -22,6 +22,7 @@ import (
 
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
@@ -3436,6 +3437,10 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrStorageScopeMismatch
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
+	case errors.Is(err, host.ErrFeatureNotConfigured):
+		return security.ErrFeatureNotConfigured
+	case errors.Is(err, capability.ErrRegistrationMissing):
+		return security.ErrContractMismatch
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return security.ErrManagementRevisionMismatch
 	case errors.Is(err, host.ErrPluginRuntimeNotConfigured):
@@ -3537,6 +3542,10 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
+	case errors.Is(err, host.ErrFeatureNotConfigured):
+		return http.StatusNotImplemented
+	case errors.Is(err, capability.ErrRegistrationMissing):
+		return http.StatusConflict
 	case errors.Is(err, host.ErrActionDenied),
 		errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, connectivity.ErrResourceScopeMismatch),
 		errors.Is(err, host.ErrStorageScopeMismatch):

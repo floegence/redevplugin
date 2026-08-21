@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -39,6 +40,49 @@ func startReleaseInstallOperationForTest(t *testing.T, h *Host, ctx context.Cont
 		request.InspectionID = inspectReleasePackageForTest(t, h, ctx, request.PluginInstanceID, request.ReleaseRef)
 	}
 	return h.startReleaseInstallOperation(ctx, request)
+}
+
+func TestReleasePackageInspectionStoreExpiresUnclaimedPackages(t *testing.T) {
+	store := newReleasePackageInspectionStore()
+	t.Cleanup(store.clear)
+	now := time.Now().UTC()
+	store.put(pendingReleasePackageInspection{
+		Inspection: ReleasePackageInspection{InspectionID: "release_inspection_expiring", ExpiresAt: now.Add(20 * time.Millisecond)},
+		Package:    pluginpkg.Package{Files: map[string][]byte{"ui/index.html": []byte("verified package")}},
+	}, now)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		remaining := len(store.records)
+		retainedBytes := store.packageBytes
+		store.mu.Unlock()
+		if remaining == 0 && retainedBytes == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("unclaimed release inspection was retained after its expiry")
+}
+
+func TestReleasePackageInspectionStoreBoundsPrefetchedPackages(t *testing.T) {
+	store := newReleasePackageInspectionStore()
+	t.Cleanup(store.clear)
+	now := time.Now().UTC()
+	for index := 0; index <= maxPendingReleasePackageInspections; index++ {
+		id := fmt.Sprintf("release_inspection_%03d", index)
+		store.put(pendingReleasePackageInspection{
+			Inspection: ReleasePackageInspection{InspectionID: id, ExpiresAt: now.Add(time.Duration(index+1) * time.Minute)},
+			Package:    pluginpkg.Package{Files: map[string][]byte{"ui/index.html": []byte(id)}},
+		}, now)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.records) != maxPendingReleasePackageInspections {
+		t.Fatalf("pending inspection count = %d, want %d", len(store.records), maxPendingReleasePackageInspections)
+	}
+	if _, exists := store.records["release_inspection_000"]; exists {
+		t.Fatal("oldest prefetched inspection was not evicted at the capacity boundary")
+	}
 }
 
 func TestStartReleaseInstallExecutionReturnsUnifiedExecution(t *testing.T) {
@@ -698,6 +742,24 @@ func TestReleaseInstallFailureClassifiesReleaseTrustErrors(t *testing.T) {
 			}
 			if releaseInstallFailureRetryable(boundaryErr) {
 				t.Fatal("release trust failure was marked retryable")
+			}
+		})
+	}
+}
+
+func TestReleaseInstallFailureClassifiesKnownPlatformFailures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want security.ErrorCode
+	}{
+		{name: "adapter", err: ErrAdapterFailure, want: security.ErrAdapterFailure},
+		{name: "feature", err: FeatureNotConfiguredError{Features: []Feature{FeatureCapability}}, want: security.ErrFeatureNotConfigured},
+		{name: "feature sentinel", err: ErrFeatureNotConfigured, want: security.ErrFeatureNotConfigured},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := releaseInstallFailureCode(test.err); got != string(test.want) {
+				t.Fatalf("releaseInstallFailureCode() = %q, want %q", got, test.want)
 			}
 		})
 	}

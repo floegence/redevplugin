@@ -124,7 +124,7 @@ func (h *Host) InspectReleasePackage(ctx context.Context, req InspectReleasePack
 		Package: pkg, Release: release,
 		SourcePolicy: sourcePolicy, Verified: verifiedRelease,
 		Metadata: cloneReleasePackageInspectionMetadata(metadata),
-	})
+	}, now)
 	return inspection, nil
 }
 
@@ -446,6 +446,12 @@ func releaseInstallFailureCode(err error) string {
 			return string(security.ErrRuntimeUnavailable)
 		}
 		return string(security.ErrFeatureNotConfigured)
+	}
+	if errors.Is(err, ErrFeatureNotConfigured) {
+		return string(security.ErrFeatureNotConfigured)
+	}
+	if errors.Is(err, ErrAdapterFailure) {
+		return string(security.ErrAdapterFailure)
 	}
 	if errors.Is(err, ErrPackageTrustVerificationInvalid) {
 		return string(security.ErrTrustVerificationInvalid)
