@@ -267,6 +267,62 @@ func TestReinstallWithRetainedDataReactivatesSamePluginInstance(t *testing.T) {
 	}
 }
 
+func TestDeleteDataReinstallCanOpenSurfaceInSameHostSession(t *testing.T) {
+	ctx := hostTestContext()
+	h, _, _ := newTestHost(t, true, true)
+	packageBytes := buildFixturePackage(t)
+	pluginInstanceID := nextTestPluginInstanceID(t)
+
+	installed, err := ImportLocalPackageBytes(ctx, h, pluginInstanceID, packageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:           pluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:           pluginInstanceID,
+		SurfaceID:                  "lifecycle.view",
+		ExpectedManagementRevision: enabled.ManagementRevision,
+	}); err != nil {
+		t.Fatalf("OpenSurface() before uninstall error = %v", err)
+	}
+	uninstalled, err := h.UninstallPlugin(ctx, UninstallRequest{
+		PluginInstanceID:           pluginInstanceID,
+		DeleteData:                 true,
+		ExpectedManagementRevision: enabled.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reinstalled, err := ImportLocalPackageBytes(ctx, h, pluginInstanceID, packageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reenabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:           pluginInstanceID,
+		ExpectedManagementRevision: reinstalled.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reinstalled.RevokeEpoch != uninstalled.RevokeEpoch || reenabled.RevokeEpoch != uninstalled.RevokeEpoch {
+		t.Fatalf("reinstall revoke epochs = (%d, %d), want uninstall floor %d", reinstalled.RevokeEpoch, reenabled.RevokeEpoch, uninstalled.RevokeEpoch)
+	}
+	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:           pluginInstanceID,
+		SurfaceID:                  "lifecycle.view",
+		ExpectedManagementRevision: reenabled.ManagementRevision,
+	}); err != nil {
+		t.Fatalf("OpenSurface() after delete-data reinstall error = %v", err)
+	}
+}
+
 func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
 	ctx := hostTestContext()
 	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")

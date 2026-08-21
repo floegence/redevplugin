@@ -222,31 +222,35 @@ type PluginSnapshot struct {
 	Policy *Policy
 }
 
-// InstallExternalPackage commits the complete installed record and clears any
-// previous grants and policy in the same control-DB transaction. Inspection
-// identifiers and receipts never enter this store.
-func (v RegistryView) InstallExternalPackage(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
+// UpdateExternalPackage commits an update to an existing active record and
+// clears its grants and policy in the same control-DB transaction. Fresh and
+// reinstalled packages use Store.InstallCommit so every installation shares
+// the plugin-data binding and tombstone revoke-floor transaction.
+func (v RegistryView) UpdateExternalPackage(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
 	if err := v.ready(); err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if req.Intent != registry.ExternalPackageUpdate {
+		return registry.PluginRecord{}, registry.ErrInvalidExternalPackageInstall
 	}
 	tx, err := v.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	defer tx.Rollback()
-	var existing *registry.PluginRecord
 	var raw string
-	err = tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, req.Record.PluginInstanceID).Scan(&raw)
-	if err == nil {
-		current, decodeErr := decodeRegistryPluginRecord([]byte(raw))
-		if decodeErr != nil {
-			return registry.PluginRecord{}, decodeErr
-		}
-		existing = &current
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	err = tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL`, ownerEnvHash, req.Record.PluginInstanceID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return registry.PluginRecord{}, registry.ErrNotFound
+	}
+	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	record, err := registry.PrepareExternalPackageInstall(ownerEnvHash, req, existing)
+	existing, err := decodeRegistryPluginRecord([]byte(raw))
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record, err := registry.PrepareExternalPackageInstall(ownerEnvHash, req, &existing)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}

@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.0.9
+
+- Preserve the instance revoke epoch across retained-data and delete-data
+  reinstalls so a freshly installed plugin can mint new surface credentials in
+  the same Host session without reviving credentials revoked by uninstall.
+- Remove the obsolete control-store external-install bypass so every fresh and
+  repeated install commits through the same plugin-data and tombstone
+  transaction; the remaining external-package control path is update-only.
+
 ## v3.0.8
 
 - Make official release inspection the single installation entry point, reuse

@@ -78,7 +78,10 @@ and marked that exact asset session prepared.
   update, downgrade, enable, disable, and uninstall take the plugin write lock;
   surface opening and final Event commits take the read lock. Release
   resolution and package validation occur outside the lock and commit only after
-  the registry revision is revalidated.
+  the registry revision is revalidated. Every fresh or repeated installation,
+  including external packages, commits through the same atomic plugin-data and
+  tombstone transaction; external-package update persistence cannot create a
+  new installed record.
 - `pkg/releasetrust` owns current release-document verification. A validated,
   immutable source configuration and root Ed25519 key are the trust inputs.
   Release metadata and package signatures bind exact SHA-256 digests and the

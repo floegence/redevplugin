@@ -289,7 +289,10 @@ reported by the runtime.
 
 Permission grants are lifecycle-bound. Uninstall removes grants even when plugin
 data is retained, because authorization is tied to the active installed plugin
-instance, not to retained user data.
+instance, not to retained user data. Reinstalling the same stable plugin
+instance preserves the tombstone's revoke epoch as the new credential floor.
+New surface credentials can therefore be minted without lowering the floor or
+reviving credentials that uninstall already revoked.
 
 ## Storage, Settings, And Secrets
 

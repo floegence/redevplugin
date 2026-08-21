@@ -13,7 +13,7 @@ func TestPrepareExternalPackageInstallBindsOwnerAndRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if installed.ManagementRevision != 1 || installed.OwnerEnvHash != "owner_env_a" || !RunnablePluginRecord(installed) {
+	if installed.ManagementRevision != 1 || installed.RevokeEpoch != 1 || installed.OwnerEnvHash != "owner_env_a" || !RunnablePluginRecord(installed) {
 		t.Fatalf("prepared record = %#v", installed)
 	}
 	if _, err := PrepareExternalPackageInstall("owner_env_b", req, nil); !errors.Is(err, ErrInvalidExternalPackageInstall) {
@@ -21,6 +21,25 @@ func TestPrepareExternalPackageInstallBindsOwnerAndRevision(t *testing.T) {
 	}
 	if _, err := PrepareExternalPackageInstall("owner_env_a", req, &installed); !errors.Is(err, ErrManagementRevisionConflict) {
 		t.Fatalf("duplicate prepare error = %v", err)
+	}
+}
+
+func TestPrepareExternalPackageReinstallInheritsDeletedRevokeFloor(t *testing.T) {
+	now := time.Date(2026, 7, 23, 1, 2, 3, 0, time.UTC)
+	req := externalPackageInstallRequest("owner_env_a", now)
+	deletedAt := now.Add(-time.Minute)
+	tombstone := req.Record
+	tombstone.OwnerEnvHash = "owner_env_a"
+	tombstone.ManagementRevision = 7
+	tombstone.RevokeEpoch = 5
+	tombstone.DeletedAt = &deletedAt
+
+	reinstalled, err := PrepareExternalPackageInstall("owner_env_a", req, &tombstone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reinstalled.ManagementRevision != 1 || reinstalled.RevokeEpoch != tombstone.RevokeEpoch || reinstalled.DeletedAt != nil {
+		t.Fatalf("reinstalled record = %#v", reinstalled)
 	}
 }
 

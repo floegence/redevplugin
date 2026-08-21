@@ -82,7 +82,7 @@ func TestSessionIdentityRejectsCorruptHostMetadata(t *testing.T) {
 	}
 }
 
-func TestRegistryExternalInstallUsesOneTransactionAndNoDurableInspectionState(t *testing.T) {
+func TestRegistryViewRejectsExternalInstallPersistenceBypass(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
 	if err != nil {
@@ -92,22 +92,11 @@ func TestRegistryExternalInstallUsesOneTransactionAndNoDurableInspectionState(t 
 	view := store.Registry()
 	now := time.Unix(100, 0).UTC()
 	record := externalControlRecord("plugin", "1.0.0", now)
-	installed, err := view.InstallExternalPackage(ctx, "env", registry.InstallExternalPackageRequest{Intent: registry.ExternalPackageInstall, Record: record, Now: now})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := view.UpdateExternalPackage(ctx, "env", registry.InstallExternalPackageRequest{Intent: registry.ExternalPackageInstall, Record: record, Now: now}); !errors.Is(err, registry.ErrInvalidExternalPackageInstall) {
+		t.Fatalf("external install bypass error = %v, want ErrInvalidExternalPackageInstall", err)
 	}
-	if installed.ManagementRevision != 1 || installed.EnableState != registry.EnableEnabled {
-		t.Fatalf("installed = %#v", installed)
-	}
-	if _, err := view.InstallExternalPackage(ctx, "env", registry.InstallExternalPackageRequest{Intent: registry.ExternalPackageInstall, Record: record, Now: now.Add(time.Second)}); !errors.Is(err, registry.ErrManagementRevisionConflict) {
-		t.Fatalf("duplicate install error = %v", err)
-	}
-	got, err := view.Get(ctx, "env", "plugin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Record.ManagementRevision != 1 || len(got.Grants) != 0 || got.Policy != nil {
-		t.Fatalf("failed transaction changed state: %#v", got)
+	if _, err := view.Get(ctx, "env", "plugin"); !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("rejected external install persisted state: %v", err)
 	}
 	var transientTables int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND (name LIKE '%inspection%' OR name LIKE '%receipt%' OR name LIKE '%stage%')`).Scan(&transientTables); err != nil {
@@ -121,7 +110,7 @@ func TestRegistryExternalInstallUsesOneTransactionAndNoDurableInspectionState(t 
 		t.Fatal(err)
 	}
 	if executionRows != 0 {
-		t.Fatalf("external install created a second activation execution: %d", executionRows)
+		t.Fatalf("rejected external install created an activation execution: %d", executionRows)
 	}
 }
 

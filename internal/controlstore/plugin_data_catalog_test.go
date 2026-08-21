@@ -96,11 +96,12 @@ func TestInstallCommitReactivatesExactRetainedBindingAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
+	uninstalled, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
 		PluginInstanceID:           stored.PluginInstanceID,
 		ExpectedManagementRevision: stored.ManagementRevision,
 		Now:                        time.Now().UTC(),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	retained, found, err := store.GetBinding(ctx, stored.PluginInstanceID)
@@ -118,7 +119,7 @@ func TestInstallCommitReactivatesExactRetainedBindingAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallCommit() retained reinstall error = %v", err)
 	}
-	if reinstalled.EnableState != registry.EnableEnabled || reinstalled.ManagementRevision != 1 || reinstalled.RevokeEpoch != 1 {
+	if reinstalled.EnableState != registry.EnableEnabled || reinstalled.ManagementRevision != 1 || reinstalled.RevokeEpoch != uninstalled.RevokeEpoch {
 		t.Fatalf("reinstalled record = %#v", reinstalled)
 	}
 	actual, found, err := store.GetBinding(ctx, stored.PluginInstanceID)
@@ -136,12 +137,13 @@ func TestInstallCommitReplacesDeletedTombstoneAfterDeleteDataUninstall(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
+	uninstalled, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		DeleteData:                 true,
 		ExpectedManagementRevision: installed.ManagementRevision,
 		Now:                        time.Now().UTC(),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := store.GetBinding(ctx, installed.PluginInstanceID); err != nil || found {
@@ -153,7 +155,7 @@ func TestInstallCommitReplacesDeletedTombstoneAfterDeleteDataUninstall(t *testin
 	if err != nil {
 		t.Fatalf("delete-data reinstall error = %v", err)
 	}
-	if reinstalled.EnableState != registry.EnableEnabled || reinstalled.ManagementRevision != 1 || reinstalled.RevokeEpoch != 1 {
+	if reinstalled.EnableState != registry.EnableEnabled || reinstalled.ManagementRevision != 1 || reinstalled.RevokeEpoch != uninstalled.RevokeEpoch {
 		t.Fatalf("reinstalled record = %#v", reinstalled)
 	}
 	active, found, err := store.GetBinding(ctx, installed.PluginInstanceID)

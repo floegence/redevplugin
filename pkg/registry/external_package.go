@@ -357,6 +357,14 @@ func prepareExternalPackageRecord(ownerEnvHash string, req InstallExternalPackag
 		if exists && existing.DeletedAt == nil {
 			return PluginRecord{}, &ManagementRevisionConflictError{PluginInstanceID: record.PluginInstanceID, Expected: 0, Actual: existing.ManagementRevision}
 		}
+		// RevokeEpoch is an instance-scoped monotonic credential floor. A fresh
+		// external package starts at one; reinstalling a deleted stable instance
+		// inherits its tombstone floor so new credentials remain usable without
+		// reviving credentials revoked by uninstall.
+		record.RevokeEpoch = 1
+		if exists && existing.RevokeEpoch > record.RevokeEpoch {
+			record.RevokeEpoch = existing.RevokeEpoch
+		}
 		record.InstalledAt = now
 		if record.PolicyRevision == 0 {
 			record.PolicyRevision = 1

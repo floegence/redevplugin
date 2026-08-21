@@ -104,14 +104,22 @@ func (s *Store) InstallCommit(ctx context.Context, record registry.PluginRecord,
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	record.RevokeEpoch = 1
 	record.DisabledReason = ""
 	record.EnabledAt = &now
 	var stored registry.PluginRecord
 	err = s.pluginDataMutation(ctx, func(tx *sql.Tx) error {
-		if _, err := getControlPluginRecord(ctx, tx, owner, record.PluginInstanceID); err == nil {
+		previous, err := getControlPluginRecordIncludingDeleted(ctx, tx, owner, record.PluginInstanceID)
+		switch {
+		case err == nil && previous.DeletedAt == nil:
 			return plugindata.ErrBindingConflict
-		} else if !errors.Is(err, registry.ErrNotFound) {
+		case err == nil:
+			// The revoke epoch is an instance-scoped monotonic floor. Reusing the
+			// stable instance ID after uninstall must not reset it below the
+			// in-process token revocation floor established by that uninstall.
+			record.RevokeEpoch = previous.RevokeEpoch
+		case errors.Is(err, registry.ErrNotFound):
+			record.RevokeEpoch = 1
+		default:
 			return err
 		}
 		actual, found, err := getControlDataBinding(ctx, tx, owner, next.PluginInstanceID)
@@ -129,7 +137,7 @@ func (s *Store) InstallCommit(ctx context.Context, record registry.PluginRecord,
 		if err != nil {
 			return err
 		}
-		if prepared.EnableState != registry.EnableEnabled || prepared.ManagementRevision != 1 || prepared.RevokeEpoch != 1 {
+		if prepared.EnableState != registry.EnableEnabled || prepared.ManagementRevision != 1 || prepared.RevokeEpoch != record.RevokeEpoch {
 			return plugindata.ErrInvalidArgument
 		}
 		if err := validateControlRecordDataShape(prepared, next, shape); err != nil {
@@ -542,6 +550,23 @@ type controlDataQuerier interface {
 func getControlPluginRecord(ctx context.Context, q controlDataQuerier, owner, pluginInstanceID string) (registry.PluginRecord, error) {
 	var raw string
 	err := q.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL`, owner, pluginInstanceID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return registry.PluginRecord{}, registry.ErrNotFound
+	}
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record, err := decodeRegistryPluginRecord([]byte(raw))
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record.OwnerEnvHash = owner
+	return record, nil
+}
+
+func getControlPluginRecordIncludingDeleted(ctx context.Context, q controlDataQuerier, owner, pluginInstanceID string) (registry.PluginRecord, error) {
+	var raw string
+	err := q.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=?`, owner, pluginInstanceID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return registry.PluginRecord{}, registry.ErrNotFound
 	}

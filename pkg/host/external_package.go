@@ -556,7 +556,7 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	if previous == nil {
 		stored, err = h.commitInstall(ctx, record, now)
 	} else {
-		stored, err = h.installExternalPackageRecord(ctx, session, registry.InstallExternalPackageRequest{
+		stored, err = h.updateExternalPackageRecord(ctx, session, registry.InstallExternalPackageRequest{
 			Intent:                     registry.ExternalPackageUpdate,
 			ExpectedManagementRevision: pending.Inspection.Intent.ExpectedManagementRevision,
 			Record:                     record, Now: now,
@@ -597,11 +597,11 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	return result, nil
 }
 
-func (h *Host) installExternalPackageRecord(ctx context.Context, session sessionctx.Context, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
+func (h *Host) updateExternalPackageRecord(ctx context.Context, session sessionctx.Context, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
 	if h.controlStore == nil {
 		return registry.PluginRecord{}, ErrControlStoreRequired
 	}
-	return h.controlStore.Registry().InstallExternalPackage(ctx, session.OwnerEnvHash, req)
+	return h.controlStore.Registry().UpdateExternalPackage(ctx, session.OwnerEnvHash, req)
 }
 
 func installedExternalPackage(record registry.PluginRecord, now time.Time) InstalledExternalPackage {
