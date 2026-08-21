@@ -4298,14 +4298,24 @@ func (h *Host) preflightWorkerRuntime(ctx context.Context, record registry.Plugi
 	}
 	health, healthErr := h.adapters.RuntimeManager.Health(ctx)
 	if healthErr != nil {
-		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, healthErr)
+		return classifyWorkerRuntimePreflightError("health", healthErr)
 	}
 	target := health.ArtifactIdentity.Target()
 	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, target)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+		return classifyWorkerRuntimePreflightError("preflight", err)
 	}
 	return validateWorkerRuntimeArtifactIdentity(record, descriptor, target)
+}
+
+func classifyWorkerRuntimePreflightError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || isWorkerRuntimeUnavailable(err) {
+		return fmt.Errorf("runtime %s: %w", operation, err)
+	}
+	return fmt.Errorf("%w: runtime %s: %v", ErrPluginRuntimeIncompatible, operation, err)
 }
 
 func (h *Host) bindCompatibleWorkerRuntime(ctx context.Context, record registry.PluginRecord) (runtimeclient.RuntimeBinding, error) {

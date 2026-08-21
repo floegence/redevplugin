@@ -422,6 +422,11 @@ func releaseInstallFailureCode(err error) string {
 	if errors.Is(err, plugindata.ErrShapeMismatch) {
 		return string(security.ErrRetainedDataIncompatible)
 	}
+	if errors.Is(err, plugindata.ErrBindingNotFound) || errors.Is(err, plugindata.ErrBindingConflict) ||
+		errors.Is(err, plugindata.ErrBindingRevisionConflict) || errors.Is(err, plugindata.ErrNotActive) ||
+		errors.Is(err, plugindata.ErrNotRetained) || errors.Is(err, plugindata.ErrRevisionConflict) {
+		return releaseInstallFailureConflict
+	}
 	if errors.Is(err, ErrReleaseRefVerificationFailed) {
 		return string(security.ErrReleaseRefVerificationFailed)
 	}
@@ -435,6 +440,9 @@ func releaseInstallFailureCode(err error) string {
 		return string(security.ErrReleaseInspectionStale)
 	}
 	if errors.Is(err, ErrPluginRuntimeNotConfigured) {
+		return string(security.ErrRuntimeUnavailable)
+	}
+	if isWorkerRuntimeUnavailable(err) {
 		return string(security.ErrRuntimeUnavailable)
 	}
 	if errors.Is(err, ErrPluginRuntimeIncompatible) {
@@ -481,5 +489,11 @@ func releaseInstallFailureRetryable(err error) bool {
 		return provider.ReleaseArtifactFailure().Retryable
 	}
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		externalsource.CodeOf(err) == externalsource.ErrorDNS || externalsource.CodeOf(err) == externalsource.ErrorTransport
+		isWorkerRuntimeUnavailable(err) || externalsource.CodeOf(err) == externalsource.ErrorDNS ||
+		externalsource.CodeOf(err) == externalsource.ErrorTransport
+}
+
+func isWorkerRuntimeUnavailable(err error) bool {
+	return errors.Is(err, ErrRuntimeNotReady) || errors.Is(err, ErrRuntimeIPCUnavailable) ||
+		errors.Is(err, ErrRuntimeRequestFailed) || errors.Is(err, ErrRuntimeHandshake)
 }

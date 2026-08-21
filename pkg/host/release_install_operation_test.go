@@ -749,17 +749,28 @@ func TestReleaseInstallFailureClassifiesReleaseTrustErrors(t *testing.T) {
 
 func TestReleaseInstallFailureClassifiesKnownPlatformFailures(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		err  error
-		want security.ErrorCode
+		name      string
+		err       error
+		want      security.ErrorCode
+		retryable bool
 	}{
 		{name: "adapter", err: ErrAdapterFailure, want: security.ErrAdapterFailure},
 		{name: "feature", err: FeatureNotConfiguredError{Features: []Feature{FeatureCapability}}, want: security.ErrFeatureNotConfigured},
 		{name: "feature sentinel", err: ErrFeatureNotConfigured, want: security.ErrFeatureNotConfigured},
+		{name: "data binding", err: plugindata.ErrBindingConflict, want: security.ErrInstallStateConflict},
+		{name: "data binding revision", err: plugindata.ErrBindingRevisionConflict, want: security.ErrInstallStateConflict},
+		{name: "data not retained", err: plugindata.ErrNotRetained, want: security.ErrInstallStateConflict},
+		{name: "runtime not ready", err: ErrRuntimeNotReady, want: security.ErrRuntimeUnavailable, retryable: true},
+		{name: "runtime ipc", err: ErrRuntimeIPCUnavailable, want: security.ErrRuntimeUnavailable, retryable: true},
+		{name: "runtime request", err: ErrRuntimeRequestFailed, want: security.ErrRuntimeUnavailable, retryable: true},
+		{name: "runtime handshake", err: ErrRuntimeHandshake, want: security.ErrRuntimeUnavailable, retryable: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := releaseInstallFailureCode(test.err); got != string(test.want) {
 				t.Fatalf("releaseInstallFailureCode() = %q, want %q", got, test.want)
+			}
+			if got := releaseInstallFailureRetryable(test.err); got != test.retryable {
+				t.Fatalf("releaseInstallFailureRetryable() = %t, want %t", got, test.retryable)
 			}
 		})
 	}

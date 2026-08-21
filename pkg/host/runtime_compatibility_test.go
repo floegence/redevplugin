@@ -192,6 +192,43 @@ func TestWorkerInstallRejectsMissingRuntimeBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestWorkerInstallPreservesRuntimeAvailabilityFailures(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		healthErr    error
+		preflightErr error
+		want         error
+	}{
+		{name: "health not ready", healthErr: runtimeclient.ErrRuntimeNotReady, want: runtimeclient.ErrRuntimeNotReady},
+		{name: "health ipc unavailable", healthErr: runtimeclient.ErrRuntimeIPCUnavailable, want: runtimeclient.ErrRuntimeIPCUnavailable},
+		{name: "preflight request failed", preflightErr: runtimeclient.ErrRuntimeRequestFailed, want: runtimeclient.ErrRuntimeRequestFailed},
+		{name: "preflight handshake", preflightErr: runtimeclient.ErrRuntimeHandshake, want: runtimeclient.ErrRuntimeHandshake},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager := recordingRuntimeManagerForDescriptor(hostTestRuntimeArtifactIdentity())
+			manager.healthErr = test.healthErr
+			manager.preflightErr = test.preflightErr
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode: true, localGenerated: true, runtimeManager: manager,
+			})
+			packageBytes := buildWorkerFixturePackage(t)
+			_, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
+				PluginInstanceID: nextTestPluginInstanceID(t), PackageReader: bytes.NewReader(packageBytes), PackageSize: int64(len(packageBytes)),
+			})
+			if !errors.Is(err, test.want) || errors.Is(err, ErrPluginRuntimeIncompatible) {
+				t.Fatalf("InstallLocalPackage() error = %v, want %v without runtime incompatibility", err, test.want)
+			}
+			records, listErr := h.ListPlugins(hostTestContext())
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if len(records) != 0 {
+				t.Fatalf("runtime availability failure mutated registry: %#v", records)
+			}
+		})
+	}
+}
+
 func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing.T) {
 	runtimeVersion, err := version.ParseSemVer("0.0.1")
 	if err != nil {
