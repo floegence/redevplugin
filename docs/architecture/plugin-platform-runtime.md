@@ -115,6 +115,13 @@ and marked that exact asset session prepared.
 - `pkg/plugindata` owns settings, storage generations, immutable exports, and
   retained bindings. One Host-owned control SQLite owns installed plugin,
   authorization, execution/event, confirmation, and session lifecycle state.
+- `host.NewEnvironmentResetOwnershipManifest`, `PreflightEnvironmentReset`,
+  and `ResetEnvironment` form the stopped-environment destructive maintenance
+  boundary. A cross-process Host lock excludes live execution. The canonical
+  manifest accepts only fixed platform-owned categories and paths; tampering,
+  symlinks, broad roots, or unknown categories fail closed. Reset removes no
+  host-product file and initializes fresh control and PluginData stores without
+  importing retained data, grants, catalog state, or execution records.
 - `pkg/protocol` tests keep OpenAPI, schemas, route fixtures, Go DTOs,
   TypeScript SDK bindings, Rust IPC, WASM ABI, and compatibility hashes aligned.
 

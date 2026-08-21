@@ -549,6 +549,7 @@ type PluginData interface {
 }
 
 type Host struct {
+	environmentLock      environmentRootLock
 	controlStore         *controlstore.Store
 	adapters             normalizedAdapters
 	features             map[Feature]struct{}
@@ -1367,6 +1368,15 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		}
 		return nil, err
 	}
+	environmentLock, err := acquireEnvironmentRootLock(config.StateRoot, true)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if openedHost == nil && environmentLock != nil {
+			retErr = errors.Join(retErr, environmentLock.Close())
+		}
+	}()
 	control, err := openControlStore(ctx, config)
 	if err != nil {
 		return nil, err
@@ -1442,6 +1452,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		return nil, fmt.Errorf("open runtime I/O broker: %w", err)
 	}
 	host := &Host{
+		environmentLock:      environmentLock,
 		controlStore:         control,
 		adapters:             adapters,
 		features:             features,
@@ -1581,7 +1592,11 @@ func (h *Host) Close() error {
 		if h.runtimeIO != nil {
 			runtimeIOCloseErr = h.runtimeIO.closeAll()
 		}
-		h.closeErr = errors.Join(runtimeCloseErr, runtimeIOCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr)
+		var environmentLockCloseErr error
+		if h.environmentLock != nil {
+			environmentLockCloseErr = h.environmentLock.Close()
+		}
+		h.closeErr = errors.Join(runtimeCloseErr, runtimeIOCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr, environmentLockCloseErr)
 	})
 	return h.closeErr
 }

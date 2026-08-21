@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.0.7
+
+- Add an environment-level reset API with a canonical ownership manifest,
+  exact platform-owned paths, preflight, idempotent cleanup, and a cross-process
+  Host lock. Reset fails closed for a live Host, a tampered manifest, unsafe
+  roots, symlinks, or unrecognized data categories.
+
 ## v3.0.6
 
 - Allow reinstall after deleting plugin data and expose a stable error when
