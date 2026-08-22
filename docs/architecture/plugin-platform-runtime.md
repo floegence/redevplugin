@@ -435,19 +435,17 @@ and opt-in local-import package routes. Local-import install/update requests are
 for explicitly named local, developer, or import flows and still run through the
 same manifest validator, trust verifier, staged install, lifecycle, audit, and
 diagnostic path, but they are not part of the default route set. Official or
-registry-backed product installs first call `release-packages/inspect` with a
-`PluginReleaseRef`. The host source policy resolver freezes the source policy
-snapshot before the artifact resolver runs. The artifact resolver receives that
-snapshot and returns only an untrusted artifact handle plus signed
-release-metadata bytes and signature bytes. ReDevPlugin verifies and
-closed-world decodes that metadata, derives the canonical release, then verifies
-the package hash, manifest, entries, package signature/trust result,
-compatibility, identity, presentation, and permission requirements without
-running lifecycle or runtime preflight work. The trusted product UI reviews
-that result and calls `executions/release-installs` with its short-lived
-`inspection_id`. Install consumes the bound verified package and refreshes
-current revocation state before performing install-only validation and registry
-mutation. Updates continue to use `update-release-ref`.
+registry-backed product installs obtain display-ready presentation and permission
+evidence from the market, then call `executions/release-installs` once with the
+exact `PluginReleaseRef` and its declaration digests. ReDevPlugin recomputes the
+canonical release-reference identity digest before accepting the task. The host
+source policy resolver freezes the source policy snapshot before the artifact
+resolver runs. The artifact resolver receives that snapshot and returns only an
+untrusted artifact handle plus signed release-metadata bytes and signature bytes.
+ReDevPlugin verifies and closed-world decodes that metadata, derives the canonical
+release, then verifies package hashes, signatures, trust, compatibility, identity,
+and the declared permission summary before registry mutation. Updates continue to
+use `update-release-ref`.
 
 The manifest defines the complete PluginData shape. Update and downgrade may
 switch package code only when the target shape hash is identical to the active

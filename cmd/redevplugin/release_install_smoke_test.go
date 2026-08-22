@@ -173,9 +173,17 @@ func runReleaseInstallSmokeExecution(t *testing.T, pluginHost *host.Host, fixtur
 	if err != nil {
 		t.Fatal(err)
 	}
+	releaseIdentityDigest, err := registry.ReleaseInstallIdentitySHA256(registry.ReleaseInstallIdentity{
+		SourceID: ref.SourceID, Channel: ref.Channel, ReleaseMetadataRef: ref.ReleaseMetadataRef, ReleaseMetadataSHA256: ref.ReleaseMetadataSHA256,
+		PublisherID: ref.PublisherID, PluginID: ref.PluginID, Version: ref.Version, PackageSHA256: ref.ExpectedHashes.PackageSHA256,
+		ManifestSHA256: ref.ExpectedHashes.ManifestSHA256, EntriesSHA256: ref.ExpectedHashes.EntriesSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	started, err := pluginHost.StartReleaseInstallExecution(ctx, host.StartReleaseInstallExecutionRequest{
 		RequestID: requestID, PluginInstanceID: pluginInstanceID, ReleaseRef: ref,
-		ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ReleaseIdentityDigest: releaseIdentityDigest, ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
 		ContractSetSHA256: contractDigest, SummarySHA256: summary.SummarySHA256, Now: time.Now().UTC(),
 	})
 	if err != nil {

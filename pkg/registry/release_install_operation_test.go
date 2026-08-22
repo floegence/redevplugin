@@ -203,7 +203,7 @@ func TestReleaseInstallExecutionPayloadAcceptsPublisherReleaseRefDigestShapes(t 
 	}
 	req := StartReleaseInstallOperationRequest{
 		RequestID: "request_install_containers", ExecutionID: "operation_install_containers", PluginInstanceID: "plugini_containers",
-		ReleaseIdentityDigest: "sha256:" + strings.Repeat("e", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("f", 64), SummarySHA256: "sha256:" + strings.Repeat("1", 64),
+		ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("f", 64), SummarySHA256: "sha256:" + strings.Repeat("1", 64),
 		Release: ReleaseInstallIdentity{
 			SourceID: reference.SourceID, Channel: reference.Channel, ReleaseMetadataRef: reference.ReleaseMetadataRef,
 			ReleaseMetadataSHA256: reference.ReleaseMetadataSHA256, PublisherID: reference.PublisherID,
@@ -212,15 +212,25 @@ func TestReleaseInstallExecutionPayloadAcceptsPublisherReleaseRefDigestShapes(t 
 		},
 		Now: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
 	}
+	req.ReleaseIdentityDigest = mustReleaseInstallIdentitySHA256(t, req.Release)
 	if _, err := PrepareReleaseInstallOperation(req); err != nil {
 		t.Fatalf("publisher release ref payload error = %v", err)
 	}
 }
 
+func TestReleaseInstallExecutionPayloadRejectsMismatchedReleaseIdentityDigest(t *testing.T) {
+	req := releaseInstallExecutionRequest(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC))
+	req.Release.Version = "1.2.4"
+	if _, err := PrepareReleaseInstallOperation(req); !errors.Is(err, ErrInvalidReleaseInstallOperation) ||
+		!strings.Contains(err.Error(), "release_identity_digest does not match canonical release identity") {
+		t.Fatalf("tampered release identity error = %v", err)
+	}
+}
+
 func releaseInstallExecutionRequest(now time.Time) StartReleaseInstallOperationRequest {
-	return StartReleaseInstallOperationRequest{
+	req := StartReleaseInstallOperationRequest{
 		RequestID: "request_install_example", ExecutionID: "operation_install_example", PluginInstanceID: "plugini_example",
-		ReleaseIdentityDigest: "sha256:" + strings.Repeat("e", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("f", 64), SummarySHA256: "sha256:" + strings.Repeat("1", 64),
+		ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("f", 64), SummarySHA256: "sha256:" + strings.Repeat("1", 64),
 		Release: ReleaseInstallIdentity{
 			SourceID: "official", Channel: "stable", ReleaseMetadataRef: "example-1.2.3",
 			ReleaseMetadataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -231,4 +241,20 @@ func releaseInstallExecutionRequest(now time.Time) StartReleaseInstallOperationR
 		},
 		Now: now,
 	}
+	req.ReleaseIdentityDigest = mustReleaseInstallIdentitySHA256(nil, req.Release)
+	return req
+}
+
+func mustReleaseInstallIdentitySHA256(t *testing.T, identity ReleaseInstallIdentity) string {
+	if t != nil {
+		t.Helper()
+	}
+	digest, err := ReleaseInstallIdentitySHA256(identity)
+	if err != nil {
+		if t != nil {
+			t.Fatal(err)
+		}
+		panic(err)
+	}
+	return digest
 }

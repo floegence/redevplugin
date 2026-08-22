@@ -2096,6 +2096,7 @@ export interface components {
         StartReleaseInstallExecutionRequest: {
             request_id: string;
             plugin_instance_id: string;
+            /** @description SHA-256 of the canonical JSON encoding of release_ref. The Host recomputes and verifies this digest before accepting the install task. */
             release_identity_digest: string;
             manifest_sha256: string;
             contract_set_sha256: string;

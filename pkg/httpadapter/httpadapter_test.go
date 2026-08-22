@@ -1551,11 +1551,19 @@ func TestHandlerReleaseInstallDownloadsAfterConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	releaseIdentityDigest, err := registry.ReleaseInstallIdentitySHA256(registry.ReleaseInstallIdentity{
+		SourceID: ref.SourceID, Channel: ref.Channel, ReleaseMetadataRef: ref.ReleaseMetadataRef, ReleaseMetadataSHA256: ref.ReleaseMetadataSHA256,
+		PublisherID: ref.PublisherID, PluginID: ref.PluginID, Version: ref.Version, PackageSHA256: ref.ExpectedHashes.PackageSHA256,
+		ManifestSHA256: ref.ExpectedHashes.ManifestSHA256, EntriesSHA256: ref.ExpectedHashes.EntriesSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	started := postJSON[execution.Execution](t, handler, "/_redevplugin/api/plugins/executions/release-installs", map[string]any{
 		"request_id":              "request_http_release_install",
 		"plugin_instance_id":      pluginInstanceID,
 		"release_ref":             ref,
-		"release_identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"release_identity_digest": releaseIdentityDigest,
 		"manifest_sha256":         fixture.Package.ManifestHash,
 		"contract_set_sha256":     contractDigest,
 		"summary_sha256":          summary.SummarySHA256,

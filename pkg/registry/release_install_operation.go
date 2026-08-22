@@ -11,6 +11,7 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 type ReleaseInstallProgressKind string
@@ -87,6 +88,45 @@ type ReleaseInstallIdentity struct {
 	PackageSHA256         string `json:"package_sha256"`
 	ManifestSHA256        string `json:"manifest_sha256"`
 	EntriesSHA256         string `json:"entries_sha256"`
+}
+
+// ReleaseInstallIdentitySHA256 returns the canonical digest of the exact
+// publisher release reference consumed by an official install.
+func ReleaseInstallIdentitySHA256(identity ReleaseInstallIdentity) (string, error) {
+	if err := validateReleaseInstallIdentity(identity); err != nil {
+		return "", err
+	}
+	reference := struct {
+		Channel        string `json:"channel"`
+		ExpectedHashes struct {
+			EntriesSHA256  string `json:"entries_sha256"`
+			ManifestSHA256 string `json:"manifest_sha256"`
+			PackageSHA256  string `json:"package_sha256"`
+		} `json:"expected_hashes"`
+		PluginID              string `json:"plugin_id"`
+		PublisherID           string `json:"publisher_id"`
+		ReleaseMetadataRef    string `json:"release_metadata_ref"`
+		ReleaseMetadataSHA256 string `json:"release_metadata_sha256"`
+		SourceID              string `json:"source_id"`
+		Version               string `json:"version"`
+	}{
+		Channel: identity.Channel, PluginID: identity.PluginID, PublisherID: identity.PublisherID,
+		ReleaseMetadataRef: identity.ReleaseMetadataRef, ReleaseMetadataSHA256: identity.ReleaseMetadataSHA256,
+		SourceID: identity.SourceID, Version: identity.Version,
+	}
+	reference.ExpectedHashes.EntriesSHA256 = identity.EntriesSHA256
+	reference.ExpectedHashes.ManifestSHA256 = identity.ManifestSHA256
+	reference.ExpectedHashes.PackageSHA256 = identity.PackageSHA256
+	raw, err := json.Marshal(reference)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := releasecontract.CanonicalJSON(raw)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 type StartReleaseInstallOperationRequest struct {
@@ -196,16 +236,14 @@ func PrepareReleaseInstallOperation(req StartReleaseInstallOperationRequest) (Re
 func validateStartReleaseInstallOperation(req StartReleaseInstallOperationRequest) error {
 	values := map[string]string{
 		"request_id": req.RequestID, "execution_id": req.ExecutionID, "plugin_instance_id": req.PluginInstanceID,
-		"source_id": req.Release.SourceID, "channel": req.Release.Channel, "release_metadata_ref": req.Release.ReleaseMetadataRef,
-		"release_metadata_sha256": req.Release.ReleaseMetadataSHA256, "publisher_id": req.Release.PublisherID,
-		"plugin_id": req.Release.PluginID, "version": req.Release.Version,
-		"package_sha256": req.Release.PackageSHA256, "manifest_sha256": req.Release.ManifestSHA256,
-		"entries_sha256": req.Release.EntriesSHA256,
 	}
 	for name, value := range values {
 		if strings.TrimSpace(value) == "" || value != strings.TrimSpace(value) {
 			return fmt.Errorf("%w: %s is required and must be canonical", ErrInvalidReleaseInstallOperation, name)
 		}
+	}
+	if err := validateReleaseInstallIdentity(req.Release); err != nil {
+		return err
 	}
 	declared := map[string]string{
 		"release_identity_digest": req.ReleaseIdentityDigest,
@@ -230,13 +268,36 @@ func validateStartReleaseInstallOperation(req StartReleaseInstallOperationReques
 	if !strings.EqualFold(strings.TrimPrefix(req.ManifestSHA256, "sha256:"), strings.TrimPrefix(req.Release.ManifestSHA256, "sha256:")) {
 		return fmt.Errorf("%w: manifest_sha256 does not match release identity", ErrInvalidReleaseInstallOperation)
 	}
-	if !validCanonicalSHA256Hex(req.Release.ReleaseMetadataSHA256) {
+	expectedIdentityDigest, err := ReleaseInstallIdentitySHA256(req.Release)
+	if err != nil {
+		return err
+	}
+	if req.ReleaseIdentityDigest != expectedIdentityDigest {
+		return fmt.Errorf("%w: release_identity_digest does not match canonical release identity", ErrInvalidReleaseInstallOperation)
+	}
+	return nil
+}
+
+func validateReleaseInstallIdentity(identity ReleaseInstallIdentity) error {
+	values := map[string]string{
+		"source_id": identity.SourceID, "channel": identity.Channel, "release_metadata_ref": identity.ReleaseMetadataRef,
+		"release_metadata_sha256": identity.ReleaseMetadataSHA256, "publisher_id": identity.PublisherID,
+		"plugin_id": identity.PluginID, "version": identity.Version,
+		"package_sha256": identity.PackageSHA256, "manifest_sha256": identity.ManifestSHA256,
+		"entries_sha256": identity.EntriesSHA256,
+	}
+	for name, value := range values {
+		if strings.TrimSpace(value) == "" || value != strings.TrimSpace(value) {
+			return fmt.Errorf("%w: %s is required and must be canonical", ErrInvalidReleaseInstallOperation, name)
+		}
+	}
+	if !validCanonicalSHA256Hex(identity.ReleaseMetadataSHA256) {
 		return fmt.Errorf("%w: release_metadata_sha256 must be a canonical sha256 digest", ErrInvalidReleaseInstallOperation)
 	}
 	for name, digest := range map[string]string{
-		"package_sha256":  req.Release.PackageSHA256,
-		"manifest_sha256": req.Release.ManifestSHA256,
-		"entries_sha256":  req.Release.EntriesSHA256,
+		"package_sha256":  identity.PackageSHA256,
+		"manifest_sha256": identity.ManifestSHA256,
+		"entries_sha256":  identity.EntriesSHA256,
 	} {
 		if !validExternalPackageConfirmationDigest(digest) {
 			return fmt.Errorf("%w: %s must be a canonical sha256 digest", ErrInvalidReleaseInstallOperation, name)
@@ -326,7 +387,7 @@ func updateReleaseInstallPhaseDiagnostics(current ReleaseInstallOperation, req U
 
 func validReleaseInstallPhase(phase string) bool {
 	switch phase {
-	case "queued", "validate_inspection", "refresh_trust", "fetch_trust_evidence", "fetch_release_evidence",
+	case "queued", "refresh_trust", "fetch_trust_evidence", "fetch_release_evidence",
 		"download_package", "verify_hashes", "verify_signatures", "validate_install", "runtime_preflight",
 		"fetch_capability_evidence", "commit", "complete", "reconciling":
 		return true
@@ -343,7 +404,7 @@ func ReleaseInstallStageForPhase(phase string) ReleaseInstallStage {
 		return ReleaseInstallStageDownload
 	case "refresh_trust", "verify_hashes", "verify_signatures":
 		return ReleaseInstallStageVerify
-	case "validate_inspection", "validate_install", "runtime_preflight", "fetch_capability_evidence", "commit", "reconciling":
+	case "validate_install", "runtime_preflight", "fetch_capability_evidence", "commit", "reconciling":
 		return ReleaseInstallStageInstall
 	case "complete":
 		return ReleaseInstallStageEnable

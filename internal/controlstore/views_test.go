@@ -463,13 +463,17 @@ func TestReleaseInstallPayloadDefersIdentityStateAndCursorToExecution(t *testing
 	now := time.Unix(20, 0).UTC()
 	request := registry.StartReleaseInstallOperationRequest{
 		RequestID: "request_install", ExecutionID: "execution_install", PluginInstanceID: "plugin_install",
-		ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("b", 64), SummarySHA256: "sha256:" + strings.Repeat("d", 64),
+		ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("b", 64), SummarySHA256: "sha256:" + strings.Repeat("d", 64),
 		Release: registry.ReleaseInstallIdentity{
 			SourceID: "official", Channel: "stable", ReleaseMetadataRef: "release.json",
 			ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0",
 			PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64),
 		},
 		Now: now,
+	}
+	request.ReleaseIdentityDigest, err = registry.ReleaseInstallIdentitySHA256(request.Release)
+	if err != nil {
+		t.Fatal(err)
 	}
 	owner := ExecutionOwner{OwnerSessionHash: "session", OwnerUserHash: "user", OwnerEnvHash: "env", SessionChannelIDHash: "channel"}
 	started, created, err := view.StartReleaseInstall(ctx, owner, request)

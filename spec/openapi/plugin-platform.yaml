@@ -3052,7 +3052,10 @@ components:
       properties:
         request_id: { type: string, minLength: 1, maxLength: 256 }
         plugin_instance_id: { type: string, minLength: 1 }
-        release_identity_digest: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        release_identity_digest:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: SHA-256 of the canonical JSON encoding of release_ref. The Host recomputes and verifies this digest before accepting the install task.
         manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
         contract_set_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
         summary_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }

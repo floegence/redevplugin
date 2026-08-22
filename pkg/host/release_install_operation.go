@@ -81,6 +81,13 @@ func (h *Host) startReleaseInstallOperation(ctx context.Context, req startReleas
 	if !strings.EqualFold(strings.TrimPrefix(req.ManifestSHA256, "sha256:"), strings.TrimPrefix(req.ReleaseRef.ExpectedHashes.ManifestSHA256, "sha256:")) {
 		return registry.ReleaseInstallOperation{}, fmt.Errorf("%w: manifest_sha256 does not match release identity", ErrMethodRequestContract)
 	}
+	expectedReleaseIdentityDigest, err := registry.ReleaseInstallIdentitySHA256(releaseInstallIdentity(req.ReleaseRef))
+	if err != nil {
+		return registry.ReleaseInstallOperation{}, fmt.Errorf("%w: canonical release identity is invalid: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if req.ReleaseIdentityDigest != expectedReleaseIdentityDigest {
+		return registry.ReleaseInstallOperation{}, fmt.Errorf("%w: release_identity_digest does not match canonical release identity", ErrReleaseRefVerificationFailed)
+	}
 	operationID, err := newExternalPackageID("release_install")
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, err

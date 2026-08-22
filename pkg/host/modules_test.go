@@ -8,7 +8,6 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -334,7 +333,7 @@ func TestReleaseInstallPreflightRejectsMissingRuntimeBeforeRegistryMutation(t *t
 	digests := releaseMarketDigestsForTest(t, h, ctx, pluginInstanceID, ref)
 	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID: "request_missing_runtime", PluginInstanceID: pluginInstanceID,
-		ReleaseRef: ref, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ReleaseRef: ref, ReleaseIdentityDigest: releaseInstallIdentityDigestForTest(t, ref), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
 		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary,
 	})
 	if err != nil {

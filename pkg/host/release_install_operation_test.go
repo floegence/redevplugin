@@ -24,11 +24,29 @@ import (
 func startReleaseInstallOperationForTest(t *testing.T, h *Host, ctx context.Context, request startReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
 	t.Helper()
 	digests := releaseMarketDigestsForTest(t, h, ctx, request.PluginInstanceID, request.ReleaseRef)
-	request.ReleaseIdentityDigest = "sha256:" + strings.Repeat("a", 64)
+	request.ReleaseIdentityDigest = releaseInstallIdentityDigestForTest(t, request.ReleaseRef)
 	request.ManifestSHA256 = request.ReleaseRef.ExpectedHashes.ManifestSHA256
 	request.ContractSetSHA256 = digests.contract
 	request.SummarySHA256 = digests.summary
 	return h.startReleaseInstallOperation(ctx, request)
+}
+
+func releaseInstallIdentityDigestForTest(t *testing.T, ref PluginReleaseRef) string {
+	t.Helper()
+	digest, err := registry.ReleaseInstallIdentitySHA256(releaseInstallIdentity(ref))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func mustReleaseIdentityDigestForRegistryTest(t *testing.T, identity registry.ReleaseInstallIdentity) string {
+	t.Helper()
+	digest, err := registry.ReleaseInstallIdentitySHA256(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }
 
 type releaseMarketDigests struct{ contract, summary string }
@@ -75,7 +93,7 @@ func TestStartReleaseInstallExecutionReturnsUnifiedExecution(t *testing.T) {
 	digests := releaseMarketDigestsForTest(t, h, ctx, pluginInstanceID, ref)
 	started, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
 		RequestID: "request_unified_execution", PluginInstanceID: pluginInstanceID,
-		ReleaseRef: ref, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ReleaseRef: ref, ReleaseIdentityDigest: releaseInstallIdentityDigestForTest(t, ref), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
 		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary, Now: time.Now().UTC(),
 	})
 	if err != nil {
@@ -116,7 +134,7 @@ func TestStartReleaseInstallExecutionWithoutInspectionPublishesStableProgress(t 
 	digests := releaseMarketDigestsForTest(t, h, ctx, pluginInstanceID, ref)
 	started, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
 		RequestID: "request_direct_market_install", PluginInstanceID: pluginInstanceID,
-		ReleaseRef: ref, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: fixture.Package.ManifestHash,
+		ReleaseRef: ref, ReleaseIdentityDigest: releaseInstallIdentityDigestForTest(t, ref), ManifestSHA256: fixture.Package.ManifestHash,
 		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary, Now: time.Now().UTC(),
 	})
 	if err != nil {
@@ -267,7 +285,7 @@ func TestReleaseInstallOperationRecoversCommittedInstallAfterHostRestart(t *test
 	ref := releaseTrustFixtureRef(fixture)
 	operation, _, err := h.controlStore.Executions().StartReleaseInstall(ctx, executionOwnerScope(ctx), registry.StartReleaseInstallOperationRequest{
 		RequestID: "request_recover_committed_install", ExecutionID: "release_install_recover_committed",
-		PluginInstanceID: pluginInstanceID, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		PluginInstanceID: pluginInstanceID, ReleaseIdentityDigest: releaseInstallIdentityDigestForTest(t, ref), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
 		ContractSetSHA256: "sha256:" + strings.Repeat("b", 64), SummarySHA256: "sha256:" + strings.Repeat("c", 64), Release: releaseInstallIdentity(ref),
 	})
 	if err != nil {
@@ -525,7 +543,7 @@ func TestReleaseInstallCapabilityFailurePersistsTerminalStateAfterProgress(t *te
 	h.adapters.Capabilities = nil
 	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID: "request_capability_failure_terminal", PluginInstanceID: pluginInstanceID,
-		ReleaseRef: ref, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ReleaseRef: ref, ReleaseIdentityDigest: releaseInstallIdentityDigestForTest(t, ref), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
 		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary, Now: time.Now().UTC(),
 	})
 	if err != nil {
@@ -551,7 +569,7 @@ func TestReleaseInstallProgressTrackerPreservesPersistenceFailure(t *testing.T) 
 	ctx := hostTestContext()
 	started, _, err := h.controlStore.Executions().StartReleaseInstall(ctx, executionOwnerScope(ctx), registry.StartReleaseInstallOperationRequest{
 		RequestID: "request_persistence_failure", ExecutionID: "operation_install_example", PluginInstanceID: "plugini_failure",
-		ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("b", 64), SummarySHA256: "sha256:" + strings.Repeat("d", 64),
+		ReleaseIdentityDigest: mustReleaseIdentityDigestForRegistryTest(t, registry.ReleaseInstallIdentity{SourceID: "source", Channel: "stable", ReleaseMetadataRef: "metadata.json", ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0", PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64)}), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("b", 64), SummarySHA256: "sha256:" + strings.Repeat("d", 64),
 		Release: registry.ReleaseInstallIdentity{SourceID: "source", Channel: "stable", ReleaseMetadataRef: "metadata.json", ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0", PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64)},
 	})
 	if err != nil {
