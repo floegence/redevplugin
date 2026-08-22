@@ -28,6 +28,6 @@
     "scripts/canonical_wasm_builder.mjs": "c7f68cb9d10438bdd547aeb7e48a01765cb9b2256266259568a66864214a65b7"
   },
   "artifacts": {
-    "cmd/redevplugin/scaffold_assets/backend.wasm": "389a830bddc6bb31dae75780d676846e05241c89826cea59c30352bf11c787a7"
+    "cmd/redevplugin/scaffold_assets/backend.wasm": "58ae1c1cc14dc53da54a29c8539e589ebb51c32f4ea27661f0b1377e43ec4187"
   }
 }
