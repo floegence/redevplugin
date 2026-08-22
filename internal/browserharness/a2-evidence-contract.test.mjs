@@ -68,6 +68,7 @@ function validScenario(name) {
       prototype_fetch_blocked: true,
       prototype_indexeddb_blocked: true,
       prototype_nested_blob_worker_blocked: true,
+      dynamic_import_blocked: true,
       all_blocked: true,
     },
     platform_dynamic_import_gate: true,
