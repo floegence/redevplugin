@@ -77,10 +77,14 @@ func runRelease(ctx context.Context, args []string) error {
 			VerifierVersion: version.CurrentPlatformVersion(),
 		})
 	case "extract-presentation-icon":
-		if len(args) != 3 {
+		if len(args) < 3 {
 			return usage()
 		}
-		icon, err := releasepublisher.ExtractPresentationIcon(ctx, args[1], args[2])
+		contracts, err := readCapabilityContractArtifacts(args[3:])
+		if err != nil {
+			return err
+		}
+		icon, err := releasepublisher.ExtractPresentationIcon(ctx, args[1], args[2], contracts...)
 		if err != nil {
 			return err
 		}

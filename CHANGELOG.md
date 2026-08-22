@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.11
+
+- Let verified presentation icon extraction consume the same exact capability
+  contract artifacts as release verification, so capability-backed releases
+  retain one fail-closed evidence path through market ingest.
+
 ## v3.0.10
 
 - Add direct official-market installation with stable download, verification,

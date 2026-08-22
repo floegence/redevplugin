@@ -82,8 +82,8 @@ func VerifyAndInspectOutputWithContracts(ctx context.Context, output string, con
 // ExtractPresentationIcon writes the exact package-local image only after the
 // complete release output has been re-verified. Existing targets are never
 // replaced so a caller cannot mistake stale bytes for current evidence.
-func ExtractPresentationIcon(ctx context.Context, output, destination string) (PresentationIconEvidenceV1, error) {
-	verified, content, err := inspectVerifiedOutput(ctx, output, nil)
+func ExtractPresentationIcon(ctx context.Context, output, destination string, contracts ...capabilitycontract.KnownContract) (PresentationIconEvidenceV1, error) {
+	verified, content, err := inspectVerifiedOutput(ctx, output, contracts)
 	if err != nil {
 		return PresentationIconEvidenceV1{}, err
 	}

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
@@ -34,7 +35,7 @@ func TestPublisherWorkspaceCompletesExternalSigningFlow(t *testing.T) {
 	}
 }
 
-func finalizeTestRelease(t *testing.T, ctx context.Context, packageDir string) string {
+func finalizeTestRelease(t *testing.T, ctx context.Context, packageDir string, contracts ...capabilitycontract.KnownContract) string {
 	t.Helper()
 	var packageBuffer bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(ctx, packageDir, &packageBuffer, pluginpkg.DefaultReadLimits()); err != nil {
@@ -103,7 +104,7 @@ func finalizeTestRelease(t *testing.T, ctx context.Context, packageDir string) s
 		t.Fatalf("publisher status = %#v", status)
 	}
 	output := filepath.Join(t.TempDir(), "release")
-	if _, err := Finalize(ctx, workspace, output); err != nil {
+	if _, err := Finalize(ctx, workspace, output, contracts...); err != nil {
 		t.Fatal(err)
 	}
 	return output
@@ -171,6 +172,7 @@ func mustSingleMatch(t *testing.T, pattern string) string {
 func TestVerifiedOutputExtractsBoundPresentationIcon(t *testing.T) {
 	ctx := context.Background()
 	packageDir := copyExamplePlugin(t, "weather")
+	contract := presentationIconCapabilityContract(t)
 	icon := mustDecodeHex(t, "89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c020000000b4944415478da6364f80f00010501012718e3660000000049454e44ae426082")
 	manifestPath := filepath.Join(packageDir, "manifest.json")
 	manifestRaw, err := os.ReadFile(manifestPath)
@@ -182,6 +184,7 @@ func TestVerifiedOutputExtractsBoundPresentationIcon(t *testing.T) {
 		t.Fatal(err)
 	}
 	document["presentation"].(map[string]any)["icon"] = map[string]any{"path": "ui/assets/plugin.png"}
+	document["capability_bindings"] = []any{map[string]any{"binding_id": "documents", "contract": contract.Pin}}
 	manifestRaw, err = json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -193,8 +196,11 @@ func TestVerifiedOutputExtractsBoundPresentationIcon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	output := finalizeTestRelease(t, ctx, packageDir)
-	verified, err := VerifyAndInspectOutput(ctx, output)
+	output := finalizeTestRelease(t, ctx, packageDir, contract)
+	if _, err := VerifyAndInspectOutput(ctx, output); !errors.Is(err, ErrCapabilityContractsRequired) {
+		t.Fatalf("VerifyAndInspectOutput() error = %v, want %v", err, ErrCapabilityContractsRequired)
+	}
+	verified, err := VerifyAndInspectOutputWithContracts(ctx, output, []capabilitycontract.KnownContract{contract})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +213,10 @@ func TestVerifiedOutputExtractsBoundPresentationIcon(t *testing.T) {
 	}
 
 	extracted := filepath.Join(t.TempDir(), "presentation-icon.png")
-	evidence, err := ExtractPresentationIcon(ctx, output, extracted)
+	if _, err := ExtractPresentationIcon(ctx, output, extracted); !errors.Is(err, ErrCapabilityContractsRequired) {
+		t.Fatalf("ExtractPresentationIcon() error = %v, want %v", err, ErrCapabilityContractsRequired)
+	}
+	evidence, err := ExtractPresentationIcon(ctx, output, extracted, contract)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +230,7 @@ func TestVerifiedOutputExtractsBoundPresentationIcon(t *testing.T) {
 	if !bytes.Equal(extractedBytes, icon) {
 		t.Fatal("extracted icon does not match verified package bytes")
 	}
-	if _, err := ExtractPresentationIcon(ctx, output, extracted); !errors.Is(err, ErrPresentationIconOutputExists) {
+	if _, err := ExtractPresentationIcon(ctx, output, extracted, contract); !errors.Is(err, ErrPresentationIconOutputExists) {
 		t.Fatalf("ExtractPresentationIcon() overwrite error = %v", err)
 	}
 
@@ -230,12 +239,36 @@ func TestVerifiedOutputExtractsBoundPresentationIcon(t *testing.T) {
 		t.Fatal(err)
 	}
 	tamperedOutput := filepath.Join(t.TempDir(), "tampered-icon.png")
-	if _, err := ExtractPresentationIcon(ctx, output, tamperedOutput); !errors.Is(err, ErrInvalidWorkspace) {
+	if _, err := ExtractPresentationIcon(ctx, output, tamperedOutput, contract); !errors.Is(err, ErrInvalidWorkspace) {
 		t.Fatalf("ExtractPresentationIcon() tampered output error = %v", err)
 	}
 	if _, err := os.Stat(tamperedOutput); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("tampered release wrote icon output: %v", err)
 	}
+}
+
+func presentationIconCapabilityContract(t *testing.T) capabilitycontract.KnownContract {
+	t.Helper()
+	closedObject := func(properties map[string]any, required []string) map[string]any {
+		return map[string]any{"type": "object", "additionalProperties": false, "properties": properties, "required": required}
+	}
+	contract, err := capabilitycontract.NewKnownContract(capabilitycontract.Contract{
+		SchemaVersion: capabilitycontract.SchemaVersion, ContractID: "example.documents.v1", ContractVersion: "1.0.0",
+		PublisherID: "example.publisher", CapabilityID: "example.documents", CapabilityVersion: "1.0.0",
+		ClientName: "ExampleDocumentsClient",
+		Methods: []capabilitycontract.Method{{
+			Name: "documents.list", ClientMethod: "list", Effect: "read", Execution: "sync",
+			RequiredPermissions: []string{"documents.read"}, TargetFields: []string{"workspace_id"},
+			TargetSchema:    closedObject(map[string]any{"workspace_id": map[string]any{"type": "string"}}, []string{"workspace_id"}),
+			RequestTypeName: "DocumentsListRequest", ResponseTypeName: "DocumentsListResponse",
+			RequestSchema:  closedObject(map[string]any{"workspace_id": map[string]any{"type": "string"}}, []string{"workspace_id"}),
+			ResponseSchema: closedObject(map[string]any{"documents": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, []string{"documents"}),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contract
 }
 
 func TestExtractPresentationIconRejectsReleaseWithoutIcon(t *testing.T) {
