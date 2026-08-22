@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
 
@@ -29,6 +30,7 @@ var (
 	ErrWorkspaceConflict            = errors.New("release publisher workspace conflicts with the requested input")
 	ErrWorkspaceIncomplete          = errors.New("release publisher workspace is incomplete")
 	ErrInvalidWorkspace             = errors.New("release publisher workspace is invalid")
+	ErrCapabilityContractsRequired  = errors.New("capability contract artifacts are required for this release")
 	ErrPresentationIconUnavailable  = errors.New("release publisher presentation icon is unavailable")
 	ErrPresentationIconOutputExists = errors.New("release publisher presentation icon output already exists")
 )
@@ -141,7 +143,11 @@ func ApplySignature(ctx context.Context, workspace string, responseRaw []byte) (
 	return refreshWorkspace(ctx, workspace, state)
 }
 
-func Finalize(ctx context.Context, workspace, output string) (WorkspaceStatusV1, error) {
+// Finalize assembles and verifies a release output. Capability contract
+// artifacts are accepted as variadic inputs so existing callers remain source
+// compatible while capability-backed releases can bind the exact contracts
+// used by the Host during installation.
+func Finalize(ctx context.Context, workspace, output string, contracts ...capabilitycontract.KnownContract) (WorkspaceStatusV1, error) {
 	stateRaw, err := os.ReadFile(filepath.Join(workspace, workspaceStateFile))
 	if err != nil {
 		return WorkspaceStatusV1{}, err
@@ -164,7 +170,7 @@ func Finalize(ctx context.Context, workspace, output string) (WorkspaceStatusV1,
 	if err := writeAssembly(output, assembly); err != nil {
 		return WorkspaceStatusV1{}, err
 	}
-	if err := VerifyOutput(ctx, output); err != nil {
+	if _, err := VerifyAndInspectOutputWithContracts(ctx, output, contracts); err != nil {
 		return WorkspaceStatusV1{}, err
 	}
 	return WorkspaceStatusV1{OK: true, Phase: "complete", Workspace: workspace, Output: output}, nil

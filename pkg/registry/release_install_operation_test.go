@@ -203,7 +203,7 @@ func TestReleaseInstallExecutionPayloadAcceptsPublisherReleaseRefDigestShapes(t 
 	}
 	req := StartReleaseInstallOperationRequest{
 		RequestID: "request_install_containers", ExecutionID: "operation_install_containers", PluginInstanceID: "plugini_containers",
-		InspectionID: "inspection_install_containers",
+		ReleaseIdentityDigest: "sha256:" + strings.Repeat("e", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("f", 64), SummarySHA256: "sha256:" + strings.Repeat("1", 64),
 		Release: ReleaseInstallIdentity{
 			SourceID: reference.SourceID, Channel: reference.Channel, ReleaseMetadataRef: reference.ReleaseMetadataRef,
 			ReleaseMetadataSHA256: reference.ReleaseMetadataSHA256, PublisherID: reference.PublisherID,
@@ -220,7 +220,7 @@ func TestReleaseInstallExecutionPayloadAcceptsPublisherReleaseRefDigestShapes(t 
 func releaseInstallExecutionRequest(now time.Time) StartReleaseInstallOperationRequest {
 	return StartReleaseInstallOperationRequest{
 		RequestID: "request_install_example", ExecutionID: "operation_install_example", PluginInstanceID: "plugini_example",
-		InspectionID: "inspection_install_example",
+		ReleaseIdentityDigest: "sha256:" + strings.Repeat("e", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("f", 64), SummarySHA256: "sha256:" + strings.Repeat("1", 64),
 		Release: ReleaseInstallIdentity{
 			SourceID: "official", Channel: "stable", ReleaseMetadataRef: "example-1.2.3",
 			ReleaseMetadataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

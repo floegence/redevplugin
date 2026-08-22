@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,13 +51,11 @@ func testRecoverEnabledRefreshesCurrentRevocationBeforeRuntime(t *testing.T, rev
 	ctx := hostTestContext()
 	pluginInstanceID := nextTestPluginInstanceID(t)
 	ref := releaseTrustFixtureRef(fixture)
-	inspection, err := first.InspectReleasePackage(ctx, InspectReleasePackageRequest{PluginInstanceID: pluginInstanceID, ReleaseRef: ref})
-	if err != nil {
-		t.Fatal(err)
-	}
+	digests := releaseMarketDigestsForTest(t, first, ctx, pluginInstanceID, ref)
 	started, err := first.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
 		RequestID: "request_current_revocation", PluginInstanceID: pluginInstanceID,
-		InspectionID: inspection.InspectionID, ReleaseRef: ref,
+		ReleaseRef: ref, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary,
 	})
 	if err != nil {
 		t.Fatal(err)

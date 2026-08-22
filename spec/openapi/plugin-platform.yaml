@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.0.9
+  version: 3.0.10
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -96,16 +96,6 @@ paths:
         $ref: "#/components/requestBodies/InstallInspectedPackageRequest"
       responses:
         "200": { $ref: "#/components/responses/InstalledExternalPackageResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/release-packages/inspect:
-    post:
-      operationId: inspectReleasePackage
-      x-redevplugin-route-effect: mutation
-      description: Resolves and fully verifies an exact release reference before installation so one user confirmation can review the Host-derived permissions and package identity. The inspection does not perform runtime or lifecycle preflight and returns short-lived session-bound evidence that installation consumes without downloading or parsing the package again.
-      requestBody:
-        $ref: "#/components/requestBodies/InspectReleasePackageRequest"
-      responses:
-        "200": { $ref: "#/components/responses/ReleasePackageInspectionResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/enable:
     post:
@@ -888,12 +878,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/SettingsSnapshotSuccessResponse"
-    ReleasePackageInspectionResponse:
-      description: Verified release package facts for the installation review.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ReleasePackageInspectionSuccessResponse"
   requestBodies:
     InspectExternalPackageRequest:
       required: true
@@ -907,12 +891,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/InstallInspectedPackageRequest"
-    InspectReleasePackageRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/InspectReleasePackageRequest"
     UpdateReleaseRefRequest:
       required: true
       content:
@@ -1240,13 +1218,6 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/InstalledExternalPackage" }
-    ReleasePackageInspectionSuccessResponse:
-      type: object
-      required: [ok, data]
-      additionalProperties: false
-      properties:
-        ok: { const: true }
-        data: { $ref: "#/components/schemas/ReleasePackageInspection" }
     PluginCatalogSuccessResponse:
       type: object
       required: [ok, data]
@@ -1779,8 +1750,6 @@ components:
         - PLUGIN_RELEASE_TIMEOUT
         - PLUGIN_RELEASE_ASSET_MISSING
         - PLUGIN_RELEASE_ASSET_INTEGRITY
-        - PLUGIN_RELEASE_INSPECTION_EXPIRED
-        - PLUGIN_RELEASE_INSPECTION_STALE
         - PLUGIN_INSTALL_INTERRUPTED
         - PLUGIN_INSTALL_STATE_CONFLICT
         - PLUGIN_RETAINED_DATA_INCOMPATIBLE
@@ -2379,13 +2348,6 @@ components:
       properties:
         inspection_id: { type: string, minLength: 1 }
         expected_package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-    InspectReleasePackageRequest:
-      type: object
-      required: [plugin_instance_id, release_ref]
-      additionalProperties: false
-      properties:
-        plugin_instance_id: { type: string, minLength: 1 }
-        release_ref: { $ref: "#/components/schemas/PluginReleaseRef" }
     ExternalPackageSignatureAssessment:
       type: object
       description: Cryptographic signature fact computed over the inspected artifact. The absent state is installable and affects trust classification and automatic-update eligibility only.
@@ -2822,19 +2784,6 @@ components:
         execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
         update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
         security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
-    ReleasePackageInspection:
-      type: object
-      required: [inspection_id, expires_at, plugin_instance_id, release_ref, inspected_hashes, presentation, presentation_sha256, security_summary]
-      additionalProperties: false
-      properties:
-        inspection_id: { type: string, minLength: 1 }
-        expires_at: { type: string, format: date-time }
-        plugin_instance_id: { type: string, minLength: 1 }
-        release_ref: { $ref: "#/components/schemas/PluginReleaseRef" }
-        inspected_hashes: { $ref: "#/components/schemas/TrustHashSet" }
-        presentation: { $ref: "#/components/schemas/PresentationCatalog" }
-        presentation_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
-        security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
     TrustState:
       type: string
       enum: [verified, unsigned_local, untrusted, needs_review, trust_unavailable, blocked_security]
@@ -3098,12 +3047,15 @@ components:
         limit: { type: integer, minimum: 1, maximum: 500 }
     StartReleaseInstallExecutionRequest:
       type: object
-      required: [request_id, plugin_instance_id, inspection_id, release_ref]
+      required: [request_id, plugin_instance_id, release_ref, release_identity_digest, manifest_sha256, contract_set_sha256, summary_sha256]
       additionalProperties: false
       properties:
         request_id: { type: string, minLength: 1, maxLength: 256 }
         plugin_instance_id: { type: string, minLength: 1 }
-        inspection_id: { type: string, minLength: 1 }
+        release_identity_digest: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        contract_set_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        summary_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
         release_ref:
           $ref: "#/components/schemas/PluginReleaseRef"
     ListRetainedDataQueryRequest:
@@ -3465,7 +3417,22 @@ components:
         payload:
           type: object
           additionalProperties: true
+          properties:
+            install_progress: { $ref: "#/components/schemas/ReleaseInstallProgressEvent" }
         error: { $ref: "#/components/schemas/PublicError" }
+    ReleaseInstallProgressEvent:
+      type: object
+      additionalProperties: false
+      required: [task_id, request_id, stage, status]
+      properties:
+        task_id: { type: string, minLength: 1 }
+        request_id: { type: string, minLength: 1 }
+        stage: { type: string, enum: [download, verify, install, enable] }
+        status: { type: string, enum: [pending, running, completed, failed] }
+        completed: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        total: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        failure_code: { type: string, minLength: 1 }
+        failure_stage: { type: string, enum: [download, verify, install, enable] }
     PublicError:
       type: object
       additionalProperties: false

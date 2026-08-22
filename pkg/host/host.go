@@ -298,12 +298,6 @@ const (
 	PackageDistributionLocalImport     PackageDistribution = "local_import"
 )
 
-type PackageHashSet struct {
-	PackageSHA256  string `json:"package_sha256"`
-	ManifestSHA256 string `json:"manifest_sha256"`
-	EntriesSHA256  string `json:"entries_sha256"`
-}
-
 type PluginReleaseRef struct {
 	SourceID              string         `json:"source_id"`
 	Channel               string         `json:"channel"`
@@ -563,7 +557,6 @@ type Host struct {
 	lifecycleLocks       *pluginLifecycleLockRegistry
 	executions           *executionLeaseRegistry
 	verifiedReleases     *verifiedReleaseRegistry
-	releaseInspections   *releasePackageInspectionStore
 	sessionScopes        *sessionscope.Coordinator
 	sessionMaintenance   *sessionScopeMaintenanceLockRegistry
 	lifecycleCtx         context.Context
@@ -1459,7 +1452,6 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		lifecycleLocks:       newPluginLifecycleLockRegistry(),
 		executions:           newExecutionLeaseRegistry(),
 		verifiedReleases:     newVerifiedReleaseRegistry(),
-		releaseInspections:   newReleasePackageInspectionStore(),
 		sessionScopes:        adapters.SessionScopes,
 		sessionMaintenance:   newSessionScopeMaintenanceLockRegistry(),
 		lifecycleCtx:         lifecycleCtx,
@@ -1556,9 +1548,6 @@ func (h *Host) Close() error {
 			externalStageCloseErr = h.externalStage.Close()
 		}
 		h.verifiedReleases.clear()
-		if h.releaseInspections != nil {
-			h.releaseInspections.clear()
-		}
 		var runtimeCloseErr error
 		if h.runtimeModule != nil {
 			shutdownTimeout := DefaultRuntimeShutdownTimeout

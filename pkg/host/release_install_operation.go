@@ -12,11 +12,12 @@ import (
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
-	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
@@ -30,102 +31,14 @@ const (
 )
 
 type StartReleaseInstallExecutionRequest struct {
-	RequestID        string           `json:"request_id"`
-	PluginInstanceID string           `json:"plugin_instance_id"`
-	ReleaseRef       PluginReleaseRef `json:"release_ref"`
-	InspectionID     string           `json:"inspection_id"`
-	Now              time.Time        `json:"-"`
-}
-
-type InspectReleasePackageRequest struct {
-	PluginInstanceID string           `json:"plugin_instance_id"`
-	ReleaseRef       PluginReleaseRef `json:"release_ref"`
-	Now              time.Time        `json:"-"`
-}
-
-type ReleasePackageInspection struct {
-	InspectionID       string                         `json:"inspection_id"`
-	ExpiresAt          time.Time                      `json:"expires_at"`
-	PluginInstanceID   string                         `json:"plugin_instance_id"`
-	ReleaseRef         PluginReleaseRef               `json:"release_ref"`
-	InspectedHashes    PackageHashSet                 `json:"inspected_hashes"`
-	Presentation       manifest.PresentationCatalog   `json:"presentation"`
-	PresentationSHA256 string                         `json:"presentation_sha256"`
-	SecuritySummary    ExternalPackageSecuritySummary `json:"security_summary"`
-}
-
-func (h *Host) InspectReleasePackage(ctx context.Context, req InspectReleasePackageRequest) (ReleasePackageInspection, error) {
-	session, err := requireUserSession(ctx)
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
-	if req.PluginInstanceID == "" {
-		return ReleasePackageInspection{}, fmt.Errorf("%w: plugin_instance_id is required", ErrMethodRequestContract)
-	}
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallReleaseRef,
-		scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	now := req.Now.UTC()
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	pkg, release, sourcePolicy, verifiedRelease, metadata, err := h.resolveReleasePackage(
-		ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, now,
-	)
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	trustInput := packageTrustInput{
-		ReleaseRef: &req.ReleaseRef, Release: &release, SourcePolicy: &sourcePolicy, VerifiedRelease: &verifiedRelease,
-	}
-	trustAssessment, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, trustInput, nil, req.PluginInstanceID, now)
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	pins, err := h.resolvePackageCapabilityPins(pkg.Manifest)
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	provenance, err := packageSourceProvenanceForTrust(pkg, trustInput)
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	record := packageRecord(pkg, trustAssessment, req.PluginInstanceID, nil, provenance, pins)
-	effectiveManifest, required, err := h.externalPackageEffectiveManifest(record)
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	securitySummary, err := buildExternalPackageSecuritySummary(effectiveManifest, pins, required)
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	presentation := pkg.Manifest.PresentationCatalog()
-	presentationSHA256, err := manifest.PresentationCatalogSHA256(presentation)
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	inspectionID, err := newExternalPackageID("release_inspection")
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	inspection := ReleasePackageInspection{
-		InspectionID: inspectionID, ExpiresAt: now.Add(releasePackageInspectionTTL), PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef,
-		InspectedHashes: packageHashSetForPackage(pkg), Presentation: presentation,
-		PresentationSHA256: presentationSHA256, SecuritySummary: securitySummary,
-	}
-	scope, err := session.SessionScope()
-	if err != nil {
-		return ReleasePackageInspection{}, err
-	}
-	h.releaseInspections.put(pendingReleasePackageInspection{
-		Scope: scope, Inspection: inspection, ReleaseRef: req.ReleaseRef,
-		Package: pkg, Release: release,
-		SourcePolicy: sourcePolicy, Verified: verifiedRelease,
-		Metadata: cloneReleasePackageInspectionMetadata(metadata),
-	}, now)
-	return inspection, nil
+	RequestID             string           `json:"request_id"`
+	PluginInstanceID      string           `json:"plugin_instance_id"`
+	ReleaseRef            PluginReleaseRef `json:"release_ref"`
+	ReleaseIdentityDigest string           `json:"release_identity_digest,omitempty"`
+	ManifestSHA256        string           `json:"manifest_sha256,omitempty"`
+	ContractSetSHA256     string           `json:"contract_set_sha256,omitempty"`
+	SummarySHA256         string           `json:"summary_sha256,omitempty"`
+	Now                   time.Time        `json:"-"`
 }
 
 func (h *Host) StartReleaseInstallExecution(ctx context.Context, req StartReleaseInstallExecutionRequest) (execution.Execution, error) {
@@ -159,8 +72,14 @@ func (h *Host) startReleaseInstallOperation(ctx context.Context, req startReleas
 	if err := validateReleaseRef(req.ReleaseRef); err != nil {
 		return registry.ReleaseInstallOperation{}, err
 	}
-	if strings.TrimSpace(req.InspectionID) == "" {
-		return registry.ReleaseInstallOperation{}, ErrReleasePackageInspectionNotFound
+	declaredDigests := []string{req.ReleaseIdentityDigest, req.ManifestSHA256, req.ContractSetSHA256, req.SummarySHA256}
+	for _, digest := range declaredDigests {
+		if strings.TrimSpace(digest) == "" {
+			return registry.ReleaseInstallOperation{}, fmt.Errorf("%w: market declaration digests are required", ErrMethodRequestContract)
+		}
+	}
+	if !strings.EqualFold(strings.TrimPrefix(req.ManifestSHA256, "sha256:"), strings.TrimPrefix(req.ReleaseRef.ExpectedHashes.ManifestSHA256, "sha256:")) {
+		return registry.ReleaseInstallOperation{}, fmt.Errorf("%w: manifest_sha256 does not match release identity", ErrMethodRequestContract)
 	}
 	operationID, err := newExternalPackageID("release_install")
 	if err != nil {
@@ -168,42 +87,40 @@ func (h *Host) startReleaseInstallOperation(ctx context.Context, req startReleas
 	}
 	operation, created, err := h.controlStore.Executions().StartReleaseInstall(ctx, releaseInstallOwner(session), registry.StartReleaseInstallOperationRequest{
 		RequestID: req.RequestID, ExecutionID: operationID, PluginInstanceID: req.PluginInstanceID,
-		Release: releaseInstallIdentity(req.ReleaseRef), InspectionID: req.InspectionID, Now: req.Now,
+		Release:               releaseInstallIdentity(req.ReleaseRef),
+		ReleaseIdentityDigest: req.ReleaseIdentityDigest, ManifestSHA256: req.ManifestSHA256,
+		ContractSetSHA256: req.ContractSetSHA256, SummarySHA256: req.SummarySHA256, Now: req.Now,
 	})
 	if err != nil || !created {
 		return operation, err
-	}
-	scope, err := session.SessionScope()
-	if err != nil {
-		return h.failReleaseInstallOperationAtPhase(context.WithoutCancel(ctx), operation, "validate_inspection", releaseInstallFailureInternal, false, mutation.ForError(err))
-	}
-	pending, err := h.releaseInspections.claim(req.InspectionID, scope, req.PluginInstanceID, req.ReleaseRef, time.Now().UTC())
-	if err != nil {
-		return h.failReleaseInstallOperationAtPhase(context.WithoutCancel(ctx), operation, "validate_inspection", releasePackageInspectionFailureCode(err), false, mutation.OutcomeNotCommitted)
 	}
 	if !h.startLifecycleJob(func(lifecycleCtx context.Context) {
 		jobCtx := sessionctx.WithContext(lifecycleCtx, session)
 		jobCtx, cancel := context.WithTimeout(jobCtx, releaseInstallOperationTimeout)
 		defer cancel()
-		h.runReleaseInstallOperation(jobCtx, operation, req.ReleaseRef, pending)
+		h.runReleaseInstallOperation(jobCtx, operation, req.ReleaseRef)
 	}) {
 		return h.failReleaseInstallOperation(context.WithoutCancel(ctx), operation, releaseInstallFailureInterrupted, true, mutation.OutcomeNotCommitted)
 	}
 	return operation, nil
 }
 
-func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registry.ReleaseInstallOperation, ref PluginReleaseRef, pending pendingReleasePackageInspection) {
-	running, err := h.updateReleaseInstallOperation(ctx, operation, execution.StatusRunning, "refresh_trust",
+func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registry.ReleaseInstallOperation, ref PluginReleaseRef) {
+	running, err := h.updateReleaseInstallOperation(ctx, operation, execution.StatusRunning, "download_package",
 		registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate}, mutation.OutcomeNotCommitted, nil, nil)
 	if err != nil {
 		_, _ = h.failReleaseInstallOperation(context.WithoutCancel(ctx), operation, releaseInstallFailureCode(err), false, mutation.ForError(err))
 		return
 	}
 	tracker := &releaseInstallProgressTracker{host: h, ctx: ctx, current: running}
-	pkg, release := pending.Package, pending.Release
-	sourcePolicy, verifiedRelease, metadata := pending.SourcePolicy, pending.Verified, pending.Metadata
-	if err = h.refreshReleaseInspectionTrust(ctx, ref, pending); err == nil {
-		tracker.observe(ReleaseArtifactProgress{Phase: "verify_signatures", Attempt: 1, CacheHit: true})
+	var pkg pluginpkg.Package
+	var release PluginPackageRelease
+	var sourcePolicy releasecontract.SourcePolicyV3
+	var verifiedRelease releasetrust.VerifiedPackage
+	var metadata map[string]string
+	pkg, release, sourcePolicy, verifiedRelease, metadata, err = h.resolveReleasePackage(ctx, PackageTrustActionInstall, ref, nil, operation.PluginInstanceID, time.Now().UTC(), tracker.observe)
+	if err == nil && operation.SummarySHA256 != "" {
+		err = h.validateReleaseInstallDeclaration(pkg, release, sourcePolicy, verifiedRelease, ref, operation)
 	}
 	running, progressErr := tracker.snapshot()
 	if progressErr != nil {
@@ -225,6 +142,7 @@ func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registr
 			Observe: tracker.observe,
 		}, time.Now().UTC(), metadata)
 		if err == nil {
+			tracker.observe(ReleaseArtifactProgress{Phase: "complete", Attempt: 1, CacheHit: true})
 			running, err = tracker.snapshot()
 			if err != nil {
 				h.finishFailedReleaseInstall(ctx, running, err)
@@ -240,6 +158,37 @@ func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registr
 	running = latest
 	err = errors.Join(err, progressErr)
 	h.finishFailedReleaseInstall(ctx, running, err)
+}
+
+func (h *Host) validateReleaseInstallDeclaration(pkg pluginpkg.Package, release PluginPackageRelease, sourcePolicy releasecontract.SourcePolicyV3, verifiedRelease releasetrust.VerifiedPackage, ref PluginReleaseRef, operation registry.ReleaseInstallOperation) error {
+	pins, err := h.resolvePackageCapabilityPins(pkg.Manifest)
+	if err != nil {
+		return err
+	}
+	provenance, err := packageSourceProvenanceForTrust(pkg, packageTrustInput{ReleaseRef: &ref, Release: &release, SourcePolicy: &sourcePolicy, VerifiedRelease: &verifiedRelease})
+	if err != nil {
+		return err
+	}
+	record := packageRecord(pkg, registry.TrustAssessment{}, operation.PluginInstanceID, nil, provenance, pins)
+	effectiveManifest, required, err := h.externalPackageEffectiveManifest(record)
+	if err != nil {
+		return err
+	}
+	summary, err := BuildExternalPackageSecuritySummary(effectiveManifest, pins, required)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimPrefix(summary.SummarySHA256, "sha256:"), strings.TrimPrefix(operation.SummarySHA256, "sha256:")) {
+		return fmt.Errorf("%w: market security summary does not match the verified package", ErrReleaseRefVerificationFailed)
+	}
+	contractDigest, err := CapabilityContractSetSHA256(summary)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimPrefix(contractDigest, "sha256:"), strings.TrimPrefix(operation.ContractSetSHA256, "sha256:")) {
+		return fmt.Errorf("%w: market capability contract set does not match the verified package", ErrReleaseRefVerificationFailed)
+	}
+	return nil
 }
 
 // reconcileCommittedReleaseInstalls closes the only crash window in the
@@ -432,12 +381,6 @@ func releaseInstallFailureCode(err error) string {
 	}
 	if errors.Is(err, ErrReleaseRefPolicyDenied) {
 		return string(security.ErrReleaseRefPolicyDenied)
-	}
-	if errors.Is(err, ErrReleasePackageInspectionExpired) {
-		return string(security.ErrReleaseInspectionExpired)
-	}
-	if errors.Is(err, ErrReleasePackageInspectionStale) {
-		return string(security.ErrReleaseInspectionStale)
 	}
 	if errors.Is(err, ErrPluginRuntimeNotConfigured) {
 		return string(security.ErrRuntimeUnavailable)

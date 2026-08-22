@@ -63,8 +63,6 @@ export type PluginRecord = PlatformSchemas["PluginRecord"];
 export type PluginEnableState = PluginRecord["enable_state"];
 export type PluginPackageHashSet = PlatformSchemas["PackageHashSet"];
 export type PluginReleaseRef = PlatformSchemas["PluginReleaseRef"];
-export type PluginInspectReleasePackageRequest = PlatformSchemas["InspectReleasePackageRequest"];
-export type PluginReleasePackageInspection = PlatformSchemas["ReleasePackageInspection"];
 export type PluginUpdateReleaseRefRequest = PlatformSchemas["UpdateReleaseRefRequest"];
 export type PluginInspectExternalPackageRequest = PlatformSchemas["InspectExternalPackageRequest"];
 export type PluginUploadedExternalPackageIntent = PlatformSchemas["ExternalPackageIntentRequest"];
@@ -204,9 +202,6 @@ export class PluginPlatformClient {
 
   catalog(options: PluginRequestOptions = {}): Promise<PluginCatalogResult> { return this.#requestQuery("/_redevplugin/api/plugins/catalog/query", {}, options); }
   features(options: PluginRequestOptions = {}): Promise<PluginFeatures> { return this.#requestQuery("/_redevplugin/api/plugins/features/query", {}, options); }
-  inspectReleasePackage(request: PluginInspectReleasePackageRequest, options: PluginRequestOptions = {}): Promise<PluginReleasePackageInspection> {
-    return this.#requestMutation("POST", "/_redevplugin/api/plugins/release-packages/inspect", request, options);
-  }
   async inspectExternalPackage(request: PluginInspectExternalPackageRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageInspection> {
     const inspection = await this.#requestMutation<PluginExternalPackageInspection>(
       "POST", "/_redevplugin/api/plugins/external-packages/inspect", request, options,

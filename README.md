@@ -12,7 +12,7 @@ capabilities.
 
 ## Current Platform Snapshot
 
-- Platform version source: `VERSION` (`3.0.9`)
+- Platform version source: `VERSION` (`3.0.10`)
 - Go module: `github.com/floegence/redevplugin/v3`
 - TypeScript packages: the opt-in raw contract body package
   `@floegence/redevplugin-contracts` and the sandbox/runtime SDK
@@ -201,8 +201,8 @@ an English fallback or mix locales within one resolved presentation.
   `redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace>`,
   apply each closed response with
   `redevplugin release apply-signature <workspace> <response.json>`, then run
-  `redevplugin release finalize <workspace> <out-dir>` and
-  `redevplugin release verify <out-dir>`. For a declared presentation icon,
+  `redevplugin release finalize <workspace> <out-dir> [capability-contract.json ...]` and
+  `redevplugin release verify <out-dir> [capability-contract.json ...]`. For a declared presentation icon,
   `redevplugin release extract-presentation-icon <out-dir> <out-file>` repeats
   full release verification before writing the exact verified image and refuses
   to overwrite an existing target. Repeating a completed step with the same

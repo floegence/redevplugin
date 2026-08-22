@@ -27,6 +27,37 @@ type ReleaseInstallProgress struct {
 	Total     int64                      `json:"total,omitempty"`
 }
 
+type ReleaseInstallStage string
+
+const (
+	ReleaseInstallStageDownload ReleaseInstallStage = "download"
+	ReleaseInstallStageVerify   ReleaseInstallStage = "verify"
+	ReleaseInstallStageInstall  ReleaseInstallStage = "install"
+	ReleaseInstallStageEnable   ReleaseInstallStage = "enable"
+)
+
+type ReleaseInstallStageStatus string
+
+const (
+	ReleaseInstallStagePending   ReleaseInstallStageStatus = "pending"
+	ReleaseInstallStageRunning   ReleaseInstallStageStatus = "running"
+	ReleaseInstallStageCompleted ReleaseInstallStageStatus = "completed"
+	ReleaseInstallStageFailed    ReleaseInstallStageStatus = "failed"
+)
+
+// ReleaseInstallProgressEvent is the stable user-facing projection of a
+// release-install task. PhaseDiagnostics intentionally remain more detailed.
+type ReleaseInstallProgressEvent struct {
+	TaskID       string                    `json:"task_id"`
+	RequestID    string                    `json:"request_id"`
+	Stage        ReleaseInstallStage       `json:"stage"`
+	Status       ReleaseInstallStageStatus `json:"status"`
+	Completed    *int64                    `json:"completed,omitempty"`
+	Total        *int64                    `json:"total,omitempty"`
+	FailureCode  string                    `json:"failure_code,omitempty"`
+	FailureStage ReleaseInstallStage       `json:"failure_stage,omitempty"`
+}
+
 type ReleaseInstallPhaseDiagnostic struct {
 	Phase        string                 `json:"phase"`
 	ArtifactRole string                 `json:"artifact_role,omitempty"`
@@ -59,12 +90,15 @@ type ReleaseInstallIdentity struct {
 }
 
 type StartReleaseInstallOperationRequest struct {
-	RequestID        string                 `json:"request_id"`
-	ExecutionID      string                 `json:"execution_id"`
-	PluginInstanceID string                 `json:"plugin_instance_id"`
-	InspectionID     string                 `json:"inspection_id"`
-	Release          ReleaseInstallIdentity `json:"release"`
-	Now              time.Time              `json:"-"`
+	RequestID             string                 `json:"request_id"`
+	ExecutionID           string                 `json:"execution_id"`
+	PluginInstanceID      string                 `json:"plugin_instance_id"`
+	ReleaseIdentityDigest string                 `json:"release_identity_digest,omitempty"`
+	ManifestSHA256        string                 `json:"manifest_sha256,omitempty"`
+	ContractSetSHA256     string                 `json:"contract_set_sha256,omitempty"`
+	SummarySHA256         string                 `json:"summary_sha256,omitempty"`
+	Release               ReleaseInstallIdentity `json:"release"`
+	Now                   time.Time              `json:"-"`
 }
 
 type UpdateReleaseInstallOperationRequest struct {
@@ -84,20 +118,23 @@ type UpdateReleaseInstallOperationRequest struct {
 }
 
 type ReleaseInstallOperation struct {
-	Execution        execution.Execution             `json:"-"`
-	RequestID        string                          `json:"request_id"`
-	PluginInstanceID string                          `json:"plugin_instance_id"`
-	InspectionID     string                          `json:"inspection_id"`
-	RequestSHA256    string                          `json:"request_sha256"`
-	Phase            string                          `json:"phase"`
-	Progress         ReleaseInstallProgress          `json:"progress"`
-	Attempt          int                             `json:"attempt"`
-	RetryAfterMS     int64                           `json:"retry_after_ms"`
-	MutationOutcome  mutation.Outcome                `json:"mutation_outcome"`
-	Failure          *ReleaseInstallFailure          `json:"failure,omitempty"`
-	PluginRecord     *PluginRecord                   `json:"plugin_record,omitempty"`
-	PhaseDiagnostics []ReleaseInstallPhaseDiagnostic `json:"phase_diagnostics"`
-	Release          ReleaseInstallIdentity          `json:"-"`
+	Execution             execution.Execution             `json:"-"`
+	RequestID             string                          `json:"request_id"`
+	PluginInstanceID      string                          `json:"plugin_instance_id"`
+	ReleaseIdentityDigest string                          `json:"release_identity_digest,omitempty"`
+	ManifestSHA256        string                          `json:"manifest_sha256,omitempty"`
+	ContractSetSHA256     string                          `json:"contract_set_sha256,omitempty"`
+	SummarySHA256         string                          `json:"summary_sha256,omitempty"`
+	RequestSHA256         string                          `json:"request_sha256"`
+	Phase                 string                          `json:"phase"`
+	Progress              ReleaseInstallProgress          `json:"progress"`
+	Attempt               int                             `json:"attempt"`
+	RetryAfterMS          int64                           `json:"retry_after_ms"`
+	MutationOutcome       mutation.Outcome                `json:"mutation_outcome"`
+	Failure               *ReleaseInstallFailure          `json:"failure,omitempty"`
+	PluginRecord          *PluginRecord                   `json:"plugin_record,omitempty"`
+	PhaseDiagnostics      []ReleaseInstallPhaseDiagnostic `json:"phase_diagnostics"`
+	Release               ReleaseInstallIdentity          `json:"-"`
 }
 
 var (
@@ -111,11 +148,18 @@ func releaseInstallRequestSHA256(req StartReleaseInstallOperationRequest) (strin
 		return "", err
 	}
 	canonical := struct {
-		RequestID        string                 `json:"request_id"`
-		PluginInstanceID string                 `json:"plugin_instance_id"`
-		InspectionID     string                 `json:"inspection_id"`
-		Release          ReleaseInstallIdentity `json:"release"`
-	}{RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, InspectionID: req.InspectionID, Release: req.Release}
+		RequestID             string                 `json:"request_id"`
+		PluginInstanceID      string                 `json:"plugin_instance_id"`
+		ReleaseIdentityDigest string                 `json:"release_identity_digest,omitempty"`
+		ManifestSHA256        string                 `json:"manifest_sha256,omitempty"`
+		ContractSetSHA256     string                 `json:"contract_set_sha256,omitempty"`
+		SummarySHA256         string                 `json:"summary_sha256,omitempty"`
+		Release               ReleaseInstallIdentity `json:"release"`
+	}{
+		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID,
+		ReleaseIdentityDigest: req.ReleaseIdentityDigest, ManifestSHA256: req.ManifestSHA256,
+		ContractSetSHA256: req.ContractSetSHA256, SummarySHA256: req.SummarySHA256, Release: req.Release,
+	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {
 		return "", err
@@ -138,7 +182,8 @@ func PrepareReleaseInstallOperation(req StartReleaseInstallOperationRequest) (Re
 			Status: execution.StatusRunning, CreatedAt: now, UpdatedAt: now,
 		},
 		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID,
-		InspectionID:  req.InspectionID,
+		ReleaseIdentityDigest: req.ReleaseIdentityDigest,
+		ManifestSHA256:        req.ManifestSHA256, ContractSetSHA256: req.ContractSetSHA256, SummarySHA256: req.SummarySHA256,
 		RequestSHA256: requestSHA256, Phase: "queued",
 		Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, Attempt: 1,
 		MutationOutcome: mutation.OutcomeNotCommitted, Release: req.Release,
@@ -150,7 +195,7 @@ func PrepareReleaseInstallOperation(req StartReleaseInstallOperationRequest) (Re
 
 func validateStartReleaseInstallOperation(req StartReleaseInstallOperationRequest) error {
 	values := map[string]string{
-		"request_id": req.RequestID, "execution_id": req.ExecutionID, "plugin_instance_id": req.PluginInstanceID, "inspection_id": req.InspectionID,
+		"request_id": req.RequestID, "execution_id": req.ExecutionID, "plugin_instance_id": req.PluginInstanceID,
 		"source_id": req.Release.SourceID, "channel": req.Release.Channel, "release_metadata_ref": req.Release.ReleaseMetadataRef,
 		"release_metadata_sha256": req.Release.ReleaseMetadataSHA256, "publisher_id": req.Release.PublisherID,
 		"plugin_id": req.Release.PluginID, "version": req.Release.Version,
@@ -161,6 +206,29 @@ func validateStartReleaseInstallOperation(req StartReleaseInstallOperationReques
 		if strings.TrimSpace(value) == "" || value != strings.TrimSpace(value) {
 			return fmt.Errorf("%w: %s is required and must be canonical", ErrInvalidReleaseInstallOperation, name)
 		}
+	}
+	declared := map[string]string{
+		"release_identity_digest": req.ReleaseIdentityDigest,
+		"manifest_sha256":         req.ManifestSHA256,
+		"contract_set_sha256":     req.ContractSetSHA256,
+		"summary_sha256":          req.SummarySHA256,
+	}
+	declaredCount := 0
+	for _, value := range declared {
+		if value != "" {
+			declaredCount++
+		}
+	}
+	if declaredCount != len(declared) {
+		return fmt.Errorf("%w: market declaration digests must be supplied together", ErrInvalidReleaseInstallOperation)
+	}
+	for name, digest := range declared {
+		if !validExternalPackageConfirmationDigest(digest) {
+			return fmt.Errorf("%w: %s must be a canonical sha256 digest", ErrInvalidReleaseInstallOperation, name)
+		}
+	}
+	if !strings.EqualFold(strings.TrimPrefix(req.ManifestSHA256, "sha256:"), strings.TrimPrefix(req.Release.ManifestSHA256, "sha256:")) {
+		return fmt.Errorf("%w: manifest_sha256 does not match release identity", ErrInvalidReleaseInstallOperation)
 	}
 	if !validCanonicalSHA256Hex(req.Release.ReleaseMetadataSHA256) {
 		return fmt.Errorf("%w: release_metadata_sha256 must be a canonical sha256 digest", ErrInvalidReleaseInstallOperation)
@@ -264,6 +332,23 @@ func validReleaseInstallPhase(phase string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// ReleaseInstallStageForPhase maps internal diagnostics to the stable four
+// steps rendered by host products.
+func ReleaseInstallStageForPhase(phase string) ReleaseInstallStage {
+	switch phase {
+	case "queued", "fetch_trust_evidence", "fetch_release_evidence", "download_package":
+		return ReleaseInstallStageDownload
+	case "refresh_trust", "verify_hashes", "verify_signatures":
+		return ReleaseInstallStageVerify
+	case "validate_inspection", "validate_install", "runtime_preflight", "fetch_capability_evidence", "commit", "reconciling":
+		return ReleaseInstallStageInstall
+	case "complete":
+		return ReleaseInstallStageEnable
+	default:
+		return ReleaseInstallStageInstall
 	}
 }
 

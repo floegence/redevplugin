@@ -14,9 +14,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/releaseprojection"
 )
 
 func writeAssembly(output string, assembly assemblyResult) error {
@@ -64,7 +66,16 @@ func VerifyOutput(ctx context.Context, output string) error {
 }
 
 func VerifyAndInspectOutput(ctx context.Context, output string) (VerifiedOutputV1, error) {
-	verified, _, err := inspectVerifiedOutput(ctx, output)
+	verified, _, err := inspectVerifiedOutput(ctx, output, nil)
+	return verified, err
+}
+
+// VerifyAndInspectOutputWithContracts verifies a release and projects its
+// declaration using the exact capability contract artifacts used by the Host.
+// Callers publishing capability-backed plugins must use this entry point so
+// market evidence and install-time permission checks cannot drift.
+func VerifyAndInspectOutputWithContracts(ctx context.Context, output string, contracts []capabilitycontract.KnownContract) (VerifiedOutputV1, error) {
+	verified, _, err := inspectVerifiedOutput(ctx, output, contracts)
 	return verified, err
 }
 
@@ -72,7 +83,7 @@ func VerifyAndInspectOutput(ctx context.Context, output string) (VerifiedOutputV
 // complete release output has been re-verified. Existing targets are never
 // replaced so a caller cannot mistake stale bytes for current evidence.
 func ExtractPresentationIcon(ctx context.Context, output, destination string) (PresentationIconEvidenceV1, error) {
-	verified, content, err := inspectVerifiedOutput(ctx, output)
+	verified, content, err := inspectVerifiedOutput(ctx, output, nil)
 	if err != nil {
 		return PresentationIconEvidenceV1{}, err
 	}
@@ -85,16 +96,16 @@ func ExtractPresentationIcon(ctx context.Context, output, destination string) (P
 	return *verified.PresentationIcon, nil
 }
 
-func inspectVerifiedOutput(ctx context.Context, output string) (VerifiedOutputV1, []byte, error) {
+func inspectVerifiedOutput(ctx context.Context, output string, contracts []capabilitycontract.KnownContract) (VerifiedOutputV1, []byte, error) {
 	var verified VerifiedOutputV1
 	var iconContent []byte
-	if err := verifyOutputSnapshot(ctx, output, &verified, &iconContent); err != nil {
+	if err := verifyOutputSnapshot(ctx, output, contracts, &verified, &iconContent); err != nil {
 		return VerifiedOutputV1{}, nil, err
 	}
 	return verified, iconContent, nil
 }
 
-func verifyOutputSnapshot(ctx context.Context, output string, verified *VerifiedOutputV1, iconContent *[]byte) error {
+func verifyOutputSnapshot(ctx context.Context, output string, contracts []capabilitycontract.KnownContract, verified *VerifiedOutputV1, iconContent *[]byte) error {
 	matches, err := filepath.Glob(filepath.Join(output, "*.release-ref.json"))
 	if err != nil || len(matches) != 1 {
 		return ErrInvalidWorkspace
@@ -216,14 +227,65 @@ func verifyOutputSnapshot(ctx context.Context, output string, verified *Verified
 	} else if !errors.Is(iconErr, pluginpkg.ErrPresentationIconUnavailable) {
 		return ErrInvalidWorkspace
 	}
+	pins := make([]capabilitycontract.Pin, 0, len(pkg.Manifest.CapabilityBindings))
+	for _, binding := range pkg.Manifest.CapabilityBindings {
+		pins = append(pins, binding.Contract)
+	}
+	securitySummary, contractSetSHA256, err := releaseSecuritySummary(pkg.Manifest, pins, contracts)
+	if err != nil {
+		return err
+	}
 	*verified = VerifiedOutputV1{
 		Presentation: presentation, PresentationIcon: presentationIcon,
 		ManifestSHA256: pkg.ManifestHash, PresentationSHA256: presentationSHA256,
+		ContractSetSHA256: contractSetSHA256, SecuritySummary: securitySummary,
 	}
 	if iconContent != nil && presentationIcon != nil {
 		*iconContent = content
 	}
 	return nil
+}
+
+func releaseSecuritySummary(m manifest.Manifest, pins []capabilitycontract.Pin, contracts []capabilitycontract.KnownContract) (SecuritySummaryV1, string, error) {
+	if len(pins) > 0 && len(contracts) == 0 {
+		return SecuritySummaryV1{}, "", ErrCapabilityContractsRequired
+	}
+	if len(contracts) > 0 {
+		summary, err := releaseprojection.BuildExternalPackageSecuritySummaryFromContracts(m, contracts)
+		if err != nil {
+			return SecuritySummaryV1{}, "", err
+		}
+		contractDigest, err := releaseprojection.CapabilityContractSetSHA256(summary)
+		if err != nil {
+			return SecuritySummaryV1{}, "", err
+		}
+		return summary, contractDigest, nil
+	}
+	required := make(map[string][]string, len(m.Methods))
+	workerPermissions := make([]string, 0, len(m.Permissions))
+	for _, permission := range m.Permissions {
+		workerPermissions = append(workerPermissions, string(permission))
+	}
+	sort.Strings(workerPermissions)
+	for _, method := range m.Methods {
+		if method.Route.Kind == manifest.MethodRouteWorker {
+			required[method.Method] = append([]string(nil), workerPermissions...)
+		} else {
+			// Capability method permissions are resolved by the Host's exact
+			// contract registry at install time; the package declaration has no
+			// second permission source to consult.
+			required[method.Method] = []string{}
+		}
+	}
+	summary, err := releaseprojection.BuildExternalPackageSecuritySummary(m, pins, required)
+	if err != nil {
+		return SecuritySummaryV1{}, "", err
+	}
+	contractDigest, err := releaseprojection.CapabilityContractSetSHA256(summary)
+	if err != nil {
+		return SecuritySummaryV1{}, "", err
+	}
+	return summary, contractDigest, nil
 }
 
 func outputAssetName(reference PublisherReleaseRefV1, locator string) string {

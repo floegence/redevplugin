@@ -961,7 +961,10 @@ test("release installation starts through the unified execution route", async ()
   const request = {
     request_id: "request_1",
     plugin_instance_id: "plugin_instance_1",
-    inspection_id: "release_inspection_1",
+    release_identity_digest: `sha256:${"e".repeat(64)}`,
+    manifest_sha256: `sha256:${"c".repeat(64)}`,
+    contract_set_sha256: `sha256:${"f".repeat(64)}`,
+    summary_sha256: `sha256:${"0".repeat(64)}`,
     release_ref: {
       source_id: "official",
       channel: "stable",
@@ -1365,43 +1368,6 @@ test("platform client updates plugin release refs without package bytes", async 
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/update-release-ref");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "2.0.0" }, expected_management_revision: 1 });
 });
-
-test("platform client inspects an exact release package before confirmation", async () => {
-  const fetch = new FakeFetch();
-  const releaseRef = {
-    source_id: "official",
-    channel: "stable",
-    release_metadata_ref: "plugins/example/containers/4.4.4/release.json",
-    release_metadata_sha256: "sha256:" + "a".repeat(64),
-    publisher_id: "example",
-    plugin_id: "containers",
-    version: "4.4.4",
-    expected_hashes: {
-      package_sha256: "sha256:" + "b".repeat(64),
-      manifest_sha256: "sha256:" + "c".repeat(64),
-      entries_sha256: "sha256:" + "d".repeat(64),
-    },
-  } as const;
-  fetch.push({ ok: true, data: externalPackageInspectionResult("inspection_release_1", "catalog_example_containers") });
-  const client = new PluginPlatformClient({ fetch: fetch.fetch });
-
-  const inspection = await client.inspectReleasePackage({ plugin_instance_id: "catalog_example_containers", release_ref: releaseRef });
-
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/release-packages/inspect");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
-    plugin_instance_id: "catalog_example_containers",
-    release_ref: releaseRef,
-  });
-  assert.deepEqual(inspection.security_summary.permissions[0], {
-    permission_id: "containers.read",
-    methods: ["containers.list"],
-    required: true,
-    effects: ["read"],
-  });
-  assert.equal(inspection.security_summary.permissions[0]?.required, true);
-  assert.deepEqual(inspection.security_summary.permissions[0]?.effects, ["read"]);
-});
-
 
 test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();

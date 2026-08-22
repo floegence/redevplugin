@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/remoterelease"
 )
@@ -107,13 +109,13 @@ func TestReleaseInstallOperationsReuseAssetCacheAndRecoverDiagnostics(t *testing
 	}
 
 	ref := smokeReleaseRef(fixture)
-	first := runReleaseInstallSmokeExecution(t, installedHost, ctx, "request_install_smoke_first", "plugini_install_smoke_first", ref)
+	first := runReleaseInstallSmokeExecution(t, installedHost, fixture, ctx, "request_install_smoke_first", "plugini_install_smoke_first", ref)
 	if got := fetcher.requestCount(); got != 3 {
 		t.Fatalf("first install network fetches = %d, want 3", got)
 	}
 	assertReleaseInstallSmokeEvidence(t, installedHost, ctx, first)
 
-	second := runReleaseInstallSmokeExecution(t, installedHost, ctx, "request_install_smoke_second", "plugini_install_smoke_second", ref)
+	second := runReleaseInstallSmokeExecution(t, installedHost, fixture, ctx, "request_install_smoke_second", "plugini_install_smoke_second", ref)
 	if got := fetcher.requestCount(); got != 3 {
 		t.Fatalf("second install network fetches = %d, want cache reuse with 3 total", got)
 	}
@@ -153,19 +155,28 @@ func TestReleaseInstallOperationsReuseAssetCacheAndRecoverDiagnostics(t *testing
 	assertInstalledPluginsEnabled(t, reopenedHost, ctx, first.PluginInstanceID, second.PluginInstanceID)
 }
 
-func runReleaseInstallSmokeExecution(t *testing.T, pluginHost *host.Host, ctx context.Context, requestID, pluginInstanceID string, ref host.PluginReleaseRef) execution.Execution {
+func runReleaseInstallSmokeExecution(t *testing.T, pluginHost *host.Host, fixture *releasetrustfixture.Fixture, ctx context.Context, requestID, pluginInstanceID string, ref host.PluginReleaseRef) execution.Execution {
 	t.Helper()
-	inspection, err := pluginHost.InspectReleasePackage(ctx, host.InspectReleasePackageRequest{
-		PluginInstanceID: pluginInstanceID,
-		ReleaseRef:       ref,
-		Now:              time.Now().UTC(),
-	})
+	required := make(map[string][]string, len(fixture.Package.Manifest.Methods))
+	for _, method := range fixture.Package.Manifest.Methods {
+		if method.Route.Kind == manifest.MethodRouteWorker {
+			for _, permission := range fixture.Package.Manifest.Permissions {
+				required[method.Method] = append(required[method.Method], string(permission))
+			}
+		}
+	}
+	summary, err := host.BuildExternalPackageSecuritySummary(fixture.Package.Manifest, nil, required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractDigest, err := host.CapabilityContractSetSHA256(summary)
 	if err != nil {
 		t.Fatal(err)
 	}
 	started, err := pluginHost.StartReleaseInstallExecution(ctx, host.StartReleaseInstallExecutionRequest{
 		RequestID: requestID, PluginInstanceID: pluginInstanceID, ReleaseRef: ref,
-		InspectionID: inspection.InspectionID, Now: time.Now().UTC(),
+		ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ContractSetSHA256: contractDigest, SummarySHA256: summary.SummarySHA256, Now: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +206,7 @@ func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx 
 		t.Fatal(err)
 	}
 	wantPhases := []string{
-		"refresh_trust", "verify_signatures", "validate_install", "runtime_preflight",
+		"download_package", "fetch_trust_evidence", "fetch_release_evidence", "download_package", "fetch_release_evidence", "download_package", "verify_hashes", "verify_signatures", "validate_install", "runtime_preflight",
 		"fetch_capability_evidence", "commit", "complete",
 	}
 	gotPhases := make([]string, 0, len(events))

@@ -2,6 +2,7 @@ package releasepublisher
 
 import (
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/releaseprojection"
 )
 
 const (
@@ -67,7 +68,17 @@ type VerifiedOutputV1 struct {
 	PresentationIcon   *PresentationIconEvidenceV1  `json:"presentation_icon,omitempty"`
 	ManifestSHA256     string                       `json:"manifest_sha256"`
 	PresentationSHA256 string                       `json:"presentation_sha256"`
+	ContractSetSHA256  string                       `json:"contract_set_sha256"`
+	SecuritySummary    SecuritySummaryV1            `json:"security_summary"`
 }
+
+// SecuritySummaryV1 aliases the Host-neutral projection so release tooling,
+// markets, and install-time validation serialize one canonical shape.
+type SecuritySummaryV1 = releaseprojection.ExternalPackageSecuritySummary
+
+// PermissionSummaryV1 keeps the publisher API source-compatible while using
+// the canonical Host-neutral permission projection.
+type PermissionSummaryV1 = releaseprojection.ExternalPackagePermissionSummary
 
 // PresentationIconEvidenceV1 describes exactly one verified package-local
 // presentation image from a fully verified release output.

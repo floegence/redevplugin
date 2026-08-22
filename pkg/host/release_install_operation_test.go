@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/testsupport/releasetrustfixture"
-	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
@@ -23,66 +21,46 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
-func inspectReleasePackageForTest(t *testing.T, h *Host, ctx context.Context, pluginInstanceID string, ref PluginReleaseRef) string {
-	t.Helper()
-	inspection, err := h.InspectReleasePackage(ctx, InspectReleasePackageRequest{
-		PluginInstanceID: pluginInstanceID, ReleaseRef: ref, Now: time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return inspection.InspectionID
-}
-
 func startReleaseInstallOperationForTest(t *testing.T, h *Host, ctx context.Context, request startReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
 	t.Helper()
-	if request.InspectionID == "" {
-		request.InspectionID = inspectReleasePackageForTest(t, h, ctx, request.PluginInstanceID, request.ReleaseRef)
-	}
+	digests := releaseMarketDigestsForTest(t, h, ctx, request.PluginInstanceID, request.ReleaseRef)
+	request.ReleaseIdentityDigest = "sha256:" + strings.Repeat("a", 64)
+	request.ManifestSHA256 = request.ReleaseRef.ExpectedHashes.ManifestSHA256
+	request.ContractSetSHA256 = digests.contract
+	request.SummarySHA256 = digests.summary
 	return h.startReleaseInstallOperation(ctx, request)
 }
 
-func TestReleasePackageInspectionStoreExpiresUnclaimedPackages(t *testing.T) {
-	store := newReleasePackageInspectionStore()
-	t.Cleanup(store.clear)
-	now := time.Now().UTC()
-	store.put(pendingReleasePackageInspection{
-		Inspection: ReleasePackageInspection{InspectionID: "release_inspection_expiring", ExpiresAt: now.Add(20 * time.Millisecond)},
-		Package:    pluginpkg.Package{Files: map[string][]byte{"ui/index.html": []byte("verified package")}},
-	}, now)
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		store.mu.Lock()
-		remaining := len(store.records)
-		retainedBytes := store.packageBytes
-		store.mu.Unlock()
-		if remaining == 0 && retainedBytes == 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("unclaimed release inspection was retained after its expiry")
-}
+type releaseMarketDigests struct{ contract, summary string }
 
-func TestReleasePackageInspectionStoreBoundsPrefetchedPackages(t *testing.T) {
-	store := newReleasePackageInspectionStore()
-	t.Cleanup(store.clear)
-	now := time.Now().UTC()
-	for index := 0; index <= maxPendingReleasePackageInspections; index++ {
-		id := fmt.Sprintf("release_inspection_%03d", index)
-		store.put(pendingReleasePackageInspection{
-			Inspection: ReleasePackageInspection{InspectionID: id, ExpiresAt: now.Add(time.Duration(index+1) * time.Minute)},
-			Package:    pluginpkg.Package{Files: map[string][]byte{"ui/index.html": []byte(id)}},
-		}, now)
+func releaseMarketDigestsForTest(t *testing.T, h *Host, ctx context.Context, pluginInstanceID string, ref PluginReleaseRef) releaseMarketDigests {
+	t.Helper()
+	pkg, release, sourcePolicy, verifiedRelease, _, err := h.resolveReleasePackage(ctx, PackageTrustActionInstall, ref, nil, pluginInstanceID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if len(store.records) != maxPendingReleasePackageInspections {
-		t.Fatalf("pending inspection count = %d, want %d", len(store.records), maxPendingReleasePackageInspections)
+	pins, err := h.resolvePackageCapabilityPins(pkg.Manifest)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, exists := store.records["release_inspection_000"]; exists {
-		t.Fatal("oldest prefetched inspection was not evicted at the capacity boundary")
+	provenance, err := packageSourceProvenanceForTrust(pkg, packageTrustInput{ReleaseRef: &ref, Release: &release, SourcePolicy: &sourcePolicy, VerifiedRelease: &verifiedRelease})
+	if err != nil {
+		t.Fatal(err)
 	}
+	record := packageRecord(pkg, registry.TrustAssessment{}, pluginInstanceID, nil, provenance, pins)
+	effective, required, err := h.externalPackageEffectiveManifest(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := buildExternalPackageSecuritySummary(effective, pins, required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := CapabilityContractSetSHA256(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return releaseMarketDigests{contract: contract, summary: summary.SummarySHA256}
 }
 
 func TestStartReleaseInstallExecutionReturnsUnifiedExecution(t *testing.T) {
@@ -94,10 +72,11 @@ func TestStartReleaseInstallExecutionReturnsUnifiedExecution(t *testing.T) {
 	ctx := hostTestContext()
 	pluginInstanceID := nextTestPluginInstanceID(t)
 	ref := releaseTrustFixtureRef(fixture)
-	inspection := inspectReleasePackageForTest(t, h, ctx, pluginInstanceID, ref)
+	digests := releaseMarketDigestsForTest(t, h, ctx, pluginInstanceID, ref)
 	started, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
-		RequestID: "request_unified_execution", PluginInstanceID: pluginInstanceID, InspectionID: inspection,
-		ReleaseRef: ref, Now: time.Now().UTC(),
+		RequestID: "request_unified_execution", PluginInstanceID: pluginInstanceID,
+		ReleaseRef: ref, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary, Now: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +101,47 @@ func TestStartReleaseInstallExecutionReturnsUnifiedExecution(t *testing.T) {
 	}
 	if len(events) == 0 || events[len(events)-1].Kind != execution.EventTerminal {
 		t.Fatalf("EventsAfter() = %#v", events)
+	}
+}
+
+func TestStartReleaseInstallExecutionWithoutInspectionPublishesStableProgress(t *testing.T) {
+	fixture := newHostReleaseTrustFixture(t)
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust:            fixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
+	})
+	ctx := hostTestContext()
+	pluginInstanceID := nextTestPluginInstanceID(t)
+	ref := releaseTrustFixtureRef(fixture)
+	digests := releaseMarketDigestsForTest(t, h, ctx, pluginInstanceID, ref)
+	started, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
+		RequestID: "request_direct_market_install", PluginInstanceID: pluginInstanceID,
+		ReleaseRef: ref, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: fixture.Package.ManifestHash,
+		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := waitForReleaseInstallOperation(t, h, ctx, started.ID)
+	if terminal.Execution.Status != execution.StatusCompleted || terminal.PluginRecord == nil || terminal.PluginRecord.EnableState != registry.EnableEnabled {
+		t.Fatalf("direct market install terminal operation = %#v", terminal)
+	}
+	events, err := h.EventsAfter(ctx, started.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		if progress, ok := event.Payload["install_progress"].(map[string]any); ok {
+			if stage, _ := progress["stage"].(string); stage != "" {
+				seen[stage] = true
+			}
+		}
+	}
+	for _, stage := range []string{"download", "verify", "install", "enable"} {
+		if !seen[stage] {
+			t.Fatalf("stable install stage %q was not emitted; events=%#v", stage, events)
+		}
 	}
 }
 
@@ -247,7 +267,8 @@ func TestReleaseInstallOperationRecoversCommittedInstallAfterHostRestart(t *test
 	ref := releaseTrustFixtureRef(fixture)
 	operation, _, err := h.controlStore.Executions().StartReleaseInstall(ctx, executionOwnerScope(ctx), registry.StartReleaseInstallOperationRequest{
 		RequestID: "request_recover_committed_install", ExecutionID: "release_install_recover_committed",
-		PluginInstanceID: pluginInstanceID, InspectionID: "release_inspection_recovery", Release: releaseInstallIdentity(ref),
+		PluginInstanceID: pluginInstanceID, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ContractSetSHA256: "sha256:" + strings.Repeat("b", 64), SummarySHA256: "sha256:" + strings.Repeat("c", 64), Release: releaseInstallIdentity(ref),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -374,182 +395,6 @@ func TestReleaseInstallOperationDoesNotGrantPermissionsDuringInstall(t *testing.
 	}
 }
 
-func TestInspectReleasePackageReturnsVerifiedPermissionsWithoutInstalling(t *testing.T) {
-	fixture, verified := newReleaseInstallCapabilityFixture(t)
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		releaseTrust: fixture.ServiceSet,
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{
-			artifact: resolvedReleaseTrustFixture(fixture),
-		},
-		capabilityContract: &verified,
-		capabilityAdapter:  &recordingCapabilityAdapter{},
-	})
-	ctx := hostTestContext()
-	pluginInstanceID := nextTestPluginInstanceID(t)
-	inspection, err := h.InspectReleasePackage(ctx, InspectReleasePackageRequest{
-		PluginInstanceID: pluginInstanceID,
-		ReleaseRef:       releaseTrustFixtureRef(fixture),
-		Now:              time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inspection.PluginInstanceID != pluginInstanceID || inspection.InspectedHashes.PackageSHA256 != fixture.Package.PackageHash ||
-		len(inspection.SecuritySummary.Permissions) != 1 || inspection.SecuritySummary.Permissions[0].PermissionID != "read" ||
-		!inspection.SecuritySummary.Permissions[0].Required || !reflect.DeepEqual(inspection.SecuritySummary.Permissions[0].Effects, []string{"read"}) {
-		t.Fatalf("release inspection = %#v", inspection)
-	}
-	if _, err := h.getPluginRecord(ctx, pluginInstanceID); !errors.Is(err, registry.ErrNotFound) {
-		t.Fatalf("release inspection persisted plugin record: %v", err)
-	}
-}
-
-func TestInspectReleasePackageDoesNotPreflightWorkerRuntime(t *testing.T) {
-	fixture, err := releasetrustfixture.New(buildWorkerFixturePackage(t), releasetrustfixture.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtimeManager := newRecordingRuntimeManager()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		releaseTrust: fixture.ServiceSet, runtimeManager: runtimeManager,
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
-	})
-	beforeHealth, beforePreflight := runtimeManager.healthCalls, runtimeManager.preflightCalls
-	inspection, err := h.InspectReleasePackage(hostTestContext(), InspectReleasePackageRequest{
-		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inspection.InspectionID == "" || runtimeManager.healthCalls != beforeHealth || runtimeManager.preflightCalls != beforePreflight {
-		t.Fatalf("inspection=%#v runtime health calls=%d->%d preflight calls=%d->%d", inspection, beforeHealth, runtimeManager.healthCalls, beforePreflight, runtimeManager.preflightCalls)
-	}
-}
-
-func TestInspectReleasePackageUsesVerifiedCapabilityContractWithoutExecutionAdapter(t *testing.T) {
-	fixture, verified := newReleaseInstallCapabilityFixture(t)
-	capabilities := capability.NewRegistry()
-	if err := capabilities.AddContract(verified); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := capabilities.Resolve(verified.Pin); err == nil {
-		t.Fatal("capability registry unexpectedly has an execution adapter")
-	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		releaseTrust: fixture.ServiceSet, capabilities: capabilities,
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
-	})
-	inspection, err := h.InspectReleasePackage(hostTestContext(), InspectReleasePackageRequest{
-		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(inspection.SecuritySummary.Permissions) != 1 || inspection.SecuritySummary.Permissions[0].PermissionID != "read" {
-		t.Fatalf("verified permission summary = %#v", inspection.SecuritySummary.Permissions)
-	}
-}
-
-func TestReleaseInstallReusesInspectionWithoutResolvingPackageAgain(t *testing.T) {
-	fixture := newHostReleaseTrustFixture(t)
-	resolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{releaseTrust: fixture.ServiceSet, releaseArtifactResolver: resolver})
-	ctx := hostTestContext()
-	pluginInstanceID := nextTestPluginInstanceID(t)
-	ref := releaseTrustFixtureRef(fixture)
-	inspectionID := inspectReleasePackageForTest(t, h, ctx, pluginInstanceID, ref)
-	request := StartReleaseInstallExecutionRequest{
-		RequestID: "request_reuse_inspection", PluginInstanceID: pluginInstanceID, InspectionID: inspectionID, ReleaseRef: ref,
-	}
-	first, err := h.StartReleaseInstallExecution(ctx, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := h.StartReleaseInstallExecution(ctx, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminal := waitForReleaseInstallOperation(t, h, ctx, first.ID)
-	if first.ID != second.ID || terminal.Execution.Status != execution.StatusCompleted || resolver.calls != 1 {
-		t.Fatalf("first=%#v second=%#v terminal=%#v resolver calls=%d", first, second, terminal, resolver.calls)
-	}
-}
-
-func TestReleaseInstallInspectionRejectsMismatchedAndConsumedEvidence(t *testing.T) {
-	fixture := newHostReleaseTrustFixture(t)
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		releaseTrust:            fixture.ServiceSet,
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
-	})
-	ctx := hostTestContext()
-	pluginInstanceID := nextTestPluginInstanceID(t)
-	ref := releaseTrustFixtureRef(fixture)
-	inspectionID := inspectReleasePackageForTest(t, h, ctx, pluginInstanceID, ref)
-
-	mismatched, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
-		RequestID: "request_mismatched_inspection", PluginInstanceID: nextTestPluginInstanceID(t), InspectionID: inspectionID, ReleaseRef: ref,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mismatched.Status != execution.StatusFailed || mismatched.FailureCode != string(security.ErrReleaseInspectionStale) {
-		t.Fatalf("mismatched inspection execution = %#v", mismatched)
-	}
-
-	started, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
-		RequestID: "request_claim_inspection", PluginInstanceID: pluginInstanceID, InspectionID: inspectionID, ReleaseRef: ref,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if terminal := waitForReleaseInstallOperation(t, h, ctx, started.ID); terminal.Execution.Status != execution.StatusCompleted {
-		t.Fatalf("correct inspection terminal = %#v", terminal)
-	}
-	reused, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
-		RequestID: "request_reuse_consumed_inspection", PluginInstanceID: pluginInstanceID, InspectionID: inspectionID, ReleaseRef: ref,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reused.Status != execution.StatusFailed || reused.FailureCode != string(security.ErrReleaseInspectionExpired) {
-		t.Fatalf("reused inspection execution = %#v", reused)
-	}
-}
-
-func TestReleaseInstallInspectionRejectsExpiredEvidenceWithFailurePhase(t *testing.T) {
-	fixture := newHostReleaseTrustFixture(t)
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		releaseTrust:            fixture.ServiceSet,
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
-	})
-	ctx := hostTestContext()
-	pluginInstanceID := nextTestPluginInstanceID(t)
-	ref := releaseTrustFixtureRef(fixture)
-	inspectionID := inspectReleasePackageForTest(t, h, ctx, pluginInstanceID, ref)
-	h.releaseInspections.mu.Lock()
-	record := h.releaseInspections.records[inspectionID]
-	record.Inspection.ExpiresAt = time.Now().Add(-time.Second)
-	h.releaseInspections.records[inspectionID] = record
-	h.releaseInspections.mu.Unlock()
-
-	failed, err := h.StartReleaseInstallExecution(ctx, StartReleaseInstallExecutionRequest{
-		RequestID: "request_expired_inspection", PluginInstanceID: pluginInstanceID, InspectionID: inspectionID, ReleaseRef: ref,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if failed.Status != execution.StatusFailed || failed.FailureCode != string(security.ErrReleaseInspectionExpired) {
-		t.Fatalf("expired inspection execution = %#v", failed)
-	}
-	events, err := h.EventsAfter(ctx, failed.ID, 0, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 || events[0].Payload["failure_phase"] != "validate_inspection" {
-		t.Fatalf("expired inspection events = %#v", events)
-	}
-}
-
 func TestReleaseInstallOperationPersistsExplainablePhaseOrder(t *testing.T) {
 	fixture, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -575,7 +420,11 @@ func TestReleaseInstallOperationPersistsExplainablePhaseOrder(t *testing.T) {
 		t.Fatalf("terminal failure = %#v", terminal.Failure)
 	}
 	want := []string{
-		"refresh_trust",
+		"download_package",
+		"fetch_trust_evidence",
+		"fetch_release_evidence",
+		"download_package",
+		"verify_hashes",
 		"verify_signatures",
 		"validate_install",
 		"runtime_preflight",
@@ -672,18 +521,19 @@ func TestReleaseInstallCapabilityFailurePersistsTerminalStateAfterProgress(t *te
 	ctx := hostTestContext()
 	pluginInstanceID := nextTestPluginInstanceID(t)
 	ref := releaseTrustFixtureRef(fixture)
-	inspectionID := inspectReleasePackageForTest(t, h, ctx, pluginInstanceID, ref)
+	digests := releaseMarketDigestsForTest(t, h, ctx, pluginInstanceID, ref)
 	h.adapters.Capabilities = nil
 	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
-		RequestID: "request_capability_failure_terminal", PluginInstanceID: pluginInstanceID, InspectionID: inspectionID,
-		ReleaseRef: ref, Now: time.Now().UTC(),
+		RequestID: "request_capability_failure_terminal", PluginInstanceID: pluginInstanceID,
+		ReleaseRef: ref, ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
+		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary, Now: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
-	if terminal.Execution.Status != execution.StatusFailed || terminal.Phase != "validate_install" || terminal.Execution.FailureCode == "" {
+	if terminal.Execution.Status != execution.StatusFailed || terminal.Phase != "verify_signatures" || terminal.Execution.FailureCode == "" {
 		t.Fatalf("capability failure did not persist a terminal execution: %#v", terminal)
 	}
 	events, err := h.EventsAfter(ctx, terminal.Execution.ID, 0, 100)
@@ -691,7 +541,7 @@ func TestReleaseInstallCapabilityFailurePersistsTerminalStateAfterProgress(t *te
 		t.Fatal(err)
 	}
 	last := events[len(events)-1]
-	if last.Kind != execution.EventTerminal || last.Payload["failure_phase"] != "validate_install" {
+	if last.Kind != execution.EventTerminal || last.Payload["failure_phase"] != "verify_signatures" {
 		t.Fatalf("terminal failure event = %#v", last)
 	}
 }
@@ -701,8 +551,8 @@ func TestReleaseInstallProgressTrackerPreservesPersistenceFailure(t *testing.T) 
 	ctx := hostTestContext()
 	started, _, err := h.controlStore.Executions().StartReleaseInstall(ctx, executionOwnerScope(ctx), registry.StartReleaseInstallOperationRequest{
 		RequestID: "request_persistence_failure", ExecutionID: "operation_install_example", PluginInstanceID: "plugini_failure",
-		InspectionID: "release_inspection_persistence_failure",
-		Release:      registry.ReleaseInstallIdentity{SourceID: "source", Channel: "stable", ReleaseMetadataRef: "metadata.json", ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0", PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64)},
+		ReleaseIdentityDigest: "sha256:" + strings.Repeat("a", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("b", 64), SummarySHA256: "sha256:" + strings.Repeat("d", 64),
+		Release: registry.ReleaseInstallIdentity{SourceID: "source", Channel: "stable", ReleaseMetadataRef: "metadata.json", ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0", PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64)},
 	})
 	if err != nil {
 		t.Fatal(err)

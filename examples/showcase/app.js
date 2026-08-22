@@ -18,8 +18,6 @@
     "PLUGIN_RELEASE_TIMEOUT",
     "PLUGIN_RELEASE_ASSET_MISSING",
     "PLUGIN_RELEASE_ASSET_INTEGRITY",
-    "PLUGIN_RELEASE_INSPECTION_EXPIRED",
-    "PLUGIN_RELEASE_INSPECTION_STALE",
     "PLUGIN_INSTALL_INTERRUPTED",
     "PLUGIN_INSTALL_STATE_CONFLICT",
     "PLUGIN_RETAINED_DATA_INCOMPATIBLE",
@@ -89,8 +87,6 @@
     "PLUGIN_RELEASE_TIMEOUT",
     "PLUGIN_RELEASE_ASSET_MISSING",
     "PLUGIN_RELEASE_ASSET_INTEGRITY",
-    "PLUGIN_RELEASE_INSPECTION_EXPIRED",
-    "PLUGIN_RELEASE_INSPECTION_STALE",
     "PLUGIN_INSTALL_INTERRUPTED",
     "PLUGIN_INSTALL_STATE_CONFLICT",
     "PLUGIN_RETAINED_DATA_INCOMPATIBLE",
@@ -4407,9 +4403,6 @@
     }
     features(options = {}) {
       return this.#requestQuery("/_redevplugin/api/plugins/features/query", {}, options);
-    }
-    inspectReleasePackage(request2, options = {}) {
-      return this.#requestMutation("POST", "/_redevplugin/api/plugins/release-packages/inspect", request2, options);
     }
     async inspectExternalPackage(request2, options = {}) {
       const inspection = await this.#requestMutation(

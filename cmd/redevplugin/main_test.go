@@ -1064,6 +1064,8 @@ func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
 		},
 		ManifestSHA256:     "sha256:manifest",
 		PresentationSHA256: "sha256:presentation",
+		ContractSetSHA256:  "sha256:contract",
+		SecuritySummary:    releasepublisher.SecuritySummaryV1{Permissions: []releasepublisher.PermissionSummaryV1{}},
 		VerifierVersion:    "1.0.0",
 	}
 	raw, err := json.Marshal(summary)
@@ -1076,13 +1078,14 @@ func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
 	}
 	for _, field := range []string{
 		"ok", "phase", "output", "presentation", "presentation_icon", "manifest_sha256", "presentation_sha256", "verifier_version",
+		"contract_set_sha256", "security_summary",
 	} {
 		value, exists := output[field]
 		if !exists || len(value) == 0 || string(value) == `""` || string(value) == "null" {
 			t.Fatalf("release verify JSON field %q = %s", field, value)
 		}
 	}
-	if len(output) != 8 {
+	if len(output) != 10 {
 		t.Fatalf("release verify JSON fields = %#v", output)
 	}
 }

@@ -153,33 +153,6 @@ func TestPublicWireMappersPreservePublishedFields(t *testing.T) {
 	}
 }
 
-func TestReleasePackageInspectionWirePreservesPermissionPresentation(t *testing.T) {
-	inspection := publicReleasePackageInspection(host.ReleasePackageInspection{
-		PluginInstanceID: "plugin_instance_1",
-		SecuritySummary: host.ExternalPackageSecuritySummary{Permissions: []host.ExternalPackagePermissionSummary{{
-			PermissionID: "containers.read",
-			Methods:      []string{"containers.get", "containers.list"},
-			Required:     true,
-			Effects:      []string{"read"},
-		}}},
-	})
-	permission := inspection.SecuritySummary.Permissions[0]
-	if permission.PermissionID != "containers.read" || !permission.Required ||
-		!reflect.DeepEqual(permission.Methods, []string{"containers.get", "containers.list"}) ||
-		!reflect.DeepEqual(permission.Effects, []string{"read"}) {
-		t.Fatalf("release inspection permission presentation = %#v", permission)
-	}
-	raw, err := json.Marshal(inspection)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{`"permission_id":"containers.read"`, `"required":true`, `"effects":["read"]`} {
-		if !strings.Contains(string(raw), field) {
-			t.Fatalf("release inspection wire response is missing %s: %s", field, raw)
-		}
-	}
-}
-
 func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 	defaultSize := &manifest.WidgetSizeSpec{Width: 640, Height: 480}
 	record := registry.PluginRecord{
@@ -456,7 +429,7 @@ func TestReleaseRefWireRequestRejectsNestedUnknownFields(t *testing.T) {
 			}
 		}
 	}`)
-	var request inspectReleasePackageRequest
+	var request startReleaseInstallExecutionRequest
 	if err := decodeStrictJSON(raw, &request); err == nil || !strings.Contains(err.Error(), "owner_env_hash") {
 		t.Fatalf("decodeStrictJSON() error = %v, want nested unknown field rejection", err)
 	}

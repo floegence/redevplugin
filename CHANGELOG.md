@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.0.10
+
+- Add direct official-market installation with stable download, verification,
+  install, and enable progress events; market installs no longer require a
+  package inspection transaction.
+- Bind market install declarations to the exact release and verified package
+  evidence while retaining inspection for external package sources.
+
 ## v3.0.9
 
 - Preserve the instance revoke epoch across retained-data and delete-data

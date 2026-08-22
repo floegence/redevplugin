@@ -15,11 +15,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releaseprojection"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
@@ -722,22 +724,15 @@ func (h *Host) resolveExternalPackageIntent(ctx context.Context, intent External
 }
 
 func (h *Host) externalPackageEffectiveManifest(record registry.PluginRecord) (manifest.Manifest, map[string][]string, error) {
-	effective := record.Manifest
-	effective.Methods = append([]manifest.MethodSpec(nil), record.Manifest.Methods...)
-	required := make(map[string][]string, len(effective.Methods))
-	for index, declared := range effective.Methods {
-		method, err := h.effectiveMethod(record, declared)
+	contracts := make([]capabilitycontract.KnownContract, 0, len(record.CapabilityContracts))
+	for _, pin := range record.CapabilityContracts {
+		contract, err := h.adapters.Capabilities.RequireContract(pin)
 		if err != nil {
 			return manifest.Manifest{}, nil, err
 		}
-		effective.Methods[index] = method
-		permissions, err := h.requiredPermissionsForMethod(record, method)
-		if err != nil {
-			return manifest.Manifest{}, nil, err
-		}
-		required[method.Method] = permissions
+		contracts = append(contracts, contract)
 	}
-	return effective, required, nil
+	return releaseprojection.ProjectManifestWithCapabilityContracts(record.Manifest, contracts)
 }
 
 func (h *Host) assessExternalPackageSignature(ctx context.Context, pkg pluginpkg.Package, now time.Time) registry.SignatureAssessment {

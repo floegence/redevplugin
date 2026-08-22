@@ -813,11 +813,6 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"updateLocalPackage(pluginInstanceId: string", "/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import"},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/release-packages/inspect"},
-			Owner:        "PluginPlatformClient.inspectReleasePackage",
-			Snippets:     []string{"inspectReleasePackage(request: PluginInspectReleasePackageRequest", `#requestMutation("POST", "/_redevplugin/api/plugins/release-packages/inspect"`},
-		},
-		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/inspect"},
 			Owner:        "PluginPlatformClient.inspectExternalPackage",
 			Snippets:     []string{"inspectExternalPackage(request: PluginInspectExternalPackageRequest", `"POST", "/_redevplugin/api/plugins/external-packages/inspect"`},
@@ -1096,7 +1091,6 @@ func routesWithoutTypeScriptSDKBindings() []routeWithoutTypeScriptSDKBinding {
 
 func requiredJSONRequestBodyRoutes() []routeFixture {
 	return []routeFixture{
-		{Method: "POST", Path: "/_redevplugin/api/plugins/release-packages/inspect"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/executions/release-installs"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/inspect"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/install"},

@@ -285,7 +285,6 @@ func TestDataLifecycleErrorMappingKeepsConflictSemanticsDistinct(t *testing.T) {
 func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 	routes := RouteSet()
 	want := map[string]bool{
-		"POST /_redevplugin/api/plugins/release-packages/inspect":                     false,
 		"POST /_redevplugin/api/plugins/executions/release-installs":                  false,
 		"POST /_redevplugin/api/plugins/enable":                                       false,
 		"POST /_redevplugin/api/plugins/surfaces/open":                                false,
@@ -1032,7 +1031,6 @@ func TestHandlerWebSecurityRejectsHostSpecificOriginDecision(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{decision: "plugin_sandbox"}
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 	for _, path := range []string{
-		"/_redevplugin/api/plugins/release-packages/inspect",
 		"/_redevplugin/api/plugins/plugin_test/local-import",
 		"/_redevplugin/api/plugins/enable",
 		"/_redevplugin/api/plugins/surfaces/surface_test/prepare",
@@ -1525,7 +1523,7 @@ func TestHandlerManagementRevisionContractFailsClosed(t *testing.T) {
 	}
 }
 
-func TestHandlerReleaseInstallConsumesInspectionWithoutResolvingAgain(t *testing.T) {
+func TestHandlerReleaseInstallDownloadsAfterConfirmation(t *testing.T) {
 	fixture, ref := newHTTPReleaseTrustFixture(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), releasetrustfixture.Options{SourceID: "official"})
 	resolver := &httpRecordingReleaseArtifactResolver{
 		artifact: httpResolvedArtifactForFixture(fixture),
@@ -1537,15 +1535,30 @@ func TestHandlerReleaseInstallConsumesInspectionWithoutResolvingAgain(t *testing
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	pluginInstanceID := nextHTTPTestPluginInstanceID(t)
-	inspection := postJSON[releasePackageInspectionResponse](t, handler, "/_redevplugin/api/plugins/release-packages/inspect", map[string]any{
-		"plugin_instance_id": pluginInstanceID,
-		"release_ref":        ref,
-	})
+	required := make(map[string][]string, len(fixture.Package.Manifest.Methods))
+	for _, method := range fixture.Package.Manifest.Methods {
+		if method.Route.Kind == manifest.MethodRouteWorker {
+			for _, permission := range fixture.Package.Manifest.Permissions {
+				required[method.Method] = append(required[method.Method], string(permission))
+			}
+		}
+	}
+	summary, err := host.BuildExternalPackageSecuritySummary(fixture.Package.Manifest, nil, required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractDigest, err := host.CapabilityContractSetSHA256(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
 	started := postJSON[execution.Execution](t, handler, "/_redevplugin/api/plugins/executions/release-installs", map[string]any{
-		"request_id":         "request_http_release_install",
-		"plugin_instance_id": pluginInstanceID,
-		"inspection_id":      inspection.InspectionID,
-		"release_ref":        ref,
+		"request_id":              "request_http_release_install",
+		"plugin_instance_id":      pluginInstanceID,
+		"release_ref":             ref,
+		"release_identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"manifest_sha256":         fixture.Package.ManifestHash,
+		"contract_set_sha256":     contractDigest,
+		"summary_sha256":          summary.SummarySHA256,
 	})
 	deadline := time.Now().Add(5 * time.Second)
 	for started.Status == execution.StatusRunning && time.Now().Before(deadline) {
@@ -1598,57 +1611,7 @@ func TestHandlerReleaseInstallConsumesInspectionWithoutResolvingAgain(t *testing
 		t.Fatalf("resolver source policy mismatch: %#v", resolver.last.SourcePolicy)
 	}
 	if resolver.calls != 1 {
-		t.Fatalf("release resolver calls = %d, want inspection only", resolver.calls)
-	}
-}
-
-func TestHandlerInspectReleasePackagePolicyDeniedUsesReleaseRefErrorCode(t *testing.T) {
-	fixture, ref := newHTTPReleaseTrustFixture(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), releasetrustfixture.Options{
-		SourceID: "official", InstallPolicy: "block",
-	})
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
-		releaseTrust:            fixture.ServiceSet,
-		releaseArtifactResolver: &httpRecordingReleaseArtifactResolver{artifact: httpResolvedArtifactForFixture(fixture)},
-	})
-	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-
-	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/release-packages/inspect", map[string]any{
-		"plugin_instance_id": nextHTTPTestPluginInstanceID(t),
-		"release_ref":        ref,
-	}, http.StatusForbidden)
-	if envelope.Code != string(security.ErrReleaseRefPolicyDenied) {
-		t.Fatalf("error_code = %q, want %q body = %#v", envelope.Code, security.ErrReleaseRefPolicyDenied, envelope)
-	}
-}
-
-func TestHandlerInspectReleasePackagePreservesRemoteReleaseErrors(t *testing.T) {
-	fixture, ref := newHTTPReleaseTrustFixture(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), releasetrustfixture.Options{SourceID: "official"})
-	tests := []struct {
-		name       string
-		err        error
-		wantStatus int
-		wantCode   security.ErrorCode
-	}{
-		{name: "missing", err: remoterelease.ErrAssetMissing, wantStatus: http.StatusBadGateway, wantCode: security.ErrReleaseAssetMissing},
-		{name: "mismatch", err: remoterelease.ErrAssetMismatch, wantStatus: http.StatusBadRequest, wantCode: security.ErrReleaseAssetIntegrity},
-		{name: "invalid adapter", err: remoterelease.ErrInvalidAssetSet, wantStatus: http.StatusBadGateway, wantCode: security.ErrAdapterFailure},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
-				releaseTrust:            fixture.ServiceSet,
-				releaseArtifactResolver: &httpRecordingReleaseArtifactResolver{err: tt.err},
-			})
-			handler := mustNewHandler(t, h, allowHTTPTestGuard())
-
-			envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/release-packages/inspect", map[string]any{
-				"plugin_instance_id": nextHTTPTestPluginInstanceID(t),
-				"release_ref":        ref,
-			}, tt.wantStatus)
-			if envelope.Code != string(tt.wantCode) {
-				t.Fatalf("inspect release error code = %q, want %q body = %#v", envelope.Code, tt.wantCode, envelope)
-			}
-		})
+		t.Fatalf("release resolver calls = %d, want one install fetch", resolver.calls)
 	}
 }
 
@@ -1722,15 +1685,6 @@ func TestHandlerInstallRequiresPluginInstanceIDBeforeConsumingExternalInput(t *t
 		t.Fatalf("missing local import ID consumed request body %d times", body.calls)
 	}
 
-	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/release-packages/inspect", bytes.NewBufferString(`{"release_ref":{}}`))
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if rec.Code != http.StatusBadRequest || envelope.Code != string(security.ErrInvalidRequest) {
-		t.Fatalf("missing release install ID = status:%d envelope:%#v", rec.Code, envelope)
-	}
 }
 
 func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {

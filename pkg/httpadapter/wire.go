@@ -202,27 +202,6 @@ type installedExternalPackageResponse struct {
 	SecuritySummary     *host.ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
 }
 
-type releasePackageInspectionResponse struct {
-	InspectionID       string                              `json:"inspection_id"`
-	ExpiresAt          time.Time                           `json:"expires_at"`
-	PluginInstanceID   string                              `json:"plugin_instance_id"`
-	ReleaseRef         host.PluginReleaseRef               `json:"release_ref"`
-	InspectedHashes    host.PackageHashSet                 `json:"inspected_hashes"`
-	Presentation       presentationCatalogResponse         `json:"presentation"`
-	PresentationSHA256 string                              `json:"presentation_sha256"`
-	SecuritySummary    host.ExternalPackageSecuritySummary `json:"security_summary"`
-}
-
-func publicReleasePackageInspection(value host.ReleasePackageInspection) releasePackageInspectionResponse {
-	return releasePackageInspectionResponse{
-		InspectionID:     value.InspectionID,
-		ExpiresAt:        value.ExpiresAt,
-		PluginInstanceID: value.PluginInstanceID, ReleaseRef: value.ReleaseRef,
-		InspectedHashes: value.InspectedHashes, Presentation: publicPresentationCatalog(value.Presentation),
-		PresentationSHA256: value.PresentationSHA256, SecuritySummary: value.SecuritySummary,
-	}
-}
-
 func publicInstalledExternalPackage(result host.InstalledExternalPackage) (installedExternalPackageResponse, error) {
 	response := installedExternalPackageResponse{
 		SignatureAssessment: result.SignatureAssessment,

@@ -422,15 +422,13 @@ func (route routeSpec) validate() error {
 }
 
 type startReleaseInstallExecutionRequest struct {
-	RequestID        string            `json:"request_id"`
-	PluginInstanceID string            `json:"plugin_instance_id"`
-	InspectionID     string            `json:"inspection_id"`
-	ReleaseRef       releaseRefRequest `json:"release_ref"`
-}
-
-type inspectReleasePackageRequest struct {
-	PluginInstanceID string            `json:"plugin_instance_id"`
-	ReleaseRef       releaseRefRequest `json:"release_ref"`
+	RequestID             string            `json:"request_id"`
+	PluginInstanceID      string            `json:"plugin_instance_id"`
+	ReleaseIdentityDigest string            `json:"release_identity_digest,omitempty"`
+	ManifestSHA256        string            `json:"manifest_sha256,omitempty"`
+	ContractSetSHA256     string            `json:"contract_set_sha256,omitempty"`
+	SummarySHA256         string            `json:"summary_sha256,omitempty"`
+	ReleaseRef            releaseRefRequest `json:"release_ref"`
 }
 
 type inspectExternalPackageRequest struct {
@@ -879,7 +877,6 @@ func (e *jsonLimitError) status() int {
 
 var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/release-packages/inspect", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInspectReleasePackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/executions/release-installs", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleStartReleaseInstallExecution }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectExternalPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackage }),
@@ -1291,23 +1288,6 @@ func (h Handler) handleImportLocalPackageUpload(w http.ResponseWriter, r *http.R
 	h.writePluginMutationSuccess(w, r, "local-import.install.response", record)
 }
 
-func (h Handler) handleInspectReleasePackage(w http.ResponseWriter, r *http.Request) {
-	var req inspectReleasePackageRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	inspection, err := h.host.InspectReleasePackage(r.Context(), host.InspectReleasePackageRequest{
-		PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef.domain(),
-	})
-	if err != nil {
-		code := errorCodeForManagementError(err)
-		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "release.inspect", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
-		return
-	}
-	writeMutationSuccess(w, publicReleasePackageInspection(inspection))
-}
-
 func (h Handler) handleStartReleaseInstallExecution(w http.ResponseWriter, r *http.Request) {
 	var req startReleaseInstallExecutionRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1315,7 +1295,9 @@ func (h Handler) handleStartReleaseInstallExecution(w http.ResponseWriter, r *ht
 		return
 	}
 	record, err := h.host.StartReleaseInstallExecution(r.Context(), host.StartReleaseInstallExecutionRequest{
-		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, InspectionID: req.InspectionID, ReleaseRef: req.ReleaseRef.domain(),
+		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID,
+		ReleaseIdentityDigest: req.ReleaseIdentityDigest, ManifestSHA256: req.ManifestSHA256,
+		ContractSetSHA256: req.ContractSetSHA256, SummarySHA256: req.SummarySHA256, ReleaseRef: req.ReleaseRef.domain(),
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -3234,10 +3216,6 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin release asset was not found"
 	case security.ErrReleaseAssetIntegrity:
 		return "plugin release asset failed integrity verification"
-	case security.ErrReleaseInspectionExpired:
-		return "plugin release inspection expired; inspect the release again"
-	case security.ErrReleaseInspectionStale:
-		return "plugin release changed after inspection; inspect the release again"
 	case security.ErrInstallInterrupted:
 		return "plugin installation was interrupted"
 	case security.ErrInstallStateConflict:
@@ -3425,12 +3403,6 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		errors.Is(err, host.ErrExternalPackageRequestInvalid),
 		errors.Is(err, registry.ErrInvalidExternalPackageInstall):
 		return security.ErrInvalidRequest
-	case errors.Is(err, host.ErrReleasePackageInspectionNotFound):
-		return security.ErrReleaseInspectionExpired
-	case errors.Is(err, host.ErrReleasePackageInspectionExpired):
-		return security.ErrReleaseInspectionExpired
-	case errors.Is(err, host.ErrReleasePackageInspectionStale):
-		return security.ErrReleaseInspectionStale
 	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, connectivity.ErrResourceScopeMismatch):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, host.ErrStorageScopeMismatch):

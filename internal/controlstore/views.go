@@ -836,12 +836,29 @@ func (v ExecutionView) UpdateReleaseInstall(ctx context.Context, ownerEnvHash st
 	if status == execution.StatusFailed {
 		failureCode = updated.Failure.Code
 	}
-	eventPayload := map[string]any{"phase": updated.Phase, "progress": updated.Progress}
+	installProgress := registry.ReleaseInstallProgressEvent{
+		TaskID: updated.Execution.ID, RequestID: updated.RequestID,
+		Stage: registry.ReleaseInstallStageForPhase(updated.Phase), Status: registry.ReleaseInstallStageRunning,
+	}
+	if updated.Progress.Kind != registry.ReleaseInstallProgressIndeterminate {
+		completed, total := updated.Progress.Completed, updated.Progress.Total
+		installProgress.Completed, installProgress.Total = &completed, &total
+	}
+	eventPayload := map[string]any{
+		"phase": updated.Phase, "progress": updated.Progress, "install_progress": installProgress,
+	}
 	if status != execution.StatusRunning {
 		eventPayload["status"] = status
 	}
 	if status == execution.StatusFailed {
 		eventPayload["failure_phase"] = updated.Phase
+		installProgress.Status = registry.ReleaseInstallStageFailed
+		installProgress.FailureCode = updated.Failure.Code
+		installProgress.FailureStage = installProgress.Stage
+		eventPayload["install_progress"] = installProgress
+	} else if status == execution.StatusCompleted {
+		installProgress.Status = registry.ReleaseInstallStageCompleted
+		eventPayload["install_progress"] = installProgress
 	}
 	payload, err := json.Marshal(eventPayload)
 	if err != nil {

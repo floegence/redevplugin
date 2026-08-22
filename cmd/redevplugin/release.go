@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/releasepublisher"
 	"github.com/floegence/redevplugin/v3/pkg/version"
 )
@@ -44,19 +45,27 @@ func runRelease(ctx context.Context, args []string) error {
 		}
 		return writeJSON(status)
 	case "finalize":
-		if len(args) != 3 {
+		if len(args) < 3 {
 			return usage()
 		}
-		status, err := releasepublisher.Finalize(ctx, args[1], args[2])
+		contracts, err := readCapabilityContractArtifacts(args[3:])
+		if err != nil {
+			return err
+		}
+		status, err := releasepublisher.Finalize(ctx, args[1], args[2], contracts...)
 		if err != nil {
 			return err
 		}
 		return writeJSON(status)
 	case "verify":
-		if len(args) != 2 {
+		if len(args) < 2 {
 			return usage()
 		}
-		verified, err := releasepublisher.VerifyAndInspectOutput(ctx, args[1])
+		contracts, err := readCapabilityContractArtifacts(args[2:])
+		if err != nil {
+			return err
+		}
+		verified, err := releasepublisher.VerifyAndInspectOutputWithContracts(ctx, args[1], contracts)
 		if err != nil {
 			return err
 		}
@@ -64,6 +73,7 @@ func runRelease(ctx context.Context, args []string) error {
 			OK: true, Phase: "verified", Output: args[1], Presentation: verified.Presentation,
 			PresentationIcon: verified.PresentationIcon,
 			ManifestSHA256:   verified.ManifestSHA256, PresentationSHA256: verified.PresentationSHA256,
+			ContractSetSHA256: verified.ContractSetSHA256, SecuritySummary: verified.SecuritySummary,
 			VerifierVersion: version.CurrentPlatformVersion(),
 		})
 	case "extract-presentation-icon":
@@ -81,4 +91,20 @@ func runRelease(ctx context.Context, args []string) error {
 	default:
 		return usage()
 	}
+}
+
+func readCapabilityContractArtifacts(paths []string) ([]capabilitycontract.KnownContract, error) {
+	contracts := make([]capabilitycontract.KnownContract, 0, len(paths))
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		contract, err := capabilitycontract.NewKnownContractFromArtifact(raw)
+		if err != nil {
+			return nil, err
+		}
+		contracts = append(contracts, contract)
+	}
+	return contracts, nil
 }

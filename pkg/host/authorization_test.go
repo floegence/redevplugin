@@ -145,7 +145,6 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"list intents", ManagementActionListIntents, func() error { _, err := h.ListIntents(ctx, ListIntentsRequest{}); return err }},
 		{"invoke intent", ManagementActionInvokeIntent, func() error { _, err := h.InvokeIntent(ctx, InvokeIntentRequest{}); return err }},
 		{"import local package", ManagementActionImportLocalPackage, func() error { _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{}); return err }},
-		{"inspect release package", ManagementActionInstallReleaseRef, func() error { _, err := h.InspectReleasePackage(ctx, InspectReleasePackageRequest{}); return err }},
 		{"update local package", ManagementActionUpdateLocalPackage, func() error { _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{}); return err }},
 		{"update release ref", ManagementActionUpdateReleaseRef, func() error { _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{}); return err }},
 		{"downgrade", ManagementActionDowngradePlugin, func() error { _, err := h.DowngradePlugin(ctx, DowngradeRequest{}); return err }},
@@ -438,9 +437,6 @@ func TestInstallEntryPointsRejectMissingPluginInstanceIDBeforeExternalInput(t *t
 		t.Fatalf("missing plugin_instance_id read package %d times", reader.calls)
 	}
 
-	if _, err := h.InspectReleasePackage(hostTestContext(), InspectReleasePackageRequest{}); !errors.Is(err, ErrMethodRequestContract) {
-		t.Fatalf("InspectReleasePackage() error = %v, want ErrMethodRequestContract", err)
-	}
 	if len(authorization.requests) != 0 {
 		t.Fatalf("invalid install target reached authorization adapter: %#v", authorization.requests)
 	}
