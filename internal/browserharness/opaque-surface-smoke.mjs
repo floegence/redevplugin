@@ -190,6 +190,7 @@ async function verifyScenario(credentiallessScenario) {
     "prototype_fetch_blocked",
     "prototype_indexeddb_blocked",
     "prototype_nested_blob_worker_blocked",
+    "dynamic_import_blocked",
     "all_blocked",
   ]) {
     assert.equal(workerProbe[field], true, `${credentiallessScenario} worker probe ${field}`);
@@ -324,7 +325,7 @@ async function verifyScenario(credentiallessScenario) {
     opaque_origin: isolation.origin === "null",
     isolation: Object.fromEntries(Object.entries(isolation).filter(([name]) => name !== "origin")),
     worker_probe: workerProbe,
-    platform_dynamic_import_gate: true,
+    platform_dynamic_import_gate: workerProbe.dynamic_import_blocked === true,
     parent_credentials_absent: forbiddenEvidenceAbsent(serializedEvidence),
     credential_query_absent: !requestedURLs.some((url) => /[?&](ticket|token|asset_session|stream_ticket)=/i.test(url)),
     direct_worker_network_absent: !requestedURLs.some((url) => url.includes("worker-network-probe") || url.includes("worker-prototype-fetch")),

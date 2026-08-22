@@ -319,10 +319,10 @@ bootstrap port to the current frame generation and waits for a generation-bound
 `port_ack` before requesting the parent-only gateway lease; all later lifecycle, RPC,
 cancel, render, asset, Execution/Event, and confirmation traffic is typed and
 port-bound.
-Worker readiness also waits for a bounded dynamic-import sandbox check. A
-matching CSP violation is authoritative denial evidence even when the browser
-leaves the import promise pending; a missing denial signal or any later import
-success fails the surface closed.
+Worker readiness does not run an active dynamic-import sandbox check. Dynamic
+imports remain denied by the strict CSP, sealed worker APIs, and package-time
+static validation. The dedicated browser harness performs the bounded denial
+check; normal plugin startup does not intentionally create a CSP violation.
 The worker receives only opaque
 surface and execution handles. Asset tickets, sessions, gateway credentials,
 internal transport credentials, confirmation tokens, plugin identity bindings, and owner/session

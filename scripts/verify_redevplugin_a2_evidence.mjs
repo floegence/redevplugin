@@ -36,6 +36,7 @@ const workerProbeKeys = [
   "prototype_fetch_blocked",
   "prototype_indexeddb_blocked",
   "prototype_nested_blob_worker_blocked",
+  "dynamic_import_blocked",
   "all_blocked",
 ];
 const scenarioProofKeys = [
