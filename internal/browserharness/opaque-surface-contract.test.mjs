@@ -89,17 +89,18 @@ test("browser host delegates surface ownership to PluginPlatformClient", async (
   }
 });
 
-test("the trusted worker wrapper owns the direct dynamic-import gate", async () => {
+test("the production worker wrapper does not run a dynamic-import probe", async () => {
   const probe = await readFile(new URL("../../testdata/browser-harness/opaque-surface/worker-security-probe.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(probe, /\bimport\s*\(/);
+  assert.match(probe, /specifier: string = ["']data:text\/javascript/);
+  assert.match(probe, /import\(specifier\)/);
   assert.doesNotMatch(probe, /AsyncFunction|new Function/);
 
   const surface = await readFile(new URL("../../packages/redevplugin-ui/src/surface.ts", import.meta.url), "utf8");
-  assert.match(surface, /__rpAddEventListener\(\"securitypolicyviolation\"/);
-  assert.match(surface, /import\(specifier\)\.then\(finishEscaped, finishBlocked\)/);
-  assert.match(surface, /Dynamic import sandbox verification timed out/);
-  assert.match(surface, /Dynamic import escaped the ReDevPlugin worker sandbox/);
-  assert.doesNotMatch(surface, /await import\(specifier\)/);
+  assert.doesNotMatch(surface, /__rpVerifyDynamicImportBlocked/);
+  assert.doesNotMatch(surface, /__rpAddEventListener\(\"securitypolicyviolation\"/);
+  assert.doesNotMatch(surface, /data:text\/javascript/);
+  assert.doesNotMatch(surface, /Dynamic import sandbox verification timed out/);
+  assert.doesNotMatch(surface, /Dynamic import escaped the ReDevPlugin worker sandbox/);
 
   const worker = await readFile(new URL("../../testdata/browser-harness/opaque-surface/plugin-worker.ts", import.meta.url), "utf8");
   assert.match(worker, /runWorkerSecurityProbe/);

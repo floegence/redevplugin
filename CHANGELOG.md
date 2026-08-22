@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.13
+
+- Remove the production dynamic-import CSP probe so normal plugin startup does not emit an expected Console violation.
+- Keep strict sandbox enforcement and move the one-time dynamic-import denial check into the browser security harness.
+
 ## v3.0.12
 
 - Bind official market installation to a canonical release identity digest and reject tampered release references.

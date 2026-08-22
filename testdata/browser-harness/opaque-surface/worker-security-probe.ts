@@ -41,9 +41,39 @@ export async function runWorkerSecurityProbe(): Promise<WorkerSecurityProbe> {
     prototype_fetch_blocked: await everyCallableDescriptorRejects(globalThis, "fetch", ["https://redevplugin.invalid/worker-prototype-fetch"]),
     prototype_indexeddb_blocked: descriptorValues(globalThis, "indexedDB").every((value) => value === undefined),
     prototype_nested_blob_worker_blocked: recoveredBlobWorkerIsBlocked(),
+    dynamic_import_blocked: await dynamicImportIsBlocked(),
   };
   probe.all_blocked = Object.values(probe).every((value) => value === true);
   return probe;
+}
+
+async function dynamicImportIsBlocked(): Promise<boolean> {
+  let settled = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  return new Promise((resolve) => {
+    const specifier: string = "data:text/javascript,export default 1";
+    const finish = (blocked: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      removeEventListener("securitypolicyviolation", onViolation, true);
+      resolve(blocked);
+    };
+    const onViolation = (event: Event) => {
+      const violation = event as SecurityPolicyViolationEvent;
+      const directive = String(violation.effectiveDirective || violation.violatedDirective || "");
+      const blockedURI = String(violation.blockedURI || "");
+      if ((directive === "script-src" || directive === "script-src-elem") &&
+        (blockedURI === "data" || blockedURI.startsWith("data:"))) finish(true);
+    };
+    addEventListener("securitypolicyviolation", onViolation, true);
+    timeout = setTimeout(() => finish(false), 1_000);
+    try {
+      import(specifier).then(() => finish(false), () => finish(true));
+    } catch {
+      finish(true);
+    }
+  });
 }
 
 function messagePortPrototypeSealed(): boolean {

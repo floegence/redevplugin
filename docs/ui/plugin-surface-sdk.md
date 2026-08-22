@@ -98,7 +98,10 @@ The runtime does not support fragments, function components, event callbacks,
 raw HTML, URL-bearing markup, or non-primitive attributes. Plugin interaction
 continues to use `data-redevplugin-action` and `PluginBridgeClient.onAction(...)`.
 Direct DOM, network, browser storage, dynamic import, and code generation remain
-blocked by the opaque surface runtime.
+blocked by the opaque surface runtime. The production worker does not actively
+probe the dynamic-import policy during startup; the browser harness owns that
+one-time security check so normal plugin opening does not create a CSP Console
+error.
 
 ```tsx
 const tree = (

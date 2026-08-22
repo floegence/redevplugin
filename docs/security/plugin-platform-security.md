@@ -123,12 +123,13 @@ early rejection for direct identifier, optional-chain, and bracket references;
 runtime removal of the API is the authoritative boundary for dynamically
 constructed source references.
 
-Before plugin code starts, the worker verifies the dynamic-import denial. The
-verification accepts either the rejected import or the matching browser CSP
-violation, since some Chromium/Electron combinations report the violation while
-leaving the import promise pending. It has a bounded fail-closed deadline, and
-any later import success reports a worker failure so the parent revokes the
-surface.
+The production worker does not run an active dynamic-import probe. Such a probe
+would intentionally create a browser CSP violation in every plugin surface and
+would appear as a Console error even when the policy is working correctly. The
+runtime boundary remains strict CSP plus the sealed worker APIs, and package
+validation rejects dynamic imports before installation. A dedicated browser
+harness performs the one-time dynamic-import denial check so the security
+contract remains tested without adding noise to normal plugin startup.
 
 Renderer resource ownership is bounded by the generated bridge policy. It
 permits at most four transferred canvases, 4096 pixels per dimension,
