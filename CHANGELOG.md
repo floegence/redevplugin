@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.12
+
+- Bind official market installation to a canonical release identity digest and reject tampered release references.
+- Remove the obsolete official-install inspection phase while retaining inspection for external package sources.
+
 ## v3.0.11
 
 - Let verified presentation icon extraction consume the same exact capability
