@@ -135,11 +135,68 @@ export type PluginSettingsPatchRequest = PluginSettingsPatchBase & (
 export type PluginCapabilityContractPin = PlatformSchemas["HostCapabilityPinV1"];
 export type PluginExecution = PlatformSchemas["Execution"];
 export type PluginEvent = PlatformSchemas["Event"];
+export type PluginReleaseInstallProgressEvent = PlatformSchemas["ReleaseInstallProgressEvent"];
 export type PluginStartReleaseInstallExecutionRequest = PlatformSchemas["StartReleaseInstallExecutionRequest"];
 export type PluginExecutionList = PlatformSchemas["ExecutionList"];
 export type PluginExecutionEventList = PlatformSchemas["ExecutionEventList"];
 export type PluginExecutionListOptions = PlatformSchemas["ListExecutionsRequest"];
+export type PluginReleaseInstallExecutionListOptions = Omit<PluginExecutionListOptions, "operation_scope">;
 export type PluginExecutionEventListOptions = PlatformSchemas["ListExecutionEventsRequest"];
+
+const releaseInstallStages = ["download", "verify", "install", "enable"] as const;
+const releaseInstallStatuses = ["pending", "running", "completed", "failed"] as const;
+const releaseInstallProgressKeys = [
+  "task_id",
+  "request_id",
+  "stage",
+  "status",
+  "completed",
+  "total",
+  "failure_code",
+  "failure_stage",
+  "retryable",
+] as const;
+
+/** Reads the stable release-install progress projection from an execution event. */
+export function decodePluginReleaseInstallProgressEvent(
+  event: PluginEvent,
+): PluginReleaseInstallProgressEvent | undefined {
+  const payload = event?.payload;
+  if (!isRecord(payload)) return undefined;
+  const value = payload.install_progress;
+  if (!isRecord(value) || !hasOnlyKeys(value, releaseInstallProgressKeys)) return undefined;
+  if (!isNonEmptyString(value.task_id) || !isNonEmptyString(value.request_id)) return undefined;
+  if (value.task_id !== event.execution_id) return undefined;
+  if (!isOneOf(value.stage, releaseInstallStages) || !isOneOf(value.status, releaseInstallStatuses)) {
+    return undefined;
+  }
+
+  const hasCompleted = value.completed !== undefined;
+  const hasTotal = value.total !== undefined;
+  if (hasCompleted !== hasTotal) return undefined;
+  if (
+    hasCompleted &&
+    (!isSafeIntegerAtLeast(value.completed, 0) || !isSafeIntegerAtLeast(value.total, 1))
+  ) {
+    return undefined;
+  }
+  if (hasCompleted && Number(value.completed) > Number(value.total)) return undefined;
+
+  const failed = value.status === "failed";
+  if (failed) {
+    if (
+      !isNonEmptyString(value.failure_code) ||
+      !isOneOf(value.failure_stage, releaseInstallStages) ||
+      value.failure_stage !== value.stage ||
+      typeof value.retryable !== "boolean"
+    ) {
+      return undefined;
+    }
+  } else if (value.failure_code !== undefined || value.failure_stage !== undefined || value.retryable !== undefined) {
+    return undefined;
+  }
+  return value as PluginReleaseInstallProgressEvent;
+}
 
 export type PluginIntentRecord = PlatformSchemas["PluginIntentRecord"];
 export type PluginIntentList = PlatformSchemas["PluginIntentList"];
@@ -360,6 +417,9 @@ export class PluginPlatformClient {
   }
   listExecutions(options: PluginExecutionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginExecutionList> {
     return this.#requestQuery("/_redevplugin/api/plugins/executions/query", options, requestOptions);
+  }
+  listReleaseInstallExecutions(options: PluginReleaseInstallExecutionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginExecutionList> {
+    return this.listExecutions({ ...options, operation_scope: "release_install" }, requestOptions);
   }
   startReleaseInstallExecution(request: PluginStartReleaseInstallExecutionRequest, options: PluginRequestOptions = {}): Promise<PluginExecution> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/executions/release-installs", request, options);
@@ -641,6 +701,27 @@ function isPluginSessionScopeRevokeResult(value: unknown): value is PluginSessio
   const counts = value.counts;
   if (!isExactRecord(counts, sessionScopeCountKeys)) return false;
   return sessionScopeCountKeys.every((key) => Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isOneOf<const Values extends readonly string[]>(value: unknown, values: Values): value is Values[number] {
+  return typeof value === "string" && values.includes(value as Values[number]);
+}
+
+function isSafeIntegerAtLeast(value: unknown, minimum: number): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= minimum;
 }
 
 function isExactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {

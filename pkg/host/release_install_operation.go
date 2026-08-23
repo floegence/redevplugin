@@ -116,7 +116,7 @@ func (h *Host) runReleaseInstallOperation(ctx context.Context, operation registr
 	running, err := h.updateReleaseInstallOperation(ctx, operation, execution.StatusRunning, "download_package",
 		registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate}, mutation.OutcomeNotCommitted, nil, nil)
 	if err != nil {
-		_, _ = h.failReleaseInstallOperation(context.WithoutCancel(ctx), operation, releaseInstallFailureCode(err), false, mutation.ForError(err))
+		_, _ = h.failReleaseInstallOperation(context.WithoutCancel(ctx), operation, releaseInstallFailureCode(err), releaseInstallFailureRetryable(err), mutation.ForError(err))
 		return
 	}
 	tracker := &releaseInstallProgressTracker{host: h, ctx: ctx, current: running}
@@ -204,19 +204,13 @@ func (h *Host) validateReleaseInstallDeclaration(pkg pluginpkg.Package, release 
 // recovery only publishes that record and never performs a second lifecycle
 // transition or grants permissions.
 func (h *Host) reconcileCommittedReleaseInstalls(ctx context.Context) error {
-	session, err := sessionctx.Require(ctx)
-	if err != nil {
-		return nil
-	}
-	operations, err := h.controlStore.Executions().ListReleaseInstalls(ctx, session.OwnerEnvHash)
+	candidates, err := h.controlStore.Executions().ListReleaseInstallRecoveryCandidates(ctx)
 	if err != nil {
 		return err
 	}
-	for _, operation := range operations {
-		if operation.Execution.Status != execution.StatusRunning {
-			continue
-		}
-		record, err := h.getPluginRecord(ctx, operation.PluginInstanceID)
+	for _, candidate := range candidates {
+		operation := candidate.Operation
+		record, err := h.controlStore.Registry().GetPlugin(ctx, candidate.OwnerEnvHash, operation.PluginInstanceID)
 		if err != nil || !releaseInstallRecordMatches(operation, record) {
 			continue
 		}
@@ -224,9 +218,8 @@ func (h *Host) reconcileCommittedReleaseInstalls(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		_, updateErr := h.updateReleaseInstallOperation(context.WithoutCancel(ctx), operation, execution.StatusCompleted, "complete",
-			registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressItems, Completed: 1, Total: 1},
-			mutation.OutcomeCommitted, nil, &record)
+		_, updateErr := h.updateReleaseInstallRecordForOwner(context.WithoutCancel(ctx), candidate.OwnerEnvHash, operation, execution.StatusCompleted, "complete",
+			registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressItems, Completed: 1, Total: 1}, mutation.OutcomeCommitted, nil, &record)
 		unlock()
 		if updateErr != nil {
 			return updateErr
@@ -301,14 +294,11 @@ func (h *Host) finishFailedReleaseInstall(ctx context.Context, running registry.
 }
 
 func (h *Host) updateReleaseInstallOperation(ctx context.Context, current registry.ReleaseInstallOperation, status string, phase string, progress registry.ReleaseInstallProgress, outcome mutation.Outcome, failure *registry.ReleaseInstallFailure, record *registry.PluginRecord) (registry.ReleaseInstallOperation, error) {
-	now := time.Now().UTC()
-	if now.Before(current.Execution.UpdatedAt) {
-		now = current.Execution.UpdatedAt
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return registry.ReleaseInstallOperation{}, err
 	}
-	return h.updateReleaseInstallRecord(ctx, registry.UpdateReleaseInstallOperationRequest{
-		ExecutionID: current.Execution.ID, ExpectedCursor: current.Execution.Cursor, Status: status, Phase: phase,
-		Progress: progress, Attempt: current.Attempt, MutationOutcome: outcome, Failure: failure, PluginRecord: record, Now: now,
-	})
+	return h.updateReleaseInstallRecordForOwner(ctx, session.OwnerEnvHash, current, status, phase, progress, outcome, failure, record)
 }
 
 func (h *Host) updateReleaseInstallRecord(ctx context.Context, req registry.UpdateReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
@@ -317,6 +307,17 @@ func (h *Host) updateReleaseInstallRecord(ctx context.Context, req registry.Upda
 		return registry.ReleaseInstallOperation{}, err
 	}
 	return h.controlStore.Executions().UpdateReleaseInstall(ctx, session.OwnerEnvHash, req)
+}
+
+func (h *Host) updateReleaseInstallRecordForOwner(ctx context.Context, ownerEnvHash string, current registry.ReleaseInstallOperation, status string, phase string, progress registry.ReleaseInstallProgress, outcome mutation.Outcome, failure *registry.ReleaseInstallFailure, record *registry.PluginRecord) (registry.ReleaseInstallOperation, error) {
+	now := time.Now().UTC()
+	if now.Before(current.Execution.UpdatedAt) {
+		now = current.Execution.UpdatedAt
+	}
+	return h.controlStore.Executions().UpdateReleaseInstall(ctx, ownerEnvHash, registry.UpdateReleaseInstallOperationRequest{
+		ExecutionID: current.Execution.ID, ExpectedCursor: current.Execution.Cursor, Status: status, Phase: phase,
+		Progress: progress, Attempt: current.Attempt, MutationOutcome: outcome, Failure: failure, PluginRecord: record, Now: now,
+	})
 }
 
 func releaseInstallOwner(session sessionctx.Context) controlstore.ExecutionOwner {
@@ -438,9 +439,13 @@ func releaseInstallFailureRetryable(err error) bool {
 	if errors.As(err, &provider) {
 		return provider.ReleaseArtifactFailure().Retryable
 	}
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 		isWorkerRuntimeUnavailable(err) || externalsource.CodeOf(err) == externalsource.ErrorDNS ||
-		externalsource.CodeOf(err) == externalsource.ErrorTransport
+		externalsource.CodeOf(err) == externalsource.ErrorTransport {
+		return true
+	}
+	code := releaseInstallFailureCode(err)
+	return code == string(security.ErrRuntimeUnavailable) || code == releaseInstallFailureInternal
 }
 
 func isWorkerRuntimeUnavailable(err error) bool {

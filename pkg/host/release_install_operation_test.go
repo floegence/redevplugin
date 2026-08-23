@@ -311,7 +311,8 @@ func TestReleaseInstallOperationRecoversCommittedInstallAfterHostRestart(t *test
 	}
 
 	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{
-		stateRoot: stateRoot, capabilityContract: &verified, capabilityAdapter: &recordingCapabilityAdapter{},
+		openContext: context.Background(), stateRoot: stateRoot,
+		capabilityContract: &verified, capabilityAdapter: &recordingCapabilityAdapter{},
 	})
 	defer restarted.Close()
 	recovered, err := restarted.controlStore.Executions().GetReleaseInstall(ctx, executionOwnerScope(ctx).OwnerEnvHash, operation.Execution.ID)
@@ -562,6 +563,10 @@ func TestReleaseInstallCapabilityFailurePersistsTerminalStateAfterProgress(t *te
 	if last.Kind != execution.EventTerminal || last.Payload["failure_phase"] != "verify_signatures" {
 		t.Fatalf("terminal failure event = %#v", last)
 	}
+	progress, ok := last.Payload["install_progress"].(map[string]any)
+	if !ok || progress["retryable"] != false {
+		t.Fatalf("terminal install progress retryability = %#v, want false", progress)
+	}
 }
 
 func TestReleaseInstallProgressTrackerPreservesPersistenceFailure(t *testing.T) {
@@ -628,10 +633,14 @@ func TestReleaseInstallFailureClassifiesKnownPlatformFailures(t *testing.T) {
 		{name: "data binding", err: plugindata.ErrBindingConflict, want: security.ErrInstallStateConflict},
 		{name: "data binding revision", err: plugindata.ErrBindingRevisionConflict, want: security.ErrInstallStateConflict},
 		{name: "data not retained", err: plugindata.ErrNotRetained, want: security.ErrInstallStateConflict},
+		{name: "runtime not configured", err: ErrPluginRuntimeNotConfigured, want: security.ErrRuntimeUnavailable, retryable: true},
+		{name: "runtime feature missing", err: FeatureNotConfiguredError{Features: []Feature{FeatureRuntime}}, want: security.ErrRuntimeUnavailable, retryable: true},
 		{name: "runtime not ready", err: ErrRuntimeNotReady, want: security.ErrRuntimeUnavailable, retryable: true},
 		{name: "runtime ipc", err: ErrRuntimeIPCUnavailable, want: security.ErrRuntimeUnavailable, retryable: true},
 		{name: "runtime request", err: ErrRuntimeRequestFailed, want: security.ErrRuntimeUnavailable, retryable: true},
 		{name: "runtime handshake", err: ErrRuntimeHandshake, want: security.ErrRuntimeUnavailable, retryable: true},
+		{name: "runtime version mismatch", err: ErrPluginRuntimeIncompatible, want: security.ErrRuntimeVersionMismatch},
+		{name: "unknown internal", err: errors.New("unexpected install failure"), want: security.ErrInternalFailure, retryable: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := releaseInstallFailureCode(test.err); got != string(test.want) {

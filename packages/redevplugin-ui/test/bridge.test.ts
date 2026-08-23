@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   defaultPluginSurfaceReloadMax,
   defaultPluginSurfaceReloadWindowMs,
+  decodePluginReleaseInstallProgressEvent,
   pluginBridgeErrorCodes,
   pluginClientErrorCodes,
   pluginPlatformErrorCodes,
@@ -12,6 +13,7 @@ import {
   type FetchInitLike,
   type FetchLike,
   type FetchResponseLike,
+  type PluginEvent,
   type PluginRuntimeHealth,
 } from "../src/trusted-parent.js";
 import { PluginMutationLifecycleError, PluginTransportError } from "../src/errors.js";
@@ -986,6 +988,115 @@ test("release installation starts through the unified execution route", async ()
   assert.equal(result.execution_id, "release_install_1");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/executions/release-installs");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), request);
+});
+
+test("release install progress decoder requires explicit failure retryability", () => {
+  const event = {
+    execution_id: "release_install_1",
+    sequence: 4,
+    kind: "terminal" as const,
+    payload: {
+      install_progress: {
+        task_id: "release_install_1",
+        request_id: "request_1",
+        stage: "install",
+        status: "failed",
+        failure_code: "PLUGIN_INTERNAL_FAILURE",
+        failure_stage: "install",
+        retryable: true,
+      },
+    },
+  } satisfies PluginEvent;
+  assert.deepEqual(decodePluginReleaseInstallProgressEvent(event), event.payload.install_progress);
+  const nonRetryable = {
+    ...event,
+    payload: {
+      install_progress: {
+        ...event.payload.install_progress,
+        failure_code: "PLUGIN_RUNTIME_VERSION_MISMATCH",
+        retryable: false,
+      },
+    },
+  } satisfies PluginEvent;
+  assert.equal(decodePluginReleaseInstallProgressEvent(nonRetryable)?.retryable, false);
+
+  const running = {
+    execution_id: "release_install_1",
+    sequence: 2,
+    kind: "progress" as const,
+    payload: {
+      install_progress: {
+        task_id: "release_install_1",
+        request_id: "request_1",
+        stage: "download" as const,
+        status: "running" as const,
+        completed: 2,
+        total: 4,
+      },
+    },
+  } satisfies PluginEvent;
+  assert.deepEqual(decodePluginReleaseInstallProgressEvent(running), running.payload.install_progress);
+
+  const missingRetryable = {
+    execution_id: "release_install_1",
+    sequence: 4,
+    kind: "terminal" as const,
+    payload: {
+      install_progress: {
+        task_id: "release_install_1",
+        request_id: "request_1",
+        stage: "install" as const,
+        status: "failed" as const,
+        failure_code: "PLUGIN_INTERNAL_FAILURE",
+        failure_stage: "install" as const,
+      },
+    },
+  } satisfies PluginEvent;
+  assert.equal(decodePluginReleaseInstallProgressEvent(missingRetryable), undefined);
+
+  assert.equal(decodePluginReleaseInstallProgressEvent({
+    ...event,
+    execution_id: "different_execution",
+  }), undefined);
+  assert.equal(decodePluginReleaseInstallProgressEvent({
+    ...running,
+    payload: {
+      install_progress: {
+        ...running.payload.install_progress,
+        completed: 5,
+      },
+    },
+  }), undefined);
+  assert.equal(decodePluginReleaseInstallProgressEvent({
+    ...event,
+    payload: {
+      install_progress: {
+        ...event.payload.install_progress,
+        failure_stage: "verify",
+      },
+    },
+  }), undefined);
+  assert.equal(decodePluginReleaseInstallProgressEvent({
+    execution_id: "ordinary_operation",
+    sequence: 1,
+    kind: "progress",
+    payload: { step: 1 },
+  }), undefined);
+});
+
+test("release install execution listing uses the closed platform filter", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { executions: [], next_cursor: 0 } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await client.listReleaseInstallExecutions({ plugin_instance_id: "plugin_1", cursor: 20, limit: 50 });
+
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_1",
+    cursor: 20,
+    limit: 50,
+    operation_scope: "release_install",
+  });
 });
 
 test("platform client reads and patches plugin settings through host API", async () => {

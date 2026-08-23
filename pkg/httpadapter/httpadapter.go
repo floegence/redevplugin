@@ -797,6 +797,7 @@ type listIntentsQueryRequest struct {
 
 type listExecutionsRequest struct {
 	PluginInstanceID optionalQueryString  `json:"plugin_instance_id"`
+	OperationScope   optionalQueryString  `json:"operation_scope"`
 	Cursor           *uint64              `json:"cursor"`
 	Limit            optionalQueryInteger `json:"limit"`
 }
@@ -2043,7 +2044,14 @@ func (h Handler) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 	if req.Cursor != nil {
 		cursor = *req.Cursor
 	}
-	executions, nextCursor, err := h.host.ListExecutions(r.Context(), req.PluginInstanceID.get(), cursor, limit)
+	operationScope := host.ExecutionOperationScope(req.OperationScope.get())
+	if operationScope != "" && operationScope != host.ExecutionOperationScopeReleaseInstall {
+		writeInvalidRequestError(w, errors.New("operation_scope is unsupported"))
+		return
+	}
+	executions, nextCursor, err := h.host.ListExecutionsWithOptions(r.Context(), host.ListExecutionsOptions{
+		PluginInstanceID: req.PluginInstanceID.get(), OperationScope: operationScope, Cursor: cursor, Limit: limit,
+	})
 	if err != nil {
 		code := errorCodeForExecutionError(err)
 		writeJSON(w, httpStatusForExecutionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "execution.list", code, err), Code: code})

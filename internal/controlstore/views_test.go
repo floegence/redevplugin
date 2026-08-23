@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/sessionscope"
 )
@@ -480,6 +481,26 @@ func TestReleaseInstallPayloadDefersIdentityStateAndCursorToExecution(t *testing
 	if err != nil || !created {
 		t.Fatalf("StartReleaseInstall() = %#v, %t, %v", started, created, err)
 	}
+	replayed, created, err := view.StartReleaseInstall(ctx, owner, request)
+	if err != nil || created || replayed.Execution.ID != started.Execution.ID {
+		t.Fatalf("idempotent StartReleaseInstall() = %#v, %t, %v", replayed, created, err)
+	}
+	conflicting := request
+	conflicting.ExecutionID = "execution_install_conflict"
+	conflicting.SummarySHA256 = "sha256:" + strings.Repeat("0", 64)
+	if _, _, err := view.StartReleaseInstall(ctx, owner, conflicting); !errors.Is(err, registry.ErrReleaseInstallOperationConflict) {
+		t.Fatalf("conflicting request replay error = %v", err)
+	}
+	otherOwner := owner
+	otherOwner.OwnerSessionHash = "other_session"
+	otherOwner.OwnerUserHash = "other_user"
+	otherOwner.OwnerEnvHash = "other_env"
+	otherOwner.SessionChannelIDHash = "other_channel"
+	otherRequest := request
+	otherRequest.ExecutionID = "execution_install_other_owner"
+	if _, created, err := view.StartReleaseInstall(ctx, otherOwner, otherRequest); err != nil || !created {
+		t.Fatalf("other-owner StartReleaseInstall() created=%t, err=%v", created, err)
+	}
 	var raw string
 	if err := store.db.QueryRowContext(ctx, `SELECT operation_json FROM execution WHERE execution_id=?`, request.ExecutionID).Scan(&raw); err != nil {
 		t.Fatal(err)
@@ -550,6 +571,27 @@ func TestExecutionViewReconcilesOrphansWithoutChangingTerminalRecords(t *testing
 			t.Fatal(err)
 		}
 	}
+	releaseIdentity := registry.ReleaseInstallIdentity{
+		SourceID: "official", Channel: "stable", ReleaseMetadataRef: "release.json",
+		ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0",
+		PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64),
+	}
+	releaseDigest, err := registry.ReleaseInstallIdentitySHA256(releaseIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	internalOwner := ExecutionOwner{
+		OwnerSessionHash: "internal_unowned", OwnerUserHash: "internal_unowned",
+		OwnerEnvHash: "internal_unowned", SessionChannelIDHash: "internal_unowned",
+	}
+	if _, _, err := view.StartReleaseInstall(ctx, internalOwner, registry.StartReleaseInstallOperationRequest{
+		RequestID: "request_interrupted", ExecutionID: "release-interrupted", PluginInstanceID: "plugin",
+		ReleaseIdentityDigest: releaseDigest, ManifestSHA256: releaseIdentity.ManifestSHA256,
+		ContractSetSHA256: "sha256:" + strings.Repeat("e", 64), SummarySHA256: "sha256:" + strings.Repeat("f", 64),
+		Release: releaseIdentity, Now: createdAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := view.RequestCancel(ctx, "cancel-requested", createdAt.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -570,11 +612,12 @@ func TestExecutionViewReconcilesOrphansWithoutChangingTerminalRecords(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Orphaned != 1 || result.Canceled != 1 {
+	if result.Orphaned != 1 || result.Canceled != 1 || result.Interrupted != 1 {
 		t.Fatalf("ReconcileOrphans() = %#v", result)
 	}
 	for id, wantStatus := range map[string]string{
-		"running": execution.StatusOrphaned, "cancel-requested": execution.StatusCanceled, "completed": execution.StatusCompleted,
+		"running": execution.StatusOrphaned, "cancel-requested": execution.StatusCanceled,
+		"completed": execution.StatusCompleted, "release-interrupted": execution.StatusFailed,
 	} {
 		got, err := view.Get(ctx, id)
 		if err != nil {
@@ -590,9 +633,15 @@ func TestExecutionViewReconcilesOrphansWithoutChangingTerminalRecords(t *testing
 		if len(events) != 1 || events[0].Kind != execution.EventTerminal || events[0].Payload["status"] != wantStatus {
 			t.Fatalf("execution %s events = %#v", id, events)
 		}
+		if id == "release-interrupted" {
+			progress, ok := events[0].Payload["install_progress"].(map[string]any)
+			if !ok || progress["failure_code"] != string(security.ErrInstallInterrupted) || progress["retryable"] != true {
+				t.Fatalf("release install interruption progress = %#v", progress)
+			}
+		}
 	}
 	second, err := view.ReconcileOrphans(ctx, now.Add(time.Second))
-	if err != nil || second.Orphaned != 0 || second.Canceled != 0 {
+	if err != nil || second.Orphaned != 0 || second.Canceled != 0 || second.Interrupted != 0 {
 		t.Fatalf("ReconcileOrphans(retry) = %#v, %v", second, err)
 	}
 }

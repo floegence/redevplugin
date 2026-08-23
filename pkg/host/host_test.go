@@ -4967,6 +4967,7 @@ func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, 
 }
 
 type testHostOptions struct {
+	openContext             context.Context
 	stateRoot               string
 	assets                  pluginpkg.AssetStore
 	developerMode           bool
@@ -5145,7 +5146,11 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if stateRoot == "" {
 		stateRoot = filepath.Join(t.TempDir(), "control-state")
 	}
-	host, err := Open(hostTestContext(), Config{
+	openContext := opts.openContext
+	if openContext == nil {
+		openContext = hostTestContext()
+	}
+	host, err := Open(openContext, Config{
 		StateRoot: stateRoot,
 		Core: CoreAdapters{
 			Policy: policyAdapter{

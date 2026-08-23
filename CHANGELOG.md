@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.0.14
+
+- Publish explicit release-install failure retryability with each failed progress event.
+- Export the canonical TypeScript progress type and decoder so hosts do not recreate the platform event contract.
+- Add a closed release-install Execution filter so hosts recover tasks without guessing from general operations.
+- Preserve interrupted installation failure semantics across Host restarts.
+- Classify unknown internal install failures and temporarily unavailable runtimes as retryable while keeping version incompatibility terminal.
+
 ## v3.0.13
 
 - Remove the production dynamic-import CSP probe so normal plugin startup does not emit an expected Console violation.

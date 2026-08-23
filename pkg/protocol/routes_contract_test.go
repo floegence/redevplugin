@@ -419,7 +419,7 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 		properties []string
 		snippets   []string
 	}{
-		{path: "/_redevplugin/api/plugins/executions/query", schema: "ListExecutionsRequest", properties: []string{"cursor", "limit", "plugin_instance_id"}, snippets: []string{"minimum: 1, maximum: 500"}},
+		{path: "/_redevplugin/api/plugins/executions/query", schema: "ListExecutionsRequest", properties: []string{"cursor", "limit", "operation_scope", "plugin_instance_id"}, snippets: []string{"minimum: 1, maximum: 500", "enum: [release_install]"}},
 		{path: "/_redevplugin/api/plugins/intents/query", schema: "ListIntentsQueryRequest", properties: []string{"intent_id", "plugin_instance_id"}},
 		{path: "/_redevplugin/api/plugins/permissions/query", schema: "ListPermissionsQueryRequest", properties: []string{"active_only", "plugin_instance_id"}, snippets: []string{"active_only: { type: boolean }"}},
 		{path: "/_redevplugin/api/plugins/permissions/requirements/query", schema: "PermissionRequirementsQueryRequest", properties: []string{"plugin_instance_id"}},

@@ -15,6 +15,17 @@ import (
 
 var ErrControlStoreRequired = errors.New("Host control store is required")
 
+type ExecutionOperationScope string
+
+const ExecutionOperationScopeReleaseInstall ExecutionOperationScope = "release_install"
+
+type ListExecutionsOptions struct {
+	PluginInstanceID string
+	OperationScope   ExecutionOperationScope
+	Cursor           uint64
+	Limit            int
+}
+
 // GetExecution returns one execution only when it belongs to the exact
 // authenticated session owner. Cross-owner identities are indistinguishable
 // from absent records.
@@ -38,7 +49,21 @@ func (h *Host) GetExecution(ctx context.Context, id string) (execution.Execution
 // ListExecutions returns one owner-scoped page ordered by the control store's
 // durable execution identity. A zero next cursor means the page is terminal.
 func (h *Host) ListExecutions(ctx context.Context, pluginInstanceID string, cursor uint64, limit int) ([]execution.Execution, uint64, error) {
-	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	return h.ListExecutionsWithOptions(ctx, ListExecutionsOptions{
+		PluginInstanceID: pluginInstanceID,
+		Cursor:           cursor,
+		Limit:            limit,
+	})
+}
+
+// ListExecutionsWithOptions returns one owner-scoped page and can select the
+// canonical release-install operation subset without introducing another
+// execution state machine or response type.
+func (h *Host) ListExecutionsWithOptions(ctx context.Context, options ListExecutionsOptions) ([]execution.Execution, uint64, error) {
+	pluginInstanceID := strings.TrimSpace(options.PluginInstanceID)
+	if options.OperationScope != "" && options.OperationScope != ExecutionOperationScopeReleaseInstall {
+		return nil, 0, fmt.Errorf("%w: unsupported execution operation scope", ErrMethodRequestContract)
+	}
 	authorization, err := h.authorizeManagement(ctx, ManagementActionListExecutions,
 		authorizationCollectionTarget(ResourceExecution),
 		relatedAuthorizationTargets(authorizationTarget(ResourcePlugin, pluginInstanceID))...,
@@ -54,7 +79,7 @@ func (h *Host) ListExecutions(ctx context.Context, pluginInstanceID string, curs
 	if h.controlStore == nil {
 		return nil, 0, ErrControlStoreRequired
 	}
-	return h.controlStore.Executions().ListOwned(ctx, pluginInstanceID, executionOwner(authorization.session), cursor, limit)
+	return h.controlStore.Executions().ListOwnedWithOperationScope(ctx, pluginInstanceID, string(options.OperationScope), executionOwner(authorization.session), options.Cursor, options.Limit)
 }
 
 // CancelExecution idempotently requests cancellation through the sole

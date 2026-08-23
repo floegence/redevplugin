@@ -7,11 +7,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
@@ -159,6 +161,27 @@ func TestExecutionFacadeUsesControlStoreAndSessionOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	releaseIdentity := registry.ReleaseInstallIdentity{
+		SourceID: "official", Channel: "stable", ReleaseMetadataRef: "release.json",
+		ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0",
+		PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64),
+	}
+	if _, _, err := host.controlStore.Executions().StartReleaseInstall(hostTestContext(), owner, registry.StartReleaseInstallOperationRequest{
+		RequestID: "request_release_install", ExecutionID: "release_install_1", PluginInstanceID: "plugin_1",
+		ReleaseIdentityDigest: mustReleaseIdentityDigestForRegistryTest(t, releaseIdentity),
+		ManifestSHA256:        releaseIdentity.ManifestSHA256, ContractSetSHA256: "sha256:" + strings.Repeat("e", 64), SummarySHA256: "sha256:" + strings.Repeat("f", 64),
+		Release: releaseIdentity, Now: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := host.controlStore.Executions().StartReleaseInstall(hostTestContext(), owner, registry.StartReleaseInstallOperationRequest{
+		RequestID: "request_release_install_2", ExecutionID: "release_install_2", PluginInstanceID: "plugin_2",
+		ReleaseIdentityDigest: mustReleaseIdentityDigestForRegistryTest(t, releaseIdentity),
+		ManifestSHA256:        releaseIdentity.ManifestSHA256, ContractSetSHA256: "sha256:" + strings.Repeat("e", 64), SummarySHA256: "sha256:" + strings.Repeat("f", 64),
+		Release: releaseIdentity, Now: now.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := host.controlStore.Executions().Append(hostTestContext(), execution.Event{ExecutionID: "exec_1", Sequence: 1, Kind: execution.EventProgress, Payload: map[string]any{"step": 1}}); err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +190,26 @@ func TestExecutionFacadeUsesControlStoreAndSessionOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].ID != "exec_1" || next != 0 {
+	if len(listed) != 2 || listed[0].ID != "exec_1" || listed[1].ID != "release_install_1" || next != 0 {
 		t.Fatalf("ListExecutions() = %#v, next=%d", listed, next)
+	}
+	releaseInstalls, next, err := host.ListExecutionsWithOptions(hostTestContext(), ListExecutionsOptions{
+		PluginInstanceID: "plugin_1", OperationScope: ExecutionOperationScopeReleaseInstall, Limit: 10,
+	})
+	if err != nil || len(releaseInstalls) != 1 || releaseInstalls[0].ID != "release_install_1" || next != 0 {
+		t.Fatalf("ListExecutionsWithOptions(release install) = %#v, next=%d, err=%v", releaseInstalls, next, err)
+	}
+	firstPage, next, err := host.ListExecutionsWithOptions(hostTestContext(), ListExecutionsOptions{
+		OperationScope: ExecutionOperationScopeReleaseInstall, Limit: 1,
+	})
+	if err != nil || len(firstPage) != 1 || firstPage[0].ID != "release_install_1" || next == 0 {
+		t.Fatalf("release install first page = %#v, next=%d, err=%v", firstPage, next, err)
+	}
+	secondPage, terminalCursor, err := host.ListExecutionsWithOptions(hostTestContext(), ListExecutionsOptions{
+		OperationScope: ExecutionOperationScopeReleaseInstall, Cursor: next, Limit: 1,
+	})
+	if err != nil || len(secondPage) != 1 || secondPage[0].ID != "release_install_2" || terminalCursor != 0 {
+		t.Fatalf("release install second page = %#v, next=%d, err=%v", secondPage, terminalCursor, err)
 	}
 	if _, err := host.GetExecution(hostTestContext(), "exec_other"); !errors.Is(err, controlstore.ErrRecordNotFound) {
 		t.Fatalf("cross-owner GetExecution() error = %v", err)

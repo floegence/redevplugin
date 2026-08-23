@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.0.13
+  version: 3.0.14
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -3043,6 +3043,7 @@ components:
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
+        operation_scope: { type: string, enum: [release_install] }
         cursor: { type: integer, minimum: 0, maximum: 9007199254740991 }
         limit: { type: integer, minimum: 1, maximum: 500 }
     StartReleaseInstallExecutionRequest:
@@ -3427,6 +3428,19 @@ components:
       type: object
       additionalProperties: false
       required: [task_id, request_id, stage, status]
+      allOf:
+        - if:
+            properties:
+              status: { const: failed }
+            required: [status]
+          then:
+            required: [failure_code, failure_stage, retryable]
+          else:
+            not:
+              anyOf:
+                - required: [failure_code]
+                - required: [failure_stage]
+                - required: [retryable]
       properties:
         task_id: { type: string, minLength: 1 }
         request_id: { type: string, minLength: 1 }
@@ -3436,6 +3450,7 @@ components:
         total: { type: integer, minimum: 1, maximum: 9007199254740991 }
         failure_code: { type: string, minLength: 1 }
         failure_stage: { type: string, enum: [download, verify, install, enable] }
+        retryable: { type: boolean }
     PublicError:
       type: object
       additionalProperties: false

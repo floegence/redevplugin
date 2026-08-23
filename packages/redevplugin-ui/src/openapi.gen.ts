@@ -2090,6 +2090,8 @@ export interface components {
         };
         ListExecutionsRequest: {
             plugin_instance_id?: string;
+            /** @enum {string} */
+            operation_scope?: "release_install";
             cursor?: number;
             limit?: number;
         };
@@ -2357,7 +2359,8 @@ export interface components {
             failure_code?: string;
             /** @enum {string} */
             failure_stage?: "download" | "verify" | "install" | "enable";
-        };
+            retryable?: boolean;
+        } & unknown;
         PublicError: {
             code: string;
             message: string;

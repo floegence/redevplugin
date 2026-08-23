@@ -57,6 +57,7 @@ type ReleaseInstallProgressEvent struct {
 	Total        *int64                    `json:"total,omitempty"`
 	FailureCode  string                    `json:"failure_code,omitempty"`
 	FailureStage ReleaseInstallStage       `json:"failure_stage,omitempty"`
+	Retryable    *bool                     `json:"retryable,omitempty"`
 }
 
 type ReleaseInstallPhaseDiagnostic struct {

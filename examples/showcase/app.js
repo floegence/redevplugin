@@ -4533,6 +4533,9 @@
     listExecutions(options = {}, requestOptions = {}) {
       return this.#requestQuery("/_redevplugin/api/plugins/executions/query", options, requestOptions);
     }
+    listReleaseInstallExecutions(options = {}, requestOptions = {}) {
+      return this.listExecutions({ ...options, operation_scope: "release_install" }, requestOptions);
+    }
     startReleaseInstallExecution(request2, options = {}) {
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/executions/release-installs", request2, options);
     }

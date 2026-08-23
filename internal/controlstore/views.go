@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/security"
@@ -42,9 +43,15 @@ type ExecutionOwner struct {
 }
 
 type ExecutionReconcileResult struct {
-	Orphaned int
-	Canceled int
-	Records  []execution.Execution
+	Orphaned    int
+	Canceled    int
+	Interrupted int
+	Records     []execution.Execution
+}
+
+type ReleaseInstallRecoveryCandidate struct {
+	OwnerEnvHash string
+	Operation    registry.ReleaseInstallOperation
 }
 
 type ExecutionPruneRequest struct {
@@ -773,43 +780,22 @@ func (v ExecutionView) GetReleaseInstall(ctx context.Context, ownerEnvHash, exec
 	return scanReleaseInstallOperation(v.store.db.QueryRowContext(ctx, releaseInstallSelect+` WHERE owner_env_hash=? AND execution_id=? AND kind=?`, ownerEnvHash, executionID, execution.KindOperation))
 }
 
-func (v ExecutionView) GetReleaseInstallByRequest(ctx context.Context, ownerEnvHash, requestID string) (registry.ReleaseInstallOperation, error) {
-	rows, err := v.store.db.QueryContext(ctx, releaseInstallSelect+` WHERE owner_env_hash=? AND kind=? ORDER BY created_at,execution_id`, ownerEnvHash, execution.KindOperation)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		operation, err := scanReleaseInstallOperation(rows)
-		if errors.Is(err, registry.ErrReleaseInstallOperationNotFound) {
-			continue
-		}
-		if err != nil {
-			return registry.ReleaseInstallOperation{}, err
-		}
-		if operation.RequestID == requestID {
-			return operation, nil
-		}
-	}
-	return registry.ReleaseInstallOperation{}, registry.ErrReleaseInstallOperationNotFound
-}
-
-func (v ExecutionView) ListReleaseInstalls(ctx context.Context, ownerEnvHash string) ([]registry.ReleaseInstallOperation, error) {
-	rows, err := v.store.db.QueryContext(ctx, releaseInstallSelect+` WHERE owner_env_hash=? AND kind=? ORDER BY created_at,execution_id`, ownerEnvHash, execution.KindOperation)
+func (v ExecutionView) ListReleaseInstallRecoveryCandidates(ctx context.Context) ([]ReleaseInstallRecoveryCandidate, error) {
+	rows, err := v.store.db.QueryContext(ctx, releaseInstallRecoverySelect+` WHERE kind=? AND status=? ORDER BY created_at,execution_id`, execution.KindOperation, execution.StatusRunning)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var result []registry.ReleaseInstallOperation
+	var result []ReleaseInstallRecoveryCandidate
 	for rows.Next() {
-		operation, err := scanReleaseInstallOperation(rows)
+		candidate, err := scanReleaseInstallRecoveryCandidate(rows)
 		if errors.Is(err, registry.ErrReleaseInstallOperationNotFound) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, operation)
+		result = append(result, candidate)
 	}
 	return result, rows.Err()
 }
@@ -836,30 +822,7 @@ func (v ExecutionView) UpdateReleaseInstall(ctx context.Context, ownerEnvHash st
 	if status == execution.StatusFailed {
 		failureCode = updated.Failure.Code
 	}
-	installProgress := registry.ReleaseInstallProgressEvent{
-		TaskID: updated.Execution.ID, RequestID: updated.RequestID,
-		Stage: registry.ReleaseInstallStageForPhase(updated.Phase), Status: registry.ReleaseInstallStageRunning,
-	}
-	if updated.Progress.Kind != registry.ReleaseInstallProgressIndeterminate {
-		completed, total := updated.Progress.Completed, updated.Progress.Total
-		installProgress.Completed, installProgress.Total = &completed, &total
-	}
-	eventPayload := map[string]any{
-		"phase": updated.Phase, "progress": updated.Progress, "install_progress": installProgress,
-	}
-	if status != execution.StatusRunning {
-		eventPayload["status"] = status
-	}
-	if status == execution.StatusFailed {
-		eventPayload["failure_phase"] = updated.Phase
-		installProgress.Status = registry.ReleaseInstallStageFailed
-		installProgress.FailureCode = updated.Failure.Code
-		installProgress.FailureStage = installProgress.Stage
-		eventPayload["install_progress"] = installProgress
-	} else if status == execution.StatusCompleted {
-		installProgress.Status = registry.ReleaseInstallStageCompleted
-		eventPayload["install_progress"] = installProgress
-	}
+	eventPayload := releaseInstallEventPayload(updated, status)
 	payload, err := json.Marshal(eventPayload)
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, err
@@ -892,14 +855,63 @@ func (v ExecutionView) UpdateReleaseInstall(ctx context.Context, ownerEnvHash st
 	return scanReleaseInstallOperation(v.store.db.QueryRowContext(ctx, releaseInstallSelect+` WHERE owner_env_hash=? AND execution_id=? AND kind=?`, ownerEnvHash, req.ExecutionID, execution.KindOperation))
 }
 
+func releaseInstallEventPayload(updated registry.ReleaseInstallOperation, status string) map[string]any {
+	installProgress := registry.ReleaseInstallProgressEvent{
+		TaskID: updated.Execution.ID, RequestID: updated.RequestID,
+		Stage: registry.ReleaseInstallStageForPhase(updated.Phase), Status: registry.ReleaseInstallStageRunning,
+	}
+	if updated.Progress.Kind != registry.ReleaseInstallProgressIndeterminate {
+		completed, total := updated.Progress.Completed, updated.Progress.Total
+		installProgress.Completed, installProgress.Total = &completed, &total
+	}
+	payload := map[string]any{
+		"phase": updated.Phase, "progress": updated.Progress, "install_progress": installProgress,
+	}
+	if status != execution.StatusRunning {
+		payload["status"] = status
+	}
+	if status == execution.StatusFailed {
+		payload["failure_phase"] = updated.Phase
+		installProgress.Status = registry.ReleaseInstallStageFailed
+		installProgress.FailureCode = updated.Failure.Code
+		installProgress.FailureStage = installProgress.Stage
+		retryable := updated.Failure.Retryable
+		installProgress.Retryable = &retryable
+		payload["install_progress"] = installProgress
+	} else if status == execution.StatusCompleted {
+		installProgress.Status = registry.ReleaseInstallStageCompleted
+		payload["install_progress"] = installProgress
+	}
+	return payload
+}
+
 const releaseInstallSelect = `SELECT execution_id,plugin_instance_id,kind,status,cursor,failure_code,cancelable,created_at,updated_at,cancel_requested_at,terminal_at,operation_json FROM execution`
+const releaseInstallRecoverySelect = `SELECT owner_env_hash,execution_id,plugin_instance_id,kind,status,cursor,failure_code,cancelable,created_at,updated_at,cancel_requested_at,terminal_at,operation_json FROM execution`
 
 func scanReleaseInstallOperation(row scanner) (registry.ReleaseInstallOperation, error) {
+	return scanReleaseInstallOperationValues(row.Scan)
+}
+
+func scanReleaseInstallRecoveryCandidate(row scanner) (ReleaseInstallRecoveryCandidate, error) {
+	var ownerEnvHash string
+	operation, err := scanReleaseInstallOperationValues(func(dest ...any) error {
+		return row.Scan(append([]any{&ownerEnvHash}, dest...)...)
+	})
+	if err != nil {
+		return ReleaseInstallRecoveryCandidate{}, err
+	}
+	if strings.TrimSpace(ownerEnvHash) == "" {
+		return ReleaseInstallRecoveryCandidate{}, fmt.Errorf("%w: release install owner environment is empty", ErrIncompatible)
+	}
+	return ReleaseInstallRecoveryCandidate{OwnerEnvHash: ownerEnvHash, Operation: operation}, nil
+}
+
+func scanReleaseInstallOperationValues(scan func(dest ...any) error) (registry.ReleaseInstallOperation, error) {
 	var control execution.Execution
 	var raw string
 	var createdAt, updatedAt int64
 	var cancelRequestedAt, terminalAt sql.NullInt64
-	if err := row.Scan(&control.ID, &control.PluginInstanceID, &control.Kind, &control.Status, &control.Cursor, &control.FailureCode, &control.Cancelable, &createdAt, &updatedAt, &cancelRequestedAt, &terminalAt, &raw); err != nil {
+	if err := scan(&control.ID, &control.PluginInstanceID, &control.Kind, &control.Status, &control.Cursor, &control.FailureCode, &control.Cancelable, &createdAt, &updatedAt, &cancelRequestedAt, &terminalAt, &raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return registry.ReleaseInstallOperation{}, registry.ErrReleaseInstallOperationNotFound
 		}
@@ -981,6 +993,10 @@ func (v ExecutionView) GetOwned(ctx context.Context, id string, owner ExecutionO
 }
 
 func (v ExecutionView) ListOwned(ctx context.Context, pluginInstanceID string, owner ExecutionOwner, cursor uint64, limit int) ([]execution.Execution, uint64, error) {
+	return v.ListOwnedWithOperationScope(ctx, pluginInstanceID, "", owner, cursor, limit)
+}
+
+func (v ExecutionView) ListOwnedWithOperationScope(ctx context.Context, pluginInstanceID, operationScope string, owner ExecutionOwner, cursor uint64, limit int) ([]execution.Execution, uint64, error) {
 	if err := v.ready(); err != nil {
 		return nil, 0, err
 	}
@@ -995,6 +1011,13 @@ func (v ExecutionView) ListOwned(ctx context.Context, pluginInstanceID string, o
 	if pluginInstanceID != "" {
 		query += ` AND plugin_instance_id=?`
 		args = append(args, pluginInstanceID)
+	}
+	if operationScope != "" {
+		if operationScope != "release_install" {
+			return nil, 0, ErrStateConflict
+		}
+		query += ` AND json_extract(operation_json,'$.kind')=?`
+		args = append(args, releaseInstallPayloadKind)
 	}
 	if cursor != 0 {
 		query += ` AND rowid>?`
@@ -1171,6 +1194,44 @@ func (v ExecutionView) ReconcileOrphans(ctx context.Context, now time.Time) (Exe
 	}
 	result := ExecutionReconcileResult{Records: make([]execution.Execution, 0, len(pending))}
 	for _, value := range pending {
+		if value.Status == execution.StatusRunning {
+			var raw string
+			if err := tx.QueryRowContext(ctx, `SELECT operation_json FROM execution WHERE execution_id=?`, value.ID).Scan(&raw); err != nil {
+				return ExecutionReconcileResult{}, err
+			}
+			if operation, ok := decodeReleaseInstallOperation(raw); ok {
+				operation.Execution = value
+				updated, err := registry.ApplyReleaseInstallOperationUpdate(operation, registry.UpdateReleaseInstallOperationRequest{
+					ExecutionID: value.ID, ExpectedCursor: value.Cursor, Status: execution.StatusFailed,
+					Phase: operation.Phase, Progress: registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate},
+					Attempt: max(operation.Attempt, 1), MutationOutcome: mutation.OutcomeNotCommitted,
+					Failure: &registry.ReleaseInstallFailure{Code: string(security.ErrInstallInterrupted), Retryable: true}, Now: now,
+				})
+				if err != nil {
+					return ExecutionReconcileResult{}, err
+				}
+				updatedRaw, err := encodeReleaseInstallOperation(updated)
+				if err != nil {
+					return ExecutionReconcileResult{}, err
+				}
+				event, err := execution.NewEvent(value, value.Cursor+1, execution.EventTerminal, releaseInstallEventPayload(updated, execution.StatusFailed))
+				if err != nil {
+					return ExecutionReconcileResult{}, err
+				}
+				if err := value.Finish(execution.StatusFailed, string(security.ErrInstallInterrupted), event, now); err != nil {
+					return ExecutionReconcileResult{}, err
+				}
+				if err := insertEvent(ctx, tx, event); err != nil {
+					return ExecutionReconcileResult{}, err
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE execution SET status=?,cursor=?,failure_code=?,updated_at=?,terminal_at=?,operation_json=? WHERE execution_id=?`, value.Status, value.Cursor, value.FailureCode, value.UpdatedAt.UnixNano(), value.TerminalAt.UnixNano(), string(updatedRaw), value.ID); err != nil {
+					return ExecutionReconcileResult{}, err
+				}
+				result.Interrupted++
+				result.Records = append(result.Records, value)
+				continue
+			}
+		}
 		status := execution.StatusOrphaned
 		failureCode := "platform_failed"
 		if value.Status == execution.StatusCancelRequested {
