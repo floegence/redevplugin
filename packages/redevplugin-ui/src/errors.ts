@@ -39,13 +39,20 @@ export class PluginPlatformRequestError extends Error {
 
 export class PluginTransportError extends Error {
   readonly mutationOutcome?: PluginMutationOutcome;
+  readonly httpStatus?: number;
   override readonly cause: unknown;
 
-  constructor(message: string, cause: unknown, mutationOutcome?: PluginMutationOutcome) {
+  constructor(
+    message: string,
+    cause: unknown,
+    mutationOutcome?: PluginMutationOutcome,
+    httpStatus?: number,
+  ) {
     super(message, { cause });
     this.name = "PluginTransportError";
     this.cause = cause;
     this.mutationOutcome = mutationOutcome;
+    this.httpStatus = httpStatus;
   }
 }
 

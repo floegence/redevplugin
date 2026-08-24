@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.15
+
+- Classify non-JSON HTTP failures as transport rejections with their HTTP status instead of reporting invalid JSON.
+- Preserve invalid JSON diagnostics for successful responses and keep valid platform error envelopes mapped to stable error codes.
+
 ## v3.0.14
 
 - Publish explicit release-install failure retryability with each failed progress event.

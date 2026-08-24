@@ -120,9 +120,12 @@ async function readResponse<T>(response: FetchResponseLike, mutation: boolean): 
     raw = await response.json();
   } catch (cause) {
     throw new PluginTransportError(
-      `Plugin platform endpoint returned invalid JSON with HTTP ${response.status}`,
+      response.ok && response.status >= 200 && response.status < 300
+        ? `Plugin platform endpoint returned invalid JSON with HTTP ${response.status}`
+        : `Plugin platform endpoint rejected the request with HTTP ${response.status}`,
       cause,
       mutation ? "unknown" : undefined,
+      response.status,
     );
   }
   if (!isPlatformResponse<T>(raw, mutation)) {
@@ -130,6 +133,7 @@ async function readResponse<T>(response: FetchResponseLike, mutation: boolean): 
       `Plugin platform endpoint returned an invalid envelope with HTTP ${response.status}`,
       new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "Invalid platform response envelope"),
       mutation ? "unknown" : undefined,
+      response.status,
     );
   }
   if (raw.ok) {
@@ -138,6 +142,7 @@ async function readResponse<T>(response: FetchResponseLike, mutation: boolean): 
         `Plugin platform endpoint returned a success envelope with HTTP ${response.status}`,
         new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "HTTP status does not match the platform response envelope"),
         mutation ? "unknown" : undefined,
+        response.status,
       );
     }
     return raw.data;
@@ -147,6 +152,7 @@ async function readResponse<T>(response: FetchResponseLike, mutation: boolean): 
       `Plugin platform endpoint returned an error envelope with HTTP ${response.status}`,
       new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "HTTP status does not match the platform response envelope"),
       mutation ? "unknown" : undefined,
+      response.status,
     );
   }
   {
