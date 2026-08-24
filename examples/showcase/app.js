@@ -162,12 +162,14 @@
   };
   var PluginTransportError = class extends Error {
     mutationOutcome;
+    httpStatus;
     cause;
-    constructor(message, cause, mutationOutcome) {
+    constructor(message, cause, mutationOutcome, httpStatus) {
       super(message, { cause });
       this.name = "PluginTransportError";
       this.cause = cause;
       this.mutationOutcome = mutationOutcome;
+      this.httpStatus = httpStatus;
     }
   };
   var PluginBridgeError = class extends Error {
@@ -263,16 +265,18 @@
       raw = await response.json();
     } catch (cause) {
       throw new PluginTransportError(
-        `Plugin platform endpoint returned invalid JSON with HTTP ${response.status}`,
+        response.ok && response.status >= 200 && response.status < 300 ? `Plugin platform endpoint returned invalid JSON with HTTP ${response.status}` : `Plugin platform endpoint rejected the request with HTTP ${response.status}`,
         cause,
-        mutation ? "unknown" : void 0
+        mutation ? "unknown" : void 0,
+        response.status
       );
     }
     if (!isPlatformResponse(raw, mutation)) {
       throw new PluginTransportError(
         `Plugin platform endpoint returned an invalid envelope with HTTP ${response.status}`,
         new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "Invalid platform response envelope"),
-        mutation ? "unknown" : void 0
+        mutation ? "unknown" : void 0,
+        response.status
       );
     }
     if (raw.ok) {
@@ -280,7 +284,8 @@
         throw new PluginTransportError(
           `Plugin platform endpoint returned a success envelope with HTTP ${response.status}`,
           new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "HTTP status does not match the platform response envelope"),
-          mutation ? "unknown" : void 0
+          mutation ? "unknown" : void 0,
+          response.status
         );
       }
       return raw.data;
@@ -289,7 +294,8 @@
       throw new PluginTransportError(
         `Plugin platform endpoint returned an error envelope with HTTP ${response.status}`,
         new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "HTTP status does not match the platform response envelope"),
-        mutation ? "unknown" : void 0
+        mutation ? "unknown" : void 0,
+        response.status
       );
     }
     {
