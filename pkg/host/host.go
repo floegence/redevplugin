@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
@@ -4890,6 +4891,9 @@ func (h *Host) refreshEnabledPlugins(ctx context.Context) ([]refreshEnabledPlugi
 	})
 	results := make([]refreshEnabledPluginResult, len(enabled))
 	auditErrors := make([]error, len(enabled))
+	var canceled atomic.Bool
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	jobs := make(chan int)
 	workerCount := min(refreshEnabledConcurrency, len(enabled))
 	var workers sync.WaitGroup
@@ -4899,10 +4903,15 @@ func (h *Host) refreshEnabledPlugins(ctx context.Context) ([]refreshEnabledPlugi
 			defer workers.Done()
 			for index := range jobs {
 				record := enabled[index]
-				pluginCtx, cancel := context.WithTimeout(ctx, h.refreshPluginTimeout)
+				pluginCtx, cancel := context.WithTimeout(runCtx, h.refreshPluginTimeout)
 				err := h.recoverEnabledRuntimeState(pluginCtx, record)
 				cancel()
 				if err != nil {
+					if errors.Is(err, context.Canceled) {
+						canceled.Store(true)
+						cancelRun()
+						continue
+					}
 					h.reportLifecycleDiagnostic(
 						ctx,
 						record,
@@ -4926,6 +4935,12 @@ func (h *Host) refreshEnabledPlugins(ctx context.Context) ([]refreshEnabledPlugi
 	}
 	close(jobs)
 	workers.Wait()
+	if canceled.Load() {
+		return nil, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for index, err := range auditErrors {
 		if err != nil {
 			return results[:index+1], mutation.Unknown(err)

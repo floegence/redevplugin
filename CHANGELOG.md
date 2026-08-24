@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.16
+
+- Treat canceled enabled-plugin recovery as request control flow instead of a cached plugin failure.
+- Do not publish or retain a recovery snapshot when the recovery request is canceled.
+
 ## v3.0.15
 
 - Classify non-JSON HTTP failures as transport rejections with their HTTP status instead of reporting invalid JSON.

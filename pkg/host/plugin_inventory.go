@@ -246,6 +246,9 @@ func (h *Host) recoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	if err != nil {
 		return RecoverySnapshot{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return RecoverySnapshot{}, err
+	}
 	snapshot := RecoverySnapshot{Revision: h.recoveryRevision, Complete: true, Results: make([]PluginRecoveryResult, len(results))}
 	for index, result := range results {
 		mapped := PluginRecoveryResult{PluginInstanceID: result.PluginInstanceID}
@@ -322,6 +325,9 @@ func (h *Host) RetryPluginRecovery(ctx context.Context, pluginInstanceID string)
 	}
 	result := PluginRecoveryResult{PluginInstanceID: pluginInstanceID, Status: PluginRecoveryReady}
 	if err := h.refreshEnabledRuntimeState(ctx, record); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return PluginRecoveryResult{}, err
+		}
 		reason, action, _ := classifyRefreshFailure(err)
 		result.Status = PluginRecoveryFailed
 		result.Reason = string(reason)

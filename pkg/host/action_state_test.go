@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +37,22 @@ type blockingStartupStartManager struct {
 	startCanceled chan struct{}
 	published     <-chan SurfaceSnapshot
 	once          sync.Once
+}
+
+type cancelingRecoveryRuntimeManager struct {
+	*recordingRuntimeManager
+	blockRecovery atomic.Bool
+	started       chan struct{}
+	startedOnce   sync.Once
+}
+
+func (manager *cancelingRecoveryRuntimeManager) BindPlugin(ctx context.Context, pluginInstanceID string) (runtimeclient.RuntimeBinding, error) {
+	if manager.blockRecovery.Load() {
+		manager.startedOnce.Do(func() { close(manager.started) })
+		<-ctx.Done()
+		return runtimeclient.RuntimeBinding{}, ctx.Err()
+	}
+	return manager.recordingRuntimeManager.BindPlugin(ctx, pluginInstanceID)
 }
 
 func (manager *blockingStartupStartManager) Start(ctx context.Context, target runtimetarget.Target) (runtimeclient.ManagerHealth, error) {
@@ -317,6 +334,54 @@ func TestRecoverEnabledIsIdempotentAndDoesNotRepublishStartupInventory(t *testin
 	}
 	if len(surfaces.snapshots) != 0 {
 		t.Fatalf("idempotent recovery republished surfaces: %d", len(surfaces.snapshots))
+	}
+}
+
+func TestRecoverEnabledDoesNotCacheCanceledAttempt(t *testing.T) {
+	runtime := &cancelingRecoveryRuntimeManager{
+		recordingRuntimeManager: newRecordingRuntimeManager(),
+		started:                 make(chan struct{}),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: runtime,
+	})
+	defer h.Close()
+	installed := installAndEnablePlugin(t, h, buildWorkerFixturePackage(t))
+	runtime.blockRecovery.Store(true)
+
+	ctx, cancel := context.WithCancel(hostTestContext())
+	resultCh := make(chan struct {
+		snapshot RecoverySnapshot
+		err      error
+	}, 1)
+	go func() {
+		snapshot, err := h.RecoverEnabled(ctx)
+		resultCh <- struct {
+			snapshot RecoverySnapshot
+			err      error
+		}{snapshot: snapshot, err: err}
+	}()
+	select {
+	case <-runtime.started:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("canceled recovery did not start")
+	}
+	result := <-resultCh
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("canceled recovery error = %v, want context.Canceled", result.err)
+	}
+	if result.snapshot.Results != nil {
+		t.Fatalf("canceled recovery returned a snapshot: %#v", result.snapshot)
+	}
+
+	runtime.blockRecovery.Store(false)
+	recovered, err := h.RecoverEnabled(hostTestContext())
+	if err != nil {
+		t.Fatalf("retry after canceled recovery error = %v", err)
+	}
+	if !recovered.Complete || len(recovered.Results) != 1 || recovered.Results[0].PluginInstanceID != installed.PluginInstanceID || recovered.Results[0].Status != PluginRecoveryReady {
+		t.Fatalf("retry after canceled recovery = %#v", recovered)
 	}
 }
 
