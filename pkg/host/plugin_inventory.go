@@ -171,26 +171,12 @@ func (h *Host) pluginAuthorizationBlockedReason(ctx context.Context, record regi
 	}
 }
 
-type pluginMethodRequirement struct {
-	method      string
-	permissions []string
-}
-
 func (h *Host) pluginAuthorizationError(ctx context.Context, record registry.PluginRecord) error {
-	methods := make([]pluginMethodRequirement, 0, len(record.Manifest.Methods))
-	requiredPermissions := make([]string, 0)
-	for _, declared := range record.Manifest.Methods {
-		required, err := h.declaredRequiredPermissions(record, declared)
-		if err != nil {
-			return err
-		}
-		if len(required) == 0 {
-			continue
-		}
-		methods = append(methods, pluginMethodRequirement{method: declared.Method, permissions: required})
-		requiredPermissions = append(requiredPermissions, required...)
+	requirements, err := h.resolvePluginPermissionRequirements(record)
+	if err != nil {
+		return err
 	}
-	if len(methods) == 0 {
+	if len(requirements.methods) == 0 {
 		return nil
 	}
 	snapshot, err := h.getAuthorizationSnapshot(ctx, record.PluginInstanceID)
@@ -199,7 +185,7 @@ func (h *Host) pluginAuthorizationError(ctx context.Context, record registry.Plu
 	}
 	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
 		PluginInstanceID: record.PluginInstanceID,
-		PermissionIDs:    normalizeStringSet(requiredPermissions),
+		PermissionIDs:    requirements.requiredPermissions,
 	})
 	if err != nil {
 		return err
@@ -207,7 +193,7 @@ func (h *Host) pluginAuthorizationError(ctx context.Context, record registry.Plu
 	if !granted {
 		return fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
 	}
-	for _, method := range methods {
+	for _, method := range requirements.methods {
 		evaluation, err := security.Evaluate(snapshot.Policy, security.EvaluatePolicyRequest{
 			PluginInstanceID:    record.PluginInstanceID,
 			Method:              method.method,

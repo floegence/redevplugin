@@ -5078,57 +5078,13 @@ func (h *Host) GetPermissionRequirements(ctx context.Context, req GetPermissionR
 	if err != nil {
 		return PermissionRequirementsResult{}, err
 	}
-	contractsByID := map[string]*PermissionRequirementContract{}
-	allPermissions := []string{}
-	for _, declared := range record.Manifest.Methods {
-		if declared.Route.Kind != manifest.MethodRouteCapability {
-			required, err := h.requiredPermissionsForMethod(record, declared)
-			if err != nil {
-				return PermissionRequirementsResult{}, err
-			}
-			allPermissions = append(allPermissions, required...)
-			continue
-		}
-		binding, ok := manifestBinding(record.Manifest, declared.Route.BindingID)
-		if !ok {
-			return PermissionRequirementsResult{}, fmt.Errorf("capability binding %q is not declared", declared.Route.BindingID)
-		}
-		verified, err := h.resolvePinnedCapabilityContract(record.CapabilityContracts, binding)
-		if err != nil {
-			return PermissionRequirementsResult{}, err
-		}
-		effectiveMethod, ok := contractMethod(verified.Contract, declared.Route.TargetMethod)
-		if !ok {
-			return PermissionRequirementsResult{}, fmt.Errorf("capability target method %q is not published", declared.Route.TargetMethod)
-		}
-		required := normalizeStringSet(effectiveMethod.RequiredPermissions)
-		allPermissions = append(allPermissions, required...)
-		key := verified.Pin.ContractID + "\x00" + verified.Pin.ContractVersion + "\x00" + verified.Pin.ArtifactSHA256
-		projection := contractsByID[key]
-		if projection == nil {
-			projection = &PermissionRequirementContract{
-				ContractID: verified.Contract.ContractID, ContractVersion: verified.Contract.ContractVersion,
-				ContractSHA256: verified.Pin.ArtifactSHA256, CapabilityID: verified.Contract.CapabilityID,
-				CapabilityVersion: verified.Contract.CapabilityVersion,
-			}
-			contractsByID[key] = projection
-		}
-		projection.Methods = append(projection.Methods, PermissionRequirementMethod{Method: declared.Method, RequiredPermissions: required})
+	requirements, err := h.resolvePluginPermissionRequirements(record)
+	if err != nil {
+		return PermissionRequirementsResult{}, err
 	}
-	contracts := make([]PermissionRequirementContract, 0, len(contractsByID))
-	for _, contract := range contractsByID {
-		sort.Slice(contract.Methods, func(i, j int) bool { return contract.Methods[i].Method < contract.Methods[j].Method })
-		contracts = append(contracts, *contract)
-	}
-	sort.Slice(contracts, func(i, j int) bool {
-		if contracts[i].ContractID == contracts[j].ContractID {
-			return contracts[i].ContractVersion < contracts[j].ContractVersion
-		}
-		return contracts[i].ContractID < contracts[j].ContractID
-	})
 	return PermissionRequirementsResult{
 		PluginInstanceID: record.PluginInstanceID, PluginVersion: record.Version, ActiveFingerprint: record.ActiveFingerprint,
-		ManagementRevision: record.ManagementRevision, Contracts: contracts, RequiredPermissions: normalizeStringSet(allPermissions),
+		ManagementRevision: record.ManagementRevision, Contracts: requirements.contracts, RequiredPermissions: requirements.requiredPermissions,
 	}, nil
 }
 
@@ -7274,7 +7230,7 @@ func manifestIntent(m manifest.Manifest, intentID string) (manifest.IntentSpec, 
 func (h *Host) requiredPermissionsForMethod(record registry.PluginRecord, method manifest.MethodSpec) ([]string, error) {
 	switch method.Route.Kind {
 	case manifest.MethodRouteWorker:
-		return h.declaredRequiredPermissions(record, method)
+		return manifestPermissionIDs(record.Manifest), nil
 	case manifest.MethodRouteCapability:
 		resolved, err := h.resolveCapabilityContractMethod(record, method)
 		if err != nil {
@@ -7305,33 +7261,6 @@ func (h *Host) requireCurrentPermissionGrants(ctx context.Context, pluginInstanc
 		return fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-func (h *Host) declaredRequiredPermissions(record registry.PluginRecord, method manifest.MethodSpec) ([]string, error) {
-	switch method.Route.Kind {
-	case manifest.MethodRouteWorker:
-		permissions := make([]string, 0, len(record.Manifest.Permissions))
-		for _, permissionID := range record.Manifest.PermissionIDs() {
-			permissions = append(permissions, string(permissionID))
-		}
-		return normalizeStringSet(permissions), nil
-	case manifest.MethodRouteCapability:
-		binding, ok := manifestBinding(record.Manifest, method.Route.BindingID)
-		if !ok {
-			return nil, fmt.Errorf("capability binding %q is not declared", method.Route.BindingID)
-		}
-		verified, err := h.resolvePinnedCapabilityContract(record.CapabilityContracts, binding)
-		if err != nil {
-			return nil, err
-		}
-		target, ok := contractMethod(verified.Contract, method.Route.TargetMethod)
-		if !ok {
-			return nil, fmt.Errorf("capability target method %q is not published", method.Route.TargetMethod)
-		}
-		return normalizeStringSet(target.RequiredPermissions), nil
-	default:
-		return nil, nil
-	}
 }
 
 func authorizationDecisionError(decision registry.AuthorizationDecision, method string) error {

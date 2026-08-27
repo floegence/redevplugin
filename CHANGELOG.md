@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.17
+
+- Resolve each pinned capability contract once while projecting plugin action state and permission requirements.
+- Keep exact contract validation while removing method-count-dependent inventory latency.
+
 ## v3.0.16
 
 - Treat canceled enabled-plugin recovery as request control flow instead of a cached plugin failure.
