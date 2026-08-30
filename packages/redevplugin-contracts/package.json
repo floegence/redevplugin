@@ -1,6 +1,6 @@
 {
   "name": "@floegence/redevplugin-contracts",
-  "version": "3.0.17",
+  "version": "3.0.18",
   "description": "Canonical ReDevPlugin release-signing and presentation-evidence APIs",
   "license": "MIT",
   "type": "module",

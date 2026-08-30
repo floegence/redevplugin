@@ -92,8 +92,14 @@ test("UI tree validation applies the opaque renderer tag and attribute policy", 
     /attribute title is not allowed/,
   );
   validatePluginUITree(element("root", "main", [
-    element("search", "input", [], { type: "search", "aria-label": "Search", "data-redevplugin-action": "search" }),
+    element("search", "input", [], { type: "search", maxlength: 120, "aria-label": "Search", "data-redevplugin-action": "search" }),
   ]));
+  for (const maxlength of [-1, 1.5, Number.NaN, "-1", "1.5", "012", " 12", true]) {
+    assert.throws(
+      () => validatePluginUITree(element("root", "main", [element("search", "input", [], { maxlength })])),
+      /attribute maxlength is not allowed/,
+    );
+  }
 });
 
 test("declarative button values do not use editable-control revisions", () => {

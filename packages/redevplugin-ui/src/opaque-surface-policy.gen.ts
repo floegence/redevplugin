@@ -100,6 +100,7 @@ export const opaqueSurfaceTagAttributes = {
     "min",
     "max",
     "step",
+    "maxlength",
     "autocomplete"
   ],
   "textarea": [

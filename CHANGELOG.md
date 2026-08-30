@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.18
+
+- Allow canonical non-negative `maxlength` values on sandboxed input elements.
+- Preserve the first renderer failure through opening revocation and local teardown.
+- Report one authoritative opening error instead of replacing it with a disposal error.
+
 ## v3.0.17
 
 - Resolve each pinned capability contract once while projecting plugin action state and permission requirements.

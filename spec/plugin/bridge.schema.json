@@ -40,7 +40,7 @@
     ],
     "tag_attributes": {
       "button": ["type", "name", "value", "disabled", "aria-pressed", "aria-expanded"],
-      "input": ["type", "name", "value", "checked", "disabled", "readonly", "required", "placeholder", "min", "max", "step", "autocomplete"],
+      "input": ["type", "name", "value", "checked", "disabled", "readonly", "required", "placeholder", "min", "max", "step", "maxlength", "autocomplete"],
       "textarea": ["name", "value", "disabled", "readonly", "required", "placeholder", "rows", "cols", "maxlength"],
       "select": ["name", "disabled", "required", "multiple", "size"],
       "option": ["value", "selected", "disabled", "label"],

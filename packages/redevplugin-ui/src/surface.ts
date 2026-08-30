@@ -1491,6 +1491,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     if (lower === "data-redevplugin-asset-binding" && !validOpaqueHandle(String(value), "asset")) return false;
     if (lower === "data-redevplugin-asset-attr" && !["src", "poster"].includes(String(value))) return false;
     if (lower === "data-redevplugin-canvas" && (tag !== "canvas" || !validResourceIdentifier(String(value)))) return false;
+    if (lower === "maxlength" && (!/^(0|[1-9][0-9]*)$/.test(String(value)) || !Number.isSafeInteger(Number(value)))) return false;
     if (tag === "canvas" && (lower === "width" || lower === "height") && (!/^[1-9][0-9]{0,4}$/.test(String(value)) || Number(value) > maxCanvasDimension)) return false;
     if (tag === "input" && lower === "type" && !safeInputTypes.has(String(value).trim().toLowerCase() || "text")) return false;
     return String(value).length <= maxAttributeValueLength;
@@ -3093,6 +3094,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #transportIdle?: Deferred<void>;
   #port?: MessagePortLike;
   #openSignals?: OpenSignals;
+  #openingFailure?: PluginBridgeError;
   #quiesce?: SurfaceQuiesce;
   #initialFrameLoad?: Deferred<void>;
   #frameLoaded = false;
@@ -3159,6 +3161,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Plugin surface host is already open");
     }
     this.#opened = true;
+    this.#openingFailure = undefined;
     const startedAt = Date.now();
     const progressTimer = setTimeout(() => {
       if (!this.#ready && !this.#disposed) {
@@ -3194,7 +3197,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         "Plugin surface opening timed out",
       );
     } catch (error) {
-      const bridgeError = toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
+      const bridgeError = this.#openingFailure ?? toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
       if (bridgeError.errorCode === "PLUGIN_BRIDGE_TIMEOUT") this.#reloadLimiter.recordCrash();
       this.#reportError(bridgeError);
       const revoke = this.#revokeSurface(false);
@@ -3204,6 +3207,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     } finally {
       clearTimeout(progressTimer);
       this.#openSignals = undefined;
+      this.#openingFailure = undefined;
       this.#initialFrameLoad = undefined;
     }
   }
@@ -3916,12 +3920,16 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
 
   async #failSurface(error: PluginBridgeError): Promise<void> {
     if (this.#disposed) return;
+    const opening = !this.#ready && this.#openSignals !== undefined;
     this.#ready = false;
     this.#bridgeReady = false;
     this.#rendererInitialized = false;
-    this.#openSignals?.firstPaint.reject(error);
-    this.#openSignals?.workerReady.reject(error);
-    this.#reportError(error);
+    const terminalError = opening ? (this.#openingFailure ??= error) : error;
+    this.#openSignals?.portAcknowledged.reject(terminalError);
+    this.#openSignals?.firstPaint.reject(terminalError);
+    this.#openSignals?.workerReady.reject(terminalError);
+    this.#openSignals?.firstCommit.reject(terminalError);
+    if (!opening) this.#reportError(terminalError);
     const revoke = this.#revokeSurface(true);
     this.#disposeLocal();
     await revoke;

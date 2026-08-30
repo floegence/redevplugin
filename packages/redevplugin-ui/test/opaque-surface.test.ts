@@ -1314,6 +1314,46 @@ test("surface host exposes no iframe before the first worker UI commit", async (
   host.dispose();
 });
 
+test("opening renderer failure remains authoritative through surface disposal", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  channel.port2.autoFirstCommit = false;
+  const errors: PluginBridgeError[] = [];
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  fetch.push(surfaceRevocation());
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap,
+    testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+    onError: (error) => errors.push(error),
+  });
+
+  const opening = host.open();
+  frame.load();
+  await waitFor(() => frame.transferred.length === 1);
+  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+  await waitFor(() => channel.port1.sent.some((message) =>
+    isMessageType(message, "redevplugin.bridge.lifecycle") &&
+    (message as { event?: { type?: string } }).event?.type === "ready"
+  ));
+  channel.port2.postMessage({ type: "redevplugin.surface.error", error: "renderer rejected weather input" });
+
+  await assert.rejects(
+    opening,
+    (error: unknown) => error instanceof PluginBridgeError &&
+      error.errorCode === "PLUGIN_BRIDGE_HANDSHAKE_FAILED" &&
+      error.message === "renderer rejected weather input",
+  );
+  await waitFor(() => fetch.calls.length === 3 && channel.port1.closed);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.errorCode, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
+  assert.equal(errors[0]?.message, "renderer rejected weather input");
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+});
+
 test("platform client fails closed when absolute surface transport base has no browser origin", () => {
   const previousLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
   Reflect.deleteProperty(globalThis, "location");

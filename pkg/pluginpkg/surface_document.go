@@ -807,6 +807,12 @@ func validateOpaqueSurfaceAttribute(tag string, key string, value string) error 
 	if tag == "input" && key == "type" && !safeOpaqueInputType(value) {
 		return fmt.Errorf("opaque surface input type %q is not supported", value)
 	}
+	if key == "maxlength" {
+		length, err := strconv.ParseUint(value, 10, 53)
+		if err != nil || strconv.FormatUint(length, 10) != value {
+			return fmt.Errorf("opaque surface element <%s> maxlength must be a non-negative safe integer", tag)
+		}
+	}
 	if tag == "canvas" && (key == "width" || key == "height") {
 		dimension, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || dimension < 1 || dimension > opaqueSurfaceMaxCanvasDimension {

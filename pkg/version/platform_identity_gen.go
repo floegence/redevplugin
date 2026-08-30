@@ -2,4 +2,4 @@
 
 package version
 
-const developmentPlatformVersion = "3.0.17"
+const developmentPlatformVersion = "3.0.18"

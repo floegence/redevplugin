@@ -188,6 +188,7 @@
             "min",
             "max",
             "step",
+            "maxlength",
             "autocomplete"
         ],
         "textarea": [
@@ -456,6 +457,8 @@
         if (normalized === "data-redevplugin-asset-attr" && serialized !== "src" && serialized !== "poster")
             return false;
         if (normalized === "data-redevplugin-canvas" && (tag !== "canvas" || !keyPattern.test(serialized)))
+            return false;
+        if (normalized === "maxlength" && (!new RegExp("^(0|[1-9][0-9]*)$").test(serialized) || !Number.isSafeInteger(Number(serialized))))
             return false;
         if (tag === "canvas" && (normalized === "width" || normalized === "height") && (!new RegExp("^[1-9][0-9]{0,4}$").test(serialized) || Number(serialized) > opaqueSurfaceRenderLimits.max_canvas_dimension))
             return false;

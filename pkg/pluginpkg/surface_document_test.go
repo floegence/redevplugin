@@ -313,6 +313,8 @@ func TestBuildOpaqueSurfaceDocumentRejectsUnsafeWorkerAndDocumentShapes(t *testi
 		{name: "inline style attribute", html: `<body><main style="display:block">ready</main><script type="text/redevplugin-worker" src="app.js"></script></body>`, script: `void 0`, want: "inline style attribute"},
 		{name: "reserved asset binding", html: `<body><img data-redevplugin-asset-binding="asset_fake" alt=""><script type="text/redevplugin-worker" src="app.js"></script></body>`, script: `void 0`, want: "reserved asset binding attribute"},
 		{name: "unsafe input type", html: `<body><input type="file"><script type="text/redevplugin-worker" src="app.js"></script></body>`, script: `void 0`, want: `input type "file" is not supported`},
+		{name: "negative input maxlength", html: `<body><input maxlength="-1"><script type="text/redevplugin-worker" src="app.js"></script></body>`, script: `void 0`, want: `maxlength must be a non-negative safe integer`},
+		{name: "non-canonical input maxlength", html: `<body><input maxlength="012"><script type="text/redevplugin-worker" src="app.js"></script></body>`, script: `void 0`, want: `maxlength must be a non-negative safe integer`},
 		{name: "sloppy worker syntax", html: `<body><script type="text/redevplugin-worker" src="app.js"></script></body>`, script: `with ({ value: 1 }) { void value }`, want: "invalid JavaScript"},
 		{name: "static import", html: `<body><script type="text/redevplugin-worker" src="app.js"></script></body>`, script: `import "./child.js"`, want: "imports and exports are not allowed"},
 		{name: "dynamic import", html: `<body><script type="text/redevplugin-worker" src="app.js"></script></body>`, script: `void import("./child.js")`, want: "imports and exports are not allowed"},
@@ -352,7 +354,7 @@ func TestBuildOpaqueSurfaceDocumentRejectsUnsafeWorkerAndDocumentShapes(t *testi
 
 func TestBuildOpaqueSurfaceDocumentCanonicalizesSafeInputTypes(t *testing.T) {
 	assets := surfaceTestAssets(t, map[string][]byte{
-		"ui/index.html": []byte(`<body><input id="trimmed" type=" TEXT "><input id="empty" type=""><script type="text/redevplugin-worker" src="app.js"></script></body>`),
+		"ui/index.html": []byte(`<body><input id="trimmed" type=" TEXT " maxlength="120"><input id="empty" type=""><script type="text/redevplugin-worker" src="app.js"></script></body>`),
 		"ui/app.js":     []byte(`void 0`),
 	})
 	document, err := BuildOpaqueSurfaceDocument("ui/index.html", func(assetPath string) (Asset, error) {
@@ -363,6 +365,9 @@ func TestBuildOpaqueSurfaceDocumentCanonicalizesSafeInputTypes(t *testing.T) {
 	}
 	if strings.Count(document.BodyHTML, `type="text"`) != 2 || strings.Contains(document.BodyHTML, " TEXT ") {
 		t.Fatalf("input types were not canonicalized: %s", document.BodyHTML)
+	}
+	if !strings.Contains(document.BodyHTML, `maxlength="120"`) {
+		t.Fatalf("input maxlength was not preserved: %s", document.BodyHTML)
 	}
 }
 

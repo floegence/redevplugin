@@ -123,6 +123,7 @@ var opaqueSurfaceTagAttributes = map[string]map[string]struct{}{
 		"min":          {},
 		"max":          {},
 		"step":         {},
+		"maxlength":    {},
 		"autocomplete": {},
 	},
 	"textarea": {
