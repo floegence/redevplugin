@@ -35,22 +35,27 @@ func TestPerformanceRuntimeWarmConcurrencyAndCache(t *testing.T) {
 		ModuleCacheSourceBytes: 128 << 20,
 	}
 	h, supervisor, assets, _ := newPerformanceRuntimeHost(t, runtimePath, limits)
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
+	installed := installAndEnablePlugin(t, h, buildWorkerFixturePackage(t))
+	if reads := assets.reads.Load(); reads != 1 {
+		t.Fatalf("artifact reads during install prewarm = %d, want 1", reads)
+	}
+	grantDeclaredPermissions(t, h, installed)
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "worker.view")
 	assets.reads.Store(0)
 
-	coldErrors, _ := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 32, performanceRuntimeAdmissionCapacity(limits))
-	if len(coldErrors) > 0 {
-		t.Fatalf("cold concurrent invocations failed: %v", coldErrors[0])
+	firstErrors, _ := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 32, performanceRuntimeAdmissionCapacity(limits))
+	if len(firstErrors) > 0 {
+		t.Fatalf("first concurrent invocations failed: %v", firstErrors[0])
 	}
-	if reads := assets.reads.Load(); reads != 1 {
-		t.Fatalf("artifact reads after concurrent first invocation = %d, want 1", reads)
+	if reads := assets.reads.Load(); reads != 0 {
+		t.Fatalf("artifact reads after first invocation batch = %d, want 0", reads)
 	}
 	heartbeat, err := supervisor.Heartbeat(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if heartbeat.ModuleCache.Compiles != 1 || heartbeat.ModuleCache.Entries != 1 {
-		t.Fatalf("module cache after cold concurrency = %#v", heartbeat.ModuleCache)
+		t.Fatalf("module cache after first concurrency = %#v", heartbeat.ModuleCache)
 	}
 
 	warmErrors, durations := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 32, performanceRuntimeAdmissionCapacity(limits))
@@ -61,8 +66,8 @@ func TestPerformanceRuntimeWarmConcurrencyAndCache(t *testing.T) {
 	if enforcePerformanceLatencyThresholds() && (p95 > 100*time.Millisecond || maximum > 500*time.Millisecond) {
 		t.Fatalf("warm invocation latency p95=%s max=%s", p95, maximum)
 	}
-	if reads := assets.reads.Load(); reads != 1 {
-		t.Fatalf("artifact reads after warm invocations = %d, want 1", reads)
+	if reads := assets.reads.Load(); reads != 0 {
+		t.Fatalf("artifact reads after warm invocations = %d, want 0", reads)
 	}
 	heartbeat, err = supervisor.Heartbeat(context.Background())
 	if err != nil {
@@ -72,11 +77,11 @@ func TestPerformanceRuntimeWarmConcurrencyAndCache(t *testing.T) {
 		t.Fatalf("module cache after warm concurrency = %#v", heartbeat.ModuleCache)
 	}
 	recordPerformanceScenario(t, performanceevidence.Scenario{
-		ID:          "runtime.cache-single-flight",
+		ID:          "runtime.prewarmed-cache",
 		Gate:        performanceevidence.Gate(),
 		SampleCount: 32,
 		Metrics: []performanceevidence.Metric{
-			{Name: "artifact_reads", Unit: "count", Observed: float64(assets.reads.Load()), Limit: 1, Comparator: "eq"},
+			{Name: "artifact_reads", Unit: "count", Observed: float64(assets.reads.Load()), Limit: 0, Comparator: "eq"},
 			{Name: "module_compiles", Unit: "count", Observed: float64(heartbeat.ModuleCache.Compiles), Limit: 1, Comparator: "eq"},
 			{Name: "cache_entries", Unit: "count", Observed: float64(heartbeat.ModuleCache.Entries), Limit: 1, Comparator: "eq"},
 		},

@@ -575,7 +575,7 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	if previous == nil {
 		postCommitErr = errors.Join(
 			postCommitErr,
-			h.prepareEnabledRuntimeState(ctx, stored),
+			h.activateEnabledRuntimeState(ctx, stored),
 			h.publishEnabledSurfaces(ctx, stored),
 		)
 	} else {

@@ -22,6 +22,26 @@ func (name RuntimeBinaryName) valid() bool { return name.value == "redevplugin-r
 
 const requiredRuntimeMemfdSeals = unix.F_SEAL_FUTURE_WRITE | unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
 
+type runtimeMemfdCreator func(string, int) (int, error)
+
+func createExecutableRuntimeMemfd(create runtimeMemfdCreator) (int, error) {
+	const baseFlags = unix.MFD_CLOEXEC | unix.MFD_ALLOW_SEALING
+	memfd, err := create("redevplugin-runtime", baseFlags|unix.MFD_EXEC)
+	if err == nil {
+		return memfd, nil
+	}
+	if errors.Is(err, unix.EINVAL) {
+		memfd, err = create("redevplugin-runtime", baseFlags)
+		if err == nil {
+			return memfd, nil
+		}
+	}
+	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) {
+		return -1, ErrRuntimeAdmissionUnsupported
+	}
+	return -1, fmt.Errorf("%w: create executable memfd", ErrRuntimeAdmissionInvalid)
+}
+
 func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptions) (*VerifiedExecutable, error) {
 	if options.RootDir == nil || options.ExecutionRoot == nil || !options.RelativeName.valid() || !options.ExpectedArtifactIdentity.valid() {
 		return nil, ErrRuntimeAdmissionInvalid
@@ -75,12 +95,9 @@ func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 		return nil, err
 	}
 
-	memfd, err := unix.MemfdCreate("redevplugin-runtime", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING|unix.MFD_EXEC)
+	memfd, err := createExecutableRuntimeMemfd(unix.MemfdCreate)
 	if err != nil {
-		if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) {
-			return nil, ErrRuntimeAdmissionUnsupported
-		}
-		return nil, fmt.Errorf("%w: create executable memfd", ErrRuntimeAdmissionInvalid)
+		return nil, err
 	}
 	sealed := os.NewFile(uintptr(memfd), "redevplugin-runtime-sealed")
 	if sealed == nil {

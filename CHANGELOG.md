@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.0.19
+
+- Admit the verified runtime through the historical executable-memfd default
+  when a Linux kernel rejects the newer explicit execution flag, while keeping
+  the existing digest, ELF, sealing, and containment checks unchanged.
+- Start, bind, and prewarm worker runtimes through one enabled-state activation
+  path for installs, updates, enablement, downgrades, and startup recovery.
+
 ## v3.0.18
 
 - Allow canonical non-negative `maxlength` values on sandboxed input elements.

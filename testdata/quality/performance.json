@@ -57,10 +57,10 @@
       ]
     },
     {
-      "id": "runtime.cache-single-flight",
+      "id": "runtime.prewarmed-cache",
       "sample_count": 32,
       "metrics": [
-        { "name": "artifact_reads", "unit": "count", "comparator": "eq", "limit": 1 },
+        { "name": "artifact_reads", "unit": "count", "comparator": "eq", "limit": 0 },
         { "name": "module_compiles", "unit": "count", "comparator": "eq", "limit": 1 },
         { "name": "cache_entries", "unit": "count", "comparator": "eq", "limit": 1 }
       ]

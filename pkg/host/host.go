@@ -3135,7 +3135,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 		h.verifiedReleases.delete(stored.PluginInstanceID)
 	}
 	if err := errors.Join(
-		h.prepareEnabledRuntimeState(ctx, stored),
+		h.activateEnabledRuntimeState(ctx, stored),
 		h.publishEnabledSurfaces(ctx, stored),
 	); err != nil {
 		committedErr := mutation.Committed(err)
@@ -3345,6 +3345,17 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 		h.verifiedReleases.delete(stored.PluginInstanceID)
 	}
 	updateCommitted = true
+	if err := h.prepareWorkerRuntimeState(ctx, stored); err != nil {
+		h.reportLifecycleDiagnostic(
+			ctx,
+			stored,
+			"plugin.runtime_state.refresh_failed",
+			"updated plugin runtime state is not ready",
+			err,
+			refreshFailureDiagnosticDetails(err),
+		)
+		return stored, mutation.Committed(err)
+	}
 	return stored, nil
 }
 
@@ -4428,15 +4439,34 @@ func (h *Host) recoverEnabledRuntimeState(ctx context.Context, record registry.P
 	if err := h.canRun(ctx, record); err != nil {
 		return err
 	}
-	if pluginHasWorkers(record.Manifest) {
-		if _, err := h.bindCompatibleWorkerRuntime(ctx, record); err != nil {
-			return err
-		}
-		if err := h.prewarmWorkerModules(ctx, record); err != nil {
-			return err
+	return h.activateEnabledRuntimeState(ctx, record)
+}
+
+func (h *Host) ensureWorkerRuntimeReady(ctx context.Context, record registry.PluginRecord) error {
+	if !pluginHasWorkers(record.Manifest) {
+		return nil
+	}
+	if h.adapters.RuntimeManager == nil {
+		return ErrPluginRuntimeNotConfigured
+	}
+	health, healthErr := h.adapters.RuntimeManager.Health(ctx)
+	if healthErr == nil && validateRuntimeManagerHealth(health, health.ArtifactIdentity) == nil {
+		return validateWorkerRuntimeArtifactIdentity(record, health.ArtifactIdentity, health.ArtifactIdentity.Target())
+	}
+	target := health.ArtifactIdentity.Target()
+	if h.runtimeModule != nil {
+		if descriptor := h.runtimeModule.ArtifactIdentity(); descriptor.PlatformVersion().String() != "" {
+			target = descriptor.Target()
 		}
 	}
-	return h.prepareEnabledRuntimeState(ctx, record)
+	if err := runtimetarget.Validate(target); err != nil {
+		if healthErr != nil {
+			return healthErr
+		}
+		return err
+	}
+	_, err := h.startRuntime(ctx, target)
+	return err
 }
 
 func (h *Host) prewarmWorkerModules(ctx context.Context, record registry.PluginRecord) error {
@@ -4458,6 +4488,28 @@ func (h *Host) prewarmWorkerModules(ctx context.Context, record registry.PluginR
 		}
 	}
 	return nil
+}
+
+func (h *Host) prepareWorkerRuntimeState(ctx context.Context, record registry.PluginRecord) error {
+	if pluginHasWorkers(record.Manifest) {
+		if err := h.ensureWorkerRuntimeReady(ctx, record); err != nil {
+			return err
+		}
+		if _, err := h.bindCompatibleWorkerRuntime(ctx, record); err != nil {
+			return err
+		}
+		if err := h.prewarmWorkerModules(ctx, record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Host) activateEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
+	if err := h.prepareWorkerRuntimeState(ctx, record); err != nil {
+		return err
+	}
+	return h.prepareEnabledRuntimeState(ctx, record)
 }
 
 func (h *Host) prepareEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
@@ -5330,6 +5382,10 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (resul
 	if _, err := h.authorizeManagement(ctx, ManagementActionStartRuntime, authorizationTarget(ResourceRuntime, "runtime")); err != nil {
 		return RuntimeHealth{}, err
 	}
+	return h.startRuntime(ctx, req.Target)
+}
+
+func (h *Host) startRuntime(ctx context.Context, target runtimetarget.Target) (result RuntimeHealth, retErr error) {
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
 		return RuntimeHealth{}, err
@@ -5341,7 +5397,6 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (resul
 	if h.adapters.RuntimeManager == nil {
 		return RuntimeHealth{}, ErrPluginRuntimeNotConfigured
 	}
-	target := req.Target
 	if err := runtimetarget.Validate(target); err != nil {
 		return RuntimeHealth{}, err
 	}

@@ -52,6 +52,69 @@ func TestUIOnlyLifecycleDoesNotRequireRuntimeManager(t *testing.T) {
 	}
 }
 
+func TestFirstWorkerInstallStartsAndPrewarmsUnreadyRuntime(t *testing.T) {
+	manager := newRecordingRuntimeManager()
+	manager.health.Ready = false
+	manager.startHealthReady = true
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: manager,
+	})
+	defer h.Close()
+
+	installed := installAndEnablePlugin(t, h, buildWorkerFixturePackage(t))
+	if manager.startCalls != 1 || manager.startedTarget != manager.descriptor.Target() {
+		t.Fatalf("runtime start calls = %d, target = %s", manager.startCalls, manager.startedTarget)
+	}
+	if manager.prewarmCalls != 1 || len(manager.prewarmRequests) != 1 {
+		t.Fatalf("runtime prewarm calls = %d, requests = %#v", manager.prewarmCalls, manager.prewarmRequests)
+	}
+	request := manager.prewarmRequests[0]
+	entry, ok := packageEntryByPath(installed.PackageEntries, request.Artifact.Artifact)
+	if !ok || request.PluginInstanceID != installed.PluginInstanceID || request.WorkerID != "echo_worker" ||
+		request.Artifact.PackageHash != installed.PackageHash || request.Artifact.ArtifactSHA256 != entry.SHA256 {
+		t.Fatalf("runtime prewarm request = %#v", request)
+	}
+
+	if _, err := h.RecoverEnabled(hostTestContext()); err != nil {
+		t.Fatalf("RecoverEnabled() error = %v", err)
+	}
+	if manager.startCalls != 1 {
+		t.Fatalf("ready runtime start calls after recovery = %d, want 1", manager.startCalls)
+	}
+}
+
+func TestWorkerInstallKeepsCommittedEnabledIntentWhenRuntimeStartFails(t *testing.T) {
+	manager := newRecordingRuntimeManager()
+	manager.health.Ready = false
+	manager.startHealthReady = true
+	manager.startErr = errors.New("runtime start failed")
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: manager,
+	})
+	defer h.Close()
+
+	packageBytes := buildWorkerFixturePackage(t)
+	pluginInstanceID := nextTestPluginInstanceID(t)
+	installed, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
+		PluginInstanceID: pluginInstanceID,
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
+	})
+	if err == nil {
+		t.Fatal("ImportLocalPackage() succeeded with an unavailable runtime")
+	}
+	if installed.PluginInstanceID != pluginInstanceID || installed.EnableState != registry.EnableEnabled {
+		t.Fatalf("committed install = %#v", installed)
+	}
+	stored, getErr := h.getPluginRecord(hostTestContext(), pluginInstanceID)
+	if getErr != nil || stored.EnableState != registry.EnableEnabled {
+		t.Fatalf("stored install = %#v, %v", stored, getErr)
+	}
+	if manager.startCalls != 1 || manager.prewarmCalls != 0 {
+		t.Fatalf("runtime calls after failed start: start=%d prewarm=%d", manager.startCalls, manager.prewarmCalls)
+	}
+}
+
 func TestUIOnlyDisableDoesNotRevokeRuntime(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	manager.revokeErr = errors.New("runtime must not be called")
@@ -327,6 +390,36 @@ func TestWorkerEnableRuntimeFailureKeepsEnabled(t *testing.T) {
 	}
 	if stored.EnableState != registry.EnableEnabled || stored.ManagementRevision != disabled.ManagementRevision+1 {
 		t.Fatalf("runtime readiness failure rewrote lifecycle state: %#v", stored)
+	}
+}
+
+func TestWorkerUpdateReusesRuntimeAndPrewarmsCommittedPackage(t *testing.T) {
+	manager := newRecordingRuntimeManager()
+	manager.health.Ready = false
+	manager.startHealthReady = true
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: manager,
+	})
+	defer h.Close()
+	installed := importWorkerVersion(t, h, "1.0.0")
+	packageBytes := buildWorkerFixturePackageVersion(t, "2.0.0")
+
+	updated, err := h.UpdateLocalPackage(hostTestContext(), UpdateLocalPackageRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		PackageReader:              bytes.NewReader(packageBytes),
+		PackageSize:                int64(len(packageBytes)),
+	})
+	if err != nil {
+		t.Fatalf("UpdateLocalPackage() error = %v", err)
+	}
+	if updated.Version != "2.0.0" || manager.startCalls != 1 || manager.prewarmCalls != 2 {
+		t.Fatalf("updated plugin = %#v, runtime start=%d prewarm=%d", updated, manager.startCalls, manager.prewarmCalls)
+	}
+	request := manager.prewarmRequests[len(manager.prewarmRequests)-1]
+	entry, ok := packageEntryByPath(updated.PackageEntries, request.Artifact.Artifact)
+	if !ok || request.Artifact.PackageHash != updated.PackageHash || request.Artifact.ArtifactSHA256 != entry.SHA256 {
+		t.Fatalf("updated runtime prewarm request = %#v", request)
 	}
 }
 

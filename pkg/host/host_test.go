@@ -7276,6 +7276,7 @@ type recordingRuntimeManager struct {
 	preflightCalls      int
 	healthCalls         int
 	startCalls          int
+	startHealthReady    bool
 	prewarmCalls        int
 	prewarmRequests     []runtimeclient.PrewarmWorkerRequest
 	prewarmStarted      chan runtimeclient.PrewarmWorkerRequest
@@ -7517,6 +7518,9 @@ func (s *recordingSecretStore) List(_ context.Context, req secrets.ListRequest) 
 func (r *recordingRuntimeManager) Start(_ context.Context, target runtimetarget.Target) (runtimeclient.ManagerHealth, error) {
 	r.startCalls++
 	r.startedTarget = target
+	if r.startHealthReady && r.startErr == nil {
+		r.health.Ready = true
+	}
 	return r.managerHealth(), r.startErr
 }
 

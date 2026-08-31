@@ -9,7 +9,6 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
-	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
@@ -224,10 +223,6 @@ func (h *Host) recoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	if h.recoverySnapshot != nil {
 		return cloneRecoverySnapshot(*h.recoverySnapshot), nil
 	}
-	// Runtime startup is an in-memory prerequisite of recovery, not a durable
-	// plugin state transition. A failed start is projected by the per-plugin
-	// recovery below and never rewrites the persisted enabled intent.
-	_ = h.startEnabledWorkerRuntime(ctx)
 	results, err := h.refreshEnabledPlugins(ctx)
 	if err != nil {
 		return RecoverySnapshot{}, err
@@ -253,45 +248,6 @@ func (h *Host) recoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	copy := cloneRecoverySnapshot(snapshot)
 	h.recoverySnapshot = &copy
 	return cloneRecoverySnapshot(*h.recoverySnapshot), nil
-}
-
-func (h *Host) startEnabledWorkerRuntime(ctx context.Context) error {
-	if h.adapters.RuntimeManager == nil {
-		return nil
-	}
-	records, err := h.listPluginRecords(ctx)
-	if err != nil {
-		return err
-	}
-	hasEnabledWorker := false
-	for _, record := range records {
-		if record.EnableState == registry.EnableEnabled && pluginHasWorkers(record.Manifest) {
-			hasEnabledWorker = true
-			break
-		}
-	}
-	if !hasEnabledWorker {
-		return nil
-	}
-
-	health, healthErr := h.adapters.RuntimeManager.Health(ctx)
-	if healthErr == nil && validateRuntimeManagerHealth(health, health.ArtifactIdentity) == nil {
-		return nil
-	}
-	target := health.ArtifactIdentity.Target()
-	if h.runtimeModule != nil {
-		if moduleDescriptor := h.runtimeModule.ArtifactIdentity(); moduleDescriptor.PlatformVersion().String() != "" {
-			target = moduleDescriptor.Target()
-		}
-	}
-	if err := runtimetarget.Validate(target); err != nil {
-		if healthErr != nil {
-			return healthErr
-		}
-		return err
-	}
-	_, err = h.StartRuntime(ctx, StartRuntimeRequest{Target: target})
-	return err
 }
 
 func (h *Host) RetryPluginRecovery(ctx context.Context, pluginInstanceID string) (PluginRecoveryResult, error) {
