@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.20
+
+- Keep sealed runtime launch compatible with Linux 5.9 and 5.10 by falling
+  back to segmented descriptor closure only when `CLOSE_RANGE_CLOEXEC` is not
+  supported.
+
 ## v3.0.19
 
 - Admit the verified runtime through the historical executable-memfd default

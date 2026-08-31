@@ -15,6 +15,7 @@
 #define PR_SET_PDEATHSIG 1
 #define PR_SET_NO_NEW_PRIVS 38
 #define SIGKILL 9
+#define EINVAL 22
 #define AT_EMPTY_PATH 0x1000
 #define CLOSE_RANGE_CLOEXEC 4
 
@@ -151,8 +152,41 @@ parent_alive:
 	MOVD $SYS_CLOSE_RANGE, R8
 	SVC
 	CMN $4095, R0
+	BCC close_range_complete
+	CMP $-EINVAL, R0
+	BNE child_error
+
+	// Linux 5.9 and 5.10 provide close_range without the CLOEXEC flag.
+	// Preserve only the executable and error descriptors needed by execveat.
+	MOVD $7, R0
+	MOVWU 28(R19), R1
+	SUB $1, R1
+	MOVD ZR, R2
+	MOVD $SYS_CLOSE_RANGE, R8
+	SVC
+	CMN $4095, R0
 	BCS child_error
 
+	MOVWU 28(R19), R0
+	ADD $1, R0
+	MOVWU 36(R19), R1
+	SUB $1, R1
+	MOVD ZR, R2
+	MOVD $SYS_CLOSE_RANGE, R8
+	SVC
+	CMN $4095, R0
+	BCS child_error
+
+	MOVWU 36(R19), R0
+	ADD $1, R0
+	MOVD $0xffffffff, R1
+	MOVD ZR, R2
+	MOVD $SYS_CLOSE_RANGE, R8
+	SVC
+	CMN $4095, R0
+	BCS child_error
+
+close_range_complete:
 	MOVWU 28(R19), R0
 	MOVD 64(R19), R1
 	MOVD 48(R19), R2

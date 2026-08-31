@@ -15,6 +15,7 @@
 #define PR_SET_PDEATHSIG 1
 #define PR_SET_NO_NEW_PRIVS 38
 #define SIGKILL 9
+#define EINVAL 22
 #define AT_EMPTY_PATH 0x1000
 #define CLOSE_RANGE_CLOEXEC 4
 
@@ -151,8 +152,41 @@ parent_alive:
 	MOVQ $CLOSE_RANGE_CLOEXEC, DX
 	SYSCALL
 	CMPQ AX, $0xfffffffffffff001
+	JLS close_range_complete
+	CMPQ AX, $-EINVAL
+	JNE child_error
+
+	// Linux 5.9 and 5.10 provide close_range without the CLOEXEC flag.
+	// Preserve only the executable and error descriptors needed by execveat.
+	MOVQ $SYS_CLOSE_RANGE, AX
+	MOVQ $7, DI
+	MOVL 28(R12), SI
+	DECQ SI
+	XORQ DX, DX
+	SYSCALL
+	CMPQ AX, $0xfffffffffffff001
 	JHI child_error
 
+	MOVQ $SYS_CLOSE_RANGE, AX
+	MOVL 28(R12), DI
+	INCQ DI
+	MOVL 36(R12), SI
+	DECQ SI
+	XORQ DX, DX
+	SYSCALL
+	CMPQ AX, $0xfffffffffffff001
+	JHI child_error
+
+	MOVQ $SYS_CLOSE_RANGE, AX
+	MOVL 36(R12), DI
+	INCQ DI
+	MOVQ $0xffffffff, SI
+	XORQ DX, DX
+	SYSCALL
+	CMPQ AX, $0xfffffffffffff001
+	JHI child_error
+
+close_range_complete:
 	MOVQ $SYS_EXECVEAT, AX
 	MOVL 28(R12), DI
 	MOVQ 64(R12), SI

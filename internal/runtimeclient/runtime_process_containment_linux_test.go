@@ -6,10 +6,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -56,6 +58,9 @@ func TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement
 	}
 	defer source.Close()
 	memfd, err := unix.MemfdCreate("redevplugin-runtime-test", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING|unix.MFD_EXEC)
+	if errors.Is(err, syscall.EINVAL) {
+		memfd, err = unix.MemfdCreate("redevplugin-runtime-test", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
