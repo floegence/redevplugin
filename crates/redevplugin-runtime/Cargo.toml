@@ -16,7 +16,7 @@ libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 sha2 = "0.11"
-wasmparser = "0.256"
+wasmparser = "0.258"
 wasmi = { version = "=2.0.0-beta.10", default-features = false, features = ["portable-dispatch", "std", "validate"] }
 
 [dev-dependencies]
