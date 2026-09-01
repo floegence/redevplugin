@@ -131,6 +131,33 @@ async function verifyScenario(credentiallessScenario) {
   const frame = await waitForPluginFrame(page);
   await frame.waitForSelector("#plugin-status", { timeout: 10_000 });
   await frame.waitForFunction(() => document.querySelector("#plugin-status")?.textContent === "Ready");
+
+  const originalIframe = await iframe.elementHandle();
+  assert.notEqual(originalIframe, null, `${credentiallessScenario} surface iframe exists before lifecycle retention`);
+  const hiddenRenderCommitted = page.waitForRequest((request) => (
+    request.method() === "POST"
+    && request.postData()?.includes("Lifecycle render committed: hidden") === true
+  ), { timeout: 2_000 });
+  await page.locator("#plugin-surface-mount").evaluate((mount) => {
+    mount.style.display = "none";
+  });
+  await page.getByRole("button", { name: "Hidden" }).click();
+  await hiddenRenderCommitted;
+  assert.equal((await page.evaluate(() => window.__redevpluginHarness.snapshot())).errors.length, 0, `${credentiallessScenario} hidden lifecycle render errors`);
+
+  const visibleRenderCommitted = page.waitForRequest((request) => (
+    request.method() === "POST"
+    && request.postData()?.includes("Lifecycle render committed: visible") === true
+  ), { timeout: 2_000 });
+  await page.locator("#plugin-surface-mount").evaluate((mount) => {
+    mount.style.display = "";
+  });
+  await page.getByRole("button", { name: "Visible" }).click();
+  await visibleRenderCommitted;
+  await frame.waitForFunction(() => document.querySelector("#plugin-status")?.textContent === "Lifecycle: visible");
+  assert.equal(await iframe.evaluate((element, retained) => element === retained, originalIframe), true, `${credentiallessScenario} lifecycle retains the exact iframe`);
+  assert.equal((await page.evaluate(() => window.__redevpluginHarness.snapshot())).errors.length, 0, `${credentiallessScenario} visible lifecycle render errors`);
+
   const isolation = await frame.evaluate(async () => {
     const blocked = async (operation) => {
       try {
@@ -267,7 +294,11 @@ async function verifyScenario(credentiallessScenario) {
 
   await frame.getByRole("button", { name: "Dangerous action" }).click();
   await page.locator("#confirmation-panel").waitFor({ state: "visible" });
-  await page.locator("#dispose-surface").click();
+  await page.evaluate(() => {
+    document.querySelector("#plugin-surface-mount").style.display = "none";
+    document.querySelector("#send-hidden").click();
+    document.querySelector("#dispose-surface").click();
+  });
   try {
     await page.waitForFunction(() => window.__redevpluginHarness.snapshot().status === "disposed");
   } catch (error) {
@@ -280,6 +311,7 @@ async function verifyScenario(credentiallessScenario) {
   }
   await page.waitForFunction(() => document.querySelector("#event-log")?.textContent?.includes("confirmation-aborted"));
   await waitFor(() => page.workers().length === 0, 5_000, "dedicated worker disposal");
+  await new Promise((resolve) => setTimeout(resolve, 250));
   await waitFor(async () => {
     const response = await fetch(`${baseURL}/__browser_harness/diagnostics`);
     const value = await response.json();

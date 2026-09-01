@@ -965,6 +965,7 @@
   const maxImageTotalPixels = ${opaqueSurfaceRenderLimits.max_image_total_pixels};
   const workerHeartbeatIntervalMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_interval_ms};
   const workerHeartbeatTimeoutMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_timeout_ms};
+  const rendererCommitFallbackMs = 100;
   const maxCriticalDocumentBytes = ${8 * 1024 * 1024};
   const maxPrivateAssetBase64Length = ${Math.ceil(32 * 1024 * 1024 / 3) * 4};
   const maxLazyAssetCount = ${maxOpaqueSurfaceLazyAssets};
@@ -1077,7 +1078,9 @@
   let workerHeartbeatTimer;
   let workerHeartbeatTimeout;
   let pendingQuiesceID;
+  let runtimeDisposed = false;
   const pendingWorkerRequests = new Set();
+  const pendingRendererCommits = new Set();
   const requestSequence = { rpc: 0, execution: 0, render: 0, canvas: 0, asset: 0 };
   let executionQuerySurfaceTokens = 8;
   let executionQuerySurfaceRefillAt = performance.now();
@@ -1170,7 +1173,13 @@
     sendParent({ type: "redevplugin.surface.error", error: String(message).slice(0, 512) });
     disposeRuntime();
   };
+  const cancelPendingRendererCommits = () => {
+    for (const cancel of [...pendingRendererCommits]) cancel();
+  };
   const disposeRuntime = () => {
+    if (runtimeDisposed) return;
+    runtimeDisposed = true;
+    cancelPendingRendererCommits();
     if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
     if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
     workerHeartbeatTimer = undefined;
@@ -1211,6 +1220,7 @@
     assetByLogicalID.clear();
   };
   const terminateQuiescedWorker = () => {
+    cancelPendingRendererCommits();
     if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
     if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
     workerHeartbeatTimer = undefined;
@@ -1700,9 +1710,25 @@
       parent.insertBefore(target, before || null);
     }
   };
-  const onAnimationFrame = (commit) => new Promise((resolve, reject) => requestAnimationFrame(() => {
-    try { commit(); resolve(); } catch (error) { reject(error); }
-  }));
+  const commitOnRenderOpportunity = (commit) => new Promise((resolve, reject) => {
+    if (runtimeDisposed) return resolve(false);
+    let settled = false;
+    let frameID;
+    let fallbackTimer;
+    const finish = (shouldCommit) => {
+      if (settled) return;
+      settled = true;
+      if (frameID !== undefined) cancelAnimationFrame(frameID);
+      if (fallbackTimer !== undefined) clearTimeout(fallbackTimer);
+      pendingRendererCommits.delete(cancel);
+      if (!shouldCommit || runtimeDisposed) return resolve(false);
+      try { commit(); resolve(true); } catch (error) { reject(error); }
+    };
+    const cancel = () => finish(false);
+    pendingRendererCommits.add(cancel);
+    frameID = requestAnimationFrame(() => finish(true));
+    fallbackTimer = setTimeout(() => finish(true), rendererCommitFallbackMs);
+  });
   const mountWorkerTree = async (tree) => {
     if (uiRevision !== 0) throw new Error("plugin UI mount may only occur once");
     const built = buildWorkerSubtree(tree, { nodes: 0 }, 1, undefined);
@@ -1710,25 +1736,29 @@
     if (!(root instanceof Element)) throw new Error("plugin UI root must be an element");
     validateCanvasIdentifiers(root);
     const renderState = captureRenderState();
-    await onAnimationFrame(() => {
+    const committed = await commitOnRenderOpportunity(() => {
       document.body.replaceChildren(root);
       restoreRenderState(renderState);
     });
+    if (!committed) return false;
     uiGraph = built.graph;
     uiNodes = built.nodes;
     uiRevision = 1;
     sendParent({ type: "redevplugin.surface.first_commit" });
+    return true;
   };
   const patchWorkerTree = async (baseRevision, revision, operations) => {
     if (uiRevision < 1 || baseRevision !== uiRevision || revision !== baseRevision + 1) throw new Error("plugin UI patch revision is invalid");
     const validated = validatePatch(operations);
     const renderState = captureRenderState();
-    await onAnimationFrame(() => {
+    const committed = await commitOnRenderOpportunity(() => {
       for (const operation of validated.plan) applyPatchOperation(operation);
       validated.graph.commit();
       restoreRenderState(renderState);
     });
+    if (!committed) return false;
     uiRevision = revision;
+    return true;
   };
   const actionPayload = (event, element, eventType = event.type) => {
     const target = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : element;
@@ -2486,9 +2516,9 @@
         completeWorkerRequest(message.id);
         return rejectWorkerRequest(message.id, "plugin render rate limit exceeded");
       }
-      void mountWorkerTree(message.tree).then(() => {
+      void mountWorkerTree(message.tree).then((committed) => {
         completeWorkerRequest(message.id);
-        sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
+        if (committed) sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
       }, (error) => fail(error && error.message || "plugin UI mount violated the protocol"));
       return;
     }
@@ -2499,9 +2529,9 @@
         completeWorkerRequest(message.id);
         return rejectWorkerRequest(message.id, "plugin render rate limit exceeded");
       }
-      void patchWorkerTree(message.base_revision, message.revision, message.operations).then(() => {
+      void patchWorkerTree(message.base_revision, message.revision, message.operations).then((committed) => {
         completeWorkerRequest(message.id);
-        sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
+        if (committed) sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
       }, (error) => fail(error && error.message || "plugin UI patch violated the protocol"));
       return;
     }

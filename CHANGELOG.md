@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.0.21
+
+- Keep retained plugin surfaces responsive when their host view is not rendered,
+  while preserving animation-frame commits for visible surfaces.
+- Cancel pending renderer commits during surface teardown so delayed callbacks
+  cannot mutate a closed surface or advance its UI revision.
+
 ## v3.0.20
 
 - Keep sealed runtime launch compatible with Linux 5.9 and 5.10 by falling

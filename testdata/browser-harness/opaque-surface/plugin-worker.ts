@@ -28,10 +28,11 @@ bridge.onAction("call-host", () => void callHost());
 bridge.onAction("read-execution-events", () => void readExecutionEvents());
 bridge.onAction("dangerous-action", () => void runDangerousAction());
 bridge.onAction("observe-execution", () => void observeExecution());
-bridge.onLifecycle((event) => {
+bridge.onLifecycle(async (event) => {
   if (event.type === "visible" || event.type === "hidden") {
     state.status = `Lifecycle: ${event.type}`;
-    void render();
+    await render();
+    await bridge.call("harness.echo", { message: `Lifecycle render committed: ${event.type}` });
   }
 });
 
