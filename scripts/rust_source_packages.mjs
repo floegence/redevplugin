@@ -305,11 +305,18 @@ export async function fetchOfficialRegistryIndex(url, {
         redirect: "error",
         signal: AbortSignal.timeout(timeoutMs),
       });
+      if (response.ok) {
+        const body = await response.arrayBuffer();
+        return new Response(body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
     } catch (error) {
       lastFailure = error;
       continue;
     }
-    if (response.ok) return response;
     const retryable = response.status === 429 || (response.status >= 500 && response.status <= 599);
     if (!retryable) throw new Error(`official registry index returned ${response.status}`);
     lastFailure = new Error(`official registry index returned ${response.status}`);

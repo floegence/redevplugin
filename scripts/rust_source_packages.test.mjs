@@ -25,19 +25,42 @@ test("official registry reads retry only transient failures within a closed budg
     fetchImpl: async () => {
       attempts += 1;
       if (attempts === 1) throw new Error("connect timeout");
-      if (attempts === 2) return { ok: false, status: 503 };
-      return { ok: true, status: 200 };
+      if (attempts === 2) return new Response(null, { status: 503 });
+      return new Response("registry entry", { status: 200 });
     },
   });
   assert.equal(response.status, 200);
+  assert.equal(await response.text(), "registry entry");
   assert.equal(attempts, 3);
+
+  attempts = 0;
+  const recoveredBody = await fetchOfficialRegistryIndex("https://index.crates.io/interrupted", {
+    retryDelaysMs: [0, 0],
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: new Headers(),
+          async arrayBuffer() {
+            throw new DOMException("response body interrupted", "TimeoutError");
+          },
+        };
+      }
+      return new Response("complete registry entry", { status: 200 });
+    },
+  });
+  assert.equal(await recoveredBody.text(), "complete registry entry");
+  assert.equal(attempts, 2);
 
   attempts = 0;
   await assert.rejects(() => fetchOfficialRegistryIndex("https://index.crates.io/missing", {
     retryDelaysMs: [0, 0, 0],
     fetchImpl: async () => {
       attempts += 1;
-      return { ok: false, status: 404 };
+      return new Response(null, { status: 404 });
     },
   }), /returned 404/);
   assert.equal(attempts, 1);
