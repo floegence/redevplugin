@@ -4,6 +4,7 @@ import type {
   PluginSettingsPatchRequest,
 } from "../src/platform.js";
 import type { OpaquePluginBootstrapHTMLOptions } from "../src/surface.js";
+import type { PluginCanvasWheelEvent } from "../src/plugin.js";
 
 type IsUnknown<T> = unknown extends T ? ([keyof T] extends [never] ? true : false) : false;
 
@@ -42,6 +43,20 @@ void emptyRemove;
 void invalidScope;
 void missingScope;
 void incompletePin;
+
+const wheelInput: PluginCanvasWheelEvent = {
+  type: "wheel",
+  x: 120,
+  y: 80,
+  deltaX: 0,
+  deltaY: -42,
+  deltaMode: 0,
+  altKey: false,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+};
+void wheelInput;
 
 const currentBootstrapOptions: OpaquePluginBootstrapHTMLOptions = { scriptNonce: "nonce_test" };
 // @ts-expect-error UI compatibility is selected only by plugin_api; callers cannot negotiate another UI version.

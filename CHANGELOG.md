@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.0.22
+
+- Deliver bounded wheel input to sandboxed plugin canvases with canvas-local
+  coordinates, standard delta modes, and modifier keys.
+- Keep wheel ownership on the canvas so zoom gestures do not also scroll the
+  containing host surface.
+
 ## v3.0.21
 
 - Keep retained plugin surfaces responsive when their host view is not rendered,

@@ -1,5 +1,6 @@
 import {
   PluginBridgeClient,
+  type PluginCanvasWheelEvent,
   type PluginMethodResult,
   type PluginUIVNode,
 } from "../../../packages/redevplugin-ui/src/plugin.js";
@@ -22,12 +23,18 @@ const state = {
   result: "Waiting for the trusted parent.",
   busy: false,
   security: {} as WorkerSecurityProbe,
+  canvasWheel: null as PluginCanvasWheelEvent | null,
 };
 
 bridge.onAction("call-host", () => void callHost());
 bridge.onAction("read-execution-events", () => void readExecutionEvents());
 bridge.onAction("dangerous-action", () => void runDangerousAction());
 bridge.onAction("observe-execution", () => void observeExecution());
+bridge.onCanvasInput("wheel-probe", (event) => {
+  if (event.type !== "wheel") return;
+  state.canvasWheel = event;
+  void render();
+});
 bridge.onLifecycle(async (event) => {
   if (event.type === "visible" || event.type === "hidden") {
     state.status = `Lifecycle: ${event.type}`;
@@ -43,6 +50,7 @@ async function initialize(): Promise<void> {
   await bridge.ready();
   state.status = "Ready";
   await render();
+  await bridge.openCanvas("wheel-probe");
 }
 
 async function callHost(): Promise<void> {
@@ -158,6 +166,25 @@ function render(): Promise<void> {
       { type: "element", key: "harness-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: [text("harness-eyebrow-text", "Opaque worker surface")] },
       { type: "element", key: "harness-title", tag: "h1", children: [text("harness-title-text", "Plugin isolation lab")] },
       { type: "element", key: "harness-status", tag: "p", attributes: { id: "plugin-status", class: "status", role: "status" }, children: [text("harness-status-text", state.status)] },
+      {
+        type: "element",
+        key: "wheel-probe",
+        tag: "canvas",
+        attributes: {
+          width: 320,
+          height: 120,
+          "aria-label": "Canvas wheel input probe",
+          "data-redevplugin-canvas": "wheel-probe",
+        },
+        children: [],
+      },
+      {
+        type: "element",
+        key: "canvas-wheel",
+        tag: "pre",
+        attributes: { id: "canvas-wheel", "aria-label": "Latest canvas wheel input" },
+        children: [text("canvas-wheel-text", state.canvasWheel ? JSON.stringify(state.canvasWheel) : "Waiting for canvas wheel input")],
+      },
       {
         type: "element",
         key: "harness-actions",

@@ -132,6 +132,39 @@ async function verifyScenario(credentiallessScenario) {
   await frame.waitForSelector("#plugin-status", { timeout: 10_000 });
   await frame.waitForFunction(() => document.querySelector("#plugin-status")?.textContent === "Ready");
 
+  const canvasWheel = await frame.locator("canvas[data-redevplugin-canvas='wheel-probe']").evaluate((canvas) => {
+    const bounds = canvas.getBoundingClientRect();
+    const event = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX: bounds.left + 32,
+      clientY: bounds.top + 24,
+      deltaX: -8,
+      deltaY: 42,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      ctrlKey: true,
+    });
+    return { dispatchResult: canvas.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
+  });
+  assert.deepEqual(canvasWheel, { dispatchResult: false, defaultPrevented: true });
+  await frame.waitForFunction(() => document.querySelector("#canvas-wheel")?.textContent?.includes('"deltaY":42'));
+  assert.deepEqual(JSON.parse(await frame.locator("#canvas-wheel").textContent()), {
+    type: "wheel",
+    x: 32,
+    y: 24,
+    deltaX: -8,
+    deltaY: 42,
+    deltaMode: 0,
+    altKey: false,
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: false,
+  });
+  await page.waitForFunction(() => window.__redevpluginHarness.snapshot().interactions.some(
+    (event) => event.kind === "wheel" && event.localScroll === true,
+  ));
+
   const originalIframe = await iframe.elementHandle();
   assert.notEqual(originalIframe, null, `${credentiallessScenario} surface iframe exists before lifecycle retention`);
   const hiddenRenderCommitted = page.waitForRequest((request) => (

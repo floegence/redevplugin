@@ -12,7 +12,7 @@ capabilities.
 
 ## Current Platform Snapshot
 
-- Platform version source: `VERSION` (`3.0.21`)
+- Platform version source: `VERSION` (`3.0.22`)
 - Go module: `github.com/floegence/redevplugin/v3`
 - TypeScript packages: the opt-in raw contract body package
   `@floegence/redevplugin-contracts` and the sandbox/runtime SDK
@@ -375,6 +375,9 @@ an English fallback or mix locales within one resolved presentation.
   on a 10-second interval with a 5-second response deadline.
 - Generated render policy limits a surface to four canvases, 4096 pixels per
   dimension, 16,777,216 total canvas pixels, and 120 pointer events per second.
+  Canvas input includes focus, resize, keyboard, pointer, and bounded wheel
+  events. Wheel coordinates are canvas-local and canvas wheel ownership prevents
+  the same gesture from scrolling the surrounding host surface.
   Raster type is detected from PNG, JPEG, GIF, or WebP bytes rather than the
   filename or declared MIME. Images are dimension-checked before decode and
   limited to 32 images and 33,554,432 decoded pixels. Plugin workers cannot

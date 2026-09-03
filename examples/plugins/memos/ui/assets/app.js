@@ -1522,6 +1522,23 @@
                 }
             };
         }
+        if (hasExactKeys(event, ["type", "x", "y", "delta_x", "delta_y", "delta_mode", "alt_key", "ctrl_key", "meta_key", "shift_key"]) && event.type === "wheel" && validCanvasCoordinate(event.x) && validCanvasCoordinate(event.y) && validCanvasWheelDelta(event.delta_x) && validCanvasWheelDelta(event.delta_y) && (event.delta_mode === 0 || event.delta_mode === 1 || event.delta_mode === 2) && typeof event.alt_key === "boolean" && typeof event.ctrl_key === "boolean" && typeof event.meta_key === "boolean" && typeof event.shift_key === "boolean") {
+            return {
+                canvasId: value.canvas_id,
+                event: {
+                    type: "wheel",
+                    x: event.x,
+                    y: event.y,
+                    deltaX: event.delta_x,
+                    deltaY: event.delta_y,
+                    deltaMode: event.delta_mode,
+                    altKey: event.alt_key,
+                    ctrlKey: event.ctrl_key,
+                    metaKey: event.meta_key,
+                    shiftKey: event.shift_key
+                }
+            };
+        }
         return void 0;
     }
     function isOffscreenCanvasLike(value) {
@@ -1538,6 +1555,9 @@
     }
     function validCanvasCoordinate(value) {
         return typeof value === "number" && Number.isFinite(value) && value >= -16384 && value <= 32768;
+    }
+    function validCanvasWheelDelta(value) {
+        return typeof value === "number" && Number.isFinite(value) && value >= -32768 && value <= 32768;
     }
     function isMessagePortLike(value) {
         return isRecord(value) && typeof value.postMessage === "function" && typeof value.addEventListener === "function" && typeof value.removeEventListener === "function" && typeof value.start === "function" && typeof value.close === "function";

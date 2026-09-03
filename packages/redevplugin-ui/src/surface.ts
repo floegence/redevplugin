@@ -193,7 +193,20 @@ export type PluginCanvasPointerEvent = {
   pressure: number;
 };
 
-export type PluginCanvasInputEvent = PluginCanvasFocusEvent | PluginCanvasResizeEvent | PluginCanvasKeyEvent | PluginCanvasPointerEvent;
+export type PluginCanvasWheelEvent = {
+  type: "wheel";
+  x: number;
+  y: number;
+  deltaX: number;
+  deltaY: number;
+  deltaMode: 0 | 1 | 2;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+};
+
+export type PluginCanvasInputEvent = PluginCanvasFocusEvent | PluginCanvasResizeEvent | PluginCanvasKeyEvent | PluginCanvasPointerEvent | PluginCanvasWheelEvent;
 
 export type PluginMethodResult<T = unknown> = {
   data: T;
@@ -1617,7 +1630,12 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   };
   document.addEventListener("pointerdown", (event) => sendInteraction("activation", event.target), true);
   document.addEventListener("focusin", (event) => sendInteraction("focus", event.target), true);
-  document.addEventListener("wheel", (event) => sendInteraction("wheel", event.target, { localScroll: ownsLocalScroll(event) }), { capture: true, passive: true });
+  const ownsCanvasWheel = (target) => {
+    const element = target instanceof Element ? target.closest("canvas[data-redevplugin-canvas]") : null;
+    const canvasID = element?.getAttribute("data-redevplugin-canvas");
+    return validResourceIdentifier(canvasID) && canvasRuntimes.has(canvasID);
+  };
+  document.addEventListener("wheel", (event) => sendInteraction("wheel", event.target, { localScroll: ownsCanvasWheel(event.target) || ownsLocalScroll(event) }), { capture: true, passive: true });
   document.addEventListener("selectionchange", () => {
     const selection = document.getSelection();
     const target = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
@@ -2839,8 +2857,25 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
         shift_key: Boolean(event.shiftKey),
       });
     };
+    const handleWheel = (event) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      sendInput({
+        type: "wheel",
+        x: Math.min(32768, Math.max(-16384, event.clientX - rect.left)),
+        y: Math.min(32768, Math.max(-16384, event.clientY - rect.top)),
+        delta_x: Math.min(32768, Math.max(-32768, Number.isFinite(event.deltaX) ? event.deltaX : 0)),
+        delta_y: Math.min(32768, Math.max(-32768, Number.isFinite(event.deltaY) ? event.deltaY : 0)),
+        delta_mode: [0, 1, 2].includes(event.deltaMode) ? event.deltaMode : 0,
+        alt_key: Boolean(event.altKey),
+        ctrl_key: Boolean(event.ctrlKey),
+        meta_key: Boolean(event.metaKey),
+        shift_key: Boolean(event.shiftKey),
+      });
+    };
     for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) listen(type, handlePointer);
     for (const type of ["keydown", "keyup"]) listen(type, handleKey);
+    listen("wheel", handleWheel);
     listen("focus", () => sendInput({ type: "focus" }));
     listen("blur", () => sendInput({ type: "blur" }));
     const observer = new ResizeObserver(() => {
@@ -5163,6 +5198,28 @@ function publicCanvasInputMessage(value: unknown): { canvasId: string; event: Pl
       },
     };
   }
+  if (hasExactKeys(event, ["type", "x", "y", "delta_x", "delta_y", "delta_mode", "alt_key", "ctrl_key", "meta_key", "shift_key"]) &&
+      event.type === "wheel" && validCanvasCoordinate(event.x) && validCanvasCoordinate(event.y) &&
+      validCanvasWheelDelta(event.delta_x) && validCanvasWheelDelta(event.delta_y) &&
+      (event.delta_mode === 0 || event.delta_mode === 1 || event.delta_mode === 2) &&
+      typeof event.alt_key === "boolean" && typeof event.ctrl_key === "boolean" &&
+      typeof event.meta_key === "boolean" && typeof event.shift_key === "boolean") {
+    return {
+      canvasId: value.canvas_id,
+      event: {
+        type: "wheel",
+        x: event.x,
+        y: event.y,
+        deltaX: event.delta_x,
+        deltaY: event.delta_y,
+        deltaMode: event.delta_mode,
+        altKey: event.alt_key,
+        ctrlKey: event.ctrl_key,
+        metaKey: event.meta_key,
+        shiftKey: event.shift_key,
+      },
+    };
+  }
   return undefined;
 }
 
@@ -5186,6 +5243,10 @@ function validDevicePixelRatio(value: unknown): value is number {
 
 function validCanvasCoordinate(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= -16384 && value <= 32768;
+}
+
+function validCanvasWheelDelta(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= -32768 && value <= 32768;
 }
 
 function isMessagePortLike(value: unknown): value is MessagePortLike {

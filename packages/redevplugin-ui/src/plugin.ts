@@ -17,6 +17,7 @@ export type {
   PluginCanvasInputEvent,
   PluginCanvasKeyEvent,
   PluginCanvasPointerEvent,
+  PluginCanvasWheelEvent,
   PluginCanvasResizeEvent,
   PluginCanvasSurface,
   PluginJSONObject,

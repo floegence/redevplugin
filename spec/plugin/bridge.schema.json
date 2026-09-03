@@ -452,6 +452,23 @@
                 "y": { "type": "number", "minimum": -16384, "maximum": 32768 },
                 "pressure": { "type": "number", "minimum": 0, "maximum": 1 }
               }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "x", "y", "delta_x", "delta_y", "delta_mode", "alt_key", "ctrl_key", "meta_key", "shift_key"],
+              "properties": {
+                "type": { "const": "wheel" },
+                "x": { "type": "number", "minimum": -16384, "maximum": 32768 },
+                "y": { "type": "number", "minimum": -16384, "maximum": 32768 },
+                "delta_x": { "type": "number", "minimum": -32768, "maximum": 32768 },
+                "delta_y": { "type": "number", "minimum": -32768, "maximum": 32768 },
+                "delta_mode": { "type": "integer", "enum": [0, 1, 2] },
+                "alt_key": { "type": "boolean" },
+                "ctrl_key": { "type": "boolean" },
+                "meta_key": { "type": "boolean" },
+                "shift_key": { "type": "boolean" }
+              }
             }
           ]
         }

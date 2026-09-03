@@ -1453,6 +1453,23 @@
         }
       };
     }
+    if (hasExactKeys(event, ["type", "x", "y", "delta_x", "delta_y", "delta_mode", "alt_key", "ctrl_key", "meta_key", "shift_key"]) && event.type === "wheel" && validCanvasCoordinate(event.x) && validCanvasCoordinate(event.y) && validCanvasWheelDelta(event.delta_x) && validCanvasWheelDelta(event.delta_y) && (event.delta_mode === 0 || event.delta_mode === 1 || event.delta_mode === 2) && typeof event.alt_key === "boolean" && typeof event.ctrl_key === "boolean" && typeof event.meta_key === "boolean" && typeof event.shift_key === "boolean") {
+      return {
+        canvasId: value.canvas_id,
+        event: {
+          type: "wheel",
+          x: event.x,
+          y: event.y,
+          deltaX: event.delta_x,
+          deltaY: event.delta_y,
+          deltaMode: event.delta_mode,
+          altKey: event.alt_key,
+          ctrlKey: event.ctrl_key,
+          metaKey: event.meta_key,
+          shiftKey: event.shift_key
+        }
+      };
+    }
     return void 0;
   }
   function isOffscreenCanvasLike(value) {
@@ -1469,6 +1486,9 @@
   }
   function validCanvasCoordinate(value) {
     return typeof value === "number" && Number.isFinite(value) && value >= -16384 && value <= 32768;
+  }
+  function validCanvasWheelDelta(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= -32768 && value <= 32768;
   }
   function isMessagePortLike(value) {
     return isRecord(value) && typeof value.postMessage === "function" && typeof value.addEventListener === "function" && typeof value.removeEventListener === "function" && typeof value.start === "function" && typeof value.close === "function";
@@ -1726,12 +1746,18 @@
     status: "Starting isolated worker...",
     result: "Waiting for the trusted parent.",
     busy: false,
-    security: {}
+    security: {},
+    canvasWheel: null
   };
   bridge.onAction("call-host", () => void callHost());
   bridge.onAction("read-execution-events", () => void readExecutionEvents());
   bridge.onAction("dangerous-action", () => void runDangerousAction());
   bridge.onAction("observe-execution", () => void observeExecution());
+  bridge.onCanvasInput("wheel-probe", (event) => {
+    if (event.type !== "wheel") return;
+    state.canvasWheel = event;
+    void render();
+  });
   bridge.onLifecycle(async (event) => {
     if (event.type === "visible" || event.type === "hidden") {
       state.status = `Lifecycle: ${event.type}`;
@@ -1745,6 +1771,7 @@
     await bridge.ready();
     state.status = "Ready";
     await render();
+    await bridge.openCanvas("wheel-probe");
   }
   async function callHost() {
     await runAction("Calling harness.echo...", "Host responded", async () => {
@@ -1851,6 +1878,25 @@
         { type: "element", key: "harness-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: [text("harness-eyebrow-text", "Opaque worker surface")] },
         { type: "element", key: "harness-title", tag: "h1", children: [text("harness-title-text", "Plugin isolation lab")] },
         { type: "element", key: "harness-status", tag: "p", attributes: { id: "plugin-status", class: "status", role: "status" }, children: [text("harness-status-text", state.status)] },
+        {
+          type: "element",
+          key: "wheel-probe",
+          tag: "canvas",
+          attributes: {
+            width: 320,
+            height: 120,
+            "aria-label": "Canvas wheel input probe",
+            "data-redevplugin-canvas": "wheel-probe"
+          },
+          children: []
+        },
+        {
+          type: "element",
+          key: "canvas-wheel",
+          tag: "pre",
+          attributes: { id: "canvas-wheel", "aria-label": "Latest canvas wheel input" },
+          children: [text("canvas-wheel-text", state.canvasWheel ? JSON.stringify(state.canvasWheel) : "Waiting for canvas wheel input")]
+        },
         {
           type: "element",
           key: "harness-actions",

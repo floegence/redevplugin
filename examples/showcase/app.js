@@ -1151,7 +1151,12 @@
   };
   document.addEventListener("pointerdown", (event) => sendInteraction("activation", event.target), true);
   document.addEventListener("focusin", (event) => sendInteraction("focus", event.target), true);
-  document.addEventListener("wheel", (event) => sendInteraction("wheel", event.target, { localScroll: ownsLocalScroll(event) }), { capture: true, passive: true });
+  const ownsCanvasWheel = (target) => {
+    const element = target instanceof Element ? target.closest("canvas[data-redevplugin-canvas]") : null;
+    const canvasID = element?.getAttribute("data-redevplugin-canvas");
+    return validResourceIdentifier(canvasID) && canvasRuntimes.has(canvasID);
+  };
+  document.addEventListener("wheel", (event) => sendInteraction("wheel", event.target, { localScroll: ownsCanvasWheel(event.target) || ownsLocalScroll(event) }), { capture: true, passive: true });
   document.addEventListener("selectionchange", () => {
     const selection = document.getSelection();
     const target = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
@@ -2373,8 +2378,25 @@
         shift_key: Boolean(event.shiftKey),
       });
     };
+    const handleWheel = (event) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      sendInput({
+        type: "wheel",
+        x: Math.min(32768, Math.max(-16384, event.clientX - rect.left)),
+        y: Math.min(32768, Math.max(-16384, event.clientY - rect.top)),
+        delta_x: Math.min(32768, Math.max(-32768, Number.isFinite(event.deltaX) ? event.deltaX : 0)),
+        delta_y: Math.min(32768, Math.max(-32768, Number.isFinite(event.deltaY) ? event.deltaY : 0)),
+        delta_mode: [0, 1, 2].includes(event.deltaMode) ? event.deltaMode : 0,
+        alt_key: Boolean(event.altKey),
+        ctrl_key: Boolean(event.ctrlKey),
+        meta_key: Boolean(event.metaKey),
+        shift_key: Boolean(event.shiftKey),
+      });
+    };
     for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) listen(type, handlePointer);
     for (const type of ["keydown", "keyup"]) listen(type, handleKey);
+    listen("wheel", handleWheel);
     listen("focus", () => sendInput({ type: "focus" }));
     listen("blur", () => sendInput({ type: "blur" }));
     const observer = new ResizeObserver(() => {

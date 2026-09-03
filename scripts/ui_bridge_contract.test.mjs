@@ -63,3 +63,18 @@ test("current UI contract rejects an independent UI protocol axis", () => {
     assert.throws(() => validateUIBridgeInputs(stale), /retains an independent UI protocol axis/);
   }
 });
+
+test("current UI contract exposes one closed finite canvas wheel event", () => {
+  const variants = baseline.activeSchema.$defs.canvas_input.properties.event.oneOf;
+  const wheel = variants.find((variant) => variant.properties?.type?.const === "wheel");
+  assert.ok(wheel, "canvas wheel input must be part of the current bridge schema");
+  assert.equal(wheel.additionalProperties, false);
+  assert.deepEqual(wheel.required, [
+    "type", "x", "y", "delta_x", "delta_y", "delta_mode",
+    "alt_key", "ctrl_key", "meta_key", "shift_key",
+  ]);
+  assert.deepEqual(wheel.properties.delta_mode.enum, [0, 1, 2]);
+  for (const name of ["x", "y", "delta_x", "delta_y"]) {
+    assert.equal(wheel.properties[name].type, "number");
+  }
+});

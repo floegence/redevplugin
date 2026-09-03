@@ -910,7 +910,7 @@ test("plugin bridge transfers one canvas and verified image assets by logical id
   client.dispose();
 });
 
-test("plugin bridge normalizes canvas focus, resize, keyboard, and pointer input", async () => {
+test("plugin bridge normalizes canvas focus, resize, keyboard, pointer, and wheel input", async () => {
   const { port1: rendererPort, port2: pluginPort } = fakeChannel();
   const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
   rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
@@ -923,6 +923,7 @@ test("plugin bridge normalizes canvas focus, resize, keyboard, and pointer input
     { type: "resize", css_width: 800, css_height: 450, device_pixel_ratio: 2 },
     { type: "key", event: "keydown", code: "ArrowLeft", key: "ArrowLeft", repeat: false, alt_key: false, ctrl_key: false, meta_key: false, shift_key: false },
     { type: "pointer", event: "pointermove", pointer_id: 1, pointer_type: "mouse", buttons: 1, button: -1, x: 120.5, y: 82.25, pressure: 0.5 },
+    { type: "wheel", x: 240.5, y: 160.25, delta_x: -12, delta_y: 48, delta_mode: 0, alt_key: false, ctrl_key: true, meta_key: false, shift_key: false },
   ]) {
     rendererPort.postMessage({ type: "redevplugin.ui.canvas.input", canvas_id: "playfield", event });
   }
@@ -931,9 +932,14 @@ test("plugin bridge normalizes canvas focus, resize, keyboard, and pointer input
     canvas_id: "playfield",
     event: { type: "pointer", event: "pointermove", pointer_id: -1, x: Number.NaN, y: 0 },
   });
+  rendererPort.postMessage({
+    type: "redevplugin.ui.canvas.input",
+    canvas_id: "playfield",
+    event: { type: "wheel", x: 0, y: 0, delta_x: 0, delta_y: Number.NaN, delta_mode: 0, alt_key: false, ctrl_key: false, meta_key: false, shift_key: false },
+  });
   await Promise.resolve();
 
-  assert.equal(events.length, 4);
+  assert.equal(events.length, 5);
   assert.deepEqual(events[2], {
     type: "key",
     event: "keydown",
@@ -956,8 +962,28 @@ test("plugin bridge normalizes canvas focus, resize, keyboard, and pointer input
     y: 82.25,
     pressure: 0.5,
   });
+  assert.deepEqual(events[4], {
+    type: "wheel",
+    x: 240.5,
+    y: 160.25,
+    deltaX: -12,
+    deltaY: 48,
+    deltaMode: 0,
+    altKey: false,
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: false,
+  });
   unsubscribe();
   client.dispose();
+});
+
+test("opaque bootstrap forwards canvas wheel input and suppresses ancestor scrolling", () => {
+  const html = createOpaquePluginBootstrapHTML({ scriptNonce: "nonce_canvas_wheel" });
+  assert.equal(/const handleWheel = \(event\) =>/u.test(html), true);
+  assert.equal(/listen\("wheel", handleWheel\)/u.test(html), true);
+  assert.equal(/event\.preventDefault\(\)/u.test(html), true);
+  assert.equal(/delta_mode: \[0, 1, 2\]\.includes\(event\.deltaMode\) \? event\.deltaMode : 0/u.test(html), true);
 });
 
 test("plugin bridge client rejects malformed capability errors immediately", async () => {
