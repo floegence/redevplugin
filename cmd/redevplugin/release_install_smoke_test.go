@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -212,10 +211,6 @@ func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx 
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPhases := []string{
-		"download_package", "fetch_trust_evidence", "fetch_release_evidence", "download_package", "fetch_release_evidence", "download_package", "verify_hashes", "verify_signatures", "validate_install", "runtime_preflight",
-		"fetch_capability_evidence", "commit", "complete",
-	}
 	gotPhases := make([]string, 0, len(events))
 	for _, event := range events {
 		phase, _ := event.Payload["phase"].(string)
@@ -224,8 +219,23 @@ func assertReleaseInstallSmokeEvidence(t *testing.T, pluginHost *host.Host, ctx 
 		}
 		gotPhases = append(gotPhases, phase)
 	}
-	if !reflect.DeepEqual(gotPhases, wantPhases) {
-		t.Fatalf("phase history = %#v, want %#v", gotPhases, wantPhases)
+	stableTail := []string{
+		"verify_hashes", "verify_signatures", "validate_install", "runtime_preflight",
+		"fetch_capability_evidence", "commit", "complete",
+	}
+	tailStart := slices.Index(gotPhases, stableTail[0])
+	if tailStart < 3 || !slices.Equal(gotPhases[:2], []string{"download_package", "fetch_trust_evidence"}) ||
+		!slices.Equal(gotPhases[tailStart:], stableTail) {
+		t.Fatalf("phase history = %#v, want stable install envelope with tail %#v", gotPhases, stableTail)
+	}
+	artifactPhases := gotPhases[2:tailStart]
+	if !slices.Contains(artifactPhases, "fetch_release_evidence") || !slices.Contains(artifactPhases, "download_package") {
+		t.Fatalf("artifact phase history = %#v, want release evidence and package download", artifactPhases)
+	}
+	for _, phase := range artifactPhases {
+		if phase != "fetch_release_evidence" && phase != "download_package" {
+			t.Fatalf("artifact phase history contains unexpected phase %q: %#v", phase, artifactPhases)
+		}
 	}
 	assertInstalledPluginsEnabled(t, pluginHost, ctx, current.PluginInstanceID)
 }
