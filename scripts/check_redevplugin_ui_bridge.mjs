@@ -24,6 +24,8 @@ const commonFrames = [
   ...executionFrames,
   "redevplugin.ui.mount",
   "redevplugin.ui.patch",
+  "redevplugin.ui.keyboard.bindings",
+  "redevplugin.ui.keyboard.input",
   "redevplugin.bridge.cancel",
   "redevplugin.ui.action",
   "redevplugin.bridge.response",
@@ -74,6 +76,7 @@ export function validateUIBridgeInputs({
   validatePluginVisibleIsolation(activeSchema, "active bridge schema");
 
   validateExecutionSchemas(activeSchema);
+  validateKeyboardSchemas(activeSchema);
   const activeText = JSON.stringify(activeSchema);
   for (const frame of commonFrames) {
     if (!activeText.includes(frame)) throw new Error(`active bridge schema is missing ${frame}`);
@@ -104,6 +107,36 @@ export function validateUIBridgeInputs({
   }
   if (!activeSchema["x-redevplugin-render-policy"]) {
     throw new Error("active bridge schema is missing the generated renderer policy source");
+  }
+}
+
+function validateKeyboardSchemas(schema) {
+  const bindings = schema.$defs?.keyboard_bindings;
+  const binding = schema.$defs?.keyboard_binding;
+  const input = schema.$defs?.keyboard_input;
+  if (!isRecord(bindings) || bindings.type !== "object" || bindings.additionalProperties !== false ||
+      JSON.stringify(bindings.required) !== JSON.stringify(["type", "id", "bindings"]) ||
+      bindings.properties?.type?.const !== "redevplugin.ui.keyboard.bindings" ||
+      bindings.properties?.id?.$ref !== "#/$defs/request_id" ||
+      bindings.properties?.bindings?.maxItems !== 128 ||
+      bindings.properties?.bindings?.items?.$ref !== "#/$defs/keyboard_binding") {
+    throw new Error("current keyboard_bindings frame is not closed and exact");
+  }
+  if (!isRecord(binding) || binding.type !== "object" || binding.additionalProperties !== false ||
+      !hasExactKeys(binding.properties, ["binding_id", "event", "code", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "target_key", "target_kind"])) {
+    throw new Error("current keyboard_binding declaration is not closed and exact");
+  }
+  if (!isRecord(input) || input.type !== "object" || input.additionalProperties !== false ||
+      input.properties?.type?.const !== "redevplugin.ui.keyboard.input" ||
+      !isRecord(input.properties?.event) || input.properties.event.additionalProperties !== false ||
+      !hasExactKeys(input.properties.event.properties, ["event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"])) {
+    throw new Error("current keyboard_input frame is not closed and exact");
+  }
+  for (const definition of ["keyboard_bindings", "keyboard_input"]) {
+    const references = Array.isArray(schema.oneOf)
+      ? schema.oneOf.filter((entry) => entry?.$ref === `#/$defs/${definition}`)
+      : [];
+    if (references.length !== 1) throw new Error(`current contract must publish exactly one ${definition} frame reference`);
   }
 }
 

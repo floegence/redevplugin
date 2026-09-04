@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.0.23
+
+- Deliver complete `keydown` and `keyup` input from the focused plugin Surface,
+  including Canvas, editable controls, buttons, modifier keys, repeat state,
+  IME composition state, and keyed target metadata.
+- Let plugins install bounded exact keyboard bindings so the sandbox can
+  synchronously prevent declared browser defaults without suppressing unbound
+  control input.
+
 ## v3.0.22
 
 - Deliver bounded wheel input to sandboxed plugin canvases with canvas-local

@@ -13,6 +13,7 @@ const (
 	opaqueSurfaceMaxTextLength                   = 65536
 	opaqueSurfaceMaxAttributeValueLength         = 4096
 	opaqueSurfaceMaxFormFields                   = 128
+	opaqueSurfaceMaxKeyboardBindings             = 128
 	opaqueSurfaceMaxCanvasCount                  = 4
 	opaqueSurfaceMaxCanvasDimension              = 4096
 	opaqueSurfaceMaxCanvasTotalPixels            = 16777216

@@ -161,6 +161,63 @@ async function verifyScenario(credentiallessScenario) {
     metaKey: false,
     shiftKey: false,
   });
+
+  const dispatchKeyboard = (selector, type, init) => frame.locator(selector).evaluate((element, options) => {
+    const event = new KeyboardEvent(options.type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      ...options.init,
+    });
+    return { dispatchResult: element.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
+  }, { type, init });
+  const keyboardCases = [
+    ["canvas[data-redevplugin-canvas='wheel-probe']", "keydown", { code: "KeyC", key: "c" }, true],
+    ["#keyboard-button", "keydown", { code: "Space", key: " " }, false],
+    ["#keyboard-input", "keydown", { code: "KeyI", key: "i" }, false],
+    ["#keyboard-textarea", "keydown", { code: "Enter", key: "Enter", shiftKey: true }, false],
+    ["#keyboard-textarea", "keydown", { code: "Enter", key: "Enter" }, true],
+    ["#keyboard-textarea", "keyup", { code: "Enter", key: "Enter" }, false],
+  ];
+  for (const [selector, type, init, prevented] of keyboardCases) {
+    const result = await dispatchKeyboard(selector, type, init);
+    assert.deepEqual(result, { dispatchResult: !prevented, defaultPrevented: prevented });
+  }
+  const composingResult = await frame.locator("#keyboard-textarea").evaluate((element) => {
+    element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, composed: true, data: "候" }));
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      code: "Enter",
+      key: "Enter",
+      isComposing: true,
+    });
+    const dispatchResult = element.dispatchEvent(event);
+    element.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, composed: true, data: "候选" }));
+    return { dispatchResult, defaultPrevented: event.defaultPrevented };
+  });
+  assert.deepEqual(composingResult, { dispatchResult: true, defaultPrevented: false });
+  await frame.waitForFunction(() => JSON.parse(document.querySelector("#keyboard-events")?.textContent || "[]").length >= 7);
+  const keyboardInputs = JSON.parse(await frame.locator("#keyboard-events").textContent());
+  assert.deepEqual(keyboardInputs.map((event) => ({
+    event: event.event,
+    code: event.code,
+    shiftKey: event.shiftKey,
+    isComposing: event.isComposing,
+    targetKey: event.targetKey,
+    targetKind: event.targetKind,
+    defaultPrevented: event.defaultPrevented,
+    bindingId: event.bindingId,
+  })), [
+    { event: "keydown", code: "KeyC", shiftKey: false, isComposing: false, targetKey: "wheel-probe", targetKind: "canvas", defaultPrevented: false, bindingId: null },
+    { event: "keydown", code: "Space", shiftKey: false, isComposing: false, targetKey: "keyboard-button", targetKind: "control", defaultPrevented: false, bindingId: null },
+    { event: "keydown", code: "KeyI", shiftKey: false, isComposing: false, targetKey: "keyboard-input", targetKind: "editable", defaultPrevented: false, bindingId: null },
+    { event: "keydown", code: "Enter", shiftKey: true, isComposing: false, targetKey: "keyboard-textarea", targetKind: "editable", defaultPrevented: false, bindingId: null },
+    { event: "keydown", code: "Enter", shiftKey: false, isComposing: false, targetKey: "keyboard-textarea", targetKind: "editable", defaultPrevented: true, bindingId: "commit-keyboard-textarea" },
+    { event: "keyup", code: "Enter", shiftKey: false, isComposing: false, targetKey: "keyboard-textarea", targetKind: "editable", defaultPrevented: false, bindingId: null },
+    { event: "keydown", code: "Enter", shiftKey: false, isComposing: true, targetKey: "keyboard-textarea", targetKind: "editable", defaultPrevented: false, bindingId: null },
+  ]);
   await page.waitForFunction(() => window.__redevpluginHarness.snapshot().interactions.some(
     (event) => event.kind === "wheel" && event.localScroll === true,
   ));

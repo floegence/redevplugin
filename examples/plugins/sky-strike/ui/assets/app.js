@@ -314,6 +314,7 @@
     "max_text_length": 65536,
     "max_attribute_value_length": 4096,
     "max_form_fields": 128,
+    "max_keyboard_bindings": 128,
     "max_canvas_count": 4,
     "max_canvas_dimension": 4096,
     "max_canvas_total_pixels": 16777216,
@@ -741,6 +742,7 @@
     #pending = /* @__PURE__ */ new Map();
     #actionHandlers = /* @__PURE__ */ new Map();
     #canvasInputHandlers = /* @__PURE__ */ new Map();
+    #keyboardInputHandlers = /* @__PURE__ */ new Set();
     #lifecycleHandlers = /* @__PURE__ */ new Set();
     #contextHandlers = /* @__PURE__ */ new Set();
     #context;
@@ -902,6 +904,37 @@
         description: state.description
       });
     }
+    setKeyboardBindings(bindings) {
+      this.#assertActive();
+      if (!validKeyboardBindings(bindings)) {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface keyboard bindings are invalid");
+      }
+      const id = this.#requestID("keyboard");
+      return this.#request(id, {
+        type: "redevplugin.ui.keyboard.bindings",
+        id,
+        bindings: bindings.map((binding) => ({
+          binding_id: binding.id,
+          event: binding.event,
+          code: binding.code,
+          repeat: binding.repeat,
+          alt_key: binding.altKey,
+          ctrl_key: binding.ctrlKey,
+          meta_key: binding.metaKey,
+          shift_key: binding.shiftKey,
+          target_key: binding.targetKey,
+          target_kind: binding.targetKind
+        }))
+      });
+    }
+    onKeyboardInput(handler) {
+      this.#assertActive();
+      if (typeof handler !== "function") {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface keyboard input subscription is invalid");
+      }
+      this.#keyboardInputHandlers.add(handler);
+      return () => this.#keyboardInputHandlers.delete(handler);
+    }
     loadImageAsset(assetId) {
       this.#assertActive();
       if (!validUIIdentifier(assetId)) {
@@ -961,6 +994,7 @@
       this.#pending.clear();
       this.#actionHandlers.clear();
       this.#canvasInputHandlers.clear();
+      this.#keyboardInputHandlers.clear();
       this.#lifecycleHandlers.clear();
       this.#contextHandlers.clear();
       this.#context = void 0;
@@ -1190,6 +1224,11 @@
       const canvasInput = publicCanvasInputMessage(data);
       if (canvasInput) {
         for (const handler of this.#canvasInputHandlers.get(canvasInput.canvasId) ?? []) handler(canvasInput.event);
+        return;
+      }
+      const keyboardInput = publicKeyboardInputMessage(data);
+      if (keyboardInput) {
+        for (const handler of this.#keyboardInputHandlers) handler(keyboardInput);
       }
     }
     #requestID(prefix) {
@@ -1397,6 +1436,26 @@
       form_data: value.form_data
     });
   }
+  function publicKeyboardInputMessage(value) {
+    if (!isRecord(value) || !hasExactKeys(value, ["type", "event"]) || value.type !== "redevplugin.ui.keyboard.input" || !isRecord(value.event)) return void 0;
+    const event = value.event;
+    if (!hasExactKeys(event, ["event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"]) || event.event !== "keydown" && event.event !== "keyup" || typeof event.code !== "string" || event.code.length > 64 || typeof event.key !== "string" || event.key.length > 64 || typeof event.repeat !== "boolean" || typeof event.alt_key !== "boolean" || typeof event.ctrl_key !== "boolean" || typeof event.meta_key !== "boolean" || typeof event.shift_key !== "boolean" || typeof event.is_composing !== "boolean" || event.target_key !== null && !validUIIdentifier(event.target_key) || event.target_kind !== "canvas" && event.target_kind !== "editable" && event.target_kind !== "control" && event.target_kind !== "surface" || typeof event.default_prevented !== "boolean" || event.binding_id !== null && !validActionID(event.binding_id)) return void 0;
+    return {
+      event: event.event,
+      code: event.code,
+      key: event.key,
+      repeat: event.repeat,
+      altKey: event.alt_key,
+      ctrlKey: event.ctrl_key,
+      metaKey: event.meta_key,
+      shiftKey: event.shift_key,
+      isComposing: event.is_composing,
+      targetKey: event.target_key,
+      targetKind: event.target_kind,
+      defaultPrevented: event.default_prevented,
+      bindingId: event.binding_id
+    };
+  }
   function isCanvasReadyCandidate(value) {
     return isRecord(value) && value.type === "redevplugin.ui.canvas.ready" && typeof value.id === "string" && typeof value.canvas_id === "string";
   }
@@ -1497,12 +1556,38 @@
   var pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
   var pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
   var opaqueHandlePattern2 = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-  var bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset)_([1-9][0-9]{0,15})$/;
+  var bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard)_([1-9][0-9]{0,15})$/;
   function validBridgeRequestID(value, expectedKind) {
     if (typeof value !== "string") return false;
     const match = bridgeRequestIDPattern.exec(value);
     if (!match || expectedKind && match[1] !== expectedKind) return false;
     return Number.isSafeInteger(Number(match[2]));
+  }
+  function validKeyboardBinding(value) {
+    return isRecord(value) && hasExactKeys(value, ["id", "event", "code", "repeat", "altKey", "ctrlKey", "metaKey", "shiftKey", "targetKey", "targetKind"]) && validActionID(value.id) && (value.event === "keydown" || value.event === "keyup") && typeof value.code === "string" && value.code.length > 0 && value.code.length <= 64 && typeof value.repeat === "boolean" && typeof value.altKey === "boolean" && typeof value.ctrlKey === "boolean" && typeof value.metaKey === "boolean" && typeof value.shiftKey === "boolean" && (value.targetKey === null || validUIIdentifier(value.targetKey)) && (value.targetKind === "canvas" || value.targetKind === "editable" || value.targetKind === "control" || value.targetKind === "surface");
+  }
+  function validKeyboardBindings(value) {
+    if (!Array.isArray(value) || value.length > 128 || !value.every(validKeyboardBinding)) return false;
+    const ids = /* @__PURE__ */ new Set();
+    const matchers = /* @__PURE__ */ new Set();
+    for (const binding of value) {
+      if (ids.has(binding.id)) return false;
+      ids.add(binding.id);
+      const matcher = JSON.stringify([
+        binding.event,
+        binding.code,
+        binding.repeat,
+        binding.altKey,
+        binding.ctrlKey,
+        binding.metaKey,
+        binding.shiftKey,
+        binding.targetKey,
+        binding.targetKind
+      ]);
+      if (matchers.has(matcher)) return false;
+      matchers.add(matcher);
+    }
+    return true;
   }
   function validMethod(value) {
     return typeof value === "string" && pluginMethodPattern.test(value);

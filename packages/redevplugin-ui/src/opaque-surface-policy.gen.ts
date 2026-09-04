@@ -221,6 +221,7 @@ export const opaqueSurfaceRenderLimits = {
   "max_text_length": 65536,
   "max_attribute_value_length": 4096,
   "max_form_fields": 128,
+  "max_keyboard_bindings": 128,
   "max_canvas_count": 4,
   "max_canvas_dimension": 4096,
   "max_canvas_total_pixels": 16777216,

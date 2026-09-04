@@ -4,7 +4,11 @@ import type {
   PluginSettingsPatchRequest,
 } from "../src/platform.js";
 import type { OpaquePluginBootstrapHTMLOptions } from "../src/surface.js";
-import type { PluginCanvasWheelEvent } from "../src/plugin.js";
+import type {
+  PluginCanvasWheelEvent,
+  PluginSurfaceKeyboardBinding,
+  PluginSurfaceKeyboardEvent,
+} from "../src/plugin.js";
 
 type IsUnknown<T> = unknown extends T ? ([keyof T] extends [never] ? true : false) : false;
 
@@ -57,6 +61,36 @@ const wheelInput: PluginCanvasWheelEvent = {
   shiftKey: false,
 };
 void wheelInput;
+
+const commitBinding: PluginSurfaceKeyboardBinding = {
+  id: "commit-node-title",
+  event: "keydown",
+  code: "Enter",
+  repeat: false,
+  altKey: false,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+  targetKey: "node-title-editor",
+  targetKind: "editable",
+};
+const keyboardInput: PluginSurfaceKeyboardEvent = {
+  event: "keydown",
+  code: "Enter",
+  key: "Enter",
+  repeat: false,
+  altKey: false,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+  isComposing: false,
+  targetKey: "node-title-editor",
+  targetKind: "editable",
+  defaultPrevented: true,
+  bindingId: "commit-node-title",
+};
+void commitBinding;
+void keyboardInput;
 
 const currentBootstrapOptions: OpaquePluginBootstrapHTMLOptions = { scriptNonce: "nonce_test" };
 // @ts-expect-error UI compatibility is selected only by plugin_api; callers cannot negotiate another UI version.

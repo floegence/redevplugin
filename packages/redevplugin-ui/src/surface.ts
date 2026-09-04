@@ -208,6 +208,37 @@ export type PluginCanvasWheelEvent = {
 
 export type PluginCanvasInputEvent = PluginCanvasFocusEvent | PluginCanvasResizeEvent | PluginCanvasKeyEvent | PluginCanvasPointerEvent | PluginCanvasWheelEvent;
 
+export type PluginSurfaceKeyboardTargetKind = "canvas" | "editable" | "control" | "surface";
+
+export type PluginSurfaceKeyboardBinding = {
+  id: string;
+  event: "keydown" | "keyup";
+  code: string;
+  repeat: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  targetKey: string | null;
+  targetKind: PluginSurfaceKeyboardTargetKind;
+};
+
+export type PluginSurfaceKeyboardEvent = {
+  event: "keydown" | "keyup";
+  code: string;
+  key: string;
+  repeat: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+  targetKey: string | null;
+  targetKind: PluginSurfaceKeyboardTargetKind;
+  defaultPrevented: boolean;
+  bindingId: string | null;
+};
+
 export type PluginMethodResult<T = unknown> = {
   data: T;
   execution_id?: string;
@@ -431,6 +462,7 @@ export class PluginBridgeClient {
   #pending = new Map<string, PendingCall>();
   #actionHandlers = new Map<string, Set<(event: PluginUIActionEvent) => void>>();
   #canvasInputHandlers = new Map<string, Set<(event: PluginCanvasInputEvent) => void>>();
+  #keyboardInputHandlers = new Set<(event: PluginSurfaceKeyboardEvent) => void>();
   #lifecycleHandlers = new Set<(event: BridgeLifecycleEvent) => Promise<void> | void>();
   #contextHandlers = new Set<(context: PluginSurfaceContext) => void>();
   #context?: PluginSurfaceContext;
@@ -626,6 +658,39 @@ export class PluginBridgeClient {
     });
   }
 
+  setKeyboardBindings(bindings: readonly PluginSurfaceKeyboardBinding[]): Promise<void> {
+    this.#assertActive();
+    if (!validKeyboardBindings(bindings)) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface keyboard bindings are invalid");
+    }
+    const id = this.#requestID("keyboard");
+    return this.#request<void>(id, {
+      type: "redevplugin.ui.keyboard.bindings",
+      id,
+      bindings: bindings.map((binding) => ({
+        binding_id: binding.id,
+        event: binding.event,
+        code: binding.code,
+        repeat: binding.repeat,
+        alt_key: binding.altKey,
+        ctrl_key: binding.ctrlKey,
+        meta_key: binding.metaKey,
+        shift_key: binding.shiftKey,
+        target_key: binding.targetKey,
+        target_kind: binding.targetKind,
+      })),
+    });
+  }
+
+  onKeyboardInput(handler: (event: PluginSurfaceKeyboardEvent) => void): () => void {
+    this.#assertActive();
+    if (typeof handler !== "function") {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface keyboard input subscription is invalid");
+    }
+    this.#keyboardInputHandlers.add(handler);
+    return () => this.#keyboardInputHandlers.delete(handler);
+  }
+
   loadImageAsset(assetId: string): Promise<ImageBitmap> {
     this.#assertActive();
     if (!validUIIdentifier(assetId)) {
@@ -689,6 +754,7 @@ export class PluginBridgeClient {
     this.#pending.clear();
     this.#actionHandlers.clear();
     this.#canvasInputHandlers.clear();
+    this.#keyboardInputHandlers.clear();
     this.#lifecycleHandlers.clear();
     this.#contextHandlers.clear();
     this.#context = undefined;
@@ -931,6 +997,11 @@ export class PluginBridgeClient {
     const canvasInput = publicCanvasInputMessage(data);
     if (canvasInput) {
       for (const handler of this.#canvasInputHandlers.get(canvasInput.canvasId) ?? []) handler(canvasInput.event);
+      return;
+    }
+    const keyboardInput = publicKeyboardInputMessage(data);
+    if (keyboardInput) {
+      for (const handler of this.#keyboardInputHandlers) handler(keyboardInput);
     }
   }
 
@@ -1435,6 +1506,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const maxTextLength = ${opaqueSurfaceRenderLimits.max_text_length};
   const maxAttributeValueLength = ${opaqueSurfaceRenderLimits.max_attribute_value_length};
   const maxFormFields = ${opaqueSurfaceRenderLimits.max_form_fields};
+  const maxKeyboardBindings = ${opaqueSurfaceRenderLimits.max_keyboard_bindings};
   const maxCanvasCount = ${opaqueSurfaceRenderLimits.max_canvas_count};
   const maxCanvasDimension = ${opaqueSurfaceRenderLimits.max_canvas_dimension};
   const maxCanvasTotalPixels = ${opaqueSurfaceRenderLimits.max_canvas_total_pixels};
@@ -1560,7 +1632,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   let runtimeDisposed = false;
   const pendingWorkerRequests = new Set();
   const pendingRendererCommits = new Set();
-  const requestSequence = { rpc: 0, execution: 0, render: 0, canvas: 0, asset: 0 };
+  const requestSequence = { rpc: 0, execution: 0, render: 0, canvas: 0, asset: 0, keyboard: 0 };
   let executionQuerySurfaceTokens = 8;
   let executionQuerySurfaceRefillAt = performance.now();
   const executionQueryStateIdleMS = 120000;
@@ -1574,6 +1646,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   let uiGraph = new Map();
   let uiNodes = new Map();
   const controlEdits = new Map();
+  let keyboardBindings = [];
   let lastAutofocusIdentity = "";
   const pendingAssets = new Map();
   const queuedAssets = [];
@@ -1590,6 +1663,55 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   let retainedImageCount = 0;
   let retainedImagePixels = 0;
   const canvasRuntimes = new Map();
+
+  const keyboardTarget = (target) => {
+    const origin = target instanceof Element ? target : document.activeElement instanceof Element ? document.activeElement : null;
+    const keyed = origin?.closest("[data-redevplugin-key]");
+    const key = keyed?.getAttribute("data-redevplugin-key");
+    const targetKey = validResourceIdentifier(key) ? key : null;
+    const control = origin?.closest("canvas, input, textarea, select, button");
+    if (!control) return { targetKey, targetKind: "surface" };
+    const tag = control.tagName.toLowerCase();
+    if (tag === "canvas") return { targetKey, targetKind: "canvas" };
+    if (tag === "textarea") return { targetKey, targetKind: "editable" };
+    if (tag === "input" && ["text", "search", "number"].includes((control.getAttribute("type") || "text").toLowerCase())) {
+      return { targetKey, targetKind: "editable" };
+    }
+    return { targetKey, targetKind: "control" };
+  };
+  const handleSurfaceKeyboard = (event) => {
+    if (!initialized || runtimeDisposed || pendingQuiesceID || !workerPort || !["keydown", "keyup"].includes(event.type)) return;
+    const target = keyboardTarget(event.target);
+    const edit = target.targetKey === null ? undefined : controlEdits.get(target.targetKey);
+    const isComposing = Boolean(event.isComposing || edit?.isComposing);
+    const binding = isComposing ? undefined : keyboardBindings.find((candidate) =>
+      candidate.event === event.type && candidate.code === String(event.code || "") &&
+      candidate.repeat === Boolean(event.repeat) && candidate.alt_key === Boolean(event.altKey) &&
+      candidate.ctrl_key === Boolean(event.ctrlKey) && candidate.meta_key === Boolean(event.metaKey) &&
+      candidate.shift_key === Boolean(event.shiftKey) && candidate.target_key === target.targetKey &&
+      candidate.target_kind === target.targetKind
+    );
+    if (binding) event.preventDefault();
+    sendWorker({
+      type: "redevplugin.ui.keyboard.input",
+      event: {
+        event: event.type,
+        code: String(event.code || "").slice(0, 64),
+        key: String(event.key || "").slice(0, 64),
+        repeat: Boolean(event.repeat),
+        alt_key: Boolean(event.altKey),
+        ctrl_key: Boolean(event.ctrlKey),
+        meta_key: Boolean(event.metaKey),
+        shift_key: Boolean(event.shiftKey),
+        is_composing: isComposing,
+        target_key: target.targetKey,
+        target_kind: target.targetKind,
+        default_prevented: Boolean(event.defaultPrevented),
+        binding_id: binding?.binding_id || null,
+      },
+    });
+  };
+  for (const eventType of ["keydown", "keyup"]) document.addEventListener(eventType, handleSurfaceKeyboard, true);
 
   const sendParent = (message) => {
     if (parentPort && withinLimit(message)) parentPort.postMessage(message);
@@ -1670,6 +1792,8 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     workerHeartbeatTimeout = undefined;
     workerHeartbeatPendingID = undefined;
     workerReady = false;
+    keyboardBindings = [];
+    for (const eventType of ["keydown", "keyup"]) document.removeEventListener(eventType, handleSurfaceKeyboard, true);
     for (const runtime of canvasRuntimes.values()) runtime.dispose();
     canvasRuntimes.clear();
     if (workerControlPort) {
@@ -2681,7 +2805,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
   const requestID = (value, expectedKind) => {
     if (typeof value !== "string") return undefined;
-    const match = /^(rpc|execution|render|canvas|asset)_([1-9][0-9]{0,15})$/.exec(value);
+    const match = /^(rpc|execution|render|canvas|asset|keyboard)_([1-9][0-9]{0,15})$/.exec(value);
     if (!match || match[1] !== expectedKind) return undefined;
     const sequence = Number(match[2]);
     return Number.isSafeInteger(sequence) ? { kind: match[1], sequence } : undefined;
@@ -2694,6 +2818,26 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     return true;
   };
   const completeWorkerRequest = (id) => pendingWorkerRequests.delete(id);
+  const validKeyboardBinding = (value) => exactKeys(value, ["binding_id", "event", "code", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "target_key", "target_kind"]) &&
+    validIdentifier(value.binding_id) && ["keydown", "keyup"].includes(value.event) &&
+    typeof value.code === "string" && value.code.length > 0 && value.code.length <= 64 &&
+    typeof value.repeat === "boolean" && typeof value.alt_key === "boolean" && typeof value.ctrl_key === "boolean" &&
+    typeof value.meta_key === "boolean" && typeof value.shift_key === "boolean" &&
+    (value.target_key === null || validResourceIdentifier(value.target_key)) &&
+    ["canvas", "editable", "control", "surface"].includes(value.target_kind);
+  const validKeyboardBindings = (value) => {
+    if (!Array.isArray(value) || value.length > maxKeyboardBindings || !value.every(validKeyboardBinding)) return false;
+    const ids = new Set();
+    const matchers = new Set();
+    for (const binding of value) {
+      if (ids.has(binding.binding_id)) return false;
+      ids.add(binding.binding_id);
+      const matcher = JSON.stringify([binding.event, binding.code, binding.repeat, binding.alt_key, binding.ctrl_key, binding.meta_key, binding.shift_key, binding.target_key, binding.target_kind]);
+      if (matchers.has(matcher)) return false;
+      matchers.add(matcher);
+    }
+    return true;
+  };
   const completeExecutionQueryRequest = (id) => {
     const executionID = executionQueryRequests.get(id);
     executionQueryRequests.delete(id);
@@ -2998,6 +3142,17 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     if (exactKeys(message, ["type", "id", "canvas_id", "label", "description"]) && message.type === "redevplugin.ui.canvas.accessibility" && typeof message.id === "string" && validResourceIdentifier(message.canvas_id)) {
       if (!acceptWorkerRequest(message.id, "canvas")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
       updateCanvasAccessibility(message.id, message.canvas_id, message.label, message.description);
+      return;
+    }
+    if (exactKeys(message, ["type", "id", "bindings"]) && message.type === "redevplugin.ui.keyboard.bindings" && typeof message.id === "string") {
+      if (!acceptWorkerRequest(message.id, "keyboard")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      if (!validKeyboardBindings(message.bindings)) {
+        completeWorkerRequest(message.id);
+        return rejectWorkerRequest(message.id, "plugin surface keyboard bindings are invalid");
+      }
+      keyboardBindings = message.bindings.map((binding) => ({ ...binding }));
+      completeWorkerRequest(message.id);
+      sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
       return;
     }
     if (exactKeys(message, ["type", "id", "asset_id"]) && message.type === "redevplugin.ui.asset.image.open" && typeof message.id === "string" && validResourceIdentifier(message.asset_id)) {
@@ -5109,6 +5264,34 @@ type PluginCanvasReadyMessage = {
   device_pixel_ratio: number;
 };
 
+function publicKeyboardInputMessage(value: unknown): PluginSurfaceKeyboardEvent | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, ["type", "event"]) || value.type !== "redevplugin.ui.keyboard.input" || !isRecord(value.event)) return undefined;
+  const event = value.event;
+  if (!hasExactKeys(event, ["event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"]) ||
+      (event.event !== "keydown" && event.event !== "keyup") || typeof event.code !== "string" || event.code.length > 64 ||
+      typeof event.key !== "string" || event.key.length > 64 || typeof event.repeat !== "boolean" ||
+      typeof event.alt_key !== "boolean" || typeof event.ctrl_key !== "boolean" || typeof event.meta_key !== "boolean" ||
+      typeof event.shift_key !== "boolean" || typeof event.is_composing !== "boolean" ||
+      (event.target_key !== null && !validUIIdentifier(event.target_key)) ||
+      (event.target_kind !== "canvas" && event.target_kind !== "editable" && event.target_kind !== "control" && event.target_kind !== "surface") ||
+      typeof event.default_prevented !== "boolean" || (event.binding_id !== null && !validActionID(event.binding_id))) return undefined;
+  return {
+    event: event.event,
+    code: event.code,
+    key: event.key,
+    repeat: event.repeat,
+    altKey: event.alt_key,
+    ctrlKey: event.ctrl_key,
+    metaKey: event.meta_key,
+    shiftKey: event.shift_key,
+    isComposing: event.is_composing,
+    targetKey: event.target_key,
+    targetKind: event.target_kind,
+    defaultPrevented: event.default_prevented,
+    bindingId: event.binding_id,
+  };
+}
+
 type PluginImageReadyMessage = {
   type: "redevplugin.ui.asset.image.ready";
   id: string;
@@ -5288,13 +5471,40 @@ const pluginMethodPattern = new RegExp("^[-A-Za-z0-9._:]{1,256}$");
 const pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
 const pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
 const opaqueHandlePattern = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-const bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset)_([1-9][0-9]{0,15})$/;
+const bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard)_([1-9][0-9]{0,15})$/;
 
-function validBridgeRequestID(value: unknown, expectedKind?: "rpc" | "execution" | "render" | "canvas" | "asset"): value is string {
+function validBridgeRequestID(value: unknown, expectedKind?: "rpc" | "execution" | "render" | "canvas" | "asset" | "keyboard"): value is string {
   if (typeof value !== "string") return false;
   const match = bridgeRequestIDPattern.exec(value);
   if (!match || (expectedKind && match[1] !== expectedKind)) return false;
   return Number.isSafeInteger(Number(match[2]));
+}
+
+function validKeyboardBinding(value: unknown): value is PluginSurfaceKeyboardBinding {
+  return isRecord(value) && hasExactKeys(value, ["id", "event", "code", "repeat", "altKey", "ctrlKey", "metaKey", "shiftKey", "targetKey", "targetKind"]) &&
+    validActionID(value.id) && (value.event === "keydown" || value.event === "keyup") &&
+    typeof value.code === "string" && value.code.length > 0 && value.code.length <= 64 &&
+    typeof value.repeat === "boolean" && typeof value.altKey === "boolean" && typeof value.ctrlKey === "boolean" &&
+    typeof value.metaKey === "boolean" && typeof value.shiftKey === "boolean" &&
+    (value.targetKey === null || validUIIdentifier(value.targetKey)) &&
+    (value.targetKind === "canvas" || value.targetKind === "editable" || value.targetKind === "control" || value.targetKind === "surface");
+}
+
+function validKeyboardBindings(value: unknown): value is readonly PluginSurfaceKeyboardBinding[] {
+  if (!Array.isArray(value) || value.length > 128 || !value.every(validKeyboardBinding)) return false;
+  const ids = new Set<string>();
+  const matchers = new Set<string>();
+  for (const binding of value) {
+    if (ids.has(binding.id)) return false;
+    ids.add(binding.id);
+    const matcher = JSON.stringify([
+      binding.event, binding.code, binding.repeat, binding.altKey, binding.ctrlKey,
+      binding.metaKey, binding.shiftKey, binding.targetKey, binding.targetKind,
+    ]);
+    if (matchers.has(matcher)) return false;
+    matchers.add(matcher);
+  }
+  return true;
 }
 
 function validMethod(value: unknown): value is string {

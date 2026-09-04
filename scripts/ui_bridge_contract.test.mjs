@@ -78,3 +78,25 @@ test("current UI contract exposes one closed finite canvas wheel event", () => {
     assert.equal(wheel.properties[name].type, "number");
   }
 });
+
+test("current UI contract exposes closed surface keyboard bindings and input", () => {
+  for (const definition of ["keyboard_bindings", "keyboard_input"]) {
+    const withoutDefinition = structuredClone(baseline);
+    delete withoutDefinition.activeSchema.$defs[definition];
+    assert.throws(() => validateUIBridgeInputs(withoutDefinition), new RegExp(`current ${definition} frame is not closed and exact`));
+
+    const withoutReference = structuredClone(baseline);
+    withoutReference.activeSchema.oneOf = withoutReference.activeSchema.oneOf.filter(
+      ({ $ref }) => $ref !== `#/$defs/${definition}`,
+    );
+    assert.throws(() => validateUIBridgeInputs(withoutReference), new RegExp(`exactly one ${definition} frame reference`));
+  }
+
+  const withOpenBinding = structuredClone(baseline);
+  withOpenBinding.activeSchema.$defs.keyboard_binding.properties.unexpected = { type: "string" };
+  assert.throws(() => validateUIBridgeInputs(withOpenBinding), /keyboard_binding declaration is not closed and exact/);
+
+  const withOpenEvent = structuredClone(baseline);
+  withOpenEvent.activeSchema.$defs.keyboard_input.properties.event.properties.unexpected = { type: "string" };
+  assert.throws(() => validateUIBridgeInputs(withOpenEvent), /keyboard_input frame is not closed and exact/);
+});

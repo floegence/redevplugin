@@ -978,12 +978,155 @@ test("plugin bridge normalizes canvas focus, resize, keyboard, pointer, and whee
   client.dispose();
 });
 
+test("plugin bridge installs exact surface keyboard bindings and normalizes keyboard input", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+
+  const installing = client.setKeyboardBindings([{
+    id: "commit-node-title",
+    event: "keydown",
+    code: "Enter",
+    repeat: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    targetKey: "node-title-editor",
+    targetKind: "editable",
+  }]);
+  assert.deepEqual(pluginPort.sent[0], {
+    type: "redevplugin.ui.keyboard.bindings",
+    id: "keyboard_1",
+    bindings: [{
+      binding_id: "commit-node-title",
+      event: "keydown",
+      code: "Enter",
+      repeat: false,
+      alt_key: false,
+      ctrl_key: false,
+      meta_key: false,
+      shift_key: false,
+      target_key: "node-title-editor",
+      target_kind: "editable",
+    }],
+  });
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "keyboard_1", ok: true });
+  await installing;
+
+  const events: unknown[] = [];
+  const unsubscribe = client.onKeyboardInput((event) => events.push(event));
+  for (const event of [
+    {
+      event: "keydown", code: "Enter", key: "Enter", repeat: false,
+      alt_key: false, ctrl_key: false, meta_key: false, shift_key: false,
+      is_composing: false, target_key: "node-title-editor", target_kind: "editable",
+      default_prevented: true, binding_id: "commit-node-title",
+    },
+    {
+      event: "keyup", code: "Enter", key: "Enter", repeat: false,
+      alt_key: false, ctrl_key: false, meta_key: false, shift_key: false,
+      is_composing: false, target_key: "node-title-editor", target_kind: "editable",
+      default_prevented: false, binding_id: null,
+    },
+  ]) rendererPort.postMessage({ type: "redevplugin.ui.keyboard.input", event });
+  rendererPort.postMessage({
+    type: "redevplugin.ui.keyboard.input",
+    event: {
+      event: "keydown", code: "Enter", key: "Enter", repeat: false,
+      alt_key: false, ctrl_key: false, meta_key: false, shift_key: false,
+      is_composing: false, target_key: "missing key", target_kind: "editable",
+      default_prevented: true, binding_id: "commit-node-title",
+    },
+  });
+  await Promise.resolve();
+
+  assert.deepEqual(events, [{
+    event: "keydown",
+    code: "Enter",
+    key: "Enter",
+    repeat: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    isComposing: false,
+    targetKey: "node-title-editor",
+    targetKind: "editable",
+    defaultPrevented: true,
+    bindingId: "commit-node-title",
+  }, {
+    event: "keyup",
+    code: "Enter",
+    key: "Enter",
+    repeat: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    isComposing: false,
+    targetKey: "node-title-editor",
+    targetKind: "editable",
+    defaultPrevented: false,
+    bindingId: null,
+  }]);
+
+  unsubscribe();
+  rendererPort.postMessage({
+    type: "redevplugin.ui.keyboard.input",
+    event: {
+      event: "keydown", code: "KeyA", key: "a", repeat: false,
+      alt_key: false, ctrl_key: false, meta_key: false, shift_key: false,
+      is_composing: false, target_key: null, target_kind: "surface",
+      default_prevented: false, binding_id: null,
+    },
+  });
+  await Promise.resolve();
+  assert.equal(events.length, 2);
+  client.dispose();
+});
+
+test("surface keyboard bindings reject ambiguous and malformed declarations", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+  const binding = {
+    id: "commit-node-title",
+    event: "keydown" as const,
+    code: "Enter",
+    repeat: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    targetKey: "node-title-editor",
+    targetKind: "editable" as const,
+  };
+  assert.throws(() => client.setKeyboardBindings([binding, { ...binding, id: "other" }]),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST");
+  assert.throws(() => client.setKeyboardBindings([{ ...binding, code: "x".repeat(65) }]),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST");
+  client.dispose();
+});
+
 test("opaque bootstrap forwards canvas wheel input and suppresses ancestor scrolling", () => {
   const html = createOpaquePluginBootstrapHTML({ scriptNonce: "nonce_canvas_wheel" });
   assert.equal(/const handleWheel = \(event\) =>/u.test(html), true);
   assert.equal(/listen\("wheel", handleWheel\)/u.test(html), true);
   assert.equal(/event\.preventDefault\(\)/u.test(html), true);
   assert.equal(/delta_mode: \[0, 1, 2\]\.includes\(event\.deltaMode\) \? event\.deltaMode : 0/u.test(html), true);
+});
+
+test("opaque bootstrap captures complete surface keyboard input and applies bindings synchronously", () => {
+  const html = createOpaquePluginBootstrapHTML({ scriptNonce: "nonce_keyboard_input" });
+  assert.equal(/redevplugin\.ui\.keyboard\.bindings/u.test(html), true);
+  assert.equal(/redevplugin\.ui\.keyboard\.input/u.test(html), true);
+  assert.equal(/for \(const eventType of \["keydown", "keyup"\]\)/u.test(html), true);
+  assert.equal(/event\.isComposing/u.test(html), true);
+  assert.equal(/binding_id/u.test(html), true);
+  assert.equal(/default_prevented/u.test(html), true);
 });
 
 test("plugin bridge client rejects malformed capability errors immediately", async () => {

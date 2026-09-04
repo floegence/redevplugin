@@ -2,6 +2,7 @@ import {
   PluginBridgeClient,
   type PluginCanvasWheelEvent,
   type PluginMethodResult,
+  type PluginSurfaceKeyboardEvent,
   type PluginUIVNode,
 } from "../../../packages/redevplugin-ui/src/plugin.js";
 import { runWorkerSecurityProbe, type WorkerSecurityProbe } from "./worker-security-probe.js";
@@ -24,6 +25,7 @@ const state = {
   busy: false,
   security: {} as WorkerSecurityProbe,
   canvasWheel: null as PluginCanvasWheelEvent | null,
+  keyboardInputs: [] as PluginSurfaceKeyboardEvent[],
 };
 
 bridge.onAction("call-host", () => void callHost());
@@ -33,6 +35,11 @@ bridge.onAction("observe-execution", () => void observeExecution());
 bridge.onCanvasInput("wheel-probe", (event) => {
   if (event.type !== "wheel") return;
   state.canvasWheel = event;
+  void render();
+});
+bridge.onKeyboardInput((event) => {
+  state.keyboardInputs.push(event);
+  if (state.keyboardInputs.length > 16) state.keyboardInputs.shift();
   void render();
 });
 bridge.onLifecycle(async (event) => {
@@ -48,9 +55,22 @@ void initialize();
 async function initialize(): Promise<void> {
   state.security = await runWorkerSecurityProbe();
   await bridge.ready();
+  await render();
+  await bridge.setKeyboardBindings([{
+    id: "commit-keyboard-textarea",
+    event: "keydown",
+    code: "Enter",
+    repeat: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    targetKey: "keyboard-textarea",
+    targetKind: "editable",
+  }]);
+  await bridge.openCanvas("wheel-probe");
   state.status = "Ready";
   await render();
-  await bridge.openCanvas("wheel-probe");
 }
 
 async function callHost(): Promise<void> {
@@ -184,6 +204,34 @@ function render(): Promise<void> {
         tag: "pre",
         attributes: { id: "canvas-wheel", "aria-label": "Latest canvas wheel input" },
         children: [text("canvas-wheel-text", state.canvasWheel ? JSON.stringify(state.canvasWheel) : "Waiting for canvas wheel input")],
+      },
+      {
+        type: "element",
+        key: "keyboard-input",
+        tag: "input",
+        attributes: { id: "keyboard-input", type: "text", "aria-label": "Keyboard input probe" },
+        children: [],
+      },
+      {
+        type: "element",
+        key: "keyboard-textarea",
+        tag: "textarea",
+        attributes: { id: "keyboard-textarea", "aria-label": "Keyboard textarea probe", rows: 2 },
+        children: [],
+      },
+      {
+        type: "element",
+        key: "keyboard-button",
+        tag: "button",
+        attributes: { id: "keyboard-button", type: "button" },
+        children: [text("keyboard-button-text", "Keyboard button probe")],
+      },
+      {
+        type: "element",
+        key: "keyboard-events",
+        tag: "pre",
+        attributes: { id: "keyboard-events", "aria-label": "Surface keyboard inputs" },
+        children: [text("keyboard-events-text", JSON.stringify(state.keyboardInputs))],
       },
       {
         type: "element",

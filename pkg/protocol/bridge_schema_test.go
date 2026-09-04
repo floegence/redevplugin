@@ -25,6 +25,8 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	requireConst(t, defs, "canvas_accessibility", "type", "redevplugin.ui.canvas.accessibility")
 	requireConst(t, defs, "canvas_ready", "type", "redevplugin.ui.canvas.ready")
 	requireConst(t, defs, "canvas_input", "type", "redevplugin.ui.canvas.input")
+	requireConst(t, defs, "keyboard_bindings", "type", "redevplugin.ui.keyboard.bindings")
+	requireConst(t, defs, "keyboard_input", "type", "redevplugin.ui.keyboard.input")
 	requireConst(t, defs, "image_open", "type", "redevplugin.ui.asset.image.open")
 	requireConst(t, defs, "image_ready", "type", "redevplugin.ui.asset.image.ready")
 	requireConst(t, defs, "lifecycle", "type", "redevplugin.bridge.lifecycle")
@@ -40,7 +42,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatalf("call params type = %#v, want object", params["type"])
 	}
 	requestID := requireDef(t, defs, "request_id")
-	if got := requestID["pattern"]; got != "^(rpc|execution|render|canvas|asset)_[1-9][0-9]{0,15}$" {
+	if got := requestID["pattern"]; got != "^(rpc|execution|render|canvas|asset|keyboard)_[1-9][0-9]{0,15}$" {
 		t.Fatalf("request id pattern = %#v", got)
 	}
 	cancel := requireDef(t, defs, "cancel")
@@ -58,6 +60,13 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	assertStringSet(t, requireStringSlice(t, executionEvents["required"], "execution events required"), []string{"type", "id", "execution_id", "after_cursor"}, "execution events required")
 	canvasAccessibility := requireDef(t, defs, "canvas_accessibility")
 	assertStringSet(t, requireStringSlice(t, canvasAccessibility["required"], "canvas accessibility required"), []string{"type", "id", "canvas_id", "label", "description"}, "canvas accessibility required")
+	keyboardBindings := requireDef(t, defs, "keyboard_bindings")
+	assertStringSet(t, requireStringSlice(t, keyboardBindings["required"], "keyboard bindings required"), []string{"type", "id", "bindings"}, "keyboard bindings required")
+	keyboardBinding := requireDef(t, defs, "keyboard_binding")
+	assertStringSet(t, requireStringSlice(t, keyboardBinding["required"], "keyboard binding required"), []string{"binding_id", "event", "code", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "target_key", "target_kind"}, "keyboard binding required")
+	keyboardInput := requireDef(t, defs, "keyboard_input")
+	keyboardEvent := requireNestedObject(t, keyboardInput, "properties", "event")
+	assertStringSet(t, requireStringSlice(t, keyboardEvent["required"], "keyboard input event required"), []string{"event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"}, "keyboard input event required")
 
 	response := requireDef(t, defs, "response")
 	responseVariants, ok := response["oneOf"].([]any)
@@ -232,6 +241,7 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 		"max_text_length",
 		"max_attribute_value_length",
 		"max_form_fields",
+		"max_keyboard_bindings",
 		"max_canvas_count",
 		"max_canvas_dimension",
 		"max_canvas_total_pixels",

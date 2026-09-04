@@ -14,6 +14,7 @@
     "max_text_length": 65536,
     "max_attribute_value_length": 4096,
     "max_form_fields": 128,
+    "max_keyboard_bindings": 128,
     "max_canvas_count": 4,
     "max_canvas_dimension": 4096,
     "max_canvas_total_pixels": 16777216,
@@ -71,6 +72,8 @@
     { "$ref": "#/$defs/canvas_accessibility" },
     { "$ref": "#/$defs/canvas_ready" },
     { "$ref": "#/$defs/canvas_input" },
+    { "$ref": "#/$defs/keyboard_bindings" },
+    { "$ref": "#/$defs/keyboard_input" },
     { "$ref": "#/$defs/image_open" },
     { "$ref": "#/$defs/image_ready" },
     { "$ref": "#/$defs/cancel" },
@@ -136,7 +139,7 @@
     },
     "request_id": {
       "type": "string",
-      "pattern": "^(rpc|execution|render|canvas|asset)_[1-9][0-9]{0,15}$"
+      "pattern": "^(rpc|execution|render|canvas|asset|keyboard)_[1-9][0-9]{0,15}$"
     },
     "call": {
       "type": "object",
@@ -471,6 +474,90 @@
               }
             }
           ]
+        }
+      }
+    },
+    "keyboard_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "bindings"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.keyboard.bindings" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "bindings": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/keyboard_binding" }
+        }
+      }
+    },
+    "keyboard_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding_id", "event", "code", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "target_key", "target_kind"],
+      "properties": {
+        "binding_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "event": { "enum": ["keydown", "keyup"] },
+        "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "repeat": { "type": "boolean" },
+        "alt_key": { "type": "boolean" },
+        "ctrl_key": { "type": "boolean" },
+        "meta_key": { "type": "boolean" },
+        "shift_key": { "type": "boolean" },
+        "target_key": {
+          "oneOf": [
+            { "$ref": "#/$defs/ui_identifier" },
+            { "type": "null" }
+          ]
+        },
+        "target_kind": { "enum": ["canvas", "editable", "control", "surface"] }
+      }
+    },
+    "keyboard_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "event"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.keyboard.input" },
+        "event": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"],
+          "properties": {
+            "event": { "enum": ["keydown", "keyup"] },
+            "code": { "type": "string", "maxLength": 64 },
+            "key": { "type": "string", "maxLength": 64 },
+            "repeat": { "type": "boolean" },
+            "alt_key": { "type": "boolean" },
+            "ctrl_key": { "type": "boolean" },
+            "meta_key": { "type": "boolean" },
+            "shift_key": { "type": "boolean" },
+            "is_composing": { "type": "boolean" },
+            "target_key": {
+              "oneOf": [
+                { "$ref": "#/$defs/ui_identifier" },
+                { "type": "null" }
+              ]
+            },
+            "target_kind": { "enum": ["canvas", "editable", "control", "surface"] },
+            "default_prevented": { "type": "boolean" },
+            "binding_id": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9._:-]+$"
+                },
+                { "type": "null" }
+              ]
+            }
+          }
         }
       }
     },
