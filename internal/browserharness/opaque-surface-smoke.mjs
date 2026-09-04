@@ -221,6 +221,20 @@ async function verifyScenario(credentiallessScenario) {
   await page.waitForFunction(() => window.__redevpluginHarness.snapshot().interactions.some(
     (event) => event.kind === "wheel" && event.localScroll === true,
   ));
+  const controlledText = "fast controlled textarea input keeps every character in order";
+  const controlledTextarea = frame.locator("#keyboard-textarea");
+  await controlledTextarea.fill("");
+  await controlledTextarea.type(controlledText, { delay: 5 });
+  await frame.waitForFunction((expected) => document.querySelector("#keyboard-textarea")?.value === expected, controlledText);
+  assert.deepEqual(await controlledTextarea.evaluate((element) => ({
+    value: element.value,
+    selectionStart: element.selectionStart,
+    selectionEnd: element.selectionEnd,
+  })), {
+    value: controlledText,
+    selectionStart: controlledText.length,
+    selectionEnd: controlledText.length,
+  }, `${credentiallessScenario} controlled render keeps the current text selection`);
 
   const originalIframe = await iframe.elementHandle();
   assert.notEqual(originalIframe, null, `${credentiallessScenario} surface iframe exists before lifecycle retention`);

@@ -26,12 +26,18 @@ const state = {
   security: {} as WorkerSecurityProbe,
   canvasWheel: null as PluginCanvasWheelEvent | null,
   keyboardInputs: [] as PluginSurfaceKeyboardEvent[],
+  keyboardText: "",
 };
 
 bridge.onAction("call-host", () => void callHost());
 bridge.onAction("read-execution-events", () => void readExecutionEvents());
 bridge.onAction("dangerous-action", () => void runDangerousAction());
 bridge.onAction("observe-execution", () => void observeExecution());
+bridge.onAction("edit-keyboard-textarea", (event) => {
+  if (event.event !== "input") return;
+  state.keyboardText = String(event.value ?? "");
+  void render();
+});
 bridge.onCanvasInput("wheel-probe", (event) => {
   if (event.type !== "wheel") return;
   state.canvasWheel = event;
@@ -216,7 +222,13 @@ function render(): Promise<void> {
         type: "element",
         key: "keyboard-textarea",
         tag: "textarea",
-        attributes: { id: "keyboard-textarea", "aria-label": "Keyboard textarea probe", rows: 2 },
+        attributes: {
+          id: "keyboard-textarea",
+          value: state.keyboardText,
+          "aria-label": "Keyboard textarea probe",
+          "data-redevplugin-action": "edit-keyboard-textarea",
+          rows: 2,
+        },
         children: [],
       },
       {

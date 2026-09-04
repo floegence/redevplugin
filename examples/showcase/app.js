@@ -1794,8 +1794,8 @@
     const root = built.node;
     if (!(root instanceof Element)) throw new Error("plugin UI root must be an element");
     validateCanvasIdentifiers(root);
-    const renderState = captureRenderState();
     const committed = await commitOnRenderOpportunity(() => {
+      const renderState = captureRenderState();
       document.body.replaceChildren(root);
       restoreRenderState(renderState);
     });
@@ -1809,8 +1809,8 @@
   const patchWorkerTree = async (baseRevision, revision, operations) => {
     if (uiRevision < 1 || baseRevision !== uiRevision || revision !== baseRevision + 1) throw new Error("plugin UI patch revision is invalid");
     const validated = validatePatch(operations);
-    const renderState = captureRenderState();
     const committed = await commitOnRenderOpportunity(() => {
+      const renderState = captureRenderState();
       for (const operation of validated.plan) applyPatchOperation(operation);
       validated.graph.commit();
       restoreRenderState(renderState);

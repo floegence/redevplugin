@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.24
+
+- Preserve the latest focus and text selection when a controlled Surface input
+  receives another edit before its queued DOM patch commits.
+
 ## v3.0.23
 
 - Deliver complete `keydown` and `keyup` input from the focused plugin Surface,
