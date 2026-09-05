@@ -8,6 +8,8 @@
   reservations, and clean up pending opens on surface disposal.
 - Validate DPR-scaled dimensions before delivering canvas metrics while retaining
   the existing worker dimension, count, and aggregate pixel limits.
+- Update SQLite to 1.57.0, wasmparser/wat to the 0.258/1.258 family, CodeQL to
+  4.37.9, ESLint to 10.9.1, and typescript-eslint to 8.68.0.
 
 ## v3.0.26
 
