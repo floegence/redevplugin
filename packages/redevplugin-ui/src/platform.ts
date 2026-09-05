@@ -24,6 +24,7 @@ import {
   type PluginSurfaceContext,
   type PluginSurfaceOpeningProgress,
   type PluginSurfaceInteractionEvent,
+  type PluginSurfaceFileExportHandler,
   type PluginSurfaceReloadLimiter,
   type PluginSurfaceSlot,
   type PluginMethodResult,
@@ -83,6 +84,7 @@ export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
   confirm?: PluginConfirmationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
+  onFileExport?: PluginSurfaceFileExportHandler;
   onError?: (error: import("./errors.js").PluginBridgeError) => void;
   surfaceContext?: PluginSurfaceContext;
 };

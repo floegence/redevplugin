@@ -26,6 +26,7 @@ const commonFrames = [
   "redevplugin.ui.patch",
   "redevplugin.ui.keyboard.bindings",
   "redevplugin.ui.keyboard.input",
+  "redevplugin.ui.file.export",
   "redevplugin.bridge.cancel",
   "redevplugin.ui.action",
   "redevplugin.bridge.response",
@@ -77,6 +78,7 @@ export function validateUIBridgeInputs({
 
   validateExecutionSchemas(activeSchema);
   validateKeyboardSchemas(activeSchema);
+  validateFileExportSchema(activeSchema);
   const activeText = JSON.stringify(activeSchema);
   for (const frame of commonFrames) {
     if (!activeText.includes(frame)) throw new Error(`active bridge schema is missing ${frame}`);
@@ -108,6 +110,27 @@ export function validateUIBridgeInputs({
   if (!activeSchema["x-redevplugin-render-policy"]) {
     throw new Error("active bridge schema is missing the generated renderer policy source");
   }
+}
+
+function validateFileExportSchema(schema) {
+  const fileExport = schema.$defs?.file_export;
+  const properties = fileExport?.properties;
+  if (!isRecord(fileExport) || fileExport.type !== "object" || fileExport.additionalProperties !== false ||
+      JSON.stringify(fileExport.required) !== JSON.stringify(["type", "id", "file_name", "media_type", "content"]) ||
+      !hasExactKeys(properties, ["type", "id", "file_name", "media_type", "content"]) ||
+      properties?.type?.const !== "redevplugin.ui.file.export" ||
+      properties?.id?.$ref !== "#/$defs/request_id" ||
+      properties?.file_name?.type !== "string" || properties.file_name.minLength !== 1 || properties.file_name.maxLength !== 128 ||
+      JSON.stringify(properties?.media_type?.enum) !== JSON.stringify(["image/png", "image/jpeg", "image/webp", "image/svg+xml", "text/plain"]) ||
+      !isRecord(properties?.content) ||
+      JSON.stringify(fileExport["x-redevplugin-transfer"]) !== JSON.stringify(["content"]) ||
+      fileExport["x-redevplugin-user-action"] !== "A current click or submit action authorizes exactly one export for 30000ms.") {
+    throw new Error("current file_export frame is not closed and exact");
+  }
+  const references = Array.isArray(schema.oneOf)
+    ? schema.oneOf.filter((entry) => entry?.$ref === "#/$defs/file_export")
+    : [];
+  if (references.length !== 1) throw new Error("current contract must publish exactly one file_export frame reference");
 }
 
 function validateKeyboardSchemas(schema) {

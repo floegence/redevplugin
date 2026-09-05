@@ -381,6 +381,21 @@ async function verifyScenario(credentiallessScenario) {
   const observationResult = await frame.locator("#plugin-result").textContent();
   assert.equal(observationResult.includes('"first_cancelled": true'), true);
 
+  await frame.getByRole("button", { name: "Export PNG" }).click();
+  await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes('"replay_error_code": "PLUGIN_ACTION_DENIED"'));
+  const exportResult = JSON.parse(await frame.locator("#plugin-result").textContent());
+  assert.equal(exportResult.file_name, "opaque-surface.png");
+  assert.equal(exportResult.media_type, "image/png");
+  assert.equal(exportResult.byte_length > 8, true);
+  assert.deepEqual(exportResult.png_magic, [137, 80, 78, 71, 13, 10, 26, 10]);
+  const exportSnapshot = await page.evaluate(() => window.__redevpluginHarness.snapshot());
+  assert.deepEqual(exportSnapshot.fileExports, [{
+    fileName: "opaque-surface.png",
+    mediaType: "image/png",
+    byteLength: exportResult.byte_length,
+    magic: [137, 80, 78, 71, 13, 10, 26, 10],
+  }], `${credentiallessScenario} exports one transferred PNG for one click`);
+
   await waitFor(async () => {
     const response = await fetch(`${baseURL}/__browser_harness/diagnostics`);
     const value = await response.json();

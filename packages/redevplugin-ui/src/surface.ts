@@ -153,6 +153,27 @@ export type PluginCanvasSurface = {
   devicePixelRatio: number;
 };
 
+export const pluginSurfaceFileExportMaxBytes = 16 * 1024 * 1024;
+export const pluginSurfaceFileExportActionWindowMs = 30_000;
+export const pluginSurfaceFileExportMediaTypes = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/svg+xml",
+  "text/plain",
+] as const;
+
+export type PluginSurfaceFileExportMediaType = (typeof pluginSurfaceFileExportMediaTypes)[number];
+
+export type PluginFileExportRequest = {
+  fileName: string;
+  mediaType: PluginSurfaceFileExportMediaType;
+  bytes: Uint8Array;
+};
+
+export type PluginSurfaceFileExport = Readonly<PluginFileExportRequest & { signal: AbortSignal }>;
+export type PluginSurfaceFileExportHandler = (request: PluginSurfaceFileExport) => Promise<void> | void;
+
 export type PluginCanvasAccessibilityState = {
   label: string;
   description: string;
@@ -704,6 +725,24 @@ export class PluginBridgeClient {
     }, { kind: "asset", identifier: assetId });
   }
 
+  exportFile(request: PluginFileExportRequest, options: PluginBridgeRequestOptions = {}): Promise<void> {
+    this.#assertActive();
+    if (!validFileExportName(request?.fileName) || !validFileExportMediaType(request?.mediaType) ||
+        !(request?.bytes instanceof Uint8Array) || request.bytes.byteLength === 0 ||
+        request.bytes.byteLength > pluginSurfaceFileExportMaxBytes) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin file export request is invalid");
+    }
+    const id = this.#requestID("file");
+    const content = Uint8Array.from(request.bytes).buffer;
+    return this.#dispatchRequest<void>(id, {
+      type: "redevplugin.ui.file.export",
+      id,
+      file_name: request.fileName,
+      media_type: request.mediaType,
+      content,
+    }, { mutation: true, signal: options.signal }, [content]);
+  }
+
   onAction(action: string, handler: (event: PluginUIActionEvent) => void): () => void {
     this.#assertActive();
     if (!validActionID(action) || typeof handler !== "function") {
@@ -834,6 +873,15 @@ export class PluginBridgeClient {
     if (new TextEncoder().encode(JSON.stringify(normalizedMessage)).byteLength > maxPluginBridgeMessageBytes) {
       throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge request exceeds the message size limit");
     }
+    return this.#dispatchRequest<T>(id, normalizedMessage, options);
+  }
+
+  #dispatchRequest<T>(
+    id: string,
+    message: unknown,
+    options: PendingCallOptions,
+    transfer?: readonly unknown[],
+  ): Promise<T> {
     if (this.#pending.size >= maxPendingPluginBridgeRequests) {
       throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge has too many pending requests");
     }
@@ -881,7 +929,7 @@ export class PluginBridgeClient {
     });
     if (!this.#pending.has(id)) return result;
     try {
-      this.#port.postMessage(normalizedMessage);
+      this.#port.postMessage(message, transfer);
       posted = true;
     } catch {
       const pending = this.#takePending(id);
@@ -1277,6 +1325,7 @@ export type PluginSurfaceHostOptions = {
   confirm?: PluginConfirmationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
+  onFileExport?: PluginSurfaceFileExportHandler;
   onError?: (error: PluginBridgeError) => void;
   surfaceContext?: PluginSurfaceContext;
 };
@@ -1514,6 +1563,9 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const maxImageCount = ${opaqueSurfaceRenderLimits.max_image_count};
   const maxImageDimension = ${opaqueSurfaceRenderLimits.max_image_dimension};
   const maxImageTotalPixels = ${opaqueSurfaceRenderLimits.max_image_total_pixels};
+  const maxFileExportBytes = ${pluginSurfaceFileExportMaxBytes};
+  const fileExportActionWindowMs = ${pluginSurfaceFileExportActionWindowMs};
+  const fileExportMediaTypes = new Set(${JSON.stringify(pluginSurfaceFileExportMediaTypes)});
   const workerHeartbeatIntervalMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_interval_ms};
   const workerHeartbeatTimeoutMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_timeout_ms};
   const rendererCommitFallbackMs = 100;
@@ -1567,6 +1619,18 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const validOpaqueHandle = (value, prefix) => typeof value === "string" && value.startsWith(prefix + "_") && /^[A-Za-z0-9_-]{8,160}$/.test(value);
   const validDigest = (value) => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
   const validPath = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 && !value.startsWith("/") && !value.includes("\\\\") && !value.split("/").some((part) => !part || part === "." || part === "..");
+  const validFileExportName = (value) => {
+    if (typeof value !== "string" || value.length === 0 || value.length > 128 || value.trim() !== value || value === "." || value === ".." || new TextEncoder().encode(value).byteLength > 255) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code < 32 || code === 47 || code === 92 || code === 127) return false;
+    }
+    return true;
+  };
+  const validWorkerFileExport = (value) => exactKeys(value, ["type", "id", "file_name", "media_type", "content"]) &&
+    value.type === "redevplugin.ui.file.export" && typeof value.id === "string" && validFileExportName(value.file_name) &&
+    fileExportMediaTypes.has(value.media_type) && value.content instanceof ArrayBuffer &&
+    value.content.byteLength > 0 && value.content.byteLength <= maxFileExportBytes;
   const validAttribute = (tag, name, value) => {
     const lower = name.toLowerCase();
     if (lower.startsWith("on") || lower === "style" || lower === "src" || lower === "srcset" || lower === "href" || lower === "srcdoc" || lower === "action" || lower === "formaction") return false;
@@ -1629,10 +1693,11 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   let workerHeartbeatTimer;
   let workerHeartbeatTimeout;
   let pendingQuiesceID;
+  let pendingFileExportAction;
   let runtimeDisposed = false;
   const pendingWorkerRequests = new Set();
   const pendingRendererCommits = new Set();
-  const requestSequence = { rpc: 0, execution: 0, render: 0, canvas: 0, asset: 0, keyboard: 0 };
+  const requestSequence = { rpc: 0, execution: 0, render: 0, canvas: 0, asset: 0, keyboard: 0, file: 0 };
   let executionQuerySurfaceTokens = 8;
   let executionQuerySurfaceRefillAt = performance.now();
   const executionQueryStateIdleMS = 120000;
@@ -1716,6 +1781,9 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const sendParent = (message) => {
     if (parentPort && withinLimit(message)) parentPort.postMessage(message);
   };
+  const sendParentTransfer = (message, transfer) => {
+    if (parentPort) parentPort.postMessage(message, transfer);
+  };
   let interactionSequence = 0;
   const interactionTargetKey = (target) => {
     const element = target instanceof Element ? target.closest("[data-redevplugin-key]") : null;
@@ -1736,7 +1804,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     return false;
   };
   const sendInteraction = (kind, target, options = {}) => {
-    if (!initialized || pendingQuiesceID) return;
+    if (!initialized || pendingQuiesceID) return 0;
     interactionSequence += 1;
     sendParent({
       type: "redevplugin.surface.interaction",
@@ -1749,6 +1817,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       local_scroll: options.localScroll === true,
       selection_active: options.selectionActive === true,
     });
+    return interactionSequence;
   };
   document.addEventListener("pointerdown", (event) => sendInteraction("activation", event.target), true);
   document.addEventListener("focusin", (event) => sendInteraction("focus", event.target), true);
@@ -2426,6 +2495,8 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       const buttonType = submitButton && element.contains(submitButton) ? (submitButton.getAttribute("type") || "submit").toLowerCase() : "";
       if (event.type === "click" && buttonType === "submit") {
         event.preventDefault();
+        const sequence = sendInteraction("action", event.target, { action: element.getAttribute("data-redevplugin-action") });
+        if (sequence > 0) pendingFileExportAction = { sequence, expires_at: performance.now() + fileExportActionWindowMs };
         sendWorker(actionPayload(event, element, "submit"));
       }
       return;
@@ -2433,7 +2504,10 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     if (event.type === "submit" || (event.type === "click" && element.tagName === "BUTTON")) event.preventDefault();
     const action = element.getAttribute("data-redevplugin-action");
     if (!validIdentifier(action)) return;
-    sendInteraction("action", event.target, { action });
+    const sequence = sendInteraction("action", event.target, { action });
+    if (sequence > 0 && (event.type === "click" || event.type === "submit")) {
+      pendingFileExportAction = { sequence, expires_at: performance.now() + fileExportActionWindowMs };
+    }
     sendWorker(actionPayload(event, element));
   };
   for (const eventType of ["click", "input", "change", "submit"]) document.addEventListener(eventType, handleAction, true);
@@ -2719,7 +2793,8 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     '    const widthDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "width");',
     '    const heightDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "height");',
     '    const contextDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "getContext");',
-    '    if (!widthDescriptor || !heightDescriptor || typeof widthDescriptor.get !== "function" || typeof widthDescriptor.set !== "function" || typeof heightDescriptor.get !== "function" || typeof heightDescriptor.set !== "function" || !contextDescriptor || typeof contextDescriptor.value !== "function") throw new TypeError("OffscreenCanvas descriptors are unavailable");',
+    '    const convertDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "convertToBlob");',
+    '    if (!widthDescriptor || !heightDescriptor || typeof widthDescriptor.get !== "function" || typeof widthDescriptor.set !== "function" || typeof heightDescriptor.get !== "function" || typeof heightDescriptor.set !== "function" || !contextDescriptor || typeof contextDescriptor.value !== "function" || !convertDescriptor || typeof convertDescriptor.value !== "function") throw new TypeError("OffscreenCanvas descriptors are unavailable");',
     '    const readWidth = (canvas) => __rpApply(widthDescriptor.get, canvas, []);',
     '    const readHeight = (canvas) => __rpApply(heightDescriptor.get, canvas, []);',
     '    const validateResize = (canvas, axis, value) => {',
@@ -2738,7 +2813,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     '    __rpDefineProperty(__rpCanvasPrototype, "height", { configurable: false, enumerable: Boolean(heightDescriptor.enumerable), get() { return readHeight(this); }, set(value) { validateResize(this, "height", value); __rpApply(heightDescriptor.set, this, [value]); } });',
     '    __rpDefineProperty(__rpCanvasPrototype, "getContext", { configurable: false, enumerable: Boolean(contextDescriptor.enumerable), writable: false, value(type, ...options) { if (type !== "2d") throw new TypeError("only 2d canvas contexts are available"); __rpTrackCanvas(this); return __rpApply(contextDescriptor.value, this, [type, ...options]); } });',
     '    __rpSealDescriptor(__rpCanvasPrototype, "constructor", undefined);',
-    '    __rpSealDescriptor(__rpCanvasPrototype, "convertToBlob", __rpBlocked);',
+    '    __rpSealDescriptor(__rpCanvasPrototype, "convertToBlob", convertDescriptor.value);',
     '    __rpSealDescriptor(__rpCanvasPrototype, "transferToImageBitmap", __rpBlocked);',
     '};',
     'try {',
@@ -2805,7 +2880,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
   const requestID = (value, expectedKind) => {
     if (typeof value !== "string") return undefined;
-    const match = /^(rpc|execution|render|canvas|asset|keyboard)_([1-9][0-9]{0,15})$/.exec(value);
+    const match = /^(rpc|execution|render|canvas|asset|keyboard|file)_([1-9][0-9]{0,15})$/.exec(value);
     if (!match || match[1] !== expectedKind) return undefined;
     const sequence = Number(match[2]);
     return Number.isSafeInteger(sequence) ? { kind: match[1], sequence } : undefined;
@@ -2887,7 +2962,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     renderCount += 1;
     return true;
   };
-  const rejectWorkerRequest = (id, error) => sendWorker({ type: "redevplugin.bridge.response", id, ok: false, error_code: "PLUGIN_INVALID_REQUEST", error });
+  const rejectWorkerRequest = (id, error, errorCode = "PLUGIN_INVALID_REQUEST") => sendWorker({ type: "redevplugin.bridge.response", id, ok: false, error_code: errorCode, error });
   const findCanvas = (canvasID) => {
     for (const element of document.querySelectorAll("canvas[data-redevplugin-canvas]")) {
       if (element.getAttribute("data-redevplugin-canvas") === canvasID) return element;
@@ -3097,8 +3172,30 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     }
   };
   const onWorkerMessage = (event) => {
-    if (!withinLimit(event.data)) return;
     const message = event.data;
+    if (isRecord(message) && message.type === "redevplugin.ui.file.export" && typeof message.id === "string") {
+      if (!validWorkerFileExport(message)) return rejectWorkerRequest(message.id, "plugin file export request is invalid");
+      if (!acceptWorkerRequest(message.id, "file")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      const action = pendingFileExportAction;
+      if (!action || performance.now() > action.expires_at) {
+        completeWorkerRequest(message.id);
+        pendingFileExportAction = undefined;
+        return rejectWorkerRequest(message.id, "plugin file export requires a recent user action", "PLUGIN_ACTION_DENIED");
+      }
+      pendingFileExportAction = undefined;
+      sendParentTransfer({
+        type: "redevplugin.surface.file.export",
+        frame_generation_id: frameGenerationID,
+        surface_handle: surfaceHandle,
+        action_sequence: action.sequence,
+        id: message.id,
+        file_name: message.file_name,
+        media_type: message.media_type,
+        content: message.content,
+      }, [message.content]);
+      return;
+    }
+    if (!withinLimit(message)) return;
     if (exactKeys(message, ["type", "quiesce_id"]) && message.type === "redevplugin.bridge.lifecycle_ack" && validOpaqueHandle(message.quiesce_id, "quiesce") && message.quiesce_id === pendingQuiesceID) {
       pendingQuiesceID = undefined;
       sendParent({ type: "redevplugin.surface.quiesce_ack", quiesce_id: message.quiesce_id });
@@ -3293,8 +3390,10 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #confirm?: PluginConfirmationHandler;
   #onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   #onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
+  #onFileExport?: PluginSurfaceFileExportHandler;
   #onError?: (error: PluginBridgeError) => void;
   #lastInteractionSequence = 0;
+  #pendingFileExportAction?: { sequence: number; expiresAt: number };
   #interactionWindowStartedAt = 0;
   #interactionWindowCount = 0;
   #abortController = new AbortController();
@@ -3364,6 +3463,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#confirm = options.confirm;
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
+    this.#onFileExport = options.onFileExport;
     this.#onError = options.onError;
     this.#surfaceContext = options.surfaceContext === undefined ? undefined : normalizePluginSurfaceContext(options.surfaceContext);
     hardenPluginSurfaceFrame(this.#iframe);
@@ -3581,6 +3681,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#assetSessionID = undefined;
     this.#document = undefined;
     this.#assets.clear();
+    this.#pendingFileExportAction = undefined;
     if (this.#port) {
       try {
         this.#port.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "dispose" } });
@@ -3605,9 +3706,14 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   }
 
   async #handlePortMessage(event: MessageEventLike): Promise<void> {
-    if (this.#disposed || !messageWithinLimit(event.data)) return;
+    if (this.#disposed) return;
     const data = event.data;
     try {
+      if (isSurfaceFileExportCandidate(data)) {
+        await this.#handleFileExport(data);
+        return;
+      }
+      if (!messageWithinLimit(data)) return;
       if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.first_paint") {
         this.#openSignals?.firstPaint.resolve();
         return;
@@ -3671,6 +3777,12 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     if (message.sequence <= this.#lastInteractionSequence) return;
     this.#lastInteractionSequence = message.sequence;
     const now = performance.now();
+    if (message.kind === "action") {
+      this.#pendingFileExportAction = {
+        sequence: message.sequence,
+        expiresAt: now + pluginSurfaceFileExportActionWindowMs,
+      };
+    }
     if (now - this.#interactionWindowStartedAt >= 1000) {
       this.#interactionWindowStartedAt = now;
       this.#interactionWindowCount = 0;
@@ -3689,6 +3801,45 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       this.#onInteraction?.(interaction);
     } catch {
       // Interaction observers cannot alter the surface lifecycle.
+    }
+  }
+
+  async #handleFileExport(message: SurfaceFileExportCandidate): Promise<void> {
+    if (!validBridgeRequestID(message.id, "file")) return;
+    if (!isSurfaceFileExportMessage(message)) {
+      this.#postError(message.id, "PLUGIN_INVALID_REQUEST", "Plugin file export request is invalid");
+      return;
+    }
+    if (!this.#bridgeReady || !this.#ready) {
+      this.#postError(message.id, "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Plugin file export arrived before the surface became ready");
+      return;
+    }
+    if (message.frame_generation_id !== this.frameGenerationId || message.surface_handle !== this.surfaceHandle) return;
+    const action = this.#pendingFileExportAction;
+    if (!action || action.sequence !== message.action_sequence || performance.now() > action.expiresAt) {
+      this.#postError(message.id, "PLUGIN_ACTION_DENIED", "Plugin file export requires a recent user action");
+      return;
+    }
+    this.#pendingFileExportAction = undefined;
+    if (!this.#onFileExport) {
+      this.#postError(message.id, "PLUGIN_FEATURE_NOT_CONFIGURED", "Plugin file export is not configured by the host");
+      return;
+    }
+    const controller = this.#registerPendingRequest(message.id);
+    try {
+      await this.#onFileExport({
+        fileName: message.file_name,
+        mediaType: message.media_type,
+        bytes: new Uint8Array(message.content),
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted && !this.#disposed) this.#postResponse(message.id);
+    } catch (error) {
+      if (controller.signal.aborted || this.#disposed) return;
+      const bridgeError = toBridgeError(error, "PLUGIN_ADAPTER_FAILURE");
+      this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
+    } finally {
+      this.#pendingRequestControllers.delete(message.id);
     }
   }
 
@@ -4746,6 +4897,34 @@ type SurfaceInteractionMessage = {
   selection_active: boolean;
 };
 
+type SurfaceFileExportCandidate = Record<string, unknown> & {
+  type: "redevplugin.surface.file.export";
+  id: string;
+};
+
+type SurfaceFileExportMessage = SurfaceFileExportCandidate & {
+  frame_generation_id: string;
+  surface_handle: string;
+  action_sequence: number;
+  file_name: string;
+  media_type: PluginSurfaceFileExportMediaType;
+  content: ArrayBuffer;
+};
+
+function isSurfaceFileExportCandidate(value: unknown): value is SurfaceFileExportCandidate {
+  return isRecord(value) && value.type === "redevplugin.surface.file.export" && typeof value.id === "string";
+}
+
+function isSurfaceFileExportMessage(value: SurfaceFileExportCandidate): value is SurfaceFileExportMessage {
+  return hasExactKeys(value, [
+    "type", "frame_generation_id", "surface_handle", "action_sequence", "id", "file_name", "media_type", "content",
+  ]) && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") &&
+    Number.isSafeInteger(value.action_sequence) && Number(value.action_sequence) > 0 &&
+    validBridgeRequestID(value.id, "file") && validFileExportName(value.file_name) &&
+    validFileExportMediaType(value.media_type) && value.content instanceof ArrayBuffer &&
+    value.content.byteLength > 0 && value.content.byteLength <= pluginSurfaceFileExportMaxBytes;
+}
+
 function isSurfaceInteractionMessage(value: unknown): value is SurfaceInteractionMessage {
   if (!hasExactKeys(value, [
     "type", "frame_generation_id", "surface_handle", "sequence", "kind", "target_key", "action", "local_scroll", "selection_active",
@@ -5471,9 +5650,9 @@ const pluginMethodPattern = new RegExp("^[-A-Za-z0-9._:]{1,256}$");
 const pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
 const pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
 const opaqueHandlePattern = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-const bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard)_([1-9][0-9]{0,15})$/;
+const bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard|file)_([1-9][0-9]{0,15})$/;
 
-function validBridgeRequestID(value: unknown, expectedKind?: "rpc" | "execution" | "render" | "canvas" | "asset" | "keyboard"): value is string {
+function validBridgeRequestID(value: unknown, expectedKind?: "rpc" | "execution" | "render" | "canvas" | "asset" | "keyboard" | "file"): value is string {
   if (typeof value !== "string") return false;
   const match = bridgeRequestIDPattern.exec(value);
   if (!match || (expectedKind && match[1] !== expectedKind)) return false;
@@ -5517,6 +5696,20 @@ function validActionID(value: unknown): value is string {
 
 function validUIIdentifier(value: unknown): value is string {
   return typeof value === "string" && pluginUIIdentifierPattern.test(value);
+}
+
+function validFileExportName(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 128 || value.trim() !== value ||
+      value === "." || value === ".." || new TextEncoder().encode(value).byteLength > 255) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 32 || code === 47 || code === 92 || code === 127) return false;
+  }
+  return true;
+}
+
+function validFileExportMediaType(value: unknown): value is PluginSurfaceFileExportMediaType {
+  return pluginSurfaceFileExportMediaTypes.includes(value as PluginSurfaceFileExportMediaType);
 }
 
 function validOpaqueHandle(value: unknown, prefix: string): value is string {

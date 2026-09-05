@@ -37,6 +37,7 @@ const state = {
   openedAt: 0,
   disposedAt: 0,
   interactions: [],
+  fileExports: [],
   errors: [],
 };
 
@@ -62,6 +63,7 @@ window.__redevpluginHarness = Object.freeze({
     openedAt: state.openedAt,
     disposedAt: state.disposedAt,
     interactions: [...state.interactions],
+    fileExports: state.fileExports.map((item) => ({ ...item, magic: [...item.magic] })),
     errors: [...state.errors],
     iframeSrcdocEmpty: !state.surfaceHost || state.surfaceHost.element.srcdoc === "",
   }),
@@ -99,6 +101,16 @@ async function openSurface() {
           localScroll: event.localScroll,
         });
         if (state.interactions.length > 32) state.interactions.shift();
+      },
+      onFileExport({ fileName, mediaType, bytes }) {
+        const exported = {
+          fileName,
+          mediaType,
+          byteLength: bytes.byteLength,
+          magic: [...bytes.slice(0, 8)],
+        };
+        state.fileExports.push(exported);
+        addLog("surface-file-export", exported);
       },
       onError(error) {
         state.errors.push({ error_code: error.errorCode, message: error.message });

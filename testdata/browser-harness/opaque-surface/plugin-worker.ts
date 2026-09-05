@@ -27,12 +27,14 @@ const state = {
   canvasWheel: null as PluginCanvasWheelEvent | null,
   keyboardInputs: [] as PluginSurfaceKeyboardEvent[],
   keyboardText: "",
+  exportCanvas: undefined as OffscreenCanvas | undefined,
 };
 
 bridge.onAction("call-host", () => void callHost());
 bridge.onAction("read-execution-events", () => void readExecutionEvents());
 bridge.onAction("dangerous-action", () => void runDangerousAction());
 bridge.onAction("observe-execution", () => void observeExecution());
+bridge.onAction("export-png", () => void exportPNG());
 bridge.onAction("edit-keyboard-textarea", (event) => {
   if (event.event !== "input") return;
   state.keyboardText = String(event.value ?? "");
@@ -74,7 +76,15 @@ async function initialize(): Promise<void> {
     targetKey: "keyboard-textarea",
     targetKind: "editable",
   }]);
-  await bridge.openCanvas("wheel-probe");
+  const canvas = await bridge.openCanvas("wheel-probe");
+  const context = canvas.canvas.getContext("2d");
+  if (!context) throw new Error("browser harness canvas context is unavailable");
+  context.fillStyle = "#0f766e";
+  context.fillRect(0, 0, canvas.canvas.width, canvas.canvas.height);
+  context.fillStyle = "#ffffff";
+  context.font = "24px sans-serif";
+  context.fillText("ReDevPlugin export", 28, 68);
+  state.exportCanvas = canvas.canvas;
   state.status = "Ready";
   await render();
 }
@@ -143,6 +153,36 @@ async function observeExecution(): Promise<void> {
     }
     const snapshot = await bridge.executionSnapshot("execution_harness_1");
     return { first_cancelled: true, retry_status: snapshot.status };
+  });
+}
+
+async function exportPNG(): Promise<void> {
+  await runAction("Exporting canvas PNG...", "Canvas PNG exported", async () => {
+    if (!state.exportCanvas) throw new Error("export canvas is unavailable");
+    const blob = await state.exportCanvas.convertToBlob({ type: "image/png" });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    await bridge.exportFile({
+      fileName: "opaque-surface.png",
+      mediaType: "image/png",
+      bytes,
+    });
+    let replayErrorCode = "";
+    try {
+      await bridge.exportFile({
+        fileName: "opaque-surface-replay.png",
+        mediaType: "image/png",
+        bytes,
+      });
+    } catch (error) {
+      replayErrorCode = (error as { errorCode?: string }).errorCode ?? "";
+    }
+    return {
+      file_name: "opaque-surface.png",
+      media_type: blob.type,
+      byte_length: bytes.byteLength,
+      png_magic: [...bytes.slice(0, 8)],
+      replay_error_code: replayErrorCode,
+    };
   });
 }
 
@@ -255,6 +295,7 @@ function render(): Promise<void> {
           button("Read execution events", "read-execution-events"),
           button("Dangerous action", "dangerous-action"),
           button("Observe execution", "observe-execution"),
+          button("Export PNG", "export-png"),
         ],
       },
       { type: "element", key: "security-title", tag: "h2", children: [text("security-title-text", "Worker security probe")] },

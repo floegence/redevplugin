@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.0.25
+
+- Let sandboxed plugin Surfaces export bounded PNG, JPEG, WebP, SVG, and text
+  files through a Host-owned adapter after a current click or submit action.
+- Allow sealed plugin OffscreenCanvas instances to encode image bytes while
+  keeping constructors, direct downloads, and network escape paths blocked.
+
 ## v3.0.24
 
 - Preserve the latest focus and text selection when a controlled Surface input

@@ -725,6 +725,14 @@
 
   // packages/redevplugin-ui/src/surface.ts
   var pluginSurfaceContextSchemaVersion = "redevplugin.surface_context.v1";
+  var pluginSurfaceFileExportMaxBytes = 16 * 1024 * 1024;
+  var pluginSurfaceFileExportMediaTypes = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/svg+xml",
+    "text/plain"
+  ];
   var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
   var maxPendingPluginBridgeRequests = 256;
   var maxPluginBridgeMessageBytes = opaqueSurfaceRenderLimits.max_message_bytes;
@@ -947,6 +955,21 @@
         asset_id: assetId
       }, { kind: "asset", identifier: assetId });
     }
+    exportFile(request, options = {}) {
+      this.#assertActive();
+      if (!validFileExportName(request?.fileName) || !validFileExportMediaType(request?.mediaType) || !(request?.bytes instanceof Uint8Array) || request.bytes.byteLength === 0 || request.bytes.byteLength > pluginSurfaceFileExportMaxBytes) {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin file export request is invalid");
+      }
+      const id = this.#requestID("file");
+      const content = Uint8Array.from(request.bytes).buffer;
+      return this.#dispatchRequest(id, {
+        type: "redevplugin.ui.file.export",
+        id,
+        file_name: request.fileName,
+        media_type: request.mediaType,
+        content
+      }, { mutation: true, signal: options.signal }, [content]);
+    }
     onAction(action, handler) {
       this.#assertActive();
       if (!validActionID(action) || typeof handler !== "function") {
@@ -1067,6 +1090,9 @@
       if (new TextEncoder().encode(JSON.stringify(normalizedMessage)).byteLength > maxPluginBridgeMessageBytes) {
         throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge request exceeds the message size limit");
       }
+      return this.#dispatchRequest(id, normalizedMessage, options);
+    }
+    #dispatchRequest(id, message, options, transfer) {
       if (this.#pending.size >= maxPendingPluginBridgeRequests) {
         throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge has too many pending requests");
       }
@@ -1112,7 +1138,7 @@
       });
       if (!this.#pending.has(id)) return result;
       try {
-        this.#port.postMessage(normalizedMessage);
+        this.#port.postMessage(message, transfer);
         posted = true;
       } catch {
         const pending = this.#takePending(id);
@@ -1556,7 +1582,7 @@
   var pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
   var pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
   var opaqueHandlePattern2 = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-  var bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard)_([1-9][0-9]{0,15})$/;
+  var bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard|file)_([1-9][0-9]{0,15})$/;
   function validBridgeRequestID(value, expectedKind) {
     if (typeof value !== "string") return false;
     const match = bridgeRequestIDPattern.exec(value);
@@ -1597,6 +1623,17 @@
   }
   function validUIIdentifier(value) {
     return typeof value === "string" && pluginUIIdentifierPattern.test(value);
+  }
+  function validFileExportName(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > 128 || value.trim() !== value || value === "." || value === ".." || new TextEncoder().encode(value).byteLength > 255) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code < 32 || code === 47 || code === 92 || code === 127) return false;
+    }
+    return true;
+  }
+  function validFileExportMediaType(value) {
+    return pluginSurfaceFileExportMediaTypes.includes(value);
   }
   function validOpaqueHandle(value, prefix) {
     return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern2.test(value);

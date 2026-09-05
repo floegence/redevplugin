@@ -12,6 +12,9 @@ export {
   opaqueSurfaceDocumentSchemaVersion,
   pluginSurfaceContextSchemaVersion,
   pluginRiskPlanSchemaVersion,
+  pluginSurfaceFileExportActionWindowMs,
+  pluginSurfaceFileExportMaxBytes,
+  pluginSurfaceFileExportMediaTypes,
   trustedParentBridgeHandshakeTranscriptSHA256,
 } from "./surface.js";
 export type {
@@ -38,6 +41,9 @@ export type {
   PluginSurfaceOpeningProgress,
   PluginSurfaceInteractionEvent,
   PluginSurfaceInteractionKind,
+  PluginSurfaceFileExport,
+  PluginSurfaceFileExportHandler,
+  PluginSurfaceFileExportMediaType,
   PluginSurfaceQuiesceResult,
   PluginSurfaceRevocationReconciliation,
   PluginSurfacePreparationResult,

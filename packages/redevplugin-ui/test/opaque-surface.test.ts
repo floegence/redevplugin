@@ -443,6 +443,9 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes("decoded image assets exceed the renderer pixel budget"), true);
   assert.equal(html.includes("OffscreenCanvas:undefined"), true);
   assert.equal(html.includes("plugin canvas resize exceeds the worker pixel budget"), true);
+  assert.equal(html.includes('__rpSealDescriptor(__rpCanvasPrototype, "convertToBlob", __rpBlocked)'), false);
+  assert.equal(html.includes("redevplugin.ui.file.export"), true);
+  assert.equal(html.includes("plugin file export requires a recent user action"), true);
   assert.equal(html.includes("redevplugin.worker.ping"), true);
   assert.equal(html.includes("redevplugin.worker.pong"), true);
   assert.equal(html.includes("plugin worker heartbeat timed out"), true);
@@ -907,6 +910,48 @@ test("plugin bridge transfers one canvas and verified image assets by logical id
   });
   assert.equal(await loading, image);
 
+  client.dispose();
+});
+
+test("plugin bridge exports one bounded file as transferred bytes", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+
+  const source = new Uint8Array([137, 80, 78, 71]);
+  const exporting = client.exportFile({
+    fileName: "diagram.png",
+    mediaType: "image/png",
+    bytes: source,
+  });
+  assert.equal(source.byteLength, 4);
+  const request = pluginPort.sent[0] as {
+    type: string;
+    id: string;
+    file_name: string;
+    media_type: string;
+    content: ArrayBuffer;
+  };
+  assert.equal(request.type, "redevplugin.ui.file.export");
+  assert.equal(request.id, "file_1");
+  assert.equal(request.file_name, "diagram.png");
+  assert.equal(request.media_type, "image/png");
+  assert.deepEqual([...new Uint8Array(request.content)], [...source]);
+  assert.equal(request.content === source.buffer, false);
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "file_1", ok: true });
+  await exporting;
+
+  for (const invalid of [
+    { fileName: "../diagram.png", mediaType: "image/png", bytes: source },
+    { fileName: "diagram.exe", mediaType: "application/octet-stream", bytes: source },
+    { fileName: "diagram.png", mediaType: "image/png", bytes: new Uint8Array() },
+  ]) {
+    assert.throws(
+      () => client.exportFile(invalid as Parameters<PluginBridgeClient["exportFile"]>[0]),
+      (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
+    );
+  }
   client.dispose();
 });
 
@@ -2296,6 +2341,75 @@ test("trusted parent accepts only current port-bound interaction ownership signa
   channel.port2.postMessage(message(144));
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(interactions.length, 121);
+});
+
+test("trusted parent exports one file for one current user action", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  const exports: Array<{ fileName: string; mediaType: string; bytes: number[] }> = [];
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap,
+    testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+    onFileExport: async ({ fileName, mediaType, bytes }) => {
+      exports.push({ fileName, mediaType, bytes: [...bytes] });
+    },
+  });
+  const opening = host.open();
+  frame.load();
+  await waitFor(() => frame.transferred.length === 1);
+  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+  await opening;
+
+  channel.port2.postMessage({
+    type: "redevplugin.surface.interaction",
+    frame_generation_id: host.frameGenerationId,
+    surface_handle: host.surfaceHandle,
+    sequence: 1,
+    kind: "action",
+    target_key: "export-png",
+    action: "export-png",
+    local_scroll: false,
+    selection_active: false,
+  });
+  channel.port2.postMessage({
+    type: "redevplugin.surface.file.export",
+    frame_generation_id: host.frameGenerationId,
+    surface_handle: host.surfaceHandle,
+    action_sequence: 1,
+    id: "file_1",
+    file_name: "map.png",
+    media_type: "image/png",
+    content: new Uint8Array([1, 2, 3]).buffer,
+  });
+  await waitFor(() => channel.port1.sent.some((message) =>
+    isMessageType(message, "redevplugin.bridge.response") && (message as { id?: string }).id === "file_1"
+  ));
+  assert.deepEqual(exports, [{ fileName: "map.png", mediaType: "image/png", bytes: [1, 2, 3] }]);
+  assert.deepEqual(channel.port1.sent.at(-1), { type: "redevplugin.bridge.response", id: "file_1", ok: true });
+
+  channel.port2.postMessage({
+    type: "redevplugin.surface.file.export",
+    frame_generation_id: host.frameGenerationId,
+    surface_handle: host.surfaceHandle,
+    action_sequence: 1,
+    id: "file_2",
+    file_name: "map.png",
+    media_type: "image/png",
+    content: new Uint8Array([4]).buffer,
+  });
+  await waitFor(() => channel.port1.sent.some((message) =>
+    isMessageType(message, "redevplugin.bridge.response") && (message as { id?: string }).id === "file_2"
+  ));
+  assert.equal(exports.length, 1);
+  assert.equal((channel.port1.sent.at(-1) as { error_code?: string }).error_code, "PLUGIN_ACTION_DENIED");
+
+  fetch.push({ disposed: true, state: "closed", previous_state: "active", revoked: true });
+  await host.dispose();
 });
 
 

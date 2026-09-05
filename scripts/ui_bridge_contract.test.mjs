@@ -100,3 +100,23 @@ test("current UI contract exposes closed surface keyboard bindings and input", (
   withOpenEvent.activeSchema.$defs.keyboard_input.properties.event.properties.unexpected = { type: "string" };
   assert.throws(() => validateUIBridgeInputs(withOpenEvent), /keyboard_input frame is not closed and exact/);
 });
+
+test("current UI contract exposes one closed user-action file export frame", () => {
+  const withoutDefinition = structuredClone(baseline);
+  delete withoutDefinition.activeSchema.$defs.file_export;
+  assert.throws(() => validateUIBridgeInputs(withoutDefinition), /file_export frame is not closed and exact/);
+
+  const withoutReference = structuredClone(baseline);
+  withoutReference.activeSchema.oneOf = withoutReference.activeSchema.oneOf.filter(
+    ({ $ref }) => $ref !== "#/$defs/file_export",
+  );
+  assert.throws(() => validateUIBridgeInputs(withoutReference), /exactly one file_export frame reference/);
+
+  const withUnexpectedProperty = structuredClone(baseline);
+  withUnexpectedProperty.activeSchema.$defs.file_export.properties.unexpected = { type: "string" };
+  assert.throws(() => validateUIBridgeInputs(withUnexpectedProperty), /file_export frame is not closed and exact/);
+
+  const withoutTransfer = structuredClone(baseline);
+  delete withoutTransfer.activeSchema.$defs.file_export["x-redevplugin-transfer"];
+  assert.throws(() => validateUIBridgeInputs(withoutTransfer), /file_export frame is not closed and exact/);
+});

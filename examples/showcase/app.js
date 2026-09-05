@@ -750,6 +750,15 @@
   // packages/redevplugin-ui/src/surface.ts
   var opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v3";
   var pluginSurfaceContextSchemaVersion = "redevplugin.surface_context.v1";
+  var pluginSurfaceFileExportMaxBytes = 16 * 1024 * 1024;
+  var pluginSurfaceFileExportActionWindowMs = 3e4;
+  var pluginSurfaceFileExportMediaTypes = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/svg+xml",
+    "text/plain"
+  ];
   var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
   var maxPendingPluginBridgeRequests = 256;
   var maxPluginBridgeMessageBytes = opaqueSurfaceRenderLimits.max_message_bytes;
@@ -965,6 +974,9 @@
   const maxImageCount = ${opaqueSurfaceRenderLimits.max_image_count};
   const maxImageDimension = ${opaqueSurfaceRenderLimits.max_image_dimension};
   const maxImageTotalPixels = ${opaqueSurfaceRenderLimits.max_image_total_pixels};
+  const maxFileExportBytes = ${pluginSurfaceFileExportMaxBytes};
+  const fileExportActionWindowMs = ${pluginSurfaceFileExportActionWindowMs};
+  const fileExportMediaTypes = new Set(${JSON.stringify(pluginSurfaceFileExportMediaTypes)});
   const workerHeartbeatIntervalMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_interval_ms};
   const workerHeartbeatTimeoutMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_timeout_ms};
   const rendererCommitFallbackMs = 100;
@@ -1018,6 +1030,18 @@
   const validOpaqueHandle = (value, prefix) => typeof value === "string" && value.startsWith(prefix + "_") && /^[A-Za-z0-9_-]{8,160}$/.test(value);
   const validDigest = (value) => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
   const validPath = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 && !value.startsWith("/") && !value.includes("\\\\") && !value.split("/").some((part) => !part || part === "." || part === "..");
+  const validFileExportName = (value) => {
+    if (typeof value !== "string" || value.length === 0 || value.length > 128 || value.trim() !== value || value === "." || value === ".." || new TextEncoder().encode(value).byteLength > 255) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code < 32 || code === 47 || code === 92 || code === 127) return false;
+    }
+    return true;
+  };
+  const validWorkerFileExport = (value) => exactKeys(value, ["type", "id", "file_name", "media_type", "content"]) &&
+    value.type === "redevplugin.ui.file.export" && typeof value.id === "string" && validFileExportName(value.file_name) &&
+    fileExportMediaTypes.has(value.media_type) && value.content instanceof ArrayBuffer &&
+    value.content.byteLength > 0 && value.content.byteLength <= maxFileExportBytes;
   const validAttribute = (tag, name, value) => {
     const lower = name.toLowerCase();
     if (lower.startsWith("on") || lower === "style" || lower === "src" || lower === "srcset" || lower === "href" || lower === "srcdoc" || lower === "action" || lower === "formaction") return false;
@@ -1080,10 +1104,11 @@
   let workerHeartbeatTimer;
   let workerHeartbeatTimeout;
   let pendingQuiesceID;
+  let pendingFileExportAction;
   let runtimeDisposed = false;
   const pendingWorkerRequests = new Set();
   const pendingRendererCommits = new Set();
-  const requestSequence = { rpc: 0, execution: 0, render: 0, canvas: 0, asset: 0, keyboard: 0 };
+  const requestSequence = { rpc: 0, execution: 0, render: 0, canvas: 0, asset: 0, keyboard: 0, file: 0 };
   let executionQuerySurfaceTokens = 8;
   let executionQuerySurfaceRefillAt = performance.now();
   const executionQueryStateIdleMS = 120000;
@@ -1167,6 +1192,9 @@
   const sendParent = (message) => {
     if (parentPort && withinLimit(message)) parentPort.postMessage(message);
   };
+  const sendParentTransfer = (message, transfer) => {
+    if (parentPort) parentPort.postMessage(message, transfer);
+  };
   let interactionSequence = 0;
   const interactionTargetKey = (target) => {
     const element = target instanceof Element ? target.closest("[data-redevplugin-key]") : null;
@@ -1187,7 +1215,7 @@
     return false;
   };
   const sendInteraction = (kind, target, options = {}) => {
-    if (!initialized || pendingQuiesceID) return;
+    if (!initialized || pendingQuiesceID) return 0;
     interactionSequence += 1;
     sendParent({
       type: "redevplugin.surface.interaction",
@@ -1200,6 +1228,7 @@
       local_scroll: options.localScroll === true,
       selection_active: options.selectionActive === true,
     });
+    return interactionSequence;
   };
   document.addEventListener("pointerdown", (event) => sendInteraction("activation", event.target), true);
   document.addEventListener("focusin", (event) => sendInteraction("focus", event.target), true);
@@ -1877,6 +1906,8 @@
       const buttonType = submitButton && element.contains(submitButton) ? (submitButton.getAttribute("type") || "submit").toLowerCase() : "";
       if (event.type === "click" && buttonType === "submit") {
         event.preventDefault();
+        const sequence = sendInteraction("action", event.target, { action: element.getAttribute("data-redevplugin-action") });
+        if (sequence > 0) pendingFileExportAction = { sequence, expires_at: performance.now() + fileExportActionWindowMs };
         sendWorker(actionPayload(event, element, "submit"));
       }
       return;
@@ -1884,7 +1915,10 @@
     if (event.type === "submit" || (event.type === "click" && element.tagName === "BUTTON")) event.preventDefault();
     const action = element.getAttribute("data-redevplugin-action");
     if (!validIdentifier(action)) return;
-    sendInteraction("action", event.target, { action });
+    const sequence = sendInteraction("action", event.target, { action });
+    if (sequence > 0 && (event.type === "click" || event.type === "submit")) {
+      pendingFileExportAction = { sequence, expires_at: performance.now() + fileExportActionWindowMs };
+    }
     sendWorker(actionPayload(event, element));
   };
   for (const eventType of ["click", "input", "change", "submit"]) document.addEventListener(eventType, handleAction, true);
@@ -2170,7 +2204,8 @@
     '    const widthDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "width");',
     '    const heightDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "height");',
     '    const contextDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "getContext");',
-    '    if (!widthDescriptor || !heightDescriptor || typeof widthDescriptor.get !== "function" || typeof widthDescriptor.set !== "function" || typeof heightDescriptor.get !== "function" || typeof heightDescriptor.set !== "function" || !contextDescriptor || typeof contextDescriptor.value !== "function") throw new TypeError("OffscreenCanvas descriptors are unavailable");',
+    '    const convertDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "convertToBlob");',
+    '    if (!widthDescriptor || !heightDescriptor || typeof widthDescriptor.get !== "function" || typeof widthDescriptor.set !== "function" || typeof heightDescriptor.get !== "function" || typeof heightDescriptor.set !== "function" || !contextDescriptor || typeof contextDescriptor.value !== "function" || !convertDescriptor || typeof convertDescriptor.value !== "function") throw new TypeError("OffscreenCanvas descriptors are unavailable");',
     '    const readWidth = (canvas) => __rpApply(widthDescriptor.get, canvas, []);',
     '    const readHeight = (canvas) => __rpApply(heightDescriptor.get, canvas, []);',
     '    const validateResize = (canvas, axis, value) => {',
@@ -2189,7 +2224,7 @@
     '    __rpDefineProperty(__rpCanvasPrototype, "height", { configurable: false, enumerable: Boolean(heightDescriptor.enumerable), get() { return readHeight(this); }, set(value) { validateResize(this, "height", value); __rpApply(heightDescriptor.set, this, [value]); } });',
     '    __rpDefineProperty(__rpCanvasPrototype, "getContext", { configurable: false, enumerable: Boolean(contextDescriptor.enumerable), writable: false, value(type, ...options) { if (type !== "2d") throw new TypeError("only 2d canvas contexts are available"); __rpTrackCanvas(this); return __rpApply(contextDescriptor.value, this, [type, ...options]); } });',
     '    __rpSealDescriptor(__rpCanvasPrototype, "constructor", undefined);',
-    '    __rpSealDescriptor(__rpCanvasPrototype, "convertToBlob", __rpBlocked);',
+    '    __rpSealDescriptor(__rpCanvasPrototype, "convertToBlob", convertDescriptor.value);',
     '    __rpSealDescriptor(__rpCanvasPrototype, "transferToImageBitmap", __rpBlocked);',
     '};',
     'try {',
@@ -2256,7 +2291,7 @@
   const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
   const requestID = (value, expectedKind) => {
     if (typeof value !== "string") return undefined;
-    const match = /^(rpc|execution|render|canvas|asset|keyboard)_([1-9][0-9]{0,15})$/.exec(value);
+    const match = /^(rpc|execution|render|canvas|asset|keyboard|file)_([1-9][0-9]{0,15})$/.exec(value);
     if (!match || match[1] !== expectedKind) return undefined;
     const sequence = Number(match[2]);
     return Number.isSafeInteger(sequence) ? { kind: match[1], sequence } : undefined;
@@ -2338,7 +2373,7 @@
     renderCount += 1;
     return true;
   };
-  const rejectWorkerRequest = (id, error) => sendWorker({ type: "redevplugin.bridge.response", id, ok: false, error_code: "PLUGIN_INVALID_REQUEST", error });
+  const rejectWorkerRequest = (id, error, errorCode = "PLUGIN_INVALID_REQUEST") => sendWorker({ type: "redevplugin.bridge.response", id, ok: false, error_code: errorCode, error });
   const findCanvas = (canvasID) => {
     for (const element of document.querySelectorAll("canvas[data-redevplugin-canvas]")) {
       if (element.getAttribute("data-redevplugin-canvas") === canvasID) return element;
@@ -2548,8 +2583,30 @@
     }
   };
   const onWorkerMessage = (event) => {
-    if (!withinLimit(event.data)) return;
     const message = event.data;
+    if (isRecord(message) && message.type === "redevplugin.ui.file.export" && typeof message.id === "string") {
+      if (!validWorkerFileExport(message)) return rejectWorkerRequest(message.id, "plugin file export request is invalid");
+      if (!acceptWorkerRequest(message.id, "file")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      const action = pendingFileExportAction;
+      if (!action || performance.now() > action.expires_at) {
+        completeWorkerRequest(message.id);
+        pendingFileExportAction = undefined;
+        return rejectWorkerRequest(message.id, "plugin file export requires a recent user action", "PLUGIN_ACTION_DENIED");
+      }
+      pendingFileExportAction = undefined;
+      sendParentTransfer({
+        type: "redevplugin.surface.file.export",
+        frame_generation_id: frameGenerationID,
+        surface_handle: surfaceHandle,
+        action_sequence: action.sequence,
+        id: message.id,
+        file_name: message.file_name,
+        media_type: message.media_type,
+        content: message.content,
+      }, [message.content]);
+      return;
+    }
+    if (!withinLimit(message)) return;
     if (exactKeys(message, ["type", "quiesce_id"]) && message.type === "redevplugin.bridge.lifecycle_ack" && validOpaqueHandle(message.quiesce_id, "quiesce") && message.quiesce_id === pendingQuiesceID) {
       pendingQuiesceID = undefined;
       sendParent({ type: "redevplugin.surface.quiesce_ack", quiesce_id: message.quiesce_id });
@@ -2743,8 +2800,10 @@
     #confirm;
     #onOpeningProgress;
     #onInteraction;
+    #onFileExport;
     #onError;
     #lastInteractionSequence = 0;
+    #pendingFileExportAction;
     #interactionWindowStartedAt = 0;
     #interactionWindowCount = 0;
     #abortController = new AbortController();
@@ -2809,6 +2868,7 @@
       this.#confirm = options.confirm;
       this.#onOpeningProgress = options.onOpeningProgress;
       this.#onInteraction = options.onInteraction;
+      this.#onFileExport = options.onFileExport;
       this.#onError = options.onError;
       this.#surfaceContext = options.surfaceContext === void 0 ? void 0 : normalizePluginSurfaceContext(options.surfaceContext);
       hardenPluginSurfaceFrame(this.#iframe);
@@ -3011,6 +3071,7 @@
       this.#assetSessionID = void 0;
       this.#document = void 0;
       this.#assets.clear();
+      this.#pendingFileExportAction = void 0;
       if (this.#port) {
         try {
           this.#port.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "dispose" } });
@@ -3031,9 +3092,14 @@
       }
     }
     async #handlePortMessage(event) {
-      if (this.#disposed || !messageWithinLimit(event.data)) return;
+      if (this.#disposed) return;
       const data = event.data;
       try {
+        if (isSurfaceFileExportCandidate(data)) {
+          await this.#handleFileExport(data);
+          return;
+        }
+        if (!messageWithinLimit(data)) return;
         if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.first_paint") {
           this.#openSignals?.firstPaint.resolve();
           return;
@@ -3095,6 +3161,12 @@
       if (message.sequence <= this.#lastInteractionSequence) return;
       this.#lastInteractionSequence = message.sequence;
       const now = performance.now();
+      if (message.kind === "action") {
+        this.#pendingFileExportAction = {
+          sequence: message.sequence,
+          expiresAt: now + pluginSurfaceFileExportActionWindowMs
+        };
+      }
       if (now - this.#interactionWindowStartedAt >= 1e3) {
         this.#interactionWindowStartedAt = now;
         this.#interactionWindowCount = 0;
@@ -3112,6 +3184,44 @@
       try {
         this.#onInteraction?.(interaction);
       } catch {
+      }
+    }
+    async #handleFileExport(message) {
+      if (!validBridgeRequestID(message.id, "file")) return;
+      if (!isSurfaceFileExportMessage(message)) {
+        this.#postError(message.id, "PLUGIN_INVALID_REQUEST", "Plugin file export request is invalid");
+        return;
+      }
+      if (!this.#bridgeReady || !this.#ready) {
+        this.#postError(message.id, "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Plugin file export arrived before the surface became ready");
+        return;
+      }
+      if (message.frame_generation_id !== this.frameGenerationId || message.surface_handle !== this.surfaceHandle) return;
+      const action = this.#pendingFileExportAction;
+      if (!action || action.sequence !== message.action_sequence || performance.now() > action.expiresAt) {
+        this.#postError(message.id, "PLUGIN_ACTION_DENIED", "Plugin file export requires a recent user action");
+        return;
+      }
+      this.#pendingFileExportAction = void 0;
+      if (!this.#onFileExport) {
+        this.#postError(message.id, "PLUGIN_FEATURE_NOT_CONFIGURED", "Plugin file export is not configured by the host");
+        return;
+      }
+      const controller = this.#registerPendingRequest(message.id);
+      try {
+        await this.#onFileExport({
+          fileName: message.file_name,
+          mediaType: message.media_type,
+          bytes: new Uint8Array(message.content),
+          signal: controller.signal
+        });
+        if (!controller.signal.aborted && !this.#disposed) this.#postResponse(message.id);
+      } catch (error) {
+        if (controller.signal.aborted || this.#disposed) return;
+        const bridgeError = toBridgeError(error, "PLUGIN_ADAPTER_FAILURE");
+        this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
+      } finally {
+        this.#pendingRequestControllers.delete(message.id);
       }
     }
     async #handleCall(request2) {
@@ -4020,6 +4130,21 @@
     element.style.opacity = state === "opening" ? "0" : "";
     element.style.pointerEvents = ready ? "" : "none";
   }
+  function isSurfaceFileExportCandidate(value) {
+    return isRecord(value) && value.type === "redevplugin.surface.file.export" && typeof value.id === "string";
+  }
+  function isSurfaceFileExportMessage(value) {
+    return hasExactKeys(value, [
+      "type",
+      "frame_generation_id",
+      "surface_handle",
+      "action_sequence",
+      "id",
+      "file_name",
+      "media_type",
+      "content"
+    ]) && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") && Number.isSafeInteger(value.action_sequence) && Number(value.action_sequence) > 0 && validBridgeRequestID(value.id, "file") && validFileExportName(value.file_name) && validFileExportMediaType(value.media_type) && value.content instanceof ArrayBuffer && value.content.byteLength > 0 && value.content.byteLength <= pluginSurfaceFileExportMaxBytes;
+  }
   function isSurfaceInteractionMessage(value) {
     if (!hasExactKeys(value, [
       "type",
@@ -4283,7 +4408,7 @@
   var pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
   var pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
   var opaqueHandlePattern2 = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-  var bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard)_([1-9][0-9]{0,15})$/;
+  var bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard|file)_([1-9][0-9]{0,15})$/;
   function validBridgeRequestID(value, expectedKind) {
     if (typeof value !== "string") return false;
     const match = bridgeRequestIDPattern.exec(value);
@@ -4298,6 +4423,17 @@
   }
   function validUIIdentifier(value) {
     return typeof value === "string" && pluginUIIdentifierPattern.test(value);
+  }
+  function validFileExportName(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > 128 || value.trim() !== value || value === "." || value === ".." || new TextEncoder().encode(value).byteLength > 255) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code < 32 || code === 47 || code === 92 || code === 127) return false;
+    }
+    return true;
+  }
+  function validFileExportMediaType(value) {
+    return pluginSurfaceFileExportMediaTypes.includes(value);
   }
   function validOpaqueHandle(value, prefix) {
     return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern2.test(value);
