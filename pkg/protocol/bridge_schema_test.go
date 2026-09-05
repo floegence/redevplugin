@@ -29,6 +29,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	requireConst(t, defs, "keyboard_input", "type", "redevplugin.ui.keyboard.input")
 	requireConst(t, defs, "image_open", "type", "redevplugin.ui.asset.image.open")
 	requireConst(t, defs, "image_ready", "type", "redevplugin.ui.asset.image.ready")
+	requireConst(t, defs, "file_export", "type", "redevplugin.ui.file.export")
 	requireConst(t, defs, "lifecycle", "type", "redevplugin.bridge.lifecycle")
 	requireConst(t, defs, "lifecycle_ack", "type", "redevplugin.bridge.lifecycle_ack")
 	if _, ok := defs["handshake"]; ok {
@@ -42,7 +43,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatalf("call params type = %#v, want object", params["type"])
 	}
 	requestID := requireDef(t, defs, "request_id")
-	if got := requestID["pattern"]; got != "^(rpc|execution|render|canvas|asset|keyboard)_[1-9][0-9]{0,15}$" {
+	if got := requestID["pattern"]; got != "^(rpc|execution|render|canvas|asset|keyboard|file)_[1-9][0-9]{0,15}$" {
 		t.Fatalf("request id pattern = %#v", got)
 	}
 	cancel := requireDef(t, defs, "cancel")
@@ -67,6 +68,9 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	keyboardInput := requireDef(t, defs, "keyboard_input")
 	keyboardEvent := requireNestedObject(t, keyboardInput, "properties", "event")
 	assertStringSet(t, requireStringSlice(t, keyboardEvent["required"], "keyboard input event required"), []string{"event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"}, "keyboard input event required")
+	fileExport := requireDef(t, defs, "file_export")
+	assertStringSet(t, requireStringSlice(t, fileExport["required"], "file export required"), []string{"type", "id", "file_name", "media_type", "content"}, "file export required")
+	assertStringSet(t, requireStringSlice(t, fileExport["x-redevplugin-transfer"], "file export transfer"), []string{"content"}, "file export transfer")
 
 	response := requireDef(t, defs, "response")
 	responseVariants, ok := response["oneOf"].([]any)
