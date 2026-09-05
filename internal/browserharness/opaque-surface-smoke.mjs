@@ -348,6 +348,20 @@ async function verifyScenario(credentiallessScenario) {
     (event) => event.kind === "wheel" && event.localScroll === true,
   ));
 
+  for (const [index, target] of ["strong", "span", "padding", "Enter", "Space"].entries()) {
+    const button = frame.locator("#select-item");
+    if (target === "padding") await button.click({ position: { x: 3, y: 3 } });
+    else if (target === "Enter" || target === "Space") {
+      await button.focus();
+      await button.press(target);
+    } else await button.locator(target).click();
+    await frame.waitForFunction((count) => JSON.parse(document.querySelector("#button-actions").textContent).length === count, index + 1);
+    const actions = JSON.parse(await frame.locator("#button-actions").textContent());
+    assert.equal(actions[index].action, "select-item", `${credentiallessScenario} ${target} button action`);
+    assert.equal(actions[index].value, "item:one", `${credentiallessScenario} ${target} preserves the owning button value`);
+    assert.equal(actions[index].event, "click");
+  }
+
   await frame.getByRole("button", { name: "Call host" }).click();
   await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes("typed MessagePort"));
   assert.equal((await frame.locator("#plugin-result").textContent()).includes("gateway_token"), false);

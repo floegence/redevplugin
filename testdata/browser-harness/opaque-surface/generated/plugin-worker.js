@@ -1872,6 +1872,7 @@
     canvasWheel: null,
     keyboardInputs: [],
     keyboardText: "",
+    buttonActions: [],
     exportCanvas: void 0
   };
   bridge.onAction("call-host", () => void callHost());
@@ -1879,6 +1880,10 @@
   bridge.onAction("dangerous-action", () => void runDangerousAction());
   bridge.onAction("observe-execution", () => void observeExecution());
   bridge.onAction("export-png", () => void exportPNG());
+  bridge.onAction("select-item", (event) => {
+    state.buttonActions.push(event);
+    void render();
+  });
   bridge.onAction("edit-keyboard-textarea", (event) => {
     if (event.event !== "input") return;
     state.keyboardText = String(event.value ?? "");
@@ -2123,12 +2128,29 @@
           tag: "div",
           attributes: { class: "button-row" },
           children: [
+            {
+              type: "element",
+              key: "select-item",
+              tag: "button",
+              attributes: { id: "select-item", type: "button", value: "item:one", "data-redevplugin-action": "select-item" },
+              children: [
+                { type: "element", key: "item-name", tag: "strong", children: [text("item-name-text", "Item name")] },
+                { type: "element", key: "item-detail", tag: "span", children: [text("item-detail-text", "Item detail")] }
+              ]
+            },
             button("Call host", "call-host"),
             button("Read execution events", "read-execution-events"),
             button("Dangerous action", "dangerous-action"),
             button("Observe execution", "observe-execution"),
             button("Export PNG", "export-png")
           ]
+        },
+        {
+          type: "element",
+          key: "button-actions",
+          tag: "pre",
+          attributes: { id: "button-actions" },
+          children: [text("button-actions-text", JSON.stringify(state.buttonActions))]
         },
         { type: "element", key: "security-title", tag: "h2", children: [text("security-title-text", "Worker security probe")] },
         {

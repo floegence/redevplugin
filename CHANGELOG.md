@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.26
+
+- Preserve the owning button's value when a plugin action is triggered by a
+  nested label or icon, so selection controls respond across their full area.
+
 ## v3.0.25
 
 - Let sandboxed plugin Surfaces export bounded PNG, JPEG, WebP, SVG, and text

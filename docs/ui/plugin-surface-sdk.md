@@ -280,6 +280,12 @@ the label concise and include their current phase, score, remaining lives, and
 FPS so keyboard and assistive-technology users receive the same operational
 state that is drawn into the bitmap.
 
+Button click actions read `value` from the button declaring
+`data-redevplugin-action`, including clicks on nested labels or icons and
+keyboard activation. `targetKey` still identifies the nearest keyed element at
+the event origin. Input and change actions read the native control's current
+value and checked state.
+
 Forms use `data-redevplugin-action` on the form element. The renderer prevents
 native sandbox submission, resolves nested content inside the clicked submit
 button, and emits one `submit` action whose `form_data` contains at most 128

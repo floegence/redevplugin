@@ -2453,7 +2453,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       edit_revision: edit.revision,
       is_composing: edit.isComposing,
     };
-    const eventTarget = event.target;
+    const eventTarget = eventType === "click" && element.tagName === "BUTTON" ? element : event.target;
     if (eventTarget && typeof eventTarget.value === "string") payload.value = eventTarget.value.slice(0, maxTextLength);
     if (eventTarget && typeof eventTarget.checked === "boolean") payload.checked = eventTarget.checked;
     if (eventType === "submit" && element.tagName === "FORM") {
