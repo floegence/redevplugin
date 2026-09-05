@@ -15,7 +15,7 @@ const deniedPermissionsPolicy = "accelerometer 'none'; autoplay 'none'; bluetoot
 
 try {
   mkdirSync(evidenceDir, { recursive: true });
-  await verifyCanvasResize(browser);
+  await verifyCanvasResize(browser, evidenceDir);
   const scenarios = [
     await verifyScenario("supported"),
     await verifyScenario("unsupported"),

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { createBrowserHarnessServer } from "./opaque-surface-server.mjs";
 
-export async function verifyCanvasResize(browser) {
+export async function verifyCanvasResize(browser, evidenceDir = "dist/a2-evidence") {
   const styleContent = "body{margin:0}canvas{display:block;width:1200px;height:800px}#second{width:300px;height:200px}";
   const options = {
     workerPath: resolve("testdata/browser-harness/opaque-surface/generated/canvas-worker.js"),
@@ -72,7 +72,17 @@ export async function verifyCanvasResize(browser) {
     await active.frame.locator("#first").evaluate((canvas) => { canvas.style.display = ""; canvas.style.width = "1000px"; });
     await ready(active.frame, 1000);
     await noErrors(active);
-    await active.frame.locator("#first").screenshot({ path: "dist/a2-evidence/canvas-retained.png" });
+    await active.frame.locator("#first").screenshot({ path: resolve(evidenceDir, "canvas-retained.png") });
+
+    for (const axis of ["width", "height"]) {
+      const before = (await snapshot(active.frame)).canvases.first;
+      await active.frame.locator("#first").evaluate((canvas, axis) => { canvas.style[axis] = "0px"; }, axis);
+      await lifecycle(active.page, active.frame, "hidden");
+      assert.deepEqual((await snapshot(active.frame)).canvases.first, before, `zero ${axis} must not resize backing pixels`);
+      await active.frame.locator("#first").evaluate((canvas, { axis, value }) => { canvas.style[axis] = `${value}px`; }, { axis, value: before[axis] });
+      await lifecycle(active.page, active.frame, "visible");
+      await noErrors(active);
+    }
 
     const hidden = await open(true);
     // The fixture's RPC timeout is 1000 ms; a layout wait must survive it.

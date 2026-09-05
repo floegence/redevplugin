@@ -12,7 +12,7 @@ capabilities.
 
 ## Current Platform Snapshot
 
-- Platform version source: `VERSION` (`3.0.26`)
+- Platform version source: `VERSION` (`3.0.27`)
 - Go module: `github.com/floegence/redevplugin/v3`
 - TypeScript packages: the opt-in raw contract body package
   `@floegence/redevplugin-contracts` and the sandbox/runtime SDK
