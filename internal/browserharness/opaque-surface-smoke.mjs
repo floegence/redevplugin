@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { validateA2Evidence } from "../../scripts/verify_redevplugin_a2_evidence.mjs";
 import { createBrowserHarnessServer } from "./opaque-surface-server.mjs";
+import { verifyCanvasResize } from "./canvas-resize-smoke.mjs";
 
 const harness = createBrowserHarnessServer();
 const address = await harness.listen(0);
@@ -14,6 +15,7 @@ const deniedPermissionsPolicy = "accelerometer 'none'; autoplay 'none'; bluetoot
 
 try {
   mkdirSync(evidenceDir, { recursive: true });
+  await verifyCanvasResize(browser);
   const scenarios = [
     await verifyScenario("supported"),
     await verifyScenario("unsupported"),

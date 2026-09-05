@@ -55,6 +55,28 @@ test("opaque bootstrap has no independent UI protocol compatibility axis", () =>
   assert.equal(html.includes("ui_protocol_version"), false);
 });
 
+test("opaque bootstrap does not infer hidden canvas CSS dimensions from backing pixels", () => {
+  const html = createOpaquePluginBootstrapHTML({ scriptNonce: "nonce_hidden_canvas" });
+  assert.equal(html.includes("rect.width || canvas.width"), false);
+  assert.equal(html.includes("rect.height || canvas.height"), false);
+  assert.equal(html.includes("if (rect.width === 0 || rect.height === 0) return undefined"), true);
+});
+
+test("canvas open waits past RPC timeout for layout and disposal rejects the pending transfer", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 5 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+  const opening = client.openCanvas("playfield");
+  let settled = false;
+  void opening.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(settled, false);
+  assert.equal(pluginPort.sent.some((message) => isMessageType(message, "redevplugin.bridge.cancel")), false);
+  client.dispose();
+  await assert.rejects(opening, (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED");
+});
+
 class FakePort implements MessagePortLike {
   peer?: FakePort;
   sent: unknown[] = [];

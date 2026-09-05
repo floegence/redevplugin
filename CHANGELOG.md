@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.0.27
+
+- Keep canvas CSS layout separate from backing pixels so hidden surfaces do not
+  multiply their device pixel ratio again when a host switches views.
+- Defer canvas transfer until layout is measurable, retain hidden canvas pixel
+  reservations, and clean up pending opens on surface disposal.
+- Validate DPR-scaled dimensions before delivering canvas metrics while retaining
+  the existing worker dimension, count, and aggregate pixel limits.
+
 ## v3.0.26
 
 - Preserve the owning button's value when a plugin action is triggered by a

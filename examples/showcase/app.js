@@ -1309,6 +1309,8 @@
   };
   const terminateQuiescedWorker = () => {
     cancelPendingRendererCommits();
+    for (const runtime of canvasRuntimes.values()) runtime.dispose();
+    canvasRuntimes.clear();
     if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
     if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
     workerHeartbeatTimer = undefined;
@@ -2409,13 +2411,17 @@
   };
   const canvasMetrics = (canvas) => {
     const rect = canvas.getBoundingClientRect();
-    const cssWidth = Math.ceil(rect.width || canvas.width || 1);
-    const cssHeight = Math.ceil(rect.height || canvas.height || 1);
+    if (rect.width === 0 || rect.height === 0) return undefined;
+    const cssWidth = Math.ceil(rect.width);
+    const cssHeight = Math.ceil(rect.height);
     const devicePixelRatio = Math.min(4, Math.max(0.5, Number(globalThis.devicePixelRatio) || 1));
     if (!Number.isSafeInteger(cssWidth) || !Number.isSafeInteger(cssHeight) || cssWidth <= 0 || cssHeight <= 0 || cssWidth > maxCanvasDimension || cssHeight > maxCanvasDimension) {
       throw new Error("plugin canvas dimensions exceed the renderer budget");
     }
-    const pixelCount = Math.ceil(cssWidth * devicePixelRatio) * Math.ceil(cssHeight * devicePixelRatio);
+    const pixelWidth = Math.ceil(cssWidth * devicePixelRatio);
+    const pixelHeight = Math.ceil(cssHeight * devicePixelRatio);
+    if (pixelWidth > maxCanvasDimension || pixelHeight > maxCanvasDimension) throw new Error("plugin canvas dimensions exceed the renderer budget");
+    const pixelCount = pixelWidth * pixelHeight;
     return { cssWidth, cssHeight, devicePixelRatio, pixelCount };
   };
   const openCanvas = (id, canvasID) => {
@@ -2423,6 +2429,10 @@
     if (!canvas || canvasRuntimes.has(canvasID) || typeof canvas.transferControlToOffscreen !== "function" || typeof ResizeObserver !== "function") {
       completeWorkerRequest(id);
       return rejectWorkerRequest(id, "plugin canvas is missing, already transferred, or unsupported");
+    }
+    if (canvasRuntimes.size >= maxCanvasCount) {
+      completeWorkerRequest(id);
+      return rejectWorkerRequest(id, "plugin canvas resources exceed renderer limits");
     }
     if (canvas.tabIndex < 0) canvas.tabIndex = 0;
     let pointerWindowStartedAt = 0;
@@ -2434,16 +2444,34 @@
     };
     const sendInput = (event) => sendWorker({ type: "redevplugin.ui.canvas.input", canvas_id: canvasID, event });
     const sendResize = () => {
+      if (runtimeDisposed || canvasRuntimes.get(canvasID) !== runtime) return;
       const metrics = canvasMetrics(canvas);
-      const runtime = canvasRuntimes.get(canvasID);
+      if (!metrics) return;
       let totalPixels = metrics.pixelCount;
       for (const [identifier, active] of canvasRuntimes) {
-        if (identifier !== canvasID) totalPixels += active.pixelCount;
+        if (identifier !== canvasID) totalPixels += active.metrics?.pixelCount ?? 0;
       }
       if (totalPixels > maxCanvasTotalPixels) throw new Error("plugin canvases exceed the renderer pixel budget");
-      if (runtime) runtime.pixelCount = metrics.pixelCount;
+      if (runtime.openRequestID !== undefined) {
+        const offscreen = canvas.transferControlToOffscreen();
+        runtime.metrics = metrics;
+        runtime.openRequestID = undefined;
+        completeWorkerRequest(id);
+        sendWorkerTransfer({ type: "redevplugin.ui.canvas.ready", id, canvas_id: canvasID, canvas: offscreen, css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio }, [offscreen]);
+        return;
+      }
+      runtime.metrics = metrics;
       sendInput({ type: "resize", css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio });
-      return metrics;
+    };
+    const updateCanvas = () => {
+      try { sendResize(); }
+      catch (error) {
+        if (runtime.openRequestID === undefined) return fail(error && error.message || "plugin canvas resize exceeded renderer limits");
+        dispose();
+        canvasRuntimes.delete(canvasID);
+        completeWorkerRequest(id);
+        rejectWorkerRequest(id, String(error && error.message || "plugin canvas transfer failed").slice(0, 512));
+      }
     };
     const handlePointer = (event) => {
       const now = performance.now();
@@ -2508,34 +2536,17 @@
     listen("wheel", handleWheel);
     listen("focus", () => sendInput({ type: "focus" }));
     listen("blur", () => sendInput({ type: "blur" }));
-    const observer = new ResizeObserver(() => {
-      try { sendResize(); }
-      catch (error) { fail(error && error.message || "plugin canvas resize exceeded renderer limits"); }
-    });
-    observer.observe(canvas);
-    const runtime = { canvas, description: undefined, dispose: undefined, pixelCount: 0 };
+    const observer = new ResizeObserver(updateCanvas);
+    const runtime = { canvas, description: undefined, dispose: undefined, metrics: undefined, openRequestID: id };
     const dispose = () => {
       observer.disconnect();
       for (const [type, handler] of listeners) canvas.removeEventListener(type, handler);
       runtime.description?.remove();
     };
     runtime.dispose = dispose;
-    try {
-      const offscreen = canvas.transferControlToOffscreen();
-      const metrics = canvasMetrics(canvas);
-      let totalPixels = metrics.pixelCount;
-      for (const runtime of canvasRuntimes.values()) totalPixels += runtime.pixelCount;
-      if (canvasRuntimes.size >= maxCanvasCount || totalPixels > maxCanvasTotalPixels) throw new Error("plugin canvas resources exceed renderer limits");
-      runtime.pixelCount = metrics.pixelCount;
-      canvasRuntimes.set(canvasID, runtime);
-      completeWorkerRequest(id);
-      sendWorkerTransfer({ type: "redevplugin.ui.canvas.ready", id, canvas_id: canvasID, canvas: offscreen, css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio }, [offscreen]);
-      sendResize();
-    } catch (error) {
-      dispose();
-      completeWorkerRequest(id);
-      rejectWorkerRequest(id, String(error && error.message || "plugin canvas transfer failed").slice(0, 512));
-    }
+    canvasRuntimes.set(canvasID, runtime);
+    observer.observe(canvas);
+    updateCanvas();
   };
   const scheduleWorkerHeartbeat = () => {
     if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
@@ -2701,6 +2712,13 @@
     }
     if (exactKeys(message, ["type", "id"]) && message.type === "redevplugin.bridge.cancel" && typeof message.id === "string") {
       if (!pendingWorkerRequests.has(message.id)) return rejectWorkerRequest(message.id, "plugin request is not pending");
+      for (const [canvasID, runtime] of canvasRuntimes) {
+        if (runtime.openRequestID !== message.id) continue;
+        runtime.dispose();
+        canvasRuntimes.delete(canvasID);
+        completeWorkerRequest(message.id);
+        return;
+      }
       if (pendingImageRequests.has(message.id)) {
         pendingImageRequests.delete(message.id);
         completeWorkerRequest(message.id);

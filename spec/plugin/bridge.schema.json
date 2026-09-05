@@ -361,6 +361,7 @@
       ]
     },
     "canvas_open": {
+      "description": "Opens one declared canvas when nonzero CSS layout is measurable. The pending open reserves a canvas slot and waits until layout or surface disposal, independently of the SDK RPC timeout.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "id", "canvas_id"],
@@ -383,6 +384,7 @@
       }
     },
     "canvas_ready": {
+      "description": "Transfers a canvas with measured CSS layout dimensions and device pixel ratio. Both CSS and DPR-scaled dimensions must fit the renderer budget; backing store dimensions are never CSS fallback measurements.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "id", "canvas_id", "canvas", "css_width", "css_height", "device_pixel_ratio"],
@@ -400,6 +402,7 @@
       "x-redevplugin-transfer": ["canvas"]
     },
     "canvas_input": {
+      "description": "Canvas input. Resize reports nonzero measured CSS layout only; zero layout suspends resize without releasing the last pixel reservation.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "canvas_id", "event"],

@@ -1131,7 +1131,7 @@
                 return Promise.reject(requestCancelledError(options, false));
             let posted = false;
             const result = new Promise((resolve, reject) => {
-                const timer = setTimeout(() => {
+                const timer = options.kind === "canvas" ? void 0 : setTimeout(() => {
                     const pending = this.#takePending(id);
                     if (!pending)
                         return;

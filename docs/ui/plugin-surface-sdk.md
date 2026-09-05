@@ -280,6 +280,15 @@ the label concise and include their current phase, score, remaining lives, and
 FPS so keyboard and assistive-technology users receive the same operational
 state that is drawn into the bitmap.
 
+Canvas ready and resize metrics describe measured CSS layout pixels; backing
+store dimensions are never used as layout measurements. A zero width or height
+defers the initial transfer or suppresses resize until usable layout returns.
+`openCanvas` waits for that layout independently of the client's RPC timeout and
+is rejected when the bridge is disposed. Pending opens reserve a canvas slot;
+hidden transferred canvases retain their last pixel reservation. The renderer
+checks both CSS dimensions and the DPR-scaled backing dimensions against the
+existing dimension and aggregate pixel budgets before delivering metrics.
+
 Button click actions read `value` from the button declaring
 `data-redevplugin-action`, including clicks on nested labels or icons and
 keyboard activation. `targetKey` still identifies the nearest keyed element at

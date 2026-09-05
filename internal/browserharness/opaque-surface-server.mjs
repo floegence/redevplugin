@@ -12,7 +12,6 @@ const lazyAssetBytes = Buffer.concat([
 ]);
 const lazyAssetBase64 = lazyAssetBytes.toString("base64");
 const entrySHA256 = digest("opaque-browser-entry-v1");
-const workerSHA256 = digestBytes(readFileSync(generatedWorkerPath));
 const styleContent = `
 :root { color: #15232a; background: #ffffff; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
 * { box-sizing: border-box; }
@@ -28,7 +27,6 @@ button { min-height: 36px; border: 1px solid #1d5e55; border-radius: 6px; paddin
 button:disabled { cursor: not-allowed; opacity: .55; }
 pre { max-width: 100%; margin: 0; padding: 13px; overflow: auto; border: 1px solid #d9dfe2; background: #f6f8f9; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
 /* ${"x".repeat(384 * 1024)} */`;
-const styleSHA256 = digestBytes(Buffer.from(styleContent));
 const assetSHA256 = digestBytes(lazyAssetBytes);
 
 const contentTypes = new Map([
@@ -40,6 +38,10 @@ const contentTypes = new Map([
 ]);
 
 export function createBrowserHarnessServer(options = {}) {
+  const selectedWorkerPath = options.workerPath ?? generatedWorkerPath;
+  const selectedWorkerHash = digestBytes(readFileSync(selectedWorkerPath));
+  const selectedStyle = options.styleContent ?? styleContent;
+  const selectedStyleHash = digestBytes(Buffer.from(selectedStyle));
   const prepareDelayMs = options.prepareDelayMs ?? 420;
   const assetDelayMs = options.assetDelayMs ?? 750;
   const surfaces = new Map();
@@ -131,7 +133,7 @@ export function createBrowserHarnessServer(options = {}) {
           diagnostics.prepare_started_at = Date.now();
           await delay(prepareDelayMs);
           diagnostics.prepare_completed_at = Date.now();
-          const workerContent = readFileSync(generatedWorkerPath, "utf8");
+          const workerContent = readFileSync(selectedWorkerPath, "utf8");
           const issuedAt = new Date();
           writeEnvelope(response, {
             asset_session: surface.assetSession,
@@ -151,10 +153,10 @@ export function createBrowserHarnessServer(options = {}) {
               language: "en",
               direction: "ltr",
               body_html: '<main class="plugin-surface"><p id="critical-paint" class="status">Critical document painted</p><img alt="Lazy asset" data-redevplugin-asset-binding="asset_harness_lazy_1" data-redevplugin-asset-attr="src"></main>',
-              styles: [{ path: "ui/styles.css", sha256: styleSHA256, content: styleContent }],
-              worker: { path: "ui/worker.js", sha256: workerSHA256, type: "classic", content: workerContent },
+              styles: [{ path: "ui/styles.css", sha256: selectedStyleHash, content: selectedStyle }],
+              worker: { path: "ui/worker.js", sha256: selectedWorkerHash, type: "classic", content: workerContent },
               assets: [{ binding_id: "asset_harness_lazy_1", logical_ids: ["harness.lazy-image"], path: "ui/lazy.png", sha256: assetSHA256, size: lazyAssetBytes.length, content_type: "image/png" }],
-              critical_bytes: Buffer.byteLength(workerContent) + Buffer.byteLength(styleContent) + 240,
+              critical_bytes: Buffer.byteLength(workerContent) + Buffer.byteLength(selectedStyle) + 240,
             },
           });
           return;
