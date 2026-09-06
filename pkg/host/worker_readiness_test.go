@@ -138,6 +138,87 @@ func TestWorkerCallPreparesColdRuntimeBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestWorkerCallJoinsStartupPreparation(t *testing.T) {
+	manager := &invocationPreparationManager{recordingRuntimeManager: newRecordingRuntimeManager()}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: manager,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
+	manager.health.RuntimeGenerationID = "runtime_generation_startup"
+	manager.prewarmCalls = 0
+	manager.started = make(chan struct{})
+	manager.release = make(chan struct{})
+	manager.result = capability.Result{Data: map[string]any{}}
+	ctx, cancel := context.WithTimeout(hostTestContext(), 5*time.Second)
+	defer cancel()
+	recoveryDone := make(chan error, 1)
+	go func() { recoveryDone <- h.activateEnabledRuntimeState(ctx, installed) }()
+	select {
+	case <-manager.started:
+	case <-ctx.Done():
+		t.Fatal("startup preparation did not start")
+	}
+	request := CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "worker.echo", Params: map[string]any{"message": "startup load"},
+	}
+	waitCtx, cancelWait := context.WithTimeout(ctx, 30*time.Millisecond)
+	defer cancelWait()
+	if _, err := h.CallPluginMethod(waitCtx, request); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("call while startup is blocked = %v, want deadline exceeded", err)
+	}
+	if manager.calls != 0 {
+		t.Fatal("call bypassed startup preparation")
+	}
+	close(manager.release)
+	if err := <-recoveryDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CallPluginMethod(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if manager.prewarmCalls != 1 || manager.calls != 1 {
+		t.Fatalf("startup preparation was repeated: prewarm=%d invoke=%d", manager.prewarmCalls, manager.calls)
+	}
+}
+
+func TestWorkerCallRejectsGenerationChangeDuringPreparation(t *testing.T) {
+	manager := &invocationPreparationManager{recordingRuntimeManager: newRecordingRuntimeManager()}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: manager,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
+	manager.health.RuntimeGenerationID = "runtime_generation_preparing"
+	manager.started = make(chan struct{})
+	manager.release = make(chan struct{})
+	manager.result = capability.Result{Data: map[string]any{}}
+	ctx, cancel := context.WithTimeout(hostTestContext(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.CallPluginMethod(ctx, CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+			Method: "worker.echo", Params: map[string]any{"message": "load"},
+		})
+		done <- err
+	}()
+	select {
+	case <-manager.started:
+	case <-ctx.Done():
+		t.Fatal("preparation did not start")
+	}
+	manager.health.RuntimeGenerationID = "runtime_generation_replaced"
+	close(manager.release)
+	if err := <-done; !errors.Is(err, runtimeclient.ErrRuntimeNotReady) {
+		t.Fatalf("changed generation = %v, want runtime not ready", err)
+	}
+	if manager.calls != 0 {
+		t.Fatal("call reached an unprepared generation")
+	}
+}
+
 func TestWorkerCallPreparationFailureDoesNotDispatch(t *testing.T) {
 	for _, failure := range []error{context.Canceled, runtimeclient.ErrRuntimeNotReady} {
 		t.Run(failure.Error(), func(t *testing.T) {

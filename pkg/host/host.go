@@ -4507,18 +4507,11 @@ func (h *Host) prepareWorkerRuntimeState(ctx context.Context, record registry.Pl
 }
 
 func (h *Host) activateEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
-	if err := h.prepareWorkerRuntimeState(ctx, record); err != nil {
-		return err
-	}
-	if err := h.prepareEnabledRuntimeState(ctx, record); err != nil {
-		return err
-	}
 	if pluginHasWorkers(record.Manifest) {
-		if binding, err := h.bindCompatibleWorkerRuntime(ctx, record); err == nil {
-			h.rememberPreparedWorkerRuntime(record, binding)
-		}
+		_, err := h.prepareWorkerBinding(ctx, record, true)
+		return err
 	}
-	return nil
+	return h.prepareEnabledRuntimeState(ctx, record)
 }
 
 func (h *Host) prepareEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
@@ -5974,6 +5967,7 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 	record.UpdatedAt = commit.DeletedAt
 	record.DeletedAt = &commit.DeletedAt
 	h.verifiedReleases.delete(record.PluginInstanceID)
+	h.workerPreparations.Delete(workerPreparationKey{ownerEnvHash: record.OwnerEnvHash, pluginInstanceID: record.PluginInstanceID})
 
 	var derivedErr error
 	if err := h.adapters.Connectivity.RemovePolicy(ctx, record.PluginInstanceID); err != nil {
