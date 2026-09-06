@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.0.27
+  version: 3.0.28
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -260,6 +260,7 @@ paths:
     post:
       operationId: callPluginMethod
       x-redevplugin-route-effect: mutation
+      description: Authorized worker calls wait for runtime startup and plugin preparation before execution admission. Cancellation or preparation failure prevents dispatch. Executed calls are never automatically retried.
       requestBody:
         $ref: "#/components/requestBodies/RPCRequest"
       responses:
@@ -269,6 +270,7 @@ paths:
     post:
       operationId: preparePluginMethodConfirmation
       x-redevplugin-route-effect: mutation
+      description: Worker confirmation targets wait for runtime startup and plugin preparation before binding the current runtime generation. Preparation does not execute the method.
       requestBody:
         $ref: "#/components/requestBodies/PrepareMethodConfirmationRequest"
       responses:

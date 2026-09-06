@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.28
+
+- Wait for the Host runtime, worker modules, and connectivity policy before
+  dispatching an authorized worker call, while sharing preparation across
+  concurrent calls and never retrying an executed method.
+
 ## v3.0.27
 
 - Keep canvas CSS layout separate from backing pixels so hidden surfaces do not

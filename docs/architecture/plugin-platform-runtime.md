@@ -140,6 +140,16 @@ A failed or canceled recovery publishes no partial surface snapshot. Signed
 release and revocation facts remain authoritative; recovery never creates
 fallback authorization.
 
+Surfaces remain available while a backend is starting or unavailable. Before
+dispatching an authorized worker method or resolving its confirmation target,
+the Host waits for runtime startup, compatible binding, worker prewarming, and
+connectivity policy installation. Concurrent calls for the same plugin share
+this preparation; canceled waiters leave without dispatch. Successful
+preparation is reused only for the exact environment owner, plugin fingerprint,
+authorization revisions, and runtime binding. A new runtime generation requires
+fresh preparation. Preparation does not retry an executed method or replace
+execution admission, permission checks, or generation-bound confirmation.
+
 The Host library must remain host-neutral. It must not import a host product,
 know product navigation, or assume a particular vault, filesystem root,
 business resource, desktop shell, or UI surface.

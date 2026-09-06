@@ -341,6 +341,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Authorized worker calls wait for runtime startup and plugin preparation before execution admission. Cancellation or preparation failure prevents dispatch. Executed calls are never automatically retried. */
         post: operations["callPluginMethod"];
         delete?: never;
         options?: never;
@@ -357,6 +358,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Worker confirmation targets wait for runtime startup and plugin preparation before binding the current runtime generation. Preparation does not execute the method. */
         post: operations["preparePluginMethodConfirmation"];
         delete?: never;
         options?: never;

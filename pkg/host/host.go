@@ -576,6 +576,7 @@ type Host struct {
 	recoveryRevision     int64
 	recoverySnapshot     *RecoverySnapshot
 	runtimeIO            *hostRuntimeIOBroker
+	workerPreparations   sync.Map
 }
 
 type ImportLocalPackageRequest struct {
@@ -4509,7 +4510,15 @@ func (h *Host) activateEnabledRuntimeState(ctx context.Context, record registry.
 	if err := h.prepareWorkerRuntimeState(ctx, record); err != nil {
 		return err
 	}
-	return h.prepareEnabledRuntimeState(ctx, record)
+	if err := h.prepareEnabledRuntimeState(ctx, record); err != nil {
+		return err
+	}
+	if pluginHasWorkers(record.Manifest) {
+		if binding, err := h.bindCompatibleWorkerRuntime(ctx, record); err == nil {
+			h.rememberPreparedWorkerRuntime(record, binding)
+		}
+	}
+	return nil
 }
 
 func (h *Host) prepareEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
@@ -6700,7 +6709,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return workerMethodDispatch{}, err
 	}
-	runtimeBinding, err := h.bindCompatibleWorkerRuntime(ctx, record)
+	runtimeBinding, err := h.bindPreparedWorkerRuntime(ctx, record)
 	if err != nil {
 		return workerMethodDispatch{}, err
 	}
@@ -7485,7 +7494,7 @@ func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record regis
 		if !ok {
 			return capability.TargetDescriptor{}, "", fmt.Errorf("worker %q is not declared", method.Route.WorkerID)
 		}
-		runtimeBinding, err := h.bindCompatibleWorkerRuntime(ctx, record)
+		runtimeBinding, err := h.bindPreparedWorkerRuntime(ctx, record)
 		if err != nil {
 			return capability.TargetDescriptor{}, "", err
 		}
