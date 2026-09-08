@@ -849,6 +849,11 @@ func validDiagnosticPresentation(eventType string, severity DiagnosticSeverity, 
 		return severity == DiagnosticSeverityWarning && message == "plugin install stage commit failed"
 	case "plugin.method.rejected":
 		return severity == DiagnosticSeverityWarning && message == "plugin method was rejected"
+	case "plugin.runtime.prewarmed":
+		return severity == DiagnosticSeverityInfo && message == "startup worker modules prepared"
+	case "plugin.runtime.prewarm_failed":
+		return severity == DiagnosticSeverityWarning && (message == "startup worker catalog could not be read" ||
+			message == "startup worker runtime could not be prepared" || message == "startup worker module could not be prepared")
 	case "plugin.runtime.stop_failed":
 		return severity == DiagnosticSeverityWarning && message == "plugin runtime stop failed"
 	case "plugin.runtime.warning":

@@ -1034,3 +1034,33 @@ func assertSensitiveValuesAbsent(t *testing.T, stored, sensitiveCause string) {
 		}
 	}
 }
+
+func TestStartupDiagnosticPresentationRemainsClosed(t *testing.T) {
+	for _, item := range []struct {
+		eventType string
+		severity  DiagnosticSeverity
+		message   string
+	}{
+		{"plugin.runtime.prewarmed", DiagnosticSeverityInfo, "startup worker modules prepared"},
+		{"plugin.runtime.prewarm_failed", DiagnosticSeverityWarning, "startup worker catalog could not be read"},
+		{"plugin.runtime.prewarm_failed", DiagnosticSeverityWarning, "startup worker runtime could not be prepared"},
+		{"plugin.runtime.prewarm_failed", DiagnosticSeverityWarning, "startup worker module could not be prepared"},
+	} {
+		event := DiagnosticEvent{Type: item.eventType, Severity: item.severity, Message: item.message, OccurredAt: time.Now().UTC(), Details: DiagnosticDetails{Operation: "startup_prewarm"}}
+		if err := ValidateDiagnosticEvent(event); err != nil {
+			t.Fatalf("known startup event rejected: %v", err)
+		}
+		event.Message += " arbitrary adapter content"
+		if err := ValidateDiagnosticEvent(event); !errors.Is(err, ErrInvalidDiagnosticMessage) {
+			t.Fatalf("arbitrary presentation accepted: %v", err)
+		}
+		event.Message = item.message
+		event.Severity = DiagnosticSeverityInfo
+		if item.severity == DiagnosticSeverityInfo {
+			event.Severity = DiagnosticSeverityWarning
+		}
+		if err := ValidateDiagnosticEvent(event); err == nil {
+			t.Fatal("unknown severity accepted")
+		}
+	}
+}

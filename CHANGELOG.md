@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.0.31
+
+- Accept startup Worker prewarming diagnostics in the closed observability
+  presentation contract so successful compilation and catalog, runtime, or
+  module preparation failures reach durable and host-projected sinks.
+- Verify successful and failed sessionless startup using the real SQLite sink,
+  including reopen validation and rejection of arbitrary diagnostic content.
+
 ## v3.0.30
 
 - Start bounded worker compilation prewarming when a process Host opens before

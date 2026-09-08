@@ -653,3 +653,13 @@ A host product should:
 Local sibling path wiring, `go.work`, `replace`, `file:`, `link:`,
 `workspace:`, `portal:`, Rust path overrides, copied source trees, or hidden
 build aliases are not supported integration paths.
+
+### Startup preparation diagnostics
+
+Sessionless Worker prewarming emits `plugin.runtime.prewarmed` after validated
+module compilation or `plugin.runtime.prewarm_failed` when catalog, runtime,
+or module preparation fails. These events use the closed observability
+presentation contract and the normal durable and host-projected sinks. They
+carry stable plugin identities and the `startup_prewarm` operation, never raw
+adapter errors or synthetic authenticated session identities. A completion event
+reports compilation only; it does not authorize execution or publish a surface.
