@@ -1521,6 +1521,9 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 			_, _ = host.recoverEnabled(recoveryContext)
 		})
 	}
+	if _, hasSession := sessionctx.FromContext(ctx); !hasSession {
+		host.startStartupWorkerPrewarm()
+	}
 	openedHost = host
 	return openedHost, nil
 }
@@ -5387,7 +5390,13 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (resul
 	return h.startRuntime(ctx, req.Target)
 }
 
-func (h *Host) startRuntime(ctx context.Context, target runtimetarget.Target) (result RuntimeHealth, retErr error) {
+func (h *Host) startRuntime(ctx context.Context, target runtimetarget.Target) (RuntimeHealth, error) {
+	return h.startRuntimeFromCatalog(ctx, target, h.listPluginRecords)
+}
+
+// Both explicit starts and startup-only compilation use the same verified
+// process admission, journal, health checks and rollback path.
+func (h *Host) startRuntimeFromCatalog(ctx context.Context, target runtimetarget.Target, listRecords func(context.Context) ([]registry.PluginRecord, error)) (result RuntimeHealth, retErr error) {
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
 		return RuntimeHealth{}, err
@@ -5406,7 +5415,7 @@ func (h *Host) startRuntime(ctx context.Context, target runtimetarget.Target) (r
 	if err != nil {
 		return RuntimeHealth{}, err
 	}
-	records, err := h.listPluginRecords(ctx)
+	records, err := listRecords(ctx)
 	if err != nil {
 		return RuntimeHealth{}, err
 	}

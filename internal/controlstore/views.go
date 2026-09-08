@@ -398,6 +398,39 @@ func (v RegistryView) ListPlugins(ctx context.Context, ownerEnvHash string) ([]r
 	return result, rows.Err()
 }
 
+// ListStartupPrewarmPlugins is an internal maintenance projection, not an
+// owner-scoped inventory API. Host uses it only to compile installed worker
+// bytes before a user session exists; it supplies no execution authority.
+func (v RegistryView) ListStartupPrewarmPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
+	if err := v.ready(); err != nil {
+		return nil, err
+	}
+	rows, err := v.store.db.QueryContext(ctx, `SELECT owner_env_hash,plugin_instance_id,active_fingerprint,package_sha256,record_json FROM plugin_records WHERE state='enabled' AND deleted_at IS NULL ORDER BY owner_env_hash,plugin_instance_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := make([]registry.PluginRecord, 0)
+	for rows.Next() {
+		var owner, instance, fingerprint, digest, raw string
+		if err := rows.Scan(&owner, &instance, &fingerprint, &digest, &raw); err != nil {
+			return nil, err
+		}
+		record, err := decodeRegistryPluginRecord([]byte(raw))
+		if err != nil {
+			return nil, err
+		}
+		if record.PluginInstanceID != instance || record.ActiveFingerprint != fingerprint || record.PackageHash != digest || record.EnableState != registry.EnableEnabled {
+			return nil, errors.New("startup worker catalog binding is inconsistent")
+		}
+		record.OwnerEnvHash = owner
+		if registry.RunnablePluginRecord(record) && len(record.Manifest.Workers) > 0 {
+			records = append(records, record)
+		}
+	}
+	return records, rows.Err()
+}
+
 func (v RegistryView) PutPlugin(ctx context.Context, ownerEnvHash string, record registry.PluginRecord, now time.Time) (registry.PluginRecord, error) {
 	if err := v.ready(); err != nil {
 		return registry.PluginRecord{}, err

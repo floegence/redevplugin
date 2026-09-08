@@ -160,6 +160,21 @@ expired trust evidence retain their normal verification and failure behavior.
 
 ### Runtime Recovery
 
+When `Host.Open` has no user session, the Host reads an internal persisted
+worker catalog and starts bounded compilation prewarming immediately. This uses
+the same verified process admission, security journal, health verification and
+rollback path as explicit runtime startup. It does not create a synthetic
+session, invoke a worker, issue a lease, activate connectivity, publish surfaces,
+or complete an authorized recovery snapshot. Each plugin is rechecked under its
+lifecycle read lock before compilation. Disabled, deleted, replaced and
+non-runnable records are skipped. Four workers share a 25-second startup budget;
+Host closure cancels and awaits the work. Empty catalogs leave the process lazy.
+`plugin.runtime.prewarmed` records successful module preparation timestamps;
+`plugin.runtime.prewarm_failed` reports bounded failure evidence. Neither event
+is an authorization or recovery-ready signal.
+The existing content-addressed runtime module cache shares compilation with
+subsequent authenticated preparation without changing execution admission.
+
 The Go Host is the only runtime recovery owner. `RecoverEnabled` reads the
 authoritative installed records, restores enabled runtimes idempotently, and
 publishes one revisioned `RecoverySnapshot`. User interfaces may read that

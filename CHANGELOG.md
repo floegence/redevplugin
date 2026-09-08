@@ -2,6 +2,10 @@
 
 ## v3.0.30
 
+- Start bounded worker compilation prewarming when a process Host opens before
+  its first user session. Reuse the existing verified runtime lifecycle and
+  module cache without creating sessions, leases, invocations or permissions.
+
 - Add an optional bounded persistent release-document byte cache so installed
   plugin recovery does not repeat network downloads on every runtime restart.
   Current projection hashes, signatures, expiry and revocations are revalidated;
