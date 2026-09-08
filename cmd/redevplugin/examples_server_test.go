@@ -305,7 +305,6 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	go func() {
 		serverResult <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
 			Listener:          listener,
-			NetworkExecutor:   examplesFixtureNetworkExecutor{},
 			Events:            events,
 			Output:            io.Discard,
 			RepositoryRoot:    repositoryRoot,
@@ -371,7 +370,6 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 	go func() {
 		result <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
 			Listener:          listener,
-			NetworkExecutor:   examplesFixtureNetworkExecutor{},
 			Output:            io.Discard,
 			RepositoryRoot:    repositoryRoot,
 			RuntimeShardCount: 1,
@@ -484,8 +482,6 @@ func waitForExamplesHealth(t *testing.T, origin string) {
 	t.Fatalf("examples server did not become ready: %v", lastErr)
 }
 
-type examplesFixtureNetworkExecutor struct{}
-
 type examplesRuntimeHealthStub struct {
 	health  host.RuntimeHealth
 	err     error
@@ -495,56 +491,6 @@ type examplesRuntimeHealthStub struct {
 func (s *examplesRuntimeHealthStub) RuntimeHealth(ctx context.Context) (host.RuntimeHealth, error) {
 	s.session, _ = sessionctx.FromContext(ctx)
 	return s.health, s.err
-}
-
-func (examplesFixtureNetworkExecutor) DoHTTP(_ context.Context, request connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
-	if request.Method != http.MethodGet {
-		return connectivity.HTTPResponse{}, fmt.Errorf("fixture only supports GET requests")
-	}
-	var body string
-	switch request.Grant.ConnectorID {
-	case "geocoding":
-		if request.Path != "/v1/search" || strings.TrimSpace(request.Query.Get("name")) == "" {
-			return connectivity.HTTPResponse{}, fmt.Errorf("invalid geocoding fixture request")
-		}
-		if strings.Contains(strings.ToLower(request.Query.Get("name")), "paris") {
-			body = `{"results":[{"id":2988507,"name":"Paris","latitude":48.8566,"longitude":2.3522,"country":"France","admin1":"Ile-de-France","timezone":"Europe/Paris"}]}`
-		} else {
-			body = `{"results":[{"id":2950159,"name":"Berlin","latitude":52.52,"longitude":13.41,"country":"Germany","admin1":"Berlin","timezone":"Europe/Berlin"}]}`
-		}
-	case "forecast":
-		if request.Path != "/v1/forecast" || request.Query.Get("forecast_days") != "7" {
-			return connectivity.HTTPResponse{}, fmt.Errorf("invalid forecast fixture request")
-		}
-		if strings.HasPrefix(request.Query.Get("latitude"), "48.8566") {
-			body = `{"timezone":"Europe/Paris","timezone_abbreviation":"CEST","current":{"time":"2026-07-14T14:00","temperature_2m":25.6,"relative_humidity_2m":47,"apparent_temperature":26.1,"is_day":1,"weather_code":0,"wind_speed_10m":8.4},"daily":{"time":["2026-07-14","2026-07-15","2026-07-16","2026-07-17","2026-07-18","2026-07-19","2026-07-20"],"weather_code":[0,1,2,3,61,1,0],"temperature_2m_max":[28,29,27,25,22,27,30],"temperature_2m_min":[18,19,18,17,16,18,20],"precipitation_probability_max":[5,5,15,25,65,10,5],"sunrise":["2026-07-14T06:02","2026-07-15T06:03","2026-07-16T06:04","2026-07-17T06:05","2026-07-18T06:06","2026-07-19T06:08","2026-07-20T06:09"],"sunset":["2026-07-14T21:50","2026-07-15T21:49","2026-07-16T21:48","2026-07-17T21:47","2026-07-18T21:46","2026-07-19T21:45","2026-07-20T21:44"]}}`
-		} else {
-			body = `{"timezone":"Europe/Berlin","timezone_abbreviation":"CEST","current":{"time":"2026-07-14T14:00","temperature_2m":21.4,"relative_humidity_2m":52,"apparent_temperature":21.1,"is_day":1,"weather_code":1,"wind_speed_10m":12.7},"daily":{"time":["2026-07-14","2026-07-15","2026-07-16","2026-07-17","2026-07-18","2026-07-19","2026-07-20"],"weather_code":[1,2,3,61,2,1,0],"temperature_2m_max":[24,25,23,19,22,26,27],"temperature_2m_min":[15,16,14,13,14,16,17],"precipitation_probability_max":[10,15,25,70,20,5,5],"sunrise":["2026-07-14T05:00","2026-07-15T05:02","2026-07-16T05:03","2026-07-17T05:04","2026-07-18T05:06","2026-07-19T05:07","2026-07-20T05:09"],"sunset":["2026-07-14T21:22","2026-07-15T21:21","2026-07-16T21:20","2026-07-17T21:19","2026-07-18T21:18","2026-07-19T21:17","2026-07-20T21:15"]}}`
-		}
-	default:
-		return connectivity.HTTPResponse{}, fmt.Errorf("unexpected connector %q", request.Grant.ConnectorID)
-	}
-	return connectivity.HTTPResponse{
-		StatusCode: http.StatusOK,
-		Headers:    http.Header{"Content-Type": []string{"application/json"}},
-		Body:       []byte(body),
-	}, nil
-}
-
-func (examplesFixtureNetworkExecutor) StreamHTTP(context.Context, connectivity.HTTPRequest, func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
-	return connectivity.HTTPStreamResponse{}, errors.New("fixture HTTP streaming is unsupported")
-}
-
-func (examplesFixtureNetworkExecutor) WebSocketRoundTrip(context.Context, connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
-	return connectivity.WebSocketRoundTripResponse{}, errors.New("fixture WebSocket is unsupported")
-}
-
-func (examplesFixtureNetworkExecutor) TCPRoundTrip(context.Context, connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
-	return connectivity.TCPRoundTripResponse{}, errors.New("fixture TCP is unsupported")
-}
-
-func (examplesFixtureNetworkExecutor) UDPRoundTrip(context.Context, connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
-	return connectivity.UDPRoundTripResponse{}, errors.New("fixture UDP is unsupported")
 }
 
 type examplesRecordingEvents struct {

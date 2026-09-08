@@ -8,6 +8,9 @@
 - Verify successful and failed sessionless startup using the real SQLite sink,
   including reopen validation and rejection of arbitrary diagnostic content.
 
+- Make examples UI weather reads deterministic while retaining real surface
+  startup, Worker UI, WASM persistence, and independent network conformance.
+
 ## v3.0.30
 
 - Start bounded worker compilation prewarming when a process Host opens before

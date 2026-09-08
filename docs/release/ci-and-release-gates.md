@@ -404,3 +404,10 @@ consume local path dependencies. A release-ready host integration should:
 5. bundle that product runtime into the host installer or desktop package;
 6. keep host-side release gates aligned with the consumed ReDevPlugin version
    while continuing to use the ReDevPlugin admission and supervisor APIs.
+
+The examples browser UI suite uses explicit Weather read-response fixtures for
+public geocoding and forecast data. Its surface SDK, Worker UI, WASM persistence,
+mutations, and error recovery remain real. Current resource-I/O network security
+and streaming contracts have separate runtime tests; public weather availability
+is not an examples UI gate. Product integration acceptance still consumes real
+published SDK and plugin packages.

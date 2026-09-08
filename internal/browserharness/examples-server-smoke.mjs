@@ -1,3 +1,4 @@
+import { installWeatherReadFixtures } from "./examples-weather-fixture.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -13,6 +14,7 @@ await mkdir(evidenceDir, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
 const desktop = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+await installWeatherReadFixtures(desktop);
 const desktopFailures = observePageFailures(desktop, baseURL);
 const methodCalls = [];
 const methodResults = [];
@@ -115,7 +117,7 @@ try {
       await desktopFailures.abortRPCResponse(route, "memos-publish-response-lost", "memos.publish");
       return;
     }
-    await route.continue();
+    await route.fallback();
   };
   await desktop.route("**/_redevplugin/api/plugins/rpc", publishLostResponseRoute);
   await memos.getByRole("button", { name: "Save", exact: true }).click();
@@ -168,7 +170,7 @@ try {
       await desktopFailures.fulfillRPCFault(route, "memos-stale-search", "plugin runtime is unavailable", "not_committed");
       return;
     }
-    await route.continue();
+    await route.fallback();
   });
   await memos.getByPlaceholder("Search memos").fill("Stale request");
   await waitFor(() => staleSearchIntercepted, 5_000, "stale Memos search request");
@@ -260,7 +262,7 @@ try {
       await desktopFailures.fulfillRPCFault(route, "memos-delete", "plugin runtime is unavailable", "not_committed");
       return;
     }
-    await route.continue();
+    await route.fallback();
   });
   await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
   await lifecycleCard().getByRole("menuitem", { name: "Delete" }).click();
@@ -291,7 +293,7 @@ try {
       await desktopFailures.abortRPCResponse(route, "memos-delete-response-lost", "memos.delete");
       return;
     }
-    await route.continue();
+    await route.fallback();
   });
   await failedDeleteDialog.getByRole("button", { name: "Delete memo" }).click();
   await memos.getByText("Memos refreshed", { exact: true }).waitFor();
@@ -331,7 +333,7 @@ try {
       await desktopFailures.fulfillRPCFault(route, "memos-delete-reconcile-list", "plugin runtime is unavailable", "not_committed");
       return;
     }
-    await route.continue();
+    await route.fallback();
   });
   await editedMenuButton.click();
   await editedCard().getByRole("menuitem", { name: "Delete" }).click();
@@ -380,7 +382,7 @@ try {
       await desktopFailures.fulfillRPCFault(route, "weather-forecast", "forecast unavailable", "not_committed");
       return;
     }
-    await route.continue();
+    await route.fallback();
   });
   await weather.getByPlaceholder("Search city or place").fill("Berlin");
   await weather.getByRole("button", { name: "Search weather" }).click();
@@ -474,6 +476,7 @@ try {
   await desktop.screenshot({ path: resolve(evidenceDir, "examples-sky-strike-desktop.png"), fullPage: false });
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  await installWeatherReadFixtures(mobile);
   const mobileFailures = observePageFailures(mobile, baseURL);
   await mobile.goto(baseURL, { waitUntil: "domcontentloaded" });
   const mobileMemos = await pluginFrame(mobile, "Memos");
@@ -523,6 +526,7 @@ try {
   await mobile.close();
 
   const compact = await browser.newPage({ viewport: { width: 360, height: 720 }, deviceScaleFactor: 1 });
+  await installWeatherReadFixtures(compact);
   const compactFailures = observePageFailures(compact, baseURL);
   await compact.goto(`${baseURL}?plugin=memos`, { waitUntil: "domcontentloaded" });
   const compactMemos = await pluginFrame(compact, "Memos");
@@ -537,7 +541,7 @@ try {
       await compactFailures.fulfillRPCFault(route, `memos-update-${faultNumber}`, "plugin runtime is unavailable", "not_committed");
       return;
     }
-    await route.continue();
+    await route.fallback();
   });
   const compactCard = compactMemos.locator(".memo-card").filter({ hasText: "Edited timeline memo" });
   await compactCard.getByRole("button", { name: "More memo actions" }).click();
@@ -592,6 +596,8 @@ try {
     memos_delete_confirmation_verified: true,
     weather_location_persisted: true,
     weather_search_and_save_verified: true,
+    weather_remote_reads: "deterministic_rpc_fixtures",
+    weather_storage: "real_wasm",
     plugin_switch_samples_ms: pluginSwitchSamplesMs.map((sample) => Math.round(sample * 10) / 10),
     plugin_switch_p95_ms: Math.round(pluginSwitchP95Ms * 10) / 10,
     plugin_switch_max_ms: Math.round(pluginSwitchMaxMs * 10) / 10,
