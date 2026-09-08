@@ -156,7 +156,7 @@ typed action over the private worker port. CSP `form-action 'none'` remains the
 browser-level backstop.
 
 One aggregate opening deadline bounds frame load, prepare, transferred-port
-acknowledgement, initial lease minting, first paint, and worker readiness.
+acknowledgement, initial lease minting, renderer initialization, worker readiness, and the first DOM commit.
 Timeout aborts in-flight parent requests, revokes the server-side surface,
 destroys the local frame/ports, and consumes one shared reload-limiter attempt;
 a later healthy host instance resets that bounded retry state.

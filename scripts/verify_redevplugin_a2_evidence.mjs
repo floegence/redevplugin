@@ -11,7 +11,7 @@ const scenarioKeys = [
   "frame_origin", "opaque_origin", "isolation", "worker_probe", "platform_dynamic_import_gate",
   "parent_credentials_absent", "credential_query_absent", "direct_worker_network_absent",
   "strict_request_allowlist", "websocket_absent", "service_worker_absent", "opening_progress",
-  "first_paint_before_lazy_asset", "execution_event_response_loss_recovered", "real_execution_events_read", "confirmation_disposal_aborted",
+  "first_commit_before_lazy_asset", "execution_event_response_loss_recovered", "real_execution_events_read", "confirmation_disposal_aborted",
   "server_disposed", "disposed",
 ];
 const isolationKeys = [
@@ -42,7 +42,7 @@ const workerProbeKeys = [
 const scenarioProofKeys = [
   "opaque_origin", "platform_dynamic_import_gate", "parent_credentials_absent", "credential_query_absent",
   "direct_worker_network_absent", "strict_request_allowlist", "websocket_absent", "service_worker_absent",
-  "opening_progress", "first_paint_before_lazy_asset", "execution_event_response_loss_recovered", "real_execution_events_read",
+  "opening_progress", "first_commit_before_lazy_asset", "execution_event_response_loss_recovered", "real_execution_events_read",
   "confirmation_disposal_aborted", "server_disposed", "disposed",
 ];
 

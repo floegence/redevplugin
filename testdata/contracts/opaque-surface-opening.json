@@ -1,0 +1,9 @@
+{
+  "phase": "opening",
+  "elapsedMs": 30000,
+  "stage": "initializing",
+  "stageElapsedMs": 29700,
+  "pendingMilestones": [
+    "worker_ready"
+  ]
+}

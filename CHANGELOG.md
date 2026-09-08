@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.0.29
+
+- Open hidden, offscreen, and zero-size plugin surfaces without waiting for
+  browser animation frames, while requiring verified initialization, worker
+  readiness, and the first validated DOM commit.
+- Start bounded lazy asset loading independently of browser paint and keep
+  exact-surface cancellation, revocation, and retry behavior.
+- Report bounded opening-stage progress and timeout diagnostics without
+  exposing credentials or plugin content. Replace the private first-paint
+  startup signal with renderer readiness in the current platform contract.
+- Cover visibility transitions, suppressed animation frames, and each blocked
+  opening milestone with real-browser and contract regression tests.
+
 ## v3.0.28
 
 - Wait for the Host runtime, worker modules, and connectivity policy before

@@ -248,6 +248,26 @@ revokes the server surface, aborts parent requests, clears the iframe and ports,
 and records one attempt in the supplied `PluginSurfaceReloadLimiter`. A new host
 instance may retry within that limiter; a healthy open resets its state.
 
+Opening does not require a browser paint or measurable layout. The renderer
+sends `redevplugin.surface.renderer_ready` after applying the verified static
+document and initial context and starting the worker. The parent waits for this
+signal and worker readiness before sending the ready lifecycle, then waits for
+the first validated DOM commit. Hidden, zero-size, and offscreen containers can
+complete this sequence without animation frames. DOM commits retain their
+100 ms scheduling fallback; this fallback commits the validated tree rather than
+asserting success without a commit. Lazy asset loading starts after renderer
+initialization and is independent of paint and opening completion.
+
+`onOpeningProgress` reports after 300 ms and every 300 ms while opening. It keeps
+`phase: "opening"` and adds `stage`, `stageElapsedMs`, and `pendingMilestones`.
+Stages are `preparing` (frame load and document preparation), `connecting`
+(private port acknowledgement), `authorizing` (initial lease), `initializing`
+(renderer and worker readiness), and `committing` (first DOM commit). All times
+are nonnegative elapsed milliseconds from a monotonic clock. Timeout errors
+include the same snapshot in `PluginBridgeError.details`. Diagnostics contain
+only these bounded stage and milestone names and timings, never credentials,
+opaque authority handles, or plugin content. Hosts own localized presentation.
+
 The trusted parent prepares the surface document and reads assets through
 same-origin POST transport methods. The document contains validated static HTML,
 nonce-bound external CSS content, one classic bundled worker, and opaque lazy

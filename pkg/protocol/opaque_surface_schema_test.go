@@ -78,7 +78,7 @@ func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
 		"#/$defs/port_ack":          false,
 		"#/$defs/initialize":        false,
 		"#/$defs/context":           false,
-		"#/$defs/first_paint":       false,
+		"#/$defs/renderer_ready":    false,
 		"#/$defs/first_commit":      false,
 		"#/$defs/worker_ready":      false,
 		"#/$defs/surface_error":     false,
@@ -109,7 +109,7 @@ func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
 		"port_ack",
 		"initialize",
 		"context",
-		"first_paint",
+		"renderer_ready",
 		"first_commit",
 		"worker_ready",
 		"surface_error",
@@ -186,6 +186,17 @@ func TestOpaqueSurfaceSchemasCompileAndRejectUnsafePackagePaths(t *testing.T) {
 	}
 	compiled, err := compiler.Compile("urn:redevplugin:opaque-surface-transport-v6")
 	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []map[string]any{
+		{"type": "redevplugin.surface.first_paint"},
+		{"type": "redevplugin.surface.renderer_ready", "asset_ticket": "secret"},
+	} {
+		if err := compiled.Validate(message); err == nil {
+			t.Fatal("accepted obsolete or authority-bearing readiness")
+		}
+	}
+	if err := compiled.Validate(map[string]any{"type": "redevplugin.surface.renderer_ready"}); err != nil {
 		t.Fatal(err)
 	}
 	document := map[string]any{
@@ -265,4 +276,54 @@ func readPluginSchema(t *testing.T, name string) map[string]any {
 		t.Fatal(err)
 	}
 	return schema
+}
+
+func TestOpaqueSurfaceOpeningDiagnostics(t *testing.T) {
+	root := repoRoot(t)
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "opaque-surface-transport-v6.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiler.AddResource("urn:opening", bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	document, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "opaque-surface-document-v3.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin/opaque-surface-document-v3.schema.json", bytes.NewReader(document)); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("urn:opening#/$defs/opening_progress")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(filepath.Join(root, "testdata", "contracts", "opaque-surface-opening.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(value); err != nil {
+		t.Fatal(err)
+	}
+	for key, invalid := range map[string]any{
+		"elapsedMs": -1, "stageElapsedMs": 1.5, "stage": "paint", "phase": "ready",
+		"pendingMilestones": []any{"token", "token"}, "asset_ticket": "secret",
+	} {
+		t.Run(key, func(t *testing.T) {
+			changed := make(map[string]any)
+			for k, v := range value {
+				changed[k] = v
+			}
+			changed[key] = invalid
+			if err := schema.Validate(changed); err == nil {
+				t.Fatalf("accepted invalid %s", key)
+			}
+		})
+	}
 }

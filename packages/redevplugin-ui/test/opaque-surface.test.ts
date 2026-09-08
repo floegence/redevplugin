@@ -1432,7 +1432,7 @@ test("plugin bridge timeout sends one cancel and rejects replayed late responses
   client.dispose();
 });
 
-test("surface host transfers one secret-free wildcard port and waits for paint, worker, and token", async () => {
+test("surface host transfers one secret-free wildcard port and waits for renderer, worker, and token", async () => {
   const frame = new FakeFrame();
   const fetch = new FakeFetch();
   const channel = fakeChannel();
@@ -1465,7 +1465,7 @@ test("surface host transfers one secret-free wildcard port and waits for paint, 
   assert.equal(frame.srcdoc.includes("asset_ticket_secret"), false);
   assert.equal(frame.srcdoc.includes("plugin_instance_1"), false);
 
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   assert.equal(settled, false);
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
@@ -1516,7 +1516,7 @@ test("surface host mints no bridge token before the transferred port acknowledge
   assert.equal(fetch.calls.length, 1);
   channel.port2.postMessage({ type: "redevplugin.surface.port_ack", frame_generation_id: host.frameGenerationId });
   await waitFor(() => fetch.calls.length === 2);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
   host.dispose();
@@ -1538,7 +1538,7 @@ test("surface host exposes no iframe before the first worker UI commit", async (
   const opening = host.open().then(() => { settled = true; });
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await waitFor(() => channel.port1.sent.some((message) =>
     isMessageType(message, "redevplugin.bridge.lifecycle") &&
@@ -1569,7 +1569,7 @@ test("opening renderer failure remains authoritative through surface disposal", 
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await waitFor(() => channel.port1.sent.some((message) =>
     isMessageType(message, "redevplugin.bridge.lifecycle") &&
@@ -1643,7 +1643,7 @@ test("platform client opens a surface in a slot with one SDK-owned same-origin t
     await waitFor(() => stage.children.length === 1);
     frame.load();
     await waitFor(() => frame.transferred.length === 1);
-    channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
     channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     const host = await opening;
 
@@ -1976,7 +1976,7 @@ test("surface slot waits for retired surface revocation before opening the next 
     assert.equal(firstFrame.style.pointerEvents, "none");
     firstFrame.load();
     await waitFor(() => firstFrame.transferred.length === 1);
-    firstChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    firstChannel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
     firstChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     await firstOpening;
     assert.equal(firstFrame.hidden, false);
@@ -2015,7 +2015,7 @@ test("surface slot waits for retired surface revocation before opening the next 
 
     secondFrame.load();
     await waitFor(() => secondFrame.transferred.length === 1);
-    secondChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    secondChannel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
     secondChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     await secondOpening;
     assert.equal(secondFrame.hidden, false);
@@ -2065,7 +2065,7 @@ test("surface lifecycle observers cannot interrupt opening or revocation", async
     await new Promise((resolve) => setTimeout(resolve, 320));
     frame.load();
     await waitFor(() => frame.transferred.length === 1);
-    channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
     channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     await opening;
 
@@ -2115,7 +2115,7 @@ test("surface slot fails closed, revokes the queued lease, and reconciles an unk
     await waitFor(() => stage.children.length === 1);
     firstFrame.load();
     await waitFor(() => firstFrame.transferred.length === 1);
-    firstChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    firstChannel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
     firstChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     await firstOpening;
 
@@ -2156,7 +2156,7 @@ test("surface slot fails closed, revokes the queued lease, and reconciles an unk
     await waitFor(() => stage.children.at(-1) === replacementFrame);
     replacementFrame.load();
     await waitFor(() => replacementFrame.transferred.length === 1);
-    replacementChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    replacementChannel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
     replacementChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     await replacementOpening;
     assert.equal(replacementFrame.hidden, false);
@@ -2219,7 +2219,7 @@ test("surface host dispose sends a keepalive revocation before local teardown", 
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2251,7 +2251,7 @@ test("post-ready renderer failure revokes the surface and blocks later RPC", asy
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2289,7 +2289,7 @@ test("trusted parent never forwards non-JSON structured-clone RPC params", async
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2320,7 +2320,7 @@ test("trusted parent accepts only current port-bound interaction ownership signa
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2383,7 +2383,7 @@ test("trusted parent exports one file for one current user action", async () => 
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2450,7 +2450,7 @@ test("trusted parent routes current execution cancellation, snapshot, and events
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2514,7 +2514,7 @@ test("execution event reader rejects unknown event kinds", async () => {
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2590,7 +2590,7 @@ test("confirmation rejection waits for lease renewal before capturing the gatewa
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2621,7 +2621,7 @@ test("trusted parent forwards validated capability error details without credent
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2675,7 +2675,7 @@ test("trusted parent converts oversized capability error details into a bounded 
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2726,7 +2726,7 @@ test("trusted parent marks a lost RPC response as an unknown mutation outcome", 
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2768,7 +2768,7 @@ test("trusted parent marks an RPC transport timeout as an unknown mutation outco
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2804,7 +2804,7 @@ test("trusted parent converts oversized RPC responses into a bounded bridge erro
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2861,7 +2861,7 @@ test("surface disposal aborts an unresolved confirmation handler", async () => {
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2898,7 +2898,7 @@ test("surface confirmation rejection is recorded before the plugin receives its 
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2950,7 +2950,7 @@ test("trusted renderer asset reads stay on the private parent POST route", async
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -2991,7 +2991,7 @@ test("trusted parent fails the surface when a lazy asset MIME type changes", asy
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -3051,7 +3051,7 @@ test("surface host applies the initial lease before renderer initialization", as
   await waitFor(() => channel.port1.sent.some((message) =>
     (message as { type?: string }).type === "redevplugin.surface.initialize"
   ));
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
   host.dispose();
@@ -3090,7 +3090,7 @@ test("surface host applies and updates context without replacing the iframe", as
   const initialize = channel.port1.sent.find((message) => isMessageType(message, "redevplugin.surface.initialize")) as {
     context?: unknown;
   };
-  assert.deepEqual(initialize.context, initialContext, "initial context must cross the private port before first paint");
+  assert.deepEqual(initialize.context, initialContext, "initial context must cross the private port before renderer readiness");
 
   const openingContext = { ...initialContext, revision: 2, locale: { language_tag: "en-US", direction: "ltr" as const } };
   host.updateContext(openingContext);
@@ -3107,7 +3107,7 @@ test("surface host applies and updates context without replacing the iframe", as
   assert.equal(frame.srcdoc, originalSource);
   assert.equal(frame.transferred.length, 1);
 
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
   const readyContext = { ...openingContext, revision: 3 };
@@ -3139,7 +3139,7 @@ test("surface host reports opening progress after 300ms", async () => {
     await new Promise((resolve) => setTimeout(resolve, 320));
     assert.equal(progress.length, 1);
     assert.equal(progress[0]! >= 300, true);
-    channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
     channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     await opening;
   } finally {
@@ -3171,7 +3171,7 @@ test("surface opening deadline revokes server state, tears down locally, and rem
   frame.load();
   const lateRendererSignals = setTimeout(() => {
     try {
-      channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+      channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
       channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     } catch {
       // The expected deadline closes the transferred channel first.
@@ -3208,7 +3208,7 @@ test("surface opening deadline revokes server state, tears down locally, and rem
   const retryOpening = retryHost.open();
   retryFrame.load();
   await waitFor(() => retryFrame.transferred.length === 1);
-  retryChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  retryChannel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   retryChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await retryOpening;
   assert.deepEqual(reloadLimiter.state, { reloads: 0, remaining: 2, windowStartedAtMs: undefined, nextRetryAtMs: undefined });
@@ -3363,7 +3363,7 @@ test("session scope revoke invalidates a ready slot and closes its local channel
     await waitFor(() => stage.children.length === 1);
     frame.load();
     await waitFor(() => frame.transferred.length === 1);
-    channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
     channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     await opening;
 
@@ -3630,7 +3630,7 @@ test("surface close bounds a non-responsive plugin quiesce", async () => {
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -3661,7 +3661,7 @@ test("throwing error observers cannot block surface revocation", async () => {
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -3692,7 +3692,7 @@ test("plugin cancellation aborts the matching parent request", async () => {
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -3730,7 +3730,7 @@ test("surface lease renews gateway and asset credentials before expiry", async (
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
   await waitFor(() => fetch.calls.length === 3);
@@ -3776,7 +3776,7 @@ test("unexpected iframe reload fails closed and records the shared reload budget
   const opening = host.open();
   frame.load();
   await waitFor(() => frame.transferred.length === 1);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
@@ -3852,4 +3852,65 @@ function withLocationOrigin<T>(origin: string, run: () => T): T {
     if (descriptor) Object.defineProperty(globalThis, "location", descriptor);
     else delete (globalThis as { location?: unknown }).location;
   }
+}
+
+for (const [milestone, stage] of [
+  ["frame_load", "preparing"], ["prepare", "preparing"], ["port_ack", "connecting"],
+  ["token", "authorizing"], ["renderer_ready", "initializing"],
+  ["worker_ready", "initializing"], ["first_commit", "committing"],
+] as const) {
+  test(`surface opening timeout identifies ${milestone} and retires only its surface`, async () => {
+    const frame = new FakeFrame();
+    const fetch = new FakeFetch();
+    const channel = fakeChannel();
+    channel.port2.autoFirstCommit = false;
+    frame.autoAcknowledge = milestone !== "port_ack";
+    const blocked = async (_input: string, init: FetchInitLike): Promise<FetchResponseLike> => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true });
+    });
+    if (milestone === "prepare") fetch.pushHandler(blocked);
+    else fetch.push(preparation());
+    if (!["frame_load", "prepare", "port_ack"].includes(milestone)) {
+      if (milestone === "token") fetch.pushHandler(blocked);
+      else fetch.push(gatewayLease());
+    }
+    const host = createSurfaceHost(frame, {
+      bootstrap: hostBootstrap,
+      testMessageChannel: channel,
+      hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+      loadTimeoutMs: 150,
+      requestTimeoutMs: 1000,
+    });
+    const opening = host.open();
+    const failure = assert.rejects(opening, (error: unknown) => {
+      if (!(error instanceof PluginBridgeError)) throw error;
+      assert.equal(error.errorCode, "PLUGIN_BRIDGE_TIMEOUT");
+      const details = error.details as import("../src/surface.js").PluginSurfaceOpeningProgress;
+      assert.equal(details.phase, "opening");
+      assert.equal(details.stage, stage);
+      assert.deepEqual(details.pendingMilestones, [milestone]);
+      assert.equal(details.elapsedMs >= 100 && details.stageElapsedMs >= 0, true);
+      assert.equal(details.stageElapsedMs <= details.elapsedMs, true);
+      assert.deepEqual(Object.keys(details).sort(), ["elapsedMs", "pendingMilestones", "phase", "stage", "stageElapsedMs"]);
+      assert.equal(JSON.stringify(details).includes(hostBootstrap.bridgeNonce), false);
+      assert.equal(JSON.stringify(details).includes(hostBootstrap.assetTicket), false);
+      return true;
+    });
+    if (milestone !== "frame_load") frame.load();
+    if (["renderer_ready", "worker_ready", "first_commit"].includes(milestone)) {
+      await waitFor(() => channel.port1.sent.some((value) => isMessageType(value, "redevplugin.surface.initialize")));
+      if (milestone !== "renderer_ready") channel.port2.postMessage({ type: "redevplugin.surface.renderer_ready" });
+      if (milestone !== "worker_ready") channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    }
+    await failure;
+    assert.equal(frame.srcdoc, "");
+    assert.equal(fetch.calls.filter((call) => call.input.endsWith("/dispose")).length, 1);
+    assert.equal(fetch.calls.filter((call) => call.input.endsWith("/dispose")).every((call) => call.input.endsWith("/surfaces/surface_1/dispose")), true);
+    const count = channel.port1.sent.length;
+    channel.port1.emit({ type: "redevplugin.surface.renderer_ready" });
+    channel.port1.emit({ type: "redevplugin.surface.worker_ready" });
+    channel.port1.emit({ type: "redevplugin.surface.first_commit" });
+    assert.equal(channel.port1.sent.length, count, "late signals cannot reactivate the surface");
+    assert.throws(() => host.sendLifecycle({ type: "visible" }));
+  });
 }

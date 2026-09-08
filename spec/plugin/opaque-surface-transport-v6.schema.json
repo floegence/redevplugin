@@ -8,7 +8,7 @@
     { "$ref": "#/$defs/port_ack" },
     { "$ref": "#/$defs/initialize" },
     { "$ref": "#/$defs/context" },
-    { "$ref": "#/$defs/first_paint" },
+    { "$ref": "#/$defs/renderer_ready" },
     { "$ref": "#/$defs/first_commit" },
     { "$ref": "#/$defs/worker_ready" },
     { "$ref": "#/$defs/surface_error" },
@@ -18,6 +18,56 @@
     { "$ref": "#/$defs/worker_initialize" }
   ],
   "$defs": {
+    "opening_progress": {
+      "description": "Host-local opening progress and timeout details. This is not a message and conveys no authority.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "elapsedMs",
+        "stage",
+        "stageElapsedMs",
+        "pendingMilestones"
+      ],
+      "properties": {
+        "phase": {
+          "const": "opening"
+        },
+        "elapsedMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stage": {
+          "enum": [
+            "preparing",
+            "connecting",
+            "authorizing",
+            "initializing",
+            "committing"
+          ]
+        },
+        "stageElapsedMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pendingMilestones": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "frame_load",
+              "prepare",
+              "port_ack",
+              "token",
+              "renderer_ready",
+              "worker_ready",
+              "first_commit"
+            ]
+          }
+        }
+      }
+    },
     "opaque_handle": {
       "type": "string",
       "pattern": "^[A-Za-z][A-Za-z0-9_-]{7,159}$"
@@ -99,11 +149,12 @@
       }
     },
     "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$" },
-    "first_paint": {
+    "renderer_ready": {
+      "description": "The verified static document and initial context are applied and the worker startup call completed. No browser paint is required.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type"],
-      "properties": { "type": { "const": "redevplugin.surface.first_paint" } }
+      "properties": { "type": { "const": "redevplugin.surface.renderer_ready" } }
     },
     "first_commit": {
       "type": "object",

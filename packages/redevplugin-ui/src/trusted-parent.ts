@@ -39,6 +39,8 @@ export type {
   PluginSurfaceHost,
   PluginSurfaceCloseResult,
   PluginSurfaceOpeningProgress,
+  PluginSurfaceOpeningStage,
+  PluginSurfaceOpeningMilestone,
   PluginSurfaceInteractionEvent,
   PluginSurfaceInteractionKind,
   PluginSurfaceFileExport,

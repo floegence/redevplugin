@@ -79,7 +79,7 @@ function validScenario(name) {
     websocket_absent: true,
     service_worker_absent: true,
     opening_progress: true,
-    first_paint_before_lazy_asset: true,
+    first_commit_before_lazy_asset: true,
     execution_event_response_loss_recovered: true,
     real_execution_events_read: true,
     confirmation_disposal_aborted: true,

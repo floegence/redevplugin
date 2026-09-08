@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { validateA2Evidence } from "../../scripts/verify_redevplugin_a2_evidence.mjs";
 import { createBrowserHarnessServer } from "./opaque-surface-server.mjs";
+import { verifySurfaceOpening, verifySurfaceOpeningFailures } from "./surface-opening-smoke.mjs";
 import { verifyCanvasResize } from "./canvas-resize-smoke.mjs";
 
 const harness = createBrowserHarnessServer();
@@ -15,6 +16,8 @@ const deniedPermissionsPolicy = "accelerometer 'none'; autoplay 'none'; bluetoot
 
 try {
   mkdirSync(evidenceDir, { recursive: true });
+  await verifySurfaceOpening(browser);
+  await verifySurfaceOpeningFailures(browser);
   await verifyCanvasResize(browser, evidenceDir);
   const scenarios = [
     await verifyScenario("supported"),
@@ -116,7 +119,7 @@ async function verifyScenario(credentiallessScenario) {
     visibility: "visible",
     opacity: "1",
     pointerEvents: "auto",
-  }, `${credentiallessScenario} first paint and worker commit reveal exactly one interactive iframe`);
+  }, `${credentiallessScenario} first commit and worker commit reveal exactly one interactive iframe`);
   const sandbox = await iframe.getAttribute("sandbox");
   const allow = await iframe.getAttribute("allow");
   const referrerPolicy = await iframe.getAttribute("referrerpolicy");
@@ -420,7 +423,7 @@ async function verifyScenario(credentiallessScenario) {
   const diagnostics = await (await fetch(`${baseURL}/__browser_harness/diagnostics`)).json();
   const currentSurfaceID = diagnostics.latest_surface_id;
   assert.equal(snapshot.openedAt > 0, true);
-  assert.equal(snapshot.openedAt < diagnostics.asset_completed_at, true, "first paint must precede delayed lazy asset completion");
+  assert.equal(snapshot.openedAt < diagnostics.asset_completed_at, true, "first commit must precede delayed lazy asset completion");
 
   await page.screenshot({
     path: join(evidenceDir, `redevplugin-a2-${credentiallessScenario}.png`),
@@ -500,7 +503,7 @@ async function verifyScenario(credentiallessScenario) {
     websocket_absent: webSockets.length === 0 && workerProbe.websocket_blocked === true,
     service_worker_absent: page.context().serviceWorkers().length === 0 && isolation.service_worker_blocked === true,
     opening_progress: snapshot.progressEvents.length >= 1 && snapshot.progressEvents[0] >= 300,
-    first_paint_before_lazy_asset: snapshot.openedAt > 0 && snapshot.openedAt < diagnostics.asset_completed_at,
+    first_commit_before_lazy_asset: snapshot.openedAt > 0 && snapshot.openedAt < diagnostics.asset_completed_at,
     execution_event_response_loss_recovered: finalDiagnostics.execution_event_response_loss_recovered === true,
     real_execution_events_read: realExecutionEventsRead && requests.filter((request) => request.url.includes("/executions/execution_harness_logs/events/query")).length === 3,
     confirmation_disposal_aborted: eventLog.includes("confirmation-aborted"),

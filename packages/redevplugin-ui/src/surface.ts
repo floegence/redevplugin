@@ -1281,9 +1281,15 @@ export type PluginSurfaceHostBootstrap = {
 
 export type PluginSurfaceHostContext = PluginSurfaceContext;
 
+export type PluginSurfaceOpeningStage = "preparing" | "connecting" | "authorizing" | "initializing" | "committing";
+export type PluginSurfaceOpeningMilestone = "frame_load" | "prepare" | "port_ack" | "token" | "renderer_ready" | "worker_ready" | "first_commit";
+
 export type PluginSurfaceOpeningProgress = {
   phase: "opening";
   elapsedMs: number;
+  stage: PluginSurfaceOpeningStage;
+  stageElapsedMs: number;
+  pendingMilestones: PluginSurfaceOpeningMilestone[];
 };
 
 export type PluginSurfaceInteractionKind = "activation" | "focus" | "wheel" | "text-selection" | "action";
@@ -1485,7 +1491,7 @@ type PluginSurfaceAssetReadResult = {
 
 type OpenSignals = {
   portAcknowledged: Deferred<void>;
-  firstPaint: Deferred<void>;
+  rendererReady: Deferred<void>;
   workerReady: Deferred<void>;
   firstCommit: Deferred<void>;
 };
@@ -3331,10 +3337,10 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       currentContext = message.context;
       try { applyStaticDocument(currentDocument); if (currentContext) applySurfaceContext(currentContext); startWorker(currentDocument); }
       catch (error) { return fail(error); }
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        sendParent({ type: "redevplugin.surface.first_paint" });
-        loadAssets();
-      }));
+      // Readiness describes applied initialization, not a browser paint. Hidden
+      // and offscreen opaque frames may never receive an animation frame.
+      sendParent({ type: "redevplugin.surface.renderer_ready" });
+      loadAssets();
       return;
     }
     if (isRecord(message) && exactKeys(message, ["type", "frame_generation_id", "surface_handle", "context"]) && message.type === "redevplugin.surface.context" && message.frame_generation_id === frameGenerationID && message.surface_handle === surfaceHandle && validSurfaceContext(message.context)) {
@@ -3433,6 +3439,10 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #port?: MessagePortLike;
   #openSignals?: OpenSignals;
   #openingFailure?: PluginBridgeError;
+  #openingStartedAt = 0;
+  #openingStageStartedAt = 0;
+  #openingStage: PluginSurfaceOpeningStage = "preparing";
+  #openingPending = new Set<PluginSurfaceOpeningMilestone>();
   #quiesce?: SurfaceQuiesce;
   #initialFrameLoad?: Deferred<void>;
   #frameLoaded = false;
@@ -3501,23 +3511,22 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     }
     this.#opened = true;
     this.#openingFailure = undefined;
-    const startedAt = Date.now();
-    const progressTimer = setTimeout(() => {
+    this.#openingStartedAt = performance.now();
+    this.#setOpeningStage("preparing", ["frame_load", "prepare"]);
+    const progressTimer = setInterval(() => {
       if (!this.#ready && !this.#disposed) {
-        this.#reportOpeningProgress({
-          phase: "opening",
-          elapsedMs: Math.max(openingProgressDelayMs, Date.now() - startedAt),
-        });
+        const progress = this.#openingProgress();
+        this.#reportOpeningProgress({ ...progress, elapsedMs: Math.max(openingProgressDelayMs, progress.elapsedMs) });
       }
     }, openingProgressDelayMs);
     const signals: OpenSignals = {
       portAcknowledged: deferred<void>(),
-      firstPaint: deferred<void>(),
+      rendererReady: deferred<void>(),
       workerReady: deferred<void>(),
       firstCommit: deferred<void>(),
     };
     void signals.portAcknowledged.promise.catch(() => undefined);
-    void signals.firstPaint.promise.catch(() => undefined);
+    void signals.rendererReady.promise.catch(() => undefined);
     void signals.workerReady.promise.catch(() => undefined);
     void signals.firstCommit.promise.catch(() => undefined);
     this.#openSignals = signals;
@@ -3536,15 +3545,19 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         "Plugin surface opening timed out",
       );
     } catch (error) {
-      const bridgeError = this.#openingFailure ?? toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
-      if (bridgeError.errorCode === "PLUGIN_BRIDGE_TIMEOUT") this.#reloadLimiter.recordCrash();
+      let bridgeError = this.#openingFailure ?? toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
+      if (bridgeError.errorCode === "PLUGIN_BRIDGE_TIMEOUT") {
+        bridgeError = new PluginBridgeError(bridgeError.errorCode, bridgeError.message, undefined, this.#openingProgress(), bridgeError.mutationOutcome);
+        this.#reloadLimiter.recordCrash();
+      }
       this.#reportError(bridgeError);
       const revoke = this.#revokeSurface(false);
       this.#disposeLocal();
       await revoke;
       throw bridgeError;
     } finally {
-      clearTimeout(progressTimer);
+      clearInterval(progressTimer);
+      this.#openingPending.clear();
       this.#openSignals = undefined;
       this.#openingFailure = undefined;
       this.#initialFrameLoad = undefined;
@@ -3552,7 +3565,13 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   }
 
   async #completeOpening(signals: OpenSignals, initialFrameLoad: Promise<void>): Promise<void> {
-    const [preparation] = await Promise.all([this.#prepareSurface(), initialFrameLoad]);
+    const [preparation] = await Promise.all([
+      this.#prepareSurface().then((value) => {
+        this.#openingPending.delete("prepare");
+        return value;
+      }),
+      initialFrameLoad.then(() => { this.#openingPending.delete("frame_load"); }),
+    ]);
     this.#assertActive();
     validateSurfacePreparation(this.bootstrap, preparation);
     this.#assetSession = preparation.asset_session;
@@ -3560,6 +3579,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#document = preparation.document;
     this.#assets = new Map(preparation.document.assets.map((asset) => [asset.binding_id, asset]));
 
+    this.#setOpeningStage("connecting", ["port_ack"]);
     const channel = this.#createMessageChannel();
     this.#port = channel.port1;
     this.#port.addEventListener("message", this.#onPortMessage);
@@ -3576,9 +3596,11 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     await signals.portAcknowledged.promise;
     this.#assertActive();
 
+    this.#setOpeningStage("authorizing", ["token"]);
     const token = await this.#mintBridgeToken();
     this.#assertActive();
     this.#applyLease(token);
+    this.#setOpeningStage("initializing", ["renderer_ready", "worker_ready"]);
     this.#postToRenderer(removeUndefined({
       type: "redevplugin.surface.initialize",
       frame_generation_id: this.frameGenerationId,
@@ -3588,10 +3610,11 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     }));
     this.#rendererInitialized = true;
 
-    await Promise.all([signals.firstPaint.promise, signals.workerReady.promise]);
+    await Promise.all([signals.rendererReady.promise, signals.workerReady.promise]);
     this.#assertActive();
     this.#bridgeReady = true;
     this.#scheduleLeaseRenewal();
+    this.#setOpeningStage("committing", ["first_commit"]);
     this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
 
     await signals.firstCommit.promise;
@@ -3687,7 +3710,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     for (const controller of this.#pendingRequestControllers.values()) controller.abort();
     this.#pendingRequestControllers.clear();
     const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface host was disposed");
-    this.#openSignals?.firstPaint.reject(disposedError);
+    this.#openSignals?.rendererReady.reject(disposedError);
     this.#openSignals?.workerReady.reject(disposedError);
     this.#openSignals?.firstCommit.reject(disposedError);
     this.#openSignals?.portAcknowledged.reject(disposedError);
@@ -3733,20 +3756,24 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         return;
       }
       if (!messageWithinLimit(data)) return;
-      if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.first_paint") {
-        this.#openSignals?.firstPaint.resolve();
+      if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.renderer_ready") {
+        this.#openingPending.delete("renderer_ready");
+        this.#openSignals?.rendererReady.resolve();
         return;
       }
       if (hasExactKeys(data, ["type", "frame_generation_id"]) &&
           data.type === "redevplugin.surface.port_ack" && data.frame_generation_id === this.frameGenerationId) {
+        this.#openingPending.delete("port_ack");
         this.#openSignals?.portAcknowledged.resolve();
         return;
       }
       if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.worker_ready") {
+        this.#openingPending.delete("worker_ready");
         this.#openSignals?.workerReady.resolve();
         return;
       }
       if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.first_commit") {
+        this.#openingPending.delete("first_commit");
         this.#openSignals?.firstCommit.resolve();
         return;
       }
@@ -4316,7 +4343,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#rendererInitialized = false;
     const terminalError = opening ? (this.#openingFailure ??= error) : error;
     this.#openSignals?.portAcknowledged.reject(terminalError);
-    this.#openSignals?.firstPaint.reject(terminalError);
+    this.#openSignals?.rendererReady.reject(terminalError);
     this.#openSignals?.workerReady.reject(terminalError);
     this.#openSignals?.firstCommit.reject(terminalError);
     if (!opening) this.#reportError(terminalError);
@@ -4378,6 +4405,23 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     } catch {
       // Observers cannot weaken revocation or local teardown invariants.
     }
+  }
+
+  #setOpeningStage(stage: PluginSurfaceOpeningStage, pending: PluginSurfaceOpeningMilestone[]): void {
+    this.#openingStage = stage;
+    this.#openingStageStartedAt = performance.now();
+    this.#openingPending = new Set(pending);
+  }
+
+  #openingProgress(): PluginSurfaceOpeningProgress {
+    const now = performance.now();
+    return {
+      phase: "opening",
+      elapsedMs: Math.max(0, Math.floor(now - this.#openingStartedAt)),
+      stage: this.#openingStage,
+      stageElapsedMs: Math.max(0, Math.floor(now - this.#openingStageStartedAt)),
+      pendingMilestones: [...this.#openingPending],
+    };
   }
 
   #reportOpeningProgress(progress: PluginSurfaceOpeningProgress): void {
