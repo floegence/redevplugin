@@ -128,6 +128,36 @@ and marked that exact asset session prepared.
 - `pkg/protocol` tests keep OpenAPI, schemas, route fixtures, Go DTOs,
   TypeScript SDK bindings, Rust IPC, WASM ABI, and compatibility hashes aligned.
 
+### Release Document Cache
+
+Hosts can open `remoterelease.OpenDocumentCache(ctx, absolutePath)` once per
+state root and pass it as `AssetSetOptions.DocumentCache` to each immutable
+release projection. Close it after the Host and release operations stop. A host
+may continue without this optional cache if opening it fails.
+
+The platform owns the SQLite layout in
+`spec/internal/release-document-cache.sql`: lineage
+`redevplugin_release_documents`, schema 1. It is a new disposable cache, not a
+migration of the control database or installed plugin state. Empty interrupted
+creation recovers transactionally; an unknown lineage, future schema, or extra
+schema object fails without changing the existing database. Each document is at
+most 1 MiB, with FIFO eviction at 128 entries or 8 MiB of payload. Transactions
+preserve committed entries across interruption; the database page quota bounds
+storage growth. Cache misses and read/write failures use the existing bounded
+remote transport.
+
+Only release documents are retained. A cache hit must match the **current**
+reviewed asset projection's exact SHA-256 and size. Signature, expiry, policy,
+revocation, owner and execution checks are unchanged and are performed by their
+existing authorities. The cache contains no tokens, trust decisions or plugin
+packages. It does not discover a newer release or make a stale market snapshot
+fresh. A changed projection cannot reuse old bytes at the same locator.
+
+Startup recovery can therefore validate already-downloaded trust documents
+locally while the runtime starts, instead of repeating five sequential network
+round trips after every process restart. Initial downloads and changed or
+expired trust evidence retain their normal verification and failure behavior.
+
 ### Runtime Recovery
 
 The Go Host is the only runtime recovery owner. `RecoverEnabled` reads the

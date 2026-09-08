@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.0.30
+
+- Add an optional bounded persistent release-document byte cache so installed
+  plugin recovery does not repeat network downloads on every runtime restart.
+  Current projection hashes, signatures, expiry and revocations are revalidated;
+  cache failures fall back to the existing verified remote transport.
+- Publish the disposable cache's initial SQLite schema and cover restart,
+  corruption, changed projections, trust failures, cancellation and quotas.
+
 ## v3.0.29
 
 - Open hidden, offscreen, and zero-size plugin surfaces without waiting for

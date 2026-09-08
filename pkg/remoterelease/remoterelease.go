@@ -99,18 +99,21 @@ type AssetFetcher interface {
 }
 
 type AssetSetOptions struct {
-	SourceID     string
-	Channel      string
-	QuotaKey     string
-	AllowedHosts []string
-	Assets       []Asset
-	Fetcher      AssetFetcher
-	FetchTimeout time.Duration
+	// DocumentCache is optional and never supplies release authority.
+	DocumentCache *DocumentCache
+	SourceID      string
+	Channel       string
+	QuotaKey      string
+	AllowedHosts  []string
+	Assets        []Asset
+	Fetcher       AssetFetcher
+	FetchTimeout  time.Duration
 }
 
 // AssetSet is an immutable, current-release projection. Updating a catalog
 // creates a new set instead of mutating a set used by an in-flight operation.
 type AssetSet struct {
+	documentCache *DocumentCache
 	sourceID      string
 	channel       string
 	quotaKey      string
@@ -170,7 +173,8 @@ func NewAssetSet(options AssetSetOptions) (*AssetSet, error) {
 	}
 	return &AssetSet{
 		sourceID: options.SourceID, channel: options.Channel, quotaKey: options.QuotaKey,
-		allowedHosts: hosts, assets: assets, fetcher: options.Fetcher, fetchTimeout: options.FetchTimeout,
+		documentCache: options.DocumentCache,
+		allowedHosts:  hosts, assets: assets, fetcher: options.Fetcher, fetchTimeout: options.FetchTimeout,
 		sleep: sleepContext, jitter: retryJitter, cache: make(map[string][]byte), cacheMaxBytes: defaultAssetCacheMaxBytes,
 		inflight: make(map[string]*assetFetchFlight),
 	}, nil
@@ -270,6 +274,9 @@ func (set *AssetSet) matches(sourceID, channel string) bool {
 }
 
 func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, maxBytes int64, allowedHosts []string, expectedSHA256 string, observe func(host.ReleaseArtifactProgress)) ([]byte, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	if set == nil || set.fetcher == nil || maxBytes <= 0 {
 		return nil, "", ErrInvalidAssetSet
 	}
@@ -305,7 +312,18 @@ func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, ma
 			return nil, "", ctx.Err()
 		}
 	} else {
+		if artifactRole == "release_document" {
+			if cached := set.documentCache.read(ctx, asset); cached != nil {
+				set.rememberAsset(asset, cached)
+				set.finishAssetFetch(asset, flight, cached, asset.SHA256, nil)
+				return cached, asset.SHA256, nil
+			}
+		}
 		value, digest, err := set.fetchRemoteAsset(ctx, asset, locator, artifactRole, maxBytes, allowedHosts, observe)
+		if err == nil && artifactRole == "release_document" {
+			// An optional cache write failure never changes verified transport success.
+			_ = set.documentCache.remember(ctx, asset, value)
+		}
 		set.finishAssetFetch(asset, flight, value, digest, err)
 		return value, digest, err
 	}

@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 
 const root = resolve(import.meta.dirname, "..");
 const canonicalContractPaths = Object.freeze([
+  "internal/release-document-cache.sql",
   "internal/runtime-wire-fixtures.json",
   "internal/runtime-wire.schema.json",
   "openapi/plugin-platform.yaml",

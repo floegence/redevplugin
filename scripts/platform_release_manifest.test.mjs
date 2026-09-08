@@ -24,6 +24,7 @@ test("manifest module can be imported from a stdin Node program", () => {
 });
 
 const expectedCanonicalContracts = [
+  "contract:internal/release-document-cache.sql",
   "contract:internal/runtime-wire-fixtures.json",
   "contract:internal/runtime-wire.schema.json",
   "contract:openapi/plugin-platform.yaml",

@@ -39,6 +39,7 @@ type Options struct {
 }
 
 type Fixture struct {
+	TrustOptions          releasetrust.ReleaseTrustOptions
 	Service               *releasetrust.ReleaseTrustService
 	ServiceSet            *releasetrust.ServiceSet
 	Identity              releasetrust.ReleaseIdentity
@@ -309,7 +310,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	}
 	artifactDigest := digestHex(signedPackageBytes)
 	return &Fixture{
-		Service: service, ServiceSet: serviceSet, Identity: identity, SourcePolicy: policy, Package: signedPackage,
+		TrustOptions: trustOptions, Service: service, ServiceSet: serviceSet, Identity: identity, SourcePolicy: policy, Package: signedPackage,
 		PackageBytes: slices.Clone(signedPackageBytes), Metadata: releaseMetadata, MetadataBytes: slices.Clone(metadataBytes),
 		MetadataSignature: slices.Clone(metadataSignature), PackageSignature: packageSignature,
 		SigningPrivateKey:     slices.Clone(signingPrivate),
@@ -470,4 +471,15 @@ func valueOrDefault(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// DocumentBytes returns an isolated projection for testing released transports.
+func (transport *DocumentTransport) DocumentBytes() map[string][]byte {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	documents := make(map[string][]byte, len(transport.values))
+	for locator, value := range transport.values {
+		documents[locator] = slices.Clone(value)
+	}
+	return documents
 }
