@@ -286,6 +286,15 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   chrome behavior only. Action names and target keys remain plugin-controlled
   semantic metadata and must never become permission, route-authorization,
   identity, or privilege inputs.
+- Saved host layout and live surface authority are separate lifetimes. Hosts may
+  retain a product container while its SDK slot is closed or invalidated, then
+  open a fresh slot after authoritative session, inventory, and permission
+  reconciliation. Each simultaneous container owns an independent slot and
+  iframe; hosts must not move or reuse an iframe between containers. Revocation
+  and unknown-outcome invalidation remain platform-owned and cannot be bypassed
+  to preserve layout. Placement persistence, current-mode navigation, and removal
+  after confirmed uninstall belong to the host product, not platform stores or
+  manifest fields.
 - A close whose response is lost must be reconcilable through the idempotent
   single-surface revocation contract. Reconciliation may confirm that the exact
   bound surface is closed or authoritatively absent, but it must not widen into
