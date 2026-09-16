@@ -193,7 +193,7 @@ func TestScaffoldWorkerArtifactsUseCanonicalBuilderAndSourceLock(t *testing.T) {
 	if !strings.Contains(packageSource, `"scaffold:check:canonical": "node scripts/build_scaffold_assets.mjs --check --canonical"`) {
 		t.Fatal("package scripts must expose the canonical scaffold worker check")
 	}
-	if !strings.Contains(packageSource, `"build": "npm run contracts-package:build && tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check"`) {
+	if !strings.Contains(packageSource, `"build": "node scripts/build_surface_integrity.mjs --check && npm run contracts-package:build && tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check"`) {
 		t.Fatal("normal package build must verify, not regenerate, committed scaffold assets")
 	}
 
