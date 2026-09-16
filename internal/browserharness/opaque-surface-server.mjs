@@ -199,7 +199,7 @@ export function createBrowserHarnessServer(options = {}) {
             path: "ui/lazy.png",
             sha256: assetSHA256,
             content_type: "image/png",
-            content_base64: lazyAssetBase64,
+            content_base64: options.corruptAsset ? Buffer.from(lazyAssetBytes).fill(0, 0, 1).toString("base64") : lazyAssetBase64,
           });
           return;
         }

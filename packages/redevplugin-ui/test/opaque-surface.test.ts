@@ -34,19 +34,25 @@ import { validatePluginUITree, type PluginUIElementVNode, type PluginUITextVNode
 
 const uiText = (key: string, text: string): PluginUITextVNode => ({ type: "text", key, text });
 
-test("trusted-parent handshake transcript has one stable current vector", async () => {
-  const got = await trustedParentBridgeHandshakeTranscriptSHA256({
-    type: "redevplugin.bridge.handshake",
-    plugin_id: "com.example.plugin",
-    surface_id: "example.view",
-    surface_instance_id: "surface_1",
-    active_fingerprint: "sha256:abc",
-    bridge_nonce: "nonce_1",
-    asset_session_nonce: "asset_nonce_1",
-    management_revision: 7,
-    revoke_epoch: 3,
-  }, "bridge_channel_1");
-  assert.equal(got, "sha256:761226eb620c1a1277cb83b129f9e800ce1f1df243a04e7b6f5ad4952e65bcba");
+for (const withoutSubtleCrypto of [false, true]) test(`trusted-parent handshake transcript has one stable current vector (without SubtleCrypto: ${withoutSubtleCrypto})`, async () => {
+  const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  if (withoutSubtleCrypto) Object.defineProperty(globalThis, "crypto", { configurable: true, value: { getRandomValues: crypto.getRandomValues.bind(crypto) } });
+  try {
+    const got = await trustedParentBridgeHandshakeTranscriptSHA256({
+      type: "redevplugin.bridge.handshake",
+      plugin_id: "com.example.plugin",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      active_fingerprint: "sha256:abc",
+      bridge_nonce: "nonce_1",
+      asset_session_nonce: "asset_nonce_1",
+      management_revision: 7,
+      revoke_epoch: 3,
+    }, "bridge_channel_1");
+    assert.equal(got, "sha256:761226eb620c1a1277cb83b129f9e800ce1f1df243a04e7b6f5ad4952e65bcba");
+  } finally {
+    if (cryptoDescriptor) Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
+  }
 });
 
 test("opaque bootstrap has no independent UI protocol compatibility axis", () => {
@@ -449,7 +455,8 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes("plugin asset response did not match the prepared document"), true);
   assert.equal(html.includes("plugin asset response failed renderer validation"), true);
   assert.equal(html.includes("message.content_type !== asset.content_type"), true);
-  assert.equal(html.includes('crypto.subtle.digest("SHA-256"'), true);
+  assert.equal(html.includes('redevpluginIntegrity.sha256(bytes)'), true);
+  assert.equal(html.includes('crypto.subtle'), false);
   assert.equal(html.includes("plugin asset bytes failed SHA-256 verification"), true);
   assert.equal(html.includes("transferControlToOffscreen"), true);
   assert.equal(html.includes("new ResizeObserver"), true);

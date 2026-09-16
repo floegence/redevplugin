@@ -441,6 +441,399 @@
     return keys.every((key) => Object.hasOwn(value, key));
   }
 
+  // node_modules/@noble/hashes/_u64.js
+  var fromNumH = (n) => n / 2 ** 32 | 0;
+  var fromNumL = (n) => n >>> 0;
+  function setU64FromNum(view, byteOffset, n, isLE) {
+    const h = fromNumH(n);
+    const l = fromNumL(n);
+    view.setUint32(byteOffset, isLE ? l : h, isLE);
+    view.setUint32(byteOffset + 4, isLE ? h : l, isLE);
+  }
+
+  // node_modules/@noble/hashes/utils.js
+  function isBytes(a) {
+    return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array" && "BYTES_PER_ELEMENT" in a && a.BYTES_PER_ELEMENT === 1;
+  }
+  var atitle = (title) => title ? `"${title}" ` : "";
+  function anumber(n, title = "") {
+    if (typeof n !== "number")
+      throw new TypeError(atitle(title) + "expected number, got " + typeof n);
+    if (!Number.isSafeInteger(n) || n < 0)
+      throw new RangeError(atitle(title) + "expected integer >= 0, got " + n);
+    return n;
+  }
+  function abytes(value, length, title = "") {
+    if (isBytes(value) && (length === void 0 || value.length === length))
+      return value;
+    if (length !== void 0)
+      anumber(length, "length");
+    const bytes = isBytes(value);
+    const ofLen = length !== void 0 ? ` of length ${length}` : "";
+    const got = bytes ? `length=${value.length}` : `type=${typeof value}`;
+    const message = atitle(title) + "expected Uint8Array" + ofLen + ", got " + got;
+    if (!bytes)
+      throw new TypeError(message);
+    throw new RangeError(message);
+  }
+  var aobject = (value, label) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      throw new TypeError((label === "object" ? "" : `"${label}" `) + "expected object, got type=" + typeof value);
+  };
+  var aopts = (value, label) => {
+    aobject(value, label);
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null)
+      throw new TypeError(`"${label}" expected plain object`);
+    if (Object.hasOwn(value, "__proto__"))
+      throw new TypeError(`"${label}.__proto__" is not allowed`);
+  };
+  function aexists(instance, checkFinished = true) {
+    if (instance.destroyed)
+      throw new Error("hash was destroyed");
+    if (checkFinished && instance.finished)
+      throw new Error("digest() was already called");
+  }
+  function aoutput(out, instance) {
+    abytes(out, void 0, "output");
+    const min = instance.outputLen;
+    if (!(out.length >= min)) {
+      throw new RangeError('"output" expected length >= ' + min);
+    }
+  }
+  function clean(...arrays) {
+    for (let i = 0; i < arrays.length; i++) {
+      arrays[i].fill(0);
+    }
+  }
+  function createView(arr) {
+    return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
+  }
+  function rotr(word, shift) {
+    return word << 32 - shift | word >>> shift;
+  }
+  var hasHexBuiltin = /* @__PURE__ */ (() => (
+    // @ts-ignore
+    typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function"
+  ))();
+  var hexes = /* @__PURE__ */ Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
+  function bytesToHex(bytes) {
+    abytes(bytes);
+    if (hasHexBuiltin)
+      return bytes.toHex();
+    let hex = "";
+    for (let i = 0; i < bytes.length; i++) {
+      hex += hexes[bytes[i]];
+    }
+    return hex;
+  }
+  function checkOpts(defaults, opts, title = "opts") {
+    aopts(defaults, "defaults");
+    if (opts !== void 0)
+      aopts(opts, title);
+    const merged = Object.assign(/* @__PURE__ */ Object.create(null), defaults, opts);
+    return merged;
+  }
+  function createHasher(hashCons, info = {}) {
+    if (typeof hashCons !== "function")
+      throw new TypeError('"hashCons" expected function, got type=' + typeof hashCons);
+    info = checkOpts({}, info, "info");
+    const hashC = (msg, opts) => hashCons(opts).update(msg).digest();
+    const tmp = hashCons(void 0);
+    hashC.outputLen = tmp.outputLen;
+    hashC.blockLen = tmp.blockLen;
+    hashC.canXOF = tmp.canXOF;
+    hashC.create = (opts) => hashCons(opts);
+    Object.assign(hashC, info);
+    return Object.freeze(hashC);
+  }
+  var oidNist = (suffix) => ({
+    // Current NIST hashAlgs suffixes used here fit in one DER subidentifier octet.
+    // Larger suffix values would need base-128 OID encoding and a different length byte.
+    oid: Uint8Array.from([6, 9, 96, 134, 72, 1, 101, 3, 4, 2, suffix])
+  });
+
+  // node_modules/@noble/hashes/_md.js
+  function Chi(a, b, c) {
+    return a & b ^ ~a & c;
+  }
+  function Maj(a, b, c) {
+    return a & b ^ a & c ^ b & c;
+  }
+  var HashMD = class {
+    blockLen;
+    outputLen;
+    canXOF = false;
+    padOffset;
+    isLE;
+    // For partial updates less than block size
+    buffer;
+    view;
+    finished = false;
+    length = 0;
+    pos = 0;
+    destroyed = false;
+    constructor(blockLen, outputLen, padOffset, isLE) {
+      this.blockLen = blockLen;
+      this.outputLen = outputLen;
+      this.padOffset = padOffset;
+      this.isLE = isLE;
+      this.buffer = new Uint8Array(blockLen);
+      this.view = createView(this.buffer);
+    }
+    update(data) {
+      aexists(this);
+      abytes(data);
+      const { view, buffer, blockLen } = this;
+      const len = data.length;
+      let processed = false;
+      for (let pos = 0; pos < len; ) {
+        const take = Math.min(blockLen - this.pos, len - pos);
+        if (take === blockLen) {
+          const dataView = createView(data);
+          for (; blockLen <= len - pos; pos += blockLen)
+            this.process(dataView, pos);
+          processed = true;
+          continue;
+        }
+        buffer.set(pos === 0 && take === len ? data : data.subarray(pos, pos + take), this.pos);
+        this.pos += take;
+        pos += take;
+        if (this.pos === blockLen) {
+          this.process(view, 0);
+          this.pos = 0;
+          processed = true;
+        }
+      }
+      this.length += data.length;
+      if (processed)
+        this.roundClean();
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      aoutput(out, this);
+      this.finished = true;
+      const { buffer, view, blockLen, isLE } = this;
+      let { pos } = this;
+      buffer[pos++] = 128;
+      buffer.fill(0, pos);
+      if (this.padOffset > blockLen - pos) {
+        this.process(view, 0);
+        buffer.fill(0);
+      }
+      setU64FromNum(view, blockLen - 8, this.length * 8, isLE);
+      this.process(view, 0);
+      this.roundClean();
+      const oview = out === buffer ? view : createView(out);
+      const len = this.outputLen;
+      const outLen = len / 4;
+      const state = this.get();
+      if (len % 4 || outLen > state.length)
+        throw new Error("invalid outputLen");
+      for (let i = 0; i < outLen; i++)
+        oview.setUint32(4 * i, state[i], isLE);
+    }
+    digest() {
+      const { buffer, outputLen } = this;
+      this.digestInto(buffer);
+      const res = buffer.slice(0, outputLen);
+      this.destroy();
+      return res;
+    }
+    _cloneIntoMeta(to) {
+      const { buffer, length, finished, destroyed, pos } = this;
+      to.destroyed = destroyed;
+      to.finished = finished;
+      to.length = length;
+      to.pos = pos;
+      if (pos)
+        to.buffer.set(buffer);
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+  };
+  var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
+    1779033703,
+    3144134277,
+    1013904242,
+    2773480762,
+    1359893119,
+    2600822924,
+    528734635,
+    1541459225
+  ]);
+
+  // node_modules/@noble/hashes/sha2.js
+  var SHA256_K = /* @__PURE__ */ Uint32Array.from([
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ]);
+  var SHA256_W = /* @__PURE__ */ new Uint32Array(64);
+  var SHA2_32B = class extends HashMD {
+    // We cannot use array here since array allows indexing by variable
+    // which means optimizer/compiler cannot use registers.
+    // Numeric initializers matter: starting the fields as `undefined` changes
+    // V8's field representation and makes sha256 3x slower (measured).
+    A = 0;
+    B = 0;
+    C = 0;
+    D = 0;
+    E = 0;
+    F = 0;
+    G = 0;
+    H = 0;
+    constructor(outputLen, IV) {
+      super(64, outputLen, 8, false);
+      this.A = IV[0] | 0;
+      this.B = IV[1] | 0;
+      this.C = IV[2] | 0;
+      this.D = IV[3] | 0;
+      this.E = IV[4] | 0;
+      this.F = IV[5] | 0;
+      this.G = IV[6] | 0;
+      this.H = IV[7] | 0;
+    }
+    get() {
+      const { A, B, C, D, E, F, G, H } = this;
+      return [A, B, C, D, E, F, G, H];
+    }
+    // prettier-ignore
+    set(A, B, C, D, E, F, G, H) {
+      this.A = A | 0;
+      this.B = B | 0;
+      this.C = C | 0;
+      this.D = D | 0;
+      this.E = E | 0;
+      this.F = F | 0;
+      this.G = G | 0;
+      this.H = H | 0;
+    }
+    _cloneInto(to) {
+      (to ||= new this.constructor()).set(...this.get());
+      return this._cloneIntoMeta(to);
+    }
+    process(view, offset) {
+      for (let i = 0; i < 16; i++, offset += 4)
+        SHA256_W[i] = view.getUint32(offset, false);
+      for (let i = 16; i < 64; i++) {
+        const W15 = SHA256_W[i - 15];
+        const W2 = SHA256_W[i - 2];
+        const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
+        const s1 = rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10;
+        SHA256_W[i] = s1 + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
+      }
+      let { A, B, C, D, E, F, G, H } = this;
+      for (let i = 0; i < 64; i++) {
+        const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
+        const T1 = H + sigma1 + Chi(E, F, G) + SHA256_K[i] + SHA256_W[i] | 0;
+        const sigma0 = rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22);
+        const T2 = sigma0 + Maj(A, B, C) | 0;
+        H = G;
+        G = F;
+        F = E;
+        E = D + T1 | 0;
+        D = C;
+        C = B;
+        B = A;
+        A = T1 + T2 | 0;
+      }
+      A = A + this.A | 0;
+      B = B + this.B | 0;
+      C = C + this.C | 0;
+      D = D + this.D | 0;
+      E = E + this.E | 0;
+      F = F + this.F | 0;
+      G = G + this.G | 0;
+      H = H + this.H | 0;
+      this.set(A, B, C, D, E, F, G, H);
+    }
+    roundClean() {
+      clean(SHA256_W);
+    }
+    destroy() {
+      this.destroyed = true;
+      this.set(0, 0, 0, 0, 0, 0, 0, 0);
+      clean(this.buffer);
+    }
+  };
+  var _SHA256 = class extends SHA2_32B {
+    constructor() {
+      super(32, SHA256_IV);
+    }
+  };
+  var sha256 = /* @__PURE__ */ createHasher(
+    () => new _SHA256(),
+    /* @__PURE__ */ oidNist(1)
+  );
+
+  // packages/redevplugin-ui/src/surface-integrity.gen.ts
+  var surfaceIntegrityScript = '/* @noble/hashes 2.4.0\nThe MIT License (MIT)\n\nCopyright (c) 2022 Paul Miller (https://paulmillr.com)\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \u201CSoftware\u201D), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in\nall copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \u201CAS IS\u201D, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN\nTHE SOFTWARE.*/\nvar redevpluginIntegrity=(()=>{var w=Object.defineProperty;var k=Object.getOwnPropertyDescriptor;var M=Object.getOwnPropertyNames;var R=Object.prototype.hasOwnProperty;var N=(e,t)=>{for(var n in t)w(e,n,{get:t[n],enumerable:!0})},W=(e,t,n,r)=>{if(t&&typeof t=="object"||typeof t=="function")for(let o of M(t))!R.call(e,o)&&o!==n&&w(e,o,{get:()=>t[o],enumerable:!(r=k(t,o))||r.enumerable});return e};var I=e=>W(w({},"__esModule",{value:!0}),e);var q={};N(q,{sha256:()=>$});var K=e=>e/2**32|0,P=e=>e>>>0;function S(e,t,n,r){let o=K(n),c=P(n);e.setUint32(t,r?c:o,r),e.setUint32(t+4,r?o:c,r)}function _(e){return e instanceof Uint8Array||ArrayBuffer.isView(e)&&e.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in e&&e.BYTES_PER_ELEMENT===1}var m=e=>e?`"${e}" `:"";function X(e,t=""){if(typeof e!="number")throw new TypeError(m(t)+"expected number, got "+typeof e);if(!Number.isSafeInteger(e)||e<0)throw new RangeError(m(t)+"expected integer >= 0, got "+e);return e}function A(e,t,n=""){if(_(e)&&(t===void 0||e.length===t))return e;t!==void 0&&X(t,"length");let r=_(e),o=t!==void 0?` of length ${t}`:"",c=r?`length=${e.length}`:`type=${typeof e}`,f=m(n)+"expected Uint8Array"+o+", got "+c;throw r?new RangeError(f):new TypeError(f)}var J=(e,t)=>{if(e===null||typeof e!="object"||Array.isArray(e))throw new TypeError((t==="object"?"":`"${t}" `)+"expected object, got type="+typeof e)},T=(e,t)=>{J(e,t);let n=Object.getPrototypeOf(e);if(n!==Object.prototype&&n!==null)throw new TypeError(`"${t}" expected plain object`);if(Object.hasOwn(e,"__proto__"))throw new TypeError(`"${t}.__proto__" is not allowed`)};function E(e,t=!0){if(e.destroyed)throw new Error("hash was destroyed");if(t&&e.finished)throw new Error("digest() was already called")}function C(e,t){A(e,void 0,"output");let n=t.outputLen;if(!(e.length>=n))throw new RangeError(\'"output" expected length >= \'+n)}function H(...e){for(let t=0;t<e.length;t++)e[t].fill(0)}function p(e){return new DataView(e.buffer,e.byteOffset,e.byteLength)}function h(e,t){return e<<32-t|e>>>t}function Y(e,t,n="opts"){return T(e,"defaults"),t!==void 0&&T(t,n),Object.assign(Object.create(null),e,t)}function F(e,t={}){if(typeof e!="function")throw new TypeError(\'"hashCons" expected function, got type=\'+typeof e);t=Y({},t,"info");let n=(o,c)=>e(c).update(o).digest(),r=e(void 0);return n.outputLen=r.outputLen,n.blockLen=r.blockLen,n.canXOF=r.canXOF,n.create=o=>e(o),Object.assign(n,t),Object.freeze(n)}var D=e=>({oid:Uint8Array.from([6,9,96,134,72,1,101,3,4,2,e])});function O(e,t,n){return e&t^~e&n}function G(e,t,n){return e&t^e&n^t&n}var y=class{blockLen;outputLen;canXOF=!1;padOffset;isLE;buffer;view;finished=!1;length=0;pos=0;destroyed=!1;constructor(t,n,r,o){this.blockLen=t,this.outputLen=n,this.padOffset=r,this.isLE=o,this.buffer=new Uint8Array(t),this.view=p(this.buffer)}update(t){E(this),A(t);let{view:n,buffer:r,blockLen:o}=this,c=t.length,f=!1;for(let s=0;s<c;){let x=Math.min(o-this.pos,c-s);if(x===o){let a=p(t);for(;o<=c-s;s+=o)this.process(a,s);f=!0;continue}r.set(s===0&&x===c?t:t.subarray(s,s+x),this.pos),this.pos+=x,s+=x,this.pos===o&&(this.process(n,0),this.pos=0,f=!0)}return this.length+=t.length,f&&this.roundClean(),this}digestInto(t){E(this),C(t,this),this.finished=!0;let{buffer:n,view:r,blockLen:o,isLE:c}=this,{pos:f}=this;n[f++]=128,n.fill(0,f),this.padOffset>o-f&&(this.process(r,0),n.fill(0)),S(r,o-8,this.length*8,c),this.process(r,0),this.roundClean();let s=t===n?r:p(t),x=this.outputLen,a=x/4,d=this.get();if(x%4||a>d.length)throw new Error("invalid outputLen");for(let i=0;i<a;i++)s.setUint32(4*i,d[i],c)}digest(){let{buffer:t,outputLen:n}=this;this.digestInto(t);let r=t.slice(0,n);return this.destroy(),r}_cloneIntoMeta(t){let{buffer:n,length:r,finished:o,destroyed:c,pos:f}=this;return t.destroyed=c,t.finished=o,t.length=r,t.pos=f,f&&t.buffer.set(n),t}clone(){return this._cloneInto()}},j=Uint32Array.from([1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225]);var z=Uint32Array.from([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298]),u=new Uint32Array(64),L=class extends y{A=0;B=0;C=0;D=0;E=0;F=0;G=0;H=0;constructor(t,n){super(64,t,8,!1),this.A=n[0]|0,this.B=n[1]|0,this.C=n[2]|0,this.D=n[3]|0,this.E=n[4]|0,this.F=n[5]|0,this.G=n[6]|0,this.H=n[7]|0}get(){let{A:t,B:n,C:r,D:o,E:c,F:f,G:s,H:x}=this;return[t,n,r,o,c,f,s,x]}set(t,n,r,o,c,f,s,x){this.A=t|0,this.B=n|0,this.C=r|0,this.D=o|0,this.E=c|0,this.F=f|0,this.G=s|0,this.H=x|0}_cloneInto(t){return(t||=new this.constructor).set(...this.get()),this._cloneIntoMeta(t)}process(t,n){for(let i=0;i<16;i++,n+=4)u[i]=t.getUint32(n,!1);for(let i=16;i<64;i++){let l=u[i-15],b=u[i-2],U=h(l,7)^h(l,18)^l>>>3,g=h(b,17)^h(b,19)^b>>>10;u[i]=g+u[i-7]+U+u[i-16]|0}let{A:r,B:o,C:c,D:f,E:s,F:x,G:a,H:d}=this;for(let i=0;i<64;i++){let l=h(s,6)^h(s,11)^h(s,25),b=d+l+O(s,x,a)+z[i]+u[i]|0,g=(h(r,2)^h(r,13)^h(r,22))+G(r,o,c)|0;d=a,a=x,x=s,s=f+b|0,f=c,c=o,o=r,r=b+g|0}r=r+this.A|0,o=o+this.B|0,c=c+this.C|0,f=f+this.D|0,s=s+this.E|0,x=x+this.F|0,a=a+this.G|0,d=d+this.H|0,this.set(r,o,c,f,s,x,a,d)}roundClean(){H(u)}destroy(){this.destroyed=!0,this.set(0,0,0,0,0,0,0,0),H(this.buffer)}},B=class extends L{constructor(){super(32,j)}};var $=F(()=>new B,D(1));return I(q);})();\n';
+
   // packages/redevplugin-ui/src/opaque-surface-policy.gen.ts
   var opaqueSurfaceAllowedTags = [
     "main",
@@ -826,10 +1219,6 @@
     }
   };
   async function trustedParentBridgeHandshakeTranscriptSHA256(handshake, bridgeChannelID) {
-    const subtle = globalThis.crypto?.subtle;
-    if (!subtle) {
-      throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Web Crypto SHA-256 is unavailable for plugin bridge handshake");
-    }
     const encoder = new TextEncoder();
     const fields = [
       "redevplugin.bridge.handshake.v3",
@@ -858,8 +1247,7 @@
       transcript.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    const digest = await subtle.digest("SHA-256", transcript);
-    return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    return `sha256:${bytesToHex(sha256(transcript))}`;
   }
   var surfaceTransportInternals = /* @__PURE__ */ new WeakMap();
   function createReDevPluginSurfaceTransport(options = {}) {
@@ -953,6 +1341,7 @@
     ].join("; ");
     const bootstrapScript = `(() => {
   "use strict";
+  ${surfaceIntegrityScript}
   const documentSchema = ${JSON.stringify(opaqueSurfaceDocumentSchemaVersion)};
   const workerGlobalKey = ${JSON.stringify(opaquePluginBridgeGlobalKey)};
   const scriptNonce = ${JSON.stringify(scriptNonce)};
@@ -2110,8 +2499,7 @@
     const binary = atob(contentBase64);
     const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
     if (bytes.byteLength !== asset.size) throw new Error("plugin asset size mismatch");
-    if (!crypto || !crypto.subtle) throw new Error("plugin asset SHA-256 verification is unavailable");
-    const digestBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const digestBytes = redevpluginIntegrity.sha256(bytes);
     const actualDigest = "sha256:" + Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     if (actualDigest !== asset.sha256) throw new Error("plugin asset bytes failed SHA-256 verification");
     const declaredType = imageType(asset.content_type);

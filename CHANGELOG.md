@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.0.32
+
+- Verify trusted-parent handshake transcripts and sandboxed asset bytes on HTTP
+  origins using standard SHA-256 without requiring SubtleCrypto. Preserve exact
+  transcript encoding, byte limits, digest checks, and sandbox restrictions.
+- Generate the embedded renderer hash implementation from the pinned
+  `@noble/hashes` dependency, retaining license and reproducible build evidence.
+- Verify real network HTTP plugin startup and valid assets in Chromium, and
+  reject same-length tampering without weakening browser security settings.
+
 ## v3.0.31
 
 - Accept startup Worker prewarming diagnostics in the closed observability

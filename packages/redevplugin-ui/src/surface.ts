@@ -1,3 +1,6 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { surfaceIntegrityScript } from "./surface-integrity.gen.js";
 import {
   PluginBridgeError,
   PluginPlatformRequestError,
@@ -1177,10 +1180,6 @@ export async function trustedParentBridgeHandshakeTranscriptSHA256(
   handshake: TrustedParentBridgeHandshake,
   bridgeChannelID: string,
 ): Promise<string> {
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle) {
-    throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Web Crypto SHA-256 is unavailable for plugin bridge handshake");
-  }
   const encoder = new TextEncoder();
   const fields = [
     "redevplugin.bridge.handshake.v3",
@@ -1209,8 +1208,7 @@ export async function trustedParentBridgeHandshakeTranscriptSHA256(
     transcript.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  const digest = await subtle.digest("SHA-256", transcript);
-  return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  return `sha256:${bytesToHex(sha256(transcript))}`;
 }
 
 export type OpaqueSurfaceStyle = {
@@ -1549,6 +1547,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   ].join("; ");
   const bootstrapScript = `(() => {
   "use strict";
+  ${surfaceIntegrityScript}
   const documentSchema = ${JSON.stringify(opaqueSurfaceDocumentSchemaVersion)};
   const workerGlobalKey = ${JSON.stringify(opaquePluginBridgeGlobalKey)};
   const scriptNonce = ${JSON.stringify(scriptNonce)};
@@ -2706,8 +2705,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     const binary = atob(contentBase64);
     const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
     if (bytes.byteLength !== asset.size) throw new Error("plugin asset size mismatch");
-    if (!crypto || !crypto.subtle) throw new Error("plugin asset SHA-256 verification is unavailable");
-    const digestBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const digestBytes = redevpluginIntegrity.sha256(bytes);
     const actualDigest = "sha256:" + Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     if (actualDigest !== asset.sha256) throw new Error("plugin asset bytes failed SHA-256 verification");
     const declaredType = imageType(asset.content_type);
