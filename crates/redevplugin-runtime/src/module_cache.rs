@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-const WASMI_ENGINE_VERSION: &str = "2.0.0-beta.9";
+const WASMI_ENGINE_VERSION: &str = "2.0.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModuleCacheMetrics {

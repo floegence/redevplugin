@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.33
+
+- Upgrade the Go, npm, GitHub Actions, and Rust dependency groups, including
+  stable wasmi 2.0.0 and SQLite 1.59.0. Align the in-process engine identity and
+  verified upstream license-source record with the released wasmi crates.
+
 ## v3.0.32
 
 - Verify trusted-parent handshake transcripts and sandboxed asset bytes on HTTP
