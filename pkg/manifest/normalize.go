@@ -10,26 +10,23 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
-func decodeCurrent(r io.Reader) (Manifest, error) {
+func decodeCurrent(r io.Reader) (Manifest, []byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(r, 1<<20+1))
 	if err != nil {
-		return Manifest{}, err
+		return Manifest{}, nil, err
 	}
 	if len(raw) == 0 || len(raw) > 1<<20 {
-		return Manifest{}, fmt.Errorf("manifest exceeds 1 MiB")
+		return Manifest{}, nil, fmt.Errorf("manifest exceeds 1 MiB")
 	}
-	var header struct {
-		SchemaVersion string `json:"schema_version"`
+	canonical, err := canonicalManifestJSON(raw)
+	if err != nil {
+		return Manifest{}, nil, err
 	}
-	if err := json.Unmarshal(raw, &header); err != nil {
-		return Manifest{}, err
+	decoded, err := decodeV9(raw)
+	if err != nil {
+		return Manifest{}, nil, err
 	}
-	switch header.SchemaVersion {
-	case SchemaVersionV9:
-		return decodeV9(raw)
-	default:
-		return Manifest{}, ValidationError{Field: "schema_version", Message: "unsupported manifest schema"}
-	}
+	return decoded, canonical, nil
 }
 
 func canonicalManifestJSON(raw []byte) ([]byte, error) {
@@ -121,11 +118,6 @@ type v9Worker struct {
 }
 
 func decodeV9(raw []byte) (Manifest, error) {
-	canonical, err := canonicalManifestJSON(raw)
-	if err != nil {
-		return Manifest{}, err
-	}
-	_ = canonical // pluginpkg retains these bytes as the signing and hash authority.
 	var document v9Document
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

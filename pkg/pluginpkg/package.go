@@ -461,7 +461,7 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 	if !ok {
 		return Package{}, validationErrorf(ValidationCodeManifestInvalid, "manifest_missing", "manifest.json", "", "manifest.json is required")
 	}
-	decodedManifest, err := manifest.Decode(bytes.NewReader(manifestBytes))
+	decodedManifest, canonicalManifest, err := manifest.DecodeCanonical(bytes.NewReader(manifestBytes))
 	if err != nil {
 		return Package{}, manifestDecodeValidationError(err)
 	}
@@ -483,10 +483,6 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 		entries = append(entries, entry)
 	}
 	sortEntries(entries)
-	canonicalManifest, err := manifest.CanonicalJSON(manifestBytes)
-	if err != nil {
-		return Package{}, wrapValidationError(ValidationCodeManifestInvalid, "manifest_canonical_json", "manifest.json", "", err)
-	}
 	manifestHash := sha256String(canonicalManifest)
 	entriesHash, packageHash, err := canonicalHashes(entries, manifestHash)
 	if err != nil {

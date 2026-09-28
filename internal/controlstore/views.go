@@ -150,11 +150,7 @@ func decodeExactCanonicalManifest(raw json.RawMessage) (manifest.Manifest, strin
 	if len(raw) == 0 {
 		return manifest.Manifest{}, "", errors.New("canonical manifest is required")
 	}
-	decoded, err := manifest.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return manifest.Manifest{}, "", err
-	}
-	canonical, err := manifest.CanonicalJSON(raw)
+	decoded, canonical, err := manifest.DecodeCanonical(bytes.NewReader(raw))
 	if err != nil {
 		return manifest.Manifest{}, "", err
 	}

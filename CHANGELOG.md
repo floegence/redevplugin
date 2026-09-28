@@ -5,6 +5,11 @@
 - Upgrade the Go, npm, GitHub Actions, and Rust dependency groups, including
   stable wasmi 2.0.0 and SQLite 1.59.0. Align the in-process engine identity and
   verified upstream license-source record with the released wasmi crates.
+- Retain canvas backing stores on unchanged layout notifications, and verify
+  hidden/visible transitions without duplicate initial repaint events.
+- Reuse the validated canonical manifest bytes during registry reads and package
+  admission instead of normalizing the same JSON twice. Preserve strict manifest
+  validation and the original signed wire representation.
 
 ## v3.0.32
 

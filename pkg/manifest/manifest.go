@@ -265,6 +265,14 @@ func (e ValidationError) Error() string {
 }
 
 func Decode(r io.Reader) (Manifest, error) {
+	decoded, _, err := decodeCurrent(r)
+	return decoded, err
+}
+
+// DecodeCanonical validates the current manifest and returns both its normalized
+// value and original canonical wire representation used for signatures and hashes.
+// It returns no canonical bytes when any manifest validation fails.
+func DecodeCanonical(r io.Reader) (Manifest, []byte, error) {
 	return decodeCurrent(r)
 }
 

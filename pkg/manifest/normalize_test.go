@@ -27,3 +27,42 @@ func TestV9RejectsDuplicateKeysAndNonCanonicalNumbers(t *testing.T) {
 		t.Fatalf("non-canonical number error = %v", err)
 	}
 }
+
+func TestDecodeCanonicalPreservesSignedWireRepresentation(t *testing.T) {
+	raw := bytes.Replace(v9TestManifest(""), []byte(`"permissions":[]`), []byte(`"permissions":["fs.workspace.write","fs.workspace.read"]`), 1)
+	decoded, canonical, err := DecodeCanonical(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Permissions[0] != PermissionFSWorkspaceRead {
+		t.Fatal("decoded permissions must retain their normalized order")
+	}
+	if !bytes.Contains(canonical, []byte(`"permissions":["fs.workspace.write","fs.workspace.read"]`)) {
+		t.Fatal("canonical bytes must retain signed array order")
+	}
+	if bytes.Contains(canonical, []byte(`"capability_bindings"`)) {
+		t.Fatal("canonical bytes must not add omitted fields from normalized values")
+	}
+	_, repeated, err := DecodeCanonical(bytes.NewReader(canonical))
+	if err != nil || !bytes.Equal(repeated, canonical) {
+		t.Fatalf("canonical decode is not stable: %v", err)
+	}
+}
+
+func TestDecodeCanonicalNeverReturnsBytesForInvalidManifest(t *testing.T) {
+	for name, raw := range map[string][]byte{
+		"unknown field":    v9TestManifest(`,"unknown":true`),
+		"duplicate key":    v9TestManifest(`,"plugin":{"plugin_id":"duplicate"}`),
+		"invalid number":   bytes.Replace(v9TestManifest(""), []byte(`"major":1`), []byte(`"major":1e0`), 1),
+		"invalid contract": bytes.Replace(v9TestManifest(""), []byte(`"major":1`), []byte(`"major":2`), 1),
+		"trailing value":   append(v9TestManifest(""), []byte(`{}`)...),
+		"oversized":        bytes.Repeat([]byte(" "), (1<<20)+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, canonical, err := DecodeCanonical(bytes.NewReader(raw))
+			if err == nil || canonical != nil {
+				t.Fatalf("invalid manifest returned canonical bytes: %q, error: %v", canonical, err)
+			}
+		})
+	}
+}
