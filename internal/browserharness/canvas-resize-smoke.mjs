@@ -50,6 +50,15 @@ export async function verifyCanvasResize(browser, evidenceDir = "dist/a2-evidenc
   try {
     const active = await open();
     await ready(active.frame);
+    // Let the initial ResizeObserver delivery finish, then use the lifecycle
+    // round trip to observe every preceding canvas message in the worker.
+    await active.frame.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
+    await lifecycle(active.page, active.frame, "visible");
+    for (const canvas of Object.values((await snapshot(active.frame)).canvases)) {
+      assert.equal(canvas.updates, 1, "unchanged initial layout must not repaint a transferred canvas");
+    }
     const firstCanvas = await active.frame.locator("#first").elementHandle();
     const first = (await snapshot(active.frame)).canvases.first;
     assert.deepEqual({ ...first, updates: 0 }, { width: 1200, height: 800, dpr: 2, pixelsWidth: 2400, pixelsHeight: 1600, updates: 0 });

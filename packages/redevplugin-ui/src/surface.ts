@@ -3054,6 +3054,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
         sendWorkerTransfer({ type: "redevplugin.ui.canvas.ready", id, canvas_id: canvasID, canvas: offscreen, css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio }, [offscreen]);
         return;
       }
+      if (runtime.metrics?.cssWidth === metrics.cssWidth && runtime.metrics?.cssHeight === metrics.cssHeight && runtime.metrics?.devicePixelRatio === metrics.devicePixelRatio) return;
       runtime.metrics = metrics;
       sendInput({ type: "resize", css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio });
     };

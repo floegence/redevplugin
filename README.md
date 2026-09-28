@@ -376,7 +376,9 @@ an English fallback or mix locales within one resolved presentation.
 - Generated render policy limits a surface to four canvases, 4096 pixels per
   dimension, 16,777,216 total canvas pixels, and 120 pointer events per second.
   Canvas input includes focus, resize, keyboard, pointer, and bounded wheel
-  events. Wheel coordinates are canvas-local and canvas wheel ownership prevents
+  events. Resize events report changed CSS dimensions or device pixel ratio;
+  unchanged and zero-size layouts retain the existing backing store.
+  Wheel coordinates are canvas-local and canvas wheel ownership prevents
   the same gesture from scrolling the surrounding host surface.
   Raster type is detected from PNG, JPEG, GIF, or WebP bytes rather than the
   filename or declared MIME. Images are dimension-checked before decode and
