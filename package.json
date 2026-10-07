@@ -76,7 +76,8 @@
     "yaml": "^2.9.1"
   },
   "overrides": {
-    "brace-expansion": "5.0.9",
+    "brace-expansion": "5.0.12",
+    "fast-uri": "3.1.8",
     "@redocly/openapi-core": {
       "js-yaml": "4.3.2",
       "minimatch": "10.2.5"
