@@ -71,7 +71,7 @@ func TestRouteAuthorizationProfileRequiresStableRequestSamples(t *testing.T) {
 			Arch:        "amd64",
 			LogicalCPUs: 8,
 			GOMAXPROCS:  8,
-			GoVersion:   "go1.26.5",
+			GoVersion:   "go1.27.1",
 		},
 		WarmupCount:       RouteAuthorizationWarmupCount,
 		RequestsPerSample: RouteAuthorizationRequestsPerSample,

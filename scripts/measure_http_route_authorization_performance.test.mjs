@@ -24,11 +24,11 @@ import {
 const runOrder = buildInterleavedRunOrder(9);
 
 test("route authorization builds baseline and candidate profiles with the candidate module toolchain", () => {
-  assert.deepEqual(routeAuthorizationBuildEnvironment("go1.26.6"), {
+  assert.deepEqual(routeAuthorizationBuildEnvironment("go1.27.1"), {
     GOWORK: "off",
-    GOTOOLCHAIN: "go1.26.6",
+    GOTOOLCHAIN: "go1.27.1",
   });
-  assert.throws(() => routeAuthorizationBuildEnvironment("go version go1.26.6 darwin/arm64"), /Go toolchain/);
+  assert.throws(() => routeAuthorizationBuildEnvironment("go version go1.27.1 darwin/arm64"), /Go toolchain/);
 });
 
 test("route authorization keeps request tails at c1 and uses batch throughput at high concurrency", () => {
@@ -271,7 +271,7 @@ function profile(variant, latency, allocations, bytes) {
     schema_version: "redevplugin.route_authorization_performance.v2",
     variant,
     commit: variant === "v0.5.1" ? "a".repeat(40) : "b".repeat(40),
-    environment: { os: "linux", arch: "amd64", logical_cpus: 8, gomaxprocs: 8, go_version: "go1.26.5" },
+    environment: { os: "linux", arch: "amd64", logical_cpus: 8, gomaxprocs: 8, go_version: "go1.27.1" },
     warmup_count: 8,
     requests_per_sample: 32,
     measurements: [

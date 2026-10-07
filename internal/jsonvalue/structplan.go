@@ -55,7 +55,7 @@ func cachedJSONStructPlan(structType reflect.Type) jsonStructPlan {
 	return actual.(jsonStructPlan)
 }
 
-// buildJSONStructPlan mirrors the field-selection rules of the Go 1.26
+// buildJSONStructPlan mirrors the field-selection rules of the Go 1.27
 // encoding/json encoder pinned by go.mod, without copying its encoder machinery.
 func buildJSONStructPlan(structType reflect.Type) jsonStructPlan {
 	current := []jsonPlannedField{}
