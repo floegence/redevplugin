@@ -198,6 +198,26 @@ type ExternalPackageWorkerSummary struct {
 	IdleTimeoutMS    int    `json:"idle_timeout_ms"`
 }
 
+type ExternalPackageProcessMethodAccessSummary struct {
+	Method     string   `json:"method"`
+	Operations []string `json:"operations"`
+}
+
+type ExternalPackageProcessSummary struct {
+	ResourceLimits ExternalPackageProcessResourceLimits        `json:"resource_limits"`
+	MethodAccess   []ExternalPackageProcessMethodAccessSummary `json:"method_access"`
+}
+
+type ExternalPackageProcessResourceLimits struct {
+	OutputBufferBytes int `json:"output_buffer_bytes"`
+	MaxRuntimeMS      int `json:"max_runtime_ms"`
+}
+
+type ExternalPackageBackgroundSummary struct {
+	Strategy string `json:"strategy"`
+	WorkerID string `json:"worker_id"`
+}
+
 type ExternalPackageNetworkMethodAccessSummary struct {
 	Method      string   `json:"method"`
 	Operations  []string `json:"operations"`
@@ -267,6 +287,8 @@ type ExternalPackageSecuritySummary struct {
 	Methods             []ExternalPackageMethodSummary             `json:"methods"`
 	CapabilityContracts []ExternalPackageCapabilityContractSummary `json:"capability_contracts"`
 	Workers             []ExternalPackageWorkerSummary             `json:"workers"`
+	Process             *ExternalPackageProcessSummary             `json:"process,omitempty"`
+	Background          *ExternalPackageBackgroundSummary          `json:"background,omitempty"`
 	Network             []ExternalPackageNetworkSummary            `json:"network"`
 	Storage             []ExternalPackageStorageSummary            `json:"storage"`
 	SecretRefs          []ExternalPackageSecretRefSummary          `json:"secret_refs"`
@@ -291,6 +313,7 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 
 	storageAccess := map[string][]ExternalPackageStorageMethodAccessSummary{}
 	networkAccess := map[string][]ExternalPackageNetworkMethodAccessSummary{}
+	processAccess := make([]ExternalPackageProcessMethodAccessSummary, 0)
 	methods := make([]ExternalPackageMethodSummary, 0, len(m.Methods))
 	permissionMethods := map[string][]string{}
 	permissionEffects := map[string][]string{}
@@ -353,6 +376,11 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 				Method: method.Method, Operations: canonicalExternalPackageStrings(access.Operations), HTTPMethods: canonicalExternalPackageStrings(access.HTTPMethods),
 			})
 		}
+		for _, access := range method.BrokerAccess.Process {
+			processAccess = append(processAccess, ExternalPackageProcessMethodAccessSummary{
+				Method: method.Method, Operations: canonicalExternalPackageStrings(access.Operations),
+			})
+		}
 	}
 	sort.Slice(methods, func(i, j int) bool { return methods[i].Method < methods[j].Method })
 	sort.Slice(coreActions, func(i, j int) bool {
@@ -386,6 +414,21 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 		})
 	}
 	sort.Slice(workers, func(i, j int) bool { return workers[i].WorkerID < workers[j].WorkerID })
+	sort.Slice(processAccess, func(i, j int) bool { return processAccess[i].Method < processAccess[j].Method })
+	var process *ExternalPackageProcessSummary
+	if m.Process != nil {
+		process = &ExternalPackageProcessSummary{
+			ResourceLimits: ExternalPackageProcessResourceLimits{
+				OutputBufferBytes: m.Process.ResourceLimits.OutputBufferBytes,
+				MaxRuntimeMS:      m.Process.ResourceLimits.MaxRuntimeMS,
+			},
+			MethodAccess: processAccess,
+		}
+	}
+	var background *ExternalPackageBackgroundSummary
+	if m.Background != nil {
+		background = &ExternalPackageBackgroundSummary{Strategy: string(m.Background.Strategy), WorkerID: m.Background.WorkerID}
+	}
 
 	network, err := externalPackageNetworkSummaries(m.NetworkAccess, networkAccess)
 	if err != nil {
@@ -432,6 +475,7 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 
 	summary := ExternalPackageSecuritySummary{
 		Permissions: permissions, Methods: methods, CapabilityContracts: capabilityContracts, Workers: workers,
+		Process: process, Background: background,
 		Network: network, Storage: storage, SecretRefs: secretRefs, CoreActions: coreActions, Intents: intents, Surfaces: surfaces,
 	}
 	hash, err := externalPackageSecuritySummaryHash(summary)

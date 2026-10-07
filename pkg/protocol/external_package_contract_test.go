@@ -225,7 +225,7 @@ func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) 
 		{schema: "ExternalPackageIntentSummary", properties: []string{"intent_id", "method"}},
 		{schema: "ExternalPackageSurfaceSummary", properties: []string{"default_size", "entry", "icon", "intent", "kind", "label", "surface_id"}},
 		{schema: "ExternalPackageSizeSummary", properties: []string{"height", "width"}},
-		{schema: "ExternalPackageSecuritySummary", properties: []string{"capability_contracts", "core_actions", "intents", "methods", "network", "permissions", "secret_refs", "storage", "summary_sha256", "surfaces", "workers"}},
+		{schema: "ExternalPackageSecuritySummary", properties: []string{"background", "capability_contracts", "core_actions", "intents", "methods", "network", "permissions", "process", "secret_refs", "storage", "summary_sha256", "surfaces", "workers"}},
 	}
 	for _, tt := range tests {
 		block := openAPISchemaBlock(t, source, tt.schema)

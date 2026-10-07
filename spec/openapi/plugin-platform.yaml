@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.0.34
+  version: 3.0.35
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -2547,6 +2547,41 @@ components:
         scope: { $ref: "#/components/schemas/ResourceScopeKind" }
         memory_limit_bytes: { type: integer, minimum: 1, maximum: 268435456 }
         idle_timeout_ms: { type: integer, minimum: 0 }
+    ExternalPackageProcessMethodAccessSummary:
+      type: object
+      required: [method, operations]
+      additionalProperties: false
+      properties:
+        method: { type: string, minLength: 1 }
+        operations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [start, attach, status, write_stdin, close_stdin, read_stdout, read_stderr, wait, terminate, kill, close]
+    ExternalPackageProcessResourceLimits:
+      type: object
+      required: [output_buffer_bytes, max_runtime_ms]
+      additionalProperties: false
+      properties:
+        output_buffer_bytes: { type: integer, minimum: 0, maximum: 16777216 }
+        max_runtime_ms: { type: integer, minimum: 0, maximum: 86400000 }
+    ExternalPackageProcessSummary:
+      type: object
+      required: [resource_limits, method_access]
+      additionalProperties: false
+      properties:
+        resource_limits: { $ref: "#/components/schemas/ExternalPackageProcessResourceLimits" }
+        method_access:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageProcessMethodAccessSummary" }
+    ExternalPackageBackgroundSummary:
+      type: object
+      required: [strategy, worker_id]
+      additionalProperties: false
+      properties:
+        strategy: { type: string, enum: [runtime_start, on_demand] }
+        worker_id: { type: string, minLength: 1 }
     ExternalPackageNetworkMethodAccessSummary:
       type: object
       required: [method, operations, http_methods]
@@ -2663,6 +2698,10 @@ components:
         workers:
           type: array
           items: { $ref: "#/components/schemas/ExternalPackageWorkerSummary" }
+        process:
+          $ref: "#/components/schemas/ExternalPackageProcessSummary"
+        background:
+          $ref: "#/components/schemas/ExternalPackageBackgroundSummary"
         network:
           type: array
           items: { $ref: "#/components/schemas/ExternalPackageNetworkSummary" }

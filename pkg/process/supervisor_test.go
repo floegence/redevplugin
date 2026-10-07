@@ -33,7 +33,7 @@ func TestProcessFixture(t *testing.T) {
 }
 
 func testOwner() Owner {
-	return Owner{PluginInstanceID: "plugin-one", UserScope: "user-one", EnvironmentScope: "environment-one"}
+	return Owner{PluginInstanceID: "plugin-one", UserScope: "user-one", EnvironmentScope: "environment-one", SessionScope: "session-one", ChannelScope: "channel-one"}
 }
 
 func fixtureSpec(t *testing.T, mode string) StartRequest {
@@ -107,6 +107,55 @@ func TestBinaryStreamsAndOpaqueStatus(t *testing.T) {
 		if strings.Contains(string(raw), `"`+forbidden+`"`) {
 			t.Fatalf("private process identity exposed: %s", raw)
 		}
+	}
+}
+
+func TestListAndConvenienceStreamReadsRespectOwnerScope(t *testing.T) {
+	supervisor := testSupervisor(t, Options{})
+	owner, ctx := testOwner(), testContext(t)
+	firstSpec := fixtureSpec(t, "echo")
+	firstSpec.ClientKey = "first"
+	first, err := supervisor.Start(ctx, owner, firstSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSpec := fixtureSpec(t, "echo")
+	secondSpec.ClientKey = "second"
+	second, err := supervisor.Start(ctx, owner, secondSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.CloseStdin(owner, first.Handle); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.CloseStdin(owner, second.Handle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.Wait(ctx, owner, first.Handle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.Wait(ctx, owner, second.Handle); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := supervisor.List(owner)
+	if err != nil || len(statuses) != 2 {
+		t.Fatalf("list: %#v %v", statuses, err)
+	}
+	if statuses[0].Handle > statuses[1].Handle {
+		t.Fatalf("list is not stable: %#v", statuses)
+	}
+	stdout, err := supervisor.ReadStdout(ctx, owner, first.Handle, ReadRequest{MaxBytes: 16})
+	if err != nil || !stdout.EOF {
+		t.Fatalf("stdout convenience read: %#v %v", stdout, err)
+	}
+	stderr, err := supervisor.ReadStderr(ctx, owner, second.Handle, ReadRequest{MaxBytes: 16})
+	if err != nil || !stderr.EOF {
+		t.Fatalf("stderr convenience read: %#v %v", stderr, err)
+	}
+	foreign := owner
+	foreign.SessionScope = "session-two"
+	if statuses, err := supervisor.List(foreign); err != nil || len(statuses) != 0 {
+		t.Fatalf("foreign list: %#v %v", statuses, err)
 	}
 }
 

@@ -16,6 +16,8 @@ import (
 
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
 	processruntime "github.com/floegence/redevplugin/v3/pkg/process"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/storage"
@@ -45,6 +47,7 @@ type hostRuntimeIOBroker struct {
 	storageKV     storage.KVBroker
 	storageSQLite storage.SQLiteBroker
 	process       *processruntime.Supervisor
+	diagnostics   observability.DiagnosticsSink
 	invocations   map[string]hostRuntimeIORegistration
 }
 
@@ -71,6 +74,7 @@ func newHostRuntimeIOBroker(adapters normalizedAdapters) (*hostRuntimeIOBroker, 
 		storageKV:     adapters.PluginData,
 		storageSQLite: adapters.PluginData,
 		process:       adapters.ProcessSupervisor,
+		diagnostics:   adapters.Diagnostics,
 		invocations:   map[string]hostRuntimeIORegistration{},
 	}, nil
 }
@@ -320,11 +324,16 @@ func runtimeIOStorageError(err error) (string, bool) {
 	}
 }
 
-func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocation hostRuntimeIORegistration, request runtimeIOControlRequest) (any, error) {
+func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocation hostRuntimeIORegistration, request runtimeIOControlRequest) (result any, dispatchErr error) {
 	if broker.process == nil {
 		return nil, errRuntimeIOStorageDenied
 	}
 	operation := strings.TrimPrefix(request.Operation, "process.")
+	defer func() {
+		if dispatchErr != nil {
+			broker.appendProcessDiagnostic(ctx, invocation, "plugin.process.operation_failed", "plugin process operation failed", operation, "", runtimeIOProcessErrorCode(dispatchErr), dispatchErr)
+		}
+	}()
 	if _, allowed := invocation.process[operation]; !allowed {
 		return nil, errRuntimeIOStorageDenied
 	}
@@ -332,6 +341,8 @@ func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocati
 		PluginInstanceID: invocation.resource.Owner.PluginInstanceID,
 		UserScope:        invocation.resource.Owner.Session.OwnerUserHash,
 		EnvironmentScope: invocation.resource.Owner.Session.OwnerEnvHash,
+		SessionScope:     invocation.resource.Owner.Session.OwnerSessionHash,
+		ChannelScope:     invocation.resource.Owner.Session.SessionChannelIDHash,
 	}
 	if !owner.ValidForHost() {
 		return nil, errRuntimeIOInvocationUnknown
@@ -345,7 +356,11 @@ func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocati
 		if err := applyProcessLimits(&requestValue, invocation.processLimits); err != nil {
 			return nil, err
 		}
+		broker.appendProcessDiagnostic(ctx, invocation, "plugin.process.starting", "plugin process is starting", operation, "", "", nil)
 		status, err := broker.process.Start(ctx, owner, requestValue)
+		if err == nil {
+			broker.appendProcessDiagnostic(ctx, invocation, "plugin.process.started", "plugin process started", operation, "", "", nil)
+		}
 		return status, err
 	case "attach":
 		var requestValue struct {
@@ -391,6 +406,9 @@ func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocati
 		if err != nil {
 			return nil, err
 		}
+		if result.StreamGap {
+			broker.appendProcessDiagnostic(ctx, invocation, "plugin.process.stream_gap", "plugin process output buffer overflowed", operation, string(stream), "", nil)
+		}
 		return map[string]any{
 			"data_base64":   base64.StdEncoding.EncodeToString(result.Data),
 			"cursor":        result.Cursor,
@@ -404,7 +422,11 @@ func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocati
 		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
 			return nil, errRuntimeIOInvalidRequest
 		}
-		return broker.process.Wait(ctx, owner, requestValue.Handle)
+		exit, err := broker.process.Wait(ctx, owner, requestValue.Handle)
+		if err == nil {
+			broker.appendProcessDiagnostic(ctx, invocation, "plugin.process.exited", "plugin process exited", operation, "", "", nil)
+		}
+		return exit, err
 	case "terminate":
 		var requestValue processHandleRequest
 		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
@@ -426,6 +448,43 @@ func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocati
 	default:
 		return nil, errRuntimeIOInvalidRequest
 	}
+}
+
+func runtimeIOProcessErrorCode(err error) string {
+	code, _ := runtimeIOStorageError(err)
+	return code
+}
+
+func (broker *hostRuntimeIOBroker) appendProcessDiagnostic(ctx context.Context, invocation hostRuntimeIORegistration, eventType, message, operation, stream, code string, cause error) {
+	if broker == nil || broker.diagnostics == nil {
+		return
+	}
+	session := invocation.resource.Owner.Session
+	_ = broker.diagnostics.AppendPluginDiagnostic(ctx, observability.DiagnosticEvent{
+		Type:                 eventType,
+		Severity:             processDiagnosticSeverity(eventType),
+		Message:              message,
+		PluginID:             invocation.resource.Plugin.ID,
+		PluginInstanceID:     invocation.resource.Plugin.InstanceID,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
+		MutationOutcome:      mutation.ForError(cause),
+		Details: observability.DiagnosticDetails{
+			InvocationID: invocation.resource.Owner.InvocationID,
+			Operation:    operation,
+			Stream:       stream,
+			Code:         code,
+		},
+	})
+}
+
+func processDiagnosticSeverity(eventType string) observability.DiagnosticSeverity {
+	if eventType == "plugin.process.starting" || eventType == "plugin.process.started" || eventType == "plugin.process.exited" {
+		return observability.DiagnosticSeverityInfo
+	}
+	return observability.DiagnosticSeverityWarning
 }
 
 type processHandleRequest struct {

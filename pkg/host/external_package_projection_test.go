@@ -154,6 +154,15 @@ func TestBuildExternalPackageSecuritySummaryProjectsCompleteManifest(t *testing.
 	if len(summary.Workers) != 2 || summary.Workers[0].WorkerID != "cleanup" || summary.Workers[1].WorkerID != "jobs" || summary.Workers[1].IdleTimeoutMS != 5000 {
 		t.Fatalf("workers = %#v", summary.Workers)
 	}
+	if summary.Process == nil || summary.Process.ResourceLimits.OutputBufferBytes != 4096 ||
+		summary.Process.ResourceLimits.MaxRuntimeMS != 120000 || len(summary.Process.MethodAccess) != 1 ||
+		summary.Process.MethodAccess[0].Method != "jobs.run" ||
+		!reflect.DeepEqual(summary.Process.MethodAccess[0].Operations, []string{"read_stdout", "start"}) {
+		t.Fatalf("process projection = %#v", summary.Process)
+	}
+	if summary.Background == nil || summary.Background.Strategy != "runtime_start" || summary.Background.WorkerID != "jobs" {
+		t.Fatalf("background projection = %#v", summary.Background)
+	}
 	if len(summary.Network) != 2 || summary.Network[0].ConnectorID != "api" || !summary.Network[0].AuthDeclared || summary.Network[0].TLSDeclared ||
 		len(summary.Network[0].MethodAccess) != 1 || !reflect.DeepEqual(summary.Network[0].MethodAccess[0].Operations, []string{"http", "http_stream"}) ||
 		!reflect.DeepEqual(summary.Network[0].MethodAccess[0].HTTPMethods, []string{"GET", "POST"}) {
@@ -297,6 +306,10 @@ func TestExternalPackageSecuritySummaryJSONFieldsMatchOpenAPI(t *testing.T) {
 		{value: ExternalPackageMethodSummary{}, want: []string{"cancel", "confirmation", "dangerous", "effect", "execution", "method", "preflight_only", "required_permissions", "route"}},
 		{value: ExternalPackageCapabilityContractSummary{}, want: []string{"binding_id", "capability_id", "capability_version", "contract_sha256"}},
 		{value: ExternalPackageWorkerSummary{}, want: []string{"artifact", "idle_timeout_ms", "memory_limit_bytes", "mode", "scope", "worker_id"}},
+		{value: ExternalPackageProcessMethodAccessSummary{}, want: []string{"method", "operations"}},
+		{value: ExternalPackageProcessResourceLimits{}, want: []string{"max_runtime_ms", "output_buffer_bytes"}},
+		{value: ExternalPackageProcessSummary{}, want: []string{"method_access", "resource_limits"}},
+		{value: ExternalPackageBackgroundSummary{}, want: []string{"strategy", "worker_id"}},
 		{value: ExternalPackageNetworkMethodAccessSummary{}, want: []string{"http_methods", "method", "operations"}},
 		{value: ExternalPackageNetworkSummary{}, want: []string{"auth_declared", "connector_id", "destinations", "method_access", "scope", "tls_declared", "transport"}},
 		{value: ExternalPackageStorageMethodAccessSummary{}, want: []string{"method", "operations"}},
@@ -306,7 +319,7 @@ func TestExternalPackageSecuritySummaryJSONFieldsMatchOpenAPI(t *testing.T) {
 		{value: ExternalPackageIntentSummary{}, want: []string{"intent_id", "method"}},
 		{value: ExternalPackageSurfaceSummary{}, want: []string{"default_size", "entry", "icon", "intent", "kind", "label", "surface_id"}},
 		{value: ExternalPackageSizeSummary{}, want: []string{"height", "width"}},
-		{value: ExternalPackageSecuritySummary{}, want: []string{"capability_contracts", "core_actions", "intents", "methods", "network", "permissions", "secret_refs", "storage", "summary_sha256", "surfaces", "workers"}},
+		{value: ExternalPackageSecuritySummary{}, want: []string{"background", "capability_contracts", "core_actions", "intents", "methods", "network", "permissions", "process", "secret_refs", "storage", "summary_sha256", "surfaces", "workers"}},
 	}
 	for _, tt := range tests {
 		typeOf := reflect.TypeOf(tt.value)
@@ -367,6 +380,7 @@ func externalPackageProjectionFixture() (manifest.Manifest, []capabilitycontract
 				},
 				BrokerAccess: &manifest.MethodBrokerAccessSpec{
 					Storage: []manifest.StorageBrokerAccessSpec{{StoreID: "state", Operations: []string{"write", "put"}}},
+					Process: []manifest.ProcessBrokerAccessSpec{{Operations: []string{"read_stdout", "start"}}},
 					Network: []manifest.NetworkBrokerAccessSpec{{
 						ConnectorID: "api", Transport: "http", Scope: "environment", Operations: []string{"http_stream", "http"}, HTTPMethods: []string{"POST", "GET"},
 					}},
@@ -385,6 +399,8 @@ func externalPackageProjectionFixture() (manifest.Manifest, []capabilitycontract
 			{WorkerID: "jobs", Artifact: "workers/jobs.wasm", Mode: manifest.WorkerModeJob, Scope: "environment", MemoryLimitBytes: 64 << 20, IdleTimeoutMS: 5000},
 			{WorkerID: "cleanup", Artifact: "workers/cleanup.wasm", Mode: manifest.WorkerModeJob, Scope: "user", MemoryLimitBytes: 32 << 20},
 		},
+		Process:    &manifest.ProcessSpec{ResourceLimits: manifest.ProcessResourceLimits{OutputBufferBytes: 4096, MaxRuntimeMS: 120000}},
+		Background: &manifest.BackgroundSpec{Strategy: manifest.BackgroundRuntimeStart, WorkerID: "jobs"},
 		Storage: &manifest.StorageSpec{Stores: []manifest.StoreSpec{
 			{StoreID: "state", Kind: "sqlite", Scope: "environment", QuotaBytes: 8 << 20, QuotaFiles: &quotaFiles, SchemaVersion: 3},
 			{StoreID: "cache", Kind: "files", Scope: "user", QuotaBytes: 16 << 20, SchemaVersion: 1},

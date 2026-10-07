@@ -13,6 +13,7 @@ import (
 
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/observability"
 	processruntime "github.com/floegence/redevplugin/v3/pkg/process"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/storage"
@@ -324,7 +325,8 @@ func TestHostRuntimeIOBrokerProcessUsesOpaqueOwnerAndBinaryStreams(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = supervisor.Shutdown(context.Background()) })
-	broker, err := newHostRuntimeIOBroker(normalizedAdapters{ProcessSupervisor: supervisor})
+	diagnostics := observability.NewMemoryStore()
+	broker, err := newHostRuntimeIOBroker(normalizedAdapters{ProcessSupervisor: supervisor, Diagnostics: diagnostics})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,6 +370,34 @@ func TestHostRuntimeIOBrokerProcessUsesOpaqueOwnerAndBinaryStreams(t *testing.T)
 	waitResponse := runtimeIOControl(t, broker, invocation.Owner.InvocationID, `{"plugin_api":1,"operation":"process.wait","arguments":{"handle":"`+handle+`"}}`)
 	if waitResponse["ok"] != true {
 		t.Fatalf("wait response = %#v", waitResponse)
+	}
+	events, err := diagnostics.ListPluginDiagnostics(context.Background(), observability.ListDiagnosticRequest{
+		PluginInstanceID:     invocation.Plugin.InstanceID,
+		OwnerSessionHash:     invocation.Owner.Session.OwnerSessionHash,
+		OwnerUserHash:        invocation.Owner.Session.OwnerUserHash,
+		OwnerEnvHash:         invocation.Owner.Session.OwnerEnvHash,
+		SessionChannelIDHash: invocation.Owner.Session.SessionChannelIDHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Type] = true
+	}
+	for _, eventType := range []string{"plugin.process.starting", "plugin.process.started", "plugin.process.exited"} {
+		if !seen[eventType] {
+			t.Fatalf("missing process diagnostic %q in %#v", eventType, events)
+		}
+	}
+	rawEvents, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"pid", "program", "environment", "argv", "fd", "secret"} {
+		if bytes.Contains(rawEvents, []byte(`"`+forbidden+`"`)) {
+			t.Fatalf("process diagnostics exposed private field %q: %s", forbidden, rawEvents)
+		}
 	}
 }
 

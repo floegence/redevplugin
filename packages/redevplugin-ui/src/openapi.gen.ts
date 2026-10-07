@@ -1791,6 +1791,23 @@ export interface components {
             memory_limit_bytes: number;
             idle_timeout_ms: number;
         };
+        ExternalPackageProcessMethodAccessSummary: {
+            method: string;
+            operations: ("start" | "attach" | "status" | "write_stdin" | "close_stdin" | "read_stdout" | "read_stderr" | "wait" | "terminate" | "kill" | "close")[];
+        };
+        ExternalPackageProcessResourceLimits: {
+            output_buffer_bytes: number;
+            max_runtime_ms: number;
+        };
+        ExternalPackageProcessSummary: {
+            resource_limits: components["schemas"]["ExternalPackageProcessResourceLimits"];
+            method_access: components["schemas"]["ExternalPackageProcessMethodAccessSummary"][];
+        };
+        ExternalPackageBackgroundSummary: {
+            /** @enum {string} */
+            strategy: "runtime_start" | "on_demand";
+            worker_id: string;
+        };
         ExternalPackageNetworkMethodAccessSummary: {
             method: string;
             operations: ("http" | "http_stream" | "websocket_round_trip" | "tcp_round_trip" | "udp_round_trip")[];
@@ -1857,6 +1874,8 @@ export interface components {
             methods: components["schemas"]["ExternalPackageMethodSummary"][];
             capability_contracts: components["schemas"]["ExternalPackageCapabilityContractSummary"][];
             workers: components["schemas"]["ExternalPackageWorkerSummary"][];
+            process?: components["schemas"]["ExternalPackageProcessSummary"];
+            background?: components["schemas"]["ExternalPackageBackgroundSummary"];
             network: components["schemas"]["ExternalPackageNetworkSummary"][];
             storage: components["schemas"]["ExternalPackageStorageSummary"][];
             secret_refs: components["schemas"]["ExternalPackageSecretRefSummary"][];

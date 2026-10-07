@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.35
+
+- Add Host-owned headless background Worker lifecycle management with idempotent startup, cancellation, recovery, and shutdown cleanup.
+- Bind process sessions to the originating plugin session/channel, expose bounded list and stream helpers, and release completed background sessions for recovery.
+- Project local-process and background declarations in installation security reviews without exposing process handles, credentials, or plugin business state.
+
 ## v3.0.34
 
 - Add generic local-process broker access with opaque handles, bounded binary streams, owner isolation, secret references, and process-tree cleanup.

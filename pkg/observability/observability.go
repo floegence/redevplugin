@@ -897,6 +897,18 @@ func validDiagnosticPresentation(eventType string, severity DiagnosticSeverity, 
 		return severity == DiagnosticSeverityWarning && message == "runtime hostcall failed"
 	case "plugin.runtime.ipc.invalidated":
 		return severity == DiagnosticSeverityWarning && message == "runtime IPC channel was invalidated"
+	case "plugin.background.failed":
+		return severity == DiagnosticSeverityWarning && message == "plugin background worker stopped unexpectedly"
+	case "plugin.process.starting":
+		return severity == DiagnosticSeverityInfo && message == "plugin process is starting"
+	case "plugin.process.started":
+		return severity == DiagnosticSeverityInfo && message == "plugin process started"
+	case "plugin.process.exited":
+		return severity == DiagnosticSeverityInfo && message == "plugin process exited"
+	case "plugin.process.stream_gap":
+		return severity == DiagnosticSeverityWarning && message == "plugin process output buffer overflowed"
+	case "plugin.process.operation_failed":
+		return severity == DiagnosticSeverityWarning && message == "plugin process operation failed"
 	default:
 		return false
 	}

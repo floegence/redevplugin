@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/background"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
 	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
@@ -4982,6 +4983,7 @@ type testHostOptions struct {
 	confirmationIntents     security.ConfirmationIntentStore
 	runtimeManager          runtimeclient.Manager
 	runtimeManagerFactory   func(testRuntimeManagerDependencies) (runtimeclient.Manager, error)
+	backgroundRunnerFactory func(*Host) (background.Runner, error)
 	withoutRuntimeManager   bool
 	sessionScopePath        string
 	sessionScopeMaxScopes   int
@@ -5150,6 +5152,10 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if openContext == nil {
 		openContext = hostTestContext()
 	}
+	var backgroundModule *BackgroundModule
+	if opts.backgroundRunnerFactory != nil {
+		backgroundModule = &BackgroundModule{RunnerFactory: opts.backgroundRunnerFactory}
+	}
 	host, err := Open(openContext, Config{
 		StateRoot: stateRoot,
 		Core: CoreAdapters{
@@ -5177,6 +5183,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Connectivity: &ConnectivityModule{Broker: connectivityBroker, NetworkExecutor: networkExecutor},
 		Secrets:      &SecretsModule{Store: secretStore},
 		CoreAction:   &CoreActionModule{Adapter: coreActions},
+		Background:   backgroundModule,
 	})
 	if err != nil {
 		t.Fatal(err)

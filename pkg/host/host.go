@@ -475,7 +475,8 @@ type ProcessModule struct {
 }
 
 type BackgroundModule struct {
-	Manager *background.Manager
+	Manager       *background.Manager
+	RunnerFactory func(*Host) (background.Runner, error)
 }
 
 // ExternalPackageModule configures the host-neutral public HTTPS and GitHub
@@ -1187,7 +1188,7 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 	if module := config.Process; module != nil && module.Supervisor == nil {
 		return &HostConfigError{Module: string(FeatureProcess), Adapter: "supervisor", Cause: ErrProcessModuleRequired}
 	}
-	if module := config.Background; module != nil && module.Manager == nil {
+	if module := config.Background; module != nil && module.Manager == nil && module.RunnerFactory == nil {
 		return &HostConfigError{Module: string(FeatureBackground), Adapter: "manager", Cause: ErrBackgroundModuleRequired}
 	}
 	return nil
@@ -1507,6 +1508,20 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		processSupervisor:    adapters.ProcessSupervisor,
 		backgroundManager:    adapters.BackgroundManager,
 	}
+	if config.Background != nil && host.backgroundManager == nil && config.Background.RunnerFactory != nil {
+		runner, err := config.Background.RunnerFactory(host)
+		if err != nil {
+			lifecycleCancel()
+			return nil, fmt.Errorf("create background runner: %w", err)
+		}
+		manager, err := background.NewManager(runner)
+		if err != nil {
+			lifecycleCancel()
+			return nil, fmt.Errorf("create background manager: %w", err)
+		}
+		host.backgroundManager = manager
+		host.adapters.BackgroundManager = manager
+	}
 	if host.securityJournal != nil {
 		if err := host.securityJournal.ReconcilePendingSecurityAudits(ctx); err != nil {
 			lifecycleCancel()
@@ -1595,6 +1610,10 @@ func (h *Host) Close() error {
 			externalStageCloseErr = h.externalStage.Close()
 		}
 		h.verifiedReleases.clear()
+		var backgroundCloseErr error
+		if h.backgroundManager != nil {
+			backgroundCloseErr = h.backgroundManager.Shutdown(context.Background())
+		}
 		var runtimeCloseErr error
 		if h.runtimeModule != nil {
 			shutdownTimeout := DefaultRuntimeShutdownTimeout
@@ -1630,10 +1649,6 @@ func (h *Host) Close() error {
 		var processCloseErr error
 		if h.processSupervisor != nil {
 			processCloseErr = h.processSupervisor.Shutdown(context.Background())
-		}
-		var backgroundCloseErr error
-		if h.backgroundManager != nil {
-			backgroundCloseErr = h.backgroundManager.Shutdown(context.Background())
 		}
 		var environmentLockCloseErr error
 		if h.environmentLock != nil {

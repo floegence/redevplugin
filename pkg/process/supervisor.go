@@ -43,11 +43,18 @@ type Owner struct {
 	PluginInstanceID string
 	UserScope        string
 	EnvironmentScope string
+	SessionScope     string
+	ChannelScope     string
 }
 
 func (o Owner) valid() bool {
 	for _, value := range []string{o.PluginInstanceID, o.UserScope, o.EnvironmentScope} {
 		if value == "" || len(value) > MaxOwnerFieldBytes || strings.IndexByte(value, 0) >= 0 {
+			return false
+		}
+	}
+	for _, value := range []string{o.SessionScope, o.ChannelScope} {
+		if value != "" && (len(value) > MaxOwnerFieldBytes || strings.IndexByte(value, 0) >= 0) {
 			return false
 		}
 	}
@@ -59,7 +66,7 @@ func (o Owner) ValidForHost() bool {
 }
 
 func (o Owner) key() string {
-	return o.PluginInstanceID + "\x00" + o.UserScope + "\x00" + o.EnvironmentScope
+	return o.PluginInstanceID + "\x00" + o.UserScope + "\x00" + o.EnvironmentScope + "\x00" + o.SessionScope + "\x00" + o.ChannelScope
 }
 
 type SecretResolver func(context.Context, Owner, string) (string, error)
@@ -228,6 +235,13 @@ type Supervisor struct {
 	closed         bool
 }
 
+func nonNilContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 func NewSupervisor(options Options) (*Supervisor, error) {
 	if options.GracePeriod <= 0 {
 		options.GracePeriod = 2 * time.Second
@@ -371,6 +385,7 @@ func (s *Supervisor) isRevokedLocked(owner Owner) bool {
 }
 
 func (s *Supervisor) Start(ctx context.Context, owner Owner, request StartRequest) (Status, error) {
+	ctx = nonNilContext(ctx)
 	if !owner.valid() {
 		return Status{}, ErrInvalidRequest
 	}
@@ -720,7 +735,34 @@ func (s *Supervisor) GetStatus(owner Owner, handle string) (Status, error) {
 	return process.status, nil
 }
 
+// List returns the current process sessions owned by the exact plugin,
+// user, environment, and optional session/channel scope.
+func (s *Supervisor) List(owner Owner) ([]Status, error) {
+	if !owner.valid() {
+		return nil, ErrInvalidRequest
+	}
+	s.mu.Lock()
+	processes := make([]*session, 0)
+	for _, process := range s.sessions {
+		if process.owner == owner {
+			processes = append(processes, process)
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(processes, func(i, j int) bool {
+		return processes[i].status.Handle < processes[j].status.Handle
+	})
+	statuses := make([]Status, 0, len(processes))
+	for _, process := range processes {
+		process.mu.Lock()
+		statuses = append(statuses, process.status)
+		process.mu.Unlock()
+	}
+	return statuses, nil
+}
+
 func (s *Supervisor) WriteStdin(ctx context.Context, owner Owner, handle string, data []byte) (int, error) {
+	ctx = nonNilContext(ctx)
 	if len(data) > MaxStdinBytes {
 		return 0, ErrInvalidRequest
 	}
@@ -752,6 +794,12 @@ func (s *Supervisor) CloseStdin(owner Owner, handle string) error {
 }
 
 func (s *Supervisor) Read(ctx context.Context, owner Owner, handle string, stream Stream, request ReadRequest) (ReadResult, error) {
+	ctx = nonNilContext(ctx)
+	select {
+	case <-ctx.Done():
+		return ReadResult{}, ctx.Err()
+	default:
+	}
 	process, err := s.session(owner, handle)
 	if err != nil {
 		return ReadResult{}, err
@@ -769,7 +817,16 @@ func (s *Supervisor) Read(ctx context.Context, owner Owner, handle string, strea
 	}
 }
 
+func (s *Supervisor) ReadStdout(ctx context.Context, owner Owner, handle string, request ReadRequest) (ReadResult, error) {
+	return s.Read(ctx, owner, handle, Stdout, request)
+}
+
+func (s *Supervisor) ReadStderr(ctx context.Context, owner Owner, handle string, request ReadRequest) (ReadResult, error) {
+	return s.Read(ctx, owner, handle, Stderr, request)
+}
+
 func (s *Supervisor) Wait(ctx context.Context, owner Owner, handle string) (ExitResult, error) {
+	ctx = nonNilContext(ctx)
 	process, err := s.session(owner, handle)
 	if err != nil {
 		return ExitResult{}, err
@@ -785,6 +842,7 @@ func (s *Supervisor) Wait(ctx context.Context, owner Owner, handle string) (Exit
 }
 
 func (s *Supervisor) Terminate(ctx context.Context, owner Owner, handle string) error {
+	ctx = nonNilContext(ctx)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -812,6 +870,7 @@ func (s *Supervisor) Kill(owner Owner, handle string) error {
 }
 
 func (s *Supervisor) closeSession(ctx context.Context, process *session) error {
+	ctx = nonNilContext(ctx)
 	process.mu.Lock()
 	if process.status.State != "exited" {
 		process.terminationReason = "closed"
@@ -843,6 +902,7 @@ func (s *Supervisor) closeSession(ctx context.Context, process *session) error {
 }
 
 func (s *Supervisor) Close(ctx context.Context, owner Owner, handle string) error {
+	ctx = nonNilContext(ctx)
 	process, err := s.session(owner, handle)
 	if err != nil {
 		return err
@@ -855,6 +915,7 @@ func (s *Supervisor) Close(ctx context.Context, owner Owner, handle string) erro
 }
 
 func (s *Supervisor) Revoke(ctx context.Context, owner Owner) error {
+	ctx = nonNilContext(ctx)
 	if !owner.valid() {
 		return ErrInvalidRequest
 	}
@@ -878,6 +939,7 @@ func (s *Supervisor) Revoke(ctx context.Context, owner Owner) error {
 }
 
 func (s *Supervisor) RevokePlugin(ctx context.Context, pluginInstanceID, environmentScope string) error {
+	ctx = nonNilContext(ctx)
 	if pluginInstanceID == "" || environmentScope == "" {
 		return ErrInvalidRequest
 	}
@@ -915,6 +977,7 @@ func (s *Supervisor) RestorePlugin(pluginInstanceID, environmentScope string) er
 }
 
 func (s *Supervisor) Shutdown(ctx context.Context) error {
+	ctx = nonNilContext(ctx)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()

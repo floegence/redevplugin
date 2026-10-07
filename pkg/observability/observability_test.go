@@ -1045,6 +1045,12 @@ func TestStartupDiagnosticPresentationRemainsClosed(t *testing.T) {
 		{"plugin.runtime.prewarm_failed", DiagnosticSeverityWarning, "startup worker catalog could not be read"},
 		{"plugin.runtime.prewarm_failed", DiagnosticSeverityWarning, "startup worker runtime could not be prepared"},
 		{"plugin.runtime.prewarm_failed", DiagnosticSeverityWarning, "startup worker module could not be prepared"},
+		{"plugin.process.starting", DiagnosticSeverityInfo, "plugin process is starting"},
+		{"plugin.process.started", DiagnosticSeverityInfo, "plugin process started"},
+		{"plugin.process.exited", DiagnosticSeverityInfo, "plugin process exited"},
+		{"plugin.process.stream_gap", DiagnosticSeverityWarning, "plugin process output buffer overflowed"},
+		{"plugin.process.operation_failed", DiagnosticSeverityWarning, "plugin process operation failed"},
+		{"plugin.background.failed", DiagnosticSeverityWarning, "plugin background worker stopped unexpectedly"},
 	} {
 		event := DiagnosticEvent{Type: item.eventType, Severity: item.severity, Message: item.message, OccurredAt: time.Now().UTC(), Details: DiagnosticDetails{Operation: "startup_prewarm"}}
 		if err := ValidateDiagnosticEvent(event); err != nil {
