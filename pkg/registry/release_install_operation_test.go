@@ -5,7 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -18,17 +18,20 @@ import (
 )
 
 func TestRegistrySourceHasNoReleaseInstallStoreAuthority(t *testing.T) {
-	packages, err := parser.ParseDir(token.NewFileSet(), ".", func(info fs.FileInfo) bool {
-		return !strings.HasSuffix(info.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pkg := packages["registry"]
-	if pkg == nil {
-		t.Fatal("registry package source not found")
-	}
-	for filename, file := range pkg.Files {
+	fileSet := token.NewFileSet()
+	for _, entry := range entries {
+		filename := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(filename, ".go") || strings.HasSuffix(filename, "_test.go") {
+			continue
+		}
+		file, parseErr := parser.ParseFile(fileSet, filename, nil, 0)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch value := node.(type) {
 			case *ast.BasicLit:

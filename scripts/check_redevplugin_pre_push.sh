@@ -63,8 +63,8 @@ if [[ "$(node -p 'process.versions.node')" != "$REQUIRED_NODE_VERSION" ]]; then
   exit 1
 fi
 
-if ! golangci-lint --version 2>/dev/null | grep -Eq 'version v?1\.64\.5([[:space:]]|$)'; then
-  go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
+if ! golangci-lint --version 2>/dev/null | grep -Eq 'version v?2\.13\.2([[:space:]]|$)'; then
+  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 fi
 if [[ "$(cargo-deny --version 2>/dev/null || true)" != "cargo-deny 0.19.9" ]]; then
   cargo install cargo-deny@0.19.9 --locked

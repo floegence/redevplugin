@@ -255,7 +255,7 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 			_ = response.Body.Close()
 			return FetchResult{}, externalError(ErrorArtifactTooLarge, "fetch", current.DisplayURL(), fmt.Errorf("content length exceeds limit"))
 		}
-		var body io.ReadCloser = response.Body
+		body := response.Body
 		if progress != nil {
 			body = &progressReadCloser{ReadCloser: response.Body, total: expectedSize, observe: progress}
 		}

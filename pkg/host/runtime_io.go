@@ -500,9 +500,16 @@ func (broker *hostRuntimeIOBroker) dispatchStorage(ctx context.Context, invocati
 }
 
 func runtimeStorageOperationWrites(kind, operation string) bool {
-	return !(kind == "files" && (operation == "read" || operation == "list") ||
-		kind == "kv" && (operation == "get" || operation == "list") ||
-		kind == "sqlite" && operation == "query")
+	switch kind {
+	case "files":
+		return operation != "read" && operation != "list"
+	case "kv":
+		return operation != "get" && operation != "list"
+	case "sqlite":
+		return operation != "query"
+	default:
+		return true
+	}
 }
 
 func (broker *hostRuntimeIOBroker) dispatchStorageFiles(ctx context.Context, pluginInstanceID string, scope sessionctx.ResourceScope, operation string, raw []byte) (any, error) {
