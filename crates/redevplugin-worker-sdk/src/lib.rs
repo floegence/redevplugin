@@ -10,6 +10,7 @@ pub mod error;
 pub mod fs;
 pub mod http;
 mod platform_identity_gen;
+pub mod process;
 mod resource;
 pub mod tcp;
 pub mod udp;

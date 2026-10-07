@@ -17,6 +17,7 @@ const (
 	FeatureNetWebSocket  FeatureID = "net.websocket.v1"
 	FeatureNetTCP        FeatureID = "net.tcp.v1"
 	FeatureNetUDP        FeatureID = "net.udp.v1"
+	FeatureProcessLocal  FeatureID = "process.local.v1"
 )
 
 const (
@@ -28,6 +29,7 @@ const (
 	PermissionFSEnvironmentWrite PermissionID = "fs.environment.write"
 	PermissionNetworkClient      PermissionID = "network.client"
 	PermissionNetworkListen      PermissionID = "network.listen"
+	PermissionProcessLocal       PermissionID = "process.local"
 )
 
 var ErrUnsupportedFeature = errors.New("UNSUPPORTED_FEATURE")

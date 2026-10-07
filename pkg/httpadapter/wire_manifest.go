@@ -173,9 +173,23 @@ type manifestNetworkAccessResponse struct {
 	HTTPMethods []string `json:"http_methods,omitempty"`
 }
 
+type manifestProcessAccessResponse struct {
+	Operations []string `json:"operations"`
+}
+
+type manifestProcessResponse struct {
+	ResourceLimits manifest.ProcessResourceLimits `json:"resource_limits,omitempty"`
+}
+
+type manifestBackgroundResponse struct {
+	Strategy string `json:"strategy"`
+	WorkerID string `json:"worker_id"`
+}
+
 type manifestMethodBrokerAccessResponse struct {
 	Storage []manifestStorageAccessResponse `json:"storage,omitempty"`
 	Network []manifestNetworkAccessResponse `json:"network,omitempty"`
+	Process []manifestProcessAccessResponse `json:"process,omitempty"`
 }
 
 type manifestMethodResponse struct {
@@ -262,6 +276,8 @@ type manifestResponse struct {
 	Workers            []manifestWorkerResponse            `json:"workers,omitempty"`
 	Storage            *manifestStorageResponse            `json:"storage,omitempty"`
 	NetworkAccess      *manifestNetworkResponse            `json:"network_access,omitempty"`
+	Process            *manifestProcessResponse            `json:"process,omitempty"`
+	Background         *manifestBackgroundResponse         `json:"background,omitempty"`
 	Settings           *manifestSettingsResponse           `json:"settings,omitempty"`
 	Intents            []manifestIntentResponse            `json:"intents,omitempty"`
 }
@@ -335,6 +351,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 			access := &manifestMethodBrokerAccessResponse{
 				Storage: make([]manifestStorageAccessResponse, len(method.BrokerAccess.Storage)),
 				Network: make([]manifestNetworkAccessResponse, len(method.BrokerAccess.Network)),
+				Process: make([]manifestProcessAccessResponse, len(method.BrokerAccess.Process)),
 			}
 			for storageIndex, storage := range method.BrokerAccess.Storage {
 				access.Storage[storageIndex] = manifestStorageAccessResponse{
@@ -346,6 +363,9 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 					ConnectorID: network.ConnectorID, Transport: network.Transport, Scope: network.Scope,
 					Operations: append([]string(nil), network.Operations...), HTTPMethods: append([]string(nil), network.HTTPMethods...),
 				}
+			}
+			for processIndex, process := range method.BrokerAccess.Process {
+				access.Process[processIndex] = manifestProcessAccessResponse{Operations: append([]string(nil), process.Operations...)}
 			}
 			mapped.BrokerAccess = access
 		}
@@ -385,6 +405,12 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 			}
 		}
 		response.NetworkAccess = network
+	}
+	if source.Process != nil {
+		response.Process = &manifestProcessResponse{ResourceLimits: source.Process.ResourceLimits}
+	}
+	if source.Background != nil {
+		response.Background = &manifestBackgroundResponse{Strategy: string(source.Background.Strategy), WorkerID: source.Background.WorkerID}
 	}
 	if source.Settings != nil {
 		settings := &manifestSettingsResponse{

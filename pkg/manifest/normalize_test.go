@@ -17,6 +17,21 @@ func TestV9UnknownFieldIsRejected(t *testing.T) {
 	}
 }
 
+func TestV9ProcessDeclarationRequiresFeatureAndPermission(t *testing.T) {
+	raw := []byte(`{"schema_version":"redevplugin.manifest.v9","publisher":{"publisher_id":"example"},"plugin":{"plugin_id":"com.example.process","display_name":"Process","version":"1.0.0"},"api":{"major":1,"required_features":["process.local.v1"]},"permissions":["process.local"],"presentation":{"locales":{"default":"en-US"}},"surfaces":[],"workers":[],"methods":[],"process":{"resource_limits":{"output_buffer_bytes":1024,"max_runtime_ms":1000}}}`)
+	decoded, err := Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Process == nil || decoded.RequiredFeatureIDs()[0] != FeatureProcessLocal || decoded.Permissions[0] != PermissionProcessLocal {
+		t.Fatalf("process declaration was not normalized: %#v", decoded)
+	}
+	missingFeature := bytes.Replace(raw, []byte(`"required_features":["process.local.v1"]`), []byte(`"required_features":[]`), 1)
+	if _, err := Decode(bytes.NewReader(missingFeature)); err == nil {
+		t.Fatal("process declaration without feature was accepted")
+	}
+}
+
 func TestV9RejectsDuplicateKeysAndNonCanonicalNumbers(t *testing.T) {
 	duplicate := v9TestManifest(`,"plugin":{"plugin_id":"duplicate"}`)
 	if _, err := Decode(bytes.NewReader(duplicate)); err == nil || !strings.Contains(err.Error(), "duplicate JSON field") {

@@ -28,6 +28,7 @@ import (
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/background"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
 	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
@@ -40,6 +41,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	processruntime "github.com/floegence/redevplugin/v3/pkg/process"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
@@ -153,6 +155,8 @@ var (
 	ErrSecretsModuleRequired         = errors.New("secrets module is required")
 	ErrCoreActionModuleRequired      = errors.New("core action module is required")
 	ErrExternalPackageModuleRequired = errors.New("external package module is required")
+	ErrProcessModuleRequired         = errors.New("process module is required")
+	ErrBackgroundModuleRequired      = errors.New("background module is required")
 	ErrDurableSessionScopeRequired   = errors.New("durable session scope coordinator is required")
 	ErrSessionTeardownIncomplete     = errors.New("plugin session teardown is incomplete")
 	ErrSessionMaintenanceState       = errors.New("session lifecycle maintenance state is invalid")
@@ -208,6 +212,8 @@ const (
 	FeatureSecrets         Feature = "secrets"
 	FeatureCoreAction      Feature = "core_action"
 	FeatureExternalPackage Feature = "external_package"
+	FeatureProcess         Feature = "process"
+	FeatureBackground      Feature = "background"
 )
 
 // FeatureNotConfiguredError identifies an optional module that was not
@@ -464,6 +470,14 @@ type CoreActionModule struct {
 	Adapter CoreActionAdapter
 }
 
+type ProcessModule struct {
+	Supervisor *processruntime.Supervisor
+}
+
+type BackgroundModule struct {
+	Manager *background.Manager
+}
+
 // ExternalPackageModule configures the host-neutral public HTTPS and GitHub
 // Release admission pipeline. Pending inspections are process-local and expire
 // on Host restart; only installed plugin facts become durable.
@@ -496,6 +510,8 @@ type Config struct {
 	Secrets         *SecretsModule
 	CoreAction      *CoreActionModule
 	ExternalPackage *ExternalPackageModule
+	Process         *ProcessModule
+	Background      *BackgroundModule
 }
 
 type internalStateOwnerOverrides struct {
@@ -532,6 +548,8 @@ type normalizedAdapters struct {
 	ExternalPackageFetcher           externalPackageFetcher
 	ExternalPackageGitHubResolver    externalPackageGitHubResolver
 	ExternalPackageSignatureAssessor ExternalPackageSignatureAssessor
+	ProcessSupervisor                *processruntime.Supervisor
+	BackgroundManager                *background.Manager
 }
 
 type PluginData interface {
@@ -576,6 +594,8 @@ type Host struct {
 	recoveryRevision     int64
 	recoverySnapshot     *RecoverySnapshot
 	runtimeIO            *hostRuntimeIOBroker
+	processSupervisor    *processruntime.Supervisor
+	backgroundManager    *background.Manager
 	workerPreparations   sync.Map
 }
 
@@ -959,6 +979,7 @@ type workerInvocationPayload struct {
 type workerBrokerAccess struct {
 	Storage []workerStorageBrokerAccess `json:"storage,omitempty"`
 	Network []workerNetworkBrokerAccess `json:"network,omitempty"`
+	Process []workerProcessBrokerAccess `json:"process,omitempty"`
 }
 
 type workerStorageBrokerAccess struct {
@@ -974,6 +995,11 @@ type workerNetworkBrokerAccess struct {
 	Scope       string   `json:"scope"`
 	Operations  []string `json:"operations"`
 	HTTPMethods []string `json:"http_methods,omitempty"`
+}
+
+type workerProcessBrokerAccess struct {
+	Operations []string                       `json:"operations"`
+	Limits     *processruntime.ResourceLimits `json:"limits,omitempty"`
 }
 
 type PrepareMethodConfirmationRequest struct {
@@ -1063,6 +1089,14 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 		adapters.ExternalPackageSignatureAssessor = module.SignatureAssessor
 		features[FeatureExternalPackage] = struct{}{}
 	}
+	if module := config.Process; module != nil {
+		adapters.ProcessSupervisor = module.Supervisor
+		features[FeatureProcess] = struct{}{}
+	}
+	if module := config.Background; module != nil {
+		adapters.BackgroundManager = module.Manager
+		features[FeatureBackground] = struct{}{}
+	}
 	return adapters, features, validateConfig(adapters, config)
 }
 
@@ -1149,6 +1183,12 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 		if _, ok := module.SignatureAssessor.(ExternalPackageSignatureFreshnessAssessor); !ok {
 			return &HostConfigError{Module: string(FeatureExternalPackage), Adapter: "signature freshness assessor", Cause: ErrExternalPackageModuleRequired}
 		}
+	}
+	if module := config.Process; module != nil && module.Supervisor == nil {
+		return &HostConfigError{Module: string(FeatureProcess), Adapter: "supervisor", Cause: ErrProcessModuleRequired}
+	}
+	if module := config.Background; module != nil && module.Manager == nil {
+		return &HostConfigError{Module: string(FeatureBackground), Adapter: "manager", Cause: ErrBackgroundModuleRequired}
 	}
 	return nil
 }
@@ -1464,6 +1504,8 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		refreshPluginTimeout: refreshEnabledPluginTimeout,
 		recoveryRevision:     1,
 		runtimeIO:            runtimeIO,
+		processSupervisor:    adapters.ProcessSupervisor,
+		backgroundManager:    adapters.BackgroundManager,
 	}
 	if host.securityJournal != nil {
 		if err := host.securityJournal.ReconcilePendingSecurityAudits(ctx); err != nil {
@@ -1585,11 +1627,19 @@ func (h *Host) Close() error {
 		if h.runtimeIO != nil {
 			runtimeIOCloseErr = h.runtimeIO.closeAll()
 		}
+		var processCloseErr error
+		if h.processSupervisor != nil {
+			processCloseErr = h.processSupervisor.Shutdown(context.Background())
+		}
+		var backgroundCloseErr error
+		if h.backgroundManager != nil {
+			backgroundCloseErr = h.backgroundManager.Shutdown(context.Background())
+		}
 		var environmentLockCloseErr error
 		if h.environmentLock != nil {
 			environmentLockCloseErr = h.environmentLock.Close()
 		}
-		h.closeErr = errors.Join(runtimeCloseErr, runtimeIOCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr, environmentLockCloseErr)
+		h.closeErr = errors.Join(runtimeCloseErr, runtimeIOCloseErr, processCloseErr, backgroundCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr, environmentLockCloseErr)
 	})
 	return h.closeErr
 }
@@ -1598,7 +1648,7 @@ func (h *Host) configuredFeatures() []Feature {
 	if h == nil || len(h.features) == 0 {
 		return []Feature{}
 	}
-	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage}
+	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage, FeatureProcess, FeatureBackground}
 	result := make([]Feature, 0, len(h.features))
 	for _, feature := range ordered {
 		if _, ok := h.features[feature]; ok {
@@ -1622,7 +1672,7 @@ func (h *Host) requireFeature(feature Feature) error {
 
 func (h *Host) requireFeatures(required []Feature) error {
 	missing := make([]Feature, 0, len(required))
-	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage} {
+	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage, FeatureProcess, FeatureBackground} {
 		if slices.Contains(required, candidate) && !h.featureConfigured(candidate) {
 			missing = append(missing, candidate)
 		}
@@ -1658,6 +1708,10 @@ func (h *Host) featureConfigured(feature Feature) bool {
 	case FeatureExternalPackage:
 		return h.adapters.ExternalPackageStageStore != nil && h.adapters.ExternalPackageFetcher != nil &&
 			h.adapters.ExternalPackageGitHubResolver != nil && h.adapters.ExternalPackageSignatureAssessor != nil
+	case FeatureProcess:
+		return h.adapters.ProcessSupervisor != nil
+	case FeatureBackground:
+		return h.adapters.BackgroundManager != nil
 	default:
 		return false
 	}
@@ -1772,6 +1826,11 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	}
 	if err := h.pluginAuthorizationError(ctx, record); err != nil {
 		return bridge.SurfaceBootstrap{}, err
+	}
+	if record.Manifest.Background != nil && record.Manifest.Background.Strategy == manifest.BackgroundOnDemand {
+		if err := h.startBackgroundEntry(ctx, record); err != nil {
+			return bridge.SurfaceBootstrap{}, err
+		}
 	}
 	surface, ok := manifestSurfaceByID(record.Manifest, req.SurfaceID)
 	if !ok {
@@ -4195,6 +4254,12 @@ func requiredPackageFeatures(pluginManifest manifest.Manifest, input packageTrus
 	if len(pluginManifest.Workers) > 0 {
 		required = append(required, FeatureRuntime)
 	}
+	if pluginManifest.Process != nil || containsManifestFeature(pluginManifest.API.RequiredFeatures, manifest.FeatureProcessLocal) {
+		required = append(required, FeatureProcess)
+	}
+	if pluginManifest.Background != nil {
+		required = append(required, FeatureBackground)
+	}
 	if len(pluginManifest.CapabilityBindings) > 0 {
 		required = append(required, FeatureCapability)
 	}
@@ -4213,6 +4278,15 @@ func requiredPackageFeatures(pluginManifest manifest.Manifest, input packageTrus
 	return required
 }
 
+func containsManifestFeature(values []manifest.FeatureID, wanted manifest.FeatureID) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func manifestRequiresConnectivity(pluginManifest manifest.Manifest) bool {
 	for _, feature := range pluginManifest.API.RequiredFeatures {
 		switch feature {
@@ -4225,6 +4299,9 @@ func manifestRequiresConnectivity(pluginManifest manifest.Manifest) bool {
 	}
 	for _, method := range pluginManifest.Methods {
 		if method.BrokerAccess != nil && len(method.BrokerAccess.Network) > 0 {
+			return true
+		}
+		if method.BrokerAccess != nil && len(method.BrokerAccess.Process) > 0 {
 			return true
 		}
 	}
@@ -4446,6 +4523,35 @@ func (h *Host) recoverEnabledRuntimeState(ctx context.Context, record registry.P
 	return h.activateEnabledRuntimeState(ctx, record)
 }
 
+const backgroundOwnerUserScope = "background"
+
+func backgroundOwner(record registry.PluginRecord) background.Owner {
+	return background.Owner{
+		PluginInstanceID: record.PluginInstanceID,
+		UserScope:        backgroundOwnerUserScope,
+		EnvironmentScope: record.OwnerEnvHash,
+	}
+}
+
+func (h *Host) startBackgroundEntry(ctx context.Context, record registry.PluginRecord) error {
+	if h.backgroundManager == nil || record.Manifest.Background == nil {
+		return nil
+	}
+	entry := background.Entry{
+		WorkerID: record.Manifest.Background.WorkerID,
+		Strategy: background.Strategy(record.Manifest.Background.Strategy),
+	}
+	_, err := h.backgroundManager.Start(ctx, backgroundOwner(record), entry)
+	return err
+}
+
+func (h *Host) stopBackgroundEntry(ctx context.Context, record registry.PluginRecord) error {
+	if h.backgroundManager == nil {
+		return nil
+	}
+	return h.backgroundManager.StopPluginEnvironment(ctx, record.PluginInstanceID, record.OwnerEnvHash)
+}
+
 func (h *Host) ensureWorkerRuntimeReady(ctx context.Context, record registry.PluginRecord) error {
 	if !pluginHasWorkers(record.Manifest) {
 		return nil
@@ -4510,11 +4616,25 @@ func (h *Host) prepareWorkerRuntimeState(ctx context.Context, record registry.Pl
 }
 
 func (h *Host) activateEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
+	if h.processSupervisor != nil {
+		if err := h.processSupervisor.RestorePlugin(record.PluginInstanceID, record.OwnerEnvHash); err != nil {
+			return err
+		}
+	}
 	if pluginHasWorkers(record.Manifest) {
-		_, err := h.prepareWorkerBinding(ctx, record, true)
+		if _, err := h.prepareWorkerBinding(ctx, record, true); err != nil {
+			return err
+		}
+	} else if record.Manifest.Background != nil {
+		return fmt.Errorf("background entry requires a worker")
+	}
+	if err := h.prepareEnabledRuntimeState(ctx, record); err != nil {
 		return err
 	}
-	return h.prepareEnabledRuntimeState(ctx, record)
+	if record.Manifest.Background != nil && record.Manifest.Background.Strategy == manifest.BackgroundRuntimeStart {
+		return h.startBackgroundEntry(ctx, record)
+	}
+	return nil
 }
 
 func (h *Host) prepareEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
@@ -7041,6 +7161,7 @@ func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *mani
 	normalized := workerBrokerAccess{
 		Storage: make([]workerStorageBrokerAccess, len(access.Storage)),
 		Network: make([]workerNetworkBrokerAccess, len(access.Network)),
+		Process: make([]workerProcessBrokerAccess, len(access.Process)),
 	}
 	for i, item := range access.Storage {
 		kind, scope, ok := declaredStoreKindAndScope(pluginManifest, item.StoreID)
@@ -7069,6 +7190,19 @@ func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *mani
 		}
 		sort.Strings(normalized.Network[i].Operations)
 		sort.Strings(normalized.Network[i].HTTPMethods)
+	}
+	for i, item := range access.Process {
+		operations := append([]string(nil), item.Operations...)
+		sort.Strings(operations)
+		var limits *processruntime.ResourceLimits
+		if pluginManifest.Process != nil {
+			value := processruntime.ResourceLimits{
+				OutputBufferBytes: pluginManifest.Process.ResourceLimits.OutputBufferBytes,
+				MaxRuntimeMS:      pluginManifest.Process.ResourceLimits.MaxRuntimeMS,
+			}
+			limits = &value
+		}
+		normalized.Process[i] = workerProcessBrokerAccess{Operations: operations, Limits: limits}
 	}
 	sort.Slice(normalized.Storage, func(i, j int) bool { return normalized.Storage[i].StoreID < normalized.Storage[j].StoreID })
 	sort.Slice(normalized.Network, func(i, j int) bool { return normalized.Network[i].ConnectorID < normalized.Network[j].ConnectorID })
@@ -7731,6 +7865,12 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	}
 	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
 	var resultErr error
+	if h.processSupervisor != nil {
+		resultErr = errors.Join(resultErr, h.processSupervisor.RevokePlugin(ctx, record.PluginInstanceID, ownerEnvHash))
+	}
+	if h.backgroundManager != nil {
+		resultErr = errors.Join(resultErr, h.stopBackgroundEntry(ctx, record))
+	}
 	if err := h.runtimeIO.revokePlugin(ownerEnvHash, record.PluginInstanceID); err != nil {
 		resultErr = errors.Join(resultErr, err)
 	}

@@ -522,6 +522,8 @@ struct WorkerBrokerAccessPayload {
     storage: Vec<WorkerStorageBrokerAccessPayload>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     network: Vec<WorkerNetworkBrokerAccessPayload>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    process: Vec<WorkerProcessBrokerAccessPayload>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -541,6 +543,23 @@ struct WorkerNetworkBrokerAccessPayload {
     operations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     http_methods: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct WorkerProcessBrokerAccessPayload {
+    operations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limits: Option<WorkerProcessResourceLimitsPayload>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct WorkerProcessResourceLimitsPayload {
+    output_buffer_bytes: Option<i64>,
+    max_runtime_ms: Option<i64>,
 }
 
 struct ClosedWorkerFrame {
@@ -3208,7 +3227,7 @@ mod tests {
             );
         }
 
-        let invocation = r#"{"method":"worker.echo","params":{"title":"Launch notes","body":"<script>&\u2028"},"broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["read"]}]}}"#;
+        let invocation = r#"{"method":"worker.echo","params":{"title":"Launch notes","body":"<script>&\u2028"},"broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["read"]}],"process":[{"operations":["start","read_stdout"],"limits":{"output_buffer_bytes":4096,"max_runtime_ms":1000}}]}}"#;
         serde_json::from_str::<WorkerInvocationPayload>(invocation)
             .expect("direct typed worker invocation payload");
         let parsed = parse_worker_invocation(&closed_worker_frame("{}", invocation))
@@ -3219,7 +3238,9 @@ mod tests {
         );
         assert_eq!(
             parsed.broker_access_json.as_deref(),
-            Some(r#"{"storage":[{"store_id":"notes","scope":"user","operations":["read"]}]}"#)
+            Some(
+                r#"{"storage":[{"store_id":"notes","scope":"user","operations":["read"]}],"process":[{"operations":["start","read_stdout"],"limits":{"output_buffer_bytes":4096,"max_runtime_ms":1000}}]}"#
+            )
         );
     }
 

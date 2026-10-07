@@ -112,6 +112,7 @@ test("plugin worker entrypoint exposes only bridge and generated capability clie
     "callCapabilityOperation",
     "callCapabilityStream",
     "callCapabilitySync",
+    "createPluginProcessClient",
     "isCapabilityBusinessError",
     "pluginAPIMajor",
   ]);

@@ -1,6 +1,15 @@
 export { PluginBridgeClient } from "./surface.js";
 export { PluginBridgeError } from "./errors.js";
 export { pluginAPIMajor } from "./contracts.gen.js";
+export { createPluginProcessClient } from "./process.js";
+export type {
+  PluginProcessExitResult,
+  PluginProcessMethodContracts,
+  PluginProcessReadResult,
+  PluginProcessResourceLimits,
+  PluginProcessStartRequest,
+  PluginProcessStatus,
+} from "./process.js";
 export {
   callCapabilityOperation,
   callCapabilityStream,

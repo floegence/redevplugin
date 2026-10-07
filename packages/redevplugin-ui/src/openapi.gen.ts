@@ -2609,6 +2609,9 @@ export interface components {
                         operations: ("http" | "http_stream" | "websocket_round_trip" | "tcp_round_trip" | "udp_round_trip")[];
                         http_methods?: ("GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS")[];
                     } & unknown)[];
+                    process?: {
+                        operations: ("start" | "attach" | "status" | "write_stdin" | "close_stdin" | "read_stdout" | "read_stderr" | "wait" | "terminate" | "kill" | "close")[];
+                    }[];
                 };
                 route: {
                     /** @enum {unknown} */
@@ -2679,6 +2682,17 @@ export interface components {
                     tls?: Record<string, never>;
                 }[];
             };
+            process?: {
+                resource_limits?: {
+                    output_buffer_bytes?: number;
+                    max_runtime_ms?: number;
+                };
+            };
+            background?: {
+                /** @enum {unknown} */
+                strategy: "runtime_start" | "on_demand";
+                worker_id: string;
+            };
             settings?: {
                 schema_version: number;
                 fields?: {
@@ -2704,7 +2718,7 @@ export interface components {
                 required_features?: components["schemas"]["ManifestV9RequiredFeatures"];
                 optional_features?: components["schemas"]["ManifestV9OptionalFeatures"];
             };
-            permissions: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen")[];
+            permissions: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local")[];
         };
         ManifestV9Locale: string;
         ManifestV9Summary: string;
@@ -2774,7 +2788,7 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1")[];
+        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1")[];
         ManifestV9OptionalFeatures: string[];
         HostCapabilityPinV1: {
             publisher_id: components["schemas"]["HostCapabilityPinV1Id"];

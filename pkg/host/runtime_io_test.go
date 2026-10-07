@@ -6,13 +6,26 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	processruntime "github.com/floegence/redevplugin/v3/pkg/process"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/storage"
 )
+
+func TestHostProcessFixture(t *testing.T) {
+	if os.Getenv("RDP_HOST_PROCESS_FIXTURE") != "1" {
+		t.Skip("process fixture")
+	}
+	if _, err := io.Copy(os.Stdout, os.Stdin); err != nil {
+		t.Log(err)
+	}
+}
 
 type recordingHostMountAdapter struct {
 	list       MountListRequest
@@ -298,6 +311,63 @@ func TestHostRuntimeIOBrokerStorageFailsClosedOutsideTrustedAccess(t *testing.T)
 	}
 	if _, err := broker.Control(context.Background(), invocation.Owner.InvocationID, []byte(requests[0])); !errors.Is(err, errRuntimeIOInvocationUnknown) {
 		t.Fatalf("released invocation Control() error = %v", err)
+	}
+}
+
+func TestHostRuntimeIOBrokerProcessUsesOpaqueOwnerAndBinaryStreams(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor, err := processruntime.NewSupervisor(processruntime.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = supervisor.Shutdown(context.Background()) })
+	broker, err := newHostRuntimeIOBroker(normalizedAdapters{ProcessSupervisor: supervisor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = broker.closeAll() })
+	invocation := runtimeIOTestInvocation("invocation-process", "session-process", "channel-process")
+	registration, err := newHostRuntimeIORegistration(invocation, workerBrokerAccess{Process: []workerProcessBrokerAccess{{Operations: []string{"start", "read_stdout", "close_stdin", "wait", "close"}}}}, map[string]string{string(manifest.PermissionProcessLocal): "grant-process"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.register(invocation.Owner.InvocationID, registration); err != nil {
+		t.Fatal(err)
+	}
+	startArgs, err := json.Marshal(map[string]any{
+		"program":     program,
+		"argv":        []string{"-test.run=^TestHostProcessFixture$"},
+		"environment": map[string]string{"RDP_HOST_PROCESS_FIXTURE": "1"},
+		"client_key":  "host-process",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := map[string]any{"plugin_api": 1, "operation": "process.start", "arguments": json.RawMessage(startArgs)}
+	rawRequest, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startResponse := runtimeIOControl(t, broker, invocation.Owner.InvocationID, string(rawRequest))
+	if startResponse["ok"] != true {
+		t.Fatalf("process start response = %#v", startResponse)
+	}
+	status := startResponse["result"].(map[string]any)
+	handle := status["handle"].(string)
+	if len(handle) == 0 || status["pid"] != nil || status["program"] != nil || status["environment"] != nil {
+		t.Fatalf("opaque process status = %#v", status)
+	}
+	closeRequest := `{"plugin_api":1,"operation":"process.close_stdin","arguments":{"handle":"` + handle + `"}}`
+	closeResponse := runtimeIOControl(t, broker, invocation.Owner.InvocationID, closeRequest)
+	if closeResponse["ok"] != true {
+		t.Fatalf("close stdin response = %#v", closeResponse)
+	}
+	waitResponse := runtimeIOControl(t, broker, invocation.Owner.InvocationID, `{"plugin_api":1,"operation":"process.wait","arguments":{"handle":"`+handle+`"}}`)
+	if waitResponse["ok"] != true {
+		t.Fatalf("wait response = %#v", waitResponse)
 	}
 }
 

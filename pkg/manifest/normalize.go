@@ -64,6 +64,8 @@ func MarshalCanonical(current Manifest) ([]byte, error) {
 		Methods:            append([]MethodSpec{}, current.Methods...),
 		Storage:            current.Storage,
 		NetworkAccess:      current.NetworkAccess,
+		Process:            current.Process,
+		Background:         current.Background,
 		Settings:           current.Settings,
 		Intents:            append([]IntentSpec(nil), current.Intents...),
 	}
@@ -92,6 +94,8 @@ type v9Document struct {
 	Methods            []MethodSpec         `json:"methods"`
 	Storage            *StorageSpec         `json:"storage,omitempty"`
 	NetworkAccess      *NetworkAccessSpec   `json:"network_access,omitempty"`
+	Process            *ProcessSpec         `json:"process,omitempty"`
+	Background         *BackgroundSpec      `json:"background,omitempty"`
 	Settings           *SettingsSpec        `json:"settings,omitempty"`
 	Intents            []IntentSpec         `json:"intents,omitempty"`
 }
@@ -160,6 +164,8 @@ func decodeV9(raw []byte) (Manifest, error) {
 		Methods:            document.Methods,
 		Storage:            document.Storage,
 		NetworkAccess:      document.NetworkAccess,
+		Process:            document.Process,
+		Background:         document.Background,
 		Settings:           document.Settings,
 		Intents:            document.Intents,
 	}
@@ -205,7 +211,7 @@ func normalizePublicAPI(api PublicAPIRequirement) (PublicAPIRequirement, error) 
 
 func knownFeature(feature FeatureID) bool {
 	switch feature {
-	case FeatureIOStream, FeatureFSWorkspace, FeatureFSHome, FeatureFSEnvironment, FeatureFSWatch, FeatureNetHTTP, FeatureNetWebSocket, FeatureNetTCP, FeatureNetUDP:
+	case FeatureIOStream, FeatureFSWorkspace, FeatureFSHome, FeatureFSEnvironment, FeatureFSWatch, FeatureNetHTTP, FeatureNetWebSocket, FeatureNetTCP, FeatureNetUDP, FeatureProcessLocal:
 		return true
 	default:
 		return false
@@ -231,7 +237,7 @@ func normalizePermissions(values []PermissionID) ([]PermissionID, error) {
 
 func knownPermission(value PermissionID) bool {
 	switch value {
-	case PermissionFSWorkspaceRead, PermissionFSWorkspaceWrite, PermissionFSHomeRead, PermissionFSHomeWrite, PermissionFSEnvironmentRead, PermissionFSEnvironmentWrite, PermissionNetworkClient, PermissionNetworkListen:
+	case PermissionFSWorkspaceRead, PermissionFSWorkspaceWrite, PermissionFSHomeRead, PermissionFSHomeWrite, PermissionFSEnvironmentRead, PermissionFSEnvironmentWrite, PermissionNetworkClient, PermissionNetworkListen, PermissionProcessLocal:
 		return true
 	default:
 		return false

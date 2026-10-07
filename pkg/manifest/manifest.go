@@ -26,6 +26,8 @@ type Manifest struct {
 	Workers            []WorkerSpec         `json:"workers,omitempty"`
 	Storage            *StorageSpec         `json:"storage,omitempty"`
 	NetworkAccess      *NetworkAccessSpec   `json:"network_access,omitempty"`
+	Process            *ProcessSpec         `json:"process,omitempty"`
+	Background         *BackgroundSpec      `json:"background,omitempty"`
 	Settings           *SettingsSpec        `json:"settings,omitempty"`
 	Intents            []IntentSpec         `json:"intents,omitempty"`
 }
@@ -105,6 +107,32 @@ type MethodSpec struct {
 type MethodBrokerAccessSpec struct {
 	Storage []StorageBrokerAccessSpec `json:"storage,omitempty"`
 	Network []NetworkBrokerAccessSpec `json:"network,omitempty"`
+	Process []ProcessBrokerAccessSpec `json:"process,omitempty"`
+}
+
+type ProcessBrokerAccessSpec struct {
+	Operations []string `json:"operations"`
+}
+
+type ProcessResourceLimits struct {
+	OutputBufferBytes int `json:"output_buffer_bytes,omitempty"`
+	MaxRuntimeMS      int `json:"max_runtime_ms,omitempty"`
+}
+
+type ProcessSpec struct {
+	ResourceLimits ProcessResourceLimits `json:"resource_limits,omitempty"`
+}
+
+type BackgroundStartStrategy string
+
+const (
+	BackgroundRuntimeStart BackgroundStartStrategy = "runtime_start"
+	BackgroundOnDemand     BackgroundStartStrategy = "on_demand"
+)
+
+type BackgroundSpec struct {
+	Strategy BackgroundStartStrategy `json:"strategy"`
+	WorkerID string                  `json:"worker_id"`
 }
 
 type StorageBrokerAccessSpec struct {
@@ -297,6 +325,38 @@ func Validate(m Manifest) error {
 	}
 	if _, err := normalizePermissions(m.Permissions); err != nil {
 		return err
+	}
+	if m.Process != nil {
+		if m.Process.ResourceLimits.OutputBufferBytes < 0 || m.Process.ResourceLimits.OutputBufferBytes > 16<<20 {
+			return ValidationError{Field: "process.resource_limits.output_buffer_bytes", Message: "must be between 0 and 16777216"}
+		}
+		if m.Process.ResourceLimits.MaxRuntimeMS < 0 || m.Process.ResourceLimits.MaxRuntimeMS > 24*60*60*1000 {
+			return ValidationError{Field: "process.resource_limits.max_runtime_ms", Message: "is out of range"}
+		}
+		if !featureDeclared(m.API.RequiredFeatures, FeatureProcessLocal) {
+			return ValidationError{Field: "api.required_features", Message: "must require process.local.v1 when process is declared"}
+		}
+		if !permissionDeclared(m.Permissions, PermissionProcessLocal) {
+			return ValidationError{Field: "permissions", Message: "must include process.local when process is declared"}
+		}
+	}
+	if m.Background != nil {
+		if m.Background.Strategy != BackgroundRuntimeStart && m.Background.Strategy != BackgroundOnDemand {
+			return ValidationError{Field: "background.strategy", Message: "must be runtime_start or on_demand"}
+		}
+		if strings.TrimSpace(m.Background.WorkerID) == "" {
+			return ValidationError{Field: "background.worker_id", Message: "is required"}
+		}
+		found := false
+		for _, worker := range m.Workers {
+			if worker.WorkerID == m.Background.WorkerID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ValidationError{Field: "background.worker_id", Message: "must reference a declared worker"}
+		}
 	}
 	if m.Surfaces == nil {
 		return ValidationError{Field: "surfaces", Message: "is required"}
@@ -583,6 +643,9 @@ func Validate(m Manifest) error {
 		if err := validateMethodBrokerAccess(fmt.Sprintf("methods[%d].broker_access", i), method, storeKinds, connectorTransports); err != nil {
 			return err
 		}
+		if method.BrokerAccess != nil && len(method.BrokerAccess.Process) > 0 && m.Process == nil {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].broker_access.process", i), Message: "requires a process declaration"}
+		}
 	}
 	if err := validatePresentation(m); err != nil {
 		return err
@@ -680,6 +743,23 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 	if method.Route.Kind != MethodRouteWorker {
 		return ValidationError{Field: field, Message: "is only allowed for worker routes"}
 	}
+	seenProcessOperations := map[string]struct{}{}
+	for index, item := range access.Process {
+		itemField := fmt.Sprintf("%s.process[%d]", field, index)
+		if len(item.Operations) == 0 {
+			return ValidationError{Field: itemField + ".operations", Message: "must not be empty"}
+		}
+		for operationIndex, operation := range item.Operations {
+			operationField := fmt.Sprintf("%s.operations[%d]", itemField, operationIndex)
+			if !validProcessOperation(operation) {
+				return ValidationError{Field: operationField, Message: "is not a supported process operation"}
+			}
+			if _, duplicate := seenProcessOperations[operation]; duplicate {
+				return ValidationError{Field: operationField, Message: "must be unique"}
+			}
+			seenProcessOperations[operation] = struct{}{}
+		}
+	}
 	seenStores := map[string]struct{}{}
 	for i, item := range access.Storage {
 		itemField := fmt.Sprintf("%s.storage[%d]", field, i)
@@ -765,6 +845,33 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 		}
 	}
 	return nil
+}
+
+func validProcessOperation(operation string) bool {
+	switch operation {
+	case "start", "attach", "status", "write_stdin", "close_stdin", "read_stdout", "read_stderr", "wait", "terminate", "kill", "close":
+		return true
+	default:
+		return false
+	}
+}
+
+func featureDeclared(values []FeatureID, wanted FeatureID) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func permissionDeclared(values []PermissionID, wanted PermissionID) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func validStoreKind(kind string) bool {
@@ -866,6 +973,8 @@ func DescriptorHashInput(m Manifest) ([]byte, error) {
 		Workers            []WorkerSpec        `json:"workers"`
 		Storage            *StorageSpec        `json:"storage,omitempty"`
 		NetworkAccess      *NetworkAccessSpec  `json:"network_access,omitempty"`
+		Process            *ProcessSpec        `json:"process,omitempty"`
+		Background         *BackgroundSpec     `json:"background,omitempty"`
 		Settings           *SettingsSpec       `json:"settings,omitempty"`
 	}{
 		SchemaVersion:      m.SchemaVersion,
@@ -877,6 +986,8 @@ func DescriptorHashInput(m Manifest) ([]byte, error) {
 		Workers:            m.Workers,
 		Storage:            m.Storage,
 		NetworkAccess:      m.NetworkAccess,
+		Process:            m.Process,
+		Background:         m.Background,
 		Settings:           m.Settings,
 	}
 	return json.Marshal(input)

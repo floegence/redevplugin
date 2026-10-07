@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.34
+
+- Add generic local-process broker access with opaque handles, bounded binary streams, owner isolation, secret references, and process-tree cleanup.
+- Add declarative process permissions, resource limits, headless background-entry lifecycle management, and Worker SDK process calls.
+
 ## v3.0.33
 
 - Upgrade the Go, npm, GitHub Actions, and Rust dependency groups, including

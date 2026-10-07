@@ -340,6 +340,40 @@
                     }
                   ]
                 }
+              },
+              "process": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "operations"
+                  ],
+                  "properties": {
+                    "operations": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "enum": [
+                          "start",
+                          "attach",
+                          "status",
+                          "write_stdin",
+                          "close_stdin",
+                          "read_stdout",
+                          "read_stderr",
+                          "wait",
+                          "terminate",
+                          "kill",
+                          "close"
+                        ]
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -930,6 +964,48 @@
         }
       }
     },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource_limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "output_buffer_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16777216
+            },
+            "max_runtime_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 86400000
+            }
+          }
+        }
+      }
+    },
+    "background": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy",
+        "worker_id"
+      ],
+      "properties": {
+        "strategy": {
+          "enum": [
+            "runtime_start",
+            "on_demand"
+          ]
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "settings": {
       "type": "object",
       "additionalProperties": false,
@@ -1043,7 +1119,8 @@
           "fs.environment.read",
           "fs.environment.write",
           "network.client",
-          "network.listen"
+          "network.listen",
+          "process.local"
         ]
       }
     }
@@ -1545,7 +1622,8 @@
           "net.http.v1",
           "net.websocket.v1",
           "net.tcp.v1",
-          "net.udp.v1"
+          "net.udp.v1",
+          "process.local.v1"
         ]
       }
     },

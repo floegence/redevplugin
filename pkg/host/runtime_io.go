@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	processruntime "github.com/floegence/redevplugin/v3/pkg/process"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/storage"
 )
@@ -24,8 +26,10 @@ var errRuntimeIOStorageDenied = errors.New("runtime storage access is denied")
 var errRuntimeIOInvalidRequest = errors.New("runtime I/O request is invalid")
 
 type hostRuntimeIORegistration struct {
-	resource resourceio.Invocation
-	storage  map[string]hostRuntimeIOStorageAccess
+	resource      resourceio.Invocation
+	storage       map[string]hostRuntimeIOStorageAccess
+	process       map[string]struct{}
+	processLimits *processruntime.ResourceLimits
 }
 
 type hostRuntimeIOStorageAccess struct {
@@ -40,6 +44,7 @@ type hostRuntimeIOBroker struct {
 	storageFiles  storage.FilesBroker
 	storageKV     storage.KVBroker
 	storageSQLite storage.SQLiteBroker
+	process       *processruntime.Supervisor
 	invocations   map[string]hostRuntimeIORegistration
 }
 
@@ -65,6 +70,7 @@ func newHostRuntimeIOBroker(adapters normalizedAdapters) (*hostRuntimeIOBroker, 
 		storageFiles:  adapters.PluginData,
 		storageKV:     adapters.PluginData,
 		storageSQLite: adapters.PluginData,
+		process:       adapters.ProcessSupervisor,
 		invocations:   map[string]hostRuntimeIORegistration{},
 	}, nil
 }
@@ -77,6 +83,30 @@ func newHostRuntimeIORegistration(invocation resourceio.Invocation, access worke
 	registration := hostRuntimeIORegistration{
 		resource: invocation,
 		storage:  make(map[string]hostRuntimeIOStorageAccess, len(access.Storage)),
+		process:  make(map[string]struct{}),
+	}
+	if len(access.Process) > 0 {
+		if strings.TrimSpace(grants[string(manifest.PermissionProcessLocal)]) == "" {
+			return hostRuntimeIORegistration{}, errRuntimeIOStorageDenied
+		}
+		for _, declared := range access.Process {
+			if declared.Limits != nil {
+				if registration.processLimits != nil {
+					return hostRuntimeIORegistration{}, errRuntimeIOStorageDenied
+				}
+				limits := *declared.Limits
+				registration.processLimits = &limits
+			}
+			for _, operation := range declared.Operations {
+				if !validRuntimeProcessOperation(operation) {
+					return hostRuntimeIORegistration{}, errRuntimeIOStorageDenied
+				}
+				if _, duplicate := registration.process[operation]; duplicate {
+					return hostRuntimeIORegistration{}, errRuntimeIOStorageDenied
+				}
+				registration.process[operation] = struct{}{}
+			}
+		}
 	}
 	for _, declared := range access.Storage {
 		storeID := strings.TrimSpace(declared.StoreID)
@@ -128,6 +158,15 @@ func validRuntimeStorageOperation(kind, operation string) bool {
 		return operation == "get" || operation == "put" || operation == "delete" || operation == "list"
 	case "sqlite":
 		return operation == "query" || operation == "exec"
+	default:
+		return false
+	}
+}
+
+func validRuntimeProcessOperation(operation string) bool {
+	switch operation {
+	case "start", "attach", "status", "write_stdin", "close_stdin", "read_stdout", "read_stderr", "wait", "terminate", "kill", "close":
+		return true
 	default:
 		return false
 	}
@@ -194,6 +233,14 @@ func (broker *hostRuntimeIOBroker) Control(ctx context.Context, invocationID str
 		}
 		return runtimeIOControlSuccess(result), nil
 	default:
+		if strings.HasPrefix(request.Operation, "process.") {
+			result, dispatchErr := broker.dispatchProcess(ctx, invocation, request)
+			if dispatchErr != nil {
+				code, retryable := runtimeIOStorageError(dispatchErr)
+				return runtimeIOControlFailure(code, retryable), nil
+			}
+			return runtimeIOControlSuccess(result), nil
+		}
 		return broker.service.Control(ctx, invocation.resource, raw)
 	}
 }
@@ -248,6 +295,18 @@ func runtimeIOStorageError(err error) (string, bool) {
 		return "TIMEOUT", true
 	case errors.Is(err, errRuntimeIOStorageDenied):
 		return "PERMISSION_DENIED", false
+	case errors.Is(err, processruntime.ErrPermissionDenied):
+		return "PERMISSION_DENIED", false
+	case errors.Is(err, processruntime.ErrNotFound):
+		return "NOT_FOUND", false
+	case errors.Is(err, processruntime.ErrRevoked), errors.Is(err, processruntime.ErrClosed):
+		return "RESOURCE_CLOSED", false
+	case errors.Is(err, processruntime.ErrLaunchConflict):
+		return "ALREADY_EXISTS", false
+	case errors.Is(err, processruntime.ErrSecretUnavailable):
+		return "PERMISSION_DENIED", false
+	case errors.Is(err, processruntime.ErrInvalidRequest):
+		return "INVALID_ARGUMENT", false
 	case errors.Is(err, errRuntimeIOInvalidRequest):
 		return "INVALID_ARGUMENT", false
 	case errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrInvalidFilePath), errors.Is(err, storage.ErrInvalidKVKey), errors.Is(err, storage.ErrInvalidSQLite):
@@ -259,6 +318,150 @@ func runtimeIOStorageError(err error) (string, bool) {
 	default:
 		return "IO_ERROR", false
 	}
+}
+
+func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocation hostRuntimeIORegistration, request runtimeIOControlRequest) (any, error) {
+	if broker.process == nil {
+		return nil, errRuntimeIOStorageDenied
+	}
+	operation := strings.TrimPrefix(request.Operation, "process.")
+	if _, allowed := invocation.process[operation]; !allowed {
+		return nil, errRuntimeIOStorageDenied
+	}
+	owner := processruntime.Owner{
+		PluginInstanceID: invocation.resource.Owner.PluginInstanceID,
+		UserScope:        invocation.resource.Owner.Session.OwnerUserHash,
+		EnvironmentScope: invocation.resource.Owner.Session.OwnerEnvHash,
+	}
+	if !owner.ValidForHost() {
+		return nil, errRuntimeIOInvocationUnknown
+	}
+	switch operation {
+	case "start":
+		var requestValue processruntime.StartRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		if err := applyProcessLimits(&requestValue, invocation.processLimits); err != nil {
+			return nil, err
+		}
+		status, err := broker.process.Start(ctx, owner, requestValue)
+		return status, err
+	case "attach":
+		var requestValue struct {
+			ClientKey string `json:"client_key"`
+		}
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil || strings.TrimSpace(requestValue.ClientKey) == "" {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		return broker.process.Attach(owner, requestValue.ClientKey)
+	case "status":
+		var requestValue processHandleRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		return broker.process.GetStatus(owner, requestValue.Handle)
+	case "write_stdin":
+		var requestValue processWriteRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		body, err := base64.StdEncoding.Strict().DecodeString(requestValue.DataBase64)
+		if err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		written, err := broker.process.WriteStdin(ctx, owner, requestValue.Handle, body)
+		return map[string]any{"written": written}, err
+	case "close_stdin":
+		var requestValue processHandleRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		return map[string]any{"ok": true}, broker.process.CloseStdin(owner, requestValue.Handle)
+	case "read_stdout", "read_stderr":
+		var requestValue processReadRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		stream := processruntime.Stdout
+		if operation == "read_stderr" {
+			stream = processruntime.Stderr
+		}
+		result, err := broker.process.Read(ctx, owner, requestValue.Handle, stream, processruntime.ReadRequest{Cursor: requestValue.Cursor, MaxBytes: requestValue.MaxBytes})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"data_base64":   base64.StdEncoding.EncodeToString(result.Data),
+			"cursor":        result.Cursor,
+			"eof":           result.EOF,
+			"process_exit":  result.ProcessExit,
+			"stream_gap":    result.StreamGap,
+			"dropped_bytes": result.DroppedBytes,
+		}, nil
+	case "wait":
+		var requestValue processHandleRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		return broker.process.Wait(ctx, owner, requestValue.Handle)
+	case "terminate":
+		var requestValue processHandleRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		return map[string]any{"ok": true}, broker.process.Terminate(ctx, owner, requestValue.Handle)
+	case "kill":
+		var requestValue processHandleRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		return map[string]any{"ok": true}, broker.process.Kill(owner, requestValue.Handle)
+	case "close":
+		var requestValue processHandleRequest
+		if err := decodeRuntimeIOJSON(request.Arguments, &requestValue); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		return map[string]any{"ok": true}, broker.process.Close(ctx, owner, requestValue.Handle)
+	default:
+		return nil, errRuntimeIOInvalidRequest
+	}
+}
+
+type processHandleRequest struct {
+	Handle string `json:"handle"`
+}
+
+type processWriteRequest struct {
+	Handle     string `json:"handle"`
+	DataBase64 string `json:"data_base64"`
+}
+
+type processReadRequest struct {
+	Handle   string `json:"handle"`
+	Cursor   uint64 `json:"cursor"`
+	MaxBytes int    `json:"max_bytes"`
+}
+
+func applyProcessLimits(request *processruntime.StartRequest, declared *processruntime.ResourceLimits) error {
+	if declared == nil {
+		return nil
+	}
+	if declared.OutputBufferBytes > 0 {
+		if request.Limits.OutputBufferBytes == 0 {
+			request.Limits.OutputBufferBytes = declared.OutputBufferBytes
+		} else if request.Limits.OutputBufferBytes > declared.OutputBufferBytes {
+			return errRuntimeIOStorageDenied
+		}
+	}
+	if declared.MaxRuntimeMS > 0 {
+		if request.Limits.MaxRuntimeMS == 0 {
+			request.Limits.MaxRuntimeMS = declared.MaxRuntimeMS
+		} else if request.Limits.MaxRuntimeMS > declared.MaxRuntimeMS {
+			return errRuntimeIOStorageDenied
+		}
+	}
+	return nil
 }
 
 func (broker *hostRuntimeIOBroker) dispatchStorage(ctx context.Context, invocation hostRuntimeIORegistration, request runtimeIOControlRequest) (any, error) {
