@@ -5,7 +5,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 
 MODE="fast"
 SUMMARY_PATH=""
-PINNED_GO_LINUX_IMAGE="docker.io/library/golang@sha256:162be5298a40ed317005c8339c6de4d10d3eef336d66dc8e9259b03ab9d3a6d2"
+PINNED_GO_LINUX_IMAGE="docker.io/library/golang@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61"
 
 usage() {
   cat <<'USAGE'

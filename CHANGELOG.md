@@ -2,6 +2,8 @@
 
 ## v3.0.36
 
+- Upgrade to Go 1.27.2 and golang.org/x/net 0.60.0 to clear the release security audit; pin the matching official Linux validation image.
+
 - Reuse validated method-schema content in one bounded concurrent compilation cache across manifest decoding and Host calls, preserving complete validation and resource identity.
 
 - Support WebGL and WebGL2 on SDK-transferred canvases through the generated context allowlist while retaining opaque-origin, Worker, network, and canvas-budget restrictions.
