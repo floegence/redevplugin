@@ -47,7 +47,8 @@ func (e methodSchemaError) Error() string {
 
 // CompileMethodSchemas validates and compiles a method's JSON Schema contracts.
 // Remote schema loading is disabled so package validation remains deterministic
-// and cannot perform network I/O.
+// and cannot perform network I/O. Successfully compiled content is reused in a
+// bounded process-wide cache; every call still validates the supplied schemas.
 func CompileMethodSchemas(method MethodSpec) (*CompiledMethodSchemas, error) {
 	request, err := compileClosedObjectSchema("request_schema", method.RequestSchema)
 	if err != nil {
@@ -90,7 +91,10 @@ func compileClosedObjectSchema(name string, schema map[string]any) (*jsonschema.
 	if len(raw) > maxMethodSchemaBytes {
 		return nil, methodSchemaError{path: name, message: fmt.Sprintf("exceeds %d bytes", maxMethodSchemaBytes)}
 	}
+	return compiledMethodSchemaCache.compile(name, raw)
+}
 
+func compileMethodSchemaBytes(name string, raw []byte) (*jsonschema.Schema, error) {
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
 	compiler.LoadURL = func(string) (io.ReadCloser, error) {

@@ -2,6 +2,8 @@
 
 ## v3.0.36
 
+- Reuse validated method-schema content in one bounded concurrent compilation cache across manifest decoding and Host calls, preserving complete validation and resource identity.
+
 - Support WebGL and WebGL2 on SDK-transferred canvases through the generated context allowlist while retaining opaque-origin, Worker, network, and canvas-budget restrictions.
 - Verify real sandbox rendering, resize, context loss/restoration, close/reopen, native availability semantics, sealed APIs, and rejected resource limits.
 

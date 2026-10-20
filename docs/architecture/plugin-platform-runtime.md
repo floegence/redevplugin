@@ -40,10 +40,14 @@ belongs in ReDevPlugin first.
 
 Manifest v9 methods are executable contracts, not descriptive metadata. Both
 request and response schemas are closed draft 2020-12 object schemas compiled
-during package validation. The Host keeps a bounded fingerprint+method LRU of
-compiled validators, rejects request mismatches before dispatch, canonicalizes
-and redacts adapter/runtime data, and rejects response mismatches before an
-  execution result becomes visible.
+during package validation. Manifest decoding and Host calls share one process-wide
+LRU keyed by exact serialized schema content and request/response resource identity.
+It retains at most 1,024 compiled validators and 8 MiB of source keys; unsuccessful
+compilations and oversized cache entries are not retained. Every call still checks
+the closed subset and schema limits. Compiled validators own their content and
+contain no plugin, session, permission, or trust authority. The Host rejects
+request mismatches before dispatch, canonicalizes and redacts adapter/runtime
+data, and rejects response mismatches before an execution result becomes visible.
 
 Manifest v9 surfaces express only host-neutral `view`, `command`, or
 `background` roles plus optional `primary`, `secondary`, or `utility` intent.

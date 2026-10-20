@@ -53,7 +53,10 @@ resources, schema documents over 256 KiB, excessive schema depth/node counts,
 and schemas that do not compile as draft 2020-12. The Host validates requests
 before any capability, core-action, or WASM invocation. It canonicalizes and
 redacts adapter/runtime data, then validates that plugin-visible response before
-registering an execution or publishing its events.
+registering an execution or publishing its events. Successfully compiled schemas
+are reused by exact content and resource identity in one bounded process-wide
+cache. The cache never replaces schema-subset, size, admission, or permission
+validation; caller mutations select new content and cannot modify prior validators.
 
 Validation errors expose stable platform error codes and structured
 `error_details` such as reason, package path, and manifest JSON pointer. Product

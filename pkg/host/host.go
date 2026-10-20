@@ -572,7 +572,6 @@ type Host struct {
 	securityExportMu     sync.Mutex
 	surfaceTokens        *bridge.SurfaceTokenService
 	surfaceDocuments     *surfaceDocumentCache
-	methodSchemas        *methodSchemaCache
 	surfaceGenerationID  string
 	lifecycleLocks       *pluginLifecycleLockRegistry
 	executions           *executionLeaseRegistry
@@ -1490,7 +1489,6 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		securityJournal:      adapters.SecurityAudit,
 		surfaceTokens:        adapters.SurfaceTokens,
 		surfaceDocuments:     newSurfaceDocumentCache(defaultSurfaceDocumentCacheEntries, defaultSurfaceDocumentCacheBytes),
-		methodSchemas:        newMethodSchemaCache(defaultMethodSchemaCacheEntries),
 		surfaceGenerationID:  surfaceGenerationID,
 		lifecycleLocks:       newPluginLifecycleLockRegistry(),
 		executions:           newExecutionLeaseRegistry(),
@@ -2491,7 +2489,7 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 	}
 	resolvedCall = &call
 	if methodRequiresConfirmation(call.method) {
-		if err := h.validateMethodRequest(call.record, call.method, req.Params); err != nil {
+		if err := h.validateMethodRequest(call.method, req.Params); err != nil {
 			return CallMethodResult{}, err
 		}
 		requestHash, err := methodRequestHash(call.method, req.Params)
@@ -2627,7 +2625,7 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodC
 	if !methodRequiresConfirmation(call.method) {
 		return PrepareMethodConfirmationResult{}, errors.New("method does not require confirmation")
 	}
-	if err := h.validateMethodRequest(call.record, call.method, req.Params); err != nil {
+	if err := h.validateMethodRequest(call.method, req.Params); err != nil {
 		return PrepareMethodConfirmationResult{}, err
 	}
 	requestHash, err := methodRequestHash(call.method, req.Params)
@@ -2899,7 +2897,7 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (respo
 		return CallMethodResult{}, err
 	}
 	if methodRequiresConfirmation(resolved.method) {
-		if err := h.validateMethodRequest(resolved.record, resolved.method, req.Params); err != nil {
+		if err := h.validateMethodRequest(resolved.method, req.Params); err != nil {
 			return CallMethodResult{}, err
 		}
 		requestHash, hashErr := methodRequestHash(resolved.method, req.Params)
@@ -6549,7 +6547,7 @@ func (p runtimeArtifactProvider) ReadArtifact(ctx context.Context, req runtimecl
 }
 
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (response CallMethodResult, responseErr error) {
-	if err := h.validateMethodRequest(record, method, req.Params); err != nil {
+	if err := h.validateMethodRequest(method, req.Params); err != nil {
 		return CallMethodResult{}, err
 	}
 
@@ -6630,7 +6628,7 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		}
 		return CallMethodResult{}, methodErrorAfterDispatch(ctx, method, fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err))
 	}
-	if err := h.validateMethodResponse(record, method, visibleData); err != nil {
+	if err := h.validateMethodResponse(method, visibleData); err != nil {
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
@@ -6708,8 +6706,8 @@ func normalizeCapabilityBusinessError(contract capabilitycontract.Contract, err 
 	return fmt.Errorf("%w: undeclared business error code %q", ErrMethodResponseContract, businessError.Code)
 }
 
-func (h *Host) validateMethodRequest(record registry.PluginRecord, method manifest.MethodSpec, params map[string]any) error {
-	compiled, err := h.methodSchemas.get(record, method)
+func (h *Host) validateMethodRequest(method manifest.MethodSpec, params map[string]any) error {
+	compiled, err := manifest.CompileMethodSchemas(method)
 	if err != nil {
 		return fmt.Errorf("%w: method %q: %v", ErrMethodRequestContract, method.Method, err)
 	}
@@ -6719,8 +6717,8 @@ func (h *Host) validateMethodRequest(record registry.PluginRecord, method manife
 	return nil
 }
 
-func (h *Host) validateMethodResponse(record registry.PluginRecord, method manifest.MethodSpec, data any) error {
-	compiled, err := h.methodSchemas.get(record, method)
+func (h *Host) validateMethodResponse(method manifest.MethodSpec, data any) error {
+	compiled, err := manifest.CompileMethodSchemas(method)
 	if err != nil {
 		return fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err)
 	}
