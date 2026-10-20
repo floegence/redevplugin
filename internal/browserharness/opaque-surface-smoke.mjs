@@ -6,6 +6,7 @@ import { validateA2Evidence } from "../../scripts/verify_redevplugin_a2_evidence
 import { createBrowserHarnessServer } from "./opaque-surface-server.mjs";
 import { verifySurfaceOpening, verifySurfaceOpeningFailures } from "./surface-opening-smoke.mjs";
 import { verifyCanvasResize } from "./canvas-resize-smoke.mjs";
+import { verifyWebGL } from "./webgl-smoke.mjs";
 
 const harness = createBrowserHarnessServer();
 const address = await harness.listen(0);
@@ -19,6 +20,7 @@ try {
   await verifySurfaceOpening(browser);
   await verifySurfaceOpeningFailures(browser);
   await verifyCanvasResize(browser, evidenceDir);
+  await verifyWebGL(browser);
   const scenarios = [
     await verifyScenario("supported"),
     await verifyScenario("unsupported"),

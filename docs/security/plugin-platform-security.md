@@ -141,6 +141,14 @@ declared MIME, and dimensions are parsed before decode. At most 32 images and
 allocate an unaccounted secondary graphics surface. Resizing an already
 transferred canvas is checked against the same budget.
 
+The generated canvas context allowlist admits only `2d`, `webgl`, and `webgl2`
+on those transferred canvases. Context options and unavailable-context `null`
+results retain native semantics; unsupported types throw `TypeError`. WebGL
+does not relax opaque origins, CSP, sealed APIs, asset mediation, or the canvas
+budgets. Pixel budgets do not bound texture/buffer allocations or shader time:
+the browser owns graphics validation and GPU recovery. The Worker heartbeat
+detects an unresponsive JavaScript Worker, not every asynchronous GPU workload.
+
 The renderer sends a private ping every 10 seconds and requires the matching
 worker pong within 5 seconds. A stalled or replaced worker fails the surface
 closed. Disposal uses a unique quiesce id: the plugin bridge waits for all async

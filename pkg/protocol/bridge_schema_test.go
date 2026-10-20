@@ -237,6 +237,10 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 	if !ok {
 		t.Fatal("bridge schema missing x-redevplugin-render-policy")
 	}
+	contexts := requireStringSlice(t, policy["canvas_context_types"], "canvas context types")
+	if strings.Join(contexts, ",") != "2d,webgl,webgl2" {
+		t.Fatalf("canvas context types = %v, want only 2d, webgl, webgl2", contexts)
+	}
 	for _, key := range []string{
 		"max_message_bytes",
 		"max_render_depth",
@@ -250,6 +254,7 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 		"max_canvas_dimension",
 		"max_canvas_total_pixels",
 		"max_canvas_pointer_events_per_second",
+		"canvas_context_types",
 		"max_image_count",
 		"max_image_dimension",
 		"max_image_total_pixels",

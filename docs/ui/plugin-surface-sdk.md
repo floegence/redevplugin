@@ -292,6 +292,25 @@ decode, regardless of filename or declared MIME. A surface may decode 32 images
 and 33,554,432 pixels in total. The plugin worker cannot construct an additional
 `OffscreenCanvas` or call `createImageBitmap`.
 
+Transferred canvases support `getContext("2d")`, `getContext("webgl")`, and
+`getContext("webgl2")`. The bridge schema's `canvas_context_types` list is the
+authoritative allowlist. Other context types, including WebGPU and legacy
+aliases, throw `TypeError`. An allowed context may return `null` when the browser
+or GPU cannot provide it, or when the canvas already uses another context type.
+Check availability and present an accessible unsupported message rather than
+assuming a renderer is available. Context options retain native browser semantics.
+
+WebGL uses the existing transferred canvas, input, resize, accessibility, and
+lifecycle paths. It does not enable direct DOM, network, imports, or secondary
+canvas construction. Bundle Worker-compatible graphics code and load images
+through the existing asset API. Pause animation on `hidden`, resume on `visible`,
+rebuild graphics resources after `webglcontextrestored`, and release resources
+on `dispose`. Calling `preventDefault()` on `webglcontextlost` permits restoration.
+Canvas dimensions and pixel budgets also apply to WebGL; they do not account
+for texture/buffer memory or guarantee GPU execution time. Browser graphics
+validation, context-loss handling, and Worker termination remain the enforcement
+boundary for those resources.
+
 Canvas plugins open a declared surface with `openCanvas(...)` and publish the
 current semantic state with `updateCanvasAccessibility(...)`. The trusted
 renderer binds the supplied label and description to the declared canvas only;

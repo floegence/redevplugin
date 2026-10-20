@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 import {
   PluginBridgeError,
@@ -28,11 +29,73 @@ import {
   type PreparedPluginSurfaceHost,
 } from "../src/surface.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
-import { opaqueSurfaceRenderLimits } from "../src/opaque-surface-policy.gen.js";
+import { opaqueSurfaceCanvasContextTypes, opaqueSurfaceRenderLimits } from "../src/opaque-surface-policy.gen.js";
 import { disposePluginSurfaceScope, invalidatePluginSurfaceScope, registerPluginSurface } from "../src/surface-scope.js";
 import { validatePluginUITree, type PluginUIElementVNode, type PluginUITextVNode } from "../src/ui-reconciler.js";
 
 const uiText = (key: string, text: string): PluginUITextVNode => ({ type: "text", key, text });
+
+test("worker canvas contexts preserve browser availability, options, sealing, and budgets", () => {
+  assert.deepEqual(opaqueSurfaceCanvasContextTypes, ["2d", "webgl", "webgl2"]);
+  const html = createOpaquePluginBootstrapHTML({ scriptNonce: "nonce_webgl_context" });
+  // Execute the actual generated worker guard, including its native descriptors,
+  // in an isolated realm so the test cannot alter the runner's global APIs.
+  const begin = html.indexOf("const workerRuntime = () => [");
+  const end = html.indexOf("  const startWorker =", begin);
+  assert.equal(begin >= 0 && end > begin, true);
+  const worker = runInNewContext(html.slice(begin, end) + ";workerRuntime();", {
+    maxCanvasCount: opaqueSurfaceRenderLimits.max_canvas_count,
+    maxCanvasDimension: opaqueSurfaceRenderLimits.max_canvas_dimension,
+    maxCanvasTotalPixels: opaqueSurfaceRenderLimits.max_canvas_total_pixels,
+    workerGlobalKey: "test_bridge",
+  }) as string;
+  const guardBegin = worker.indexOf("const __rpGetPrototypeOf");
+  const guardEnd = worker.indexOf("try {\n    for (const name", guardBegin);
+  assert.equal(guardBegin >= 0 && guardEnd > guardBegin, true);
+  const result = runInNewContext(`
+    const addEventListener = () => {}; const removeEventListener = () => {};
+    const setTimeout = () => {}; const clearTimeout = () => {};
+    class Canvas {
+      #width = 64; #height = 64;
+      get width() { return this.#width; } set width(value) { this.#width = value; }
+      get height() { return this.#height; } set height(value) { this.#height = value; }
+      getContext(type, options) { return type === "webgl2" ? null : { type, options, canvas: this }; }
+      convertToBlob() {} transferToImageBitmap() {}
+    }
+    globalThis.OffscreenCanvas = Canvas;
+    ${worker.slice(guardBegin, guardEnd)}
+    __rpInstallCanvasBudget();
+    const canvas = new Canvas();
+    const options = { alpha: false };
+    const gl = canvas.getContext("webgl", options);
+    const rejected = [];
+    for (const type of ["webgpu", "experimental-webgl", "bitmaprenderer", "WEBGL", undefined, {toString(){return "webgl";}}]) {
+      try { canvas.getContext(type); rejected.push(false); } catch (e) { rejected.push(e instanceof TypeError); }
+    }
+    const before = canvas.width;
+    let dimensionRejected = false;
+    try { canvas.width = 4097; } catch (e) { dimensionRejected = e instanceof RangeError; }
+    const descriptor = Object.getOwnPropertyDescriptor(Canvas.prototype, "getContext");
+    const canvases = [canvas, new Canvas(), new Canvas(), new Canvas()];
+    for (const item of canvases) item.getContext("2d");
+    let countRejected = false;
+    try { new Canvas().getContext("webgl"); } catch (e) { countRejected = e instanceof RangeError; }
+    canvases[1].width = 4096; canvases[1].height = 4092;
+    let pixelsRejected = false;
+    try { canvases[1].height = 4096; } catch (e) { pixelsRejected = e instanceof RangeError; }
+    JSON.stringify({
+      type: gl.type, optionsPreserved: gl.options === options, receiverPreserved: gl.canvas === canvas,
+      repeatedContextAllowed: canvas.getContext("webgl") !== null, unavailable: canvas.getContext("webgl2"),
+      rejected, dimensionRejected, sizePreserved: canvas.width === before,
+      sealed: !descriptor.configurable && !descriptor.writable, countRejected, pixelsRejected
+    });
+  `);
+  assert.deepEqual(JSON.parse(result as string), {
+    type: "webgl", optionsPreserved: true, receiverPreserved: true, repeatedContextAllowed: true, unavailable: null,
+    rejected: [true, true, true, true, true, true], dimensionRejected: true, sizePreserved: true,
+    sealed: true, countRejected: true, pixelsRejected: true,
+  });
+});
 
 for (const withoutSubtleCrypto of [false, true]) test(`trusted-parent handshake transcript has one stable current vector (without SubtleCrypto: ${withoutSubtleCrypto})`, async () => {
   const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");

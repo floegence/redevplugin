@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.36
+
+- Support WebGL and WebGL2 on SDK-transferred canvases through the generated context allowlist while retaining opaque-origin, Worker, network, and canvas-budget restrictions.
+- Verify real sandbox rendering, resize, context loss/restoration, close/reopen, native availability semantics, sealed APIs, and rejected resource limits.
+
 ## v3.0.35
 
 - Add Host-owned headless background Worker lifecycle management with idempotent startup, cancellation, recovery, and shutdown cleanup.

@@ -19,6 +19,7 @@
     "max_canvas_dimension": 4096,
     "max_canvas_total_pixels": 16777216,
     "max_canvas_pointer_events_per_second": 120,
+    "canvas_context_types": ["2d", "webgl", "webgl2"],
     "max_image_count": 32,
     "max_image_dimension": 4096,
     "max_image_total_pixels": 33554432,
@@ -393,7 +394,7 @@
         "id": { "$ref": "#/$defs/request_id" },
         "canvas_id": { "$ref": "#/$defs/ui_identifier" },
         "canvas": {
-          "description": "One transferred OffscreenCanvas. The runtime validates the structured-clone object outside JSON Schema."
+          "description": "One transferred OffscreenCanvas supporting only the generated canvas_context_types allowlist (2d, webgl, webgl2), subject to browser availability and the shared canvas dimension and aggregate pixel budgets. Unsupported context types throw TypeError; an unavailable allowed context returns null. The runtime validates the structured-clone object outside JSON Schema."
         },
         "css_width": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
         "css_height": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },

@@ -1040,6 +1040,11 @@
     "submit",
     "reset"
   ];
+  var opaqueSurfaceCanvasContextTypes = [
+    "2d",
+    "webgl",
+    "webgl2"
+  ];
   var opaqueSurfaceRenderLimits = {
     "max_message_bytes": 524288,
     "max_in_flight_requests": 256,
@@ -2612,7 +2617,7 @@
     '    };',
     '    __rpDefineProperty(__rpCanvasPrototype, "width", { configurable: false, enumerable: Boolean(widthDescriptor.enumerable), get() { return readWidth(this); }, set(value) { validateResize(this, "width", value); __rpApply(widthDescriptor.set, this, [value]); } });',
     '    __rpDefineProperty(__rpCanvasPrototype, "height", { configurable: false, enumerable: Boolean(heightDescriptor.enumerable), get() { return readHeight(this); }, set(value) { validateResize(this, "height", value); __rpApply(heightDescriptor.set, this, [value]); } });',
-    '    __rpDefineProperty(__rpCanvasPrototype, "getContext", { configurable: false, enumerable: Boolean(contextDescriptor.enumerable), writable: false, value(type, ...options) { if (type !== "2d") throw new TypeError("only 2d canvas contexts are available"); __rpTrackCanvas(this); return __rpApply(contextDescriptor.value, this, [type, ...options]); } });',
+    '    __rpDefineProperty(__rpCanvasPrototype, "getContext", { configurable: false, enumerable: Boolean(contextDescriptor.enumerable), writable: false, value(type, ...options) { if (${opaqueSurfaceCanvasContextTypes.map((type) => "type !== " + JSON.stringify(type)).join(" && ")}) throw new TypeError("canvas context type is unavailable in the ReDevPlugin worker sandbox"); __rpTrackCanvas(this); return __rpApply(contextDescriptor.value, this, [type, ...options]); } });',
     '    __rpSealDescriptor(__rpCanvasPrototype, "constructor", undefined);',
     '    __rpSealDescriptor(__rpCanvasPrototype, "convertToBlob", convertDescriptor.value);',
     '    __rpSealDescriptor(__rpCanvasPrototype, "transferToImageBitmap", __rpBlocked);',

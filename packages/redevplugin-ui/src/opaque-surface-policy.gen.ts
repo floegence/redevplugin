@@ -210,6 +210,12 @@ export const opaqueSurfaceSafeInputTypes = [
   "reset"
 ] as const;
 
+export const opaqueSurfaceCanvasContextTypes = [
+  "2d",
+  "webgl",
+  "webgl2"
+] as const;
+
 export const opaqueSurfaceRenderLimits = {
   "max_message_bytes": 524288,
   "max_in_flight_requests": 256,

@@ -9,6 +9,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.slice(2).includes("--check");
 const targets = [
   {
+    source: "testdata/browser-harness/opaque-surface/webgl-worker.ts",
+    output: "testdata/browser-harness/opaque-surface/generated/webgl-worker.js",
+  },
+  {
     source: "testdata/browser-harness/opaque-surface/canvas-worker.ts",
     output: "testdata/browser-harness/opaque-surface/generated/canvas-worker.js",
   },
