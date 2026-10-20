@@ -628,8 +628,12 @@ func (s *Supervisor) childEnvironment(ctx context.Context, owner Owner, request 
 }
 
 func (s *Supervisor) wait(process *session, maxRuntimeMS int) {
-	result := make(chan error, 1)
-	go func() { result <- process.command.Wait() }()
+	result := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = process.command.Wait()
+		close(result)
+	}()
 	var timer *time.Timer
 	var timeout <-chan time.Time
 	if maxRuntimeMS > 0 {
@@ -637,12 +641,12 @@ func (s *Supervisor) wait(process *session, maxRuntimeMS int) {
 		timeout = timer.C
 	}
 	select {
-	case err := <-result:
-		process.setExit(err, "")
+	case <-result:
+		process.setExit(waitErr, "")
 	case <-timeout:
 		process.setExit(nil, "timeout")
 		_ = terminateProcessTree(process.tree, process.command, true)
-		<-result
+		<-result // Timeout remains the authoritative exit cause.
 	}
 	if timer != nil {
 		timer.Stop()

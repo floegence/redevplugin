@@ -2,7 +2,7 @@
 
 ## v3.0.36
 
-- Upgrade to Go 1.27.2 and golang.org/x/net 0.60.0 to clear the release security audit; pin the matching official Linux validation image.
+- Upgrade to Go 1.27.2 and golang.org/x/net 0.60.0 to clear the release security audit; pin the matching official Linux validation image and Go-compatible golangci-lint 2.15.0.
 
 - Reuse validated method-schema content in one bounded concurrent compilation cache across manifest decoding and Host calls, preserving complete validation and resource identity.
 

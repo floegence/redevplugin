@@ -181,8 +181,8 @@ func TestManagerShutdownWaitsForInFlightStart(t *testing.T) {
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- manager.Shutdown(context.Background()) }()
 	select {
-	case <-shutdownDone:
-		t.Fatal("shutdown returned while start was in flight")
+	case err := <-shutdownDone:
+		t.Fatalf("shutdown returned while start was in flight: %v", err)
 	case <-time.After(10 * time.Millisecond):
 	}
 	close(runner.gate)

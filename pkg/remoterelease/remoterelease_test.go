@@ -224,7 +224,9 @@ func TestAssetSetSingleFlightsConcurrentImmutableAssetFetches(t *testing.T) {
 	case <-fetcher.started:
 		close(fetcher.release)
 		for range callers {
-			<-done
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
 		}
 		t.Fatalf("underlying fetch calls reached %d before completion, want one single-flight owner", fetcher.calls.Load())
 	case <-time.After(250 * time.Millisecond):
