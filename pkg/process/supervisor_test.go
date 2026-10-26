@@ -338,6 +338,93 @@ func TestClientKeyReuseRejectsLimitChanges(t *testing.T) {
 	}
 }
 
+func TestClientKeyReuseRejectsArgumentEnvironmentBoundaryCollision(t *testing.T) {
+	supervisor := testSupervisor(t, Options{})
+	owner, ctx := testOwner(), testContext(t)
+	spec := fixtureSpec(t, "hold")
+	spec.Argv = append(spec.Argv, "EXTRA=value")
+	if _, err := supervisor.Start(ctx, owner, spec); err != nil {
+		t.Fatal(err)
+	}
+
+	retry := fixtureSpec(t, "hold")
+	retry.Environment["EXTRA"] = "value"
+	if _, err := supervisor.Start(ctx, owner, retry); !errors.Is(err, ErrLaunchConflict) {
+		t.Fatalf("argument moved into environment reused session: %v", err)
+	}
+}
+
+func TestClientKeyReuseRetainsOriginalLaunchRequest(t *testing.T) {
+	supervisor := testSupervisor(t, Options{Secrets: func(context.Context, Owner, string) (string, error) {
+		return "resolved-value", nil
+	}})
+	owner, ctx := testOwner(), testContext(t)
+	spec := fixtureSpec(t, "hold")
+	spec.EnvironmentRemovals = []string{"UNUSED"}
+	spec.SecretReferences = map[string]string{"BOUND_SECRET": "original-reference"}
+	status, err := supervisor.Start(ctx, owner, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spec.Argv[0] = "changed-argument"
+	spec.Environment["RDP_PROCESS_MODE"] = "environment"
+	spec.EnvironmentRemovals[0] = "OTHER_UNUSED"
+	spec.SecretReferences["BOUND_SECRET"] = "changed-reference"
+	if _, err := supervisor.Start(ctx, owner, spec); !errors.Is(err, ErrLaunchConflict) {
+		t.Fatalf("caller mutation changed retained launch: %v", err)
+	}
+
+	retry := fixtureSpec(t, "hold")
+	retry.EnvironmentRemovals = []string{"UNUSED"}
+	retry.SecretReferences = map[string]string{"BOUND_SECRET": "original-reference"}
+	reused, err := supervisor.Start(ctx, owner, retry)
+	if err != nil || reused.Handle != status.Handle {
+		t.Fatalf("original launch could not be reused: %#v %v", reused, err)
+	}
+}
+
+func TestClientKeyReuseRejectsChangedPendingLaunch(t *testing.T) {
+	resolving, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	supervisor := testSupervisor(t, Options{Secrets: func(ctx context.Context, _ Owner, _ string) (string, error) {
+		close(resolving)
+		select {
+		case <-release:
+			return "resolved-value", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}})
+	owner, ctx := testOwner(), testContext(t)
+	spec := fixtureSpec(t, "hold")
+	spec.Argv = append(spec.Argv, "EXTRA=value")
+	spec.SecretReferences = map[string]string{"BOUND_SECRET": "reference"}
+	started := make(chan error, 1)
+	go func() {
+		_, err := supervisor.Start(ctx, owner, spec)
+		started <- err
+	}()
+	select {
+	case <-resolving:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	retry := fixtureSpec(t, "hold")
+	retry.Environment["EXTRA"] = "value"
+	retry.SecretReferences = map[string]string{"BOUND_SECRET": "reference"}
+	if _, err := supervisor.Start(ctx, owner, retry); !errors.Is(err, ErrLaunchConflict) {
+		t.Fatalf("changed pending launch reused reservation: %v", err)
+	}
+	unblock()
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestShutdownRevokeAndTimeout(t *testing.T) {
 	supervisor := testSupervisor(t, Options{GracePeriod: 20 * time.Millisecond})
 	owner, ctx := testOwner(), testContext(t)
