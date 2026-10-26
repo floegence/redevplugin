@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.0.37
+
+- Compare immutable process launch requests by field instead of hashing environment values and secret references; reject argument/environment boundary collisions and retain the original request after caller mutations.
+- Raise the existing fast-uri override to 3.1.9 to address URI normalization advisories.
+- Update the Go, npm, Rust, and GitHub Actions dependency groups from Dependabot PRs #38, #40, #41, and #42, and pin Go 1.27.3 with its matching official Linux validation image.
+
 ## v3.0.36
 
 - Upgrade to Go 1.27.2 and golang.org/x/net 0.60.0 to clear the release security audit; pin the matching official Linux validation image and Go-compatible golangci-lint 2.15.0.
