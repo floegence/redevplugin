@@ -317,6 +317,16 @@ instance preserves the tombstone's revoke epoch as the new credential floor.
 New surface credentials can therefore be minted without lowering the floor or
 reviving credentials that uninstall already revoked.
 
+## Local Process Launch Identity
+
+The process supervisor binds client-key reuse to an independent snapshot of the
+validated launch request. It compares program, arguments, working directory,
+environment additions/removals, secret references, and resource limits by field
+for both pending and running launches. Moving bytes between arguments and
+environment entries cannot preserve launch identity, and later caller mutations
+cannot redefine the original request. Secret references and environment values
+are not hashed for deduplication or exposed through process status.
+
 ## Storage, Settings, And Secrets
 
 Storage access is brokered by the Host. Plugins do not receive arbitrary

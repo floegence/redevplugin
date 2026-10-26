@@ -5,11 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -218,10 +219,10 @@ type session struct {
 }
 
 type startReservation struct {
-	done        chan struct{}
-	fingerprint string
-	status      Status
-	err         error
+	done    chan struct{}
+	request StartRequest
+	status  Status
+	err     error
 }
 
 type Supervisor struct {
@@ -347,33 +348,11 @@ func validateStart(request StartRequest) error {
 	return nil
 }
 
-func launchFingerprint(request StartRequest) string {
-	hash := sha256.New()
-	fmt.Fprintf(hash, "%s\x00%s\x00%s\x00", request.Program, request.Cwd, request.ClientKey)
-	for _, argument := range request.Argv {
-		fmt.Fprintf(hash, "%s\x00", argument)
-	}
-	keys := make([]string, 0, len(request.Environment))
-	for key := range request.Environment {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		fmt.Fprintf(hash, "%s=%s\x00", key, request.Environment[key])
-	}
-	for _, key := range request.EnvironmentRemovals {
-		fmt.Fprintf(hash, "-%s\x00", key)
-	}
-	secretKeys := make([]string, 0, len(request.SecretReferences))
-	for key := range request.SecretReferences {
-		secretKeys = append(secretKeys, key)
-	}
-	sort.Strings(secretKeys)
-	for _, key := range secretKeys {
-		fmt.Fprintf(hash, "secret:%s=%s\x00", key, request.SecretReferences[key])
-	}
-	fmt.Fprintf(hash, "limits:%d:%d\x00", request.Limits.OutputBufferBytes, request.Limits.MaxRuntimeMS)
-	return hex.EncodeToString(hash.Sum(nil))
+func sameLaunch(left, right StartRequest) bool {
+	return left.Program == right.Program && left.Cwd == right.Cwd && left.ClientKey == right.ClientKey &&
+		left.Limits == right.Limits && slices.Equal(left.Argv, right.Argv) &&
+		maps.Equal(left.Environment, right.Environment) && slices.Equal(left.EnvironmentRemovals, right.EnvironmentRemovals) &&
+		maps.Equal(left.SecretReferences, right.SecretReferences)
 }
 
 func validEnvironmentKey(key string) bool {
@@ -398,8 +377,12 @@ func (s *Supervisor) Start(ctx context.Context, owner Owner, request StartReques
 		}
 	}
 
+	// Retain a private snapshot so later caller mutations cannot redefine a launch.
+	request.Argv = slices.Clone(request.Argv)
+	request.Environment = maps.Clone(request.Environment)
+	request.EnvironmentRemovals = slices.Clone(request.EnvironmentRemovals)
+	request.SecretReferences = maps.Clone(request.SecretReferences)
 	clientID := owner.key() + "\x00" + request.ClientKey
-	fingerprint := launchFingerprint(request)
 	var reservation *startReservation
 	for {
 		s.mu.Lock()
@@ -419,7 +402,7 @@ func (s *Supervisor) Start(ctx context.Context, owner Owner, request StartReques
 				existing.mu.Unlock()
 				if state != "exited" {
 					s.mu.Unlock()
-					if launchFingerprint(existing.request) != fingerprint {
+					if !sameLaunch(existing.request, request) {
 						return Status{}, ErrLaunchConflict
 					}
 					return status, nil
@@ -435,7 +418,7 @@ func (s *Supervisor) Start(ctx context.Context, owner Owner, request StartReques
 			delete(s.clients, clientID)
 		}
 		if existing := s.starting[clientID]; existing != nil {
-			if existing.fingerprint != fingerprint {
+			if !sameLaunch(existing.request, request) {
 				s.mu.Unlock()
 				return Status{}, ErrLaunchConflict
 			}
@@ -448,7 +431,7 @@ func (s *Supervisor) Start(ctx context.Context, owner Owner, request StartReques
 				return Status{}, ctx.Err()
 			}
 		}
-		reservation = &startReservation{done: make(chan struct{}), fingerprint: fingerprint}
+		reservation = &startReservation{done: make(chan struct{}), request: request}
 		s.starting[clientID] = reservation
 		s.mu.Unlock()
 		break
