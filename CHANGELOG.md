@@ -4,7 +4,7 @@
 
 - Compare immutable process launch requests by field instead of hashing environment values and secret references; reject argument/environment boundary collisions and retain the original request after caller mutations.
 - Raise the existing fast-uri override to 3.1.9 to address URI normalization advisories.
-- Update the Go, npm, Rust, and GitHub Actions dependency groups from Dependabot PRs #38, #40, #41, and #42, and pin Go 1.27.3 with its matching official Linux validation image.
+- Update the Go, npm, Rust, and GitHub Actions dependency groups from Dependabot PRs #38, #40, #41, #42, #43, and #44, including SQLite 1.61.0 and parse 2.8.20, and pin Go 1.27.3 with its matching official Linux validation image.
 
 ## v3.0.36
 
