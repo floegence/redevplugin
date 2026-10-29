@@ -2,6 +2,7 @@
 
 ## v3.3.0
 
+- Apply Web confinement headers to all responses, including rejected or expired origin routing.
 - Correct the even-sized route performance order-bias median, record sustained
   warmup evidence, preallocate complete sample buffers, and lengthen short
   sampling windows without changing

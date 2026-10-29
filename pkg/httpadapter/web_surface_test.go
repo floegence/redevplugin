@@ -15,6 +15,40 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/host"
 )
 
+func TestWebHTTPRejectedOriginsRetainConfinement(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		origin string
+		err    error
+	}{
+		{name: "resolver rejection", err: errors.New("route expired")},
+		{name: "host mismatch", origin: "https://other.example"},
+		{name: "invalid origin", origin: "https://%"},
+		{name: "insecure origin", origin: "http://app.example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "https://app.example/index.html", nil)
+			serveWebSurface(nil, func(*http.Request) (string, error) { return tc.origin, tc.err }, w, r)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want forbidden", w.Code)
+			}
+			for key, want := range map[string]string{
+				"Content-Security-Policy": webSurfaceCSP,
+				"Connection-Allowlist":    "(response-origin)",
+				"Cache-Control":           "no-store",
+				"X-Content-Type-Options":  "nosniff",
+				"Referrer-Policy":         "no-referrer",
+				"Origin-Agent-Cluster":    "?1",
+			} {
+				if got := w.Header().Get(key); got != want {
+					t.Errorf("%s = %q, want %q", key, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestWebHTTPResourceBoundary(t *testing.T) {
 	h := newHTTPTestHost(t)
 	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))

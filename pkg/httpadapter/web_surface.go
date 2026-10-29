@@ -32,6 +32,7 @@ func NewWebSurfaceHandler(platform *host.Host, origin WebSurfaceOrigin) (http.Ha
 }
 
 func serveWebSurface(platform *host.Host, resolve WebSurfaceOrigin, w http.ResponseWriter, r *http.Request) {
+	setWebSurfaceHeaders(w)
 	origin, err := resolve(r)
 	if err != nil {
 		http.Error(w, "Web application origin denied", http.StatusForbidden)
@@ -42,7 +43,6 @@ func serveWebSurface(platform *host.Host, resolve WebSurfaceOrigin, w http.Respo
 		http.Error(w, "Web application origin denied", http.StatusForbidden)
 		return
 	}
-	setWebSurfaceHeaders(w)
 	if r.URL.RawPath != "" || strings.ContainsAny(r.URL.Path, "\\%\x00") || r.Header.Get("Sec-Fetch-Dest") == "serviceworker" || r.Header.Get("Service-Worker") != "" {
 		http.Error(w, "Unsupported application request", http.StatusForbidden)
 		return
