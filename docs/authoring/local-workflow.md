@@ -76,6 +76,10 @@ and grants no management, filesystem, or network access. List each permitted
 host.ManagementAction explicitly. AllowLocalPackages permits the development
 provenance path only; it never grants plugin permissions. Use ordinary import,
 grant, revoke, and execution APIs through Harness.Host() and Harness.Context().
+The CLI explicitly supplies a writable development session and permits private
+storage-handle issuance, so declared plugin storage works in dev and test. This
+does not expose host filesystem mounts or automatically grant plugin permissions.
+The reusable harness keeps its denying defaults.
 
 Supply explicit Capability, IO, Connectivity, Secrets, CoreAction, or Background
 modules where a test needs product resources. An optional MethodPolicy can deny

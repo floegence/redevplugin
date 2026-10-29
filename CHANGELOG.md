@@ -5,6 +5,7 @@
 - Publish pkg/testhost to compose the real Host, HTTP adapter, isolated Web surfaces, durable assets, explicit test adapters, bounded events, and verified runtime ownership.
 - Deny management and resource access by default; bind test requests to one exact session and loopback origin, preserve real grants and revocation, and clean up only owned temporary state.
 - Reuse the public harness in author dev/test and remove the duplicate preview session and HTTP guard assembly.
+- Preserve explicit CLI private-storage ceilings and storage-handle authorization, verified by a real Memos SQLite bootstrap.
 - Pin the generated Rust toolchain and WASM target, include audited frontend dependency overrides, and remove retired render-acknowledgement documentation.
 
 ## v3.3.2

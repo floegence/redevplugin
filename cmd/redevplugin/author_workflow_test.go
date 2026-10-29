@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"github.com/floegence/redevplugin/v3/pkg/authorproject"
 	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/testhost"
@@ -15,6 +17,38 @@ import (
 	"testing"
 	"time"
 )
+
+func TestAuthorRuntimeSupportsPrivateStorage(t *testing.T) {
+	repo := cliRepoRoot(t)
+	runtimePath := buildExamplesRuntime(t, repo)
+	identity := mustInspectCommandRuntimeArtifact(t, runtimePath)
+	var archive bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), filepath.Join(repo, "examples/plugins/memos"), &archive, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := authorRuntimeCall(context.Background(), authorOptions{
+		runtime: runtimePath, sha: identity.BinarySHA256().String(),
+		surface: "memos.view", method: "memos.bootstrap",
+		params: `{"month":"2026-10","utc_offset_minutes":0}`,
+	}, archive.Bytes())
+	if err != nil {
+		workerError, worker := host.AsValidatedWorkerExecutionError(err)
+		t.Fatalf("author storage bootstrap: %v (worker=%t %+v)", err, worker, workerError)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Data struct {
+			Memos  []any          `json:"memos"`
+			Facets map[string]any `json:"facets"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil || response.Data.Memos == nil || response.Data.Facets == nil {
+		t.Fatalf("private SQLite write/read did not complete: %s (%v)", raw, err)
+	}
+}
 
 func TestAuthorCLIInvokesRealRuntime(t *testing.T) {
 	repo := cliRepoRoot(t)

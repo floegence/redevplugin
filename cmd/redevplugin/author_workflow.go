@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/testhost"
 	"github.com/floegence/redevplugin/v3/pkg/version"
 )
@@ -431,6 +433,13 @@ func authorRuntimeCall(ctx context.Context, options authorOptions, raw []byte) (
 func authorHostOptions(root, origin string, runtime *host.RuntimeModule) testhost.Options {
 	return testhost.Options{
 		StateRoot: root, ParentOrigin: origin, AllowLocalPackages: true, Runtime: runtime,
+		// The isolated CLI permits private plugin storage. This ceiling does not
+		// provide filesystem mounts, method access, or plugin permission grants.
+		Session: &sessionctx.Context{
+			OwnerSessionHash: rand.Text(), OwnerUserHash: rand.Text(),
+			OwnerEnvHash: rand.Text(), SessionChannelIDHash: rand.Text(),
+			CanRead: true, CanWrite: true,
+		},
 		Connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
 		Secrets:      &host.SecretsModule{Store: secrets.NewMemoryStore()},
 		Background:   &host.BackgroundModule{RunnerFactory: host.NewBackgroundWorkerRunner},
@@ -440,6 +449,7 @@ func authorHostOptions(root, origin string, runtime *host.RuntimeModule) testhos
 			host.ManagementActionOpenSurface, host.ManagementActionPrepareSurface,
 			host.ManagementActionMintBridgeToken, host.ManagementActionDisposeSurface,
 			host.ManagementActionCallPluginMethod, host.ManagementActionPrepareMethodConfirmation,
+			host.ManagementActionMintStorageHandleGrant,
 			host.ManagementActionRejectSurfaceConfirmation,
 			host.ManagementActionGetPermissionRequirements, host.ManagementActionListPermissionGrants,
 			host.ManagementActionGrantPermission, host.ManagementActionRevokePermission,
