@@ -41,10 +41,14 @@ func detectBuildInfoModuleVersion() string {
 	if !ok {
 		return ""
 	}
+	return platformVersionFromBuildInfo(info)
+}
+
+func platformVersionFromBuildInfo(info *debug.BuildInfo) string {
 	if info.Main.Path == modulePath {
-		if version := normalizeModuleVersion(info.Main.Version); version != "" {
-			return version
-		}
+		// Source builds may carry a VCS-derived pseudo-version or +dirty suffix.
+		// VERSION-generated identity is authoritative for this executable.
+		return ""
 	}
 	for _, dependency := range info.Deps {
 		if dependency.Path != modulePath {

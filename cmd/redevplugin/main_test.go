@@ -166,7 +166,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err := json.Unmarshal(output, &summary); err != nil {
 		t.Fatalf("scaffold output decode error = %v: %s", err, output)
 	}
-	if summary.PluginID != "com.example.generated" || len(summary.Files) != 15 {
+	if summary.PluginID != "com.example.generated" || len(summary.Files) != 16 {
 		t.Fatalf("scaffold summary mismatch: %#v", summary)
 	}
 

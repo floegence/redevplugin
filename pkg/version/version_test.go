@@ -1,6 +1,22 @@
 package version
 
-import "testing"
+import (
+	"runtime/debug"
+	"testing"
+)
+
+func TestSourceBuildUsesCanonicalPlatformVersion(t *testing.T) {
+	for _, value := range []string{"v3.1.0+dirty", "v3.1.1-0.20261029000000-245322417711", "v3.1.0"} {
+		info := &debug.BuildInfo{Main: debug.Module{Path: modulePath, Version: value}}
+		if got := platformVersionFromBuildInfo(info); got != "" {
+			t.Fatalf("local main version %q overrides canonical source with %q", value, got)
+		}
+	}
+	info := &debug.BuildInfo{Main: debug.Module{Path: "example.com/host"}, Deps: []*debug.Module{{Path: modulePath, Version: "v3.2.1"}}}
+	if got := platformVersionFromBuildInfo(info); got != "3.2.1" {
+		t.Fatalf("published dependency version = %q", got)
+	}
+}
 
 func TestCurrentPlatformVersionUsesReleaseOrSourceVersion(t *testing.T) {
 	originalGoVersion := goModuleVersionOverride

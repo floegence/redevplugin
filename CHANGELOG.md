@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.0
+
+- Add the explicit local author project contract and init/dev/test workflow with isolated real Host preview, bounded builds, immutable package updates, explicit grants, and process cleanup.
+- Publish production-bridge author fixtures through the UI testing entrypoint and a minimal read-only host embedding example.
+- Include canonical project and test-report schemas in the platform release artifact set and real browser author acceptance in the local gate.
+- Keep source-built Go platform identity anchored to VERSION when Go adds VCS pseudo-versions or dirty metadata. Published host dependencies retain their exact module identity.
+
 ## v3.1.0
 
 - Upgrade golang.org/x/net to 0.62.0 to address reachable HTML parsing and rendering advisories GO-2026-6860 and GO-2026-6866.

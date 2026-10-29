@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ReDevPlugin Developer Preview</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<header><strong>ReDevPlugin</strong><span class="badge">DEV · REAL RUNTIME</span><select id="surfaces" aria-label="Preview surface"></select><button id="reload" type="button">Reload preview</button></header>
+<main><section id="stage" aria-label="Plugin preview"></section><aside><h1>Developer preview</h1><p id="status" role="status">Connecting…</p><div id="permissions"></div><pre id="error" role="alert"></pre><details><summary>Build output</summary><pre id="output"></pre></details></aside></main>
+<dialog id="confirmation" aria-labelledby="confirmation-title" aria-describedby="confirmation-description">
+<form method="dialog"><h2 id="confirmation-title">Review plugin action</h2><p id="confirmation-description">This action needs your approval. Review the method and its proposed effects before continuing.</p><p><strong id="confirmation-method"></strong></p><details open><summary>Proposed effects</summary><pre id="confirmation-plan"></pre></details><footer><button value="cancel" autofocus>Cancel</button><button value="confirm" class="primary">Approve action</button></footer></form>
+</dialog>
+<script type="module" src="/app.js"></script>
+</body></html>

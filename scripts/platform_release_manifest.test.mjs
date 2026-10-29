@@ -29,6 +29,8 @@ const expectedCanonicalContracts = [
   "contract:internal/runtime-wire.schema.json",
   "contract:openapi/plugin-platform.yaml",
   "contract:platform-release-manifest.schema.json",
+  "contract:plugin/author-project-v1.schema.json",
+  "contract:plugin/author-test-v1.schema.json",
   "contract:plugin/bridge.schema.json",
   "contract:plugin/error-codes.schema.json",
   "contract:plugin/external-signer-request-v1.schema.json",

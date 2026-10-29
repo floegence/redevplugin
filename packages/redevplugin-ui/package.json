@@ -1,6 +1,6 @@
 {
   "name": "@floegence/redevplugin-ui",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -34,13 +34,17 @@
     "./local-import": {
       "types": "./dist/local-import.d.ts",
       "default": "./dist/local-import.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "files": [
     "dist"
   ],
   "dependencies": {
-    "@floegence/redevplugin-contracts": "3.1.0",
+    "@floegence/redevplugin-contracts": "3.2.0",
     "@noble/hashes": "2.4.0"
   },
   "publishConfig": {

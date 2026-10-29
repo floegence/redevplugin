@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"
@@ -190,7 +192,9 @@ type signingPublicKeyFile struct {
 }
 
 func main() {
-	if err := run(context.Background(), os.Args[1:]); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "redevplugin: %v\n", err)
 		os.Exit(1)
 	}
@@ -212,7 +216,11 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return buildPackage(ctx, args[1], args[2])
-	case "scaffold":
+	case "dev":
+		return runAuthorDev(ctx, args[1:])
+	case "test":
+		return runAuthorTest(ctx, args[1:])
+	case "init", "scaffold":
 		if len(args) != 4 {
 			return usage()
 		}
@@ -518,6 +526,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 	manifestBytes := append(append([]byte(nil), rawManifest...), '\n')
 	files := map[string][]byte{
 		"README.md":                 []byte(scaffoldReadme(displayName, platformVersion)),
+		"redevplugin.project.json":  []byte(scaffoldProjectConfig()),
 		"manifest.json":             append([]byte(nil), manifestBytes...),
 		"package.json":              []byte(scaffoldPackageJSON(platformVersion)),
 		"tsconfig.json":             []byte(scaffoldTSConfig()),
@@ -605,7 +614,8 @@ func scaffoldPackageJSON(platformVersion string) string {
     "check": "npm run typecheck && npm run build",
     "build": "node scripts/build.mjs",
     "build:ui": "esbuild ui/src/app.tsx --bundle --format=iife --platform=browser --target=es2022 --jsx=automatic --jsx-import-source=@floegence/redevplugin-ui --outfile=dist/ui/assets/app.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cargo test --manifest-path worker/Cargo.toml"
   },
   "dependencies": {
     "@floegence/redevplugin-ui": %q
@@ -648,7 +658,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-redevplugin-worker-sdk = { git = "https://github.com/floegence/redevplugin", tag = "v%s" }
+redevplugin-worker-sdk = "=%s"
 serde_json = "1.0"
 `, platformVersion)
 }
@@ -695,6 +705,27 @@ surface and Rust WASM worker. It requests no storage or network permissions.
 
 The generated dist directory already contains compiled ui/assets/app.js and
 workers/backend.wasm, so it can be validated and packaged immediately.
+
+## Develop and test
+
+    redevplugin dev . --runtime /path/to/verified-runtime --runtime-sha256 <verified-build-sha256>
+    redevplugin test .
+
+The preview uses an isolated temporary Host, a random loopback port, the real
+WASM runtime, and explicit permission controls. It watches declared source
+inputs, retains the last preview after build errors, and creates fresh surface
+authority after a successful update. Ctrl-C removes its temporary state.
+The executable digest must come from independently verified build evidence;
+hashing an arbitrary executable does not establish trust.
+
+The test command reports business/package checks separately from real runtime
+execution. To exercise the generated worker with the real runtime:
+
+    redevplugin test . --runtime /path/to/verified-runtime --runtime-sha256 <verified-build-sha256> --surface <plugin-id>.view --method worker.echo --params '{"message":"hello"}'
+
+Build/test argv and watched inputs live in redevplugin.project.json. These
+commands run only for explicitly selected local source; installed packages do
+not execute them. Install source dependencies before starting the preview.
 
 ## Build
 
@@ -878,7 +909,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> [capability-contract.json ...] | redevplugin release verify <out-dir> [capability-contract.json ...] | redevplugin release extract-presentation-icon <out-dir> <out-file> [capability-contract.json ...] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
+	return fmt.Errorf("usage: redevplugin init <plugin-id> <display-name> <out-dir> | redevplugin dev <source-dir> --runtime <path> --runtime-sha256 <digest> | redevplugin test <source-dir> [--runtime <path> --runtime-sha256 <digest> --surface <id> --method <name> --params <json>] | redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> [capability-contract.json ...] | redevplugin release verify <out-dir> [capability-contract.json ...] | redevplugin release extract-presentation-icon <out-dir> <out-file> [capability-contract.json ...] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -1210,4 +1241,15 @@ func (staticPolicyAdapter) DeveloperModeEnabled(context.Context, sessionctx.Cont
 
 func (staticPolicyAdapter) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
 	return true, nil
+}
+
+func scaffoldProjectConfig() string {
+	return `{
+  "schema_version": "redevplugin.project.v1",
+  "output": "dist",
+  "build": ["npm", "run", "build"],
+  "test": ["npm", "test"],
+  "watch": ["manifest.json", "ui", "worker/src", "worker/Cargo.toml", "scripts", "package.json"]
+}
+`
 }
