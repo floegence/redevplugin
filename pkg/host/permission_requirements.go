@@ -45,13 +45,11 @@ func buildPluginPermissionRequirements(
 		methods:             make([]pluginMethodRequirement, 0, len(record.Manifest.Methods)),
 		requiredPermissions: make([]string, 0),
 	}
-	workerPermissions := manifestPermissionIDs(record.Manifest)
-
 	for _, declared := range record.Manifest.Methods {
 		var required []string
 		switch declared.Route.Kind {
 		case manifest.MethodRouteWorker:
-			required = workerPermissions
+			required = workerMethodPermissionIDs(record.Manifest, declared)
 		case manifest.MethodRouteCapability:
 			binding, ok := bindings[declared.Route.BindingID]
 			if !ok {
@@ -88,7 +86,7 @@ func buildPluginPermissionRequirements(
 				PermissionRequirementMethod{Method: declared.Method, RequiredPermissions: required},
 			)
 		}
-		if len(required) == 0 {
+		if len(required) == 0 && declared.Permissions == nil {
 			continue
 		}
 		projection.methods = append(projection.methods, pluginMethodRequirement{method: declared.Method, permissions: required})
@@ -110,10 +108,10 @@ func buildPluginPermissionRequirements(
 	return projection, nil
 }
 
-func manifestPermissionIDs(value manifest.Manifest) []string {
-	permissions := make([]string, 0, len(value.Permissions))
-	for _, permissionID := range value.PermissionIDs() {
-		permissions = append(permissions, string(permissionID))
+func workerMethodPermissionIDs(value manifest.Manifest, method manifest.MethodSpec) []string {
+	result := make([]string, 0)
+	for _, permission := range value.WorkerPermissionIDs(method) {
+		result = append(result, string(permission))
 	}
-	return normalizeStringSet(permissions)
+	return normalizeStringSet(result)
 }

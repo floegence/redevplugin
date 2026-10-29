@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.0.37
+  version: 3.1.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -463,7 +463,7 @@ paths:
     post:
       operationId: getPluginPermissionRequirements
       x-redevplugin-route-effect: query
-      description: Projects required permissions only from the active plugin version's Host-verified capability contracts.
+      description: Projects active Worker permission ceilings and Host-verified capability requirements, bound to the active plugin version.
       requestBody:
         $ref: "#/components/requestBodies/PermissionRequirementsQueryRequest"
       responses:
@@ -1814,11 +1814,22 @@ components:
       $ref: "../plugin/session-scope-v1.schema.json#/$defs/complete_revoke_result"
     SessionScopeRevokeIncompleteResult:
       $ref: "../plugin/session-scope-v1.schema.json#/$defs/incomplete_revoke_result"
+    PluginSurfaceActionState:
+      type: object
+      required: [surface_id, can_open]
+      additionalProperties: false
+      properties:
+        surface_id: { type: string, minLength: 1 }
+        can_open: { type: boolean }
+        blocked_reason: { $ref: "#/components/schemas/PluginActionState/properties/blocked_reason" }
     PluginActionState:
       type: object
       required: [can_open, can_enable, can_disable, can_uninstall]
       additionalProperties: false
       properties:
+        surfaces:
+          type: array
+          items: { $ref: "#/components/schemas/PluginSurfaceActionState" }
         can_open: { type: boolean }
         can_enable: { type: boolean }
         can_disable: { type: boolean }
@@ -1952,6 +1963,9 @@ components:
         contracts:
           type: array
           items: { $ref: "#/components/schemas/PluginPermissionRequirementContract" }
+        methods:
+          type: array
+          items: { $ref: "#/components/schemas/PluginPermissionRequirementMethod" }
         required_permissions:
           type: array
           uniqueItems: true
@@ -2580,6 +2594,7 @@ components:
       required: [strategy, worker_id]
       additionalProperties: false
       properties:
+        method: { type: string, minLength: 1 }
         strategy: { type: string, enum: [runtime_start, on_demand] }
         worker_id: { type: string, minLength: 1 }
     ExternalPackageNetworkMethodAccessSummary:

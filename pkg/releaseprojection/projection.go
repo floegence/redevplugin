@@ -214,6 +214,7 @@ type ExternalPackageProcessResourceLimits struct {
 }
 
 type ExternalPackageBackgroundSummary struct {
+	Method   string `json:"method,omitempty"`
 	Strategy string `json:"strategy"`
 	WorkerID string `json:"worker_id"`
 }
@@ -427,7 +428,7 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 	}
 	var background *ExternalPackageBackgroundSummary
 	if m.Background != nil {
-		background = &ExternalPackageBackgroundSummary{Strategy: string(m.Background.Strategy), WorkerID: m.Background.WorkerID}
+		background = &ExternalPackageBackgroundSummary{Strategy: string(m.Background.Strategy), WorkerID: m.Background.WorkerID, Method: m.Background.Method}
 	}
 
 	network, err := externalPackageNetworkSummaries(m.NetworkAccess, networkAccess)
@@ -512,14 +513,13 @@ func ProjectManifestWithCapabilityContracts(m manifest.Manifest, contracts []cap
 			return manifest.Manifest{}, nil, fmt.Errorf("capability contract %s@%s is not resolved", binding.Contract.ContractID, binding.Contract.ContractVersion)
 		}
 	}
-	workerPermissions := make([]string, 0, len(m.Permissions))
-	for _, permission := range m.Permissions {
-		workerPermissions = append(workerPermissions, string(permission))
-	}
-	workerPermissions = canonicalExternalPackageStrings(workerPermissions)
 	for index, declared := range m.Methods {
 		if declared.Route.Kind == manifest.MethodRouteWorker {
-			required[declared.Method] = append([]string(nil), workerPermissions...)
+			permissions := make([]string, 0)
+			for _, permission := range m.WorkerPermissionIDs(declared) {
+				permissions = append(permissions, string(permission))
+			}
+			required[declared.Method] = canonicalExternalPackageStrings(permissions)
 			continue
 		}
 		if declared.Route.Kind != manifest.MethodRouteCapability {

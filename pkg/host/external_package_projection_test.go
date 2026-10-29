@@ -309,7 +309,7 @@ func TestExternalPackageSecuritySummaryJSONFieldsMatchOpenAPI(t *testing.T) {
 		{value: ExternalPackageProcessMethodAccessSummary{}, want: []string{"method", "operations"}},
 		{value: ExternalPackageProcessResourceLimits{}, want: []string{"max_runtime_ms", "output_buffer_bytes"}},
 		{value: ExternalPackageProcessSummary{}, want: []string{"method_access", "resource_limits"}},
-		{value: ExternalPackageBackgroundSummary{}, want: []string{"strategy", "worker_id"}},
+		{value: ExternalPackageBackgroundSummary{}, want: []string{"method", "strategy", "worker_id"}},
 		{value: ExternalPackageNetworkMethodAccessSummary{}, want: []string{"http_methods", "method", "operations"}},
 		{value: ExternalPackageNetworkSummary{}, want: []string{"auth_declared", "connector_id", "destinations", "method_access", "scope", "tls_declared", "transport"}},
 		{value: ExternalPackageStorageMethodAccessSummary{}, want: []string{"method", "operations"}},

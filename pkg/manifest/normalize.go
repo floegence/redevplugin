@@ -211,7 +211,7 @@ func normalizePublicAPI(api PublicAPIRequirement) (PublicAPIRequirement, error) 
 
 func knownFeature(feature FeatureID) bool {
 	switch feature {
-	case FeatureIOStream, FeatureFSWorkspace, FeatureFSHome, FeatureFSEnvironment, FeatureFSWatch, FeatureNetHTTP, FeatureNetWebSocket, FeatureNetTCP, FeatureNetUDP, FeatureProcessLocal:
+	case FeatureIOStream, FeatureFSWorkspace, FeatureFSHome, FeatureFSEnvironment, FeatureFSWatch, FeatureNetHTTP, FeatureNetWebSocket, FeatureNetTCP, FeatureNetUDP, FeatureProcessLocal, FeatureScopedAuthorization, FeatureBackgroundMethod:
 		return true
 	default:
 		return false

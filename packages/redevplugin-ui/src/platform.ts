@@ -53,6 +53,20 @@ type PlatformSchemas = components["schemas"];
 
 export type PluginCatalogResult = PlatformSchemas["PluginCatalogResult"];
 export type PluginCatalogRecord = PluginCatalogResult["plugins"][number];
+export type PluginSurfaceActionState = PlatformSchemas["PluginSurfaceActionState"];
+
+/** Read the Host projection; never infer authorization from manifest permissions. */
+export function getPluginSurfaceActionState(
+  record: Pick<PluginCatalogRecord, "action_state">,
+  surfaceId: string,
+): PluginSurfaceActionState {
+  const state = record.action_state;
+  if (state.surfaces !== undefined) {
+    return state.surfaces.find((surface) => surface.surface_id === surfaceId)
+      ?? { surface_id: surfaceId, can_open: false, blocked_reason: "incompatible" };
+  }
+  return { surface_id: surfaceId, can_open: state.can_open, ...(state.blocked_reason ? { blocked_reason: state.blocked_reason } : {}) };
+}
 export type PluginFeatures = PlatformSchemas["PluginFeaturesSuccessResponse"]["data"];
 export type PluginTrustState = PlatformSchemas["TrustState"];
 export type PluginTrustHashSet = PlatformSchemas["TrustHashSet"];

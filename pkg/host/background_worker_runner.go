@@ -66,8 +66,10 @@ func (r *backgroundWorkerRunner) Start(ctx context.Context, owner background.Own
 	if err := r.host.canRun(authorizationContext, record); err != nil {
 		return background.Session{}, err
 	}
-	if err := r.host.pluginAuthorizationError(authorizationContext, record); err != nil {
-		return background.Session{}, err
+	if record.Manifest.Background.Method == "" {
+		if err := r.host.pluginAuthorizationError(authorizationContext, record); err != nil {
+			return background.Session{}, err
+		}
 	}
 	worker, ok := manifestWorker(record.Manifest, workerID)
 	if !ok {
@@ -88,10 +90,25 @@ func (r *backgroundWorkerRunner) Start(ctx context.Context, owner background.Own
 		return background.Session{}, fmt.Errorf("background worker %q must use environment scope", workerID)
 	}
 
-	method.Execution = manifest.MethodExecutionOperation
-	method.Confirmation = nil
-	method.PreflightOnly = false
-	method.CancelPolicy = &manifest.CancelPolicySpec{Cancelable: true, DisableBehavior: "cancel", UninstallBehavior: "cancel", AckTimeoutMS: 2000}
+	if methodRequiresConfirmation(method) {
+		return background.Session{}, ErrConfirmationRequired
+	}
+	if method.PreflightOnly {
+		return background.Session{}, fmt.Errorf("%w: background cannot execute a preflight-only method", ErrMethodRequestContract)
+	}
+	params, err := deepCloneParams(record.Manifest.Background.Params)
+	if err != nil {
+		return background.Session{}, err
+	}
+	if params == nil {
+		params = map[string]any{}
+	}
+	if err := r.host.validateMethodRequest(method, params); err != nil {
+		return background.Session{}, err
+	}
+	if err := r.host.authorizeHeadlessMethod(authorizationContext, backgroundSessionContext(owner), record, method, time.Now().UTC()); err != nil {
+		return background.Session{}, err
+	}
 	backgroundContext, cancel := context.WithCancel(context.WithoutCancel(authorizationContext))
 	backgroundContext = sessionctx.WithContext(backgroundContext, backgroundSessionContext(owner))
 	handle := backgroundHandle(owner, workerID)
@@ -118,18 +135,11 @@ func (r *backgroundWorkerRunner) Start(ctx context.Context, owner background.Own
 		request := CallMethodRequest{
 			PluginInstanceID: owner.PluginInstanceID,
 			Method:           method.Method,
-			Params:           map[string]any{},
+			Params:           params,
 			session:          backgroundSessionContext(owner),
 			Now:              time.Now().UTC(),
 		}
-		dispatch, invokeErr := r.host.invokeWorker(backgroundContext, record, method, request)
-		if dispatch.finish != nil {
-			if invokeErr != nil {
-				invokeErr = errors.Join(invokeErr, dispatch.finish(false, invokeErr))
-			} else {
-				invokeErr = dispatch.finish(true, nil)
-			}
-		}
+		_, invokeErr := r.host.dispatchMethod(backgroundContext, record, method, request)
 		if invokeErr != nil && !errors.Is(invokeErr, context.Canceled) {
 			r.host.reportLifecycleDiagnostic(
 				context.WithoutCancel(backgroundContext),
@@ -186,6 +196,9 @@ func (r *backgroundWorkerRunner) Stop(ctx context.Context, session background.Se
 func backgroundWorkerMethod(pluginManifest manifest.Manifest, workerID string) (manifest.MethodSpec, bool) {
 	for _, method := range pluginManifest.Methods {
 		if method.Route.Kind == manifest.MethodRouteWorker && method.Route.WorkerID == workerID {
+			if pluginManifest.Background != nil && pluginManifest.Background.Method != "" && pluginManifest.Background.Method != method.Method {
+				continue
+			}
 			return method, true
 		}
 	}

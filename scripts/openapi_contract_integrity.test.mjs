@@ -3,9 +3,38 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import Ajv from "ajv";
+import Ajv2020 from "ajv/dist/2020.js";
 import { parse as parseYAML } from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
+
+test("manifest scoped authorization uses explicit feature and Worker-only ceilings", async () => {
+  const schema = JSON.parse(await readFile(join(root, "spec/plugin/manifest-v9.schema.json"), "utf8"));
+  const pin = JSON.parse(await readFile(join(root, "spec/plugin/host-capability-pin-v1.schema.json"), "utf8"));
+  const ajv = new Ajv2020({ strict: false });
+  ajv.addSchema(pin);
+  const validate = ajv.compile(schema);
+  const base = {
+    schema_version: "redevplugin.manifest.v9", publisher: { publisher_id: "example" },
+    plugin: { plugin_id: "com.example.scoped", display_name: "Scoped", version: "1.0.0" },
+    api: { major: 1, required_features: ["authorization.scoped.v1"] }, permissions: ["fs.environment.read"],
+    presentation: { locales: { default: "en-US" } },
+    surfaces: [{ surface_id: "view", kind: "view", label: "View", entry: "ui/index.html", required_methods: [] }],
+    workers: [{ worker_id: "worker", artifact: "workers/main.wasm", mode: "job", scope: "environment", memory_limit_bytes: 16777216 }],
+    methods: [{ method: "read", effect: "read", execution: "sync", permissions: [], route: { kind: "worker", worker_id: "worker" }, request_schema: { type: "object", additionalProperties: false }, response_schema: { type: "object", additionalProperties: false } }],
+  };
+  assert.equal(validate(base), true, JSON.stringify(validate.errors));
+  for (const change of [
+    (value) => { value.api.required_features = []; },
+    (value) => { value.methods[0].permissions = null; },
+    (value) => { value.surfaces[0].required_methods = null; },
+    (value) => { value.methods[0].permissions = ["fs.environment.read", "fs.environment.read"]; },
+    (value) => { value.methods[0].route = { kind: "core_action", action_id: "read" }; },
+  ]) { const value = structuredClone(base); change(value); assert.equal(validate(value), false); }
+  const existing = structuredClone(base);
+  delete existing.methods[0].permissions; delete existing.surfaces[0].required_methods; existing.api.required_features = [];
+  assert.equal(validate(existing), true, JSON.stringify(validate.errors));
+});
 
 async function readOpenAPI() {
   return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform.yaml"), "utf8"));

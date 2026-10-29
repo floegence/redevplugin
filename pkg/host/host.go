@@ -741,6 +741,7 @@ type PermissionRequirementContract struct {
 }
 
 type PermissionRequirementsResult struct {
+	Methods             []PermissionRequirementMethod   `json:"methods,omitempty"`
 	PluginInstanceID    string                          `json:"plugin_instance_id"`
 	PluginVersion       string                          `json:"plugin_version"`
 	ActiveFingerprint   string                          `json:"active_fingerprint"`
@@ -1837,17 +1838,17 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	if err := h.canRun(ctx, record); err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	if err := h.pluginAuthorizationError(ctx, record); err != nil {
-		return bridge.SurfaceBootstrap{}, err
-	}
-	if record.Manifest.Background != nil && record.Manifest.Background.Strategy == manifest.BackgroundOnDemand {
-		if err := h.startBackgroundEntry(ctx, record); err != nil {
-			return bridge.SurfaceBootstrap{}, err
-		}
-	}
 	surface, ok := manifestSurfaceByID(record.Manifest, req.SurfaceID)
 	if !ok {
 		return bridge.SurfaceBootstrap{}, fmt.Errorf("surface %q is not declared", req.SurfaceID)
+	}
+	if err := h.surfaceAuthorizationError(ctx, record, surface); err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
+	if surfaceStartsBackground(record.Manifest, surface) {
+		if err := h.startBackgroundEntry(ctx, record); err != nil {
+			return bridge.SurfaceBootstrap{}, err
+		}
 	}
 	entry, ok := packageEntryByPath(record.PackageEntries, surface.Entry)
 	if !ok || strings.TrimSpace(entry.SHA256) == "" {
@@ -3095,28 +3096,32 @@ func (h *Host) resolveIntentIdentity(ctx context.Context, req InvokeIntentReques
 }
 
 func (h *Host) authorizeResolvedIntent(ctx context.Context, req InvokeIntentRequest, resolved resolvedIntentCall) error {
-	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, req.session, pluginRefFromRecord(resolved.record), resolved.method)
+	return h.authorizeHeadlessMethod(ctx, req.session, resolved.record, resolved.method, req.Now)
+}
+
+func (h *Host) authorizeHeadlessMethod(ctx context.Context, session sessionctx.Context, record registry.PluginRecord, method manifest.MethodSpec, now time.Time) error {
+	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, session, pluginRefFromRecord(record), method)
 	if err != nil {
 		return err
 	}
 	if decision != PolicyAllow {
-		return errors.New("plugin intent denied by local policy")
+		return fmt.Errorf("%w: headless method denied by local policy", security.ErrPolicyDenied)
 	}
-	requiredPermissions, err := h.requiredPermissionsForMethod(resolved.record, resolved.method)
+	requiredPermissions, err := h.requiredPermissionsForMethod(record, method)
 	if err != nil {
 		return err
 	}
 	authorization, err := h.authorizePlugin(ctx, registry.AuthorizeRequest{
-		PluginInstanceID: resolved.record.PluginInstanceID,
-		Method:           resolved.method.Method,
+		PluginInstanceID: record.PluginInstanceID,
+		Method:           method.Method,
 		PermissionIDs:    requiredPermissions,
-		Now:              req.Now,
-		Expected:         registry.AuthorizationRevisionsFromRecord(resolved.record),
+		Now:              now,
+		Expected:         registry.AuthorizationRevisionsFromRecord(record),
 	})
 	if err != nil {
 		return err
 	}
-	if err := authorizationDecisionError(authorization, resolved.method.Method); err != nil {
+	if err := authorizationDecisionError(authorization, method.Method); err != nil {
 		return err
 	}
 	return nil
@@ -4538,6 +4543,18 @@ func (h *Host) recoverEnabledRuntimeState(ctx context.Context, record registry.P
 
 const backgroundOwnerUserScope = "background"
 
+func surfaceStartsBackground(pluginManifest manifest.Manifest, surface manifest.SurfaceSpec) bool {
+	entry := pluginManifest.Background
+	if entry == nil || entry.Strategy != manifest.BackgroundOnDemand {
+		return false
+	}
+	if surface.RequiredMethods == nil {
+		return true
+	}
+	method, ok := backgroundWorkerMethod(pluginManifest, entry.WorkerID)
+	return ok && slices.Contains(surface.RequiredMethods, method.Method)
+}
+
 func backgroundOwner(record registry.PluginRecord) background.Owner {
 	return background.Owner{
 		PluginInstanceID: record.PluginInstanceID,
@@ -5272,7 +5289,16 @@ func (h *Host) GetPermissionRequirements(ctx context.Context, req GetPermissionR
 	if err != nil {
 		return PermissionRequirementsResult{}, err
 	}
+	methods := make([]PermissionRequirementMethod, 0, len(record.Manifest.Methods))
+	for _, method := range record.Manifest.Methods {
+		required, err := h.requiredPermissionsForMethod(record, method)
+		if err != nil {
+			return PermissionRequirementsResult{}, err
+		}
+		methods = append(methods, PermissionRequirementMethod{Method: method.Method, RequiredPermissions: append([]string{}, required...)})
+	}
 	return PermissionRequirementsResult{
+		Methods:          methods,
 		PluginInstanceID: record.PluginInstanceID, PluginVersion: record.Version, ActiveFingerprint: record.ActiveFingerprint,
 		ManagementRevision: record.ManagementRevision, Contracts: requirements.contracts, RequiredPermissions: requirements.requiredPermissions,
 	}, nil
@@ -7059,9 +7085,9 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
-	grantedPermissions := make(map[string]bool, len(record.Manifest.Permissions))
-	for _, permissionID := range record.Manifest.PermissionIDs() {
-		grantedPermissions[string(permissionID)] = true
+	grantedPermissions := make(map[string]bool, len(requiredPermissions))
+	for _, permissionID := range requiredPermissions {
+		grantedPermissions[permissionID] = true
 	}
 	runtimeIORegistration, err := newHostRuntimeIORegistration(resourceio.Invocation{
 		Owner: resourceio.Owner{
@@ -7444,7 +7470,7 @@ func manifestIntent(m manifest.Manifest, intentID string) (manifest.IntentSpec, 
 func (h *Host) requiredPermissionsForMethod(record registry.PluginRecord, method manifest.MethodSpec) ([]string, error) {
 	switch method.Route.Kind {
 	case manifest.MethodRouteWorker:
-		return manifestPermissionIDs(record.Manifest), nil
+		return workerMethodPermissionIDs(record.Manifest, method), nil
 	case manifest.MethodRouteCapability:
 		resolved, err := h.resolveCapabilityContractMethod(record, method)
 		if err != nil {

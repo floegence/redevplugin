@@ -124,13 +124,14 @@ type manifestWidgetSizeResponse struct {
 }
 
 type manifestSurfaceResponse struct {
-	SurfaceID   string                      `json:"surface_id"`
-	Kind        string                      `json:"kind"`
-	Intent      string                      `json:"intent,omitempty"`
-	Label       string                      `json:"label"`
-	Entry       string                      `json:"entry"`
-	Icon        string                      `json:"icon,omitempty"`
-	DefaultSize *manifestWidgetSizeResponse `json:"default_size,omitempty"`
+	RequiredMethods []string                    `json:"required_methods,omitzero"`
+	SurfaceID       string                      `json:"surface_id"`
+	Kind            string                      `json:"kind"`
+	Intent          string                      `json:"intent,omitempty"`
+	Label           string                      `json:"label"`
+	Entry           string                      `json:"entry"`
+	Icon            string                      `json:"icon,omitempty"`
+	DefaultSize     *manifestWidgetSizeResponse `json:"default_size,omitempty"`
 }
 
 type manifestCapabilityBindingResponse struct {
@@ -182,8 +183,10 @@ type manifestProcessResponse struct {
 }
 
 type manifestBackgroundResponse struct {
-	Strategy string `json:"strategy"`
-	WorkerID string `json:"worker_id"`
+	Method   string         `json:"method,omitempty"`
+	Params   map[string]any `json:"params,omitempty"`
+	Strategy string         `json:"strategy"`
+	WorkerID string         `json:"worker_id"`
 }
 
 type manifestMethodBrokerAccessResponse struct {
@@ -193,6 +196,7 @@ type manifestMethodBrokerAccessResponse struct {
 }
 
 type manifestMethodResponse struct {
+	Permissions    []manifest.PermissionID             `json:"permissions,omitzero"`
 	Method         string                              `json:"method"`
 	Effect         string                              `json:"effect,omitempty"`
 	Execution      string                              `json:"execution,omitempty"`
@@ -307,6 +311,9 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		if surface.DefaultSize != nil {
 			mapped.DefaultSize = &manifestWidgetSizeResponse{Width: surface.DefaultSize.Width, Height: surface.DefaultSize.Height}
 		}
+		if surface.RequiredMethods != nil {
+			mapped.RequiredMethods = append([]string{}, surface.RequiredMethods...)
+		}
 		response.Surfaces[index] = mapped
 	}
 	response.CapabilityBindings = make([]manifestCapabilityBindingResponse, len(source.CapabilityBindings))
@@ -369,6 +376,9 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 			}
 			mapped.BrokerAccess = access
 		}
+		if method.Permissions != nil {
+			mapped.Permissions = append([]manifest.PermissionID{}, method.Permissions...)
+		}
 		response.Methods[index] = mapped
 	}
 	response.Workers = make([]manifestWorkerResponse, len(source.Workers))
@@ -410,7 +420,11 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		response.Process = &manifestProcessResponse{ResourceLimits: source.Process.ResourceLimits}
 	}
 	if source.Background != nil {
-		response.Background = &manifestBackgroundResponse{Strategy: string(source.Background.Strategy), WorkerID: source.Background.WorkerID}
+		params, err := cloneWireJSONMap(source.Background.Params)
+		if err != nil {
+			return manifestResponse{}, err
+		}
+		response.Background = &manifestBackgroundResponse{Strategy: string(source.Background.Strategy), WorkerID: source.Background.WorkerID, Method: source.Background.Method, Params: params}
 	}
 	if source.Settings != nil {
 		settings := &manifestSettingsResponse{

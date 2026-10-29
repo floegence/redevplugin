@@ -1,11 +1,32 @@
 package releaseprojection
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 )
+
+func TestWorkerSecuritySummaryUsesExplicitMethodCeilings(t *testing.T) {
+	read := []manifest.PermissionID{manifest.PermissionFSEnvironmentRead}
+	empty := []manifest.PermissionID{}
+	value := manifest.Manifest{Permissions: []manifest.PermissionID{manifest.PermissionFSEnvironmentRead, manifest.PermissionFSEnvironmentWrite}, Methods: []manifest.MethodSpec{
+		{Method: "read", Permissions: read, Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "worker"}},
+		{Method: "local", Permissions: empty, Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "worker"}},
+		{Method: "existing", Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "worker"}},
+	}}
+	summary, err := BuildExternalPackageSecuritySummaryFromContracts(value, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"read": {"fs.environment.read"}, "local": {}, "existing": {"fs.environment.read", "fs.environment.write"}}
+	for _, method := range summary.Methods {
+		if !reflect.DeepEqual(method.RequiredPermissions, want[method.Method]) {
+			t.Fatalf("%s permissions = %#v", method.Method, method.RequiredPermissions)
+		}
+	}
+}
 
 func TestBuildSecuritySummaryFromExactCapabilityContract(t *testing.T) {
 	contract, err := capabilitycontract.NewKnownContract(capabilitycontract.Contract{

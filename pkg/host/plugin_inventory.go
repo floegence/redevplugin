@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/security"
@@ -31,12 +32,21 @@ const (
 // PluginActionState is the only Host-owned action projection consumed by host
 // products. UI clients may present it, but must not recompute it.
 type PluginActionState struct {
-	CanOpen        bool                      `json:"can_open"`
-	CanEnable      bool                      `json:"can_enable"`
-	CanDisable     bool                      `json:"can_disable"`
-	CanUninstall   bool                      `json:"can_uninstall"`
-	BlockedReason  PluginActionBlockedReason `json:"blocked_reason,omitempty"`
-	RecoveryAction string                    `json:"recovery_action,omitempty"`
+	Surfaces       []PluginSurfaceActionState `json:"surfaces,omitempty"`
+	CanOpen        bool                       `json:"can_open"`
+	CanEnable      bool                       `json:"can_enable"`
+	CanDisable     bool                       `json:"can_disable"`
+	CanUninstall   bool                       `json:"can_uninstall"`
+	BlockedReason  PluginActionBlockedReason  `json:"blocked_reason,omitempty"`
+	RecoveryAction string                     `json:"recovery_action,omitempty"`
+}
+
+// PluginSurfaceActionState projects startup requirements, not a method allowlist.
+// Every invocation still authorizes the exact method independently.
+type PluginSurfaceActionState struct {
+	SurfaceID     string                    `json:"surface_id"`
+	CanOpen       bool                      `json:"can_open"`
+	BlockedReason PluginActionBlockedReason `json:"blocked_reason,omitempty"`
 }
 
 type PluginInventoryRecord struct {
@@ -105,6 +115,30 @@ func (h *Host) publishStartupInventory(ctx context.Context) (bool, error) {
 }
 
 func (h *Host) pluginActionState(ctx context.Context, record registry.PluginRecord) PluginActionState {
+	state := h.pluginActionStateWithAuthorization(record, func() error { return h.pluginAuthorizationError(ctx, record) })
+	scoped := false
+	for _, surface := range record.Manifest.Surfaces {
+		scoped = scoped || surface.RequiredMethods != nil
+	}
+	if !scoped {
+		return state
+	}
+	state.Surfaces = make([]PluginSurfaceActionState, 0, len(record.Manifest.Surfaces))
+	canOpen := false
+	for _, surface := range record.Manifest.Surfaces {
+		surfaceState := h.pluginActionStateWithAuthorization(record, func() error { return h.surfaceAuthorizationError(ctx, record, surface) })
+		state.Surfaces = append(state.Surfaces, PluginSurfaceActionState{SurfaceID: surface.SurfaceID, CanOpen: surfaceState.CanOpen, BlockedReason: surfaceState.BlockedReason})
+		canOpen = canOpen || surfaceState.CanOpen
+	}
+	state.CanOpen = canOpen
+	if canOpen {
+		state.BlockedReason = ""
+		state.RecoveryAction = ""
+	}
+	return state
+}
+
+func (h *Host) pluginActionStateWithAuthorization(record registry.PluginRecord, authorize func() error) PluginActionState {
 	state := PluginActionState{CanUninstall: true}
 	if record.DeletedAt != nil {
 		state.CanUninstall = false
@@ -131,7 +165,7 @@ func (h *Host) pluginActionState(ctx context.Context, record registry.PluginReco
 		state.BlockedReason = PluginActionBlockedPackageInvalid
 	}
 	if state.BlockedReason == "" && record.EnableState == registry.EnableEnabled {
-		state.BlockedReason = h.pluginAuthorizationBlockedReason(ctx, record)
+		state.BlockedReason = authorizationBlockedReason(authorize())
 	}
 	if state.BlockedReason == "" && record.EnableState == registry.EnableEnabled {
 		state.CanOpen = true
@@ -156,8 +190,7 @@ func (h *Host) pluginActionState(ctx context.Context, record registry.PluginReco
 	return state
 }
 
-func (h *Host) pluginAuthorizationBlockedReason(ctx context.Context, record registry.PluginRecord) PluginActionBlockedReason {
-	err := h.pluginAuthorizationError(ctx, record)
+func authorizationBlockedReason(err error) PluginActionBlockedReason {
 	switch {
 	case err == nil:
 		return ""
@@ -175,6 +208,31 @@ func (h *Host) pluginAuthorizationError(ctx context.Context, record registry.Plu
 	if err != nil {
 		return err
 	}
+	return h.authorizePermissionRequirements(ctx, record, requirements)
+}
+
+func (h *Host) surfaceAuthorizationError(ctx context.Context, record registry.PluginRecord, surface manifest.SurfaceSpec) error {
+	if surface.RequiredMethods == nil {
+		return h.pluginAuthorizationError(ctx, record)
+	}
+	requirements := pluginPermissionRequirementProjection{}
+	for _, name := range surface.RequiredMethods {
+		method, ok := manifestMethod(record.Manifest, name)
+		if !ok {
+			return fmt.Errorf("surface required method %q is not declared", name)
+		}
+		required, err := h.requiredPermissionsForMethod(record, method)
+		if err != nil {
+			return err
+		}
+		requirements.methods = append(requirements.methods, pluginMethodRequirement{method: name, permissions: required})
+		requirements.requiredPermissions = append(requirements.requiredPermissions, required...)
+	}
+	requirements.requiredPermissions = normalizeStringSet(requirements.requiredPermissions)
+	return h.authorizePermissionRequirements(ctx, record, requirements)
+}
+
+func (h *Host) authorizePermissionRequirements(ctx context.Context, record registry.PluginRecord, requirements pluginPermissionRequirementProjection) error {
 	if len(requirements.methods) == 0 {
 		return nil
 	}

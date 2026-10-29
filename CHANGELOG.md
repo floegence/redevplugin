@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.1.0
+
+- Add explicit Worker permission ceilings and surface startup requirements under authorization.scoped.v1, preserving absent-field package semantics and signed canonical content.
+- Enforce the exact method ceiling in Host authorization, execution evidence, runtime I/O brokers, installation review, and permission discovery. Project independent surface availability through the released SDK.
+- Add explicit background method and argument declarations under background.method.v1. Apply method policy, confirmation, request/response validation, and the existing execution lifecycle without overriding execution or cancellation behavior.
+
 ## v3.0.37
 
 - Compare immutable process launch requests by field instead of hashing environment values and secret references; reject argument/environment boundary collisions and retain the original request after caller mutations.

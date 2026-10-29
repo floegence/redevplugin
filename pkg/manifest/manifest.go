@@ -91,6 +91,7 @@ type MethodRouteSpec struct {
 }
 
 type MethodSpec struct {
+	Permissions    PermissionSet           `json:"permissions,omitzero"`
 	Method         string                  `json:"method"`
 	Effect         MethodEffect            `json:"effect,omitempty"`
 	Execution      MethodExecutionMode     `json:"execution,omitempty"`
@@ -131,6 +132,8 @@ const (
 )
 
 type BackgroundSpec struct {
+	Method   string                  `json:"method,omitempty"`
+	Params   map[string]any          `json:"params,omitempty"`
 	Strategy BackgroundStartStrategy `json:"strategy"`
 	WorkerID string                  `json:"worker_id"`
 }
@@ -196,13 +199,14 @@ const (
 )
 
 type SurfaceSpec struct {
-	SurfaceID   string          `json:"surface_id"`
-	Kind        SurfaceKind     `json:"kind"`
-	Intent      SurfaceIntent   `json:"intent,omitempty"`
-	Label       string          `json:"label"`
-	Entry       string          `json:"entry"`
-	Icon        string          `json:"icon,omitempty"`
-	DefaultSize *WidgetSizeSpec `json:"default_size,omitempty"`
+	RequiredMethods MethodNames     `json:"required_methods,omitzero"`
+	SurfaceID       string          `json:"surface_id"`
+	Kind            SurfaceKind     `json:"kind"`
+	Intent          SurfaceIntent   `json:"intent,omitempty"`
+	Label           string          `json:"label"`
+	Entry           string          `json:"entry"`
+	Icon            string          `json:"icon,omitempty"`
+	DefaultSize     *WidgetSizeSpec `json:"default_size,omitempty"`
 }
 
 type WidgetSizeSpec struct {
@@ -324,6 +328,9 @@ func Validate(m Manifest) error {
 		return err
 	}
 	if _, err := normalizePermissions(m.Permissions); err != nil {
+		return err
+	}
+	if err := validateScopedAuthorization(m); err != nil {
 		return err
 	}
 	if m.Process != nil {
@@ -559,6 +566,9 @@ func Validate(m Manifest) error {
 				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].secret_ref", i), Message: "is only allowed for secret settings"}
 			}
 		}
+	}
+	if err := validateBackgroundMethod(m, methods); err != nil {
+		return err
 	}
 	if m.Storage != nil {
 		if len(m.Storage.Stores) > MaxStorageStores {

@@ -8,16 +8,18 @@ type FeatureID string
 type PermissionID string
 
 const (
-	FeatureIOStream      FeatureID = "io.stream.v1"
-	FeatureFSWorkspace   FeatureID = "fs.workspace.v1"
-	FeatureFSHome        FeatureID = "fs.home.v1"
-	FeatureFSEnvironment FeatureID = "fs.environment.v1"
-	FeatureFSWatch       FeatureID = "fs.watch.v1"
-	FeatureNetHTTP       FeatureID = "net.http.v1"
-	FeatureNetWebSocket  FeatureID = "net.websocket.v1"
-	FeatureNetTCP        FeatureID = "net.tcp.v1"
-	FeatureNetUDP        FeatureID = "net.udp.v1"
-	FeatureProcessLocal  FeatureID = "process.local.v1"
+	FeatureIOStream            FeatureID = "io.stream.v1"
+	FeatureFSWorkspace         FeatureID = "fs.workspace.v1"
+	FeatureFSHome              FeatureID = "fs.home.v1"
+	FeatureFSEnvironment       FeatureID = "fs.environment.v1"
+	FeatureFSWatch             FeatureID = "fs.watch.v1"
+	FeatureNetHTTP             FeatureID = "net.http.v1"
+	FeatureNetWebSocket        FeatureID = "net.websocket.v1"
+	FeatureNetTCP              FeatureID = "net.tcp.v1"
+	FeatureNetUDP              FeatureID = "net.udp.v1"
+	FeatureProcessLocal        FeatureID = "process.local.v1"
+	FeatureScopedAuthorization FeatureID = "authorization.scoped.v1"
+	FeatureBackgroundMethod    FeatureID = "background.method.v1"
 )
 
 const (

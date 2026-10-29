@@ -685,7 +685,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Projects required permissions only from the active plugin version's Host-verified capability contracts. */
+        /** @description Projects active Worker permission ceilings and Host-verified capability requirements, bound to the active plugin version. */
         post: operations["getPluginPermissionRequirements"];
         delete?: never;
         options?: never;
@@ -1293,7 +1293,13 @@ export interface components {
         SessionScopeRevokeResult: components["schemas"]["SessionScopeV1PublicRevokeResult"];
         SessionScopeRevokeCompleteResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"];
         SessionScopeRevokeIncompleteResult: components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
+        PluginSurfaceActionState: {
+            surface_id: string;
+            can_open: boolean;
+            blocked_reason?: components["schemas"]["PluginActionState"]["blocked_reason"];
+        };
         PluginActionState: {
+            surfaces?: components["schemas"]["PluginSurfaceActionState"][];
             can_open: boolean;
             can_enable: boolean;
             can_disable: boolean;
@@ -1373,6 +1379,7 @@ export interface components {
             active_fingerprint: string;
             management_revision: number;
             contracts: components["schemas"]["PluginPermissionRequirementContract"][];
+            methods?: components["schemas"]["PluginPermissionRequirementMethod"][];
             required_permissions: string[];
         };
         AuthorizationRevisions: {
@@ -1804,6 +1811,7 @@ export interface components {
             method_access: components["schemas"]["ExternalPackageProcessMethodAccessSummary"][];
         };
         ExternalPackageBackgroundSummary: {
+            method?: string;
             /** @enum {string} */
             strategy: "runtime_start" | "on_demand";
             worker_id: string;
@@ -2603,6 +2611,8 @@ export interface components {
                     width: number;
                     height: number;
                 };
+                /** @description Methods required to open this surface. Omitted retains aggregate authorization. An empty array allows opening without method grants; calls remain individually authorized. Requires authorization.scoped.v1. */
+                required_methods?: string[];
             }[];
             capability_bindings?: {
                 binding_id: string;
@@ -2667,7 +2677,9 @@ export interface components {
                     /** @constant */
                     additionalProperties: false;
                 };
-            } & (unknown & unknown & unknown & unknown))[];
+                /** @description Explicit Worker permission ceiling. Omitted retains the package ceiling; an empty array grants no resource permissions. Requires authorization.scoped.v1. */
+                permissions?: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local")[];
+            } & (unknown & unknown & unknown & unknown & unknown))[];
             workers: {
                 worker_id: string;
                 artifact: string;
@@ -2711,6 +2723,8 @@ export interface components {
                 /** @enum {unknown} */
                 strategy: "runtime_start" | "on_demand";
                 worker_id: string;
+                method?: string;
+                params?: Record<string, never>;
             };
             settings?: {
                 schema_version: number;
@@ -2738,7 +2752,7 @@ export interface components {
                 optional_features?: components["schemas"]["ManifestV9OptionalFeatures"];
             };
             permissions: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local")[];
-        };
+        } & (unknown & unknown & unknown);
         ManifestV9Locale: string;
         ManifestV9Summary: string;
         ManifestV9Description: string[];
@@ -2807,7 +2821,7 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1")[];
+        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1")[];
         ManifestV9OptionalFeatures: string[];
         HostCapabilityPinV1: {
             publisher_id: components["schemas"]["HostCapabilityPinV1Id"];
