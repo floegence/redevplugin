@@ -484,6 +484,22 @@ export class PluginPlatformClient {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/cleanup-expired", request, options);
   }
 
+  reviewConnection(request: PlatformSchemas["ConnectionReviewRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["ReviewConnectionSuccessResponse"]["data"]> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/connections/review", request, options);
+  }
+  approveConnection(request: PlatformSchemas["ConnectionReviewReference"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["ApproveConnectionSuccessResponse"]["data"]> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/connections/approve", request, options);
+  }
+  cancelConnectionReview(request: PlatformSchemas["ConnectionReviewReference"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["CancelConnectionReviewSuccessResponse"]["data"]> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/connections/cancel", request, options);
+  }
+  listConnections(request: PlatformSchemas["ConnectionListRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["ListConnectionsSuccessResponse"]["data"]> {
+    return this.#requestQuery("/_redevplugin/api/plugins/connections/query", request, options);
+  }
+  revokeConnection(request: PlatformSchemas["ConnectionRevokeRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["RevokeConnectionSuccessResponse"]["data"]> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/connections/revoke", request, options);
+  }
+
   selectFileResource(request: PlatformSchemas["FileSelectRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["SelectFileResourceSuccessResponse"]["data"]> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/select", request, options);
   }

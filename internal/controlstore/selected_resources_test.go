@@ -43,8 +43,8 @@ func TestSelectedResourcesMigratesExactReleasedSchemaAndPreservesData(t *testing
 		if err := store.db.QueryRow("SELECT version FROM control_schema WHERE id=1").Scan(&version); err != nil {
 			t.Fatal(err)
 		}
-		if version != 2 {
-			t.Fatalf("schema version=%d, want 2", version)
+		if version != schemaVersion {
+			t.Fatalf("schema version=%d, want %d", version, schemaVersion)
 		}
 		var data string
 		if err := store.db.QueryRow("SELECT value_json FROM control_metadata WHERE key='migration-test'").Scan(&data); err != nil || data != "preserved" {
@@ -247,7 +247,7 @@ func TestSelectedResourceMigrationRecoversInterruptedTransaction(t *testing.T) {
 			t.Fatal(err)
 		}
 		var version int
-		if err := store.db.QueryRow("SELECT version FROM control_schema WHERE id=1").Scan(&version); err != nil || version != 2 {
+		if err := store.db.QueryRow("SELECT version FROM control_schema WHERE id=1").Scan(&version); err != nil || version != schemaVersion {
 			t.Fatalf("recovered version %d: %v", version, err)
 		}
 		store.Close()

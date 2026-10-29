@@ -202,24 +202,9 @@ func (a *selectedFileAuthority) close() error {
 }
 
 func (h *Host) fileResourceAction(ctx context.Context, action ManagementAction, id string) (context.Context, sessionctx.Context, func(), error) {
-	release, err := h.ensureOpen()
-	if err != nil {
-		return ctx, sessionctx.Context{}, nil, err
-	}
-	authorized, err := h.authorizeManagement(ctx, action, scopedAuthorizationTarget(ResourcePlugin, id, sessionctx.ScopeEnvironment))
-	if err != nil {
-		release()
-		return ctx, sessionctx.Context{}, nil, err
-	}
-	ctx, unreserve, err := h.reserveAuthorizedAction(ctx, authorized)
-	if err != nil {
-		release()
-		return ctx, sessionctx.Context{}, nil, err
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(h.lifecycleCtx, cancel)
-	return ctx, authorized.session, func() { stop(); cancel(); unreserve(); release() }, nil
+	return h.resourceAction(ctx, action, scopedAuthorizationTarget(ResourcePlugin, id, sessionctx.ScopeEnvironment))
 }
+
 func (h *Host) fileResourceCeiling(ctx context.Context, id string, writable bool) (registry.PluginRecord, error) {
 	record, err := h.getPluginRecord(ctx, id)
 	if err != nil {

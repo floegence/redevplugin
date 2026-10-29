@@ -1,0 +1,189 @@
+{
+  "valid": [
+    {
+      "plugin_instance_id": "plugini_example",
+      "connector_id": "api",
+      "destination": "https://api.example.com",
+      "expected_revision": 0,
+      "http_methods": [
+        "GET"
+      ],
+      "private_prefixes": [
+        "127.0.0.1/32"
+      ]
+    },
+    {
+      "plugin_instance_id": "plugini_example",
+      "review_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "plugin_instance_id": "plugini_example"
+    },
+    {
+      "plugin_instance_id": "plugini_example",
+      "connector_id": "api",
+      "expected_revision": 1
+    },
+    {
+      "connector_id": "api",
+      "connection_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "scope": "user",
+      "destination": "https://api.example.com",
+      "http_methods": [
+        "GET"
+      ],
+      "revision": 1,
+      "status": "active",
+      "expires_at": "2026-11-28T00:00:00Z"
+    },
+    {
+      "plugin_instance_id": "plugini_example",
+      "connector_id": "api",
+      "destination": "https://api.example.com",
+      "expected_revision": 0,
+      "http_methods": [
+        "GET"
+      ],
+      "private_prefixes": [
+        "127.0.0.1/32"
+      ],
+      "review_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "scope": "user",
+      "review_expires_at": "2026-10-29T00:05:00Z",
+      "expires_at": "2026-11-28T00:00:00Z"
+    },
+    {
+      "connector_id": "api",
+      "connection_id": "fixed-0",
+      "base_path": "/_redevplugin_web/connections/api/fixed-0/",
+      "http_methods": [
+        "GET"
+      ]
+    },
+    {
+      "connections": [
+        {
+          "connector_id": "api",
+          "connection_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scope": "user",
+          "destination": "https://api.example.com",
+          "http_methods": [
+            "GET"
+          ],
+          "revision": 1,
+          "status": "active",
+          "expires_at": "2026-11-28T00:00:00Z"
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "plugin_instance_id": "plugini_example",
+      "connector_id": "../outside",
+      "destination": "https://api.example.com",
+      "expected_revision": 0,
+      "http_methods": [
+        "GET"
+      ],
+      "private_prefixes": [
+        "127.0.0.1/32"
+      ]
+    },
+    {
+      "plugin_instance_id": "plugini_example",
+      "connector_id": "api",
+      "destination": "https://api.example.com",
+      "expected_revision": 0,
+      "http_methods": [
+        "GET",
+        "GET"
+      ],
+      "private_prefixes": [
+        "127.0.0.1/32"
+      ]
+    },
+    {
+      "plugin_instance_id": "plugini_example",
+      "connector_id": "api",
+      "destination": "https://api.example.com",
+      "expected_revision": 0,
+      "http_methods": [
+        "CONNECT"
+      ],
+      "private_prefixes": [
+        "127.0.0.1/32"
+      ]
+    },
+    {
+      "plugin_instance_id": "plugini_example",
+      "connector_id": "api",
+      "destination": "https://api.example.com",
+      "expected_revision": 0,
+      "http_methods": [
+        "GET"
+      ],
+      "private_prefixes": [
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32",
+        "127.0.0.1/32"
+      ]
+    },
+    {
+      "plugin_instance_id": "plugini_example",
+      "connector_id": "api",
+      "destination": "https://api.example.com",
+      "expected_revision": 0,
+      "http_methods": [
+        "GET"
+      ],
+      "private_prefixes": [
+        "127.0.0.1/32"
+      ],
+      "password": "leaked"
+    },
+    {
+      "connector_id": "api",
+      "connection_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "scope": "user",
+      "destination": "https://api.example.com",
+      "http_methods": [
+        "GET"
+      ],
+      "revision": 1,
+      "status": "allowed",
+      "expires_at": "2026-11-28T00:00:00Z"
+    },
+    {
+      "connector_id": "api",
+      "connection_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "scope": "user",
+      "destination": "https://api.example.com",
+      "http_methods": [
+        "GET"
+      ],
+      "revision": -1,
+      "status": "active",
+      "expires_at": "2026-11-28T00:00:00Z"
+    },
+    {
+      "plugin_instance_id": "plugini_example",
+      "review_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "can_write": true
+    }
+  ]
+}

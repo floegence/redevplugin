@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 )
 
@@ -38,11 +40,22 @@ type Plugin struct {
 }
 
 type Invocation struct {
-	Owner       Owner
-	Plugin      Plugin
-	Permissions map[string]bool
-	CanRead     bool
-	CanWrite    bool
+	Lifetime       *InvocationLifetime
+	PolicyRevision uint64
+	Network        []NetworkAccess
+	Owner          Owner
+	Plugin         Plugin
+	Permissions    map[string]bool
+	CanRead        bool
+	CanWrite       bool
+}
+
+type NetworkAccess struct {
+	ConnectorID string
+	Transport   string
+	Scope       string
+	Operations  []string
+	HTTPMethods []string
 }
 
 type MountSpec struct {
@@ -57,6 +70,8 @@ type MountResolver interface {
 }
 
 type NetworkAuthorization struct {
+	ConnectorID string
+	HTTPMethod  string
 	Invocation  Invocation
 	Operation   string
 	Destination *url.URL
@@ -67,11 +82,24 @@ type NetworkAuthorizer interface {
 	AuthorizeNetwork(context.Context, NetworkAuthorization) error
 }
 
+type NetworkClient interface {
+	HTTPTransport(Invocation, string) http.RoundTripper
+	OpenTCP(context.Context, Invocation, string, TCPConnectOptions) (net.Conn, error)
+	OpenUDP(context.Context, Invocation, string, string, time.Duration) (DatagramConnection, error)
+	OpenWebSocket(context.Context, Invocation, string, WebSocketOpen) (WebSocketStream, http.Header, func() error, error)
+}
+
 type Service struct {
 	table    *Table
 	mounts   MountResolver
 	network  NetworkAuthorizer
+	client   NetworkClient
 	selected SelectedResources
+}
+
+func (service *Service) SetNetworkClient(client NetworkClient) { service.client = client }
+func (service *Service) SetNetworkAuthorizer(authorizer NetworkAuthorizer) {
+	service.network = authorizer
 }
 
 func NewService(table *Table, mounts MountResolver, network NetworkAuthorizer) (*Service, error) {
@@ -185,7 +213,7 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 			return nil, err
 		}
 		defer mount.Close()
-		handle, err := service.table.OpenCreated(invocation.Owner, KindFile, func() (io.Closer, error) { return mount.OpenFile(uri, args.Options) })
+		handle, err := service.openCreatedResource(invocation, KindFile, func() (io.Closer, error) { return mount.OpenFile(uri, args.Options) })
 		if err != nil {
 			return nil, err
 		}
@@ -260,7 +288,7 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 		if err != nil {
 			return nil, err
 		}
-		handle, err := service.table.Open(invocation.Owner, KindDirectory, stream)
+		handle, err := service.openResource(invocation, KindDirectory, stream)
 		if err != nil {
 			_ = stream.Close()
 			return nil, err
@@ -311,7 +339,7 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 		if err != nil {
 			return nil, err
 		}
-		handle, err := service.table.Open(invocation.Owner, KindWatch, watch)
+		handle, err := service.openResource(invocation, KindWatch, watch)
 		if err != nil {
 			_ = watch.Close()
 			return nil, err
@@ -492,23 +520,41 @@ func (service *Service) authorizeNetwork(ctx context.Context, invocation Invocat
 
 func (service *Service) beginHTTP(ctx context.Context, invocation Invocation, arguments json.RawMessage) (any, error) {
 	var args struct {
-		Method    string       `json:"method"`
-		URL       string       `json:"url"`
-		Headers   []Header     `json:"headers"`
-		Redirect  RedirectMode `json:"redirect"`
-		TimeoutMS uint32       `json:"timeout_ms"`
+		ConnectorID string       `json:"connector_id"`
+		Method      string       `json:"method"`
+		URL         string       `json:"url"`
+		Headers     []Header     `json:"headers"`
+		Redirect    RedirectMode `json:"redirect"`
+		TimeoutMS   uint32       `json:"timeout_ms"`
 	}
 	if err := decodeClosedJSON(arguments, &args); err != nil {
 		return nil, ErrInvalidHandle
 	}
-	authorize := func(ctx context.Context, target *url.URL) error {
-		return service.authorizeNetwork(ctx, invocation, "net.http.begin", target.String(), false)
+	authorize := func(ctx context.Context, request *http.Request) error {
+		if !invocation.Permissions[PermissionNetworkClient] || service.network == nil || service.client == nil || args.ConnectorID == "" {
+			return os.ErrPermission
+		}
+		return service.network.AuthorizeNetwork(ctx, NetworkAuthorization{Invocation: invocation, Operation: "net.http.begin", Destination: request.URL, ConnectorID: args.ConnectorID, HTTPMethod: request.Method})
 	}
-	upload, err := BeginHTTP(ctx, HTTPRequest{Method: args.Method, URL: args.URL, Headers: args.Headers, Redirect: args.Redirect, Timeout: time.Duration(args.TimeoutMS) * time.Millisecond, Authorize: authorize})
+	if service.client == nil {
+		return nil, os.ErrPermission
+	}
+	parsed, err := url.Parse(args.URL)
+	if err != nil {
+		return nil, ErrInvalidHandle
+	}
+	if err := authorize(ctx, &http.Request{URL: parsed, Method: args.Method}); err != nil {
+		return nil, err
+	}
+	requestCtx := ctx
+	if invocation.Lifetime != nil {
+		requestCtx = invocation.Lifetime.Context()
+	}
+	upload, err := BeginHTTP(requestCtx, HTTPRequest{Transport: service.client.HTTPTransport(invocation, args.ConnectorID), Method: args.Method, URL: args.URL, Headers: args.Headers, Redirect: args.Redirect, Timeout: time.Duration(args.TimeoutMS) * time.Millisecond, Authorize: nil})
 	if err != nil {
 		return nil, err
 	}
-	handle, err := service.table.Open(invocation.Owner, KindHTTPUpload, upload)
+	handle, err := service.openResource(invocation, KindHTTPUpload, upload)
 	if err != nil {
 		_ = upload.Close()
 		return nil, err
@@ -537,7 +583,7 @@ func (service *Service) finishHTTP(invocation Invocation, arguments json.RawMess
 	if err != nil {
 		return nil, err
 	}
-	bodyHandle, err := service.table.Open(invocation.Owner, KindHTTPBody, response.Body)
+	bodyHandle, err := service.openResource(invocation, KindHTTPBody, response.Body)
 	if err != nil {
 		_ = response.Body.Close()
 		return nil, err
@@ -557,6 +603,7 @@ func (service *Service) abortHTTP(invocation Invocation, arguments json.RawMessa
 
 func (service *Service) openWebSocket(ctx context.Context, invocation Invocation, arguments json.RawMessage) (any, error) {
 	var args struct {
+		ConnectorID  string   `json:"connector_id"`
 		URL          string   `json:"url"`
 		Headers      []Header `json:"headers"`
 		Subprotocols []string `json:"subprotocols"`
@@ -565,14 +612,20 @@ func (service *Service) openWebSocket(ctx context.Context, invocation Invocation
 	if err := decodeClosedJSON(arguments, &args); err != nil {
 		return nil, ErrInvalidHandle
 	}
-	authorize := func(ctx context.Context, target *url.URL) error {
-		return service.authorizeNetwork(ctx, invocation, "net.websocket.open", target.String(), false)
+	if service.client == nil || !invocation.Permissions[PermissionNetworkClient] {
+		return nil, os.ErrPermission
 	}
-	opened, err := OpenWebSocket(ctx, WebSocketOpen{URL: args.URL, Headers: args.Headers, Subprotocols: args.Subprotocols, Timeout: time.Duration(args.TimeoutMS) * time.Millisecond, Authorize: authorize})
+	lifetime := ctx
+	if invocation.Lifetime != nil {
+		lifetime = invocation.Lifetime.Context()
+	}
+	opened, err := OpenWebSocket(ctx, WebSocketOpen{Lifetime: lifetime, URL: args.URL, Headers: args.Headers, Subprotocols: args.Subprotocols, Timeout: time.Duration(args.TimeoutMS) * time.Millisecond, Open: func(ctx context.Context, request WebSocketOpen) (WebSocketStream, http.Header, func() error, error) {
+		return service.client.OpenWebSocket(ctx, invocation, args.ConnectorID, request)
+	}})
 	if err != nil {
 		return nil, err
 	}
-	handle, err := service.table.Open(invocation.Owner, KindWebSocket, opened.Resource)
+	handle, err := service.openResource(invocation, KindWebSocket, opened.Resource)
 	if err != nil {
 		_ = opened.Resource.Close()
 		return nil, err
@@ -619,6 +672,7 @@ func (service *Service) closeWebSocket(invocation Invocation, arguments json.Raw
 
 func (service *Service) connectTCP(ctx context.Context, invocation Invocation, arguments json.RawMessage) (any, error) {
 	var args struct {
+		ConnectorID string `json:"connector_id"`
 		Host        string `json:"host"`
 		Port        uint16 `json:"port"`
 		TimeoutMS   uint32 `json:"timeout_ms"`
@@ -628,15 +682,17 @@ func (service *Service) connectTCP(ctx context.Context, invocation Invocation, a
 	if err := decodeClosedJSON(arguments, &args); err != nil || args.Host == "" || args.Port == 0 {
 		return nil, ErrInvalidHandle
 	}
-	address := fmt.Sprintf("%s:%d", args.Host, args.Port)
-	if err := service.authorizeNetwork(ctx, invocation, "net.tcp.connect", "tcp://"+address, false); err != nil {
-		return nil, err
+	if service.client == nil || !invocation.Permissions[PermissionNetworkClient] {
+		return nil, os.ErrPermission
 	}
-	stream, err := OpenTCP(ctx, TCPConnectOptions{Address: address, Timeout: time.Duration(args.TimeoutMS) * time.Millisecond, NoDelay: args.NoDelay, KeepAlive: time.Duration(args.KeepAliveMS) * time.Millisecond})
+	address := net.JoinHostPort(args.Host, fmt.Sprint(args.Port))
+	stream, err := OpenTCP(ctx, TCPConnectOptions{Address: address, Timeout: time.Duration(args.TimeoutMS) * time.Millisecond, NoDelay: args.NoDelay, KeepAlive: time.Duration(args.KeepAliveMS) * time.Millisecond, Dial: func(ctx context.Context, options TCPConnectOptions) (net.Conn, error) {
+		return service.client.OpenTCP(ctx, invocation, args.ConnectorID, options)
+	}})
 	if err != nil {
 		return nil, err
 	}
-	handle, err := service.table.Open(invocation.Owner, KindTCP, stream)
+	handle, err := service.openResource(invocation, KindTCP, stream)
 	if err != nil {
 		_ = stream.Close()
 		return nil, err
@@ -660,7 +716,7 @@ func (service *Service) listenTCP(ctx context.Context, invocation Invocation, ar
 	if err != nil {
 		return nil, err
 	}
-	handle, err := service.table.Open(invocation.Owner, KindTCPListener, listener)
+	handle, err := service.openResource(invocation, KindTCPListener, listener)
 	if err != nil {
 		_ = listener.Close()
 		return nil, err
@@ -690,7 +746,7 @@ func (service *Service) acceptTCP(ctx context.Context, invocation Invocation, ar
 	if err != nil {
 		return nil, err
 	}
-	handle, err := service.table.Open(invocation.Owner, KindTCP, stream)
+	handle, err := service.openResource(invocation, KindTCP, stream)
 	if err != nil {
 		_ = stream.Close()
 		return nil, err
@@ -718,22 +774,25 @@ func (service *Service) shutdownTCP(invocation Invocation, arguments json.RawMes
 
 func (service *Service) connectUDP(ctx context.Context, invocation Invocation, arguments json.RawMessage) (any, error) {
 	var args struct {
-		Host      string `json:"host"`
-		Port      uint16 `json:"port"`
-		TimeoutMS uint32 `json:"timeout_ms"`
+		ConnectorID string `json:"connector_id"`
+		Host        string `json:"host"`
+		Port        uint16 `json:"port"`
+		TimeoutMS   uint32 `json:"timeout_ms"`
 	}
 	if err := decodeClosedJSON(arguments, &args); err != nil || args.Host == "" || args.Port == 0 {
 		return nil, ErrInvalidHandle
 	}
-	address := fmt.Sprintf("%s:%d", args.Host, args.Port)
-	if err := service.authorizeNetwork(ctx, invocation, "net.udp.connect", "udp://"+address, false); err != nil {
-		return nil, err
+	if service.client == nil || !invocation.Permissions[PermissionNetworkClient] {
+		return nil, os.ErrPermission
 	}
-	resource, err := OpenUDP(ctx, address, time.Duration(args.TimeoutMS)*time.Millisecond)
+	address := net.JoinHostPort(args.Host, fmt.Sprint(args.Port))
+	resource, err := OpenUDP(ctx, address, time.Duration(args.TimeoutMS)*time.Millisecond, func(ctx context.Context, address string, timeout time.Duration) (DatagramConnection, error) {
+		return service.client.OpenUDP(ctx, invocation, args.ConnectorID, address, timeout)
+	})
 	if err != nil {
 		return nil, err
 	}
-	handle, err := service.table.Open(invocation.Owner, KindUDP, resource)
+	handle, err := service.openResource(invocation, KindUDP, resource)
 	if err != nil {
 		_ = resource.Close()
 		return nil, err
@@ -843,7 +902,7 @@ func stableServiceError(err error) (string, bool) {
 		return "CANCELED", false
 	case errors.Is(err, context.DeadlineExceeded):
 		return "TIMEOUT", true
-	case errors.Is(err, os.ErrPermission):
+	case errors.Is(err, os.ErrPermission), errors.Is(err, connectivity.ErrConnectorDenied), errors.Is(err, connectivity.ErrTargetDenied), errors.Is(err, connectivity.ErrResourceScopeMismatch):
 		return "PERMISSION_DENIED", false
 	case errors.Is(err, fs.ErrNotExist):
 		return "NOT_FOUND", false
@@ -851,9 +910,9 @@ func stableServiceError(err error) (string, bool) {
 		return "NOT_EMPTY", false
 	case errors.Is(err, fs.ErrExist):
 		return "ALREADY_EXISTS", false
-	case errors.Is(err, ErrResourceClosed), errors.Is(err, ErrOwnerMismatch), errors.Is(err, net.ErrClosed):
+	case errors.Is(err, connectivity.ErrGrantExpired), errors.Is(err, connectivity.ErrConnectionClosed), errors.Is(err, ErrResourceClosed), errors.Is(err, ErrOwnerMismatch), errors.Is(err, net.ErrClosed):
 		return "RESOURCE_CLOSED", false
-	case errors.Is(err, ErrResourceLimit):
+	case errors.Is(err, ErrResourceLimit), errors.Is(err, connectivity.ErrRequestTooLarge), errors.Is(err, connectivity.ErrResponseTooLarge), errors.Is(err, connectivity.ErrRateLimited):
 		return "RESOURCE_LIMIT", false
 	case errors.Is(err, ErrCrossDevice):
 		return "CROSS_DEVICE", false
@@ -865,7 +924,7 @@ func stableServiceError(err error) (string, bool) {
 		return "MOUNT_UNAVAILABLE", false
 	case errors.Is(err, ErrWatchUnsupported):
 		return "RUNTIME_UNAVAILABLE", false
-	case errors.Is(err, ErrInvalidHandle), errors.Is(err, ErrInvalidURI), errors.Is(err, ErrInvalidOptions):
+	case errors.Is(err, connectivity.ErrInvalidConnector), errors.Is(err, ErrInvalidHandle), errors.Is(err, ErrInvalidURI), errors.Is(err, ErrInvalidOptions):
 		return "INVALID_ARGUMENT", false
 	case isNetworkError(err):
 		return "NETWORK_ERROR", false

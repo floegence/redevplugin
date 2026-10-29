@@ -4292,6 +4292,7 @@ func newHTTPTestHost(t *testing.T) *host.Host {
 }
 
 type httpTestHostOptions struct {
+	connectivity            *host.ConnectivityModule
 	webOrigins              host.SurfaceOriginAdapter
 	files                   *host.FilesModule
 	authorization           host.AuthorizationAdapter
@@ -4350,6 +4351,10 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	if webOrigins == nil {
 		webOrigins = httpTestWebOrigins{}
 	}
+	connectivityModule := opts.connectivity
+	if connectivityModule == nil {
+		connectivityModule = &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})}
+	}
 	h, err := host.Open(httpTestContext(), host.Config{
 		Web:       &host.WebModule{Origins: webOrigins},
 		Files:     opts.files,
@@ -4366,7 +4371,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		},
 		Release:         releaseModule,
 		Capability:      &host.CapabilityModule{Registry: capabilities},
-		Connectivity:    &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
+		Connectivity:    connectivityModule,
 		Secrets:         &host.SecretsModule{Store: secretStore},
 		CoreAction:      &host.CoreActionModule{Adapter: coreActions},
 		ExternalPackage: opts.external,

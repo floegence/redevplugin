@@ -19,7 +19,7 @@ import (
 
 const (
 	schemaKind    = "redevplugin_control_v3"
-	schemaVersion = 2
+	schemaVersion = 3
 )
 
 var (
@@ -110,6 +110,12 @@ func (s *Store) initialize(ctx context.Context) error {
 			if err := migrateSelectedResources(ctx, tx); err != nil {
 				return err
 			}
+			version = 2
+		}
+		if version == 2 {
+			if err := migrateConnections(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if err := validateSchema(ctx, tx); err != nil {
 			return err
@@ -188,7 +194,10 @@ func createSchema(ctx context.Context, q interface {
 	if err := createSchemaOne(ctx, q); err != nil {
 		return err
 	}
-	return migrateSelectedResources(ctx, q)
+	if err := migrateSelectedResources(ctx, q); err != nil {
+		return err
+	}
+	return migrateConnections(ctx, q)
 }
 func validateSchema(ctx context.Context, db schemaReader) error {
 	var kind string
@@ -244,6 +253,11 @@ func expectedSchemaShapeVersion(ctx context.Context, version int) ([]schemaObjec
 	}
 	if version >= 2 {
 		if err := migrateSelectedResources(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if version >= 3 {
+		if err := migrateConnections(ctx, db); err != nil {
 			return nil, err
 		}
 	}

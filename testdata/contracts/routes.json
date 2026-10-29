@@ -11,6 +11,31 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/connections/approve",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/connections/cancel",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/connections/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/connections/review",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/connections/revoke",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/data/export",
     "effect": "mutation"
   },

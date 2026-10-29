@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.6.0
+
+- Route Worker HTTP, WebSocket, TCP and UDP through one connector-scoped network authority with explicit method declarations, pinned destinations, bounded streams and cancellation.
+- Add durable owner-scoped connection review, approval, inventory, replacement and revocation; migrate exact control schemas 1 and 2 transactionally to schema 3.
+- Expose native fetch-compatible connection URLs for ordinary Web applications, authenticated by each isolated child session and declared independently from Worker access.
+- Require explicit private CIDRs and host policy, keep package downloads public-only, and resolve host credential references and verified TLS/mTLS without exposing secret values.
+- Report unavailable connections and stale connection revisions with explicit recoverable HTTP conflict errors.
+- Bind active streams to exact session and surface lifetimes, reject stale revisions without canceling current streams, and retain WebSocket message context across bounded I/O operations.
+- Validate real Rust Worker protocols, Chromium native fetch streams and isolation, TLS identities, schema migration, cross-origin credential handling and standalone npm consumption.
+
 ## v3.5.0
 
 - Add explicit selected-file and directory approval, durable owner-scoped resource authority, bounded lifetimes and quotas, independent revocation, and exact object identity checks.

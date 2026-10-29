@@ -51,6 +51,8 @@ type NetworkDestination struct {
 }
 
 type NetworkAuthorizationRequest struct {
+	ConnectorID string
+	HTTPMethod  string
 	Session     sessionctx.Context
 	Plugin      PluginRef
 	Operation   string

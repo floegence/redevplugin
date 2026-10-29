@@ -36,6 +36,9 @@ type httpPoolScope struct {
 }
 
 type httpPoolKey struct {
+	connectionID            string
+	connectionRevision      uint64
+	privatePrefixes         string
 	pluginInstanceID        string
 	activeFingerprint       string
 	resourceScope           sessionctx.ResourceScope
@@ -90,7 +93,7 @@ func (e *Executor) resolveHTTPPoolBinding(ctx context.Context, grant ConnectionG
 		connectorID:      grant.ConnectorID,
 		destination:      grant.Destination,
 	}
-	addresses, err := e.resolveAddresses(ctx, "tcp", grantEndpoint(grant))
+	addresses, err := e.resolveAddresses(grantNetworkContext(ctx, grant), "tcp", grantEndpoint(grant))
 	if err != nil {
 		if errors.Is(err, ErrTargetDenied) {
 			e.retireHTTPPoolScope(scope)
@@ -116,6 +119,9 @@ func (e *Executor) resolveHTTPPoolBinding(ctx context.Context, grant ConnectionG
 	return httpPoolBinding{
 		scope: scope,
 		key: httpPoolKey{
+			connectionID:            grant.ConnectionID,
+			connectionRevision:      grant.ConnectionRevision,
+			privatePrefixes:         strings.Join(grant.PrivatePrefixes, ","),
 			pluginInstanceID:        grant.PluginInstanceID,
 			activeFingerprint:       grant.ActiveFingerprint,
 			resourceScope:           grant.ResourceScope,
@@ -322,4 +328,35 @@ func (b *httpPoolResponseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.once.Do(b.release)
 	return err
+}
+
+// Custom credentials use a dedicated transport so no TLS session can outlive
+// its exact connection approval or be reused with another credential identity.
+func (e *Executor) acquireHTTPPoolForTLS(binding httpPoolBinding, config *tls.Config) (*httpConnectionPool, func(), error) {
+	if config == nil {
+		return e.acquireHTTPPool(binding)
+	}
+	validated, err := validatedTLSConfig(config, binding.key.destination)
+	if err != nil {
+		return nil, nil, err
+	}
+	pools := &e.httpPools
+	pools.mu.Lock()
+	defer pools.mu.Unlock()
+	if pools.closed {
+		return nil, nil, ErrConnectionClosed
+	}
+	for pools.totalLocked() >= maxHTTPConnectionPools {
+		candidate := pools.oldestIdleLocked()
+		if candidate == nil {
+			return nil, nil, ErrRateLimited
+		}
+		pools.retireLocked(candidate)
+	}
+	transport := newHTTPPoolTransport(binding, e.dialResolved)
+	transport.TLSClientConfig = validated
+	transport.DisableKeepAlives = true
+	pool := &httpConnectionPool{active: 1, draining: true, transport: transport, client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	pools.draining[pool] = struct{}{}
+	return pool, pools.releaseFuncLocked(pool), nil
 }

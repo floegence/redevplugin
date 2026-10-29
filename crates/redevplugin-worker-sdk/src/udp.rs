@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UdpConnect {
+    /// Connector declared by the current method; no implicit default is used.
+    pub connector_id: String,
     pub host: String,
     pub port: u16,
     #[serde(default)]

@@ -104,3 +104,49 @@ raw Worker write failures are nonretryable and report unknown through last_error
 Rust File::write_all adds acknowledged_bytes for earlier completed chunks, while
 Web PluginFileWriteError.bytesWritten carries the same lower-bound meaning.
 Selected resource watches are unsupported.
+
+
+## Controlled connections
+
+Control schema 3 transactionally extends both released predecessors (schema 1
+and 2) with owner-scoped network connection approvals. Upgrade preserves registry,
+grants, settings and selected-file authority; interrupted transactions roll back
+and unknown schema drift fails closed without changing the state root.
+
+A configurable connector declares transport and resource scope. Review binds an
+exact destination, HTTP method set, optional approved private CIDRs and secret
+reference to the current plugin fingerprint and authenticated session. Approval
+consumes that review once and uses a durable revision compare-and-swap. Inspect
+ListConnections after a lost approval result; never replay a network mutation.
+Replacing or revoking approval cancels its active streams; a stale revision
+cannot cancel the current generation. Session close removes pending reviews and
+cancels only that session's streams, without revoking another session's durable
+owner-scoped configuration.
+
+Web applications declare web.network separately from Worker broker_access. The
+plugin SDK exposes openPluginConnection to obtain a connector-scoped baseURL on
+the allocated child origin. Applications use ordinary fetch, Request, Response,
+AbortSignal and streams. The child session cookie authenticates each request;
+the URL is a locator, not a bearer credential. Remote data routes accept only
+same-origin fetch metadata, never script, navigation, Worker or image requests.
+The adapter does not forward host cookies, proxy headers, response cookies,
+authentication challenges, redirects or security-policy response headers.
+Redirects fail without replaying a dispatched write.
+
+All Worker client opens name a declared connector. HTTP, WebSocket, TCP and UDP
+share the platform target classifier, pinned address resolution, scoped grants,
+limits, cancellation and revocation. A read-only session cannot open a mutating
+HTTP method or an arbitrary socket. NetworkPolicy adds product constraints;
+it never substitutes for platform declarations or grants. Private targets need
+explicit CIDRs and PrivateNetworkPolicy approval. Public package downloads do
+not receive those approvals and remain public-HTTPS-only.
+
+NetworkSecretResolver resolves approved secret references to credential headers
+inside the trusted Host. Values are never returned to the plugin. Auth accepts
+only a secret_ref for HTTP and WebSocket; protocol-specific TCP authentication
+is application protocol behavior, not HTTP header injection. NetworkTLSResolver
+resolves authored TLS declarations. The platform rejects missing adapters,
+plaintext/UDP TLS, insecure verification and mismatched server names, and enforces
+TLS 1.2 or newer. TCP supports TLS and mutual TLS; ordinary HTTPS/WSS use normal
+certificate verification without requiring an adapter. Custom credential
+transports share the executor's bounded pool admission and shutdown drain.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -218,8 +219,9 @@ type WidgetSizeSpec struct {
 // SurfaceWebSpec maps the application's origin root to one package directory.
 // SPA fallback applies only to document navigations, never module or API reads.
 type SurfaceWebSpec struct {
-	Root string `json:"root"`
-	SPA  bool   `json:"spa"`
+	Network []NetworkBrokerAccessSpec `json:"network,omitempty"`
+	Root    string                    `json:"root"`
+	SPA     bool                      `json:"spa"`
 }
 
 type WorkerMode string
@@ -260,6 +262,7 @@ type NetworkAccessSpec struct {
 }
 
 type NetworkConnectorSpec struct {
+	Configurable bool           `json:"configurable,omitempty"`
 	ConnectorID  string         `json:"connector_id"`
 	Transport    string         `json:"transport"`
 	Scope        string         `json:"scope"`
@@ -621,8 +624,8 @@ func Validate(m Manifest) error {
 	if m.NetworkAccess != nil {
 		connectors := map[string]struct{}{}
 		for i, connector := range m.NetworkAccess.Connectors {
-			if strings.TrimSpace(connector.ConnectorID) == "" {
-				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].connector_id", i), Message: "is required"}
+			if !connectorIDPattern.MatchString(connector.ConnectorID) {
+				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].connector_id", i), Message: "must contain 1-128 ASCII letters, digits, dots, underscores or hyphens, starting with a letter or digit"}
 			}
 			if _, ok := connectors[connector.ConnectorID]; ok {
 				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].connector_id", i), Message: "must be unique"}
@@ -634,7 +637,10 @@ func Validate(m Manifest) error {
 			if connector.Scope != "user" && connector.Scope != "environment" {
 				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].scope", i), Message: "must be user or environment"}
 			}
-			if len(connector.Destinations) == 0 {
+			if connector.Configurable && len(connector.Destinations) != 0 {
+				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].destinations", i), Message: "must be empty for a configurable connector"}
+			}
+			if !connector.Configurable && len(connector.Destinations) == 0 {
 				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].destinations", i), Message: "must not be empty"}
 			}
 			for destinationIndex, destination := range connector.Destinations {
@@ -658,6 +664,20 @@ func Validate(m Manifest) error {
 	if m.NetworkAccess != nil {
 		for _, connector := range m.NetworkAccess.Connectors {
 			connectorTransports[connector.ConnectorID] = connector.Transport
+		}
+	}
+	for i, surface := range m.Surfaces {
+		field := fmt.Sprintf("surfaces[%d].web", i)
+		if len(surface.Web.Network) > 0 && !permissionDeclared(m.Permissions, PermissionNetworkClient) {
+			return ValidationError{Field: field + ".network", Message: "requires network.client"}
+		}
+		for _, access := range surface.Web.Network {
+			if access.Transport != "http" {
+				return ValidationError{Field: field + ".network", Message: "Web applications support HTTP connections"}
+			}
+		}
+		if err := validateNetworkBrokerAccess(field, surface.Web.Network, connectorTransports, false); err != nil {
+			return err
 		}
 	}
 	for i, method := range m.Methods {
@@ -810,8 +830,12 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 			seenOperations[operation] = struct{}{}
 		}
 	}
+	return validateNetworkBrokerAccess(field, access.Network, connectors, method.Effect == MethodEffectRead)
+}
+
+func validateNetworkBrokerAccess(field string, access []NetworkBrokerAccessSpec, connectors map[string]string, readOnly bool) error {
 	seenConnectors := map[string]struct{}{}
-	for i, item := range access.Network {
+	for i, item := range access {
 		itemField := fmt.Sprintf("%s.network[%d]", field, i)
 		if strings.TrimSpace(item.Scope) != "" {
 			return ValidationError{Field: itemField + ".scope", Message: "is host-derived and must not be declared"}
@@ -836,7 +860,7 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 			if !validNetworkOperation(item.Transport, operation) {
 				return ValidationError{Field: operationField, Message: "is not valid for the declared transport"}
 			}
-			if method.Effect == MethodEffectRead && item.Transport != "http" {
+			if readOnly && item.Transport != "http" {
 				return ValidationError{Field: operationField, Message: "requires a write, execute, delete, or admin effect"}
 			}
 			if _, duplicate := seenOperations[operation]; duplicate {
@@ -856,7 +880,7 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 			if !validHTTPMethod(httpMethod) {
 				return ValidationError{Field: httpMethodField, Message: "must be an uppercase supported HTTP method"}
 			}
-			if method.Effect == MethodEffectRead && !readOnlyHTTPMethod(httpMethod) {
+			if readOnly && !readOnlyHTTPMethod(httpMethod) {
 				return ValidationError{Field: httpMethodField, Message: "must be GET, HEAD, or OPTIONS for a read effect method"}
 			}
 			if _, duplicate := seenHTTPMethods[httpMethod]; duplicate {
@@ -926,11 +950,11 @@ func validNetworkOperation(transport string, operation string) bool {
 	case "http":
 		return operation == "http" || operation == "http_stream"
 	case "websocket":
-		return operation == "websocket_round_trip"
+		return operation == "websocket"
 	case "tcp":
-		return operation == "tcp_round_trip"
+		return operation == "tcp"
 	case "udp":
-		return operation == "udp_round_trip"
+		return operation == "udp"
 	default:
 		return false
 	}
@@ -1214,3 +1238,5 @@ func validSettingType(fieldType string) bool {
 		return false
 	}
 }
+
+var connectorIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)

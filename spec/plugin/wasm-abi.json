@@ -92,6 +92,7 @@
       }
     },
     "control_import": {
+      "description": "Client network open operations follow network-control.schema.json. Connector identity is mandatory and binds method access; no default connector or direct network fallback exists. HTTP, WebSocket, TCP and UDP resources use the shared connectivity executor and the invocation cancellation lifetime.",
       "type": "object",
       "additionalProperties": false,
       "required": ["module", "name", "params", "results"],

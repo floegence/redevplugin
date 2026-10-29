@@ -224,6 +224,7 @@ func TestServiceWebSocketCloseUsesRequestedCodeAndReason(t *testing.T) {
 
 	table, _ := NewTableWithLimits(DefaultLimits())
 	service, _ := NewService(table, nil, nil)
+	service.SetNetworkClient(testNetworkClient{})
 	invocation := fixtureInvocation("websocket-close")
 	response := callControl(t, service, invocation, "net.websocket.open", fmt.Sprintf(`{"url":%q,"timeout_ms":1000}`, "ws"+server.URL[len("http"):]))
 	handle := resultHandle(t, response, "handle")

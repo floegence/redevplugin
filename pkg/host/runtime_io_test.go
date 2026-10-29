@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/observability"
 	processruntime "github.com/floegence/redevplugin/v3/pkg/process"
@@ -67,7 +68,7 @@ func TestHostRuntimeIOBrokerProjectsExactTrustedAdapterContext(t *testing.T) {
 	mounts := &recordingHostMountAdapter{}
 	networkDenied := errors.New("fixture network policy denial")
 	network := &recordingHostNetworkAdapter{err: networkDenied}
-	broker, err := newHostRuntimeIOBroker(normalizedAdapters{FileSystem: mounts, NetworkPolicy: network})
+	broker, err := newHostRuntimeIOBroker(normalizedAdapters{FileSystem: mounts, NetworkPolicy: network, Connectivity: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +94,8 @@ func TestHostRuntimeIOBrokerProjectsExactTrustedAdapterContext(t *testing.T) {
 		CanRead:  true,
 		CanWrite: false,
 	}
-	if err := broker.register(invocation.Owner.InvocationID, hostRuntimeIORegistration{resource: invocation}); err != nil {
+	invocation.Network = []resourceio.NetworkAccess{{ConnectorID: "forecast", Transport: "http", Scope: "user", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}}
+	if err := broker.register(context.Background(), invocation.Owner.InvocationID, hostRuntimeIORegistration{resource: invocation}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -109,7 +111,7 @@ func TestHostRuntimeIOBrokerProjectsExactTrustedAdapterContext(t *testing.T) {
 	}
 	assertProjectedIOContext(t, mounts.list.Session, mounts.list.Plugin)
 
-	_, err = broker.Control(context.Background(), invocation.Owner.InvocationID, []byte(`{"plugin_api":1,"operation":"net.http.begin","arguments":{"method":"GET","url":"https://example.test:8443/data","headers":[],"redirect":"error","timeout_ms":1000}}`))
+	_, err = broker.Control(context.Background(), invocation.Owner.InvocationID, []byte(`{"plugin_api":1,"operation":"net.http.begin","arguments":{"connector_id":"forecast","method":"GET","url":"https://example.test:8443/data","headers":[],"redirect":"error","timeout_ms":1000}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,10 +141,10 @@ func TestHostRuntimeIOBrokerRevokesExactSessionThenPlugin(t *testing.T) {
 	t.Cleanup(func() { _ = broker.closeAll() })
 	first := runtimeIOTestInvocation("invocation-first", "session-first", "channel-first")
 	second := runtimeIOTestInvocation("invocation-second", "session-second", "channel-second")
-	if err := broker.register(first.Owner.InvocationID, hostRuntimeIORegistration{resource: first}); err != nil {
+	if err := broker.register(context.Background(), first.Owner.InvocationID, hostRuntimeIORegistration{resource: first}); err != nil {
 		t.Fatal(err)
 	}
-	if err := broker.register(second.Owner.InvocationID, hostRuntimeIORegistration{resource: second}); err != nil {
+	if err := broker.register(context.Background(), second.Owner.InvocationID, hostRuntimeIORegistration{resource: second}); err != nil {
 		t.Fatal(err)
 	}
 	if err := broker.revokeSession(first.Owner.Session); err != nil {
@@ -243,7 +245,7 @@ func TestHostRuntimeIOBrokerDispatchesAuthorizedStorageFromTrustedRegistration(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := broker.register(invocation.Owner.InvocationID, registration); err != nil {
+	if err := broker.register(context.Background(), invocation.Owner.InvocationID, registration); err != nil {
 		t.Fatal(err)
 	}
 
@@ -284,7 +286,7 @@ func TestHostRuntimeIOBrokerStorageFailsClosedOutsideTrustedAccess(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := broker.register(invocation.Owner.InvocationID, registration); err != nil {
+	if err := broker.register(context.Background(), invocation.Owner.InvocationID, registration); err != nil {
 		t.Fatal(err)
 	}
 
@@ -336,7 +338,7 @@ func TestHostRuntimeIOBrokerProcessUsesOpaqueOwnerAndBinaryStreams(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := broker.register(invocation.Owner.InvocationID, registration); err != nil {
+	if err := broker.register(context.Background(), invocation.Owner.InvocationID, registration); err != nil {
 		t.Fatal(err)
 	}
 	startArgs, err := json.Marshal(map[string]any{

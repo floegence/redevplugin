@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,10 +30,10 @@ func TestHTTPStreamsUploadResponseAndPreservesRepeatedHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 	var authorizations atomic.Int32
-	upload, err := BeginHTTP(context.Background(), HTTPRequest{
+	upload, err := BeginHTTP(context.Background(), HTTPRequest{Transport: http.DefaultTransport,
 		Method: "POST", URL: server.URL, Redirect: RedirectFollow,
 		Headers: []Header{{Name: "X-Repeated", Value: "a"}, {Name: "X-Repeated", Value: "b"}, {Name: "Connection", Value: "close"}},
-		Authorize: func(context.Context, *url.URL) error {
+		Authorize: func(context.Context, *http.Request) error {
 			authorizations.Add(1)
 			return nil
 		},
@@ -86,6 +85,39 @@ func TestHTTPUploadWritePreservesCompletedNetworkFailure(t *testing.T) {
 	}
 }
 
+type earlyHTTPResponseTransport struct{}
+
+func (earlyHTTPResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusRequestEntityTooLarge, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString("request rejected")), Request: request}, nil
+}
+
+func TestHTTPEarlyResponseUnblocksUploadAndKeepsResponse(t *testing.T) {
+	upload, err := BeginHTTP(context.Background(), HTTPRequest{Transport: earlyHTTPResponseTransport{}, Method: http.MethodPost, URL: "https://api.example/upload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upload.Close()
+	written := make(chan error, 1)
+	go func() { _, err := upload.Write([]byte("payload")); written <- err }()
+	select {
+	case err := <-written:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("write error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("early response left upload blocked")
+	}
+	response, err := upload.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.Status != http.StatusRequestEntityTooLarge || string(body) != "request rejected" {
+		t.Fatalf("early response = %d %q, %v", response.Status, body, err)
+	}
+}
+
 func TestHTTPRedirectReauthorizesAndRefusesStreamingReplay(t *testing.T) {
 	final := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = response.Write([]byte("done"))
@@ -96,7 +128,7 @@ func TestHTTPRedirectReauthorizesAndRefusesStreamingReplay(t *testing.T) {
 	}))
 	defer redirect303.Close()
 	var calls atomic.Int32
-	upload, err := BeginHTTP(context.Background(), HTTPRequest{Method: "POST", URL: redirect303.URL, Redirect: RedirectFollow, Authorize: func(context.Context, *url.URL) error {
+	upload, err := BeginHTTP(context.Background(), HTTPRequest{Transport: http.DefaultTransport, Method: "POST", URL: redirect303.URL, Redirect: RedirectFollow, Authorize: func(context.Context, *http.Request) error {
 		calls.Add(1)
 		return nil
 	}})
@@ -117,7 +149,7 @@ func TestHTTPRedirectReauthorizesAndRefusesStreamingReplay(t *testing.T) {
 		response.WriteHeader(http.StatusTemporaryRedirect)
 	}))
 	defer redirect307.Close()
-	upload, err = BeginHTTP(context.Background(), HTTPRequest{Method: "POST", URL: redirect307.URL, Redirect: RedirectFollow})
+	upload, err = BeginHTTP(context.Background(), HTTPRequest{Transport: http.DefaultTransport, Method: "POST", URL: redirect307.URL, Redirect: RedirectFollow})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +172,7 @@ func TestConnectedUDPPreservesDatagramBoundaries(t *testing.T) {
 			_, _ = listener.WriteToUDP(buffer[:n], peer)
 		}
 	}()
-	resource, err := OpenUDP(context.Background(), listener.LocalAddr().String(), time.Second)
+	resource, err := OpenUDP(context.Background(), listener.LocalAddr().String(), time.Second, testUDPDial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +215,7 @@ func TestWebSocketStreamsRepeatedMessagesWithBoundaries(t *testing.T) {
 	}))
 	defer server.Close()
 	websocketURL := "ws" + server.URL[len("http"):]
-	opened, err := OpenWebSocket(context.Background(), WebSocketOpen{URL: websocketURL, Subprotocols: []string{"fixture.v1"}, Timeout: time.Second})
+	opened, err := OpenWebSocket(context.Background(), WebSocketOpen{Open: testWebSocketOpen, URL: websocketURL, Subprotocols: []string{"fixture.v1"}, Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +240,10 @@ func TestWebSocketStreamsRepeatedMessagesWithBoundaries(t *testing.T) {
 			if index == len(fixture.parts)-1 {
 				flags |= IOFlagMessageEnd
 			}
-			if n, err := opened.Resource.WriteOwnedChunk(context.Background(), owner, part, flags); err != nil || n != len(part) {
+			operation, cancel := context.WithCancel(context.Background())
+			n, err := opened.Resource.WriteOwnedChunk(operation, owner, part, flags)
+			cancel()
+			if n, err := n, err; err != nil || n != len(part) {
 				t.Fatalf("WebSocket write = %d, %v", n, err)
 			}
 		}
@@ -216,7 +251,9 @@ func TestWebSocketStreamsRepeatedMessagesWithBoundaries(t *testing.T) {
 		var observed uint32
 		for observed&IOFlagMessageEnd == 0 {
 			chunk := make([]byte, 3)
-			n, flags, err := opened.Resource.ReadChunk(context.Background(), chunk)
+			operation, cancel := context.WithCancel(context.Background())
+			n, flags, err := opened.Resource.ReadChunk(operation, chunk)
+			cancel()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -239,7 +276,7 @@ func TestWebSocketRejectsCrossInvocationMessageContinuation(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	opened, err := OpenWebSocket(context.Background(), WebSocketOpen{URL: "ws" + server.URL[len("http"):], Timeout: time.Second})
+	opened, err := OpenWebSocket(context.Background(), WebSocketOpen{Open: testWebSocketOpen, URL: "ws" + server.URL[len("http"):], Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +310,7 @@ func TestTCPRepeatedReadWriteAcceptAndShutdown(t *testing.T) {
 		_, acceptErr = io.Copy(stream, stream)
 		serverResult <- acceptErr
 	}()
-	client, err := OpenTCP(context.Background(), TCPConnectOptions{Address: listener.Address(), Timeout: time.Second, NoDelay: true, KeepAlive: time.Second})
+	client, err := OpenTCP(context.Background(), TCPConnectOptions{Dial: testTCPDial, Address: listener.Address(), Timeout: time.Second, NoDelay: true, KeepAlive: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,5 +353,94 @@ func TestTCPListenerAcceptHonorsCancellation(t *testing.T) {
 	}
 	if time.Since(started) > 500*time.Millisecond {
 		t.Fatal("canceled accept did not wake promptly")
+	}
+}
+
+func testTCPDial(ctx context.Context, options TCPConnectOptions) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: options.Timeout, KeepAlive: options.KeepAlive}
+	conn, err := dialer.DialContext(ctx, "tcp", options.Address)
+	if err != nil {
+		return nil, err
+	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		if err := tcp.SetNoDelay(options.NoDelay); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+	}
+	return conn, nil
+}
+func testUDPDial(ctx context.Context, address string, timeout time.Duration) (DatagramConnection, error) {
+	dialer := net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(ctx, "udp", address)
+	if err != nil {
+		return nil, err
+	}
+	return conn.(*net.UDPConn), nil
+}
+func testWebSocketOpen(ctx context.Context, options WebSocketOpen) (WebSocketStream, http.Header, func() error, error) {
+	headers, err := normalizedHTTPHeaders(options.Headers)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	conn, response, err := websocket.Dial(ctx, options.URL, &websocket.DialOptions{HTTPHeader: headers, Subprotocols: options.Subprotocols})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	conn.SetReadLimit(maxWebSocketMessageBytes)
+	return conn, response.Header, conn.CloseNow, nil
+}
+
+type testNetworkClient struct{}
+
+func (testNetworkClient) HTTPTransport(Invocation, string) http.RoundTripper {
+	return http.DefaultTransport
+}
+func (testNetworkClient) OpenTCP(ctx context.Context, _ Invocation, _ string, options TCPConnectOptions) (net.Conn, error) {
+	return testTCPDial(ctx, options)
+}
+func (testNetworkClient) OpenUDP(ctx context.Context, _ Invocation, _ string, address string, timeout time.Duration) (DatagramConnection, error) {
+	return testUDPDial(ctx, address, timeout)
+}
+func (testNetworkClient) OpenWebSocket(ctx context.Context, _ Invocation, _ string, options WebSocketOpen) (WebSocketStream, http.Header, func() error, error) {
+	return testWebSocketOpen(ctx, options)
+}
+
+func TestHTTPClosingUploadCancelsPendingFinish(t *testing.T) {
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(entered)
+		<-r.Context().Done()
+		close(cancelled)
+	}))
+	defer server.Close()
+	upload, err := BeginHTTP(context.Background(), HTTPRequest{Transport: http.DefaultTransport, Method: "POST", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { _, err := upload.Finish(); finished <- err }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("receiver not entered")
+	}
+	if err := upload.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err == nil {
+			t.Fatal("closed upload finished successfully")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close did not cancel finish")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("receiver did not observe cancellation")
 	}
 }

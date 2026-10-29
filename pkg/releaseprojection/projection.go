@@ -225,14 +225,21 @@ type ExternalPackageNetworkMethodAccessSummary struct {
 	HTTPMethods []string `json:"http_methods"`
 }
 
+type ExternalPackageNetworkSurfaceAccessSummary struct {
+	SurfaceID   string   `json:"surface_id"`
+	Operations  []string `json:"operations"`
+	HTTPMethods []string `json:"http_methods"`
+}
 type ExternalPackageNetworkSummary struct {
-	ConnectorID  string                                      `json:"connector_id"`
-	Transport    string                                      `json:"transport"`
-	Scope        string                                      `json:"scope"`
-	Destinations []string                                    `json:"destinations"`
-	AuthDeclared bool                                        `json:"auth_declared"`
-	TLSDeclared  bool                                        `json:"tls_declared"`
-	MethodAccess []ExternalPackageNetworkMethodAccessSummary `json:"method_access"`
+	Configurable  bool                                         `json:"configurable"`
+	SurfaceAccess []ExternalPackageNetworkSurfaceAccessSummary `json:"surface_access"`
+	ConnectorID   string                                       `json:"connector_id"`
+	Transport     string                                       `json:"transport"`
+	Scope         string                                       `json:"scope"`
+	Destinations  []string                                     `json:"destinations"`
+	AuthDeclared  bool                                         `json:"auth_declared"`
+	TLSDeclared   bool                                         `json:"tls_declared"`
+	MethodAccess  []ExternalPackageNetworkMethodAccessSummary  `json:"method_access"`
 }
 
 type ExternalPackageStorageMethodAccessSummary struct {
@@ -435,6 +442,19 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 	if err != nil {
 		return ExternalPackageSecuritySummary{}, err
 	}
+	for i := range network {
+		for _, surface := range m.Surfaces {
+			for _, access := range surface.Web.Network {
+				if access.ConnectorID == network[i].ConnectorID {
+					network[i].SurfaceAccess = append(network[i].SurfaceAccess, ExternalPackageNetworkSurfaceAccessSummary{SurfaceID: surface.SurfaceID, Operations: canonicalExternalPackageStrings(access.Operations), HTTPMethods: canonicalExternalPackageStrings(access.HTTPMethods)})
+				}
+			}
+		}
+		sort.Slice(network[i].SurfaceAccess, func(a, b int) bool {
+			return network[i].SurfaceAccess[a].SurfaceID < network[i].SurfaceAccess[b].SurfaceID
+		})
+	}
+
 	storage, err := externalPackageStorageSummaries(m.Storage, storageAccess)
 	if err != nil {
 		return ExternalPackageSecuritySummary{}, err
@@ -683,7 +703,7 @@ func externalPackageNetworkSummaries(spec *manifest.NetworkAccessSpec, access ma
 			sort.Slice(methodAccess, func(i, j int) bool { return methodAccess[i].Method < methodAccess[j].Method })
 			items = append(items, ExternalPackageNetworkSummary{
 				ConnectorID: connector.ConnectorID, Transport: connector.Transport, Scope: connector.Scope,
-				Destinations: canonicalExternalPackageStrings(connector.Destinations), AuthDeclared: connector.Auth != nil,
+				Configurable: connector.Configurable, SurfaceAccess: []ExternalPackageNetworkSurfaceAccessSummary{}, Destinations: canonicalExternalPackageStrings(connector.Destinations), AuthDeclared: connector.Auth != nil,
 				TLSDeclared: connector.TLS != nil, MethodAccess: methodAccess,
 			})
 		}

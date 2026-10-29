@@ -369,6 +369,7 @@ func TestPublicAggregateProjectionsMatchPublishedFieldSets(t *testing.T) {
 		{name: "manifest presentation localization", domainType: manifest.PresentationLocalizationSpec{}, wireType: manifestPresentationLocalizationResponse{}},
 		{name: "manifest localized surface", domainType: manifest.LocalizedSurfacePresentation{}, wireType: manifestLocalizedSurfaceResponse{}},
 		{name: "manifest localized setting", domainType: manifest.LocalizedSettingPresentation{}, wireType: manifestLocalizedSettingResponse{}},
+		{name: "manifest surface web", domainType: manifest.SurfaceWebSpec{}, wireType: manifestSurfaceWebResponse{}},
 		{name: "manifest surface", domainType: manifest.SurfaceSpec{}, wireType: manifestSurfaceResponse{}},
 		{name: "manifest widget size", domainType: manifest.WidgetSizeSpec{}, wireType: manifestWidgetSizeResponse{}},
 		{name: "manifest capability binding", domainType: manifest.CapabilityBinding{}, wireType: manifestCapabilityBindingResponse{}},

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WebSocketOpen {
+    /// Connector declared by the current method; no implicit default is used.
+    pub connector_id: String,
     pub url: String,
     #[serde(default)]
     pub headers: Vec<Header>,

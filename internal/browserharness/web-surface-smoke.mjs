@@ -37,6 +37,10 @@ if (process.argv[2] === "--build") {
     assert.equal(await page.evaluate(() => globalThis.testState.prepared.length), 2);
     for (const frame of frames) await frame.waitForFunction(() => globalThis.appState?.ready);
     const state = await frames[0].evaluate(() => globalThis.appState);
+    assert.deepEqual(state.nativeNetwork, { uri: "/signed%2fpath?q=%2f", method: "GET" });
+    assert.equal(state.firstChunk, "first"); assert.equal(state.streamCanceled, true); assert.equal(state.remoteScriptDenied, true);
+    assert.equal(state.networkHeaders.challenge, null); assert.equal(state.networkHeaders.cookie, null);
+    assert.ok(state.networkHeaders.csp.includes("connect-src 'self'"));
     assert.equal(state.unicode, "Unicode package resource");
     assert.equal(state.chunk, "native chunk"); assert.equal(state.worker, "native chunk worker");
     assert.deepEqual(state.pixel, [18,52,86,255]); assert.equal(state.wasm, true); assert.equal(state.webgl, true); assert.equal(state.indexedDB, true);

@@ -111,6 +111,7 @@ test("Web application entrypoint exposes only bridge and generated capability cl
     "callCapabilitySync",
     "createPluginProcessClient",
     "isCapabilityBusinessError",
+    "openPluginConnection",
     "pluginAPIMajor",
   ]);
   assert.equal(pluginEntrypoint.pluginAPIMajor, 1);

@@ -1,0 +1,87 @@
+{
+  "valid": [
+    {
+      "plugin_api": 1,
+      "operation": "net.http.begin",
+      "arguments": {
+        "connector_id": "api",
+        "method": "GET",
+        "url": "https://api.example.com/a%2fb?x=a+b"
+      }
+    },
+    {
+      "plugin_api": 1,
+      "operation": "net.websocket.open",
+      "arguments": {
+        "connector_id": "api",
+        "url": "wss://api.example.com/messages",
+        "subprotocols": [
+          "fixture"
+        ]
+      }
+    },
+    {
+      "plugin_api": 1,
+      "operation": "net.tcp.connect",
+      "arguments": {
+        "connector_id": "api",
+        "host": "api.example.com",
+        "port": 443
+      }
+    },
+    {
+      "plugin_api": 1,
+      "operation": "net.udp.connect",
+      "arguments": {
+        "connector_id": "api",
+        "host": "api.example.com",
+        "port": 443
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "plugin_api": 1,
+      "operation": "net.http.begin",
+      "arguments": {
+        "method": "GET",
+        "url": "https://api.example.com/a%2fb?x=a+b"
+      }
+    },
+    {
+      "plugin_api": 1,
+      "operation": "net.websocket.open",
+      "arguments": {
+        "url": "wss://api.example.com/messages",
+        "subprotocols": [
+          "fixture"
+        ]
+      }
+    },
+    {
+      "plugin_api": 1,
+      "operation": "net.tcp.connect",
+      "arguments": {
+        "host": "api.example.com",
+        "port": 443
+      }
+    },
+    {
+      "plugin_api": 1,
+      "operation": "net.udp.connect",
+      "arguments": {
+        "host": "api.example.com",
+        "port": 443
+      }
+    },
+    {
+      "plugin_api": 1,
+      "operation": "net.http.begin",
+      "arguments": {
+        "connector_id": "api",
+        "method": "CONNECT",
+        "url": "https://api.example.com/a%2fb?x=a+b"
+      }
+    }
+  ]
+}

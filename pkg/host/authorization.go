@@ -16,6 +16,11 @@ var ErrActionDenied = errors.New("host platform action is denied")
 type ManagementAction string
 
 const (
+	ManagementActionReviewConnection           ManagementAction = "connection.review"
+	ManagementActionApproveConnection          ManagementAction = "connection.approve"
+	ManagementActionCancelConnectionReview     ManagementAction = "connection.cancel_review"
+	ManagementActionListConnections            ManagementAction = "connection.list"
+	ManagementActionRevokeConnection           ManagementAction = "connection.revoke"
 	ManagementActionSurfaceFile                ManagementAction = "file_resource.surface_io"
 	ManagementActionSelectFileResource         ManagementAction = "file_resource.select"
 	ManagementActionApproveFileResource        ManagementAction = "file_resource.approve"
@@ -88,7 +93,7 @@ func (action ManagementAction) Valid() bool {
 
 func (action ManagementAction) Resource() ResourceRef {
 	switch action {
-	case ManagementActionSurfaceFile, ManagementActionSelectFileResource, ManagementActionApproveFileResource, ManagementActionCancelFileResource, ManagementActionListFileResources, ManagementActionRevokeFileResource:
+	case ManagementActionReviewConnection, ManagementActionApproveConnection, ManagementActionCancelConnectionReview, ManagementActionListConnections, ManagementActionRevokeConnection, ManagementActionSurfaceFile, ManagementActionSelectFileResource, ManagementActionApproveFileResource, ManagementActionCancelFileResource, ManagementActionListFileResources, ManagementActionRevokeFileResource:
 		return ResourcePlugin
 	case ManagementActionOpenSurface, ManagementActionPrepareSurface,
 		ManagementActionMintBridgeToken,
@@ -395,4 +400,25 @@ func (action ManagementAction) allowsCollectionTarget() bool {
 	default:
 		return false
 	}
+}
+
+// resourceAction reserves one authenticated action for the Host lifetime.
+func (h *Host) resourceAction(ctx context.Context, action ManagementAction, target authorizationTargetSpec, related ...authorizationTargetSpec) (context.Context, sessionctx.Context, func(), error) {
+	release, err := h.ensureOpen()
+	if err != nil {
+		return ctx, sessionctx.Context{}, nil, err
+	}
+	authorized, err := h.authorizeManagement(ctx, action, target, related...)
+	if err != nil {
+		release()
+		return ctx, sessionctx.Context{}, nil, err
+	}
+	ctx, unreserve, err := h.reserveAuthorizedAction(ctx, authorized)
+	if err != nil {
+		release()
+		return ctx, sessionctx.Context{}, nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(h.lifecycleCtx, cancel)
+	return ctx, authorized.session, func() { stop(); cancel(); unreserve(); release() }, nil
 }

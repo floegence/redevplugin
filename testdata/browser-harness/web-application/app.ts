@@ -1,6 +1,21 @@
-import { PluginBridgeClient } from "../../../packages/redevplugin-ui/src/plugin.js";
+import { PluginBridgeClient, openPluginConnection } from "../../../packages/redevplugin-ui/src/plugin.js";
 const bridge = new PluginBridgeClient();
 await bridge.ready();
+const connection = await openPluginConnection("api");
+const nativeResponse = await fetch(connection.baseURL + "signed%2fpath?q=%2f");
+const nativeNetwork = await nativeResponse.json();
+const networkHeaders = { csp: nativeResponse.headers.get("Content-Security-Policy"), challenge: nativeResponse.headers.get("WWW-Authenticate"), cookie: nativeResponse.headers.get("Set-Cookie") };
+const aborted = new AbortController();
+const streamed = await fetch(connection.baseURL + "stream", { signal: aborted.signal });
+const streamReader = streamed.body!.getReader();
+const firstChunk = new TextDecoder().decode((await streamReader.read()).value);
+aborted.abort();
+let streamCanceled = false;
+try { await streamReader.read(); } catch { streamCanceled = true; }
+const remoteScriptDenied = await new Promise<boolean>(resolve => {
+ const script = document.createElement("script"); script.src = connection.baseURL + "remote.js";
+ script.onload = () => { script.remove(); resolve(false); }; script.onerror = () => { script.remove(); resolve(true); }; document.head.append(script);
+});
 const unicode = await (await fetch("/说明.txt")).text();
 const chunk = await import("./chunk.js");
 const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
@@ -21,7 +36,7 @@ const nativeStorage = await new Promise<boolean>((resolve, reject) => {
  opening.onsuccess = () => { const db = opening.result; const transaction = db.transaction("records", "readwrite"); transaction.objectStore("records").put("value", "key"); transaction.oncomplete = () => { db.close(); resolve(true); }; transaction.onerror = () => reject(transaction.error); };
 });
 bridge.onLifecycle(async event => { if (event.type === "dispose") await new Promise(resolve => setTimeout(resolve, 20)); });
-const state = { unicode, unsaved: true, webgl: !!gl, indexedDB: nativeStorage, ready: true, chunk: chunk.value, worker: workerValue, pixel: [...context.getImageData(0,0,1,1).data], wasm: !!wasm.instance,
+const state = { nativeNetwork, networkHeaders, firstChunk, streamCanceled, remoteScriptDenied, unicode, unsaved: true, webgl: !!gl, indexedDB: nativeStorage, ready: true, chunk: chunk.value, worker: workerValue, pixel: [...context.getImageData(0,0,1,1).data], wasm: !!wasm.instance,
   parentBlocked, cookie: document.cookie, storage: localStorage.getItem("sample") };
 bridge.onBeforeClose(() => !state.unsaved);
 Object.assign(globalThis, { appState: state });

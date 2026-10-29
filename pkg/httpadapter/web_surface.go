@@ -43,11 +43,12 @@ func serveWebSurface(platform *host.Host, resolve WebSurfaceOrigin, w http.Respo
 		http.Error(w, "Web application origin denied", http.StatusForbidden)
 		return
 	}
-	if r.URL.RawPath != "" || strings.ContainsAny(r.URL.Path, "\\%\x00") || r.Header.Get("Sec-Fetch-Dest") == "serviceworker" || r.Header.Get("Service-Worker") != "" {
+	networkRoute := strings.HasPrefix(r.URL.Path, host.WebSurfacePlatformPath+"connections/") || r.URL.Path == host.WebSurfacePlatformPath+"connection"
+	if !networkRoute && (r.URL.RawPath != "" || strings.ContainsAny(r.URL.Path, "\\%\x00") || r.Header.Get("Sec-Fetch-Dest") == "serviceworker" || r.Header.Get("Service-Worker") != "") {
 		http.Error(w, "Unsupported application request", http.StatusForbidden)
 		return
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodPost {
+	if !networkRoute && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -102,6 +103,10 @@ func serveWebSurface(platform *host.Host, resolve WebSurfaceOrigin, w http.Respo
 		return
 	}
 	w.Header().Set("Content-Security-Policy", webSurfaceCSP+"; frame-ancestors "+session.ParentOrigin)
+	if networkRoute {
+		serveWebConnection(platform, w, r, request, route)
+		return
+	}
 	if internal {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)

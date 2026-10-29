@@ -2922,9 +2922,9 @@ func workerInvocationFixture() []byte {
 		},
 		Network: []workerNetworkBrokerAccess{
 			{ConnectorID: "api", Transport: "http", Scope: "user", Operations: []string{"http", "http_stream"}, HTTPMethods: []string{"GET", "POST"}},
-			{ConnectorID: "api", Transport: "websocket", Scope: "user", Operations: []string{"websocket_round_trip"}},
-			{ConnectorID: "api", Transport: "tcp", Scope: "user", Operations: []string{"tcp_round_trip"}},
-			{ConnectorID: "api", Transport: "udp", Scope: "user", Operations: []string{"udp_round_trip"}},
+			{ConnectorID: "api", Transport: "websocket", Scope: "user", Operations: []string{"websocket"}},
+			{ConnectorID: "api", Transport: "tcp", Scope: "user", Operations: []string{"tcp"}},
+			{ConnectorID: "api", Transport: "udp", Scope: "user", Operations: []string{"udp"}},
 		},
 	})
 }

@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +40,12 @@ type browserFilePicker struct{ path string }
 
 func (p browserFilePicker) SelectFile(context.Context, host.FileSelectionRequest) (host.FileSelectionResult, error) {
 	return host.FileSelectionResult{Path: p.path}, nil
+}
+
+type browserPrivateNetworkPolicy struct{}
+
+func (browserPrivateNetworkPolicy) AuthorizePrivateNetwork(context.Context, host.PrivateNetworkRequest) error {
+	return nil
 }
 
 func TestNativeWebApplicationBrowser(t *testing.T) {
@@ -73,17 +83,45 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 	if err := os.WriteFile(selectedPath, []byte("Existing document"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{webOrigins: origins, files: &host.FilesModule{Picker: browserFilePicker{path: selectedPath}}})
+	var networkRequests atomic.Int32
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		networkRequests.Add(1)
+		if r.Header.Get("Cookie") != "" || r.Header.Get("Origin") != "" || r.Header.Get("Referer") != "" {
+			http.Error(w, "browser authority leaked", 500)
+			return
+		}
+		w.Header().Set("Set-Cookie", "remote-cookie=leaked")
+		w.Header().Set("Content-Security-Policy", "default-src *")
+		w.Header().Set("WWW-Authenticate", "Bearer secret")
+		if r.URL.Path == "/stream" {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = io.WriteString(w, "first")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		if r.URL.Path == "/remote.js" {
+			w.Header().Set("Content-Type", "text/javascript")
+			_, _ = io.WriteString(w, "globalThis.remoteExecuted=true")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"uri": r.URL.RequestURI(), "method": r.Method})
+	}))
+	defer receiver.Close()
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{}), PrivateNetwork: browserPrivateNetworkPolicy{}}, webOrigins: origins, files: &host.FilesModule{Picker: browserFilePicker{path: selectedPath}}})
 	defer h.Close()
 	dir := t.TempDir()
 	var document map[string]any
 	if err := json.Unmarshal([]byte(httpFixtureManifestJSON()), &document); err != nil {
 		t.Fatal(err)
 	}
-	document["permissions"] = append(document["permissions"].([]any), "fs.selected.read", "fs.selected.write")
+	document["permissions"] = append(document["permissions"].([]any), "fs.selected.read", "fs.selected.write", "network.client")
+	document["network_access"] = map[string]any{"connectors": []any{map[string]any{"connector_id": "api", "transport": "http", "scope": "user", "configurable": true}}}
 	surfaces := document["surfaces"].([]any)
 	surfaces[0].(map[string]any)["entry"] = "ui/文档.html"
 	surfaces[0].(map[string]any)["web"].(map[string]any)["spa"] = true
+	surfaces[0].(map[string]any)["web"].(map[string]any)["network"] = []any{map[string]any{"connector_id": "api", "transport": "http", "operations": []string{"http"}, "http_methods": []string{"GET"}}}
 	document["surfaces"] = append(surfaces, map[string]any{
 		"surface_id": "plain.view", "kind": "view", "label": "Existing application", "entry": "ui/plain.html",
 		"web": map[string]any{"root": "ui", "spa": false},
@@ -112,9 +150,19 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := h.GrantPermission(httpTestContext(), host.GrantPermissionRequest{PluginInstanceID: installed.PluginInstanceID, PermissionID: "network.client", ExpectedPolicyRevision: installed.PolicyRevision, ExpectedManagementRevision: installed.ManagementRevision, ExpectedRevokeEpoch: installed.RevokeEpoch}); err != nil {
+		t.Fatal(err)
+	}
 	revision := mustManagementRevision(t, h, installed.PluginInstanceID)
 	fileSession, _ := sessionctx.FromContext(httpTestContext())
 	fileSession.CanRead, fileSession.CanWrite = true, true
+	review, err := h.ReviewConnection(sessionctx.WithContext(ctx, fileSession), host.ReviewConnectionRequest{PluginInstanceID: installed.PluginInstanceID, ConnectorID: "api", Destination: receiver.URL, HTTPMethods: []string{"GET"}, PrivatePrefixes: []string{"127.0.0.1/32"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ApproveConnection(sessionctx.WithContext(ctx, fileSession), host.ConnectionReviewRequest{PluginInstanceID: installed.PluginInstanceID, ReviewID: review.ReviewID}); err != nil {
+		t.Fatal(err)
+	}
 	platform := mustNewHandler(t, h, &httpTestWebSecurityGuard{scope: fileSession})
 	web, err := NewWebSurfaceHandler(h, func(r *http.Request) (string, error) {
 		hostname, p, err := net.SplitHostPort(r.Host)
@@ -201,6 +249,9 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 		t.Fatalf("browser failed: %v\n%s", err, out)
 	}
 	if mode == "--run" {
+		if networkRequests.Load() < 3 {
+			t.Fatalf("native network receiver observed only %d requests", networkRequests.Load())
+		}
 		saved, err := os.ReadFile(selectedPath)
 		if err != nil || string(saved) != "Saved 中文 document" {
 			t.Fatalf("selected file saved bytes = %q, %v", saved, err)

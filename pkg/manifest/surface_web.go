@@ -12,8 +12,9 @@ import (
 // UnmarshalJSON requires the routing decision to be explicit in signed input.
 func (web *SurfaceWebSpec) UnmarshalJSON(raw []byte) error {
 	var value struct {
-		Root *string `json:"root"`
-		SPA  *bool   `json:"spa"`
+		Network []NetworkBrokerAccessSpec `json:"network,omitempty"`
+		Root    *string                   `json:"root"`
+		SPA     *bool                     `json:"spa"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -23,7 +24,7 @@ func (web *SurfaceWebSpec) UnmarshalJSON(raw []byte) error {
 	if value.Root == nil || value.SPA == nil {
 		return errors.New("web root and SPA routing policy are required")
 	}
-	*web = SurfaceWebSpec{Root: *value.Root, SPA: *value.SPA}
+	*web = SurfaceWebSpec{Root: *value.Root, SPA: *value.SPA, Network: value.Network}
 	return nil
 }
 

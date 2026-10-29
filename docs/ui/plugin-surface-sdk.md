@@ -349,3 +349,18 @@ Names and returned URIs use the platform's NFC normalization.
 Browser-local imports and downloads remain ordinary Web interactions. They do
 not grant access to environment files. The selected-file API and its management
 contracts are defined by spec/plugin/file-resources.schema.json and OpenAPI.
+
+
+### Native HTTP clients
+
+Declare a connector in network_access and its HTTP operations in the surface's
+web.network. A trusted parent reviews any configurable target and permission
+requirements. Import openPluginConnection from @floegence/redevplugin-ui/plugin,
+then pass its baseURL to the application's existing fetch-based client. Keep
+request paths relative to that URL to retain the connector prefix. The helper
+only discovers an existing connection; it cannot grant access, expose host
+credentials or install a global fetch replacement. AbortSignal and streaming
+Response bodies retain native browser behavior. Failed writes are never retried
+by the SDK. Redirect responses fail and require an explicit new application
+request. Native WebSocket is not exposed through this HTTP data path; declared
+Worker WebSocket, TCP and UDP use the bounded Worker SDK resources.

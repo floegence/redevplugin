@@ -24,7 +24,7 @@ try {
     "import * as testing from '@floegence/redevplugin-ui/testing';",
     "import * as local from '@floegence/redevplugin-ui/local-import';",
     "assert.deepEqual(Object.keys(root), Object.keys(parent));",
-    "assert.deepEqual(Object.keys(plugin), ['PluginBridgeClient','PluginBridgeError','PluginFileHandle','PluginFileWriteError','PluginFilesClient','callCapabilityOperation','callCapabilityStream','callCapabilitySync','createPluginProcessClient','isCapabilityBusinessError','pluginAPIMajor']);",
+    "assert.deepEqual(Object.keys(plugin), ['PluginBridgeClient','PluginBridgeError','PluginFileHandle','PluginFileWriteError','PluginFilesClient','callCapabilityOperation','callCapabilityStream','callCapabilitySync','createPluginProcessClient','isCapabilityBusinessError','openPluginConnection','pluginAPIMajor']);",
     "assert.deepEqual(Object.keys(testing), ['createPluginTestClock','createPluginTestContext','createPluginTestHarness']);",
     "assert.ok(local.PluginLocalImportClient);",
     "for (const name of ['jsx-runtime','jsx-dev-runtime']) await assert.rejects(import('@floegence/redevplugin-ui/' + name), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });",
@@ -33,11 +33,12 @@ try {
   ].join("\n"));
   run(process.execPath, ["verify.mjs"], temporary);
   writeFileSync(join(temporary, "consumer.ts"), [
-    "import {PluginBridgeClient,PluginFileHandle,PluginFileWriteError,PluginFilesClient,type PluginFileResource,type PluginFileStat} from '@floegence/redevplugin-ui/plugin';",
+    "import {PluginBridgeClient,PluginFileHandle,PluginFileWriteError,PluginFilesClient,openPluginConnection,type PluginWebConnection,type PluginFileResource,type PluginFileStat} from '@floegence/redevplugin-ui/plugin';",
     "import {PluginPlatformClient,PluginSurfaceSlot} from '@floegence/redevplugin-ui';",
     "import {createPluginTestClock} from '@floegence/redevplugin-ui/testing';",
     "const client = new PluginBridgeClient({clock:createPluginTestClock().clock});",
     "client.onBeforeClose(async () => false);",
+    "const connection: PluginWebConnection = await openPluginConnection('api'); void connection.baseURL;",
     "const files: PluginFilesClient = client.files;",
     "declare const resource: PluginFileResource;",
     "const file: PluginFileHandle = await files.open(resource.uri, {read:true,write:true});",

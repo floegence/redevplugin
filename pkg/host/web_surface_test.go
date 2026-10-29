@@ -123,14 +123,18 @@ func TestWebSurfaceRejectsUnsafeOrigins(t *testing.T) {
 	}
 }
 
-func openTestWebSurface(t *testing.T, h *Host, pluginID, surfaceID string) (WebSurfaceRequest, bridge.SurfaceBootstrap) {
+func openTestWebSurface(t *testing.T, h *Host, pluginID, surfaceID string, contexts ...context.Context) (WebSurfaceRequest, bridge.SurfaceBootstrap) {
 	t.Helper()
+	ctx := hostTestContext()
+	if len(contexts) > 0 {
+		ctx = contexts[0]
+	}
 	now := stableRecentTestNow()
-	b, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{PluginInstanceID: pluginID, SurfaceID: "lifecycle.view", SurfaceInstanceID: surfaceID, ExpectedManagementRevision: mustManagementRevision(t, h, pluginID), Now: now})
+	b, err := h.OpenSurface(ctx, OpenSurfaceRequest{PluginInstanceID: pluginID, SurfaceID: "lifecycle.view", SurfaceInstanceID: surfaceID, ExpectedManagementRevision: mustManagementRevision(t, h, pluginID), Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := h.PrepareSurface(hostTestContext(), exchangeAssetTicketRequestForBootstrap(b, now))
+	prepared, err := h.PrepareSurface(ctx, exchangeAssetTicketRequestForBootstrap(b, now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +150,7 @@ func openTestWebSurface(t *testing.T, h *Host, pluginID, surfaceID string) (WebS
 	req.Token = session.ResourceToken
 	handshake := bridge.Handshake{PluginID: b.PluginID, SurfaceID: b.SurfaceID, SurfaceInstanceID: b.SurfaceInstanceID, ActiveFingerprint: b.ActiveFingerprint, BridgeNonce: b.BridgeNonce, AssetSessionNonce: b.AssetSessionNonce, ManagementRevision: b.ManagementRevision, RevokeEpoch: b.RevokeEpoch}
 	channel := "bridge_" + surfaceID
-	_, err = h.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{Handshake: handshake, BridgeChannelID: channel, HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, channel), Now: now})
+	_, err = h.MintBridgeToken(ctx, MintBridgeTokenRequest{Handshake: handshake, BridgeChannelID: channel, HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, channel), Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}

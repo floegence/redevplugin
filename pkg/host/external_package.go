@@ -797,8 +797,7 @@ func (h *Host) validateExternalPackageSignatureFreshness(ctx context.Context, re
 	}
 	if assessment.Status == registry.SignatureInvalid || assessment.Status == registry.SignatureRevoked {
 		denied := fmt.Errorf("%w: external package signature freshness is %q", ErrPluginTrustDenied, assessment.Status)
-		cleanupErr := h.revokeDeniedPluginRuntime(ctx, record, time.Now().UTC())
-		return errors.Join(denied, cleanupErr)
+		return denied
 	}
 	return nil
 }

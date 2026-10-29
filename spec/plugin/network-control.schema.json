@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/network-control.schema.json",
+  "title": "ReDevPlugin persistent client network resource admission",
+  "description": "Each open request selects an explicit connector declared by the active method. Host validates transport, scope, HTTP method and exact destination before connectivity classifies DNS and dials. Subsequent bounded I/O uses the returned invocation-owned handle. Cancellation or expiry closes the resource; dispatched writes are not replayed.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "net.http.begin"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "connector_id",
+            "method",
+            "url"
+          ],
+          "properties": {
+            "connector_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "method": {
+              "enum": [
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS"
+              ]
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "headers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "redirect": {
+              "enum": [
+                "follow",
+                "manual",
+                "error"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "net.websocket.open"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "connector_id",
+            "url"
+          ],
+          "properties": {
+            "connector_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "headers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "subprotocols": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "net.tcp.connect"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "connector_id",
+            "host",
+            "port"
+          ],
+          "properties": {
+            "connector_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "host": {
+              "type": "string",
+              "minLength": 1
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "no_delay": {
+              "type": "boolean"
+            },
+            "keep_alive_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "net.udp.connect"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "connector_id",
+            "host",
+            "port"
+          ],
+          "properties": {
+            "connector_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "host": {
+              "type": "string",
+              "minLength": 1
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        }
+      }
+    }
+  ]
+}

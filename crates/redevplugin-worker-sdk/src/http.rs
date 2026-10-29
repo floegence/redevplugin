@@ -20,6 +20,8 @@ pub enum RedirectMode {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HttpRequest {
+    /// Connector declared by the current method; no implicit default is used.
+    pub connector_id: String,
     pub method: String,
     pub url: String,
     #[serde(default)]

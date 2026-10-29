@@ -50,6 +50,8 @@ var pluginPlatformErrorCodes = [
   "PLUGIN_EXECUTION_BLOCKED",
   "PLUGIN_EXECUTION_NOT_FOUND",
   "PLUGIN_EXECUTION_NOT_CANCELABLE",
+  "PLUGIN_CONNECTION_UNAVAILABLE",
+  "PLUGIN_CONNECTION_CONFLICT",
   "PLUGIN_NETWORK_TARGET_DENIED",
   "PLUGIN_NETWORK_RATE_LIMITED",
   "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -120,6 +122,8 @@ var pluginBridgeErrorCodes = [
   "PLUGIN_EXECUTION_BLOCKED",
   "PLUGIN_EXECUTION_NOT_FOUND",
   "PLUGIN_EXECUTION_NOT_CANCELABLE",
+  "PLUGIN_CONNECTION_UNAVAILABLE",
+  "PLUGIN_CONNECTION_CONFLICT",
   "PLUGIN_NETWORK_TARGET_DENIED",
   "PLUGIN_NETWORK_RATE_LIMITED",
   "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -3381,6 +3385,21 @@ var PluginPlatformClient = class {
   }
   cleanupExpiredRetainedData(request = {}, options = {}) {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/cleanup-expired", request, options);
+  }
+  reviewConnection(request, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/connections/review", request, options);
+  }
+  approveConnection(request, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/connections/approve", request, options);
+  }
+  cancelConnectionReview(request, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/connections/cancel", request, options);
+  }
+  listConnections(request, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/connections/query", request, options);
+  }
+  revokeConnection(request, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/connections/revoke", request, options);
   }
   selectFileResource(request, options = {}) {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/select", request, options);

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,6 +87,7 @@ func (d Destination) Canonical() string {
 }
 
 type ConnectorPolicy struct {
+	Configurable bool          `json:"configurable,omitempty"`
 	ConnectorID  string        `json:"connector_id"`
 	Transport    Transport     `json:"transport"`
 	Scope        Scope         `json:"scope"`
@@ -303,7 +305,10 @@ func compileConnector(classifier Classifier, connector manifest.NetworkConnector
 	if scope != ScopeUser && scope != ScopeEnvironment {
 		return ConnectorPolicy{}, fmt.Errorf("%w: scope must be user or environment", ErrInvalidConnector)
 	}
-	if len(connector.Destinations) == 0 {
+	if connector.Configurable && len(connector.Destinations) != 0 {
+		return ConnectorPolicy{}, ErrInvalidConnector
+	}
+	if !connector.Configurable && len(connector.Destinations) == 0 {
 		return ConnectorPolicy{}, fmt.Errorf("%w: destinations are required", ErrInvalidConnector)
 	}
 	destinations := make([]Destination, 0, len(connector.Destinations))
@@ -328,6 +333,7 @@ func compileConnector(classifier Classifier, connector manifest.NetworkConnector
 	})
 	return ConnectorPolicy{
 		ConnectorID:  connectorID,
+		Configurable: connector.Configurable,
 		Transport:    transport,
 		Scope:        scope,
 		Destinations: destinations,
@@ -504,7 +510,22 @@ func (c Classifier) EvaluateResolvedAddress(destination Destination, addr netip.
 	return nil
 }
 
+// ApprovedBinding is Host-owned durable connection authority. Plugin requests
+// never supply it. The Host verifies owner, active fingerprint, epoch and resource
+// revision before supplying this exact target and method restriction.
+type ApprovedBinding struct {
+	PrivatePrefixes []string
+	ConnectionID    string
+	Revision        uint64
+	Destination     string
+	HTTPMethods     []string
+	ExpiresAt       time.Time
+}
+
 type GrantRequest struct {
+	Binding    *ApprovedBinding
+	HTTPMethod string
+
 	PluginInstanceID    string
 	ActiveFingerprint   string
 	ResourceScope       sessionctx.ResourceScope
@@ -520,6 +541,10 @@ type GrantRequest struct {
 }
 
 type ConnectionGrant struct {
+	PrivatePrefixes         []string                 `json:"private_prefixes,omitempty"`
+	ConnectionID            string                   `json:"connection_id,omitempty"`
+	ConnectionRevision      uint64                   `json:"connection_revision,omitempty"`
+	HTTPMethods             []string                 `json:"http_methods,omitempty"`
 	GrantID                 string                   `json:"grant_id"`
 	PluginInstanceID        string                   `json:"plugin_instance_id"`
 	ActiveFingerprint       string                   `json:"active_fingerprint"`
@@ -536,17 +561,22 @@ type ConnectionGrant struct {
 }
 
 type HTTPRequest struct {
-	Grant            ConnectionGrant `json:"grant"`
-	Method           string          `json:"method"`
-	Path             string          `json:"path,omitempty"`
-	Query            url.Values      `json:"query,omitempty"`
-	Headers          http.Header     `json:"headers,omitempty"`
-	Body             []byte          `json:"-"`
-	MaxRequestBytes  int64           `json:"max_request_bytes,omitempty"`
-	MaxResponseBytes int64           `json:"max_response_bytes,omitempty"`
-	MaxChunkBytes    int64           `json:"max_chunk_bytes,omitempty"`
-	Timeout          time.Duration   `json:"timeout,omitempty"`
-	Now              time.Time       `json:"-"`
+	TLSConfig *tls.Config `json:"-"`
+
+	Grant      ConnectionGrant `json:"grant"`
+	Method     string          `json:"method"`
+	Path       string          `json:"path,omitempty"`
+	RequestURI string          `json:"request_uri,omitempty"`
+	Query      url.Values      `json:"query,omitempty"`
+	Headers    http.Header     `json:"headers,omitempty"`
+	Body       []byte          `json:"-"`
+	// BodyReader streams a request body. It is mutually exclusive with Body.
+	BodyReader       io.Reader     `json:"-"`
+	MaxRequestBytes  int64         `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes int64         `json:"max_response_bytes,omitempty"`
+	MaxChunkBytes    int64         `json:"max_chunk_bytes,omitempty"`
+	Timeout          time.Duration `json:"timeout,omitempty"`
+	Now              time.Time     `json:"-"`
 }
 
 type HTTPResponse struct {
@@ -617,6 +647,10 @@ type WebSocketRoundTripResponse struct {
 }
 
 type NetworkExecutor interface {
+	OpenTCP(context.Context, SocketRequest) (net.Conn, error)
+	OpenUDP(context.Context, SocketRequest) (DatagramConnection, error)
+	OpenWebSocket(context.Context, WebSocketOpenRequest) (WebSocketConnection, error)
+	OpenHTTP(ctx context.Context, req HTTPRequest) (HTTPBodyResponse, error)
 	DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, error)
 	StreamHTTP(ctx context.Context, req HTTPRequest, onChunk func(HTTPResponseChunk) error) (HTTPStreamResponse, error)
 	WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTripRequest) (WebSocketRoundTripResponse, error)
@@ -947,10 +981,27 @@ func mintConnectionGrant(session sessionctx.Context, policy PolicySet, req Grant
 	if err != nil {
 		return ConnectionGrant{}, err
 	}
-	if err := DefaultClassifier().Evaluate(destination); err != nil {
+	var prefixes []string
+	if req.Binding != nil {
+		prefixes = req.Binding.PrivatePrefixes
+	}
+	if err := ValidateApprovedDestination(destination, prefixes); err != nil {
 		return ConnectionGrant{}, err
 	}
-	if !connector.allows(destination) {
+	if connector.Configurable {
+		if req.Binding == nil || req.Binding.ConnectionID == "" || req.Binding.Revision == 0 || !req.Binding.ExpiresAt.After(now) {
+			return ConnectionGrant{}, ErrConnectorDenied
+		}
+		approved, err := ParseDestination(req.Transport, req.Binding.Destination)
+		if err != nil || approved != destination {
+			return ConnectionGrant{}, ErrConnectorDenied
+		}
+		if req.Transport == TransportHTTP && !slices.Contains(req.Binding.HTTPMethods, req.HTTPMethod) {
+			return ConnectionGrant{}, ErrConnectorDenied
+		}
+	} else if req.Binding != nil {
+		return ConnectionGrant{}, ErrConnectorDenied
+	} else if !connector.allows(destination) {
 		return ConnectionGrant{}, fmt.Errorf("%w: destination %s is not declared by connector %q", ErrTargetDenied, destination.Canonical(), req.ConnectorID)
 	}
 	grant := ConnectionGrant{
@@ -966,6 +1017,15 @@ func mintConnectionGrant(session sessionctx.Context, policy PolicySet, req Grant
 		RuntimeGenerationID:     req.RuntimeGenerationID,
 		TargetClassifierVersion: policy.TargetClassifierVersion,
 		ExpiresAt:               now.Add(ttl),
+	}
+	if req.Binding != nil {
+		grant.PrivatePrefixes = slices.Clone(req.Binding.PrivatePrefixes)
+		grant.ConnectionID = req.Binding.ConnectionID
+		grant.ConnectionRevision = req.Binding.Revision
+		grant.HTTPMethods = append([]string(nil), req.Binding.HTTPMethods...)
+		if req.Binding.ExpiresAt.Before(grant.ExpiresAt) {
+			grant.ExpiresAt = req.Binding.ExpiresAt
+		}
 	}
 	grantID, err := randomGrantID()
 	if err != nil {
@@ -1035,6 +1095,9 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 	if method == "" {
 		method = http.MethodGet
 	}
+	if len(req.Grant.HTTPMethods) > 0 && !slices.Contains(req.Grant.HTTPMethods, method) {
+		return nil, nil, ErrConnectorDenied
+	}
 	if method == http.MethodConnect {
 		return nil, nil, fmt.Errorf("%w: HTTP CONNECT is disabled", ErrInvalidConnector)
 	}
@@ -1046,13 +1109,16 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 	if err != nil {
 		return nil, nil, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
+	if req.BodyReader != nil && len(req.Body) != 0 {
+		return nil, nil, fmt.Errorf("%w: request body has two sources", ErrInvalidConnector)
+	}
+	requestCtx, cancel := e.connectionContext(ctx, req.Grant, req.Timeout)
 	poolBinding, err := e.resolveHTTPPoolBinding(requestCtx, req.Grant)
 	if err != nil {
 		cancel()
 		return nil, nil, err
 	}
-	pool, releasePool, err := e.acquireHTTPPool(poolBinding)
+	pool, releasePool, err := e.acquireHTTPPoolForTLS(poolBinding, req.TLSConfig)
 	if err != nil {
 		cancel()
 		return nil, nil, err
@@ -1063,7 +1129,28 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 		Path:     path,
 		RawQuery: req.Query.Encode(),
 	}
-	httpReq, err := http.NewRequestWithContext(requestCtx, method, target.String(), bytes.NewReader(req.Body))
+	if req.RequestURI != "" {
+		if req.Path != "" || len(req.Query) != 0 {
+			releasePool()
+			cancel()
+			return nil, nil, ErrInvalidConnector
+		}
+		parsed, err := url.ParseRequestURI(req.RequestURI)
+		if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(req.RequestURI, "/") || strings.HasPrefix(req.RequestURI, "//") {
+			releasePool()
+			cancel()
+			return nil, nil, ErrInvalidConnector
+		}
+		target.Path = parsed.Path
+		target.RawPath = parsed.RawPath
+		target.RawQuery = parsed.RawQuery
+		target.ForceQuery = parsed.ForceQuery
+	}
+	var body io.Reader = bytes.NewReader(req.Body)
+	if req.BodyReader != nil {
+		body = &limitedHTTPRequest{source: req.BodyReader, remaining: responseLimit(req.MaxRequestBytes, e.maxRequestBytes)}
+	}
+	httpReq, err := http.NewRequestWithContext(requestCtx, method, target.String(), body)
 	if err != nil {
 		releasePool()
 		cancel()
@@ -1162,7 +1249,7 @@ func (e *Executor) TCPRoundTrip(ctx context.Context, req TCPRoundTripRequest) (T
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
 	defer cancel()
-	conn, err := e.dialContext(ctx, "tcp", grantEndpoint(req.Grant))
+	conn, err := e.dialContext(grantNetworkContext(ctx, req.Grant), "tcp", grantEndpoint(req.Grant))
 	if err != nil {
 		return TCPRoundTripResponse{}, err
 	}
@@ -1208,7 +1295,7 @@ func (e *Executor) UDPRoundTrip(ctx context.Context, req UDPRoundTripRequest) (U
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
 	defer cancel()
-	conn, err := e.dialContext(ctx, "udp", grantEndpoint(req.Grant))
+	conn, err := e.dialContext(grantNetworkContext(ctx, req.Grant), "udp", grantEndpoint(req.Grant))
 	if err != nil {
 		return UDPRoundTripResponse{}, err
 	}
@@ -1241,6 +1328,9 @@ func udpRateLimitKey(grant ConnectionGrant) UDPRateLimitKey {
 }
 
 func validateGrantForTransport(grant ConnectionGrant, transport Transport, now time.Time, nowFunc func() time.Time) error {
+	if (grant.ConnectionID == "") != (grant.ConnectionRevision == 0) {
+		return ErrConnectorDenied
+	}
 	if strings.TrimSpace(grant.GrantID) == "" ||
 		strings.TrimSpace(grant.PluginInstanceID) == "" ||
 		strings.TrimSpace(grant.ActiveFingerprint) == "" ||
@@ -1268,7 +1358,10 @@ func validateGrantForTransport(grant ConnectionGrant, transport Transport, now t
 	if grant.ExpiresAt.IsZero() || !grant.ExpiresAt.After(now) {
 		return ErrGrantExpired
 	}
-	return DefaultClassifier().Evaluate(grant.Destination)
+	if len(grant.PrivatePrefixes) > 0 && (grant.ConnectionID == "" || grant.ConnectionRevision == 0) {
+		return ErrConnectorDenied
+	}
+	return ValidateApprovedDestination(grant.Destination, grant.PrivatePrefixes)
 }
 
 func validStoredRevisionValues(policyRevision, managementRevision, revokeEpoch uint64) bool {
@@ -1405,7 +1498,6 @@ func guardedResolveAddresses(lookupIPAddr func(context.Context, string) ([]net.I
 	if lookupIPAddr == nil {
 		lookupIPAddr = net.DefaultResolver.LookupIPAddr
 	}
-	classifier := DefaultClassifier()
 	return func(ctx context.Context, network string, address string) ([]netip.Addr, error) {
 		host, portText, err := net.SplitHostPort(address)
 		if err != nil {
@@ -1440,7 +1532,7 @@ func guardedResolveAddresses(lookupIPAddr func(context.Context, string) ([]net.I
 				return nil, fmt.Errorf("%w: resolved address is invalid", ErrInvalidConnector)
 			}
 			addr = addr.Unmap()
-			if err := classifier.EvaluateResolvedAddress(destination, addr); err != nil {
+			if err := evaluateResolvedTarget(ctx, destination, addr); err != nil {
 				return nil, err
 			}
 			if _, ok := seen[addr]; ok {
@@ -1476,6 +1568,7 @@ func dialResolvedAddresses(ctx context.Context, dialer *net.Dialer, network stri
 }
 
 func (e *Executor) dialWebSocket(ctx context.Context, grant ConnectionGrant) (net.Conn, error) {
+	ctx = grantNetworkContext(ctx, grant)
 	address := grantEndpoint(grant)
 	if grant.Destination.Scheme == "wss" {
 		rawConn, err := e.dialContext(ctx, "tcp", address)

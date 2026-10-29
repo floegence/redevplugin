@@ -53,6 +53,8 @@ const (
 	ErrExecutionBlocked              ErrorCode = "PLUGIN_EXECUTION_BLOCKED"
 	ErrExecutionNotFound             ErrorCode = "PLUGIN_EXECUTION_NOT_FOUND"
 	ErrExecutionNotCancelable        ErrorCode = "PLUGIN_EXECUTION_NOT_CANCELABLE"
+	ErrConnectionUnavailable         ErrorCode = "PLUGIN_CONNECTION_UNAVAILABLE"
+	ErrConnectionConflict            ErrorCode = "PLUGIN_CONNECTION_CONFLICT"
 	ErrNetworkTargetDenied           ErrorCode = "PLUGIN_NETWORK_TARGET_DENIED"
 	ErrNetworkRateLimited            ErrorCode = "PLUGIN_NETWORK_RATE_LIMITED"
 	ErrRuntimeUnavailable            ErrorCode = "PLUGIN_RUNTIME_UNAVAILABLE"
@@ -132,6 +134,8 @@ var platformErrorCodes = []ErrorCode{
 	ErrExecutionBlocked,
 	ErrExecutionNotFound,
 	ErrExecutionNotCancelable,
+	ErrConnectionUnavailable,
+	ErrConnectionConflict,
 	ErrNetworkTargetDenied,
 	ErrNetworkRateLimited,
 	ErrRuntimeUnavailable,

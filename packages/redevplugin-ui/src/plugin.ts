@@ -51,3 +51,5 @@ export type {
   PluginExecutionWaitOptions,
   PluginStream,
 } from "./capability-client.js";
+export { openPluginConnection } from "./connections.js";
+export type { PluginWebConnection, PluginConnectionOptions } from "./connections.js";

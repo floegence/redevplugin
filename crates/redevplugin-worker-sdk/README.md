@@ -58,3 +58,17 @@ code does not import separate storage or network modules.
 The SDK returns structured `WorkerError` values. Broker failures retain their
 stable platform code and user-safe message instead of exposing transport or
 credential details.
+
+## Explicit Network Connectors
+
+Every HTTP, WebSocket, TCP and UDP open option requires connector_id. It must
+name a connector in the current method's broker_access.network; a plugin-wide
+network.client grant alone never authorizes an outbound request. HTTP checks the
+actual method on each redirect. Persistent operation names are http /
+http_stream, websocket, tcp, and udp; there are no legacy operation aliases.
+
+The Host owns target policy, DNS classification, exact-address dialing and bounded
+connection lifetime. Close, cancellation, expiry and revocation interrupt pending
+I/O. A streaming body cannot be replayed through a 307/308 redirect. After a write
+is dispatched, an error may mean the remote peer already received bytes: inspect
+the result before deciding on a new application-level operation.

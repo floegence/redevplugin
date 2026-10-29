@@ -965,7 +965,7 @@ func TestValidateRejectsInvalidMethodScopedBrokerAccess(t *testing.T) {
 			mutate: func(m *Manifest) {
 				m.NetworkAccess.Connectors[0].Transport = "websocket"
 				m.Methods[1].BrokerAccess.Network[0] = NetworkBrokerAccessSpec{
-					ConnectorID: "forecast", Transport: "websocket", Operations: []string{"websocket_round_trip"},
+					ConnectorID: "forecast", Transport: "websocket", Operations: []string{"websocket"},
 				}
 			},
 		},

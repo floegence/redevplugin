@@ -923,6 +923,11 @@ var routes = []routeSpec{
 	queryRoute("/_redevplugin/api/plugins/retained-data/query", websecurity.RouteActionListRetainedData, func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", websecurity.RouteActionDeleteRetainedData, func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", websecurity.RouteActionCleanupExpiredRetainedData, func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/connections/review", websecurity.RouteActionReviewConnection, func(h *Handler) http.HandlerFunc { return h.handleReviewConnection }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/connections/approve", websecurity.RouteActionApproveConnection, func(h *Handler) http.HandlerFunc { return h.handleApproveConnection }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/connections/cancel", websecurity.RouteActionCancelConnectionReview, func(h *Handler) http.HandlerFunc { return h.handleCancelConnectionReview }),
+	queryRoute("/_redevplugin/api/plugins/connections/query", websecurity.RouteActionListConnections, func(h *Handler) http.HandlerFunc { return h.handleListConnections }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/connections/revoke", websecurity.RouteActionRevokeConnection, func(h *Handler) http.HandlerFunc { return h.handleRevokeConnection }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/file-resources/surface-io", websecurity.RouteActionSurfaceFile, func(h *Handler) http.HandlerFunc { return h.handleSurfaceFile }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/file-resources/select", websecurity.RouteActionSelectFileResource, func(h *Handler) http.HandlerFunc { return h.handleSelectFileResource }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/file-resources/approve", websecurity.RouteActionApproveFileResource, func(h *Handler) http.HandlerFunc { return h.handleApproveFileResource }),
@@ -3290,6 +3295,10 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin session teardown is incomplete"
 	case security.ErrSessionFenceCapacity:
 		return "plugin session fence capacity is exhausted"
+	case security.ErrConnectionUnavailable:
+		return "connection is unavailable; review its configuration"
+	case security.ErrConnectionConflict:
+		return "connection changed; reload its configuration before reviewing again"
 	case security.ErrCSRFRequired:
 		return "csrf token is required"
 	case security.ErrCSRFInvalid:

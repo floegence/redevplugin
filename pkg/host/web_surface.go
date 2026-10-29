@@ -48,6 +48,8 @@ type WebSurfaceDocument struct {
 }
 
 type webSurfaceBinding struct {
+	ctx              context.Context
+	cancel           context.CancelFunc
 	origin           SurfaceOrigin
 	owner            sessionctx.Context
 	request          surfaceAssetSessionRequest
@@ -127,6 +129,9 @@ func (h *Host) prepareWebSurface(ctx context.Context, session sessionctx.Context
 	now := assetSession.IssuedAt
 	for key, item := range h.webSurfaces.byOrigin {
 		if !item.expiresAt.After(now) {
+			if item.cancel != nil {
+				item.cancel()
+			}
 			delete(h.webSurfaces.byOrigin, key)
 		}
 	}
@@ -136,6 +141,7 @@ func (h *Host) prepareWebSurface(ctx context.Context, session sessionctx.Context
 	if _, exists := h.webSurfaces.byOrigin[origin.Origin]; exists {
 		return WebSurfaceDocument{}, errors.New("surface origin has already been allocated")
 	}
+	binding.ctx, binding.cancel = context.WithCancel(h.lifecycleCtx)
 	h.webSurfaces.byOrigin[origin.Origin] = binding
 	return WebSurfaceDocument{SchemaVersion: WebSurfaceSchemaVersion, Origin: origin.Origin, ParentOrigin: origin.ParentOrigin, BootstrapURL: origin.Origin + WebSurfacePlatformPath + "bootstrap#" + entryToken, EntryURL: origin.Origin + "/" + strings.TrimPrefix(surface.Entry, surface.Web.Root+"/")}, nil
 }
@@ -307,6 +313,9 @@ func (h *Host) removeWebSurfaces(match func(*webSurfaceBinding) bool) {
 	defer h.webSurfaces.mu.Unlock()
 	for key, binding := range h.webSurfaces.byOrigin {
 		if match(binding) {
+			if binding.cancel != nil {
+				binding.cancel()
+			}
 			delete(h.webSurfaces.byOrigin, key)
 			if h.runtimeIO != nil {
 				_ = h.runtimeIO.service.Revoke(func(owner resourceio.Owner) bool {

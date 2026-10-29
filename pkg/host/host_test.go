@@ -6562,11 +6562,11 @@ func workerNetworkFixtureManifestJSON() string {
 func workerNetworkBrokerAccessJSON(transport connectivity.Transport) string {
 	switch transport {
 	case connectivity.TransportWebSocket:
-		return `"broker_access": {"network": [{"connector_id": "stream", "transport": "websocket", "operations": ["websocket_round_trip"]}]},`
+		return `"broker_access": {"network": [{"connector_id": "stream", "transport": "websocket", "operations": ["websocket"]}]},`
 	case connectivity.TransportTCP:
-		return `"broker_access": {"network": [{"connector_id": "mysql", "transport": "tcp", "operations": ["tcp_round_trip"]}]},`
+		return `"broker_access": {"network": [{"connector_id": "mysql", "transport": "tcp", "operations": ["tcp"]}]},`
 	case connectivity.TransportUDP:
-		return `"broker_access": {"network": [{"connector_id": "metrics", "transport": "udp", "operations": ["udp_round_trip"]}]},`
+		return `"broker_access": {"network": [{"connector_id": "metrics", "transport": "udp", "operations": ["udp"]}]},`
 	default:
 		return `"broker_access": {"network": [{"connector_id": "api", "transport": "http", "operations": ["http", "http_stream"], "http_methods": ["GET", "POST"]}]},`
 	}

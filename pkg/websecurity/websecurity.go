@@ -23,6 +23,11 @@ type RouteAction = host.ManagementAction
 
 const (
 	RouteActionImportLocalPackage         = host.ManagementActionImportLocalPackage
+	RouteActionReviewConnection           = host.ManagementActionReviewConnection
+	RouteActionApproveConnection          = host.ManagementActionApproveConnection
+	RouteActionCancelConnectionReview     = host.ManagementActionCancelConnectionReview
+	RouteActionListConnections            = host.ManagementActionListConnections
+	RouteActionRevokeConnection           = host.ManagementActionRevokeConnection
 	RouteActionSurfaceFile                = host.ManagementActionSurfaceFile
 	RouteActionSelectFileResource         = host.ManagementActionSelectFileResource
 	RouteActionApproveFileResource        = host.ManagementActionApproveFileResource

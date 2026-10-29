@@ -2,12 +2,12 @@ package resourceio
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +38,8 @@ type HTTPRequest struct {
 	Headers   []Header
 	Redirect  RedirectMode
 	Timeout   time.Duration
-	Authorize func(context.Context, *url.URL) error
+	Authorize func(context.Context, *http.Request) error
+	Transport http.RoundTripper
 }
 
 type HTTPResponse struct {
@@ -49,13 +50,15 @@ type HTTPResponse struct {
 }
 
 type HTTPUpload struct {
-	mu         sync.Mutex
-	writer     *io.PipeWriter
-	result     <-chan httpResult
-	resultOnce sync.Once
-	terminal   httpResult
-	cancel     context.CancelFunc
-	closed     bool
+	mu          sync.Mutex
+	writer      *io.PipeWriter
+	result      <-chan httpResult
+	resultOnce  sync.Once
+	terminal    httpResult
+	cancel      context.CancelFunc
+	closed      bool
+	transferred bool
+	aborted     bool
 }
 
 type httpResult struct {
@@ -81,12 +84,15 @@ func BeginHTTP(ctx context.Context, request HTTPRequest) (*HTTPUpload, error) {
 	if err != nil {
 		return nil, err
 	}
-	requestCtx, cancel := context.WithCancel(ctx)
+	var requestCtx context.Context
+	var cancel context.CancelFunc
 	if request.Timeout > 0 {
 		requestCtx, cancel = context.WithTimeout(ctx, request.Timeout)
+	} else {
+		requestCtx, cancel = context.WithCancel(ctx)
 	}
 	if request.Authorize != nil {
-		if err := request.Authorize(requestCtx, parsed); err != nil {
+		if err := request.Authorize(requestCtx, &http.Request{Method: request.Method, URL: parsed}); err != nil {
 			cancel()
 			return nil, err
 		}
@@ -101,8 +107,13 @@ func BeginHTTP(ctx context.Context, request HTTPRequest) (*HTTPUpload, error) {
 	}
 	req.Header = headers
 	result := make(chan httpResult, 1)
-	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
-	client := &http.Client{Transport: transport}
+	if request.Transport == nil {
+		cancel()
+		_ = pipeReader.Close()
+		_ = pipeWriter.Close()
+		return nil, os.ErrPermission
+	}
+	client := &http.Client{Transport: request.Transport}
 	client.CheckRedirect = func(next *http.Request, previous []*http.Request) error {
 		if len(previous) >= 10 {
 			return errors.New("HTTP redirect limit exceeded")
@@ -111,18 +122,18 @@ func BeginHTTP(ctx context.Context, request HTTPRequest) (*HTTPUpload, error) {
 			return http.ErrUseLastResponse
 		}
 		if request.Authorize != nil {
-			return request.Authorize(next.Context(), next.URL)
+			return request.Authorize(next.Context(), next)
 		}
 		return nil
 	}
 	go func() {
-		defer transport.CloseIdleConnections()
 		response, requestErr := client.Do(req)
 		if requestErr != nil {
 			_ = pipeReader.CloseWithError(requestErr)
 			result <- httpResult{err: requestErr}
 			return
 		}
+		_ = pipeReader.Close()
 		if request.Redirect == RedirectError && response.StatusCode >= 300 && response.StatusCode < 400 {
 			_ = response.Body.Close()
 			result <- httpResult{err: errors.New("HTTP redirect is not allowed")}
@@ -137,7 +148,7 @@ func BeginHTTP(ctx context.Context, request HTTPRequest) (*HTTPUpload, error) {
 			Status:   response.StatusCode,
 			Headers:  headerPairs(response.Header),
 			FinalURL: response.Request.URL.String(),
-			Body:     response.Body,
+			Body:     &cancelHTTPBody{ReadCloser: response.Body, cancel: cancel},
 		}}
 	}()
 	return &HTTPUpload{writer: pipeWriter, result: result, cancel: cancel}, nil
@@ -215,6 +226,8 @@ func (upload *HTTPUpload) WriteChunk(ctx context.Context, value []byte, flags ui
 		return 0, ctx.Err()
 	default:
 	}
+	stop := context.AfterFunc(ctx, func() { _ = upload.Abort(ctx.Err()) })
+	defer stop()
 	written, err := writer.Write(value)
 	if err == nil {
 		return written, nil
@@ -248,6 +261,15 @@ func (upload *HTTPUpload) Finish() (*HTTPResponse, error) {
 	result := upload.awaitResult()
 	if result.err != nil {
 		upload.cancel()
+	} else {
+		upload.mu.Lock()
+		if upload.aborted {
+			upload.mu.Unlock()
+			_ = result.response.Body.Close()
+			return nil, context.Canceled
+		}
+		upload.transferred = true
+		upload.mu.Unlock()
 	}
 	return result.response, result.err
 }
@@ -264,23 +286,30 @@ func (upload *HTTPUpload) Abort(cause error) error {
 		return nil
 	}
 	upload.mu.Lock()
-	if upload.writer == nil || upload.closed {
+	if upload.writer == nil || upload.transferred {
 		upload.mu.Unlock()
 		return nil
 	}
 	upload.closed = true
+	upload.aborted = true
 	writer := upload.writer
 	upload.mu.Unlock()
 	if cause == nil {
 		cause = context.Canceled
 	}
 	upload.cancel()
-	return writer.CloseWithError(cause)
+	err := writer.CloseWithError(cause)
+	result := upload.awaitResult()
+	if result.response != nil {
+		err = errors.Join(err, result.response.Body.Close())
+	}
+	return err
 }
 
 func (upload *HTTPUpload) Close() error { return upload.Abort(context.Canceled) }
 
 type TCPConnectOptions struct {
+	Dial      func(context.Context, TCPConnectOptions) (net.Conn, error)
 	Address   string
 	Timeout   time.Duration
 	NoDelay   bool
@@ -288,28 +317,52 @@ type TCPConnectOptions struct {
 }
 
 type TCPStream struct {
-	connection *net.TCPConn
+	connection net.Conn
 }
 
 func OpenTCP(ctx context.Context, options TCPConnectOptions) (*TCPStream, error) {
-	dialer := net.Dialer{Timeout: options.Timeout, KeepAlive: options.KeepAlive}
-	connection, err := dialer.DialContext(ctx, "tcp", options.Address)
+	if options.Dial == nil {
+		return nil, os.ErrPermission
+	}
+	connection, err := options.Dial(ctx, options)
 	if err != nil {
 		return nil, err
 	}
-	tcp, ok := connection.(*net.TCPConn)
-	if !ok {
-		_ = connection.Close()
-		return nil, errors.New("TCP socket has an unexpected type")
-	}
-	if err := tcp.SetNoDelay(options.NoDelay); err != nil {
-		_ = tcp.Close()
-		return nil, err
-	}
-	return &TCPStream{connection: tcp}, nil
+	return &TCPStream{connection: connection}, nil
 }
 
 func (*TCPStream) FullDuplexResource() {}
+
+func (stream *TCPStream) ReadChunk(ctx context.Context, p []byte) (int, uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = stream.Close() })
+	defer stop()
+	n, err := stream.Read(p)
+	if ctx.Err() != nil {
+		return n, 0, ctx.Err()
+	}
+	if errors.Is(err, io.EOF) {
+		return n, IOFlagEOF, nil
+	}
+	return n, 0, err
+}
+func (stream *TCPStream) WriteChunk(ctx context.Context, p []byte, flags uint32) (int, error) {
+	if flags != 0 {
+		return 0, ErrInvalidHandle
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = stream.Close() })
+	defer stop()
+	n, err := stream.Write(p)
+	if ctx.Err() != nil {
+		return n, ctx.Err()
+	}
+	return n, err
+}
 
 func (stream *TCPStream) Read(destination []byte) (int, error) {
 	if stream == nil || stream.connection == nil {
@@ -339,9 +392,15 @@ func (stream *TCPStream) Shutdown(direction TCPShutdown) error {
 	}
 	switch direction {
 	case TCPShutdownRead:
-		return stream.connection.CloseRead()
+		if conn, ok := stream.connection.(interface{ CloseRead() error }); ok {
+			return conn.CloseRead()
+		}
+		return ErrInvalidHandle
 	case TCPShutdownWrite:
-		return stream.connection.CloseWrite()
+		if conn, ok := stream.connection.(interface{ CloseWrite() error }); ok {
+			return conn.CloseWrite()
+		}
+		return ErrInvalidHandle
 	case TCPShutdownBoth:
 		return stream.connection.Close()
 	default:
@@ -425,28 +484,28 @@ func (listener *TCPListener) Close() error {
 }
 
 type UDPResource struct {
-	connection *net.UDPConn
+	connection DatagramConnection
 }
 
-func OpenUDP(ctx context.Context, address string, timeout time.Duration) (*UDPResource, error) {
-	destination, err := net.ResolveUDPAddr("udp", address)
+type DatagramConnection interface {
+	net.Conn
+	ReadMsgUDP([]byte, []byte) (int, int, int, *net.UDPAddr, error)
+}
+
+func OpenUDP(ctx context.Context, address string, timeout time.Duration, dial func(context.Context, string, time.Duration) (DatagramConnection, error)) (*UDPResource, error) {
+	if dial == nil {
+		return nil, os.ErrPermission
+	}
+	connection, err := dial(ctx, address, timeout)
 	if err != nil {
 		return nil, err
 	}
-	dialer := net.Dialer{Timeout: timeout}
-	connection, err := dialer.DialContext(ctx, "udp", destination.String())
-	if err != nil {
-		return nil, err
-	}
-	udp, ok := connection.(*net.UDPConn)
-	if !ok {
-		_ = connection.Close()
-		return nil, errors.New("connected UDP socket has an unexpected type")
-	}
-	return &UDPResource{connection: udp}, nil
+	return &UDPResource{connection: connection}, nil
 }
 
 func (resource *UDPResource) ReadChunk(ctx context.Context, destination []byte) (int, uint32, error) {
+	stop := context.AfterFunc(ctx, func() { _ = resource.Close() })
+	defer stop()
 	if resource == nil || resource.connection == nil {
 		return 0, 0, ErrResourceClosed
 	}
@@ -462,6 +521,8 @@ func (resource *UDPResource) ReadChunk(ctx context.Context, destination []byte) 
 }
 
 func (resource *UDPResource) WriteChunk(ctx context.Context, source []byte, flags uint32) (int, error) {
+	stop := context.AfterFunc(ctx, func() { _ = resource.Close() })
+	defer stop()
 	if resource == nil || resource.connection == nil {
 		return 0, ErrResourceClosed
 	}
@@ -487,6 +548,8 @@ func (*UDPResource) FullDuplexResource() {}
 const maxWebSocketMessageBytes int64 = 64 << 20
 
 type WebSocketOpen struct {
+	Lifetime     context.Context
+	Open         func(context.Context, WebSocketOpen) (WebSocketStream, http.Header, func() error, error)
 	URL          string
 	Headers      []Header
 	Subprotocols []string
@@ -501,7 +564,9 @@ type WebSocketConnection struct {
 }
 
 type WebSocketResource struct {
-	connection *websocket.Conn
+	lifetime        context.Context
+	connection      WebSocketStream
+	closeConnection func() error
 
 	readMu      sync.Mutex
 	reader      io.Reader
@@ -520,8 +585,7 @@ func OpenWebSocket(ctx context.Context, request WebSocketOpen) (WebSocketConnect
 	if err != nil || (parsed.Scheme != "ws" && parsed.Scheme != "wss") || parsed.Host == "" || parsed.User != nil {
 		return WebSocketConnection{}, errors.New("invalid WebSocket URL")
 	}
-	headers, err := normalizedHTTPHeaders(request.Headers)
-	if err != nil {
+	if _, err := normalizedHTTPHeaders(request.Headers); err != nil {
 		return WebSocketConnection{}, err
 	}
 	if request.Authorize != nil {
@@ -529,25 +593,18 @@ func OpenWebSocket(ctx context.Context, request WebSocketOpen) (WebSocketConnect
 			return WebSocketConnection{}, err
 		}
 	}
-	dialCtx := ctx
-	if request.Timeout > 0 {
-		var cancel context.CancelFunc
-		dialCtx, cancel = context.WithTimeout(ctx, request.Timeout)
-		defer cancel()
+	if request.Open == nil {
+		return WebSocketConnection{}, os.ErrPermission
 	}
-	connection, response, err := websocket.Dial(dialCtx, parsed.String(), &websocket.DialOptions{HTTPHeader: headers, Subprotocols: append([]string(nil), request.Subprotocols...)})
+	connection, responseHeaders, closeConnection, err := request.Open(ctx, request)
 	if err != nil {
 		return WebSocketConnection{}, err
 	}
-	connection.SetReadLimit(maxWebSocketMessageBytes)
-	result := WebSocketConnection{Resource: &WebSocketResource{connection: connection}, Protocol: connection.Subprotocol()}
-	if response != nil {
-		result.ResponseHeaders = headerPairs(response.Header)
-		if response.Body != nil {
-			_ = response.Body.Close()
-		}
+	lifetime := request.Lifetime
+	if lifetime == nil {
+		lifetime = ctx
 	}
-	return result, nil
+	return WebSocketConnection{Resource: &WebSocketResource{lifetime: lifetime, connection: connection, closeConnection: closeConnection}, Protocol: connection.Subprotocol(), ResponseHeaders: headerPairs(responseHeaders)}, nil
 }
 
 func (*WebSocketResource) FullDuplexResource() {}
@@ -558,8 +615,13 @@ func (resource *WebSocketResource) ReadChunk(ctx context.Context, destination []
 	}
 	resource.readMu.Lock()
 	defer resource.readMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = resource.Close() })
+	defer stop()
 	if resource.reader == nil {
-		messageType, reader, err := resource.connection.Reader(ctx)
+		messageType, reader, err := resource.connection.Reader(resource.lifetime)
 		if err != nil {
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
 				return 0, IOFlagEOF, nil
@@ -602,6 +664,11 @@ func (resource *WebSocketResource) WriteOwnedChunk(ctx context.Context, owner Ow
 	}
 	resource.writeMu.Lock()
 	defer resource.writeMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = resource.Close() })
+	defer stop()
 	messageTypeFlags := flags & (IOFlagText | IOFlagBinary)
 	if flags&^(IOFlagText|IOFlagBinary|IOFlagMessageEnd) != 0 || messageTypeFlags == IOFlagText|IOFlagBinary {
 		return 0, ErrInvalidHandle
@@ -614,7 +681,7 @@ func (resource *WebSocketResource) WriteOwnedChunk(ctx context.Context, owner Ow
 		if messageTypeFlags == IOFlagBinary {
 			messageType = websocket.MessageBinary
 		}
-		writer, err := resource.connection.Writer(ctx, messageType)
+		writer, err := resource.connection.Writer(resource.lifetime, messageType)
 		if err != nil {
 			return 0, err
 		}
@@ -667,9 +734,41 @@ func (resource *WebSocketResource) Close() error {
 	if resource == nil || resource.connection == nil {
 		return nil
 	}
-	err := resource.connection.CloseNow()
+	err := resource.closeConnection()
 	if errors.Is(err, net.ErrClosed) {
 		return nil
 	}
 	return err
+}
+
+type cancelHTTPBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelHTTPBody) Close() error { b.cancel(); return b.ReadCloser.Close() }
+
+type WebSocketStream interface {
+	Reader(context.Context) (websocket.MessageType, io.Reader, error)
+	Writer(context.Context, websocket.MessageType) (io.WriteCloser, error)
+	Ping(context.Context) error
+	Subprotocol() string
+	Close(websocket.StatusCode, string) error
+	CloseNow() error
+}
+
+func (b *cancelHTTPBody) ReadChunk(ctx context.Context, p []byte) (int, uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = b.Close() })
+	defer stop()
+	n, err := b.Read(p)
+	if ctx.Err() != nil {
+		return n, 0, ctx.Err()
+	}
+	if errors.Is(err, io.EOF) {
+		return n, IOFlagEOF, nil
+	}
+	return n, 0, err
 }

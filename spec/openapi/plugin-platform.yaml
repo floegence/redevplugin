@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.5.0
+  version: 3.6.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -12,6 +12,86 @@ x-redevplugin-query-policy:
     post_query: required
     mutation: required
 paths:
+  /_redevplugin/api/plugins/connections/review:
+    post:
+      operationId: reviewConnection
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/connections.schema.json#/$defs/review_request" }
+      responses:
+        "200":
+          description: Controlled connection result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReviewConnectionSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/connections/approve:
+    post:
+      operationId: approveConnection
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/connections.schema.json#/$defs/review_reference" }
+      responses:
+        "200":
+          description: Controlled connection result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApproveConnectionSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/connections/cancel:
+    post:
+      operationId: cancelConnectionReview
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/connections.schema.json#/$defs/review_reference" }
+      responses:
+        "200":
+          description: Controlled connection result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CancelConnectionReviewSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/connections/query:
+    post:
+      operationId: listConnections
+      x-redevplugin-route-effect: query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/connections.schema.json#/$defs/list_request" }
+      responses:
+        "200":
+          description: Controlled connection result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListConnectionsSuccessResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/connections/revoke:
+    post:
+      operationId: revokeConnection
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/connections.schema.json#/$defs/revoke_request" }
+      responses:
+        "200":
+          description: Controlled connection result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevokeConnectionSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/file-resources/select:
     post:
       operationId: selectFileResource
@@ -1207,6 +1287,51 @@ components:
           schema:
             $ref: "#/components/schemas/PatchSettingsRequest"
   schemas:
+    ReviewConnectionSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "../plugin/connections.schema.json#/$defs/review_result" }
+    ApproveConnectionSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "../plugin/connections.schema.json#/$defs/connection" }
+    CancelConnectionReviewSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { type: object, additionalProperties: false, required: [canceled], properties: { canceled: { const: true } } }
+    ListConnectionsSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "../plugin/connections.schema.json#/$defs/connection_list" }
+    RevokeConnectionSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { type: object, additionalProperties: false, required: [revoked], properties: { revoked: { const: true } } }
+    ConnectionReviewRequest:
+      $ref: "../plugin/connections.schema.json#/$defs/review_request"
+    ConnectionReviewReference:
+      $ref: "../plugin/connections.schema.json#/$defs/review_reference"
+    ConnectionListRequest:
+      $ref: "../plugin/connections.schema.json#/$defs/list_request"
+    ConnectionRevokeRequest:
+      $ref: "../plugin/connections.schema.json#/$defs/revoke_request"
+    ConnectionInfo:
+      $ref: "../plugin/connections.schema.json#/$defs/connection"
     SelectFileResourceSuccessResponse:
       type: object
       additionalProperties: false
@@ -1933,6 +2058,8 @@ components:
         - PLUGIN_EXECUTION_BLOCKED
         - PLUGIN_EXECUTION_NOT_FOUND
         - PLUGIN_EXECUTION_NOT_CANCELABLE
+        - PLUGIN_CONNECTION_UNAVAILABLE
+        - PLUGIN_CONNECTION_CONFLICT
         - PLUGIN_NETWORK_TARGET_DENIED
         - PLUGIN_NETWORK_RATE_LIMITED
         - PLUGIN_RUNTIME_UNAVAILABLE
@@ -2761,16 +2888,28 @@ components:
         operations:
           type: array
           uniqueItems: true
-          items: { type: string, enum: [http, http_stream, websocket_round_trip, tcp_round_trip, udp_round_trip] }
+          items: { type: string, enum: [http, http_stream, websocket, tcp, udp] }
         http_methods:
           type: array
           uniqueItems: true
           items: { type: string, enum: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS] }
+    ExternalPackageNetworkSurfaceAccessSummary:
+      type: object
+      additionalProperties: false
+      required: [surface_id, operations, http_methods]
+      properties:
+        surface_id: { type: string, minLength: 1 }
+        operations: { type: array, uniqueItems: true, items: { enum: [http, http_stream] } }
+        http_methods: { type: array, uniqueItems: true, items: { enum: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS] } }
     ExternalPackageNetworkSummary:
       type: object
-      required: [connector_id, transport, scope, destinations, auth_declared, tls_declared, method_access]
+      required: [connector_id, transport, scope, destinations, auth_declared, tls_declared, method_access, configurable, surface_access]
       additionalProperties: false
       properties:
+        configurable: { type: boolean }
+        surface_access:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageNetworkSurfaceAccessSummary" }
         connector_id: { type: string, minLength: 1 }
         transport: { type: string, enum: [http, websocket, tcp, udp] }
         scope: { $ref: "#/components/schemas/ResourceScopeKind" }

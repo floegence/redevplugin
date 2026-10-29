@@ -459,6 +459,9 @@ type CapabilityModule struct {
 }
 
 type ConnectivityModule struct {
+	TLS             NetworkTLSResolver
+	PrivateNetwork  PrivateNetworkPolicy
+	Secrets         NetworkSecretResolver
 	Broker          connectivity.Broker
 	NetworkExecutor connectivity.NetworkExecutor
 }
@@ -577,6 +580,10 @@ type Host struct {
 	webSurfaces          *webSurfaceBindings
 	webOrigins           SurfaceOriginAdapter
 	selectedFiles        *selectedFileAuthority
+	connections          *connectionAuthority
+	networkSecrets       NetworkSecretResolver
+	networkTLS           NetworkTLSResolver
+	privateNetworkPolicy PrivateNetworkPolicy
 	surfaceGenerationID  string
 	lifecycleLocks       *pluginLifecycleLockRegistry
 	executions           *executionLeaseRegistry
@@ -1525,6 +1532,13 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		picker = config.Files.Picker
 	}
 	host.selectedFiles = newSelectedFileAuthority(host, picker)
+	host.connections = newConnectionAuthority(host)
+	host.runtimeIO.connections = host.connections
+	if config.Connectivity != nil {
+		host.networkSecrets = config.Connectivity.Secrets
+		host.networkTLS = config.Connectivity.TLS
+		host.privateNetworkPolicy = config.Connectivity.PrivateNetwork
+	}
 	if config.Files != nil {
 		host.runtimeIO.service.SetSelectedResources(host.selectedFiles)
 	}
@@ -2196,6 +2210,7 @@ func (h *Host) revokeAuthenticatedSessionScope(
 	if err := h.cleanupExternalPackageInspectionArtifactsForScope(scope); err != nil {
 		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
+	h.connections.revokeSession(scope)
 	if snapshot.State == sessionscope.StateComplete {
 		result = revokeSessionScopeResult(snapshot)
 		auditDetails = sessionRevokeAuditDetails(result)
@@ -7085,6 +7100,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		grantedPermissions[permissionID] = true
 	}
 	runtimeIORegistration, err := newHostRuntimeIORegistration(resourceio.Invocation{
+		PolicyRevision: record.PolicyRevision,
 		Owner: resourceio.Owner{
 			PluginInstanceID:   record.PluginInstanceID,
 			ActiveFingerprint:  record.ActiveFingerprint,
@@ -7108,7 +7124,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
-	if err := h.runtimeIO.register(invocationID, runtimeIORegistration); err != nil {
+	if err := h.runtimeIO.register(executionCtx, invocationID, runtimeIORegistration); err != nil {
 		return dispatch, err
 	}
 	defer func() {
@@ -7897,6 +7913,9 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	if ownerEnvHash == "" {
 		return fmt.Errorf("%w: plugin owner environment is missing", ErrOwnerScopeMismatch)
 	}
+	if h.connections != nil {
+		h.connections.revokePlugin(ownerEnvHash, record.PluginInstanceID)
+	}
 	h.removeWebSurfaces(func(b *webSurfaceBinding) bool {
 		return b.pluginInstanceID == record.PluginInstanceID && b.owner.OwnerEnvHash == record.OwnerEnvHash
 	})
@@ -8038,25 +8057,31 @@ func (h *Host) ReportHTTPAdapterFailure(ctx context.Context, operation string, c
 }
 
 func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
+	revoke, err := h.checkRunnable(ctx, record)
+	if err != nil && revoke {
+		return errors.Join(err, h.revokeDeniedPluginRuntime(ctx, record, time.Now().UTC()))
+	}
+	return err
+}
+
+// checkRunnable performs trust and policy checks without draining the caller's
+// own execution. Resource admission uses this read-only check before taking locks.
+func (h *Host) checkRunnable(ctx context.Context, record registry.PluginRecord) (bool, error) {
 	if !registry.RunnablePluginRecord(record) {
 		if record.TrustState == registry.TrustUnavailable || record.SignatureAssessment.Status == registry.SignatureUnavailable {
-			return fmt.Errorf("%w: trust_state %q", ErrPluginTrustUnavailable, record.TrustState)
+			return false, fmt.Errorf("%w: trust_state %q", ErrPluginTrustUnavailable, record.TrustState)
 		}
-		return fmt.Errorf("%w: trust_state %q", ErrPluginTrustDenied, record.TrustState)
+		return false, fmt.Errorf("%w: trust_state %q", ErrPluginTrustDenied, record.TrustState)
 	}
 	if err := h.validateExternalPackageSignatureFreshness(ctx, record); err != nil {
-		return err
+		return true, err
 	}
 	if record.TrustState == registry.TrustUnsignedLocal {
 		if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
-			now := time.Now().UTC()
-			if cleanupErr := h.revokeDeniedPluginRuntime(ctx, record, now); cleanupErr != nil {
-				return errors.Join(err, cleanupErr)
-			}
-			return err
+			return true, err
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (h *Host) enforceUnsignedLocalPluginPolicy(ctx context.Context) error {

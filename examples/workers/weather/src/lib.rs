@@ -77,6 +77,7 @@ fn search_locations(params: SearchParams) -> WorkerResult {
         ));
     }
     let payload = http_get(
+        "geocoding",
         "https://geocoding-api.open-meteo.com",
         "/v1/search",
         BTreeMap::from([
@@ -211,6 +212,7 @@ fn fetch_and_cache_forecast(params: &ForecastParams, cache_key: &str) -> WorkerR
         params.timezone.trim()
     };
     let payload = http_get(
+        "forecast",
         "https://api.open-meteo.com",
         "/v1/forecast",
         BTreeMap::from([
@@ -245,6 +247,7 @@ fn forecast_response(mut forecast: Value, cache_state: &str, age_seconds: i64) -
 }
 
 fn http_get(
+    connector_id: &str,
     destination: &str,
     path: &str,
     query: BTreeMap<String, Vec<String>>,
@@ -260,6 +263,7 @@ fn http_get(
         .join("&");
     let url = format!("{destination}{path}?{query}");
     let response = http::RequestBody::begin(http::HttpRequest {
+        connector_id: connector_id.to_string(),
         method: "GET".to_string(),
         url,
         headers: vec![],

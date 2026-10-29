@@ -183,6 +183,23 @@
               },
               "spa": {
                 "type": "boolean"
+              },
+              "network": {
+                "type": "array",
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/network_access"
+                    },
+                    {
+                      "properties": {
+                        "transport": {
+                          "const": "http"
+                        }
+                      }
+                    }
+                  ]
+                }
               }
             }
           }
@@ -289,84 +306,7 @@
                 "type": "array",
                 "uniqueItems": true,
                 "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "connector_id",
-                    "transport",
-                    "operations"
-                  ],
-                  "properties": {
-                    "connector_id": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 128
-                    },
-                    "transport": {
-                      "enum": [
-                        "http",
-                        "websocket",
-                        "tcp",
-                        "udp"
-                      ]
-                    },
-                    "operations": {
-                      "type": "array",
-                      "minItems": 1,
-                      "uniqueItems": true,
-                      "items": {
-                        "enum": [
-                          "http",
-                          "http_stream",
-                          "websocket_round_trip",
-                          "tcp_round_trip",
-                          "udp_round_trip"
-                        ]
-                      }
-                    },
-                    "http_methods": {
-                      "type": "array",
-                      "minItems": 1,
-                      "uniqueItems": true,
-                      "items": {
-                        "enum": [
-                          "GET",
-                          "HEAD",
-                          "POST",
-                          "PUT",
-                          "PATCH",
-                          "DELETE",
-                          "OPTIONS"
-                        ]
-                      }
-                    }
-                  },
-                  "allOf": [
-                    {
-                      "if": {
-                        "properties": {
-                          "transport": {
-                            "const": "http"
-                          }
-                        },
-                        "required": [
-                          "transport"
-                        ]
-                      },
-                      "then": {
-                        "required": [
-                          "http_methods"
-                        ]
-                      },
-                      "else": {
-                        "not": {
-                          "required": [
-                            "http_methods"
-                          ]
-                        }
-                      }
-                    }
-                  ]
+                  "$ref": "#/$defs/network_access"
                 }
               },
               "process": {
@@ -990,13 +930,14 @@
             "required": [
               "connector_id",
               "transport",
-              "scope",
-              "destinations"
+              "scope"
             ],
             "properties": {
               "connector_id": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
               },
               "transport": {
                 "enum": [
@@ -1024,8 +965,43 @@
               },
               "tls": {
                 "type": "object"
+              },
+              "configurable": {
+                "type": "boolean",
+                "description": "The Host must approve an exact user-configured target. Destinations must be empty when true."
               }
-            }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "configurable": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "configurable"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "destinations": {
+                      "maxItems": 0
+                    }
+                  }
+                },
+                "else": {
+                  "required": [
+                    "destinations"
+                  ],
+                  "properties": {
+                    "destinations": {
+                      "minItems": 1
+                    }
+                  }
+                }
+              }
+            ]
           }
         }
       }
@@ -1718,6 +1694,87 @@
         "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$",
         "maxLength": 128
       }
+    },
+    "network_access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "connector_id",
+        "transport",
+        "operations"
+      ],
+      "properties": {
+        "connector_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+        },
+        "transport": {
+          "enum": [
+            "http",
+            "websocket",
+            "tcp",
+            "udp"
+          ]
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "http",
+              "http_stream",
+              "websocket",
+              "tcp",
+              "udp"
+            ]
+          }
+        },
+        "http_methods": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "GET",
+              "HEAD",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE",
+              "OPTIONS"
+            ]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "transport": {
+                "const": "http"
+              }
+            },
+            "required": [
+              "transport"
+            ]
+          },
+          "then": {
+            "required": [
+              "http_methods"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "http_methods"
+              ]
+            }
+          }
+        }
+      ]
     }
   },
   "allOf": [

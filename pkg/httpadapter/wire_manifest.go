@@ -125,8 +125,9 @@ type manifestWidgetSizeResponse struct {
 }
 
 type manifestSurfaceWebResponse struct {
-	Root string `json:"root"`
-	SPA  bool   `json:"spa"`
+	Network []manifestNetworkAccessResponse `json:"network,omitempty"`
+	Root    string                          `json:"root"`
+	SPA     bool                            `json:"spa"`
 }
 
 type manifestSurfaceResponse struct {
@@ -241,6 +242,7 @@ type manifestStorageResponse struct {
 }
 
 type manifestConnectorResponse struct {
+	Configurable bool           `json:"configurable,omitempty"`
 	ConnectorID  string         `json:"connector_id"`
 	Transport    string         `json:"transport"`
 	Scope        string         `json:"scope"`
@@ -315,7 +317,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		mapped := manifestSurfaceResponse{
 			SurfaceID: surface.SurfaceID, Kind: string(surface.Kind), Intent: string(surface.Intent),
 			Label: surface.Label, Entry: surface.Entry, Icon: surface.Icon,
-			Web: manifestSurfaceWebResponse{Root: surface.Web.Root, SPA: surface.Web.SPA},
+			Web: manifestSurfaceWebResponse{Root: surface.Web.Root, SPA: surface.Web.SPA, Network: publicNetworkAccess(surface.Web.Network)},
 		}
 		if surface.DefaultSize != nil {
 			mapped.DefaultSize = &manifestWidgetSizeResponse{Width: surface.DefaultSize.Width, Height: surface.DefaultSize.Height}
@@ -419,7 +421,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 				return manifestResponse{}, err
 			}
 			network.Connectors[index] = manifestConnectorResponse{
-				ConnectorID: connector.ConnectorID, Transport: connector.Transport, Scope: connector.Scope,
+				ConnectorID: connector.ConnectorID, Transport: connector.Transport, Scope: connector.Scope, Configurable: connector.Configurable,
 				Destinations: append([]string(nil), connector.Destinations...), Auth: auth, TLS: tls,
 			}
 		}
@@ -542,4 +544,15 @@ type webSurfaceDocumentResponse struct {
 
 func publicWebSurfaceDocument(source host.WebSurfaceDocument) webSurfaceDocumentResponse {
 	return webSurfaceDocumentResponse{SchemaVersion: source.SchemaVersion, Origin: source.Origin, ParentOrigin: source.ParentOrigin, BootstrapURL: source.BootstrapURL, EntryURL: source.EntryURL}
+}
+
+func publicNetworkAccess(source []manifest.NetworkBrokerAccessSpec) []manifestNetworkAccessResponse {
+	if source == nil {
+		return nil
+	}
+	result := make([]manifestNetworkAccessResponse, len(source))
+	for i, access := range source {
+		result[i] = manifestNetworkAccessResponse{ConnectorID: access.ConnectorID, Transport: access.Transport, Scope: access.Scope, Operations: append([]string(nil), access.Operations...), HTTPMethods: append([]string(nil), access.HTTPMethods...)}
+	}
+	return result
 }
