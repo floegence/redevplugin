@@ -3,18 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/floegence/redevplugin/v3/pkg/authorproject"
+	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
-	"net/http"
-	"net/http/httptest"
+	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/v3/pkg/testhost"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
 
 func TestAuthorCLIInvokesRealRuntime(t *testing.T) {
@@ -68,35 +67,6 @@ func TestAuthorBrowserWorkflow(t *testing.T) {
 	command.Dir = repo
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("author browser acceptance: %v\n%s", err, output)
-	}
-}
-
-func TestAuthorGuardRejectsForeignHostAndMissingSession(t *testing.T) {
-	guard := authorWebGuard{origin: "http://127.0.0.1:43123", token: "session-secret", csrf: "csrf-secret", session: sessionctx.Context{OwnerSessionHash: "s", OwnerUserHash: "u", OwnerEnvHash: "e", SessionChannelIDHash: "c", CanRead: true, CanWrite: true}}
-	request := httptest.NewRequest(http.MethodPost, guard.origin+"/_redevplugin/api/plugins/catalog/query", nil)
-	if _, err := guard.Authenticate(request); err == nil {
-		t.Fatal("accepted unauthenticated request")
-	}
-	request.AddCookie(&http.Cookie{Name: authorCookie, Value: guard.token})
-	if _, err := guard.Authenticate(request); err != nil {
-		t.Fatal(err)
-	}
-	request.Host = "attacker.example"
-	if _, err := guard.Authenticate(request); err == nil {
-		t.Fatal("accepted DNS rebinding host")
-	}
-	request.Host = "127.0.0.1:43123"
-	request.Header.Set("Origin", "http://attacker.example")
-	if err := guard.ValidateOrigin(request, guard.session, websecurity.OriginPolicyTrustedHost); err == nil {
-		t.Fatal("accepted foreign origin")
-	}
-	request.Header.Set("Origin", guard.origin)
-	if err := guard.ValidateCSRF(request, guard.session, websecurity.CSRFPolicyRequired); err == nil {
-		t.Fatal("accepted missing CSRF token")
-	}
-	request.Header.Set(examplesCSRFHeader, guard.csrf)
-	if err := guard.ValidateCSRF(request, guard.session, websecurity.CSRFPolicyRequired); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -184,5 +154,56 @@ func TestAuthorBuildFailureRetainsPreview(t *testing.T) {
 	state := builds.snapshot()
 	if state.Generation != 4 || state.PluginInstanceID != "existing" || state.Error == "" || state.Building {
 		t.Fatalf("failed build damaged active preview: %#v", state)
+	}
+}
+
+func TestAuthorTestHostOwnsOnlyItsVerifiedRuntime(t *testing.T) {
+	repo := cliRepoRoot(t)
+	runtimePath := buildExamplesRuntime(t, repo)
+	identity := mustInspectCommandRuntimeArtifact(t, runtimePath)
+	ctx := context.Background()
+	newModule := func() *host.RuntimeModule {
+		t.Helper()
+		module, err := newCommandRuntimeModule(ctx, runtimePath, t.TempDir(), identity, 15*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return module
+	}
+	module := newModule()
+	first, err := testhost.Open(ctx, testhost.Options{Runtime: module, Actions: []host.ManagementAction{host.ManagementActionStartRuntime, host.ManagementActionGetRuntimeHealth}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	target, err := runtimetarget.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Host().StartRuntime(first.Context(ctx), host.StartRuntimeRequest{Target: target}); err != nil {
+		t.Fatal(err)
+	}
+	if second, err := testhost.Open(ctx, testhost.Options{Runtime: module}); err == nil {
+		_ = second.Close()
+		t.Fatal("consumed module admitted twice")
+	}
+	health, err := first.Host().RuntimeHealth(first.Context(ctx))
+	if err != nil || !health.Ready {
+		t.Fatalf("failed construction stopped another Host runtime: %+v %v", health, err)
+	}
+	rejected := newModule()
+	if opened, err := testhost.Open(ctx, testhost.Options{Runtime: rejected, Actions: []host.ManagementAction{"unknown.action"}}); err == nil {
+		_ = opened.Close()
+		t.Fatal("invalid actions admitted")
+	}
+	result, err := rejected.Close(ctx)
+	if err != nil || result.Disposition != host.RuntimeModuleAlreadyClosed || result.Outcome != host.MutationOutcomeNotCommitted {
+		t.Fatalf("failure leaked runtime ownership: %+v %v", result, err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Host().RuntimeHealth(first.Context(ctx)); !errors.Is(err, host.ErrActionDenied) {
+		t.Fatalf("closed runtime query = %v", err)
 	}
 }

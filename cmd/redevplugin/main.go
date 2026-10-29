@@ -540,6 +540,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		"ui/index.html":             []byte(scaffoldIndexHTML(pluginID, displayName)),
 		"ui/styles.css":             []byte(scaffoldStylesCSS()),
 		"ui/src/app.ts":             scaffoldSource(scaffoldAppTS, displayName),
+		"rust-toolchain.toml":       []byte("[toolchain]\nchannel = \"1.88.0\"\ntargets = [\"wasm32-unknown-unknown\"]\nprofile = \"minimal\"\n"),
 		"worker/Cargo.toml":         []byte(scaffoldCargoTOML(platformVersion)),
 		"worker/src/lib.rs":         append([]byte(nil), scaffoldWorkerRust...),
 		"dist/manifest.json":        append([]byte(nil), manifestBytes...),
@@ -627,6 +628,10 @@ func scaffoldPackageJSON(platformVersion string) string {
     "@floegence/redevplugin-ui": %q,
     "@floegence/floe-webapp-core": "0.86.65",
     "solid-js": "1.9.17"
+  },
+  "overrides": {
+    "dompurify": "3.4.17",
+    "katex": "0.18.2"
   },
   "devDependencies": {
     "esbuild": "0.25.5",

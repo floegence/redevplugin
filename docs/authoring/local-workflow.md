@@ -2,7 +2,10 @@
 
 Create a project with `redevplugin init <plugin-id> <display-name> <directory>`.
 The generated source uses exact published npm and Cargo SDK versions. Install
-its source dependencies and WASM target before building.
+its source dependencies before building. The generated rust-toolchain.toml pins
+Rust 1.88.0 and wasm32-unknown-unknown; rustup installs that toolchain and target
+on the first Cargo invocation. The generated package keeps audited dependency
+overrides alongside the exact SDK dependencies.
 
 `redevplugin.project.json` is a closed local-source configuration. Its canonical
 schema is `spec/plugin/author-project-v1.schema.json`. The public Go
@@ -43,9 +46,8 @@ The npm `@floegence/redevplugin-ui/testing` entrypoint provides
 `createPluginTestHarness` and `createPluginTestContext`. The fixture uses the
 production PluginBridgeClient, validators, request cancellation, and stable error
 handling. Its BridgeClient constructor can be injected into a plugin UI test;
-call responses and actions remain under the test's control. Render snapshots are
-accepted only after the real client's render acknowledgement. This is a
-business/bridge fixture, not evidence of Host authorization, real DOM rendering,
+call responses remain under the test's control. This is a business/bridge
+fixture, not evidence of Host authorization, real DOM rendering,
 resource brokers, or WASM execution. Those boundaries require the real preview
 and browser/runtime acceptance tests.
 
@@ -65,3 +67,42 @@ Configuration edits require a restart and preserve the last valid preview.
 Confirmation dialogs default to Cancel, restore keyboard focus, and close on
 request invalidation. The CLI author workflow supports the platform's current
 Darwin and Linux runtime targets.
+
+## Public Go test host
+
+Import github.com/floegence/redevplugin/v3/pkg/testhost to compose the real Host,
+HTTP adapter, and Web surface loader. Open(ctx, Options{}) owns a temporary root
+and grants no management, filesystem, or network access. List each permitted
+host.ManagementAction explicitly. AllowLocalPackages permits the development
+provenance path only; it never grants plugin permissions. Use ordinary import,
+grant, revoke, and execution APIs through Harness.Host() and Harness.Context().
+
+Supply explicit Capability, IO, Connectivity, Secrets, CoreAction, or Background
+modules where a test needs product resources. An optional MethodPolicy can deny
+methods in addition to the production permission checks. Runtime accepts only
+the verified module constructor; no fake-manager injection or automatic runtime
+fallback exists. Harness.Events() exposes the existing bounded observability
+store. Pure bridge fixtures and real runtime evidence remain separate.
+
+For persistence tests, pass StateRoot and reuse Harness.Session() on reopen.
+The real file asset store persists packages alongside the control state. Explicit
+roots survive Close; only the harness's own temporary root is removed. Invalid
+control state is admitted before asset-store creation. Close denies new requests,
+closes Host/runtime resources, and then removes owned temporary state. It is
+idempotent. Open takes responsibility for closing an unconsumed RuntimeModule
+on failure and never stops a module already consumed by another Host.
+
+For HTTP tests, bind your own loopback listener, then provide its exact
+http://localhost:<port> ParentOrigin. Harness.Handler(parent) reserves production
+platform routes and serves child origins only through NewWebSurfaceHandler.
+Mount Harness.SessionHandler() on an explicit test-page route to exchange the
+per-instance BrowserToken for an HttpOnly host-only cookie. Harness.NewRequest
+adds the cookie, Origin, and CSRF only for that exact parent origin; it rejects
+external URLs and does not send requests or follow redirects. A browser test
+page obtains CSRFToken() from its parent-owned authenticated bootstrap. Never
+expose these credentials to plugin documents. No handler listens by itself.
+
+The CLI dev/test commands reuse this harness. CLI retains source builds,
+watching, listener ownership, preview UI, and verified runtime admission; the
+shared package owns their test-session and HTTP assembly. The defaults remain
+deny-by-default when the package is imported independently.

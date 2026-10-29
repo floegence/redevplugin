@@ -166,7 +166,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err := json.Unmarshal(output, &summary); err != nil {
 		t.Fatalf("scaffold output decode error = %v: %s", err, output)
 	}
-	if summary.PluginID != "com.example.generated" || len(summary.Files) != 16 {
+	if summary.PluginID != "com.example.generated" || len(summary.Files) != 17 {
 		t.Fatalf("scaffold summary mismatch: %#v", summary)
 	}
 
@@ -1381,4 +1381,31 @@ func prefixLen(length int, maxLength int) int {
 		return length
 	}
 	return maxLength
+}
+
+func TestAuthorTemplatePinsConsumerToolchainAndAuditedOverrides(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "author")
+	if _, err := createPluginScaffold("example.author.inputs", "Author Inputs", dir); err != nil {
+		t.Fatal(err)
+	}
+	toolchain, err := os.ReadFile(filepath.Join(dir, "rust-toolchain.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"channel = \"1.88.0\"", "wasm32-unknown-unknown"} {
+		if !bytes.Contains(toolchain, []byte(want)) {
+			t.Fatalf("toolchain missing %q", want)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg struct{ Overrides map[string]string }
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Overrides["dompurify"] != "3.4.17" || pkg.Overrides["katex"] != "0.18.2" {
+		t.Fatalf("overrides = %+v", pkg.Overrides)
+	}
 }

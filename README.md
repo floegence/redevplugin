@@ -206,6 +206,11 @@ an English fallback or mix locales within one resolved presentation.
   Capability contracts and exact pins are part of the host's closed local
   registry. ReDevPlugin validates that registry at startup and does not resolve
   or publish capability bundles through an independent distribution channel.
+- The public Go package pkg/testhost composes the real Host, HTTP adapter,
+  isolated Web surfaces, durable package assets, and bounded events with explicit
+  test adapters. It denies management and resources by default and is shared by
+  author dev/test. See [local author workflow](docs/authoring/local-workflow.md)
+  for exact-session requests, verified runtime ownership, and persistence tests.
 - `testdata/generated_plugins/minimal`, `networked`, `storage`, and
   `method-contract` are positive generated-plugin fixtures that the platform
   gate validates and packages through the same CLI path. `method-contract`

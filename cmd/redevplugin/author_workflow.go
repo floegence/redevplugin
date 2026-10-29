@@ -3,32 +3,27 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/authorproject"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"github.com/floegence/redevplugin/v3/pkg/host"
-	"github.com/floegence/redevplugin/v3/pkg/httpadapter"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
-	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
+	"github.com/floegence/redevplugin/v3/pkg/testhost"
 	"github.com/floegence/redevplugin/v3/pkg/version"
-	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
 
 //go:embed author_assets/index.html
@@ -39,49 +34,6 @@ var authorJS []byte
 
 //go:embed author_assets/styles.css
 var authorCSS []byte
-
-const authorCookie = "redevplugin_dev_session"
-
-type authorWebGuard struct {
-	origin, token, csrf string
-	session             sessionctx.Context
-}
-
-func (g authorWebGuard) Authenticate(r *http.Request) (sessionctx.Context, error) {
-	cookie, err := r.Cookie(authorCookie)
-	if r.Host != strings.TrimPrefix(g.origin, "http://") || err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(g.token)) != 1 {
-		return sessionctx.Context{}, host.ErrActionDenied
-	}
-	return g.session, nil
-}
-func (g authorWebGuard) ValidateOrigin(r *http.Request, s sessionctx.Context, p websecurity.OriginPolicy) error {
-	return (examplesWebSecurityGuard{origin: g.origin, csrfToken: g.csrf}).ValidateOrigin(r, s, p)
-}
-func (g authorWebGuard) ValidateCSRF(r *http.Request, s sessionctx.Context, p websecurity.CSRFPolicy) error {
-	return (examplesWebSecurityGuard{origin: g.origin, csrfToken: g.csrf}).ValidateCSRF(r, s, p)
-}
-func (g authorWebGuard) AuthorizeRoute(r *http.Request, s sessionctx.Context, a websecurity.RouteAction, e websecurity.RouteEffect) error {
-	return (examplesWebSecurityGuard{}).AuthorizeRoute(r, s, a, e)
-}
-
-func authorRandom() (string, error) {
-	var value [32]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(value[:]), nil
-}
-func authorSession() (sessionctx.Context, error) {
-	values := make([]string, 4)
-	for i := range values {
-		var err error
-		values[i], err = authorRandom()
-		if err != nil {
-			return sessionctx.Context{}, err
-		}
-	}
-	return sessionctx.Context{OwnerSessionHash: values[0], OwnerUserHash: values[1], OwnerEnvHash: values[2], SessionChannelIDHash: values[3], CanRead: true, CanWrite: true}, nil
-}
 
 func authorRuntime(ctx context.Context, stateRoot, path, expectedSHA string) (*host.RuntimeModule, error) {
 	if path == "" || expectedSHA == "" {
@@ -273,37 +225,24 @@ func runAuthorDev(ctx context.Context, args []string) error {
 		return err
 	}
 	defer os.RemoveAll(stateRoot)
-	session, err := authorSession()
-	if err != nil {
-		return err
-	}
-	ctx = sessionctx.WithContext(ctx, session)
-	runtimeModule, err := authorRuntime(ctx, stateRoot, options.runtime, options.sha)
-	if err != nil {
-		return err
-	}
-	config, err := newEphemeralCLIAdapters(stateRoot)
-	if err != nil {
-		_, _ = runtimeModule.Close(context.Background())
-		return err
-	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
 	_, webPort, _ := net.SplitHostPort(listener.Addr().String())
-	webOrigins := localWebOrigins{port: webPort}
-	origin := webOrigins.parentOrigin()
-	config.Runtime = runtimeModule
-	config.Web = &host.WebModule{Origins: webOrigins}
-	config.Background = &host.BackgroundModule{RunnerFactory: host.NewBackgroundWorkerRunner}
-	pluginHost, err := host.Open(ctx, config)
+	origin := "http://localhost:" + webPort
+	runtimeModule, err := authorRuntime(ctx, stateRoot, options.runtime, options.sha)
 	if err != nil {
-		_, _ = runtimeModule.Close(context.Background())
 		return err
 	}
-	defer pluginHost.Close()
+	harness, err := testhost.Open(ctx, authorHostOptions(stateRoot, origin, runtimeModule))
+	if err != nil {
+		return err
+	}
+	defer harness.Close()
+	ctx = harness.Context(ctx)
+	pluginHost := harness.Host()
 	target, err := runtimetarget.Current()
 	if err != nil {
 		return err
@@ -311,35 +250,11 @@ func runAuthorDev(ctx context.Context, args []string) error {
 	if _, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{Target: target}); err != nil {
 		return err
 	}
-	token, err := authorRandom()
-	if err != nil {
-		return err
-	}
-	csrf, err := authorRandom()
-	if err != nil {
-		return err
-	}
-	guard := authorWebGuard{origin: origin, token: token, csrf: csrf, session: session}
-	platform, err := httpadapter.NewHandler(httpadapter.Dependencies{Host: pluginHost, Guard: guard})
-	if err != nil {
-		return err
-	}
+	token, csrf := harness.BrowserToken(), harness.CSRFToken()
+	guard := harness.Guard()
 	state := &authorBuilds{state: authorBuildState{CSRF: csrf, Mode: "real-runtime"}}
 	mux := http.NewServeMux()
-	mux.Handle("/_redevplugin/api/plugins/", platform)
-	mux.HandleFunc("/dev/session", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Header.Get("Origin") != origin {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		raw, err := io.ReadAll(io.LimitReader(r.Body, 128))
-		if err != nil || subtle.ConstantTimeCompare(raw, []byte(token)) != 1 {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		http.SetCookie(w, &http.Cookie{Name: authorCookie, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		w.WriteHeader(http.StatusNoContent)
-	})
+	mux.Handle("/dev/session", harness.SessionHandler())
 	mux.HandleFunc("/dev/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -374,20 +289,7 @@ func runAuthorDev(ctx context.Context, args []string) error {
 		}
 		_, _ = w.Write(body)
 	})
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if r.Host != "localhost:"+webPort {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	})
-	webHandler, err := webOrigins.handler(pluginHost, handler)
-	if err != nil {
-		return err
-	}
+	webHandler := harness.Handler(mux)
 	server := &http.Server{Handler: webHandler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.Serve(listener) }()
@@ -477,34 +379,23 @@ func authorRuntimeCall(ctx context.Context, options authorOptions, raw []byte) (
 		return nil, err
 	}
 	defer os.RemoveAll(root)
-	session, err := authorSession()
-	if err != nil {
-		return nil, err
-	}
-	ctx = sessionctx.WithContext(ctx, session)
-	module, err := authorRuntime(ctx, root, options.runtime, options.sha)
-	if err != nil {
-		return nil, err
-	}
-	config, err := newEphemeralCLIAdapters(root)
-	if err != nil {
-		_, _ = module.Close(context.Background())
-		return nil, err
-	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
 	defer listener.Close()
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
-	config.Web = &host.WebModule{Origins: localWebOrigins{port: port}}
-	config.Runtime = module
-	h, err := host.Open(ctx, config)
+	module, err := authorRuntime(ctx, root, options.runtime, options.sha)
 	if err != nil {
-		_, _ = module.Close(context.Background())
 		return nil, err
 	}
-	defer h.Close()
+	harness, err := testhost.Open(ctx, authorHostOptions(root, "http://localhost:"+port, module))
+	if err != nil {
+		return nil, err
+	}
+	defer harness.Close()
+	ctx = harness.Context(ctx)
+	h := harness.Host()
 	target, err := runtimetarget.Current()
 	if err != nil {
 		return nil, err
@@ -533,4 +424,29 @@ func authorRuntimeCall(ctx context.Context, options authorOptions, raw []byte) (
 		return nil, err
 	}
 	return h.CallPluginMethod(ctx, host.CallMethodRequest{PluginInstanceID: id, SurfaceInstanceID: bootstrap.SurfaceInstanceID, BridgeChannelID: "author_test_bridge", GatewayToken: gateway.GatewayToken, Method: options.method, Params: params})
+}
+
+// The preview permits only actions exposed by its author workflow. Plugin
+// permission grants remain explicit operations through the production Host.
+func authorHostOptions(root, origin string, runtime *host.RuntimeModule) testhost.Options {
+	return testhost.Options{
+		StateRoot: root, ParentOrigin: origin, AllowLocalPackages: true, Runtime: runtime,
+		Connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
+		Secrets:      &host.SecretsModule{Store: secrets.NewMemoryStore()},
+		Background:   &host.BackgroundModule{RunnerFactory: host.NewBackgroundWorkerRunner},
+		Actions: []host.ManagementAction{
+			host.ManagementActionStartRuntime, host.ManagementActionListPlugins,
+			host.ManagementActionImportLocalPackage, host.ManagementActionUpdateLocalPackage,
+			host.ManagementActionOpenSurface, host.ManagementActionPrepareSurface,
+			host.ManagementActionMintBridgeToken, host.ManagementActionDisposeSurface,
+			host.ManagementActionCallPluginMethod, host.ManagementActionPrepareMethodConfirmation,
+			host.ManagementActionRejectSurfaceConfirmation,
+			host.ManagementActionGetPermissionRequirements, host.ManagementActionListPermissionGrants,
+			host.ManagementActionGrantPermission, host.ManagementActionRevokePermission,
+			host.ManagementActionGetSettingsSchema, host.ManagementActionGetPluginSettings,
+			host.ManagementActionPatchPluginSettings, host.ManagementActionListIntents,
+			host.ManagementActionInvokeIntent, host.ManagementActionGetExecution,
+			host.ManagementActionListExecutionEvents, host.ManagementActionCancelExecution,
+		},
+	}
 }
