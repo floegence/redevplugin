@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	RouteAuthorizationWarmupCount       = 8
-	RouteAuthorizationMinBatchCount     = 64
+	RouteAuthorizationWarmupCount       = 32
+	RouteAuthorizationMinBatchCount     = 256
 	RouteAuthorizationMinSampleCount    = 1000
+	RouteAuthorizationWarmupDuration    = time.Second
 	RouteAuthorizationRequestsPerSample = 32
 )
 
@@ -31,6 +32,8 @@ type RouteAuthorizationEnvironment struct {
 
 type RouteAuthorizationMeasurement struct {
 	Concurrency                      int     `json:"concurrency"`
+	WarmupBatches                    int     `json:"warmup_batches"`
+	WarmupNanoseconds                int64   `json:"warmup_nanoseconds"`
 	BatchCount                       int     `json:"batch_count"`
 	SampleCount                      int     `json:"sample_count"`
 	MedianNanoseconds                int64   `json:"median_nanoseconds"`
@@ -43,13 +46,14 @@ type RouteAuthorizationMeasurement struct {
 }
 
 type RouteAuthorizationProfile struct {
-	SchemaVersion     string                          `json:"schema_version"`
-	Variant           string                          `json:"variant"`
-	Commit            string                          `json:"commit"`
-	Environment       RouteAuthorizationEnvironment   `json:"environment"`
-	WarmupCount       int                             `json:"warmup_count"`
-	RequestsPerSample int                             `json:"requests_per_sample"`
-	Measurements      []RouteAuthorizationMeasurement `json:"measurements"`
+	SchemaVersion        string                          `json:"schema_version"`
+	Variant              string                          `json:"variant"`
+	Commit               string                          `json:"commit"`
+	Environment          RouteAuthorizationEnvironment   `json:"environment"`
+	WarmupCount          int                             `json:"warmup_count"`
+	WarmupMinNanoseconds int64                           `json:"warmup_min_nanoseconds"`
+	RequestsPerSample    int                             `json:"requests_per_sample"`
+	Measurements         []RouteAuthorizationMeasurement `json:"measurements"`
 }
 
 func MeasureRouteAuthorization(variant, commit string, invoke func() error) (RouteAuthorizationProfile, error) {
@@ -59,7 +63,7 @@ func MeasureRouteAuthorization(variant, commit string, invoke func() error) (Rou
 		return RouteAuthorizationProfile{}, errors.New("route authorization performance measurement is incomplete")
 	}
 	profile := RouteAuthorizationProfile{
-		SchemaVersion: "redevplugin.route_authorization_performance.v2",
+		SchemaVersion: "redevplugin.route_authorization_performance.v3",
 		Variant:       variant,
 		Commit:        commit,
 		Environment: RouteAuthorizationEnvironment{
@@ -69,19 +73,19 @@ func MeasureRouteAuthorization(variant, commit string, invoke func() error) (Rou
 			GOMAXPROCS:  runtime.GOMAXPROCS(0),
 			GoVersion:   runtime.Version(),
 		},
-		WarmupCount:       RouteAuthorizationWarmupCount,
-		RequestsPerSample: RouteAuthorizationRequestsPerSample,
-		Measurements:      make([]RouteAuthorizationMeasurement, 0, len(routeAuthorizationConcurrencies)),
+		WarmupCount:          RouteAuthorizationWarmupCount,
+		WarmupMinNanoseconds: RouteAuthorizationWarmupDuration.Nanoseconds(),
+		RequestsPerSample:    RouteAuthorizationRequestsPerSample,
+		Measurements:         make([]RouteAuthorizationMeasurement, 0, len(routeAuthorizationConcurrencies)),
 	}
 	for _, concurrency := range routeAuthorizationConcurrencies {
-		batchCount := RouteAuthorizationMinBatchCount
-		if minimumBatches := (RouteAuthorizationMinSampleCount + concurrency - 1) / concurrency; minimumBatches > batchCount {
-			batchCount = minimumBatches
-		}
-		for range RouteAuthorizationWarmupCount {
-			if _, _, err := measureRouteAuthorizationBatch(concurrency, invoke); err != nil {
-				return RouteAuthorizationProfile{}, err
-			}
+		batchCount := routeAuthorizationBatchCount(concurrency)
+		warmupBatches, warmupElapsed, err := warmRouteAuthorization(func() error {
+			_, _, err := measureRouteAuthorizationBatch(concurrency, invoke)
+			return err
+		}, time.Now)
+		if err != nil {
+			return RouteAuthorizationProfile{}, err
 		}
 		durations := make([]time.Duration, 0, batchCount*concurrency)
 		batchNanosecondsPerRequest := make([]float64, 0, batchCount)
@@ -102,6 +106,8 @@ func MeasureRouteAuthorization(variant, commit string, invoke func() error) (Rou
 		}
 		profile.Measurements = append(profile.Measurements, RouteAuthorizationMeasurement{
 			Concurrency:                      concurrency,
+			WarmupBatches:                    warmupBatches,
+			WarmupNanoseconds:                warmupElapsed.Nanoseconds(),
 			BatchCount:                       batchCount,
 			SampleCount:                      len(durations),
 			MedianNanoseconds:                routeAuthorizationPercentile(durations, 50).Nanoseconds(),
@@ -257,8 +263,9 @@ func routeAuthorizationFloatPercentile(values []float64, percentile int) float64
 }
 
 func ValidateRouteAuthorizationProfile(profile RouteAuthorizationProfile) error {
-	if profile.SchemaVersion != "redevplugin.route_authorization_performance.v2" ||
+	if profile.SchemaVersion != "redevplugin.route_authorization_performance.v3" ||
 		strings.TrimSpace(profile.Variant) == "" || strings.TrimSpace(profile.Commit) == "" ||
+		profile.WarmupMinNanoseconds != RouteAuthorizationWarmupDuration.Nanoseconds() ||
 		profile.WarmupCount != RouteAuthorizationWarmupCount || profile.RequestsPerSample != RouteAuthorizationRequestsPerSample ||
 		profile.Environment.OS == "" || profile.Environment.Arch == "" || profile.Environment.LogicalCPUs < 1 ||
 		profile.Environment.GOMAXPROCS < 1 || profile.Environment.GoVersion == "" ||
@@ -267,11 +274,9 @@ func ValidateRouteAuthorizationProfile(profile RouteAuthorizationProfile) error 
 	}
 	for index, concurrency := range routeAuthorizationConcurrencies {
 		measurement := profile.Measurements[index]
-		minimumBatches := (RouteAuthorizationMinSampleCount + concurrency - 1) / concurrency
-		if minimumBatches < RouteAuthorizationMinBatchCount {
-			minimumBatches = RouteAuthorizationMinBatchCount
-		}
+		minimumBatches := routeAuthorizationBatchCount(concurrency)
 		if measurement.Concurrency != concurrency || measurement.BatchCount != minimumBatches ||
+			measurement.WarmupBatches < RouteAuthorizationWarmupCount || measurement.WarmupNanoseconds < RouteAuthorizationWarmupDuration.Nanoseconds() ||
 			measurement.SampleCount != minimumBatches*concurrency*RouteAuthorizationRequestsPerSample || measurement.MedianNanoseconds < 1 ||
 			measurement.P95Nanoseconds < measurement.MedianNanoseconds ||
 			measurement.P99Nanoseconds < measurement.P95Nanoseconds ||
@@ -282,4 +287,31 @@ func ValidateRouteAuthorizationProfile(profile RouteAuthorizationProfile) error 
 		}
 	}
 	return nil
+}
+
+// Every profile reaches both minimums before any measured request. A fixed
+// batch count alone leaves the shorter concurrency levels sensitive to startup.
+func warmRouteAuthorization(batch func() error, now func() time.Time) (int, time.Duration, error) {
+	started := now()
+	count := 0
+	elapsed := time.Duration(0)
+	for count < RouteAuthorizationWarmupCount || elapsed < RouteAuthorizationWarmupDuration {
+		if err := batch(); err != nil {
+			return count, elapsed, err
+		}
+		count++
+		elapsed = now().Sub(started)
+	}
+	return count, elapsed, nil
+}
+
+func routeAuthorizationBatchCount(concurrency int) int {
+	if concurrency == 100 {
+		return 1024
+	}
+	batches := (RouteAuthorizationMinSampleCount + concurrency - 1) / concurrency
+	if batches < RouteAuthorizationMinBatchCount {
+		batches = RouteAuthorizationMinBatchCount
+	}
+	return batches
 }

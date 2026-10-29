@@ -245,8 +245,8 @@ test("performance contract pins the immutable v0.5.1 route authorization probe",
   });
   assert.deepEqual(probe.measured_batches, [
     { concurrency: 1, batches: 1000, samples: 32000 },
-    { concurrency: 100, batches: 64, samples: 204800 },
-    { concurrency: 1000, batches: 64, samples: 2048000 },
+    { concurrency: 100, batches: 1024, samples: 3276800 },
+    { concurrency: 1000, batches: 256, samples: 8192000 },
   ]);
   for (const source of [probe.runner, probe.comparison_logic, probe.baseline_probe, probe.candidate_probe, probe.shared_probe]) {
     const raw = readFileSync(resolve(import.meta.dirname, "..", source.path));
@@ -299,7 +299,7 @@ function repeatedProfiles(variant, commit, latencies) {
 
 function routeAuthorizationProfile(variant, commit, latency) {
   return {
-    schema_version: "redevplugin.route_authorization_performance.v2",
+    schema_version: "redevplugin.route_authorization_performance.v3",
     variant,
     commit,
     environment: {
@@ -309,12 +309,13 @@ function routeAuthorizationProfile(variant, commit, latency) {
       gomaxprocs: 8,
       go_version: "go1.27.1",
     },
-    warmup_count: 8,
+    warmup_count: 32,
+    warmup_min_nanoseconds: 1_000_000_000,
     requests_per_sample: 32,
     measurements: [
       routeAuthorizationMeasurement(1, 1000, 32000, latency),
-      routeAuthorizationMeasurement(100, 64, 204800, latency),
-      routeAuthorizationMeasurement(1000, 64, 2048000, latency),
+      routeAuthorizationMeasurement(100, 1024, 3276800, latency),
+      routeAuthorizationMeasurement(1000, 256, 8192000, latency),
     ],
   };
 }
@@ -322,6 +323,8 @@ function routeAuthorizationProfile(variant, commit, latency) {
 function routeAuthorizationMeasurement(concurrency, batchCount, sampleCount, latency) {
   return {
     concurrency,
+    warmup_batches: 32,
+    warmup_nanoseconds: 1_000_000_000,
     batch_count: batchCount,
     sample_count: sampleCount,
     median_nanoseconds: latency,

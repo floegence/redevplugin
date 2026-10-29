@@ -2,6 +2,10 @@
 
 ## v3.3.0
 
+- Correct the even-sized route performance order-bias median, record sustained
+  warmup evidence, and lengthen short sampling windows without changing
+  regression or noise thresholds.
+
 - Expose a trusted-parent origin preparation adapter before child navigation, with aggregate opening deadlines, surface-lifetime cancellation, exact routing metadata, and no token or bootstrap override.
 - Replace the virtual-node surface contract with one ordinary Web application runtime. Remove custom JSX, UI patches, rendering proxies, retired asset routes, and legacy package exports. Existing plugin packages must rebuild for the current Web manifest.
 - Serve verified HTML, modules, styles, Workers, Canvas, WebGL, and WASM on independent per-container origins with one-use admission, source-bound ports, revocable resource leases, and browser-enforced outbound confinement. Unsupported browsers fail before application code executes.

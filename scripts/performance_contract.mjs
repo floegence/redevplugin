@@ -71,6 +71,7 @@ function validateComparisonProbes(probes) {
       "repetitions",
       "max_attempts",
       "warmup_batches",
+      "warmup_min_nanoseconds",
       "requests_per_sample",
       "measured_batches",
       "noise_qualification",
@@ -95,9 +96,10 @@ function validateComparisonProbes(probes) {
     if (probe.max_attempts !== 3) {
       throw new Error(`${label}.max_attempts must be exactly 3`);
     }
-    if (!Number.isSafeInteger(probe.warmup_batches) || probe.warmup_batches < 8) {
-      throw new Error(`${label}.warmup_batches must be at least 8`);
+    if (!Number.isSafeInteger(probe.warmup_batches) || probe.warmup_batches !== 32) {
+      throw new Error(`${label}.warmup_batches must be exactly 32`);
     }
+    if (probe.warmup_min_nanoseconds !== 1_000_000_000) throw new Error("route authorization requires one second of warmup");
     if (!Number.isSafeInteger(probe.requests_per_sample) || probe.requests_per_sample < 1) {
       throw new Error(`${label}.requests_per_sample must be positive`);
     }

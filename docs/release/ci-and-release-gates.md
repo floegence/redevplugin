@@ -203,6 +203,15 @@ source, while registry conformance independently validates published package
 bytes and identities without treating transient performance output as a
 publication artifact.
 
+Each concurrency profile warms the actual handler for at least 32 batches and
+one second before measurement. Evidence records the actual warmup batch count
+and elapsed time. Measured batch counts are 1000, 1024, and 256 at concurrency
+1, 100, and 1000 respectively, with 32 requests per worker in each batch. These
+longer windows reduce sensitivity to short scheduling phases; noise
+qualification still rejects unstable runs. The four-observation BA group uses
+the average of its two central observations for the statistical median.
+Neither noise nor regression limits are relaxed.
+
 Route authorization alternates the pinned baseline and candidate process order
 across nine adjacent complete-profile pairs and takes the median of the nine
 paired candidate/baseline ratios. Concurrency one keeps request-level P95 and

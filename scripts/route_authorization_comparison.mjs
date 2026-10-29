@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-const profileSchemaVersion = "redevplugin.route_authorization_performance.v2";
+const profileSchemaVersion = "redevplugin.route_authorization_performance.v3";
 const comparisonID = "httpadapter.route-authorization-v051";
 const gitCommitPattern = /^[0-9a-f]{40}$/;
 
@@ -295,12 +295,13 @@ function validateRouteAuthorizationProfile(profile, variant) {
     "commit",
     "environment",
     "warmup_count",
+    "warmup_min_nanoseconds",
     "requests_per_sample",
     "measurements",
   ], `${variant} route authorization profile`);
   if (profile.schema_version !== profileSchemaVersion || profile.variant !== variant ||
       typeof profile.commit !== "string" || !gitCommitPattern.test(profile.commit) ||
-      profile.warmup_count !== 8 || profile.requests_per_sample !== 32 ||
+      profile.warmup_count !== 32 || profile.warmup_min_nanoseconds !== 1_000_000_000 || profile.requests_per_sample !== 32 ||
       !Array.isArray(profile.measurements) || profile.measurements.length !== 3) {
     throw new Error(`invalid ${variant} route authorization profile`);
   }
@@ -313,11 +314,13 @@ function validateRouteAuthorizationProfile(profile, variant) {
       !Number.isSafeInteger(profile.environment.gomaxprocs) || profile.environment.gomaxprocs < 1) {
     throw new Error(`invalid ${variant} route authorization profile environment`);
   }
-  const expected = [[1, 1000, 32000], [100, 64, 204800], [1000, 64, 2048000]];
+  const expected = [[1, 1000, 32000], [100, 1024, 3276800], [1000, 256, 8192000]];
   for (const [index, measurement] of profile.measurements.entries()) {
     assertRecord(measurement, `${variant} route authorization measurement`);
     assertExactKeys(measurement, [
       "concurrency",
+      "warmup_batches",
+      "warmup_nanoseconds",
       "batch_count",
       "sample_count",
       "median_nanoseconds",
@@ -328,6 +331,10 @@ function validateRouteAuthorizationProfile(profile, variant) {
       "allocations_per_request",
       "bytes_per_request",
     ], `${variant} route authorization measurement`);
+    if (!Number.isSafeInteger(measurement.warmup_batches) || measurement.warmup_batches < profile.warmup_count ||
+        !Number.isSafeInteger(measurement.warmup_nanoseconds) || measurement.warmup_nanoseconds < profile.warmup_min_nanoseconds) {
+      throw new Error("route authorization warmup evidence is incomplete");
+    }
     const sampleShape = expected[index];
     if (measurement.concurrency !== sampleShape[0] || measurement.batch_count !== sampleShape[1] || measurement.sample_count !== sampleShape[2]) {
       throw new Error(`invalid ${variant} route authorization sample shape`);
@@ -375,7 +382,10 @@ function roundMetric(value) {
 
 function median(values) {
 	const ordered = [...values].sort((left, right) => left - right);
-	return ordered[Math.floor(ordered.length / 2)];
+	const middle = Math.floor(ordered.length / 2);
+	return ordered.length % 2 === 0
+		? (ordered[middle - 1] + ordered[middle]) / 2
+		: ordered[middle];
 }
 
 function assertRecord(value, label) {

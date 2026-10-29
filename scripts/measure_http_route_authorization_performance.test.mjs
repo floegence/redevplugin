@@ -23,6 +23,30 @@ import {
 
 const runOrder = buildInterleavedRunOrder(9);
 
+test("profiles reject insufficient warmup and retired short samples", () => {
+  for (const mutate of [
+    (value) => { value.measurements[1].warmup_batches = 31; },
+    (value) => { value.measurements[1].warmup_nanoseconds = 999_999_999; },
+    (value) => { value.measurements[1].batch_count = 64; value.measurements[1].sample_count = 204800; },
+  ]) {
+    const baselines = Array.from({ length: 9 }, () => profile("v0.5.1", 100, 10, 1000));
+    const candidates = Array.from({ length: 9 }, () => profile("v0.6.0", 100, 10, 1000));
+    mutate(candidates[0]);
+    assert.throws(() => buildRouteAuthorizationAttempt(probe(), 1, runOrder, baselines, candidates), /warmup|sample shape/);
+  }
+});
+
+test("order bias averages both central observations in the four-pair group", () => {
+  const baselines = Array.from({ length: 9 }, () => profile("v0.5.1", 100, 10, 1000));
+  const candidates = [100, 80, 100, 90, 100, 110, 100, 120, 100]
+    .map((latency) => profile("v0.6.0", latency, 10, 1000));
+  const attempt = buildRouteAuthorizationAttempt(probe(), 1, runOrder, baselines, candidates);
+  for (const metric of attempt.noise_qualification.metrics) {
+    assert.equal(metric.order_bias_basis_points, 0);
+  }
+  assert.equal(attempt.noise_qualification.status, "qualified");
+});
+
 test("route authorization builds baseline and candidate profiles with the candidate module toolchain", () => {
   assert.deepEqual(routeAuthorizationBuildEnvironment("go1.27.1"), {
     GOWORK: "off",
@@ -36,8 +60,8 @@ test("route authorization keeps request tails at c1 and uses batch throughput at
   const scenarios = buildRepeatedRouteAuthorizationScenarios(attempt, "full");
   assert.deepEqual(scenarios.map((scenario) => [scenario.id, scenario.sample_count]), [
     ["httpadapter.route-authorization-c1", 32000],
-    ["httpadapter.route-authorization-c100", 204800],
-    ["httpadapter.route-authorization-c1000", 2048000],
+    ["httpadapter.route-authorization-c100", 3276800],
+    ["httpadapter.route-authorization-c1000", 8192000],
   ]);
   assert.deepEqual(scenarios[0].metrics.map((metric) => metric.name), [
     "p95_relative", "p99_relative", "allocations_increase", "allocated_bytes_relative",
@@ -268,16 +292,17 @@ function stableAttempt(attemptNumber, baselineLatency, candidateLatency, baselin
 
 function profile(variant, latency, allocations, bytes) {
   return {
-    schema_version: "redevplugin.route_authorization_performance.v2",
+    schema_version: "redevplugin.route_authorization_performance.v3",
     variant,
     commit: variant === "v0.5.1" ? "a".repeat(40) : "b".repeat(40),
     environment: { os: "linux", arch: "amd64", logical_cpus: 8, gomaxprocs: 8, go_version: "go1.27.1" },
-    warmup_count: 8,
+    warmup_count: 32,
+    warmup_min_nanoseconds: 1_000_000_000,
     requests_per_sample: 32,
     measurements: [
       measurement(1, 1000, 32000, latency, allocations, bytes),
-      measurement(100, 64, 204800, latency, allocations, bytes),
-      measurement(1000, 64, 2048000, latency, allocations, bytes),
+      measurement(100, 1024, 3276800, latency, allocations, bytes),
+      measurement(1000, 256, 8192000, latency, allocations, bytes),
     ],
   };
 }
@@ -285,6 +310,8 @@ function profile(variant, latency, allocations, bytes) {
 function measurement(concurrency, batchCount, sampleCount, latency, allocations, bytes) {
   return {
     concurrency,
+    warmup_batches: 32,
+    warmup_nanoseconds: 1_000_000_000,
     batch_count: batchCount,
     sample_count: sampleCount,
     median_nanoseconds: latency,

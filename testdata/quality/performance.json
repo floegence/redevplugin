@@ -6,7 +6,8 @@
       "baseline_commit": "3febcc59bbdb2118a4f105781b4c743bc11ba09f",
       "repetitions": 9,
       "max_attempts": 3,
-      "warmup_batches": 8,
+      "warmup_batches": 32,
+      "warmup_min_nanoseconds": 1000000000,
       "requests_per_sample": 32,
       "noise_qualification": {
         "batch_median_relative": {
@@ -22,8 +23,8 @@
       },
       "measured_batches": [
         { "concurrency": 1, "batches": 1000, "samples": 32000 },
-        { "concurrency": 100, "batches": 64, "samples": 204800 },
-        { "concurrency": 1000, "batches": 64, "samples": 2048000 }
+        { "concurrency": 100, "batches": 1024, "samples": 3276800 },
+        { "concurrency": 1000, "batches": 256, "samples": 8192000 }
       ],
       "runner": {
         "path": "scripts/measure_http_route_authorization_performance.mjs",
@@ -31,7 +32,7 @@
       },
       "comparison_logic": {
         "path": "scripts/route_authorization_comparison.mjs",
-        "sha256": "e8b098aadb3d7aba9e0cb64444193fa8d5c254969355572900a15ea5b894d05b"
+        "sha256": "15ee93b3bf443b19b116fe96a85b741122e9a99adbb3b5efe1f11aa4fa17ccff"
       },
       "baseline_probe": {
         "path": "testdata/performance/httpadapter-v051/route_authorization_performance_test.go",
@@ -43,7 +44,7 @@
       },
       "shared_probe": {
         "path": "internal/performanceevidence/route_authorization.go",
-        "sha256": "7ea1721d959004094e912c49aca90e05ffb83f8f1a0013bb53e7fb2e70f55725"
+        "sha256": "39f2f4012e9c7cafb8625dce24d5737d7e269bea23597ccd6a7abef1f8f269b1"
       }
     }
   ],
@@ -129,7 +130,7 @@
     },
     {
       "id": "httpadapter.route-authorization-c100",
-      "sample_count": 204800,
+      "sample_count": 3276800,
       "metrics": [
         { "name": "batch_median_relative", "unit": "basis_points", "comparator": "lte", "limit": 11000 },
         { "name": "batch_p95_relative", "unit": "basis_points", "comparator": "lte", "limit": 11500 },
@@ -139,7 +140,7 @@
     },
     {
       "id": "httpadapter.route-authorization-c1000",
-      "sample_count": 2048000,
+      "sample_count": 8192000,
       "metrics": [
         { "name": "batch_median_relative", "unit": "basis_points", "comparator": "lte", "limit": 11000 },
         { "name": "batch_p95_relative", "unit": "basis_points", "comparator": "lte", "limit": 11500 },

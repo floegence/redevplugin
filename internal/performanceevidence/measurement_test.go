@@ -63,7 +63,7 @@ func TestEnforceThresholdsRequiresExplicitEvidenceRun(t *testing.T) {
 
 func TestRouteAuthorizationProfileRequiresStableRequestSamples(t *testing.T) {
 	profile := RouteAuthorizationProfile{
-		SchemaVersion: "redevplugin.route_authorization_performance.v2",
+		SchemaVersion: "redevplugin.route_authorization_performance.v3",
 		Variant:       "v0.6.0",
 		Commit:        "0123456789abcdef0123456789abcdef01234567",
 		Environment: RouteAuthorizationEnvironment{
@@ -73,12 +73,13 @@ func TestRouteAuthorizationProfileRequiresStableRequestSamples(t *testing.T) {
 			GOMAXPROCS:  8,
 			GoVersion:   "go1.27.1",
 		},
-		WarmupCount:       RouteAuthorizationWarmupCount,
-		RequestsPerSample: RouteAuthorizationRequestsPerSample,
+		WarmupCount:          RouteAuthorizationWarmupCount,
+		WarmupMinNanoseconds: RouteAuthorizationWarmupDuration.Nanoseconds(),
+		RequestsPerSample:    RouteAuthorizationRequestsPerSample,
 		Measurements: []RouteAuthorizationMeasurement{
-			{Concurrency: 1, BatchCount: 1000, SampleCount: 32000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
-			{Concurrency: 100, BatchCount: 64, SampleCount: 204800, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
-			{Concurrency: 1000, BatchCount: 64, SampleCount: 2048000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
+			{Concurrency: 1, BatchCount: 1000, SampleCount: 32000, WarmupBatches: 32, WarmupNanoseconds: 1_000_000_000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
+			{Concurrency: 100, BatchCount: 1024, SampleCount: 3276800, WarmupBatches: 32, WarmupNanoseconds: 1_000_000_000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
+			{Concurrency: 1000, BatchCount: 256, SampleCount: 8192000, WarmupBatches: 32, WarmupNanoseconds: 1_000_000_000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
 		},
 	}
 	if err := ValidateRouteAuthorizationProfile(profile); err != nil {
