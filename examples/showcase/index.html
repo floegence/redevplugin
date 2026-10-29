@@ -29,8 +29,7 @@
           </div>
         </section>
 
-        <button id="inspector-scrim" class="inspector-scrim" type="button" aria-label="Close app details" hidden></button>
-        <aside id="plugin-inspector" class="plugin-inspector" role="dialog" aria-modal="true" aria-label="App details" aria-hidden="true" data-open="false" inert>
+        <dialog id="plugin-inspector" class="plugin-inspector" aria-label="App details" aria-hidden="true" data-open="false">
           <header class="inspector-header">
             <div class="inspector-identity">
               <img id="detail-icon" alt="" width="48" height="48">
@@ -55,7 +54,7 @@
               <div id="detail-error-row" hidden><dt>Last issue</dt><dd id="detail-error">None</dd></div>
             </dl>
           </details>
-        </aside>
+        </dialog>
       </section>
 
       <nav class="mobile-plugin-navigation" aria-label="Example plugins">

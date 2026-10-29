@@ -579,7 +579,7 @@ func TestShowcaseUsesOneProductLayerAndAccessibleSecondaryDetails(t *testing.T) 
 		`mobile-inspector-toggle`,
 		`developer-details`,
 		`aria-hidden`,
-		`.inert`,
+		`.showModal()`,
 		`focus({ preventScroll: true })`,
 		`@media (max-width: 820px)`,
 		`@media (max-width: 360px)`,

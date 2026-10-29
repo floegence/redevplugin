@@ -4754,7 +4754,6 @@ var elements = {
   inspectorToggle: required("#inspector-toggle"),
   mobileInspectorToggle: required("#mobile-inspector-toggle"),
   inspectorClose: required("#inspector-close"),
-  inspectorScrim: required("#inspector-scrim"),
   confirmation: required("#confirmation-dialog"),
   confirmationTitle: required("#confirmation-title"),
   confirmationSummary: required("#confirmation-summary")
@@ -4794,10 +4793,17 @@ for (const toggle of [elements.inspectorToggle, elements.mobileInspectorToggle])
   toggle.addEventListener("click", () => setInspectorOpen(elements.inspector.dataset.open !== "true", toggle));
 }
 elements.inspectorClose.addEventListener("click", () => setInspectorOpen(false));
-elements.inspectorScrim.addEventListener("click", () => setInspectorOpen(false));
-addEventListener("keydown", (event) => {
-  if (event.key === "Escape") setInspectorOpen(false);
-  if (event.key === "Tab" && elements.inspector.dataset.open === "true") containInspectorFocus(event);
+elements.inspector.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  setInspectorOpen(false);
+});
+elements.inspector.addEventListener("close", () => {
+  if (!elements.inspector.open) setInspectorOpen(false);
+});
+elements.inspector.addEventListener("click", (event) => {
+  if (event.target !== elements.inspector) return;
+  const bounds = elements.inspector.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) setInspectorOpen(false);
 });
 addEventListener("popstate", () => {
   const plugin = selectedPluginFromURL() ?? catalog[0];
@@ -4940,31 +4946,15 @@ function setInspectorOpen(open, trigger) {
   if (open) inspectorReturnFocus = trigger ?? inspectorReturnFocus;
   elements.inspector.dataset.open = String(open);
   elements.inspector.setAttribute("aria-hidden", String(!open));
-  elements.inspector.inert = !open;
   for (const toggle of [elements.inspectorToggle, elements.mobileInspectorToggle]) toggle.setAttribute("aria-expanded", String(open));
-  elements.inspectorScrim.hidden = !open;
-  document.body.dataset.inspectorOpen = String(open);
-  if (open) elements.inspectorClose.focus({ preventScroll: true });
-  else if (inspectorReturnFocus && document.contains(inspectorReturnFocus)) {
-    inspectorReturnFocus.focus({ preventScroll: true });
-    inspectorReturnFocus = void 0;
-  }
-}
-function containInspectorFocus(event) {
-  const controls = Array.from(elements.inspector.querySelectorAll("button, summary, [tabindex]")).filter((element) => !element.hasAttribute("disabled"));
-  if (controls.length === 0) {
-    event.preventDefault();
+  if (open) {
+    if (!elements.inspector.open) elements.inspector.showModal();
     elements.inspectorClose.focus({ preventScroll: true });
-    return;
-  }
-  const first = controls[0];
-  const last = controls[controls.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus({ preventScroll: true });
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus({ preventScroll: true });
+  } else {
+    if (elements.inspector.open) elements.inspector.close();
+    const returnFocus = inspectorReturnFocus;
+    inspectorReturnFocus = void 0;
+    if (returnFocus && document.contains(returnFocus)) returnFocus.focus({ preventScroll: true });
   }
 }
 function selectedPluginFromURL() {

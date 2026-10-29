@@ -100,12 +100,34 @@ try {
     await desktop.locator("#inspector-toggle").click();
     await desktop.locator('#plugin-inspector[data-open="true"]').waitFor();
     assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "false");
+    assert.equal(await desktop.locator("#plugin-inspector").evaluate((element) => element.matches(":modal")), true, "app details must own the browser modal boundary");
+    const focusRemainsInDetails = await desktop.evaluate(() => {
+      document.querySelector("#surface-stage iframe")?.focus();
+      return document.querySelector("#plugin-inspector").contains(document.activeElement);
+    });
+    assert.equal(focusRemainsInDetails, true, "an opening plugin must not steal modal focus");
     await desktop.locator("#inspector-close").click();
     await desktop.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
     assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "true");
+    assert.equal(await desktop.locator("#inspector-toggle").evaluate((element) => element === document.activeElement), true, "closing app details must restore the trigger focus");
   }
+  await desktop.locator("#inspector-toggle").click();
+  const reopenedDetails = await desktop.evaluate(() => new Promise((resolveReopen) => {
+    const dialog = document.querySelector("#plugin-inspector");
+    dialog.addEventListener("close", () => resolveReopen(dialog.matches(":modal")), { once: true });
+    // Reopen in the same task to exercise the queued close event deterministically.
+    document.querySelector("#inspector-close").click();
+    document.querySelector("#inspector-toggle").click();
+  }));
+  assert.equal(reopenedDetails, true, "an old close event must not dismiss newly opened details");
+  await desktop.keyboard.press("Escape");
+  await desktop.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
+  await desktop.locator("#inspector-toggle").click();
+  await desktop.locator("#plugin-inspector").click({ position: { x: -100, y: 400 } });
+  await desktop.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
 
   let memos = await pluginFrame(desktop, "Memos");
+  assert.equal(await desktop.locator('#surface-stage iframe').evaluate((element) => getComputedStyle(element).animationName), "none", "surface admission must not overlap a decorative iframe animation");
   const explorerStyle = await waitForComputedStyles(
     memos.locator(".memos-explorer"),
     ["width"],
@@ -509,7 +531,7 @@ try {
   await mobile.locator('#plugin-inspector[data-open="true"]').waitFor();
   await mobile.locator("#inspector-close").click();
   await mobile.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
-  await waitFor(async () => await mobile.locator("#plugin-inspector").evaluate((element) => getComputedStyle(element).visibility === "hidden"), 2_000, "closed mobile app details sheet to be hidden");
+  assert.equal(await mobile.locator("#plugin-inspector").isVisible(), false, "closed mobile app details must be hidden");
   await mobileMemos.getByRole("button", { name: "Open explorer" }).click();
   await mobileMemos.locator(".memos-explorer").waitFor();
   await assertMinimumTouchSize(mobileMemos.getByRole("button", { name: "Close explorer" }), 44);

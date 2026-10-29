@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.3.1
+
+- Use a native modal dialog for Showcase app details, keeping background plugin frames out of modal focus and restoring the invoking control on close.
+- Preserve newly reopened details when an earlier close event arrives, and cover Escape, backdrop dismissal, and mobile interaction.
+- Remove decorative iframe admission animation that interfered with the first plugin click during modal transitions.
+
 ## v3.3.0
 
 - Apply Web confinement headers to all responses, including rejected or expired origin routing.
