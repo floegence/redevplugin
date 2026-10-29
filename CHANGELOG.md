@@ -2,6 +2,7 @@
 
 ## v3.1.0
 
+- Upgrade golang.org/x/net to 0.62.0 to address reachable HTML parsing and rendering advisories GO-2026-6860 and GO-2026-6866.
 - Add explicit Worker permission ceilings and surface startup requirements under authorization.scoped.v1, preserving absent-field package semantics and signed canonical content.
 - Enforce the exact method ceiling in Host authorization, execution evidence, runtime I/O brokers, installation review, and permission discovery. Project independent surface availability through the released SDK.
 - Add explicit background method and argument declarations under background.method.v1. Apply method policy, confirmation, request/response validation, and the existing execution lifecycle without overriding execution or cancellation behavior.
