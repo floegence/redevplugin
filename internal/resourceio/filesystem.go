@@ -190,7 +190,8 @@ func (mount Mount) OpenFile(uri URI, options OpenOptions) (*os.File, error) {
 	if mount.ReadOnly && flags&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND) != 0 {
 		return nil, os.ErrPermission
 	}
-	file, err := mount.Root.OpenFile(path, flags, mode)
+	// Opening must not change bytes before descriptor safety is established.
+	file, err := mount.Root.OpenFile(path, flags&^os.O_TRUNC, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +202,12 @@ func (mount Mount) OpenFile(uri URI, options OpenOptions) (*os.File, error) {
 			return nil, err
 		}
 		return nil, ErrUnsafeFile
+	}
+	if options.Truncate {
+		if err := file.Truncate(0); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
 	}
 	return file, nil
 }
@@ -314,14 +321,31 @@ func (mount Mount) Copy(from, to URI, overwrite bool, mode fs.FileMode) error {
 		return err
 	}
 	defer source.Close()
-	if mode == 0 {
-		if info, statErr := source.Stat(); statErr == nil {
-			mode = info.Mode().Perm()
-		}
-	}
-	destination, err := mount.OpenFile(to, OpenOptions{Write: true, Create: overwrite, CreateNew: !overwrite, Truncate: overwrite, Mode: mode})
+	sourceInfo, err := source.Stat()
 	if err != nil {
 		return err
+	}
+	if mode == 0 {
+		mode = sourceInfo.Mode().Perm()
+	}
+	destination, err := mount.OpenFile(to, OpenOptions{Write: true, Create: overwrite, CreateNew: !overwrite, Mode: mode})
+	if err != nil {
+		return err
+	}
+	destinationInfo, err := destination.Stat()
+	if err != nil {
+		_ = destination.Close()
+		return err
+	}
+	if os.SameFile(sourceInfo, destinationInfo) {
+		_ = destination.Close()
+		return ErrInvalidOptions
+	}
+	if overwrite {
+		if err := destination.Truncate(0); err != nil {
+			_ = destination.Close()
+			return err
+		}
 	}
 	_, copyErr := io.CopyBuffer(destination, source, make([]byte, MaxIOChunkBytes))
 	syncErr := destination.Sync()

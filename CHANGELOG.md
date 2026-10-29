@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.3.2
+
+- Validate rooted file descriptors before truncating bytes, preserving both paths when a hard-linked file is rejected.
+- Reject copy-overwrite onto the same file, including a rooted symlink alias, before modifying the destination.
+- Cover refused writes, copy-overwrite, legitimate truncation, append, and exclusive creation with file-integrity regression tests.
+
 ## v3.3.1
 
 - Use a native modal dialog for Showcase app details, keeping background plugin frames out of modal focus and restoring the invoking control on close.

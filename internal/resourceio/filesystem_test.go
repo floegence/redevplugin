@@ -3,6 +3,7 @@ package resourceio
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -133,6 +134,175 @@ func TestMountRejectsSymlinkEscapeHardlinksAndSpecialFiles(t *testing.T) {
 	insideURI, _ := ParseURI("redevfs://workspace/inside.txt")
 	if _, err := mount.OpenFile(insideURI, OpenOptions{Read: true}); !errors.Is(err, ErrUnsafeFile) {
 		t.Fatalf("hardlink error = %v, want ErrUnsafeFile", err)
+	}
+}
+
+func TestMountRejectedTruncatePreservesHardlinkContents(t *testing.T) {
+	for _, options := range []OpenOptions{
+		{Write: true, Truncate: true},
+		{Read: true, Write: true, Truncate: true},
+		{Write: true, Create: true, Truncate: true},
+	} {
+		t.Run(fmt.Sprintf("read=%t/create=%t", options.Read, options.Create), func(t *testing.T) {
+			mount, root := testMount(t, false)
+			outside := filepath.Join(t.TempDir(), "original.txt")
+			selected := filepath.Join(root, "selected.txt")
+			want := []byte("preserve original bytes")
+			if err := os.WriteFile(outside, want, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(outside, selected); err != nil {
+				t.Skipf("hardlink unavailable: %v", err)
+			}
+			uri, _ := ParseURI("redevfs://workspace/selected.txt")
+			file, err := mount.OpenFile(uri, options)
+			if file != nil {
+				_ = file.Close()
+			}
+			if !errors.Is(err, ErrUnsafeFile) {
+				t.Fatalf("open error = %v, want ErrUnsafeFile", err)
+			}
+			for _, path := range []string{outside, selected} {
+				got, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Errorf("rejected open changed %s: %q, %v", path, got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestMountRejectedCopyPreservesHardlinkContents(t *testing.T) {
+	mount, root := testMount(t, false)
+	outside := filepath.Join(t.TempDir(), "original.txt")
+	selected := filepath.Join(root, "selected.txt")
+	want := []byte("preserve destination bytes")
+	if err := os.WriteFile(outside, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, selected); err != nil {
+		t.Skipf("hardlink unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "source.txt"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	from, _ := ParseURI("redevfs://workspace/source.txt")
+	to, _ := ParseURI("redevfs://workspace/selected.txt")
+	if err := mount.Copy(from, to, true, 0); !errors.Is(err, ErrUnsafeFile) {
+		t.Fatalf("copy error = %v, want ErrUnsafeFile", err)
+	}
+	for _, path := range []string{outside, selected} {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("rejected copy changed %s: %q, %v", path, got, err)
+		}
+	}
+}
+
+func TestMountValidatedTruncateAppendAndExclusiveCreate(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options OpenOptions
+		write   string
+		want    string
+	}{
+		{"truncate", OpenOptions{Write: true, Truncate: true}, "new", "new"},
+		{"truncate-empty", OpenOptions{Write: true, Truncate: true}, "", ""},
+		{"read-write-truncate", OpenOptions{Read: true, Write: true, Truncate: true}, "new", "new"},
+		{"append", OpenOptions{Write: true, Append: true}, "new", "originalnew"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mount, root := testMount(t, false)
+			path := filepath.Join(root, "file.txt")
+			if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			uri, _ := ParseURI("redevfs://workspace/file.txt")
+			file, err := mount.OpenFile(uri, test.options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.WriteString(test.write); err != nil {
+				_ = file.Close()
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != test.want {
+				t.Fatalf("contents = %q, %v; want %q", got, err, test.want)
+			}
+			if file, err := mount.OpenFile(uri, OpenOptions{Write: true, CreateNew: true, Truncate: true}); !errors.Is(err, os.ErrExist) {
+				if file != nil {
+					_ = file.Close()
+				}
+				t.Fatalf("exclusive creation error = %v", err)
+			}
+			got, err = os.ReadFile(path)
+			if err != nil || string(got) != test.want {
+				t.Fatalf("exclusive creation changed contents: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestMountCopyRejectsSymlinkToSameFileWithoutTruncating(t *testing.T) {
+	mount, root := testMount(t, false)
+	want := []byte("preserve source bytes")
+	path := filepath.Join(root, "source.txt")
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("source.txt", filepath.Join(root, "alias.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	from, _ := ParseURI("redevfs://workspace/source.txt")
+	to, _ := ParseURI("redevfs://workspace/alias.txt")
+	if err := mount.Copy(from, to, true, 0); !errors.Is(err, ErrInvalidOptions) {
+		t.Errorf("copy error = %v, want ErrInvalidOptions", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("alias copy changed source: %q, %v", got, err)
+	}
+}
+
+func TestMountCopyOverwriteTruncatesOnlyValidatedDestination(t *testing.T) {
+	mount, root := testMount(t, false)
+	if err := os.WriteFile(filepath.Join(root, "source.txt"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "destination.txt"), []byte("previous longer contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	from, _ := ParseURI("redevfs://workspace/source.txt")
+	to, _ := ParseURI("redevfs://workspace/destination.txt")
+	if err := mount.Copy(from, to, true, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"source.txt", "destination.txt"} {
+		got, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil || string(got) != "new" {
+			t.Fatalf("copy contents %s = %q, %v", name, got, err)
+		}
+	}
+}
+
+func TestMountCopyRejectsSameFileWithoutTruncating(t *testing.T) {
+	mount, root := testMount(t, false)
+	want := []byte("preserve source bytes")
+	path := filepath.Join(root, "source.txt")
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	uri, _ := ParseURI("redevfs://workspace/source.txt")
+	if err := mount.Copy(uri, uri, true, 0); !errors.Is(err, ErrInvalidOptions) {
+		t.Errorf("copy error = %v, want ErrInvalidOptions", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("self copy changed source: %q, %v", got, err)
 	}
 }
 
