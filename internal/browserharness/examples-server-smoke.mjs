@@ -14,6 +14,26 @@ await mkdir(evidenceDir, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
 const desktop = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+await desktop.addInitScript(() => {
+  if (window !== window.top) return;
+  const events = [];
+  const snapshot = () => ({
+    open: document.querySelector("#plugin-inspector")?.getAttribute("data-open"),
+    focus: document.activeElement?.id || document.activeElement?.tagName,
+  });
+  const record = (event) => {
+    events.push({ time: performance.now(), ...event, ...snapshot() });
+    if (events.length > 80) events.shift();
+  };
+  for (const type of ["pointerdown", "pointerup", "click", "focusin"]) {
+    document.addEventListener(type, (event) => record({ type, target: event.target?.id || event.target?.className }), true);
+  }
+  addEventListener("DOMContentLoaded", () => {
+    const inspector = document.querySelector("#plugin-inspector");
+    if (inspector) new MutationObserver(() => record({ type: "inspector-state" })).observe(inspector, { attributes: true, attributeFilter: ["data-open"] });
+  });
+  window.__showcaseInteractionEvents = events;
+});
 await installWeatherReadFixtures(desktop);
 const desktopFailures = observePageFailures(desktop, baseURL);
 const methodCalls = [];
@@ -76,12 +96,14 @@ try {
     assert.equal(icon.width >= 256 && icon.height >= 256, true, `consumer icon dimensions = ${JSON.stringify(icon)}`);
   }
   await assertNoHorizontalOverflow(desktop);
-  await desktop.locator("#inspector-toggle").click();
-  await desktop.locator('#plugin-inspector[data-open="true"]').waitFor();
-  assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "false");
-  await desktop.locator("#inspector-close").click();
-  await desktop.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
-  assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "true");
+  for (let interaction = 0; interaction < 4; interaction += 1) {
+    await desktop.locator("#inspector-toggle").click();
+    await desktop.locator('#plugin-inspector[data-open="true"]').waitFor();
+    assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "false");
+    await desktop.locator("#inspector-close").click();
+    await desktop.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
+    assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "true");
+  }
 
   let memos = await pluginFrame(desktop, "Memos");
   const explorerStyle = await waitForComputedStyles(
@@ -635,6 +657,9 @@ try {
   }, null, 2) + "\n");
 } catch (error) {
   const diagnostics = {
+    inspector_events: await desktop.evaluate(() => window.__showcaseInteractionEvents).catch(() => []),
+    inspector_state: await desktop.locator("#plugin-inspector").evaluate((element) => ({ open: element.dataset.open, inert: element.inert, hidden: element.getAttribute("aria-hidden"), focus: document.activeElement?.id, transform: getComputedStyle(element).transform })).catch(() => null),
+    placeholder_visible: await desktop.locator("#surface-placeholder").isVisible().catch(() => false),
     cause_message: error instanceof Error ? error.message : String(error),
     cause_stack: error instanceof Error ? error.stack : undefined,
     outer_status: await desktop.locator("#surface-placeholder p").textContent().catch(() => ""),
