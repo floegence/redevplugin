@@ -87,18 +87,11 @@ func MeasureRouteAuthorization(variant, commit string, invoke func() error) (Rou
 		if err != nil {
 			return RouteAuthorizationProfile{}, err
 		}
-		durations := make([]time.Duration, 0, batchCount*concurrency)
-		batchNanosecondsPerRequest := make([]float64, 0, batchCount)
-		for range batchCount {
-			batchDurations, batchElapsed, err := measureRouteAuthorizationBatch(concurrency, invoke)
-			if err != nil {
-				return RouteAuthorizationProfile{}, err
-			}
-			durations = append(durations, batchDurations...)
-			batchNanosecondsPerRequest = append(
-				batchNanosecondsPerRequest,
-				float64(batchElapsed.Nanoseconds())/float64(concurrency*RouteAuthorizationRequestsPerSample),
-			)
+		durations, batchNanosecondsPerRequest, err := collectRouteAuthorizationSamples(concurrency, batchCount, func() ([]time.Duration, time.Duration, error) {
+			return measureRouteAuthorizationBatch(concurrency, invoke)
+		})
+		if err != nil {
+			return RouteAuthorizationProfile{}, err
 		}
 		allocations, bytes, err := measureRouteAuthorizationMemory(concurrency, batchCount, invoke)
 		if err != nil {
@@ -120,6 +113,20 @@ func MeasureRouteAuthorization(variant, commit string, invoke func() error) (Rou
 		})
 	}
 	return profile, nil
+}
+
+func collectRouteAuthorizationSamples(concurrency, batchCount int, measure func() ([]time.Duration, time.Duration, error)) ([]time.Duration, []float64, error) {
+	durations := make([]time.Duration, 0, batchCount*concurrency*RouteAuthorizationRequestsPerSample)
+	batches := make([]float64, 0, batchCount)
+	for range batchCount {
+		batch, elapsed, err := measure()
+		if err != nil {
+			return nil, nil, err
+		}
+		durations = append(durations, batch...)
+		batches = append(batches, float64(elapsed.Nanoseconds())/float64(concurrency*RouteAuthorizationRequestsPerSample))
+	}
+	return durations, batches, nil
 }
 
 func WriteRouteAuthorizationProfile(path string, profile RouteAuthorizationProfile) error {

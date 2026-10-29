@@ -210,6 +210,8 @@ and elapsed time. Measured batch counts are 1000, 1024, and 256 at concurrency
 longer windows reduce sensitivity to short scheduling phases; noise
 qualification still rejects unstable runs. The four-observation BA group uses
 the average of its two central observations for the statistical median.
+The collector allocates its complete request-duration and batch-cost buffers
+before recording batches, avoiding growth allocations between measurements.
 Neither noise nor regression limits are relaxed.
 
 Route authorization alternates the pinned baseline and candidate process order

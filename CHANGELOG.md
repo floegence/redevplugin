@@ -3,7 +3,8 @@
 ## v3.3.0
 
 - Correct the even-sized route performance order-bias median, record sustained
-  warmup evidence, and lengthen short sampling windows without changing
+  warmup evidence, preallocate complete sample buffers, and lengthen short
+  sampling windows without changing
   regression or noise thresholds.
 
 - Expose a trusted-parent origin preparation adapter before child navigation, with aggregate opening deadlines, surface-lifetime cancellation, exact routing metadata, and no token or bootstrap override.

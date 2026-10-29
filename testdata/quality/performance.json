@@ -44,7 +44,7 @@
       },
       "shared_probe": {
         "path": "internal/performanceevidence/route_authorization.go",
-        "sha256": "39f2f4012e9c7cafb8625dce24d5737d7e269bea23597ccd6a7abef1f8f269b1"
+        "sha256": "f7541f4064e9710b14e9fe519fe25f02a7807cc42f00b759bc08a37070ce39a0"
       }
     }
   ],
