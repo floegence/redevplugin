@@ -1,5 +1,33 @@
 package manifest
 
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
+func (entry *BackgroundSpec) UnmarshalJSON(raw []byte) error {
+	type backgroundWire BackgroundSpec
+	var decoded backgroundWire
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if _, present := fields["method"]; present && decoded.Method == "" {
+		return fmt.Errorf("background.method must be a non-empty string")
+	}
+	if _, present := fields["params"]; present && decoded.Params == nil {
+		return fmt.Errorf("background.params must be an object")
+	}
+	*entry = BackgroundSpec(decoded)
+	return nil
+}
+
 func validateBackgroundMethod(m Manifest, methods map[string]MethodSpec) error {
 	entry := m.Background
 	if entry == nil {

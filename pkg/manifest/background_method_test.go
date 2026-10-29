@@ -1,6 +1,23 @@
 package manifest
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestBackgroundDeclarationRejectsAmbiguousFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"strategy":"on_demand","worker_id":"worker","method":null}`,
+		`{"strategy":"on_demand","worker_id":"worker","method":""}`,
+		`{"strategy":"on_demand","worker_id":"worker","params":null}`,
+		`{"strategy":"on_demand","worker_id":"worker","unexpected":true}`,
+	} {
+		var entry BackgroundSpec
+		if err := json.Unmarshal([]byte(raw), &entry); err == nil {
+			t.Errorf("accepted ambiguous background: %s", raw)
+		}
+	}
+}
 
 func TestExplicitBackgroundMethodValidation(t *testing.T) {
 	tests := []struct {
