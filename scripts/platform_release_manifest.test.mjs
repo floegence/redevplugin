@@ -35,6 +35,7 @@ const expectedCanonicalContracts = [
   "contract:plugin/error-codes.schema.json",
   "contract:plugin/external-signer-request-v1.schema.json",
   "contract:plugin/external-signer-response-v1.schema.json",
+  "contract:plugin/file-resources.schema.json",
   "contract:plugin/host-capability-contract-v1.schema.json",
   "contract:plugin/host-capability-pin-v1.schema.json",
   "contract:plugin/manifest-v9.schema.json",
@@ -62,7 +63,6 @@ const expectedCanonicalContracts = [
   "contract:plugin/wasm-abi.json",
   "contract:plugin/web-surface-document.schema.json",
   "contract:plugin/web-surface-transport.schema.json",
-  "contract:plugin/file-resources.schema.json",
   "contract:plugin/worker-invocation.schema.json",
 ];
 

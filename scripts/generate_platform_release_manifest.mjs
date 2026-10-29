@@ -15,6 +15,7 @@ const canonicalContractPaths = Object.freeze([
   "plugin/error-codes.schema.json",
   "plugin/external-signer-request-v1.schema.json",
   "plugin/external-signer-response-v1.schema.json",
+  "plugin/file-resources.schema.json",
   "plugin/host-capability-contract-v1.schema.json",
   "plugin/host-capability-pin-v1.schema.json",
   "plugin/manifest-v9.schema.json",
@@ -42,7 +43,6 @@ const canonicalContractPaths = Object.freeze([
   "plugin/wasm-abi.json",
   "plugin/web-surface-document.schema.json",
   "plugin/web-surface-transport.schema.json",
-  "plugin/file-resources.schema.json",
   "plugin/worker-invocation.schema.json",
 ]);
 
