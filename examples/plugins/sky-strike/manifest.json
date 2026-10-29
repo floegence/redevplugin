@@ -26,7 +26,7 @@
       "kind": "view",
       "intent": "primary",
       "label": "Sky Strike",
-      "entry": "ui/index.html",
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false},
       "default_size": {
         "width": 1100,
         "height": 760

@@ -6,7 +6,15 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "lib": ["ES2022", "DOM", "WebWorker"]
+    "lib": [
+      "ES2022",
+      "DOM",
+      "WebWorker"
+    ],
+    "allowJs": true
   },
-  "include": ["opaque-surface/*.ts"]
+  "include": [
+    "web-application/*.ts",
+    "web-application/chunk.js"
+  ]
 }

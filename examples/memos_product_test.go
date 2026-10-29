@@ -9,11 +9,11 @@ import (
 
 func TestMemosUsesSafeDraftAndSerializedEditing(t *testing.T) {
 	root := repositoryRoot(t)
-	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.tsx")
 	styles := readMemosProductFile(t, root, "examples/plugins/memos/ui/assets/styles.css")
 	combined := source + styles
 
-	if strings.Count(source, `data-redevplugin-action": "set-pinned"`) != 1 {
+	if strings.Count(source, `onClick={() => void setPinned(props.id)}`) != 1 {
 		t.Fatal("Memos must expose pin as the one explicit card-header action")
 	}
 	for _, required := range []string{
@@ -28,7 +28,7 @@ func TestMemosUsesSafeDraftAndSerializedEditing(t *testing.T) {
 		`memos.draft.save`,
 		`memos.publish`,
 		`memos.update`,
-		`save-indicator`,
+		`save-state`,
 		`Memos could not protect this draft`,
 		`Memos could not save your changes`,
 	} {
@@ -45,7 +45,7 @@ func TestMemosUsesSafeDraftAndSerializedEditing(t *testing.T) {
 
 func TestMemosUsesTimelineExplorerAndControlledMarkdown(t *testing.T) {
 	root := repositoryRoot(t)
-	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.tsx")
 	markdown := readMemosProductFile(t, root, "examples/plugin-ui/memos-markdown.ts")
 	styles := readMemosProductFile(t, root, "examples/plugins/memos/ui/assets/styles.css")
 	combined := source + markdown + styles
@@ -68,13 +68,13 @@ func TestMemosUsesTimelineExplorerAndControlledMarkdown(t *testing.T) {
 		`markdown-table`,
 		`markdown-code-block`,
 		`markdown-raw`,
-		`data-redevplugin-action": "toggle-task"`,
-		`role: "dialog"`,
-		`"aria-modal": true`,
-		`@media (max-width: 640px)`,
-		`@media (prefers-color-scheme: dark)`,
-		`grid-template-columns: 256px minmax(0, 1fr)`,
-		`width: min(100%, 784px)`,
+		`data-memo-task`,
+		`<dialog`,
+		`aria-modal="true"`,
+		`@media (max-width: 700px)`,
+		`data-floe-surface`,
+		`grid-template-columns: 240px minmax(0, 1fr)`,
+		`max-width: 760px`,
 	} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("Memos timeline product flow is missing %q", required)
@@ -98,12 +98,12 @@ func TestMemosUsesTimelineExplorerAndControlledMarkdown(t *testing.T) {
 
 func TestMemosMarkdownUsesCallerOwnedStableIdentity(t *testing.T) {
 	root := repositoryRoot(t)
-	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.tsx")
 	markdown := readMemosProductFile(t, root, "examples/plugin-ui/memos-markdown.ts")
 
 	for _, required := range []string{
 		`createMarkdownIdentity`,
-		`markdownIdentityFor(memo.id)`,
+		`markdownIdentityFor(props.id)`,
 		`pruneMarkdownIdentities`,
 	} {
 		if !strings.Contains(source+markdown, required) {
@@ -117,23 +117,23 @@ func TestMemosMarkdownUsesCallerOwnedStableIdentity(t *testing.T) {
 		`occurrences`,
 	} {
 		if strings.Contains(markdown, forbidden) {
-			t.Fatalf("Memos markdown derives VNode identity from mutable token content via %q", forbidden)
+			t.Fatalf("Memos markdown derives DOM identity from mutable token content via %q", forbidden)
 		}
 	}
 }
 
 func TestMemosDeleteDialogKeepsRecoverableFailureState(t *testing.T) {
 	root := repositoryRoot(t)
-	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.tsx")
 	styles := readMemosProductFile(t, root, "examples/plugins/memos/ui/assets/styles.css")
 
 	for _, required := range []string{
 		`deleteError: string`,
 		`if (state.ui.busy) return`,
-		`autofocus: !deleting`,
-		`disabled: deleting`,
-		`deleting ? textNode("delete-confirm-text", "Deleting...") : textNode("delete-confirm-text", "Delete memo")`,
-		`class: "delete-error", role: "status"`,
+		`cancel.focus({ preventScroll: true })`,
+		`disabled={state.ui.busy}`,
+		`state.ui.busy ? "Deleting..." : "Delete memo"`,
+		`<p role="status" class="danger">{state.ui.deleteError}`,
 		`response.data.deleted_id !== id`,
 		`state.ui.deleteError = readableError(error, "Memos could not delete this memo")`,
 		`state.ui.syncState = "syncing"`,
@@ -142,9 +142,9 @@ func TestMemosDeleteDialogKeepsRecoverableFailureState(t *testing.T) {
 		`refreshFeed(false, feedRequest)`,
 		`refreshFacets(facetsRequest)`,
 		`state.ui.syncState = "error"`,
-		`data-redevplugin-action": "retry-sync"`,
+		`onClick={() => void reconcileUnknownMutationOutcome()}`,
 		`return state.ui.busy || state.ui.syncState !== "ready"`,
-		`.delete-dialog .delete-error`,
+		`trapFocus`,
 	} {
 		if !strings.Contains(source+styles, required) {
 			t.Fatalf("Memos recoverable delete flow is missing %q", required)
@@ -169,7 +169,7 @@ func TestMemosDeleteDialogKeepsRecoverableFailureState(t *testing.T) {
 
 func TestMemosUnknownPublishOutcomeUsesAuthoritativeDraftReconciliation(t *testing.T) {
 	root := repositoryRoot(t)
-	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.tsx")
 	worker := readMemosProductFile(t, root, "examples/workers/memos/src/lib.rs")
 
 	for _, required := range []string{
@@ -193,7 +193,7 @@ func TestMemosUnknownPublishOutcomeUsesAuthoritativeDraftReconciliation(t *testi
 
 func TestMemosKeepsNavigationCountsIndependentFromTheActiveFeed(t *testing.T) {
 	root := repositoryRoot(t)
-	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.tsx")
 	workerSource := readMemosProductFile(t, root, "examples/workers/memos/src/lib.rs")
 	manifest := readMemosProductFile(t, root, "examples/plugins/memos/manifest.json")
 	combined := uiSource + workerSource + manifest
@@ -204,8 +204,8 @@ func TestMemosKeepsNavigationCountsIndependentFromTheActiveFeed(t *testing.T) {
 		`archived_total`,
 		`allTotal: number`,
 		`pinnedTotal: number`,
-		`viewButton("all", "All memos", "icon-inbox", state.facets.allTotal)`,
-		`viewButton("pinned", "Pinned", "icon-pin", state.facets.pinnedTotal)`,
+		`view === "all" ? state.facets.allTotal`,
+		`view === "pinned" ? state.facets.pinnedTotal`,
 		`applyMemoTransition`,
 		`applyFeedTransition`,
 		`adjustedCount`,
@@ -222,7 +222,7 @@ func TestMemosKeepsNavigationCountsIndependentFromTheActiveFeed(t *testing.T) {
 
 func TestMemosKeepsBoundedStorageAndCurrentBootstrap(t *testing.T) {
 	root := repositoryRoot(t)
-	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.tsx")
 	workerSource := readMemosProductFile(t, root, "examples/workers/memos/src/lib.rs")
 	manifest := readMemosProductFile(t, root, "examples/plugins/memos/manifest.json")
 	styles := readMemosProductFile(t, root, "examples/plugins/memos/ui/assets/styles.css")
@@ -242,11 +242,11 @@ func TestMemosKeepsBoundedStorageAndCurrentBootstrap(t *testing.T) {
 		`title = ?, body = ?, content = ?`,
 		`"schema_version": 1`,
 		`memos.setArchived`,
-		`confirm-delete`,
-		`load-older-memos`,
+		`confirmDelete()`,
+		`loadOlder()`,
 		`min-height: 44px`,
-		`button[value] > * { pointer-events: none; }`,
-		`@media (max-width: 380px)`,
+		`onInput={(event) => updateComposer(event.currentTarget.value)}`,
+		`width: min(360px, 100vw)`,
 	} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("Memos bounded storage or current bootstrap flow is missing %q", required)
@@ -259,7 +259,7 @@ func TestMemosKeepsBoundedStorageAndCurrentBootstrap(t *testing.T) {
 
 func TestMemosUsesBoundedKeysetFeedWindows(t *testing.T) {
 	root := repositoryRoot(t)
-	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.tsx")
 	workerSource := readMemosProductFile(t, root, "examples/workers/memos/src/lib.rs")
 	manifest := readMemosProductFile(t, root, "examples/plugins/memos/manifest.json")
 	combined := uiSource + workerSource + manifest
@@ -269,8 +269,8 @@ func TestMemosUsesBoundedKeysetFeedWindows(t *testing.T) {
 		`nextCursor: string | null`,
 		`cursor: advance ? state.feed.nextCursor : null`,
 		`state.feed.memos = response.data.memos.slice(0, MAX_VISIBLE_MEMOS)`,
-		`load-older-memos`,
-		`newest-memos`,
+		`loadOlder()`,
+		`showNewest()`,
 		`CURSOR_PREFIX: &str = "memos_cursor_v1_"`,
 		`filter_sha256`,
 		`filter_fingerprint(`,

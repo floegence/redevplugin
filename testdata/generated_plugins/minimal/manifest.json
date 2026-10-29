@@ -25,7 +25,7 @@
       "surface_id": "minimal.view",
       "kind": "view",
       "label": "Minimal",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

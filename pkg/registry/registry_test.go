@@ -31,7 +31,7 @@ func currentTestManifest(pluginID, version string) manifest.Manifest {
 			SurfaceID: "main",
 			Kind:      manifest.SurfaceView,
 			Label:     "Test",
-			Entry:     "ui/index.html",
+			Entry:     "ui/index.html", Web: manifest.SurfaceWebSpec{Root: "ui"},
 		}},
 	}
 }
@@ -202,7 +202,7 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 					API:       manifest.PublicAPIRequirement{Major: manifest.PluginAPIMajor},
 					Presentation: manifest.PresentationSpec{DefaultLocale: "en-US", Summary: "Clone", Description: []string{"Clone"},
 						Keywords: []string{"clone"}},
-					Surfaces: []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Clone", Entry: "ui/index.html"}},
+					Surfaces: []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Clone", Entry: "ui/index.html", Web: manifest.SurfaceWebSpec{Root: "ui"}}},
 					Methods: []manifest.MethodSpec{{
 						Method:        "documents.get",
 						Effect:        manifest.MethodEffectRead,

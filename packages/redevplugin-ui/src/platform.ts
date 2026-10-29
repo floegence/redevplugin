@@ -19,6 +19,7 @@ import {
   createReDevPluginSurfaceTransport,
   openPluginSurfaceInSlot,
   type PluginConfirmationHandler,
+  type PluginWebOriginPreparationHandler,
   type PluginSurfaceHost,
   type PluginSurfaceHostBootstrap,
   type PluginSurfaceContext,
@@ -96,9 +97,11 @@ export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
   leaseRenewalLeadMs?: number;
   reloadLimiter?: PluginSurfaceReloadLimiter;
   confirm?: PluginConfirmationHandler;
+  prepareWebOrigin?: PluginWebOriginPreparationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
   onFileExport?: PluginSurfaceFileExportHandler;
+  confirmClose?: (request: { reason: "unsaved" | "unresponsive"; signal: AbortSignal }) => boolean | Promise<boolean>;
   onError?: (error: import("./errors.js").PluginBridgeError) => void;
   surfaceContext?: PluginSurfaceContext;
 };

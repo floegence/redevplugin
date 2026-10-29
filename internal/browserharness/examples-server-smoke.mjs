@@ -80,17 +80,17 @@ try {
   await desktop.locator('#plugin-inspector[data-open="true"]').waitFor();
   assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "false");
   await desktop.locator("#inspector-close").click();
-  await desktop.locator('#plugin-inspector[data-open="false"]').waitFor();
+  await desktop.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
   assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "true");
 
   let memos = await pluginFrame(desktop, "Memos");
   const explorerStyle = await waitForComputedStyles(
     memos.locator(".memos-explorer"),
-    ["backgroundColor", "width"],
-    (style) => style.backgroundColor === "rgb(238, 240, 243)" && style.width === "256px",
+    ["width"],
+    (style) => style.width === "240px",
     "stable Memos explorer styles",
   );
-  assert.deepEqual(explorerStyle, { backgroundColor: "rgb(238, 240, 243)", width: "256px" });
+  assert.deepEqual(explorerStyle, { width: "240px" });
   await memos.locator(".memo-composer").waitFor();
   assert.equal(await memos.locator(".memo-feed .memo-card").count(), 0, "an empty timeline must keep the composer usable");
   await memos.getByRole("button", { name: "All memos 0", exact: true }).waitFor();
@@ -131,7 +131,7 @@ try {
   await memos.getByRole("button", { name: "Pinned 0", exact: true }).waitFor();
   await smokeCard().getByRole("heading", { name: "Smoke timeline memo" }).waitFor();
   const task = smokeCard().getByRole("checkbox");
-  await task.check();
+  await task.click();
   await waitFor(async () => await task.isChecked(), 5_000, "Markdown task writeback");
   const pinMemo = smokeCard().getByRole("button", { name: "Pin memo" });
   await waitFor(async () => await pinMemo.isEnabled(), 5_000, "memo actions after task update");
@@ -225,7 +225,7 @@ try {
   await memos.getByRole("button", { name: "Archived 0", exact: true }).waitFor();
 
   const lifecycleMenuButton = lifecycleCard().getByRole("button", { name: "More memo actions" });
-  const lifecycleMemoID = await lifecycleMenuButton.getAttribute("value");
+  const lifecycleMemoID = await lifecycleCard().getAttribute("data-memo-id");
   assert.match(lifecycleMemoID || "", /^memo_[0-9a-f]{24}$/);
   await lifecycleMenuButton.click();
   const firstMenuItem = lifecycleCard().getByRole("menuitem", { name: "Edit" });
@@ -311,7 +311,7 @@ try {
   await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
 
   const editedMenuButton = editedCard().getByRole("button", { name: "More memo actions" });
-  const editedMemoID = await editedMenuButton.getAttribute("value");
+  const editedMemoID = await editedCard().getAttribute("data-memo-id");
   assert.match(editedMemoID || "", /^memo_[0-9a-f]{24}$/);
   const reconcileListCallsBefore = methodCalls.filter((body) => body.includes('"method":"memos.list"')).length;
   const reconcileFacetCallsBefore = methodCalls.filter((body) => body.includes('"method":"memos.facets"')).length;
@@ -357,9 +357,9 @@ try {
   let weather = await pluginFrame(desktop, "Weather");
   await weather.getByRole("heading", { name: "Berlin" }).waitFor({ timeout: 20_000 });
   await weather.locator(".weather-story").waitFor();
-  await weather.locator(".weather-glance").waitFor();
-  const weatherSceneImage = await weather.locator(".weather-scene").evaluate((element) => getComputedStyle(element).backgroundImage);
-  assert.match(weatherSceneImage, /^url\("blob:null\//, "the sandbox must rewrite the packaged Weather artwork to an opaque-origin blob URL");
+  await weather.locator(".weather-metrics").waitFor();
+  assert.equal(await weather.locator(".weather-hero").getAttribute("data-floe-surface"), "raised");
+  assert.equal(await weather.locator("html").getAttribute("data-floe-surface-style"), "soft-neumorphic");
   const currentTemperature = weather.locator(".temperature-value");
   await currentTemperature.waitFor();
   assert.match(await currentTemperature.textContent() || "", /^-?\d+°$/);
@@ -429,9 +429,9 @@ try {
   let gameBackdropImage = "";
   await waitFor(async () => {
     gameBackdropImage = await game.locator(".canvas-stage").evaluate((element) => getComputedStyle(element).backgroundImage);
-    return /^url\("blob:null\//.test(gameBackdropImage);
+    return /\/assets\/starfield-v2\.webp/.test(gameBackdropImage);
   }, 10_000, "sandboxed game artwork");
-  assert.match(gameBackdropImage, /^url\("blob:null\//, "the sandbox must rewrite the packaged game artwork to an opaque-origin blob URL");
+  assert.match(gameBackdropImage, /\/assets\/starfield-v2\.webp/, "native CSS must load verified package artwork from its application origin");
   const canvas = game.locator("canvas");
   await canvas.waitFor({ state: "visible", timeout: 20_000 });
   await waitFor(() => methodCalls.some((body) => body.includes("game.highScore.load")), 10_000, "high-score load call");
@@ -486,7 +486,7 @@ try {
   await mobile.locator("#mobile-inspector-toggle").click();
   await mobile.locator('#plugin-inspector[data-open="true"]').waitFor();
   await mobile.locator("#inspector-close").click();
-  await mobile.locator('#plugin-inspector[data-open="false"]').waitFor();
+  await mobile.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
   await waitFor(async () => await mobile.locator("#plugin-inspector").evaluate((element) => getComputedStyle(element).visibility === "hidden"), 2_000, "closed mobile app details sheet to be hidden");
   await mobileMemos.getByRole("button", { name: "Open explorer" }).click();
   await mobileMemos.locator(".memos-explorer").waitFor();
@@ -584,6 +584,23 @@ try {
   await compactFailures.assertClean();
   await compact.close();
 
+  for (const mode of ["dark", "light"]) {
+    await desktop.emulateMedia({ colorScheme: mode });
+    for (const [slug, title] of [["memos", "Memos"], ["weather", "Weather"], ["sky-strike", "Sky Strike"]]) {
+      await desktop.locator('#plugin-list button[data-slug="' + slug + '"]').click();
+      const themed = await pluginFrame(desktop, title);
+      await themed.locator("html." + mode).waitFor();
+      if (slug === "weather") await themed.locator(".temperature-value").waitFor({ timeout: 20_000 });
+      assert.equal(await themed.locator("html").getAttribute("data-floe-surface-style"), "soft-neumorphic");
+      await assertNoHorizontalOverflow(themed);
+      await desktop.screenshot({ path: resolve(evidenceDir, "examples-" + slug + "-" + mode + ".png") });
+    }
+  }
+  for (const viewport of [{ width: 430, height: 932 }, { width: 768, height: 1024 }]) {
+    await desktop.setViewportSize(viewport);
+    await assertNoHorizontalOverflow(desktop);
+    await assertNoHorizontalOverflow(await pluginFrame(desktop, "Sky Strike"));
+  }
   const desktopFailureSummary = await desktopFailures.assertClean();
   await writeFile(resolve(evidenceDir, "examples-acceptance.json"), JSON.stringify({
     schema_version: "redevplugin.examples_acceptance.v1",
@@ -610,7 +627,8 @@ try {
     high_score_save_and_reload_verified: true,
     premium_webp_artwork_loaded: true,
     distinct_consumer_visual_systems_verified: true,
-    responsive_viewports: ["1280x800", "390x844", "360x720"],
+    responsive_viewports: ["1280x800", "390x844", "360x720", "430x932", "768x1024"],
+    light_dark_themes_verified: true,
     console_errors: desktopFailureSummary.unexpectedConsole,
     page_errors: desktopFailureSummary.pageErrors,
     api_failures: desktopFailureSummary.apiFailures,
@@ -621,9 +639,10 @@ try {
     cause_stack: error instanceof Error ? error.stack : undefined,
     outer_status: await desktop.locator("#surface-placeholder p").textContent().catch(() => ""),
     detail_error: await desktop.locator("#detail-error").textContent().catch(() => ""),
-    plugin_text: await desktop.frameLocator('iframe[title="Memos plugin"]').locator("body").innerText().catch(() => ""),
+    weather_text: await desktop.frameLocator('iframe[title="Weather plugin"]').locator("body").innerText({timeout: 1000}).catch(() => ""),
+    plugin_text: await desktop.frameLocator('iframe[title="Memos plugin"]').locator("body").innerText({timeout: 1000}).catch(() => ""),
     failure_summary: await desktopFailures.read(),
-    method_calls: methodCalls,
+    method_calls: methodCalls.map((body) => { const { method, params } = JSON.parse(body); return { method, params }; }),
     method_results: await Promise.all(methodResults),
   };
   throw new Error(`examples smoke failed: ${JSON.stringify(diagnostics)}`, { cause: error });

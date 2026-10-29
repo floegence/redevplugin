@@ -175,8 +175,8 @@ node scripts/measure_http_route_authorization_performance.mjs \
   --comparison-output "$COMPARISONS" \
   --diagnostic-output "$ROUTE_AUTHORIZATION_DIAGNOSTIC" \
   --gate "$MODE"
-node scripts/measure_redevplugin_ui_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"
-node scripts/measure_redevplugin_renderer_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"
+REDEVPLUGIN_WEB_PERFORMANCE_OUTPUT="$MEASUREMENTS" REDEVPLUGIN_WEB_PERFORMANCE_GATE="$MODE" REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off \
+  go test ./pkg/httpadapter -run '^TestNativeWebApplicationBrowser$' -count=1
 ARGS=(
   --output "$OUTPUT"
   --measurements "$MEASUREMENTS"

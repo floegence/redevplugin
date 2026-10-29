@@ -25,7 +25,7 @@
       "surface_id": "malicious.cargo_dependencies.view",
       "kind": "view",
       "label": "Malicious Cargo Dependencies",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

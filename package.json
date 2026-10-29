@@ -34,8 +34,6 @@
     "release-workflow-security:test": "node --test scripts/release_workflow_security.test.mjs scripts/release_workflow_state_machine.test.mjs scripts/verify_quick_ci_evidence.test.mjs",
     "release-audit-retry:test": "node --test scripts/release_audit_retry.test.mjs",
     "rust-source-packages:test": "node --test scripts/rust_source_packages.test.mjs",
-    "browser-harness:generate": "node scripts/build_browser_harness.mjs",
-    "browser-harness:check": "node scripts/build_browser_harness.mjs --check",
     "browser-harness:typecheck": "tsc -p testdata/browser-harness/tsconfig.json --noEmit",
     "scaffold:generate": "node scripts/build_scaffold_assets.mjs",
     "scaffold:check": "node scripts/build_scaffold_assets.mjs --check",
@@ -43,17 +41,17 @@
     "canonical-wasm:test": "node --test scripts/canonical_wasm_builder.test.mjs",
     "memos-markdown:test": "node --test scripts/memos_markdown_identity.test.mjs",
     "scaffold:typecheck": "tsc -p internal/scaffoldtemplate/tsconfig.json --noEmit",
-    "lint": "eslint packages/redevplugin-contracts/src packages/redevplugin-contracts/test packages/redevplugin-ui/src packages/redevplugin-ui/test examples/plugin-ui examples/showcase/app.ts internal/scaffoldtemplate testdata/browser-harness/opaque-surface/*.ts internal/authorpreview",
+    "lint": "eslint packages/redevplugin-contracts/src packages/redevplugin-contracts/test packages/redevplugin-ui/src packages/redevplugin-ui/test examples/plugin-ui examples/showcase/app.ts internal/scaffoldtemplate testdata/browser-harness/web-application/*.ts internal/authorpreview",
     "typecheck": "npm run contracts-package:typecheck && tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
     "examples:generate": "node scripts/build_example_plugins.mjs",
     "examples:check": "node scripts/build_example_plugins.mjs --check",
     "examples:check:canonical": "node scripts/build_example_plugins.mjs --check --canonical",
     "examples:typecheck": "tsc -p examples/tsconfig.json --noEmit",
-    "build": "node scripts/build_surface_integrity.mjs --check && npm run contracts-package:build && tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check",
+    "build": "npm run contracts-package:build && npm --workspace @floegence/redevplugin-ui run build && npm run scaffold:check",
     "test:contracts": "node --test scripts/clean_typescript_test_output.test.mjs && npm run contracts-package:test",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",
-    "test:browser-harness": "npm run browser-harness:check && node --test internal/browserharness/*.test.mjs",
-    "test:browser-harness:smoke": "npm run build && node internal/browserharness/opaque-surface-smoke.mjs && node internal/browserharness/http-integrity-smoke.mjs && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^(TestExamplesServerBrowserSmoke|TestAuthorBrowserWorkflow)$' -count=1",
+    "test:browser-harness": "node --test internal/browserharness/*.test.mjs",
+    "test:browser-harness:smoke": "npm run build && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./pkg/httpadapter -run '^TestNativeWebApplicationBrowser$' -count=1 && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^(TestExamplesServerBrowserSmoke|TestAuthorBrowserWorkflow)$' -count=1",
     "performance:fast": "./scripts/check_redevplugin_performance.sh --fast",
     "performance-contract:test": "node --test scripts/performance_contract.test.mjs scripts/performance_evidence_source_state.test.mjs scripts/measure_http_route_authorization_performance.test.mjs scripts/runtime_performance_platform_policy.test.mjs",
     "performance:full": "./scripts/check_redevplugin_performance.sh --full",
@@ -61,18 +59,21 @@
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",
     "stress-platform:test": "node --test scripts/stress_platform_policy.test.mjs",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && mkdir -p dist/examples-state && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run author-preview:check && npm run platform-identity:check && npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run ui-bridge-contract:test && npm run ui-contracts:check && npm run surface-integrity:check && npm run release-metadata:check && npm run node-toolchain-contract:test && npm run repository-boundary:test && npm run release-workflow-security:test && npm run release-audit-retry:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates",
-    "surface-integrity:generate": "node scripts/build_surface_integrity.mjs",
-    "surface-integrity:check": "node scripts/build_surface_integrity.mjs --check && node --test scripts/surface_integrity.test.mjs",
+    "check": "npm run author-preview:check && npm run platform-identity:check && npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run ui-bridge-contract:test && npm run ui-contracts:check && npm run release-metadata:check && npm run node-toolchain-contract:test && npm run repository-boundary:test && npm run release-workflow-security:test && npm run release-audit-retry:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run build && npm run ui-package:check && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates",
     "author-preview:generate": "node scripts/build_author_preview.mjs",
-    "author-preview:check": "node scripts/build_author_preview.mjs --check && tsc -p internal/authorpreview/tsconfig.json --noEmit"
+    "author-preview:check": "node scripts/build_author_preview.mjs --check && tsc -p internal/authorpreview/tsconfig.json --noEmit",
+    "ui-package:check": "node scripts/check_ui_package.mjs"
   },
   "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@floegence/floe-webapp-core": "0.86.65",
     "ajv": "8.20.0",
+    "babel-preset-solid": "1.9.16",
     "esbuild": "^0.28.2",
     "eslint": "10.13.0",
     "openapi-typescript": "7.13.0",
     "playwright": "^1.64.1",
+    "solid-js": "1.9.17",
     "typescript": "^5.9.3",
     "typescript-eslint": "8.72.0",
     "yaml": "^2.9.1"
@@ -83,6 +84,8 @@
     "@redocly/openapi-core": {
       "js-yaml": "4.3.2",
       "minimatch": "10.2.5"
-    }
+    },
+    "dompurify": "3.4.17",
+    "katex": "0.18.2"
   }
 }

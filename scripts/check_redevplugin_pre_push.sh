@@ -100,7 +100,7 @@ go test -p=1 ./cmd/... ./examples/... ./pkg/...
 golangci-lint run ./cmd/... ./examples/... ./pkg/...
 
 echo "==> TypeScript, contract, browser, and property checks"
-REDEVPLUGIN_A2_EVIDENCE_DIR=dist/a2-pre-push npm run check
+REDEVPLUGIN_WEB_EVIDENCE_DIR=dist/web-pre-push npm run check
 npm run examples:check:canonical
 npm run scaffold:check:canonical
 ./scripts/check_redevplugin_ui_bridge.sh

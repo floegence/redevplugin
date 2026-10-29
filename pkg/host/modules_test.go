@@ -35,6 +35,7 @@ func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {
 		"ExternalPackage",
 		"Process",
 		"Background",
+		"Web",
 	}
 	if configType.NumField() != len(want) {
 		t.Fatalf("Config has %d fields, want %d state and module fields", configType.NumField(), len(want))

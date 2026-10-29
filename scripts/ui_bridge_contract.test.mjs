@@ -23,8 +23,8 @@ test("UI bridge gate uses the single current schema", async () => {
   assert.deepEqual(descriptors.active, {
     bridgeSchemaVersion: "bridge",
     path: "spec/plugin/bridge.schema.json",
-    transportSchemaVersion: "opaque-surface-transport-v6",
-    transportPath: "spec/plugin/opaque-surface-transport-v6.schema.json",
+    transportSchemaVersion: "web-surface-transport",
+    transportPath: "spec/plugin/web-surface-transport.schema.json",
   });
   await assert.doesNotReject(validateUIBridgeRepository(root));
 });
@@ -64,44 +64,22 @@ test("current UI contract rejects an independent UI protocol axis", () => {
   }
 });
 
-test("current UI contract exposes one closed finite canvas wheel event", () => {
-  const variants = baseline.activeSchema.$defs.canvas_input.properties.event.oneOf;
-  const wheel = variants.find((variant) => variant.properties?.type?.const === "wheel");
-  assert.ok(wheel, "canvas wheel input must be part of the current bridge schema");
-  assert.equal(wheel.additionalProperties, false);
-  assert.deepEqual(wheel.required, [
-    "type", "x", "y", "delta_x", "delta_y", "delta_mode",
-    "alt_key", "ctrl_key", "meta_key", "shift_key",
-  ]);
-  assert.deepEqual(wheel.properties.delta_mode.enum, [0, 1, 2]);
-  for (const name of ["x", "y", "delta_x", "delta_y"]) {
-    assert.equal(wheel.properties[name].type, "number");
+test("current Web contract rejects retired rendering and input protocols", () => {
+  for (const mechanism of ["redevplugin.ui.mount", "redevplugin.ui.patch", "redevplugin.ui.keyboard.input", "redevplugin.ui.canvas", "x-redevplugin-render-policy"]) {
+    const stale = structuredClone(baseline);
+    stale.surface += "\n" + mechanism;
+    assert.throws(() => validateUIBridgeInputs(stale), /obsolete rendering mechanism/);
   }
 });
 
-test("current UI contract exposes closed surface keyboard bindings and input", () => {
-  for (const definition of ["keyboard_bindings", "keyboard_input"]) {
-    const withoutDefinition = structuredClone(baseline);
-    delete withoutDefinition.activeSchema.$defs[definition];
-    assert.throws(() => validateUIBridgeInputs(withoutDefinition), new RegExp(`current ${definition} frame is not closed and exact`));
-
-    const withoutReference = structuredClone(baseline);
-    withoutReference.activeSchema.oneOf = withoutReference.activeSchema.oneOf.filter(
-      ({ $ref }) => $ref !== `#/$defs/${definition}`,
-    );
-    assert.throws(() => validateUIBridgeInputs(withoutReference), new RegExp(`exactly one ${definition} frame reference`));
+test("Web entry binds the exact window source and allocated origin", () => {
+  for (const condition of ['event.source !== this.#iframe.contentWindow', 'event.origin !== this.#document.origin']) {
+    const invalid = structuredClone(baseline); invalid.surface = invalid.surface.replace(condition, "false");
+    assert.throws(() => validateUIBridgeInputs(invalid), /bind source and exact origin/);
   }
-
-  const withOpenBinding = structuredClone(baseline);
-  withOpenBinding.activeSchema.$defs.keyboard_binding.properties.unexpected = { type: "string" };
-  assert.throws(() => validateUIBridgeInputs(withOpenBinding), /keyboard_binding declaration is not closed and exact/);
-
-  const withOpenEvent = structuredClone(baseline);
-  withOpenEvent.activeSchema.$defs.keyboard_input.properties.event.properties.unexpected = { type: "string" };
-  assert.throws(() => validateUIBridgeInputs(withOpenEvent), /keyboard_input frame is not closed and exact/);
 });
 
-test("current UI contract exposes one closed user-action file export frame", () => {
+test("current UI contract exposes one closed host-authorized file export frame", () => {
   const withoutDefinition = structuredClone(baseline);
   delete withoutDefinition.activeSchema.$defs.file_export;
   assert.throws(() => validateUIBridgeInputs(withoutDefinition), /file_export frame is not closed and exact/);
@@ -119,4 +97,15 @@ test("current UI contract exposes one closed user-action file export frame", () 
   const withoutTransfer = structuredClone(baseline);
   delete withoutTransfer.activeSchema.$defs.file_export["x-redevplugin-transfer"];
   assert.throws(() => validateUIBridgeInputs(withoutTransfer), /file_export frame is not closed and exact/);
+});
+
+test("origin preparation is host-local and exposes only exact routing metadata", () => {
+  for (const field of ["bootstrap_url", "asset_session", "plugin_gateway_token", "replacement_url"]) {
+    const invalid = structuredClone(baseline);
+    invalid.activeTransportSchema.$defs.origin_preparation.properties[field] = { type: "string" };
+    assert.throws(() => validateUIBridgeInputs(invalid), /secret-free host-local/);
+  }
+  const invalid = structuredClone(baseline);
+  invalid.activeTransportSchema.oneOf.push({ $ref: "#/$defs/origin_preparation" });
+  assert.throws(() => validateUIBridgeInputs(invalid), /secret-free host-local/);
 });

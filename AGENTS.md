@@ -220,7 +220,7 @@ Use this responsibility matrix as the default decision rule:
 | --- | --- | --- |
 | Package and trust | Package layout, canonical hashes, signing rules, manifest validation, trust state contracts, release artifact identity | Which registries or local sources are allowed, product review UX, enterprise policy caps |
 | Lifecycle | Install, enable, open, disable, uninstall, update, downgrade, export/import, diagnostics, and data-retention APIs; durable owner-scoped release-install operations with idempotent request recovery, restart reconciliation, progress, and stable failure codes | Where those actions appear in product UI, who may invoke them, and how they are audited in the host product |
-| UI runtime | Sandboxed iframe bootstrap, asset ticket/session protocol, bridge SDK, opaque-origin-safe source/port-bound MessageChannel messaging, settings and intent contracts | Activity Bar, Workbench, Settings, Desktop shell, route mounting, native product chrome, and product copy |
+| UI runtime | Sandboxed iframe bootstrap, asset ticket/session protocol, bridge SDK, dedicated-origin source/port-bound MessageChannel messaging, settings and intent contracts | Activity Bar, Workbench, Settings, Desktop shell, route mounting, native product chrome, and product copy |
 | Backend runtime | Rust `redevplugin-runtime` source crates, runtime admission and manager/supervisor, WASM actor/job model, IPC, leases, quotas, revocation, hostcall contracts, stream envelopes | Fixed package coordinates and toolchain, verified source build, product binary/SBOM/provenance/signature, process placement, and diagnostics presentation |
 | Storage, network, and secrets | Host-neutral broker contracts, request contexts, Go connectivity target classification, quotas, secret reference contracts, and stable errors | Concrete vault, filesystem root, environment policy, allowlists, proxy settings, and product-specific grant UX |
 | Business capabilities | Generic capability adapter interface, permission hooks, Execution/Event envelope, and audit DTOs | Docker/Podman, files, shells, cloud services, database access, local product APIs, and any domain-specific adapter |
@@ -273,9 +273,12 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   concrete adapter must live in the host product.
 - If a plugin UI document is loaded, the loading path must remain the
   ReDevPlugin sandbox bootstrap, asset-ticket/session validation, and
-  opaque-origin-safe source/port-bound MessageChannel bridge handshake path.
-  For opaque sandbox iframes, `event.origin` is diagnostic context only and is
-  not an authorization input. Authorization must bind the window source,
+  dedicated-origin source/port-bound MessageChannel bridge handshake path.
+  Every live container uses a fresh origin distinct from the parent hostname.
+  Bootstrap must validate the exact allocated origin and window source before
+  transferring a port. Browser network confinement must pass admission before
+  plugin scripts execute; no legacy renderer or permissive fallback is allowed.
+  Authorization must additionally bind the window source,
   transferred `MessagePort`, asset session, surface instance, bridge nonce,
   active fingerprint, session hash, management revision, and revoke epoch. Host UI
   chrome may surround the surface but must not replace that path.

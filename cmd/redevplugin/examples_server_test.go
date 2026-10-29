@@ -324,7 +324,7 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 		}
 	})
 
-	origin := "http://" + listener.Addr().String()
+	origin := "http://" + strings.Replace(listener.Addr().String(), "127.0.0.1", "localhost", 1)
 	var pluginHost *host.Host
 	select {
 	case pluginHost = <-hostReady:

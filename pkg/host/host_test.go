@@ -1083,66 +1083,13 @@ func TestMintBridgeTokenSurvivesRuntimeGenerationChanges(t *testing.T) {
 	}
 }
 
-func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
+func TestWebSurfaceAssetRevalidatesAdapterBytes(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	bootstrap, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceID:         "lifecycle.view",
-		SurfaceInstanceID: "surface_asset",
-
-		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
-			installed.PluginInstanceID),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-		AssetSession:   "not-a-session",
-		AssetSessionID: "as_invalid",
-		BindingID:      "asset_invalid",
-		Now:            now.Add(2 * time.Second),
-	}); !errors.Is(err, ErrActionDenied) {
-		t.Fatalf("ReadSurfaceAsset(empty surface) error = %v, want ErrActionDenied", err)
-	}
-	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetSession:      "not-a-session",
-		AssetSessionID:    "as_invalid",
-		BindingID:         "asset_invalid",
-
-		Now: now.Add(2 * time.Second),
-	}); !errors.Is(err, bridge.ErrTokenInvalid) {
-		t.Fatalf("ReadSurfaceAsset() error = %v, want ErrTokenInvalid", err)
-	}
-	prepared, err := h.PrepareSurface(hostTestContext(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(prepared.Document.Assets) != 1 {
-		t.Fatalf("prepared assets = %#v, want one lazy asset", prepared.Document.Assets)
-	}
-	preparedAsset := prepared.Document.Assets[0]
-	asset, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetSession:      prepared.AssetSession,
-		AssetSessionID:    prepared.AssetSessionID,
-		BindingID:         preparedAsset.BindingID,
-
-		Now: now.Add(3 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("ReadSurfaceAsset() error = %v", err)
-	}
-	if !bytes.Equal(asset.Content, validPNGForTest()) || asset.Entry.Path != preparedAsset.Path || asset.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID {
-		t.Fatalf("asset mismatch: session=%#v entry=%#v content=%q", asset.Session, asset.Entry, string(asset.Content))
+	installed := installAndEnablePlugin(t, h, buildFixturePackage(t))
+	req, _ := openTestWebSurface(t, h, installed.PluginInstanceID, "surface_integrity")
+	asset, err := h.ReadWebSurfaceAsset(context.Background(), ReadWebSurfaceAssetRequest{WebSurfaceRequest: req, Path: "/assets/status.png"})
+	if err != nil || !bytes.Equal(asset.Content, validPNGForTest()) {
+		t.Fatalf("resource read: %v", err)
 	}
 	originalAssets := h.adapters.Assets
 	for _, tt := range []struct {
@@ -1178,41 +1125,15 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 			},
 		},
 	} {
-		t.Run("rejects adapter "+tt.name+" mismatch", func(t *testing.T) {
+
+		t.Run(tt.name, func(t *testing.T) {
 			h.adapters.Assets = mutatingAssetStore{AssetStore: originalAssets, mutate: tt.mutate}
 			defer func() { h.adapters.Assets = originalAssets }()
-			_, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-				SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-				AssetSession:      prepared.AssetSession,
-				AssetSessionID:    prepared.AssetSessionID,
-				BindingID:         preparedAsset.BindingID,
-
-				Now: now.Add(3 * time.Second),
-			})
+			_, err := h.ReadWebSurfaceAsset(context.Background(), ReadWebSurfaceAssetRequest{WebSurfaceRequest: req, Path: "/assets/status.png"})
 			if !errors.Is(err, bridge.ErrTokenAudience) {
-				t.Fatalf("ReadSurfaceAsset() adapter mismatch error = %v, want ErrTokenAudience", err)
+				t.Fatalf("tampered resource: %v", err)
 			}
 		})
-	}
-	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetSession:      prepared.AssetSession,
-		AssetSessionID:    prepared.AssetSessionID,
-		BindingID:         "asset_not_prepared",
-
-		Now: now.Add(3 * time.Second),
-	}); !errors.Is(err, bridge.ErrTokenAudience) {
-		t.Fatalf("ReadSurfaceAsset(unprepared binding) error = %v, want ErrTokenAudience", err)
-	}
-	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetSession:      prepared.AssetSession,
-		AssetSessionID:    "asset_session_other",
-		BindingID:         preparedAsset.BindingID,
-
-		Now: now.Add(3 * time.Second),
-	}); !errors.Is(err, bridge.ErrTokenAudience) {
-		t.Fatalf("ReadSurfaceAsset(wrong session id) error = %v, want ErrTokenAudience", err)
 	}
 }
 
@@ -5157,6 +5078,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		backgroundModule = &BackgroundModule{RunnerFactory: opts.backgroundRunnerFactory}
 	}
 	host, err := Open(openContext, Config{
+		Web:       &WebModule{Origins: testSurfaceOrigins{}},
 		StateRoot: stateRoot,
 		Core: CoreAdapters{
 			Policy: policyAdapter{
@@ -5978,7 +5900,7 @@ func validPNGForTest() []byte {
 }
 
 func fixtureSurfaceHTML(title string) string {
-	return `<!doctype html><html><head><title>` + title + `</title></head><body><main>` + title + `</main><img src="assets/status.png" alt="Status"><script type="text/redevplugin-worker" src="assets/app.js"></script></body></html>`
+	return `<!doctype html><html><head><title>` + title + `</title></head><body><main>` + title + `</main><img src="assets/status.png" alt="Status"><script type="module" src="assets/app.js"></script></body></html>`
 }
 
 func writeBytes(t *testing.T, filename string, content []byte) {
@@ -6242,7 +6164,7 @@ func lifecycleManifestJSON(version string, title string) string {
 			"locales": {"default": "en-US"}
 		},
 		"surfaces": [
-			{"surface_id": "lifecycle.view", "kind": "view", "label": "Lifecycle", "entry": "ui/index.html"}
+			{"surface_id": "lifecycle.view", "kind": "view", "label": "Lifecycle", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [],
 		"methods": [],
@@ -6263,7 +6185,7 @@ func storageFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "storage.view", "kind": "view", "label": "Storage", "entry": "ui/index.html"}
+			{"surface_id": "storage.view", "kind": "view", "label": "Storage", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [],
 		"methods": [],
@@ -6303,7 +6225,7 @@ func settingsFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "settings.view", "kind": "view", "label": "Settings", "entry": "ui/index.html"}
+			{"surface_id": "settings.view", "kind": "view", "label": "Settings", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [],
 		"methods": [],
@@ -6335,7 +6257,7 @@ func dataShapeFixtureManifestJSON(opts dataShapeFixtureOptions) string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "data-shape.view", "kind": "view", "label": "Data Shape", "entry": "ui/index.html"}
+			{"surface_id": "data-shape.view", "kind": "view", "label": "Data Shape", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [],
 		"methods": [],
@@ -6375,7 +6297,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html"}
+			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
@@ -6403,7 +6325,7 @@ func dangerousRPCFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html"}
+			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
@@ -6431,7 +6353,7 @@ func operationRPCFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html"}
+			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
@@ -6459,7 +6381,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html"}
+			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
@@ -6487,7 +6409,7 @@ func coreActionFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "core.view", "kind": "view", "label": "Core", "entry": "ui/index.html"}
+			{"surface_id": "core.view", "kind": "view", "label": "Core", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [],
 		"methods": [
@@ -6566,7 +6488,7 @@ func workerFixtureManifestJSON() string {
 			"locales": {"default": "en-US"}
 		},
 		"surfaces": [
-			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [
 			{
@@ -6602,7 +6524,7 @@ func workerNetworkFixtureManifestJSON() string {
 		"permissions": ["network.client"],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [
 			{
@@ -6657,7 +6579,7 @@ func workerStorageFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [
 			{
@@ -6705,7 +6627,7 @@ func workerStorageKVFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [
 			{
@@ -6753,7 +6675,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [
 			{
@@ -6805,7 +6727,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 		"permissions": ["network.client"],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "network.view", "kind": "view", "label": "Network", "entry": "ui/index.html"}
+			{"surface_id": "network.view", "kind": "view", "label": "Network", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [],
 		"methods": [],
@@ -7648,4 +7570,10 @@ func (r *recordingRuntimeManager) RevokeSession(_ context.Context, req runtimecl
 		result.SessionRevokeSequence = req.SessionRevokeSequence
 	}
 	return result, r.sessionRevokeErr
+}
+
+type testSurfaceOrigins struct{}
+
+func (testSurfaceOrigins) AllocateSurfaceOrigin(_ context.Context, req SurfaceOriginRequest) (SurfaceOrigin, error) {
+	return SurfaceOrigin{Origin: "https://" + req.OriginKey + ".plugins.example", ParentOrigin: "https://host.example"}, nil
 }

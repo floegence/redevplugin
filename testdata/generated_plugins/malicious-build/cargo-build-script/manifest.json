@@ -25,7 +25,7 @@
       "surface_id": "malicious.cargo_build_script.view",
       "kind": "view",
       "label": "Malicious Cargo Build Script",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

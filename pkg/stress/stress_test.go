@@ -643,7 +643,7 @@ func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []
 			SurfaceID: "main",
 			Kind:      manifest.SurfaceView,
 			Label:     "Stress data",
-			Entry:     "ui/index.html",
+			Entry:     "ui/index.html", Web: manifest.SurfaceWebSpec{Root: "ui"},
 		}},
 		Presentation: manifest.PresentationSpec{
 			DefaultLocale: "en-US",

@@ -4,6 +4,15 @@ import { isExpectedSandboxConsoleLine } from "./smoke-console-policy.mjs";
 
 export function observePageFailures(page, applicationBaseURL) {
   const consoleRecords = [];
+  const parentURL = new URL(applicationBaseURL);
+  const admissionProbe = (url) => {
+    try {
+      const target = new URL(url);
+      return target.protocol === parentURL.protocol && target.port === parentURL.port &&
+        /^[a-f0-9]{48}\.localhost$/.test(target.hostname) &&
+        target.pathname === "/_redevplugin_web/probe-redirect" && !target.search;
+    } catch { return false; }
+  };
   const pageErrors = [];
   const apiFailureReads = [];
   const expectedRPCFaults = [];
@@ -119,7 +128,8 @@ export function observePageFailures(page, applicationBaseURL) {
       const expectedConsoleRecord = (record) =>
         expectedFailureConsoleRecords.includes(record) ||
         expectedTransportFailureConsoleRecords.includes(record) ||
-        resourceFailures.some((failure) => failure.line === record.line && failure.url === record.url);
+        resourceFailures.some((failure) => failure.line === record.line && failure.url === record.url) ||
+        (admissionProbe(record.url) && record.line === "error: Failed to load resource: net::ERR_UNSAFE_REDIRECT");
       return {
         consoleLines: consoleRecords.map((record) => record.line),
         pageErrors: [...pageErrors],

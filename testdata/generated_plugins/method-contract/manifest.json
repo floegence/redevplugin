@@ -25,7 +25,7 @@
       "surface_id": "method_contract.view",
       "kind": "view",
       "label": "Method Contract",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

@@ -39,8 +39,6 @@ const expectedCanonicalContracts = [
   "contract:plugin/host-capability-pin-v1.schema.json",
   "contract:plugin/manifest-v9.schema.json",
   "contract:plugin/network-grant-v2.schema.json",
-  "contract:plugin/opaque-surface-document-v3.schema.json",
-  "contract:plugin/opaque-surface-transport-v6.schema.json",
   "contract:plugin/package-signature-v1.schema.json",
   "contract:plugin/plugin-api.json",
   "contract:plugin/presentation-icon-evidence-v1.schema.json",
@@ -62,6 +60,8 @@ const expectedCanonicalContracts = [
   "contract:plugin/target-classifier-v2.json",
   "contract:plugin/token-ticket-v4.schema.json",
   "contract:plugin/wasm-abi.json",
+  "contract:plugin/web-surface-document.schema.json",
+  "contract:plugin/web-surface-transport.schema.json",
   "contract:plugin/worker-invocation.schema.json",
 ];
 

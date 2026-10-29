@@ -38,7 +38,6 @@ const (
 	RouteActionRevokeSessionScope         = host.ManagementActionRevokeSessionScope
 	RouteActionPrepareSurface             = host.ManagementActionPrepareSurface
 	RouteActionMintBridgeToken            = host.ManagementActionMintBridgeToken
-	RouteActionReadSurfaceAsset           = host.ManagementActionReadSurfaceAsset
 	RouteActionRejectSurfaceConfirmation  = host.ManagementActionRejectSurfaceConfirmation
 	RouteActionDisposeSurface             = host.ManagementActionDisposeSurface
 	RouteActionCallPluginMethod           = host.ManagementActionCallPluginMethod

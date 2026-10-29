@@ -19,7 +19,6 @@ const (
 	ManagementActionOpenSurface                ManagementAction = "surface.open"
 	ManagementActionPrepareSurface             ManagementAction = "surface.prepare"
 	ManagementActionMintBridgeToken            ManagementAction = "surface.mint_bridge_token"
-	ManagementActionReadSurfaceAsset           ManagementAction = "surface.read_asset"
 	ManagementActionRejectSurfaceConfirmation  ManagementAction = "surface.reject_confirmation"
 	ManagementActionDisposeSurface             ManagementAction = "surface.dispose"
 	ManagementActionRevokeSessionScope         ManagementAction = "session.revoke_scope"
@@ -84,7 +83,7 @@ func (action ManagementAction) Valid() bool {
 func (action ManagementAction) Resource() ResourceRef {
 	switch action {
 	case ManagementActionOpenSurface, ManagementActionPrepareSurface,
-		ManagementActionMintBridgeToken, ManagementActionReadSurfaceAsset,
+		ManagementActionMintBridgeToken,
 		ManagementActionDisposeSurface:
 		return ResourceSurface
 	case ManagementActionRevokeSessionScope, ManagementActionFinalizeSessionScope:
@@ -145,8 +144,6 @@ const (
 	ResourcePlatform          ResourceRef = "platform"
 	ResourceSurface           ResourceRef = "surface"
 	ResourceSurfaceDefinition ResourceRef = "surface_definition"
-	ResourceSurfaceAsset      ResourceRef = "surface_asset"
-	ResourceAssetSession      ResourceRef = "asset_session"
 	ResourceBridgeChannel     ResourceRef = "bridge_channel"
 	ResourceConfirmation      ResourceRef = "confirmation"
 	ResourceMethod            ResourceRef = "method"
@@ -169,8 +166,7 @@ const (
 func (resource ResourceRef) Valid() bool {
 	switch resource {
 	case ResourcePlugin, ResourcePlatform, ResourceSurface,
-		ResourceSurfaceDefinition, ResourceSurfaceAsset,
-		ResourceAssetSession, ResourceBridgeChannel,
+		ResourceSurfaceDefinition, ResourceBridgeChannel,
 		ResourceConfirmation, ResourceMethod, ResourceIntent, ResourcePermission,
 		ResourceSecurityPolicy, ResourceDiagnostic, ResourceExecution,
 		ResourceRuntime, ResourceConnector, ResourceStore,

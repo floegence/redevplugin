@@ -282,22 +282,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["readPreparedSurfaceAsset"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject": {
         parameters: {
             query?: never;
@@ -918,11 +902,6 @@ export interface components {
             /** @constant */
             ok: true;
             data: components["schemas"]["BridgeTokenResult"];
-        };
-        SurfaceAssetSuccessResponse: {
-            /** @constant */
-            ok: true;
-            data: components["schemas"]["SurfaceAssetResult"];
         };
         SurfaceDisposeSuccessResponse: {
             /** @constant */
@@ -2192,7 +2171,7 @@ export interface components {
             issued_at: string;
             /** Format: date-time */
             expires_at: string;
-            document: components["schemas"]["OpaqueSurfaceDocumentV3"];
+            document: components["schemas"]["WebSurfaceDocument"];
         };
         TrustedParentBridgeHandshake: {
             /** @constant */
@@ -2222,17 +2201,6 @@ export interface components {
             issued_at: string;
             /** Format: date-time */
             expires_at: string;
-        };
-        ReadSurfaceAssetRequest: {
-            asset_session: string;
-            asset_session_id: string;
-            binding_id: string;
-        };
-        SurfaceAssetResult: {
-            path: string;
-            sha256: string;
-            content_type: string;
-            content_base64: string;
         };
         ListExecutionEventsRequest: {
             after_cursor: number;
@@ -2613,6 +2581,10 @@ export interface components {
                 };
                 /** @description Methods required to open this surface. Omitted retains aggregate authorization. An empty array allows opening without method grants; calls remain individually authorized. Requires authorization.scoped.v1. */
                 required_methods?: string[];
+                web: {
+                    root: string;
+                    spa: boolean;
+                };
             }[];
             capability_bindings?: {
                 binding_id: string;
@@ -2832,41 +2804,17 @@ export interface components {
         HostCapabilityPinV1Id: string;
         HostCapabilityPinV1Semver: string;
         HostCapabilityPinV1Sha256: string;
-        OpaqueSurfaceDocumentV3: {
+        WebSurfaceDocument: {
             /** @constant */
-            schema_version: "redevplugin.opaque_surface_document.v3";
-            entry_path: components["schemas"]["OpaqueSurfaceDocumentV3PackagePath"];
-            entry_sha256: components["schemas"]["OpaqueSurfaceDocumentV3Sha256"];
-            language?: string;
-            /** @enum {unknown} */
-            direction?: "ltr" | "rtl" | "auto";
-            body_html: string;
-            styles: components["schemas"]["OpaqueSurfaceDocumentV3Style"][];
-            worker: components["schemas"]["OpaqueSurfaceDocumentV3Worker"];
-            assets: components["schemas"]["OpaqueSurfaceDocumentV3Asset"][];
-            critical_bytes: number;
-        };
-        OpaqueSurfaceDocumentV3Sha256: string;
-        OpaqueSurfaceDocumentV3PackagePath: string;
-        OpaqueSurfaceDocumentV3Style: {
-            path: components["schemas"]["OpaqueSurfaceDocumentV3PackagePath"];
-            sha256: components["schemas"]["OpaqueSurfaceDocumentV3Sha256"];
-            content: string;
-        };
-        OpaqueSurfaceDocumentV3Worker: {
-            path: components["schemas"]["OpaqueSurfaceDocumentV3PackagePath"];
-            sha256: components["schemas"]["OpaqueSurfaceDocumentV3Sha256"];
-            /** @constant */
-            type: "classic";
-            content: string;
-        };
-        OpaqueSurfaceDocumentV3Asset: {
-            binding_id: string;
-            logical_ids: string[];
-            path: components["schemas"]["OpaqueSurfaceDocumentV3PackagePath"];
-            sha256: components["schemas"]["OpaqueSurfaceDocumentV3Sha256"];
-            size: number;
-            content_type: string;
+            schema_version: "redevplugin.web_surface.v1";
+            /** Format: uri */
+            origin: string;
+            /** Format: uri */
+            parent_origin: string;
+            /** Format: uri */
+            bootstrap_url: string;
+            /** Format: uri */
+            entry_url: string;
         };
     };
     responses: {
@@ -2897,7 +2845,7 @@ export interface components {
                 "application/json": components["schemas"]["RPCSuccessResponse"];
             };
         };
-        /** @description Trusted-parent surface bootstrap. Capability-bearing fields are never forwarded into the opaque iframe or plugin worker. */
+        /** @description Trusted-parent surface bootstrap. Capability-bearing fields are never forwarded into the isolated Web application. */
         SurfaceBootstrapResponse: {
             headers: {
                 [name: string]: unknown;
@@ -2906,7 +2854,7 @@ export interface components {
                 "application/json": components["schemas"]["SurfaceBootstrapSuccessResponse"];
             };
         };
-        /** @description Trusted-parent asset-session exchange and validated opaque surface document. */
+        /** @description Trusted-parent asset-session exchange and verified Web surface origin binding. */
         SurfacePreparationResponse: {
             headers: {
                 [name: string]: unknown;
@@ -2922,15 +2870,6 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["BridgeTokenSuccessResponse"];
-            };
-        };
-        /** @description Trusted-parent package asset response. The plugin receives only a renderer-created blob URL. */
-        SurfaceAssetResponse: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["SurfaceAssetSuccessResponse"];
             };
         };
         /** @description Surface revocation response. */
@@ -3367,11 +3306,6 @@ export interface components {
                 "application/json": components["schemas"]["TrustedParentBridgeTokenRequest"];
             };
         };
-        ReadSurfaceAssetRequest: {
-            content: {
-                "application/json": components["schemas"]["ReadSurfaceAssetRequest"];
-            };
-        };
         ListExecutionEventsRequest: {
             content: {
                 "application/json": components["schemas"]["ListExecutionEventsRequest"];
@@ -3759,21 +3693,6 @@ export interface operations {
         responses: {
             200: components["responses"]["BridgeTokenResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
-        };
-    };
-    readPreparedSurfaceAsset: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                surface_instance_id: components["parameters"]["SurfaceInstanceID"];
-            };
-            cookie?: never;
-        };
-        requestBody: components["requestBodies"]["ReadSurfaceAssetRequest"];
-        responses: {
-            200: components["responses"]["SurfaceAssetResponse"];
-            default: components["responses"]["PlatformErrorResponse"];
         };
     };
     rejectSurfacePluginConfirmation: {

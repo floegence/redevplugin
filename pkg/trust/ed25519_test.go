@@ -238,12 +238,12 @@ func unsignedFixturePackage(t *testing.T) pluginpkg.Package {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "trust.view", "kind": "view", "label": "Trust", "entry": "ui/index.html"}
+			{"surface_id": "trust.view", "kind": "view", "label": "Trust", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [],
 		"methods": []
 	}`)
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html><title>Trust</title><body><main>Trust</main><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`)
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html><title>Trust</title><body><main>Trust</main><script type="module" src="assets/app.js"></script></body>`)
 	writeFile(t, filepath.Join(dir, "ui", "assets", "app.js"), "void 0;")
 	var buf bytes.Buffer
 	pkg, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadLimits())

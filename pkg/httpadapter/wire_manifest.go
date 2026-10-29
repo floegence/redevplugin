@@ -2,6 +2,7 @@ package httpadapter
 
 import (
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
@@ -123,7 +124,14 @@ type manifestWidgetSizeResponse struct {
 	Height int `json:"height"`
 }
 
+type manifestSurfaceWebResponse struct {
+	Root string `json:"root"`
+	SPA  bool   `json:"spa"`
+}
+
 type manifestSurfaceResponse struct {
+	Web manifestSurfaceWebResponse `json:"web"`
+
 	RequiredMethods []string                    `json:"required_methods,omitzero"`
 	SurfaceID       string                      `json:"surface_id"`
 	Kind            string                      `json:"kind"`
@@ -307,6 +315,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		mapped := manifestSurfaceResponse{
 			SurfaceID: surface.SurfaceID, Kind: string(surface.Kind), Intent: string(surface.Intent),
 			Label: surface.Label, Entry: surface.Entry, Icon: surface.Icon,
+			Web: manifestSurfaceWebResponse{Root: surface.Web.Root, SPA: surface.Web.SPA},
 		}
 		if surface.DefaultSize != nil {
 			mapped.DefaultSize = &manifestWidgetSizeResponse{Width: surface.DefaultSize.Width, Height: surface.DefaultSize.Height}
@@ -523,61 +532,14 @@ func cloneRequiredWireArray[T any](source []T) []T {
 	return result
 }
 
-type opaqueSurfaceStyleResponse struct {
-	Path    string `json:"path"`
-	SHA256  string `json:"sha256"`
-	Content string `json:"content"`
+type webSurfaceDocumentResponse struct {
+	SchemaVersion string `json:"schema_version"`
+	Origin        string `json:"origin"`
+	ParentOrigin  string `json:"parent_origin"`
+	BootstrapURL  string `json:"bootstrap_url"`
+	EntryURL      string `json:"entry_url"`
 }
 
-type opaqueSurfaceWorkerResponse struct {
-	Path    string `json:"path"`
-	SHA256  string `json:"sha256"`
-	Type    string `json:"type"`
-	Content string `json:"content"`
-}
-
-type opaqueSurfaceAssetResponse struct {
-	BindingID   string   `json:"binding_id"`
-	LogicalIDs  []string `json:"logical_ids"`
-	Path        string   `json:"path"`
-	SHA256      string   `json:"sha256"`
-	Size        int64    `json:"size"`
-	ContentType string   `json:"content_type"`
-}
-
-type opaqueSurfaceDocumentResponse struct {
-	SchemaVersion string                       `json:"schema_version"`
-	EntryPath     string                       `json:"entry_path"`
-	EntrySHA256   string                       `json:"entry_sha256"`
-	Title         string                       `json:"title,omitempty"`
-	Language      string                       `json:"language,omitempty"`
-	Direction     string                       `json:"direction,omitempty"`
-	BodyHTML      string                       `json:"body_html"`
-	Styles        []opaqueSurfaceStyleResponse `json:"styles"`
-	Worker        opaqueSurfaceWorkerResponse  `json:"worker"`
-	Assets        []opaqueSurfaceAssetResponse `json:"assets"`
-	CriticalBytes int64                        `json:"critical_bytes"`
-}
-
-func publicOpaqueSurfaceDocument(source pluginpkg.OpaqueSurfaceDocument) opaqueSurfaceDocumentResponse {
-	response := opaqueSurfaceDocumentResponse{
-		SchemaVersion: source.SchemaVersion, EntryPath: source.EntryPath, EntrySHA256: source.EntrySHA256,
-		Title: source.Title, Language: source.Language, Direction: source.Direction, BodyHTML: source.BodyHTML,
-		Worker: opaqueSurfaceWorkerResponse{
-			Path: source.Worker.Path, SHA256: source.Worker.SHA256, Type: string(source.Worker.Type), Content: source.Worker.Content,
-		},
-		CriticalBytes: source.CriticalBytes,
-	}
-	response.Styles = make([]opaqueSurfaceStyleResponse, len(source.Styles))
-	for index, style := range source.Styles {
-		response.Styles[index] = opaqueSurfaceStyleResponse{Path: style.Path, SHA256: style.SHA256, Content: style.Content}
-	}
-	response.Assets = make([]opaqueSurfaceAssetResponse, len(source.Assets))
-	for index, asset := range source.Assets {
-		response.Assets[index] = opaqueSurfaceAssetResponse{
-			BindingID: asset.BindingID, LogicalIDs: append([]string(nil), asset.LogicalIDs...),
-			Path: asset.Path, SHA256: asset.SHA256, Size: asset.Size, ContentType: asset.ContentType,
-		}
-	}
-	return response
+func publicWebSurfaceDocument(source host.WebSurfaceDocument) webSurfaceDocumentResponse {
+	return webSurfaceDocumentResponse{SchemaVersion: source.SchemaVersion, Origin: source.Origin, ParentOrigin: source.ParentOrigin, BootstrapURL: source.BootstrapURL, EntryURL: source.EntryURL}
 }

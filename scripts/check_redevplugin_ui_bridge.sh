@@ -15,25 +15,20 @@ const path = require("path");
 const [surfacePath, rootDir] = process.argv.slice(2);
 const surface = fs.readFileSync(surfacePath, "utf8");
 
-const wildcardTransfers = surface.match(/\}, "\*", \[channel\.port2\]\);/g) ?? [];
-if (wildcardTransfers.length !== 1) {
-  throw new Error(`surface SDK must contain exactly one opaque-origin bootstrap port transfer, found ${wildcardTransfers.length}`);
-}
-const transferStart = surface.lastIndexOf("iframeWindow.postMessage({", surface.indexOf(wildcardTransfers[0]));
-const transferBlock = surface.slice(transferStart, surface.indexOf(wildcardTransfers[0]) + wildcardTransfers[0].length);
-for (const required of ["redevplugin.surface.port", "frame_generation_id"]) {
-  if (!transferBlock.includes(required)) throw new Error(`bootstrap transfer is missing ${required}`);
-}
+const transferStart = surface.indexOf("iframeWindow.postMessage({");
+const transferEnd = surface.indexOf("}, preparation.document.origin, [channel.port2]);", transferStart);
+if (transferStart < 0 || transferEnd < 0) throw new Error("Web bootstrap requires an exact-origin port transfer");
+const transferBlock = surface.slice(transferStart, transferEnd);
 for (const forbidden of ["plugin_id", "surface_instance_id", "active_fingerprint", "bridge_nonce", "asset_session", "token", "ticket"]) {
-  if (transferBlock.includes(forbidden)) throw new Error(`bootstrap transfer exposes ${forbidden}`);
+  if (transferBlock.includes(forbidden)) throw new Error("bootstrap transfer exposes " + forbidden);
 }
 
 const pluginSourceFiles = [
-  "examples/plugin-ui/memos.ts",
-  "examples/plugin-ui/weather.ts",
+  "examples/plugin-ui/memos.tsx",
+  "examples/plugin-ui/weather.tsx",
   "examples/plugin-ui/sky-strike.ts",
-  "internal/scaffoldtemplate/plugin-worker.tsx",
-  "testdata/browser-harness/opaque-surface/plugin-worker.ts",
+  "internal/scaffoldtemplate/app.ts",
+  "testdata/browser-harness/web-application/app.ts",
 ];
 for (const relativePath of pluginSourceFiles) {
   const source = fs.readFileSync(path.join(rootDir, relativePath), "utf8");

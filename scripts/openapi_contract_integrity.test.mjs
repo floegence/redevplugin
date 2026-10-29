@@ -19,7 +19,7 @@ test("manifest scoped authorization uses explicit feature and Worker-only ceilin
     plugin: { plugin_id: "com.example.scoped", display_name: "Scoped", version: "1.0.0" },
     api: { major: 1, required_features: ["authorization.scoped.v1"] }, permissions: ["fs.environment.read"],
     presentation: { locales: { default: "en-US" } },
-    surfaces: [{ surface_id: "view", kind: "view", label: "View", entry: "ui/index.html", required_methods: [] }],
+    surfaces: [{ surface_id: "view", kind: "view", label: "View", entry: "ui/index.html", web: { root: "ui", spa: true }, required_methods: [] }],
     workers: [{ worker_id: "worker", artifact: "workers/main.wasm", mode: "job", scope: "environment", memory_limit_bytes: 16777216 }],
     methods: [{ method: "read", effect: "read", execution: "sync", permissions: [], route: { kind: "worker", worker_id: "worker" }, request_schema: { type: "object", additionalProperties: false }, response_schema: { type: "object", additionalProperties: false } }],
   };

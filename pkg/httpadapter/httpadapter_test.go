@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -291,7 +290,6 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/session/revoke-scope":                         false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare":       false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token":  false,
-		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read":   false,
 		"POST /_redevplugin/api/plugins/executions/query":                             false,
 		"POST /_redevplugin/api/plugins/executions/{execution_id}/query":              false,
 		"POST /_redevplugin/api/plugins/executions/{execution_id}/cancel":             false,
@@ -1091,7 +1089,6 @@ func TestHandlerWebSecurityRejectsIncompleteTrustedScope(t *testing.T) {
 func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/_redevplugin/api/plugins/enable",
-		"/_redevplugin/api/plugins/surfaces/surface_test/assets/read",
 		"/_redevplugin/api/plugins/executions/execution_test/events/query",
 	} {
 		t.Run(path, func(t *testing.T) {
@@ -1979,56 +1976,13 @@ func TestHandlerPrepareAndPrivateAssetFlow(t *testing.T) {
 	prepareResp := postJSON[host.PrepareSurfaceResult](t, handler, preparePath, map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
-	if prepareResp.AssetSession == "" || prepareResp.Document.EntryPath != "ui/index.html" {
+	if prepareResp.AssetSession == "" || prepareResp.Document.SchemaVersion != host.WebSurfaceSchemaVersion {
 		t.Fatalf("prepare response mismatch: %#v", prepareResp)
 	}
-	if len(prepareResp.Document.Assets) != 1 {
-		t.Fatalf("prepare response assets = %#v, want one lazy asset", prepareResp.Document.Assets)
-	}
-	preparedAsset := prepareResp.Document.Assets[0]
 
 	replay := postJSONError(t, handler, preparePath, map[string]any{"asset_ticket": openResp.AssetTicket}, http.StatusForbidden)
 	if replay.Code != string(security.ErrTokenReplay) {
-		t.Fatalf("asset ticket replay error_code = %s body = %#v", replay.Code, replay)
-	}
-
-	asset := postJSON[struct {
-		Path          string `json:"path"`
-		SHA256        string `json:"sha256"`
-		ContentType   string `json:"content_type"`
-		ContentBase64 string `json:"content_base64"`
-	}](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_asset/assets/read", map[string]any{
-		"asset_session":    prepareResp.AssetSession,
-		"asset_session_id": prepareResp.AssetSessionID,
-		"binding_id":       preparedAsset.BindingID,
-	})
-	content, err := base64.StdEncoding.DecodeString(asset.ContentBase64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if asset.Path != preparedAsset.Path ||
-		asset.SHA256 != preparedAsset.SHA256 ||
-		asset.ContentType != "image/png" ||
-		!bytes.Equal(content, minimalHTTPPNGForTest()) {
-		t.Fatalf("asset response mismatch: %#v content=%q", asset, string(content))
-	}
-
-	rawPathBypass := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_asset/assets/read", map[string]any{
-		"asset_session":    prepareResp.AssetSession,
-		"asset_session_id": prepareResp.AssetSessionID,
-		"asset_path":       "ui/app.js",
-	}, http.StatusBadRequest)
-	if rawPathBypass.Code != string(security.ErrInvalidRequest) {
-		t.Fatalf("raw asset path bypass error_code = %s body = %#v", rawPathBypass.Code, rawPathBypass)
-	}
-
-	wrongSurface := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_other/assets/read", map[string]any{
-		"asset_session":    prepareResp.AssetSession,
-		"asset_session_id": prepareResp.AssetSessionID,
-		"binding_id":       preparedAsset.BindingID,
-	}, http.StatusForbidden)
-	if wrongSurface.Code != string(security.ErrAssetSessionInvalid) {
-		t.Fatalf("cross-surface asset error_code = %s body = %#v", wrongSurface.Code, wrongSurface)
+		t.Fatalf("asset ticket replay: %#v", replay)
 	}
 }
 
@@ -4188,8 +4142,6 @@ func samplePathForRoute(path string) string {
 		return "/_redevplugin/api/plugins/surfaces/surface_test/prepare"
 	case "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token":
 		return "/_redevplugin/api/plugins/surfaces/surface_test/bridge-token"
-	case "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read":
-		return "/_redevplugin/api/plugins/surfaces/surface_test/assets/read"
 	case "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose":
 		return "/_redevplugin/api/plugins/surfaces/surface_test/dispose"
 	case "/_redevplugin/api/plugins/executions/{execution_id}/query":
@@ -4340,6 +4292,7 @@ func newHTTPTestHost(t *testing.T) *host.Host {
 }
 
 type httpTestHostOptions struct {
+	webOrigins              host.SurfaceOriginAdapter
 	authorization           host.AuthorizationAdapter
 	secrets                 host.SecretStoreAdapter
 	diagnostics             host.DiagnosticsSink
@@ -4392,7 +4345,12 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 			ReleaseArtifactResolver: opts.releaseArtifactResolver,
 		}
 	}
+	webOrigins := opts.webOrigins
+	if webOrigins == nil {
+		webOrigins = httpTestWebOrigins{}
+	}
 	h, err := host.Open(httpTestContext(), host.Config{
+		Web:       &host.WebModule{Origins: webOrigins},
 		StateRoot: filepath.Join(t.TempDir(), "control"),
 		Core: host.CoreAdapters{
 			Policy:               httpTestPolicy{},
@@ -4675,7 +4633,7 @@ func buildHTTPBlockedNetworkFixturePackage(t *testing.T) []byte {
 func writeHTTPFile(t *testing.T, filename string, content string) {
 	t.Helper()
 	if filepath.Base(filename) == "index.html" && filepath.Base(filepath.Dir(filename)) == "ui" {
-		content += `<body><main>Fixture</main><img src="status.png" alt="Status"><script type="text/redevplugin-worker" src="app.js"></script></body>`
+		content += `<body><main>Fixture</main><img src="status.png" alt="Status"><script type="module" src="app.js"></script></body>`
 		writeHTTPBytes(t, filepath.Join(filepath.Dir(filename), "app.js"), []byte(`globalThis.__redevpluginFixture = true;`))
 		writeHTTPBytes(t, filepath.Join(filepath.Dir(filename), "status.png"), minimalHTTPPNGForTest())
 	}
@@ -4739,7 +4697,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "http.view", "kind": "view", "label": "HTTP", "entry": "ui/index.html"}
+			{"surface_id": "http.view", "kind": "view", "label": "HTTP", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		]
 	}`
 }
@@ -4757,7 +4715,7 @@ func httpStorageFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "http.storage.view", "kind": "view", "label": "HTTP Storage", "entry": "ui/index.html"}
+			{"surface_id": "http.storage.view", "kind": "view", "label": "HTTP Storage", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"storage": {
 			"stores": [
@@ -4786,7 +4744,7 @@ func httpRPCFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "http.rpc.view", "kind": "view", "label": "HTTP RPC", "entry": "ui/index.html"}
+			{"surface_id": "http.rpc.view", "kind": "view", "label": "HTTP RPC", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + httpCapabilityPinJSON() + `}
@@ -4813,7 +4771,7 @@ func httpDangerousRPCFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "http.danger.view", "kind": "view", "label": "HTTP Danger", "entry": "ui/index.html"}
+			{"surface_id": "http.danger.view", "kind": "view", "label": "HTTP Danger", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + httpCapabilityPinJSON() + `}
@@ -4840,7 +4798,7 @@ func httpOperationRPCFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "http.operation.view", "kind": "view", "label": "HTTP Operation", "entry": "ui/index.html"}
+			{"surface_id": "http.operation.view", "kind": "view", "label": "HTTP Operation", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "contract": ` + httpCapabilityPinJSON() + `}
@@ -4867,7 +4825,7 @@ func httpCoreActionFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "http.core.view", "kind": "view", "label": "HTTP Core", "entry": "ui/index.html"}
+			{"surface_id": "http.core.view", "kind": "view", "label": "HTTP Core", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"methods": [
 			{
@@ -4903,7 +4861,7 @@ func httpSettingsFixtureManifestJSON() string {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "http.settings.view", "kind": "view", "label": "HTTP Settings", "entry": "ui/index.html"}
+			{"surface_id": "http.settings.view", "kind": "view", "label": "HTTP Settings", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"settings": {
 			"schema_version": 1,
@@ -4929,7 +4887,7 @@ func httpBlockedNetworkFixtureManifestJSON() string {
 		"permissions": ["network.client"],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "http.network.view", "kind": "view", "label": "HTTP Network", "entry": "ui/index.html"}
+			{"surface_id": "http.network.view", "kind": "view", "label": "HTTP Network", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"storage": {
 			"stores": [
@@ -5440,4 +5398,10 @@ func (s *httpRecordingSecretStore) DeletePlugin(_ context.Context, pluginInstanc
 		s.bound = false
 	}
 	return nil
+}
+
+type httpTestWebOrigins struct{}
+
+func (httpTestWebOrigins) AllocateSurfaceOrigin(_ context.Context, req host.SurfaceOriginRequest) (host.SurfaceOrigin, error) {
+	return host.SurfaceOrigin{Origin: "https://" + req.OriginKey + ".plugins.example", ParentOrigin: "https://host.example"}, nil
 }

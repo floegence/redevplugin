@@ -1,98 +1,64 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.redevplugin.dev/plugin/bridge.schema.json",
-  "title": "ReDevPlugin plugin worker bridge",
-  "description": "Plugin-visible MessagePort contract. Plugin identity, owner/session bindings, gateway tokens, asset sessions, execution transport credentials, and confirmation tokens remain in the trusted parent and are intentionally absent from worker-visible messages.",
-  "x-redevplugin-render-policy": {
-    "max_message_bytes": 524288,
-    "max_in_flight_requests": 256,
-    "max_renders_per_second": 60,
-    "max_render_depth": 32,
-    "max_render_nodes": 4096,
-    "max_patch_operations": 1024,
-    "max_attributes_per_element": 64,
-    "max_text_length": 65536,
-    "max_attribute_value_length": 4096,
-    "max_form_fields": 128,
-    "max_keyboard_bindings": 128,
-    "max_canvas_count": 4,
-    "max_canvas_dimension": 4096,
-    "max_canvas_total_pixels": 16777216,
-    "max_canvas_pointer_events_per_second": 120,
-    "canvas_context_types": ["2d", "webgl", "webgl2"],
-    "max_image_count": 32,
-    "max_image_dimension": 4096,
-    "max_image_total_pixels": 33554432,
-    "worker_heartbeat_interval_ms": 10000,
-    "worker_heartbeat_timeout_ms": 5000,
-    "global_attributes": [
-      "id",
-      "class",
-      "role",
-      "title",
-      "hidden",
-      "tabindex",
-      "autofocus",
-      "lang",
-      "dir",
-      "data-redevplugin-action",
-      "data-redevplugin-escape-action",
-      "data-redevplugin-asset-binding",
-      "data-redevplugin-asset-attr"
-    ],
-    "tag_attributes": {
-      "button": ["type", "name", "value", "disabled", "aria-pressed", "aria-expanded"],
-      "input": ["type", "name", "value", "checked", "disabled", "readonly", "required", "placeholder", "min", "max", "step", "maxlength", "autocomplete"],
-      "textarea": ["name", "value", "disabled", "readonly", "required", "placeholder", "rows", "cols", "maxlength"],
-      "select": ["name", "disabled", "required", "multiple", "size"],
-      "option": ["value", "selected", "disabled", "label"],
-      "label": ["for"],
-      "form": ["name", "autocomplete"],
-      "th": ["scope", "colspan", "rowspan"],
-      "td": ["colspan", "rowspan"],
-      "progress": ["value", "max"],
-      "meter": ["value", "min", "max", "low", "high", "optimum"],
-      "img": ["alt", "width", "height", "loading", "decoding"],
-      "audio": ["controls", "autoplay", "muted", "loop", "preload"],
-      "video": ["controls", "autoplay", "muted", "loop", "preload", "width", "height", "playsinline"],
-      "source": ["type", "media"],
-      "track": ["kind", "srclang", "label", "default"],
-      "time": ["datetime"],
-      "canvas": ["width", "height", "data-redevplugin-canvas"]
-    },
-    "safe_input_types": ["text", "search", "number", "checkbox", "radio", "button", "submit", "reset"]
-  },
+  "title": "ReDevPlugin application bridge",
+  "description": "Plugin-visible MessagePort contract. DOM, input, rendering and workers are application-owned. Host management credentials never enter the application.",
   "oneOf": [
-    { "$ref": "#/$defs/call" },
-    { "$ref": "#/$defs/execution_cancel" },
-    { "$ref": "#/$defs/execution_query" },
-    { "$ref": "#/$defs/execution_events" },
-    { "$ref": "#/$defs/mount" },
-    { "$ref": "#/$defs/patch" },
-    { "$ref": "#/$defs/canvas_open" },
-    { "$ref": "#/$defs/canvas_accessibility" },
-    { "$ref": "#/$defs/canvas_ready" },
-    { "$ref": "#/$defs/canvas_input" },
-    { "$ref": "#/$defs/keyboard_bindings" },
-    { "$ref": "#/$defs/keyboard_input" },
-    { "$ref": "#/$defs/image_open" },
-    { "$ref": "#/$defs/image_ready" },
-    { "$ref": "#/$defs/file_export" },
-    { "$ref": "#/$defs/cancel" },
-    { "$ref": "#/$defs/action" },
-    { "$ref": "#/$defs/response" },
-    { "$ref": "#/$defs/lifecycle" },
-    { "$ref": "#/$defs/lifecycle_ack" },
-    { "$ref": "#/$defs/context" }
+    {
+      "$ref": "#/$defs/call"
+    },
+    {
+      "$ref": "#/$defs/execution_cancel"
+    },
+    {
+      "$ref": "#/$defs/execution_query"
+    },
+    {
+      "$ref": "#/$defs/execution_events"
+    },
+    {
+      "$ref": "#/$defs/file_export"
+    },
+    {
+      "$ref": "#/$defs/cancel"
+    },
+    {
+      "$ref": "#/$defs/response"
+    },
+    {
+      "$ref": "#/$defs/lifecycle"
+    },
+    {
+      "$ref": "#/$defs/lifecycle_ack"
+    },
+    {
+      "$ref": "#/$defs/context"
+    },
+    {
+      "$ref": "#/$defs/client_ready"
+    },
+    {
+      "$ref": "#/$defs/close_request"
+    },
+    {
+      "$ref": "#/$defs/close_response"
+    }
   ],
   "$defs": {
     "context": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "context"],
+      "required": [
+        "type",
+        "context"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.bridge.context" },
-        "context": { "$ref": "https://schemas.redevplugin.dev/plugin/opaque-surface-transport-v6.schema.json#/$defs/context_snapshot" }
+        "type": {
+          "const": "redevplugin.bridge.context"
+        },
+        "context": {
+          "$ref": "https://schemas.redevplugin.dev/plugin/web-surface-transport.schema.json#/$defs/context_snapshot"
+        }
       }
     },
     "opaque_handle": {
@@ -109,13 +75,22 @@
         "business_error_code"
       ],
       "properties": {
-        "capability_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "capability_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
         "capability_version": {
           "type": "string",
           "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
         },
-        "detail_schema_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "business_error_code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "detail_schema_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "business_error_code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
         "business_error_details": {
           "type": "object",
           "additionalProperties": true
@@ -125,7 +100,11 @@
     "worker_error_details": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["worker_error_code", "worker_error_message", "worker_error_origin"],
+      "required": [
+        "worker_error_code",
+        "worker_error_message",
+        "worker_error_origin"
+      ],
       "properties": {
         "worker_error_code": {
           "type": "string",
@@ -136,25 +115,41 @@
           "minLength": 1,
           "maxLength": 4096
         },
-        "worker_error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+        "worker_error_origin": {
+          "enum": [
+            "runtime",
+            "hostcall",
+            "plugin"
+          ]
+        }
       }
     },
     "request_id": {
       "type": "string",
-      "pattern": "^(rpc|execution|render|canvas|asset|keyboard|file)_[1-9][0-9]{0,15}$"
+      "pattern": "^(rpc|execution|file)_[1-9][0-9]{0,15}$"
     },
     "call": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "request"],
+      "required": [
+        "type",
+        "request"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.bridge.call" },
+        "type": {
+          "const": "redevplugin.bridge.call"
+        },
         "request": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["id", "method"],
+          "required": [
+            "id",
+            "method"
+          ],
           "properties": {
-            "id": { "$ref": "#/$defs/request_id" },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
             "method": {
               "type": "string",
               "minLength": 1,
@@ -172,433 +167,106 @@
     "execution_events": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "id", "execution_id", "after_cursor"],
+      "required": [
+        "type",
+        "id",
+        "execution_id",
+        "after_cursor"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.bridge.execution.events" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "execution_id": { "$ref": "#/$defs/opaque_handle" },
-        "after_cursor": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+        "type": {
+          "const": "redevplugin.bridge.execution.events"
+        },
+        "id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "after_cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
       }
     },
     "execution_cancel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "id", "execution_id"],
+      "required": [
+        "type",
+        "id",
+        "execution_id"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.bridge.execution.cancel" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "execution_id": { "$ref": "#/$defs/opaque_handle" },
-        "reason": { "type": "string", "maxLength": 256 }
+        "type": {
+          "const": "redevplugin.bridge.execution.cancel"
+        },
+        "id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 256
+        }
       }
     },
     "execution_query": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "id", "execution_id"],
+      "required": [
+        "type",
+        "id",
+        "execution_id"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.bridge.execution.query" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "execution_id": { "$ref": "#/$defs/opaque_handle" }
-      }
-    },
-    "mount": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "revision", "tree"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.mount" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "revision": { "const": 1 },
-        "tree": { "$ref": "#/$defs/element_vnode" }
-      }
-    },
-    "patch": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "base_revision", "revision", "operations"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.patch" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "base_revision": { "type": "integer", "minimum": 1 },
-        "revision": { "type": "integer", "minimum": 2 },
-        "operations": {
-          "type": "array",
-          "maxItems": 1024,
-          "items": { "$ref": "#/$defs/patch_operation" }
+        "type": {
+          "const": "redevplugin.bridge.execution.query"
+        },
+        "id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque_handle"
         }
       }
     },
     "cancel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "id"],
+      "required": [
+        "type",
+        "id"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.bridge.cancel" },
-        "id": { "$ref": "#/$defs/request_id" }
-      }
-    },
-    "vnode": {
-      "oneOf": [
-        { "$ref": "#/$defs/text_vnode" },
-        { "$ref": "#/$defs/element_vnode" }
-      ]
-    },
-    "text_vnode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "key", "text"],
-      "properties": {
-        "type": { "const": "text" },
-        "key": { "$ref": "#/$defs/text_identifier" },
-        "text": { "type": "string", "maxLength": 65536 }
-      }
-    },
-    "element_vnode": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "key", "tag"],
-      "properties": {
-        "type": { "const": "element" },
-        "key": { "$ref": "#/$defs/element_identifier" },
-        "tag": {
-          "enum": [
-            "main", "section", "header", "footer", "nav", "aside", "article", "div", "span", "p",
-            "h1", "h2", "h3", "h4", "h5", "h6", "button", "input", "textarea", "select", "option",
-            "label", "fieldset", "legend", "form", "ul", "ol", "li", "dl", "dt", "dd", "table",
-            "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "details", "summary", "pre", "code",
-            "kbd", "samp", "strong", "em", "small", "mark", "time", "progress", "meter", "img", "picture",
-            "source", "audio", "video", "track", "canvas"
-          ]
+        "type": {
+          "const": "redevplugin.bridge.cancel"
         },
-        "attributes": {
-          "type": "object",
-          "maxProperties": 64,
-          "additionalProperties": { "type": ["string", "number", "boolean"] }
-        },
-        "children": {
-          "type": "array",
-          "maxItems": 4096,
-          "items": { "$ref": "#/$defs/vnode" }
+        "id": {
+          "$ref": "#/$defs/request_id"
         }
       }
-    },
-    "patch_operation": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "target_key", "text"],
-          "properties": {
-            "type": { "const": "set_text" },
-            "target_key": { "$ref": "#/$defs/text_identifier" },
-            "text": { "type": "string", "maxLength": 65536 }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "target_key", "set", "remove"],
-          "properties": {
-            "type": { "const": "patch_attributes" },
-            "target_key": { "$ref": "#/$defs/ui_identifier" },
-            "set": { "type": "object", "maxProperties": 64, "additionalProperties": { "type": ["string", "number", "boolean"] } },
-            "remove": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "target_key", "edit_revision"],
-          "properties": {
-            "type": { "const": "patch_control" },
-            "target_key": { "$ref": "#/$defs/ui_identifier" },
-            "edit_revision": { "type": "integer", "minimum": 0 },
-            "value": { "type": ["string", "null"], "maxLength": 65536 },
-            "checked": { "type": ["boolean", "null"] }
-          },
-          "anyOf": [{ "required": ["value"] }, { "required": ["checked"] }]
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "parent_key", "before_key", "node"],
-          "properties": {
-            "type": { "const": "insert_child" },
-            "parent_key": { "$ref": "#/$defs/element_identifier" },
-            "before_key": {
-              "oneOf": [
-                { "$ref": "#/$defs/ui_identifier" },
-                { "type": "null" }
-              ]
-            },
-            "node": { "$ref": "#/$defs/vnode" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "target_key"],
-          "properties": {
-            "type": { "const": "remove_child" },
-            "target_key": { "$ref": "#/$defs/ui_identifier" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "target_key", "parent_key", "before_key"],
-          "properties": {
-            "type": { "const": "move_child" },
-            "target_key": { "$ref": "#/$defs/ui_identifier" },
-            "parent_key": { "$ref": "#/$defs/element_identifier" },
-            "before_key": {
-              "oneOf": [
-                { "$ref": "#/$defs/ui_identifier" },
-                { "type": "null" }
-              ]
-            }
-          }
-        }
-      ]
-    },
-    "canvas_open": {
-      "description": "Opens one declared canvas when nonzero CSS layout is measurable. The pending open reserves a canvas slot and waits until layout or surface disposal, independently of the SDK RPC timeout.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "canvas_id"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.canvas.open" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "canvas_id": { "$ref": "#/$defs/ui_identifier" }
-      }
-    },
-    "canvas_accessibility": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "canvas_id", "label", "description"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.canvas.accessibility" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "canvas_id": { "$ref": "#/$defs/ui_identifier" },
-        "label": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "description": { "type": "string", "maxLength": 1024 }
-      }
-    },
-    "canvas_ready": {
-      "description": "Transfers a canvas with measured CSS layout dimensions and device pixel ratio. Both CSS and DPR-scaled dimensions must fit the renderer budget; backing store dimensions are never CSS fallback measurements.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "canvas_id", "canvas", "css_width", "css_height", "device_pixel_ratio"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.canvas.ready" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "canvas_id": { "$ref": "#/$defs/ui_identifier" },
-        "canvas": {
-          "description": "One transferred OffscreenCanvas supporting only the generated canvas_context_types allowlist (2d, webgl, webgl2), subject to browser availability and the shared canvas dimension and aggregate pixel budgets. Unsupported context types throw TypeError; an unavailable allowed context returns null. The runtime validates the structured-clone object outside JSON Schema."
-        },
-        "css_width": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
-        "css_height": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
-        "device_pixel_ratio": { "type": "number", "minimum": 0.5, "maximum": 4 }
-      },
-      "x-redevplugin-transfer": ["canvas"]
-    },
-    "canvas_input": {
-      "description": "Canvas input. Resize reports nonzero measured CSS layout only; zero layout suspends resize without releasing the last pixel reservation.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "canvas_id", "event"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.canvas.input" },
-        "canvas_id": { "$ref": "#/$defs/ui_identifier" },
-        "event": {
-          "oneOf": [
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["type"],
-              "properties": { "type": { "enum": ["focus", "blur"] } }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["type", "css_width", "css_height", "device_pixel_ratio"],
-              "properties": {
-                "type": { "const": "resize" },
-                "css_width": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
-                "css_height": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
-                "device_pixel_ratio": { "type": "number", "minimum": 0.5, "maximum": 4 }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["type", "event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key"],
-              "properties": {
-                "type": { "const": "key" },
-                "event": { "enum": ["keydown", "keyup"] },
-                "code": { "type": "string", "maxLength": 64 },
-                "key": { "type": "string", "maxLength": 64 },
-                "repeat": { "type": "boolean" },
-                "alt_key": { "type": "boolean" },
-                "ctrl_key": { "type": "boolean" },
-                "meta_key": { "type": "boolean" },
-                "shift_key": { "type": "boolean" }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["type", "event", "pointer_id", "pointer_type", "buttons", "button", "x", "y", "pressure"],
-              "properties": {
-                "type": { "const": "pointer" },
-                "event": { "enum": ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
-                "pointer_id": { "type": "integer", "minimum": 0 },
-                "pointer_type": { "enum": ["mouse", "pen", "touch", "unknown"] },
-                "buttons": { "type": "integer", "minimum": 0, "maximum": 31 },
-                "button": { "type": "integer", "minimum": -1, "maximum": 4 },
-                "x": { "type": "number", "minimum": -16384, "maximum": 32768 },
-                "y": { "type": "number", "minimum": -16384, "maximum": 32768 },
-                "pressure": { "type": "number", "minimum": 0, "maximum": 1 }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["type", "x", "y", "delta_x", "delta_y", "delta_mode", "alt_key", "ctrl_key", "meta_key", "shift_key"],
-              "properties": {
-                "type": { "const": "wheel" },
-                "x": { "type": "number", "minimum": -16384, "maximum": 32768 },
-                "y": { "type": "number", "minimum": -16384, "maximum": 32768 },
-                "delta_x": { "type": "number", "minimum": -32768, "maximum": 32768 },
-                "delta_y": { "type": "number", "minimum": -32768, "maximum": 32768 },
-                "delta_mode": { "type": "integer", "enum": [0, 1, 2] },
-                "alt_key": { "type": "boolean" },
-                "ctrl_key": { "type": "boolean" },
-                "meta_key": { "type": "boolean" },
-                "shift_key": { "type": "boolean" }
-              }
-            }
-          ]
-        }
-      }
-    },
-    "keyboard_bindings": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "bindings"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.keyboard.bindings" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "bindings": {
-          "type": "array",
-          "maxItems": 128,
-          "items": { "$ref": "#/$defs/keyboard_binding" }
-        }
-      }
-    },
-    "keyboard_binding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["binding_id", "event", "code", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "target_key", "target_kind"],
-      "properties": {
-        "binding_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9._:-]+$"
-        },
-        "event": { "enum": ["keydown", "keyup"] },
-        "code": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "repeat": { "type": "boolean" },
-        "alt_key": { "type": "boolean" },
-        "ctrl_key": { "type": "boolean" },
-        "meta_key": { "type": "boolean" },
-        "shift_key": { "type": "boolean" },
-        "target_key": {
-          "oneOf": [
-            { "$ref": "#/$defs/ui_identifier" },
-            { "type": "null" }
-          ]
-        },
-        "target_kind": { "enum": ["canvas", "editable", "control", "surface"] }
-      }
-    },
-    "keyboard_input": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "event"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.keyboard.input" },
-        "event": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"],
-          "properties": {
-            "event": { "enum": ["keydown", "keyup"] },
-            "code": { "type": "string", "maxLength": 64 },
-            "key": { "type": "string", "maxLength": 64 },
-            "repeat": { "type": "boolean" },
-            "alt_key": { "type": "boolean" },
-            "ctrl_key": { "type": "boolean" },
-            "meta_key": { "type": "boolean" },
-            "shift_key": { "type": "boolean" },
-            "is_composing": { "type": "boolean" },
-            "target_key": {
-              "oneOf": [
-                { "$ref": "#/$defs/ui_identifier" },
-                { "type": "null" }
-              ]
-            },
-            "target_kind": { "enum": ["canvas", "editable", "control", "surface"] },
-            "default_prevented": { "type": "boolean" },
-            "binding_id": {
-              "oneOf": [
-                {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 128,
-                  "pattern": "^[A-Za-z0-9._:-]+$"
-                },
-                { "type": "null" }
-              ]
-            }
-          }
-        }
-      }
-    },
-    "image_open": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "asset_id"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.asset.image.open" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "asset_id": { "$ref": "#/$defs/ui_identifier" }
-      }
-    },
-    "image_ready": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "id", "asset_id", "image", "width", "height"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.asset.image.ready" },
-        "id": { "$ref": "#/$defs/request_id" },
-        "asset_id": { "$ref": "#/$defs/ui_identifier" },
-        "image": {
-          "description": "One transferred ImageBitmap decoded from Host-verified package bytes."
-        },
-        "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
-        "height": { "type": "integer", "minimum": 1, "maximum": 4096 }
-      },
-      "x-redevplugin-transfer": ["image"]
     },
     "file_export": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "id", "file_name", "media_type", "content"],
+      "required": [
+        "type",
+        "id",
+        "file_name",
+        "media_type",
+        "content"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.ui.file.export" },
-        "id": { "$ref": "#/$defs/request_id" },
+        "type": {
+          "const": "redevplugin.ui.file.export"
+        },
+        "id": {
+          "$ref": "#/$defs/request_id"
+        },
         "file_name": {
           "type": "string",
           "minLength": 1,
@@ -606,73 +274,66 @@
           "description": "A leaf filename without path separators or control characters; UTF-8 encoding is limited to 255 bytes."
         },
         "media_type": {
-          "enum": ["image/png", "image/jpeg", "image/webp", "image/svg+xml", "text/plain"]
+          "enum": [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/svg+xml",
+            "text/plain"
+          ]
         },
         "content": {
           "description": "One transferred ArrayBuffer containing 1-16777216 file bytes. The runtime validates the structured-clone object outside JSON Schema."
         }
       },
-      "x-redevplugin-transfer": ["content"],
-      "x-redevplugin-user-action": "A current click or submit action authorizes exactly one export for 30000ms."
-    },
-    "ui_identifier": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-    },
-    "element_identifier": {
-      "$ref": "#/$defs/ui_identifier"
-    },
-    "text_identifier": {
-      "$ref": "#/$defs/ui_identifier"
-    },
-    "action": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "action", "event", "target_key", "edit_revision", "is_composing"],
-      "properties": {
-        "type": { "const": "redevplugin.ui.action" },
-        "action": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9._:-]+$"
-        },
-        "event": { "enum": ["click", "input", "change", "submit", "escape"] },
-        "target_key": { "$ref": "#/$defs/ui_identifier" },
-        "edit_revision": { "type": "integer", "minimum": 0 },
-        "is_composing": { "type": "boolean" },
-        "value": { "type": "string", "maxLength": 65536 },
-        "checked": { "type": "boolean" },
-        "form_data": {
-          "type": "object",
-          "maxProperties": 128,
-          "additionalProperties": { "type": "string", "maxLength": 65536 }
-        }
-      }
+      "x-redevplugin-transfer": [
+        "content"
+      ],
+      "x-redevplugin-host-authorization": "The host explicitly authorizes every export; interaction metadata grants no authority."
     },
     "response": {
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "id", "ok"],
+          "required": [
+            "type",
+            "id",
+            "ok"
+          ],
           "properties": {
-            "type": { "const": "redevplugin.bridge.response" },
-            "id": { "$ref": "#/$defs/request_id" },
-            "ok": { "const": true },
+            "type": {
+              "const": "redevplugin.bridge.response"
+            },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
+            "ok": {
+              "const": true
+            },
             "data": true
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "id", "ok", "error_code", "error"],
+          "required": [
+            "type",
+            "id",
+            "ok",
+            "error_code",
+            "error"
+          ],
           "properties": {
-            "type": { "const": "redevplugin.bridge.response" },
-            "id": { "$ref": "#/$defs/request_id" },
-            "ok": { "const": false },
+            "type": {
+              "const": "redevplugin.bridge.response"
+            },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
+            "ok": {
+              "const": false
+            },
             "error_code": {
               "enum": [
                 "PLUGIN_INVALID_REQUEST",
@@ -750,36 +411,65 @@
                 "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"
               ]
             },
-            "error": { "type": "string", "maxLength": 4096 },
+            "error": {
+              "type": "string",
+              "maxLength": 4096
+            },
             "error_details": {
               "type": "object",
               "maxProperties": 8,
               "additionalProperties": true
             },
-            "mutation_outcome": { "type": "string", "enum": ["not_committed", "unknown"] }
+            "mutation_outcome": {
+              "type": "string",
+              "enum": [
+                "not_committed",
+                "unknown"
+              ]
+            }
           },
           "allOf": [
             {
               "if": {
-                "properties": { "error_code": { "const": "PLUGIN_CAPABILITY_ERROR" } },
-                "required": ["error_code"]
+                "properties": {
+                  "error_code": {
+                    "const": "PLUGIN_CAPABILITY_ERROR"
+                  }
+                },
+                "required": [
+                  "error_code"
+                ]
               },
               "then": {
-                "required": ["error_details"],
+                "required": [
+                  "error_details"
+                ],
                 "properties": {
-                  "error_details": { "$ref": "#/$defs/capability_business_error_details" }
+                  "error_details": {
+                    "$ref": "#/$defs/capability_business_error_details"
+                  }
                 }
               }
             },
             {
               "if": {
-                "properties": { "error_code": { "const": "PLUGIN_WORKER_ERROR" } },
-                "required": ["error_code"]
+                "properties": {
+                  "error_code": {
+                    "const": "PLUGIN_WORKER_ERROR"
+                  }
+                },
+                "required": [
+                  "error_code"
+                ]
               },
               "then": {
-                "required": ["error_details"],
+                "required": [
+                  "error_details"
+                ],
                 "properties": {
-                  "error_details": { "$ref": "#/$defs/worker_error_details" }
+                  "error_details": {
+                    "$ref": "#/$defs/worker_error_details"
+                  }
                 }
               }
             }
@@ -790,26 +480,51 @@
     "lifecycle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "event"],
+      "required": [
+        "type",
+        "event"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.bridge.lifecycle" },
-        "quiesce_id": { "type": "string", "pattern": "^quiesce_[A-Za-z0-9_-]{8,151}$" },
+        "type": {
+          "const": "redevplugin.bridge.lifecycle"
+        },
+        "quiesce_id": {
+          "type": "string",
+          "pattern": "^quiesce_[A-Za-z0-9_-]{8,151}$"
+        },
         "event": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type"],
+          "required": [
+            "type"
+          ],
           "properties": {
-            "type": { "enum": ["ready", "visible", "hidden", "dispose"] }
+            "type": {
+              "enum": [
+                "ready",
+                "visible",
+                "hidden",
+                "dispose"
+              ]
+            }
           }
         }
       },
       "allOf": [
         {
-          "if": { "required": ["quiesce_id"] },
+          "if": {
+            "required": [
+              "quiesce_id"
+            ]
+          },
           "then": {
             "properties": {
               "event": {
-                "properties": { "type": { "const": "dispose" } }
+                "properties": {
+                  "type": {
+                    "const": "dispose"
+                  }
+                }
               }
             }
           }
@@ -819,10 +534,68 @@
     "lifecycle_ack": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "quiesce_id"],
+      "required": [
+        "type",
+        "quiesce_id"
+      ],
       "properties": {
-        "type": { "const": "redevplugin.bridge.lifecycle_ack" },
-        "quiesce_id": { "type": "string", "pattern": "^quiesce_[A-Za-z0-9_-]{8,151}$" }
+        "type": {
+          "const": "redevplugin.bridge.lifecycle_ack"
+        },
+        "quiesce_id": {
+          "type": "string",
+          "pattern": "^quiesce_[A-Za-z0-9_-]{8,151}$"
+        }
+      }
+    },
+    "client_ready": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.client_ready"
+        }
+      }
+    },
+    "close_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "close_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.close_request"
+        },
+        "close_id": {
+          "type": "string",
+          "pattern": "^close_[A-Za-z0-9_-]{8,153}$"
+        }
+      }
+    },
+    "close_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "close_id",
+        "allow"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.close_response"
+        },
+        "close_id": {
+          "type": "string",
+          "pattern": "^close_[A-Za-z0-9_-]{8,153}$"
+        },
+        "allow": {
+          "type": "boolean"
+        }
       }
     }
   }

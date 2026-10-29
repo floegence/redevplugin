@@ -1,0 +1,18 @@
+@import "@floegence/floe-webapp-core/standalone.css";
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; font: 14px/1.5 system-ui, sans-serif; background: var(--background); color: var(--foreground); }
+.plugin-surface { max-width: 640px; margin: auto; padding: 24px; border-radius: 16px; background: var(--card); display: grid; gap: 16px; }
+h1, p { margin: 0; }
+h1 { font-size: 24px; letter-spacing: -.03em; }
+.eyebrow { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-foreground); }
+.intro, .response > span { color: var(--muted-foreground); }
+.echo-form { display: grid; gap: 10px; }
+input, button { font: inherit; min-height: 40px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
+input { background: var(--background); color: var(--foreground); }
+button { background: var(--primary); color: var(--primary-foreground); cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.status { min-height: 22px; font-size: 12px; color: var(--muted-foreground); }
+.error { color: var(--error); }
+.response { display: grid; gap: 6px; padding-top: 16px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+@media(max-width: 480px) { body { padding: 16px; } .plugin-surface { padding: 20px; } }

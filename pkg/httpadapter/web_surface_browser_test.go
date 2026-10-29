@@ -1,0 +1,190 @@
+package httpadapter
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+)
+
+type browserWebOrigins struct {
+	port      string
+	allocated sync.Map
+	prepared  sync.Map
+}
+
+func (o *browserWebOrigins) AllocateSurfaceOrigin(_ context.Context, req host.SurfaceOriginRequest) (host.SurfaceOrigin, error) {
+	origin := "http://" + req.OriginKey + ".localhost:" + o.port
+	o.allocated.Store(origin, req.SurfaceInstanceID)
+	return host.SurfaceOrigin{Origin: origin, ParentOrigin: "http://localhost:" + o.port}, nil
+}
+
+func TestNativeWebApplicationBrowser(t *testing.T) {
+	if os.Getenv("REDEVPLUGIN_RUN_BROWSER_SMOKE") != "1" {
+		t.Skip("set REDEVPLUGIN_RUN_BROWSER_SMOKE=1 to run the real browser")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	fixtureFile := filepath.Join(t.TempDir(), "web-fixture.json")
+	build := exec.CommandContext(ctx, "node", "internal/browserharness/web-surface-smoke.mjs", "--build", fixtureFile)
+	build.Dir = root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build browser fixture: %v\n%s", err, out)
+	}
+	raw, err := os.ReadFile(fixtureFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files map[string]string
+	if err := json.Unmarshal(raw, &files); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	origins := &browserWebOrigins{port: port}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{webOrigins: origins})
+	defer h.Close()
+	dir := t.TempDir()
+	var document map[string]any
+	if err := json.Unmarshal([]byte(httpFixtureManifestJSON()), &document); err != nil {
+		t.Fatal(err)
+	}
+	surfaces := document["surfaces"].([]any)
+	surfaces[0].(map[string]any)["entry"] = "ui/文档.html"
+	surfaces[0].(map[string]any)["web"].(map[string]any)["spa"] = true
+	document["surfaces"] = append(surfaces, map[string]any{
+		"surface_id": "plain.view", "kind": "view", "label": "Existing application", "entry": "ui/plain.html",
+		"web": map[string]any{"root": "ui", "spa": false},
+	})
+	manifestJSON, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeHTTPManifest(t, filepath.Join(dir, "manifest.json"), string(manifestJSON))
+	for name, content := range files {
+		if name != "host.js" {
+			if name == "index.html" {
+				name = "文档.html"
+			}
+			writeHTTPBytes(t, filepath.Join(dir, "ui", name), []byte(content))
+		}
+	}
+	var archive bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &archive, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), archive.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision}); err != nil {
+		t.Fatal(err)
+	}
+	revision := mustManagementRevision(t, h, installed.PluginInstanceID)
+	platform := mustNewHandler(t, h, allowHTTPTestGuard())
+	web, err := NewWebSurfaceHandler(h, func(r *http.Request) (string, error) {
+		hostname, p, err := net.SplitHostPort(r.Host)
+		if err != nil || p != port || !strings.HasSuffix(hostname, ".localhost") {
+			return "", fmt.Errorf("wrong origin")
+		}
+		return "http://" + r.Host, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "localhost:"+port {
+			if _, prepared := origins.prepared.Load("http://" + r.Host); !prepared {
+				http.Error(w, "route not prepared", http.StatusForbidden)
+				return
+			}
+			web.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/_redevplugin/api/") {
+			platform.ServeHTTP(w, r)
+			return
+		}
+		switch r.URL.Path {
+		case "/":
+			http.SetCookie(w, &http.Cookie{Name: "fixture-parent", Value: "authenticated", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, "<!doctype html><title>Web host</title><script type=\"module\" src=\"/host.js\"></script>")
+		case "/host.js":
+			w.Header().Set("Content-Type", "text/javascript")
+			fmt.Fprint(w, files["host.js"])
+		case "/fixture/routes":
+			cookie, err := r.Cookie("fixture-parent")
+			if err != nil || cookie.Value != "authenticated" || r.Header.Get("Origin") != "http://localhost:"+port {
+				http.Error(w, "parent session required", http.StatusForbidden)
+				return
+			}
+			var request struct {
+				Origin            string
+				ParentOrigin      string
+				PluginInstanceID  string
+				SurfaceInstanceID string
+			}
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&request); err != nil {
+				http.Error(w, "invalid route", http.StatusBadRequest)
+				return
+			}
+			allocated, ok := origins.allocated.Load(request.Origin)
+			if !ok || allocated != request.SurfaceInstanceID || request.ParentOrigin != "http://localhost:"+port || request.PluginInstanceID != installed.PluginInstanceID {
+				http.Error(w, "route binding mismatch", http.StatusForbidden)
+				return
+			}
+			switch r.Method {
+			case http.MethodPost:
+				origins.prepared.Store(request.Origin, request.SurfaceInstanceID)
+			case http.MethodDelete:
+				origins.prepared.Delete(request.Origin)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/fixture":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"plugin_instance_id": installed.PluginInstanceID, "management_revision": revision})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	defer server.Close()
+	go func() { _ = server.Serve(listener) }()
+	mode := "--run"
+	if os.Getenv("REDEVPLUGIN_WEB_PERFORMANCE_OUTPUT") != "" {
+		mode = "--performance"
+	}
+	run := exec.CommandContext(ctx, "node", "internal/browserharness/web-surface-smoke.mjs", mode, "http://localhost:"+port)
+	run.Dir = root
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("browser failed: %v\n%s", err, out)
+	}
+	t.Log(string(out))
+}

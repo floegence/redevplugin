@@ -25,7 +25,7 @@
       "surface_id": "malicious.npm_dependencies.view",
       "kind": "view",
       "label": "Malicious NPM Dependencies",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

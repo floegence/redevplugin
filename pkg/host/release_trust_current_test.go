@@ -137,7 +137,7 @@ func buildHostReleasePackageFromManifest(t *testing.T, manifestJSON string) []by
 	}
 	for path, content := range map[string][]byte{
 		"manifest.json":    []byte(manifestJSON),
-		"ui/index.html":    []byte(`<!doctype html><title>Fixture</title><script type="text/redevplugin-worker" src="assets/app.js"></script>`),
+		"ui/index.html":    []byte(`<!doctype html><title>Fixture</title><script type="module" src="assets/app.js"></script>`),
 		"ui/assets/app.js": []byte("void 0;"),
 	} {
 		if err := os.WriteFile(filepath.Join(directory, path), content, 0o600); err != nil {
@@ -163,7 +163,7 @@ func hostReleaseManifestJSON() string {
 		"presentation": map[string]any{
 			"locales": map[string]any{"default": "en-US"},
 		},
-		"surfaces": []any{map[string]any{"surface_id": "fixture.view", "kind": "view", "label": "Fixture", "entry": "ui/index.html"}},
+		"surfaces": []any{map[string]any{"surface_id": "fixture.view", "kind": "view", "label": "Fixture", "entry": "ui/index.html", "web": map[string]any{"root": "ui", "spa": false}}},
 		"workers":  []any{},
 		"methods":  []any{},
 		"storage":  map[string]any{"stores": []any{}},

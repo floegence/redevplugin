@@ -50,7 +50,7 @@ func buildPackage(t *testing.T) []byte {
   "permissions": [],
   "presentation": {"locales": {"default": "en-US"}},
   "surfaces": [
-    {"surface_id": "fixture.view", "kind": "view", "label": "Fixture", "entry": "ui/index.html"}
+    {"surface_id": "fixture.view", "kind": "view", "label": "Fixture", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
   ],
   "workers": [],
   "methods": []
@@ -61,7 +61,7 @@ func buildPackage(t *testing.T) []byte {
 	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "ui", "index.html"), []byte(`<!doctype html><title>Fixture</title><script type="text/redevplugin-worker" src="assets/app.js"></script>`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, "ui", "index.html"), []byte(`<!doctype html><title>Fixture</title><script type="module" src="assets/app.js"></script>`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(directory, "ui", "assets", "app.js"), []byte("void 0;"), 0o600); err != nil {

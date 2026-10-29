@@ -77,12 +77,12 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 		"permissions": [],
 		"presentation": {"locales": {"default": "en-US"}},
 		"surfaces": [
-			{"surface_id": "cli.view", "kind": "view", "label": "CLI", "entry": "ui/index.html"}
+			{"surface_id": "cli.view", "kind": "view", "label": "CLI", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"workers": [],
 		"methods": []
 	}`)
-	writeCLITestFile(t, filepath.Join(srcDir, "ui", "index.html"), `<!doctype html><title>CLI</title><body><main>CLI</main><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`)
+	writeCLITestFile(t, filepath.Join(srcDir, "ui", "index.html"), `<!doctype html><title>CLI</title><body><main>CLI</main><script type="module" src="assets/app.js"></script></body>`)
 	writeCLITestFile(t, filepath.Join(srcDir, "ui", "assets", "app.js"), "void 0;")
 
 	unsignedPackage := filepath.Join(dir, "unsigned.redevplugin")
@@ -203,8 +203,8 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(indexRaw, []byte(`<title>Generated Plugin</title>`)) || !bytes.Contains(indexRaw, []byte(`type="text/redevplugin-worker"`)) {
-		t.Fatalf("scaffold index missing opaque worker declaration: %s", indexRaw)
+	if !bytes.Contains(indexRaw, []byte(`<title>Generated Plugin</title>`)) || !bytes.Contains(indexRaw, []byte(`type="module"`)) {
+		t.Fatalf("scaffold index missing Web module entry: %s", indexRaw)
 	}
 	for _, forbidden := range []string{`data-plugin-id`, `data-surface-id`, `parent_origin`, `surface_instance_id`, `active_fingerprint`, `bridge_nonce`, `allow-same-origin`} {
 		if bytes.Contains(indexRaw, []byte(forbidden)) {
@@ -215,7 +215,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"PluginBridgeClient", "redevplugin.bridge.call", "worker.echo", "echo-message", "Generated Plugin"} {
+	for _, want := range []string{"PluginBridgeClient", "redevplugin.bridge.call", "worker.echo", "echo-form", "Generated Plugin"} {
 		if !bytes.Contains(appRaw, []byte(want)) {
 			t.Fatalf("scaffold app.js missing %q: %s", want, appRaw)
 		}
@@ -225,10 +225,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 			t.Fatalf("scaffold app.js retained parent-only or hand-written bridge field %q", forbidden)
 		}
 	}
-	if bytes.Contains(appRaw, []byte(`/^[A-Za-z0-9]`)) {
-		t.Fatal("scaffold app.js contains a regex literal that the closed classic-worker parser cannot admit")
-	}
-	for _, sourcePath := range []string{"ui/src/app.tsx", "worker/src/lib.rs", "worker/Cargo.toml", "package.json", "tsconfig.json", "scripts/build.mjs", "README.md"} {
+	for _, sourcePath := range []string{"ui/src/app.ts", "worker/src/lib.rs", "worker/Cargo.toml", "package.json", "tsconfig.json", "scripts/build.mjs", "README.md"} {
 		if _, err := os.Stat(filepath.Join(scaffoldDir, filepath.FromSlash(sourcePath))); err != nil {
 			t.Fatalf("editable scaffold source %s is missing: %v", sourcePath, err)
 		}
@@ -237,7 +234,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"check"`, `ui/src/app.tsx`, `--jsx=automatic`, `@floegence/redevplugin-ui`} {
+	for _, want := range []string{`"check"`, `ui/src/app.ts`, `--format=esm`, `@floegence/redevplugin-ui`} {
 		if !bytes.Contains(packageJSONRaw, []byte(want)) {
 			t.Fatalf("scaffold package.json missing %q: %s", want, packageJSONRaw)
 		}
@@ -264,18 +261,11 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	for _, entry := range generatedPackage.Entries {
 		entries[entry.Path] = entry
 	}
-	document, err := pluginpkg.BuildOpaqueSurfaceDocument("ui/index.html", func(assetPath string) (pluginpkg.Asset, error) {
-		entry, ok := entries[assetPath]
-		if !ok {
-			return pluginpkg.Asset{}, fmt.Errorf("missing scaffold asset %s", assetPath)
-		}
-		return pluginpkg.Asset{Entry: entry, Content: generatedPackage.Files[assetPath]}, nil
-	})
-	if err != nil {
-		t.Fatalf("BuildOpaqueSurfaceDocument(scaffold) error = %v", err)
+	if _, ok := entries["ui/assets/app.js"]; !ok {
+		t.Fatal("scaffold application script is missing")
 	}
-	if document.Worker.Type != pluginpkg.OpaqueSurfaceWorkerClassic || document.Worker.Path != "ui/assets/app.js" {
-		t.Fatalf("scaffold opaque worker = %#v", document.Worker)
+	if !bytes.Contains(generatedPackage.Files["ui/index.html"], []byte("type=\"module\"")) {
+		t.Fatal("scaffold must load a native module")
 	}
 	if _, err := captureCLIOutput(t, "install-local", packageFile); !errors.Is(err, host.ErrFeatureNotConfigured) {
 		t.Fatalf("install-local scaffold package error = %v, want ErrFeatureNotConfigured", err)
@@ -378,7 +368,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareSurface() error = %v", err)
 	}
-	if prepared.Document.EntryPath != bootstrap.EntryPath || prepared.Document.EntrySHA256 != bootstrap.EntrySHA256 {
+	if !strings.HasSuffix(prepared.Document.EntryURL, "/index.html") || prepared.Document.BootstrapURL == "" {
 		t.Fatalf("PrepareSurface() document mismatch: %#v", prepared.Document)
 	}
 	handshake := bridge.Handshake{
@@ -495,6 +485,7 @@ func newTestEphemeralCLIAdapters(t *testing.T, ctx context.Context, stateRoot st
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.Web = &host.WebModule{Origins: localWebOrigins{port: "4242"}}
 	return config
 }
 

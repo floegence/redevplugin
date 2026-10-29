@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -21,14 +20,6 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	requireConst(t, defs, "execution_cancel", "type", "redevplugin.bridge.execution.cancel")
 	requireConst(t, defs, "execution_query", "type", "redevplugin.bridge.execution.query")
 	requireConst(t, defs, "execution_events", "type", "redevplugin.bridge.execution.events")
-	requireConst(t, defs, "canvas_open", "type", "redevplugin.ui.canvas.open")
-	requireConst(t, defs, "canvas_accessibility", "type", "redevplugin.ui.canvas.accessibility")
-	requireConst(t, defs, "canvas_ready", "type", "redevplugin.ui.canvas.ready")
-	requireConst(t, defs, "canvas_input", "type", "redevplugin.ui.canvas.input")
-	requireConst(t, defs, "keyboard_bindings", "type", "redevplugin.ui.keyboard.bindings")
-	requireConst(t, defs, "keyboard_input", "type", "redevplugin.ui.keyboard.input")
-	requireConst(t, defs, "image_open", "type", "redevplugin.ui.asset.image.open")
-	requireConst(t, defs, "image_ready", "type", "redevplugin.ui.asset.image.ready")
 	requireConst(t, defs, "file_export", "type", "redevplugin.ui.file.export")
 	requireConst(t, defs, "lifecycle", "type", "redevplugin.bridge.lifecycle")
 	requireConst(t, defs, "lifecycle_ack", "type", "redevplugin.bridge.lifecycle_ack")
@@ -43,7 +34,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatalf("call params type = %#v, want object", params["type"])
 	}
 	requestID := requireDef(t, defs, "request_id")
-	if got := requestID["pattern"]; got != "^(rpc|execution|render|canvas|asset|keyboard|file)_[1-9][0-9]{0,15}$" {
+	if got := requestID["pattern"]; got != "^(rpc|execution|file)_[1-9][0-9]{0,15}$" {
 		t.Fatalf("request id pattern = %#v", got)
 	}
 	cancel := requireDef(t, defs, "cancel")
@@ -59,15 +50,6 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	assertStringSet(t, requireStringSlice(t, executionQuery["required"], "execution query required"), []string{"type", "id", "execution_id"}, "execution query required")
 	executionEvents := requireDef(t, defs, "execution_events")
 	assertStringSet(t, requireStringSlice(t, executionEvents["required"], "execution events required"), []string{"type", "id", "execution_id", "after_cursor"}, "execution events required")
-	canvasAccessibility := requireDef(t, defs, "canvas_accessibility")
-	assertStringSet(t, requireStringSlice(t, canvasAccessibility["required"], "canvas accessibility required"), []string{"type", "id", "canvas_id", "label", "description"}, "canvas accessibility required")
-	keyboardBindings := requireDef(t, defs, "keyboard_bindings")
-	assertStringSet(t, requireStringSlice(t, keyboardBindings["required"], "keyboard bindings required"), []string{"type", "id", "bindings"}, "keyboard bindings required")
-	keyboardBinding := requireDef(t, defs, "keyboard_binding")
-	assertStringSet(t, requireStringSlice(t, keyboardBinding["required"], "keyboard binding required"), []string{"binding_id", "event", "code", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "target_key", "target_kind"}, "keyboard binding required")
-	keyboardInput := requireDef(t, defs, "keyboard_input")
-	keyboardEvent := requireNestedObject(t, keyboardInput, "properties", "event")
-	assertStringSet(t, requireStringSlice(t, keyboardEvent["required"], "keyboard input event required"), []string{"event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"}, "keyboard input event required")
 	fileExport := requireDef(t, defs, "file_export")
 	assertStringSet(t, requireStringSlice(t, fileExport["required"], "file export required"), []string{"type", "id", "file_name", "media_type", "content"}, "file export required")
 	assertStringSet(t, requireStringSlice(t, fileExport["x-redevplugin-transfer"], "file export transfer"), []string{"content"}, "file export transfer")
@@ -100,108 +82,6 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	}
 }
 
-func TestBridgeSchemaDefinesRevisionedKeyedRendering(t *testing.T) {
-	schema := readBridgeSchema(t)
-	defs, ok := schema["$defs"].(map[string]any)
-	if !ok {
-		t.Fatal("bridge schema missing $defs")
-	}
-
-	requireConst(t, defs, "mount", "type", "redevplugin.ui.mount")
-	mount := requireDef(t, defs, "mount")
-	assertStringSet(t, requireStringSlice(t, mount["required"], "mount required"), []string{"type", "id", "revision", "tree"}, "mount required")
-	if got := requireNestedObject(t, mount, "properties", "revision")["const"]; got != float64(1) {
-		t.Fatalf("mount revision = %#v, want 1", got)
-	}
-	if got := requireNestedObject(t, mount, "properties", "tree")["$ref"]; got != "#/$defs/element_vnode" {
-		t.Fatalf("mount tree ref = %#v", got)
-	}
-
-	requireConst(t, defs, "patch", "type", "redevplugin.ui.patch")
-	patch := requireDef(t, defs, "patch")
-	assertStringSet(t, requireStringSlice(t, patch["required"], "patch required"), []string{"type", "id", "base_revision", "revision", "operations"}, "patch required")
-	if got := requireNestedObject(t, patch, "properties", "operations", "items")["$ref"]; got != "#/$defs/patch_operation" {
-		t.Fatalf("patch operation ref = %#v", got)
-	}
-
-	element := requireDef(t, defs, "element_vnode")
-	if !containsStringValue(requireStringSlice(t, element["required"], "element vnode required"), "key") {
-		t.Fatal("element vnode must require an explicit key")
-	}
-	if got := requireNestedObject(t, element, "properties", "key")["$ref"]; got != "#/$defs/element_identifier" {
-		t.Fatalf("element vnode key ref = %#v", got)
-	}
-	text := requireDef(t, defs, "text_vnode")
-	assertStringSet(t, requireStringSlice(t, text["required"], "text vnode required"), []string{"type", "key", "text"}, "text vnode required")
-	if got := requireNestedObject(t, text, "properties", "key")["$ref"]; got != "#/$defs/text_identifier" {
-		t.Fatalf("text vnode key ref = %#v", got)
-	}
-
-	operations := requireDef(t, defs, "patch_operation")
-	variants, ok := operations["oneOf"].([]any)
-	if !ok || len(variants) != 6 {
-		t.Fatalf("patch operation variants = %#v, want six closed operations", operations["oneOf"])
-	}
-	wantOperations := map[string]bool{
-		"set_text":         false,
-		"patch_attributes": false,
-		"patch_control":    false,
-		"insert_child":     false,
-		"remove_child":     false,
-		"move_child":       false,
-	}
-	for _, raw := range variants {
-		variant, ok := raw.(map[string]any)
-		if !ok {
-			t.Fatalf("patch operation variant = %#v, want object", raw)
-		}
-		if variant["additionalProperties"] != false {
-			t.Fatalf("patch operation must be closed: %#v", variant)
-		}
-		operation, ok := requireNestedObject(t, variant, "properties", "type")["const"].(string)
-		if !ok {
-			t.Fatalf("patch operation type = %#v, want const string", variant)
-		}
-		if _, known := wantOperations[operation]; !known {
-			t.Fatalf("unknown patch operation %q", operation)
-		}
-		wantOperations[operation] = true
-	}
-	for operation, found := range wantOperations {
-		if !found {
-			t.Fatalf("patch operation missing %q", operation)
-		}
-	}
-	setText := findPatchOperation(t, variants, "set_text")
-	assertStringSet(t, requireStringSlice(t, setText["required"], "set_text required"), []string{"type", "target_key", "text"}, "set_text required")
-	insertChild := findPatchOperation(t, variants, "insert_child")
-	assertStringSet(t, requireStringSlice(t, insertChild["required"], "insert_child required"), []string{"type", "parent_key", "before_key", "node"}, "insert_child required")
-	removeChild := findPatchOperation(t, variants, "remove_child")
-	assertStringSet(t, requireStringSlice(t, removeChild["required"], "remove_child required"), []string{"type", "target_key"}, "remove_child required")
-	moveChild := findPatchOperation(t, variants, "move_child")
-	assertStringSet(t, requireStringSlice(t, moveChild["required"], "move_child required"), []string{"type", "target_key", "parent_key", "before_key"}, "move_child required")
-
-	action := requireDef(t, defs, "action")
-	actionRequired := requireStringSlice(t, action["required"], "action required")
-	for _, field := range []string{"target_key", "edit_revision", "is_composing"} {
-		if !containsStringValue(actionRequired, field) {
-			t.Fatalf("action must require %q", field)
-		}
-	}
-}
-
-func findPatchOperation(t *testing.T, variants []any, operation string) map[string]any {
-	t.Helper()
-	for _, raw := range variants {
-		variant, ok := raw.(map[string]any)
-		if ok && requireNestedObject(t, variant, "properties", "type")["const"] == operation {
-			return variant
-		}
-	}
-	t.Fatalf("patch operation %q is missing", operation)
-	return nil
-}
-
 func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge.schema.json"))
@@ -231,162 +111,14 @@ func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 	}
 }
 
-func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
-	schema := readBridgeSchema(t)
-	policy, ok := schema["x-redevplugin-render-policy"].(map[string]any)
-	if !ok {
-		t.Fatal("bridge schema missing x-redevplugin-render-policy")
+func TestBridgeHasNoPlatformRenderingProtocol(t *testing.T) {
+	raw, err := json.Marshal(readBridgeSchema(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	contexts := requireStringSlice(t, policy["canvas_context_types"], "canvas context types")
-	if strings.Join(contexts, ",") != "2d,webgl,webgl2" {
-		t.Fatalf("canvas context types = %v, want only 2d, webgl, webgl2", contexts)
-	}
-	for _, key := range []string{
-		"max_message_bytes",
-		"max_render_depth",
-		"max_render_nodes",
-		"max_attributes_per_element",
-		"max_text_length",
-		"max_attribute_value_length",
-		"max_form_fields",
-		"max_keyboard_bindings",
-		"max_canvas_count",
-		"max_canvas_dimension",
-		"max_canvas_total_pixels",
-		"max_canvas_pointer_events_per_second",
-		"canvas_context_types",
-		"max_image_count",
-		"max_image_dimension",
-		"max_image_total_pixels",
-		"worker_heartbeat_interval_ms",
-		"worker_heartbeat_timeout_ms",
-		"global_attributes",
-		"tag_attributes",
-		"safe_input_types",
-	} {
-		if _, ok := policy[key]; !ok {
-			t.Fatalf("render policy missing %q", key)
-		}
-	}
-
-	defs := schema["$defs"].(map[string]any)
-	vnode := requireDef(t, defs, "vnode")
-	variants, ok := vnode["oneOf"].([]any)
-	if !ok || len(variants) != 2 {
-		t.Fatalf("vnode oneOf = %#v, want text and element variants", vnode["oneOf"])
-	}
-	if ref := variants[0].(map[string]any)["$ref"]; ref != "#/$defs/text_vnode" {
-		t.Fatalf("text vnode ref = %#v", ref)
-	}
-	element := requireDef(t, defs, "element_vnode")
-	if ref := variants[1].(map[string]any)["$ref"]; ref != "#/$defs/element_vnode" {
-		t.Fatalf("element vnode ref = %#v", ref)
-	}
-	tags := requireStringSlice(t, requireNestedObject(t, element, "properties", "tag")["enum"], "render tag enum")
-	wantTags := map[string]bool{"main": false, "button": false, "input": false, "table": false, "img": false, "video": false, "canvas": false}
-	for _, tag := range tags {
-		if _, ok := wantTags[tag]; ok {
-			wantTags[tag] = true
-		}
-	}
-	for tag, found := range wantTags {
-		if !found {
-			t.Fatalf("render tag enum missing %q", tag)
-		}
-	}
-
-	globalAttributes := requireStringSlice(t, policy["global_attributes"], "global attributes")
-	for _, required := range []string{"id", "class", "role", "data-redevplugin-action", "data-redevplugin-asset-binding", "data-redevplugin-asset-attr"} {
-		if !containsStringValue(globalAttributes, required) {
-			t.Fatalf("global attributes missing %q", required)
-		}
-	}
-	tagAttributes, ok := policy["tag_attributes"].(map[string]any)
-	if !ok {
-		t.Fatal("render policy tag_attributes must be an object")
-	}
-	for tag := range tagAttributes {
-		if !containsStringValue(tags, tag) {
-			t.Fatalf("tag_attributes defines unsupported tag %q", tag)
-		}
-	}
-}
-
-func TestBridgeClosesMessageAndPatchBudgets(t *testing.T) {
-	schema := readBridgeSchema(t)
-	policy, ok := schema["x-redevplugin-render-policy"].(map[string]any)
-	if !ok {
-		t.Fatal("bridge render policy must be an object")
-	}
-	if got := policy["max_message_bytes"]; got != float64(512*1024) {
-		t.Fatalf("max_message_bytes = %v, want %d", got, 512*1024)
-	}
-	if got := policy["max_patch_operations"]; got != float64(1024) {
-		t.Fatalf("max_patch_operations = %v, want 1024", got)
-	}
-	defs, ok := schema["$defs"].(map[string]any)
-	if !ok {
-		t.Fatal("bridge $defs must be an object")
-	}
-	patch := requireDef(t, defs, "patch")
-	properties, ok := patch["properties"].(map[string]any)
-	if !ok {
-		t.Fatal("bridge v5 patch properties must be an object")
-	}
-	operations, ok := properties["operations"].(map[string]any)
-	if !ok {
-		t.Fatal("bridge v5 patch operations must be an object")
-	}
-	if got := operations["maxItems"]; got != float64(1024) {
-		t.Fatalf("patch operations maxItems = %v, want 1024", got)
-	}
-}
-
-func TestPluginUIRepositoryUsesCallerOwnedStableTextKeys(t *testing.T) {
-	root := repoRoot(t)
-	legacyFixture := filepath.Join(root, "testdata", "contracts", "ui", "plugin-ui-v4-mount.json")
-	if _, err := os.Stat(legacyFixture); !os.IsNotExist(err) {
-		t.Fatalf("legacy UI v4 fixture must be absent, stat error = %v", err)
-	}
-
-	for _, relativePath := range []string{
-		"docs/ui/plugin-surface-sdk.md",
-		"docs/architecture/plugin-platform-runtime.md",
-	} {
-		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relativePath)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, forbidden := range []string{
-			"keeps the authoring convenience of string text VNodes",
-			"normalizes every string VNode",
-			"deterministic keys in a reserved namespace",
-			"normalized text nodes",
-		} {
-			if bytes.Contains(raw, []byte(forbidden)) {
-				t.Fatalf("%s retains synthetic text-key contract %q", relativePath, forbidden)
-			}
-		}
-	}
-
-	for _, relativePath := range []string{
-		"examples/plugin-ui/memos.ts",
-		"examples/plugin-ui/memos-markdown.ts",
-		"examples/plugin-ui/weather.ts",
-		"examples/plugin-ui/sky-strike.ts",
-	} {
-		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relativePath)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, forbidden := range []string{
-			"function textNode(parentKey: string, slot:",
-			"key: `${parentKey}-text-${slot}`",
-			"keyFor(context, `${path}-${index}`)",
-		} {
-			if bytes.Contains(raw, []byte(forbidden)) {
-				t.Fatalf("%s synthesizes UI identity with %q", relativePath, forbidden)
-			}
+	for _, obsolete := range []string{"vnode", "ui.mount", "ui.patch", "ui.keyboard", "ui.canvas", "ui.asset", "render-policy"} {
+		if strings.Contains(string(raw), obsolete) {
+			t.Fatalf("retired rendering protocol %q", obsolete)
 		}
 	}
 }
@@ -464,13 +196,4 @@ func requireStringSlice(t *testing.T, value any, label string) []string {
 		out = append(out, text)
 	}
 	return out
-}
-
-func containsStringValue(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

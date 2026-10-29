@@ -115,11 +115,17 @@ type scaffoldMethodV9 struct {
 	Route          manifest.MethodRouteSpec     `json:"route"`
 }
 
-//go:embed scaffold_assets/plugin-worker.js
-var scaffoldPluginWorkerJS []byte
+//go:embed scaffold_assets/app.js
+var scaffoldAppJS []byte
 
-//go:embed scaffold_assets/plugin-worker.ts
-var scaffoldPluginWorkerTS []byte
+//go:embed scaffold_assets/app.ts
+var scaffoldAppTS []byte
+
+//go:embed scaffold_assets/styles.css
+var scaffoldAppCSS []byte
+
+//go:embed scaffold_assets/styles-source.css
+var scaffoldSourceCSS []byte
 
 //go:embed scaffold_assets/backend.wasm
 var scaffoldWorkerWASM []byte
@@ -506,7 +512,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Kind:      manifest.SurfaceView,
 			Intent:    manifest.SurfaceIntentPrimary,
 			Label:     displayName,
-			Entry:     "ui/index.html",
+			Entry:     "ui/index.html", Web: manifest.SurfaceWebSpec{Root: "ui"},
 		}},
 		Workers: []scaffoldWorkerV9{{WorkerID: "backend", Artifact: "workers/backend.wasm", Mode: manifest.WorkerModeJob, Scope: "user", MemoryLimitBytes: 16 << 20}},
 		Methods: []scaffoldMethodV9{{
@@ -533,13 +539,13 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		"scripts/build.mjs":         []byte(scaffoldBuildScript()),
 		"ui/index.html":             []byte(scaffoldIndexHTML(pluginID, displayName)),
 		"ui/styles.css":             []byte(scaffoldStylesCSS()),
-		"ui/src/app.tsx":            scaffoldSource(scaffoldPluginWorkerTS, displayName),
+		"ui/src/app.ts":             scaffoldSource(scaffoldAppTS, displayName),
 		"worker/Cargo.toml":         []byte(scaffoldCargoTOML(platformVersion)),
 		"worker/src/lib.rs":         append([]byte(nil), scaffoldWorkerRust...),
 		"dist/manifest.json":        append([]byte(nil), manifestBytes...),
 		"dist/ui/index.html":        []byte(scaffoldIndexHTML(pluginID, displayName)),
-		"dist/ui/assets/app.js":     scaffoldSource(scaffoldPluginWorkerJS, displayName),
-		"dist/ui/assets/styles.css": []byte(scaffoldStylesCSS()),
+		"dist/ui/assets/app.js":     scaffoldSource(scaffoldAppJS, displayName),
+		"dist/ui/assets/styles.css": append([]byte(nil), scaffoldAppCSS...),
 		"dist/workers/backend.wasm": append([]byte(nil), scaffoldWorkerWASM...),
 	}
 	if _, err := os.Stat(outDir); err == nil {
@@ -613,12 +619,14 @@ func scaffoldPackageJSON(platformVersion string) string {
   "scripts": {
     "check": "npm run typecheck && npm run build",
     "build": "node scripts/build.mjs",
-    "build:ui": "esbuild ui/src/app.tsx --bundle --format=iife --platform=browser --target=es2022 --jsx=automatic --jsx-import-source=@floegence/redevplugin-ui --outfile=dist/ui/assets/app.js",
+    "build:ui": "esbuild ui/src/app.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/ui/assets/app.js && esbuild ui/styles.css --bundle --outfile=dist/ui/assets/styles.css",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "cargo test --manifest-path worker/Cargo.toml"
   },
   "dependencies": {
-    "@floegence/redevplugin-ui": %q
+    "@floegence/redevplugin-ui": %q,
+    "@floegence/floe-webapp-core": "0.86.65",
+    "solid-js": "1.9.17"
   },
   "devDependencies": {
     "esbuild": "0.25.5",
@@ -637,11 +645,9 @@ func scaffoldTSConfig() string {
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "jsx": "react-jsx",
-    "jsxImportSource": "@floegence/redevplugin-ui",
     "lib": ["ES2022", "DOM", "WebWorker"]
   },
-  "include": ["ui/src/**/*.tsx"]
+  "include": ["ui/src/**/*.ts"]
 }
 `
 }
@@ -684,7 +690,6 @@ await mkdir(resolve(root, "dist/ui/assets"), { recursive: true });
 await mkdir(resolve(root, "dist/workers"), { recursive: true });
 await copyFile(resolve(root, "manifest.json"), resolve(root, "dist/manifest.json"));
 await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html"));
-await copyFile(resolve(root, "ui/styles.css"), resolve(root, "dist/ui/assets/styles.css"));
 await copyFile(
   resolve(root, "worker/target/wasm32-unknown-unknown/release/redevplugin_generated_worker.wasm"),
   resolve(root, "dist/workers/backend.wasm"),
@@ -741,7 +746,7 @@ and package the plugin from this directory:
     redevplugin validate dist/manifest.json
     redevplugin package dist %s.redevplugin
 
-Edit ui/src/app.tsx for the surface and worker/src/lib.rs for the WASM backend.
+Edit ui/src/app.ts for the surface and worker/src/lib.rs for the WASM backend.
 Add permissions to manifest.json only when the plugin
 actually needs them.
 `, displayName, platformVersion, strings.ReplaceAll(strings.ToLower(displayName), " ", "-"))
@@ -1056,7 +1061,7 @@ func readSigningPublicKey(filename string) (signingPublicKeyFile, ed25519.Public
 func scaffoldIndexHTML(_ string, displayName string) string {
 	title := htmlEscape(displayName)
 	return "<!doctype html>\n" +
-		"<html lang=\"en\">\n" +
+		"<html lang=\"en\" class=\"light\" data-floe-surface-style=\"soft-neumorphic\">\n" +
 		"  <head>\n" +
 		"    <meta charset=\"utf-8\">\n" +
 		"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
@@ -1071,107 +1076,13 @@ func scaffoldIndexHTML(_ string, displayName string) string {
 		"        <p class=\"status\">Starting isolated worker...</p>\n" +
 		"      </section>\n" +
 		"    </main>\n" +
-		"    <script type=\"text/redevplugin-worker\" src=\"assets/app.js\"></script>\n" +
+		"    <script type=\"module\" src=\"assets/app.js\"></script>\n" +
 		"  </body>\n" +
 		"</html>\n"
 }
 
 func scaffoldStylesCSS() string {
-	return ":root {\n" +
-		"  color-scheme: light dark;\n" +
-		"  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;\n" +
-		"}\n\n" +
-		"* {\n" +
-		"  box-sizing: border-box;\n" +
-		"}\n\n" +
-		"body {\n" +
-		"  margin: 0;\n" +
-		"  min-height: 100vh;\n" +
-		"  background: Canvas;\n" +
-		"  color: CanvasText;\n" +
-		"}\n\n" +
-		".surface {\n" +
-		"  display: grid;\n" +
-		"  gap: 14px;\n" +
-		"  min-height: 100vh;\n" +
-		"  align-content: start;\n" +
-		"  padding: 20px;\n" +
-		"}\n\n" +
-		".eyebrow {\n" +
-		"  margin: 0;\n" +
-		"  font-size: 12px;\n" +
-		"  opacity: 0.68;\n" +
-		"  text-transform: uppercase;\n" +
-		"}\n\n" +
-		"h1 {\n" +
-		"  margin: 0;\n" +
-		"  font-size: 24px;\n" +
-		"  font-weight: 650;\n" +
-		"}\n\n" +
-		"h2 {\n" +
-		"  margin: 0;\n" +
-		"  font-size: 18px;\n" +
-		"  font-weight: 650;\n" +
-		"}\n\n" +
-		".status {\n" +
-		"  margin: 0;\n" +
-		"  font-size: 14px;\n" +
-		"  line-height: 1.5;\n" +
-		"  min-height: 22px;\n" +
-		"}\n\n" +
-		".toolbar {\n" +
-		"  align-items: center;\n" +
-		"  display: flex;\n" +
-		"  flex-wrap: wrap;\n" +
-		"  gap: 12px;\n" +
-		"}\n\n" +
-		"button {\n" +
-		"  width: fit-content;\n" +
-		"  border: 1px solid ButtonBorder;\n" +
-		"  border-radius: 6px;\n" +
-		"  background: ButtonFace;\n" +
-		"  color: ButtonText;\n" +
-		"  cursor: pointer;\n" +
-		"  font: inherit;\n" +
-		"  padding: 8px 12px;\n" +
-		"}\n\n" +
-		".planner-panel {\n" +
-		"  display: grid;\n" +
-		"  gap: 12px;\n" +
-		"  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);\n" +
-		"  border-radius: 8px;\n" +
-		"  padding: 14px;\n" +
-		"}\n\n" +
-		".schedule-grid {\n" +
-		"  display: grid;\n" +
-		"  gap: 10px;\n" +
-		"  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));\n" +
-		"}\n\n" +
-		".schedule-tile {\n" +
-		"  display: grid;\n" +
-		"  gap: 4px;\n" +
-		"  border: 1px solid color-mix(in srgb, CanvasText 12%, transparent);\n" +
-		"  border-radius: 8px;\n" +
-		"  padding: 10px;\n" +
-		"}\n\n" +
-		".schedule-tile span,\n" +
-		".schedule-list span {\n" +
-		"  font-size: 12px;\n" +
-		"  opacity: 0.72;\n" +
-		"}\n\n" +
-		".schedule-list {\n" +
-		"  display: grid;\n" +
-		"  gap: 8px;\n" +
-		"  list-style: none;\n" +
-		"  margin: 0;\n" +
-		"  padding: 0;\n" +
-		"}\n\n" +
-		".schedule-list li {\n" +
-		"  display: grid;\n" +
-		"  gap: 4px;\n" +
-		"  border-left: 3px solid color-mix(in srgb, Highlight 72%, CanvasText 8%);\n" +
-		"  padding: 8px 10px;\n" +
-		"}\n"
+	return string(scaffoldSourceCSS)
 }
 
 func htmlEscape(value string) string {

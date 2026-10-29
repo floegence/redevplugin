@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.2.0
+  version: 3.3.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -221,17 +221,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/BridgeTokenResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read:
-    post:
-      operationId: readPreparedSurfaceAsset
-      x-redevplugin-route-effect: query
-      parameters:
-        - $ref: "#/components/parameters/SurfaceInstanceID"
-      requestBody:
-        $ref: "#/components/requestBodies/ReadSurfaceAssetRequest"
-      responses:
-        "200": { $ref: "#/components/responses/SurfaceAssetResponse" }
-        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject:
     post:
       operationId: rejectSurfacePluginConfirmation
@@ -647,13 +636,13 @@ components:
           schema:
             $ref: "#/components/schemas/RPCSuccessResponse"
     SurfaceBootstrapResponse:
-      description: Trusted-parent surface bootstrap. Capability-bearing fields are never forwarded into the opaque iframe or plugin worker.
+      description: Trusted-parent surface bootstrap. Capability-bearing fields are never forwarded into the isolated Web application.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/SurfaceBootstrapSuccessResponse"
     SurfacePreparationResponse:
-      description: Trusted-parent asset-session exchange and validated opaque surface document.
+      description: Trusted-parent asset-session exchange and verified Web surface origin binding.
       content:
         application/json:
           schema:
@@ -664,12 +653,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/BridgeTokenSuccessResponse"
-    SurfaceAssetResponse:
-      description: Trusted-parent package asset response. The plugin receives only a renderer-created blob URL.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/SurfaceAssetSuccessResponse"
     SurfaceDisposeResponse:
       description: Surface revocation response.
       content:
@@ -1013,12 +996,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/TrustedParentBridgeTokenRequest"
-    ReadSurfaceAssetRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ReadSurfaceAssetRequest"
     ListExecutionEventsRequest:
       required: true
       content:
@@ -1178,13 +1155,6 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/BridgeTokenResult" }
-    SurfaceAssetSuccessResponse:
-      type: object
-      required: [ok, data]
-      additionalProperties: false
-      properties:
-        ok: { const: true }
-        data: { $ref: "#/components/schemas/SurfaceAssetResult" }
     SurfaceDisposeSuccessResponse:
       type: object
       required: [ok, data]
@@ -3221,7 +3191,7 @@ components:
         issued_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         document:
-          $ref: "../plugin/opaque-surface-document-v3.schema.json"
+          $ref: "../plugin/web-surface-document.schema.json"
     TrustedParentBridgeHandshake:
       type: object
       required: [type, plugin_id, surface_id, surface_instance_id, active_fingerprint, bridge_nonce, asset_session_nonce, management_revision, revoke_epoch]
@@ -3262,23 +3232,6 @@ components:
         asset_session_id: { type: string, minLength: 1 }
         issued_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
-    ReadSurfaceAssetRequest:
-      type: object
-      additionalProperties: false
-      required: [asset_session, asset_session_id, binding_id]
-      properties:
-        asset_session: { type: string, minLength: 1 }
-        asset_session_id: { type: string, minLength: 1 }
-        binding_id: { type: string, pattern: '^asset_[A-Za-z0-9_-]{8,128}$' }
-    SurfaceAssetResult:
-      type: object
-      additionalProperties: false
-      required: [path, sha256, content_type, content_base64]
-      properties:
-        path: { type: string, minLength: 1 }
-        sha256: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
-        content_type: { type: string, minLength: 1 }
-        content_base64: { type: string, contentEncoding: base64 }
     ListExecutionEventsRequest:
       type: object
       additionalProperties: false

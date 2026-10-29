@@ -26,14 +26,10 @@ func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {
 		"examples/showcase/app.js",
 		"examples/plugins/worker-artifacts.lock.json",
 		"scripts/canonical_wasm_builder.mjs",
-		"internal/browserharness/opaque-surface-contract.test.mjs",
-		"internal/browserharness/opaque-surface-server.mjs",
-		"internal/browserharness/opaque-surface-smoke.mjs",
-		"testdata/browser-harness/opaque-surface/index.html",
-		"testdata/browser-harness/opaque-surface/host.mjs",
-		"testdata/browser-harness/opaque-surface/generated/plugin-worker.js",
-		"internal/scaffoldtemplate/plugin-worker.tsx",
-		"cmd/redevplugin/scaffold_assets/plugin-worker.js",
+		"internal/scaffoldtemplate/app.ts",
+		"testdata/browser-harness/web-application/app.ts",
+		"pkg/httpadapter/web_surface_browser_test.go",
+		"cmd/redevplugin/scaffold_assets/app.js",
 		"cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json",
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
@@ -193,7 +189,7 @@ func TestScaffoldWorkerArtifactsUseCanonicalBuilderAndSourceLock(t *testing.T) {
 	if !strings.Contains(packageSource, `"scaffold:check:canonical": "node scripts/build_scaffold_assets.mjs --check --canonical"`) {
 		t.Fatal("package scripts must expose the canonical scaffold worker check")
 	}
-	if !strings.Contains(packageSource, `"build": "node scripts/build_surface_integrity.mjs --check && npm run contracts-package:build && tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check"`) {
+	if !strings.Contains(packageSource, `"build": "npm run contracts-package:build && npm --workspace @floegence/redevplugin-ui run build && npm run scaffold:check"`) {
 		t.Fatal("normal package build must verify, not regenerate, committed scaffold assets")
 	}
 
@@ -425,10 +421,10 @@ func TestSkyStrikeExposesARealCanvasGameContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, required := range []string{
-		`bridge.openCanvas("playfield")`,
-		`bridge.loadImageAsset("starfield-background")`,
-		`bridge.loadImageAsset("player-ship")`,
-		`bridge.onCanvasInput("playfield"`,
+		`canvas.getContext("2d", { alpha: false })`,
+		`loadImage("assets/starfield-v2.webp")`,
+		`createImageBitmap`,
+		`canvas.addEventListener(type, handlePointer`,
 		`game.highScore.load`,
 		`game.highScore.save`,
 		`FPS ${Math.round(fps)}`,
@@ -493,7 +489,7 @@ func TestSkyStrikeRedistributesItsAssetLicenseEvidence(t *testing.T) {
 
 func TestWeatherHasAnImmediateForecastAndDesignedFailureRecovery(t *testing.T) {
 	root := repositoryRoot(t)
-	source, err := os.ReadFile(filepath.Join(root, "examples", "plugin-ui", "weather.ts"))
+	source, err := os.ReadFile(filepath.Join(root, "examples", "plugin-ui", "weather.tsx"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,16 +504,16 @@ func TestWeatherHasAnImmediateForecastAndDesignedFailureRecovery(t *testing.T) {
 	combined := string(source) + string(styles) + string(workerSource)
 	for _, required := range []string{
 		`DEFAULT_LOCATION`,
-		`Explore Berlin`,
-		`retry-weather`,
+		`DEFAULT_LOCATION`,
+		`loadForecast(`,
 		`friendlyWeatherError`,
 		`forecast-toolbar`,
 		`current-summary`,
 		`weather-story`,
-		`weather-glance`,
-		`--weather-cloud`,
-		`.weather-hero::before`,
-		`forecast-scroll`,
+		`hero-meta`,
+		`--muted-foreground`,
+		`data-floe-surface`,
+		`forecast-grid`,
 		`min-height: 44px`,
 		`body.len() > 393_216`,
 	} {
@@ -552,8 +548,8 @@ func TestSkyStrikeHasExplicitSessionStatesAndDurableScores(t *testing.T) {
 		`event.type === "dispose"`,
 		`stopFrameLoop`,
 		`frameTimer`,
-		`updateCanvasAccessibility`,
-		`event.event === "pointermove" && event.buttons === 0`,
+		`canvas.setAttribute("aria-label", label)`,
+		`event.type === "pointermove" && event.buttons === 0`,
 		`FPS ${Math.round(fps)}`,
 	} {
 		if !strings.Contains(content, required) {
@@ -625,14 +621,14 @@ func TestExampleInterfacesUseDistinctConsumerProductDesigns(t *testing.T) {
 		},
 		{
 			name:      "memos writing app",
-			paths:     []string{"examples/plugins/memos/ui/assets/styles.css", "examples/plugin-ui/memos.ts"},
-			required:  []string{"memos-explorer", "search-form", "view-nav", "calendar-grid", "tag-list", "memo-composer", "memo-feed", "memo-card", "save-indicator", "memo-menu", "delete-dialog", "mobile-header", "--memos-coral", "--memos-cobalt", "--memos-green", "--memos-amber"},
+			paths:     []string{"examples/plugins/memos/ui/assets/styles.css", "examples/plugin-ui/memos.tsx"},
+			required:  []string{"memos-explorer", "search-form", "view-nav", "calendar-grid", "tag-list", "memo-composer", "memo-feed", "memo-card", "save-state", "memo-menu", "delete-dialog", "mobile-header", "data-floe-surface", "--foreground", "--primary", "--muted-foreground"},
 			forbidden: []string{"memos-library", "empty-welcome", "library-overview", "overview-stats", "memo-context-rail", "context-stat", "context-ribbon", "Private library", "At a glance"},
 		},
 		{
 			name:      "weather lifestyle app",
-			paths:     []string{"examples/plugins/weather/ui/assets/styles.css", "examples/plugin-ui/weather.ts"},
-			required:  []string{"weather-hero", "weather-story", "weather-glance", "weather-metrics", "forecast-icon", "saved-strip", "search-results", "forecast-toolbar", "weather-error", "weather-scene-v2.webp", "--weather-cloud", ".weather-hero::before"},
+			paths:     []string{"examples/plugins/weather/ui/assets/styles.css", "examples/plugin-ui/weather.tsx"},
+			required:  []string{"weather-hero", "weather-story", "hero-meta", "weather-metrics", "condition-mark", "saved-strip", "search-results", "forecast-toolbar", "weather-status", "--muted-foreground", "data-floe-surface"},
 			forbidden: []string{`return "SUN"`, `return "CLD"`, `return "RAN"`, `class: "saved-panel"`},
 		},
 		{

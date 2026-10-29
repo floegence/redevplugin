@@ -273,8 +273,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"DisposeSurfaceRequest:",
 		"required: [bridge_nonce]",
 		"SurfacePreparation:",
-		"../plugin/opaque-surface-document-v3.schema.json",
-		"ReadSurfaceAssetRequest:",
+		"../plugin/web-surface-document.schema.json",
 		"DisposeSurfaceRequest:",
 		"scope: { type: string, enum: [user, environment] }",
 		"PluginDataBinding:",
@@ -526,10 +525,6 @@ func TestOpenAPITrustedScopeAndRetainedDataMatchClosedGoDTOs(t *testing.T) {
 	surfaceBootstrap := openAPISchemaBlock(t, text, "SurfaceBootstrap")
 	if !strings.Contains(surfaceBootstrap, "- runtime_generation_id") {
 		t.Fatal("SurfaceBootstrap must require runtime_generation_id")
-	}
-	assetRead := openAPISchemaBlock(t, text, "ReadSurfaceAssetRequest")
-	if !strings.Contains(assetRead, "required: [asset_session, asset_session_id, binding_id]") || strings.Contains(assetRead, "asset_path") || strings.Contains(assetRead, "expected_sha256") {
-		t.Fatalf("ReadSurfaceAssetRequest must expose only the prepared binding id: %s", assetRead)
 	}
 }
 
@@ -888,11 +883,6 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"#mintBridgeToken(previousGatewayToken?: string, direct = false): Promise<PluginGatewayTokenResult>", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/bridge-token`},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"},
-			Owner:        "PluginSurfaceHost.#handleAssetRead",
-			Snippets:     []string{"async #handleAssetRead(message: SurfaceAssetReadMessage)", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/assets/read`},
-		},
-		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject"},
 			Owner:        "PluginSurfaceHost.#rejectConfirmation",
 			Snippets:     []string{"async #rejectConfirmation(confirmationID: string, signal: AbortSignal)", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/confirmations/reject`},
@@ -1104,7 +1094,6 @@ func requiredJSONRequestBodyRoutes() []routeFixture {
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/open"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
-		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/rpc"},

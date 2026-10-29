@@ -33,12 +33,8 @@ ReDevPlugin rejects:
 - unsafe package paths, traversal, root-absolute paths, and invalid separators;
 - surface entries that are not package-local HTML assets;
 - surface entries with query strings or fragments;
-- surfaces without exactly one package-local `text/redevplugin-worker` classic
-  bundle;
-- worker imports/exports, unsupported render elements or attributes, unsafe
-  input types, external/root-absolute/missing URL assets, inline script/style,
-  event handlers, `srcdoc`, embedded browsing contexts, `meta refresh`, excessive
-  render trees, or direct Service Worker API references in sandbox UI assets;
+- missing Web roots or HTML entries, reserved platform paths, or the removed
+  worker-UI document format;
 - SVG or external surface icons; icons must be package-local raster assets;
 - shell/shebang scripts, native executable or dynamic-library artifacts,
   package-manager install lifecycle scripts, package-manager dependency fields,
@@ -103,95 +99,58 @@ requests.
 
 ## Sandbox UI Boundary
 
-`PluginPlatformClient.openSurfaceInSlot(...)` creates every plugin frame through
-one opening lease and slot-owned replacement flow. The public API does not expose
-raw bootstrap adoption or accept an existing iframe. The SDK-owned frame starts with
-`src="about:blank"`, an explicit Permissions Policy deny-list for sensors,
-capture, credentials, payments, USB/HID/serial, and other browser capabilities,
-`no-referrer`, and exactly
-`sandbox="allow-scripts"`. Without `allow-same-origin`, the document receives a
-unique opaque origin. It is not navigated to a plugin URL, Host URL, localhost,
-remote URL, or parent-created blob URL.
+Untrusted applications execute ordinary HTML and JavaScript on a fresh,
+platform-bound origin per live container. The child hostname differs from the
+host page; the host adapter provides DNS/TLS routing only. The platform owns
+entry admission, asset validation, bridge setup, leases, and revocation. Child
+origins must never mount product management routes or inherit product cookies.
 
-The trusted parent prepares a validated opaque surface document through a
-same-origin POST route. The generated bootstrap applies a fail-closed CSP with
-no direct network, frame, form, object, manifest, or base-URL capability. It
-injects validated static HTML and nonce-bound CSS, creates lazy non-executable
-asset blob URLs inside the opaque frame, and starts exactly one classic
-Dedicated Worker from validated bundled bytes. IndexedDB, Cache Storage,
-Service Workers, direct fetch, WebSocket, nested workers, dynamic import, eval,
-Function constructors, and parent DOM/storage access are denied by the browser
-boundary and renderer hardening. Package-time Service Worker scanning is an
-early rejection for direct identifier, optional-chain, and bracket references;
-runtime removal of the API is the authoritative boundary for dynamically
-constructed source references.
+The sandbox permits scripts, the child's own origin, and local form events.
+CSP denies form navigation, nested frames, objects, base overrides, and external
+resource connections. A Permissions Policy deny-list disables privileged
+browser APIs. Connection-Allowlist confines browser connections to the response
+origin. The trusted bootstrap validates its enforcement before any package
+script executes, using successful self requests around a rejected redirect.
+Unsupported browsers fail explicitly without a fallback rendering path. Tests
+must independently verify real receiver-side network behavior; an HTTP header
+or user-agent string is not evidence of enforcement.
 
-The production worker does not run an active dynamic-import probe. Such a probe
-would intentionally create a browser CSP violation in every plugin surface and
-would appear as a Console error even when the policy is working correctly. The
-runtime boundary remains strict CSP plus the sealed worker APIs, and package
-validation rejects dynamic imports before installation. A dedicated browser
-harness performs the one-time dynamic-import denial check so the security
-contract remains tested without adding noise to normal plugin startup.
+Modules, dynamic imports, browser Workers, DOM events, Canvas, WebGL, WASM,
+localStorage, and IndexedDB are ordinary application features. There is no
+sealed Worker global or platform graphics allocation budget. Browser storage
+belongs to this transient container origin, not the durable plugin namespace.
+Service Worker script requests are rejected by the HTTP resource handler.
+Executable resources must come from the exact installed package.
 
-Renderer resource ownership is bounded by the generated bridge policy. It
-permits at most four transferred canvases, 4096 pixels per dimension,
-16,777,216 aggregate canvas pixels, and 120 pointer events per second. Raster
-type is derived from PNG, JPEG, GIF, or WebP bytes rather than a filename or
-declared MIME, and dimensions are parsed before decode. At most 32 images and
-33,554,432 decoded pixels are allowed. The worker global removes
-`OffscreenCanvas` construction and `createImageBitmap`, so plugin code cannot
-allocate an unaccounted secondary graphics surface. Resizing an already
-transferred canvas is checked against the same budget.
+The bootstrap consumes a single-use entry token from the URL fragment and
+removes it from history. A Secure, HttpOnly, SameSite=None, Partitioned cookie
+carries a random resource credential. The cookie is bound to the origin and
+current surface lease; it is not a management credential. Every resource read
+revalidates the current owner/session, fingerprint, revision, revoke epoch,
+package entry metadata, length, and digest. Replayed entry, wrong origin,
+path traversal, expired sessions, and post-revocation reads fail closed.
 
-The generated canvas context allowlist admits only `2d`, `webgl`, and `webgl2`
-on those transferred canvases. Context options and unavailable-context `null`
-results retain native semantics; unsupported types throw `TypeError`. WebGL
-does not relax opaque origins, CSP, sealed APIs, asset mediation, or the canvas
-budgets. Pixel budgets do not bound texture/buffer allocations or shader time:
-the browser owns graphics validation and GPU recovery. The Worker heartbeat
-detects an unresponsive JavaScript Worker, not every asynchronous GPU workload.
+A close request carries a unique quiesce ID. Async application lifecycle
+observers may flush state before acknowledgement, within the parent's bounded
+1.5-second deadline. Revocation then tears down the frame and ports. A plugin
+cannot delay forced security revocation. Native document navigation invalidates
+the current generation; a new host opening creates fresh authority.
 
-The renderer sends a private ping every 10 seconds and requires the matching
-worker pong within 5 seconds. A stalled or replaced worker fails the surface
-closed. Disposal uses a unique quiesce id: the plugin bridge waits for all async
-lifecycle observers, including persistence flushes, before acknowledging. The
-trusted parent waits at most 1.5 seconds and then continues server revocation and
-local teardown, so a plugin can finish bounded state writes but cannot hold the
-surface open indefinitely.
-
-Allowed forms are interaction containers, not navigation primitives. The
-renderer captures submit events and nested submit-button clicks, calls
-`preventDefault`, serializes at most 128 bounded string fields, and sends one
-typed action over the private worker port. CSP `form-action 'none'` remains the
-browser-level backstop.
-
-One aggregate opening deadline bounds frame load, prepare, transferred-port
-acknowledgement, initial lease minting, renderer initialization, worker readiness, and the first DOM commit.
-Timeout aborts in-flight parent requests, revokes the server-side surface,
-destroys the local frame/ports, and consumes one shared reload-limiter attempt;
-a later healthy host instance resets that bounded retry state.
-
-Sandbox UI must not receive parent-only credentials such as asset tickets,
-plugin gateway tokens, confirmation tokens, storage grants, network grants,
-runtime-control tokens, or host management credentials. Browser bridge responses
-are tested to avoid exposing these token classes.
+Sandbox code never receives parent gateway tokens, asset tickets/sessions,
+confirmation tokens, storage/network grants, runtime-control tokens, raw vault
+secrets, or unrelated product authority. Browser bridge response tests enforce
+these exclusions. DOM, focus, action, and selection observations are untrusted
+presentation metadata and cannot authorize file export or capability calls.
 
 ## Bridge And Tokens
 
-The parent transfers one secret-free bootstrap `MessagePort` to the current
-iframe `contentWindow` and frame generation. Because the destination has an
-opaque origin, that one bootstrap transfer uses `postMessage("*")`; it contains
-no token, plugin identity, owner/session binding, or capability material. The
-renderer must return a `redevplugin.surface.port_ack` for that exact frame
-generation over the transferred port before the parent requests a gateway token. The
-trusted renderer gives each plugin worker two ordered ports: a private
-`runtime_control` port retained by the renderer and a `plugin_bridge` port
-claimed by the plugin SDK. All subsequent lifecycle, render, RPC, cancel, asset,
-stream, and confirmation traffic uses those ports. Authorization binds the
-window source, frame generation, port, asset session, surface instance, bridge
-nonce, active fingerprint, owner and session hashes, management revision, and revoke
-epoch. `event.origin` is diagnostic context only.
+The parent accepts bootstrap signals only from the current iframe window and
+exact allocated origin. It transfers one secret-free MessagePort to that
+origin and requires acknowledgement of the exact frame generation before
+requesting a gateway token. Later calls use the port and bind surface identity,
+asset session, bridge nonce, active fingerprint, owner/session hashes,
+management revision, and revoke epoch. The plugin claims a private application
+port through the SDK; the trusted parent retains management authority.
 
 Token and ticket kinds are described in `token-ticket-v4.schema.json`. Schema
 tests bind every token kind to its required `use`, audience fields, and
@@ -240,35 +199,19 @@ the raw confirmation token capability. If a host process restarts with durable
 intent metadata but without the matching in-memory token-manager record,
 confirmation consumption fails closed.
 
-Surface prepare/token/dispose, asset reads, and stream reads are parent-only POST
-routes. Responses use `Cache-Control: no-store`, and the Host's origin/CSRF guard
-must authenticate the request, validate the closed `trusted_host` origin policy,
-validate the required CSRF policy, and authorize the route's closed
-`RouteAction` before request decoding or Host dispatch. Product-specific origin
-names, CSRF tokens, session semantics, and authorization roles are not part of
-the ReDevPlugin adapter contract. Asset tickets, asset sessions, gateway tokens,
-and stream tickets remain in parent memory. For a lazy asset, plugin code sends
-only the opaque `binding_id` from the prepared document. The HTTP API does not
-accept a caller-selected package path or digest: the Host resolves both from its
-cached prepared document, checks the active fingerprint, entry path and entry
-digest, then revalidates the asset digest before returning typed bytes over the
-private port. Every read compares registry path, metadata size, content type,
-actual byte length, and recomputed SHA-256. A prepared document permits at most 128 lazy assets and 32
-MiB cumulative lazy bytes; the renderer and trusted parent allow at most four
-concurrent reads. Unknown or stale bindings fail closed. The plugin worker receives random
-`surface_handle` and `stream_handle` values; there are no query credentials,
-browser-readable cookies, GET asset endpoints, or plugin-origin stream requests.
+Management prepare/token/dispose and stream reads remain parent-only POST
+routes, authenticated through the Host origin/CSRF and route-authorization
+pipeline. Application resources instead use the isolated Web HTTP handler and
+its origin-bound HttpOnly cookie. This is the sole resource path: there is no
+management asset-read endpoint or Base64 transfer protocol. Document requests
+use the trusted loader; non-document resource misses return 404 rather than
+HTML fallback. Resource responses use no-store and nosniff.
 
-Handshake transcript SHA-256 and renderer asset SHA-256 use the pinned standard
-`@noble/hashes` implementation on HTTP and HTTPS. The transcript's length-prefixed,
-NUL-terminated UTF-8 encoding and `sha256:` hexadecimal output remain identical.
-The opaque renderer embeds a generated, license-bearing bundle of that same
-dependency; `surface-integrity:check` verifies the generated bytes and standard
-hash vectors without Web Crypto. It does not import modules, evaluate code, or
-fetch executable resources at runtime. Missing SubtleCrypto never skips integrity
-validation. CSPRNG nonces still require `crypto.getRandomValues` and fail closed
-when secure entropy is unavailable. Browser secure-context restrictions remain
-in force; host products choose transport security and authenticate their clients.
+The trusted parent computes the handshake transcript with the pinned standard
+@noble/hashes implementation. Length-prefixed, NUL-terminated UTF-8 and the
+sha256 hexadecimal result remain identical on HTTP and HTTPS. Resource bytes
+are hashed by the Go Host against verified package evidence before serving.
+CSPRNG nonces require secure entropy and never fall back to predictable values.
 
 Surface sessions are explicitly bounded. `SurfaceTokenService` defaults to
 4,096 active sessions globally and 64 per owner session; hosts may set lower or
@@ -297,7 +240,7 @@ bridge channel. A successful renewal atomically replaces both the gateway token
 and asset session, extends the server-side surface lease, and revokes the prior
 credentials. Session teardown calls the authenticated `session/revoke-scope`
 route; owner and channel identity come only from the Host request context.
-The initial lease is minted and applied before renderer initialization, so no
+The initial lease is minted and applied before application initialization, so no
 plugin asset request can race the revocation of the prepared asset session.
 Renewal timers start only after the surface reaches ready state.
 
@@ -482,12 +425,12 @@ frames or plugin work are accepted.
 
 ## Surface Diagnostics
 
-The trusted renderer reports bounded initialization, worker load/error,
-`messageerror`, contract validation, and disposal failures over the private
-parent port. Diagnostics must not include bearer credentials or plugin-provided
-HTML. The platform does not expose a browser CSP report endpoint; expected CSP
-denials are verified locally inside the worker and by browser smoke tests, while
-actionable runtime failures use typed parent diagnostics.
+The trusted loader and parent report bounded admission, preparation, handshake,
+application-load, contract, and disposal failures. Diagnostics must not include
+bearer credentials or application HTML. Browser network-denial diagnostics are
+expected only when correlated to a deliberate test or admission probe; unrelated
+console errors remain acceptance failures. Normal DOM and application errors
+remain distinguishable from transport or permission failures.
 
 ## Host Product Duties
 

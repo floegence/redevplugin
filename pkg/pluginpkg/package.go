@@ -18,7 +18,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -146,15 +145,6 @@ const PackageSignaturePath = "signatures/package.sig"
 const PackageSignatureSchemaVersion = "redevplugin.package_signature.v1"
 const PackageSignatureAlgorithmEd25519 = "ed25519"
 const maxWASMTableElements uint32 = 65_536
-
-var serviceWorkerDependencyPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bnavigator\s*(?:\?\s*)?\.\s*serviceWorker\b`),
-	regexp.MustCompile(`\bnavigator\s*(?:\?\s*\.)?\s*\[\s*["']serviceWorker["']\s*\]`),
-	regexp.MustCompile(`\bserviceWorker\s*(?:\?\s*)?\.\s*register\b`),
-	regexp.MustCompile(`\bserviceWorker\s*(?:\?\s*\.)?\s*\[\s*["']register["']\s*\]`),
-	regexp.MustCompile(`\bServiceWorkerRegistration\b`),
-	regexp.MustCompile(`\bServiceWorkerContainer\b`),
-}
 
 var forbiddenShellExtensions = map[string]struct{}{
 	".bash": {},
@@ -886,13 +876,6 @@ func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) 
 			}
 		}
 	}
-	for entryPath, content := range files {
-		if isScriptAsset(entryPath) {
-			if err := validateNoServiceWorkerDependency(entryPath, content); err != nil {
-				return err
-			}
-		}
-	}
 	return nil
 }
 
@@ -977,50 +960,30 @@ func validateSurfaceIconAsset(surfaceIndex int, iconPath string, files map[strin
 }
 
 func validateSurfaceHTMLAsset(entryPath string, content []byte, files map[string][]byte) error {
-	if err := validateNoServiceWorkerDependency(entryPath, content); err != nil {
-		return err
+	if !isHTMLAsset(entryPath) || !utf8.Valid(content) || len(content) == 0 {
+		return fmt.Errorf("%s: Web application entry must be nonempty UTF-8 HTML", entryPath)
 	}
-	_, err := BuildOpaqueSurfaceDocument(entryPath, func(assetPath string) (Asset, error) {
-		assetContent, ok := files[assetPath]
-		if !ok {
-			return Asset{}, fmt.Errorf("missing package asset %q", assetPath)
-		}
-		entry, err := makeEntry(assetPath, assetContent)
-		if err != nil {
-			return Asset{}, err
-		}
-		return Asset{Entry: entry, Content: assetContent}, nil
-	})
+	document, err := html.Parse(bytes.NewReader(content))
 	if err != nil {
-		return fmt.Errorf("%s: %w", entryPath, err)
+		return fmt.Errorf("%s: invalid Web application HTML: %w", entryPath, err)
 	}
-	return nil
-}
-
-func validateNoServiceWorkerDependency(entryPath string, content []byte) error {
-	for _, pattern := range serviceWorkerDependencyPatterns {
-		if pattern.Match(content) {
-			return fmt.Errorf("%s: Service Worker registration APIs are not allowed in plugin package assets", entryPath)
+	var inspect func(*html.Node) error
+	inspect = func(node *html.Node) error {
+		if node.Type == html.ElementNode && node.Data == "script" {
+			for _, attribute := range node.Attr {
+				if attribute.Key == "type" && strings.EqualFold(strings.TrimSpace(attribute.Val), "text/redevplugin-worker") {
+					return fmt.Errorf("%s: the worker UI format was removed; use an ordinary Web application entry", entryPath)
+				}
+			}
 		}
-	}
-	return nil
-}
-
-func resolvePackageRelativeAssetPath(baseDir string, rawPath string) (string, error) {
-	rawPath = strings.TrimSpace(rawPath)
-	if rawPath == "" || strings.HasPrefix(rawPath, "/") || strings.HasPrefix(rawPath, "//") || strings.ContainsAny(rawPath, "\\?#:\r\n\t\x00") {
-		return "", fmt.Errorf("asset path %q must be a canonical package-local path", rawPath)
-	}
-	for _, part := range strings.Split(rawPath, "/") {
-		if part == "" || part == "." || part == ".." {
-			return "", fmt.Errorf("asset path %q must be a canonical package-local path", rawPath)
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if err := inspect(child); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	joined := path.Clean(path.Join(baseDir, rawPath))
-	if joined == "." {
-		return "", errors.New("asset path is empty")
-	}
-	return validatePackageAssetPath(joined)
+	return inspect(document)
 }
 
 func validatePackageAssetPath(entryPath string) (string, error) {
@@ -1030,38 +993,9 @@ func validatePackageAssetPath(entryPath string) (string, error) {
 	return validateEntryPath(entryPath)
 }
 
-func isHTMLURLAttribute(tag string, attr string) bool {
-	switch attr {
-	case "src", "href", "poster", "data", "action", "formaction", "cite", "background", "srcset":
-		return true
-	default:
-		return false
-	}
-}
-
-func nodeTextContent(node *html.Node) string {
-	var builder strings.Builder
-	var walk func(*html.Node)
-	walk = func(current *html.Node) {
-		if current.Type == html.TextNode {
-			builder.WriteString(current.Data)
-		}
-		for child := current.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
-		}
-	}
-	walk(node)
-	return strings.TrimSpace(builder.String())
-}
-
 func isHTMLAsset(entryPath string) bool {
 	ext := strings.ToLower(path.Ext(entryPath))
 	return ext == ".html" || ext == ".htm"
-}
-
-func isScriptAsset(entryPath string) bool {
-	ext := strings.ToLower(path.Ext(entryPath))
-	return ext == ".js" || ext == ".mjs"
 }
 
 func hasRasterIconMagic(ext string, content []byte) bool {

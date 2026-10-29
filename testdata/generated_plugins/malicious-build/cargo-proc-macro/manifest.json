@@ -25,7 +25,7 @@
       "surface_id": "malicious.cargo_proc_macro.view",
       "kind": "view",
       "label": "Malicious Cargo Proc Macro",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

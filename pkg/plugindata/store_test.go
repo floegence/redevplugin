@@ -951,7 +951,7 @@ func putPluginWithContext(t *testing.T, ctx context.Context, store registry.Stor
 		}
 	}
 	if len(pluginManifest.Surfaces) == 0 {
-		pluginManifest.Surfaces = []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Example", Entry: "ui/index.html"}}
+		pluginManifest.Surfaces = []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Example", Entry: "ui/index.html", Web: manifest.SurfaceWebSpec{Root: "ui"}}}
 	}
 	record, err := store.PutPlugin(ctx, registry.PluginRecord{
 		PluginInstanceID:  instanceID,

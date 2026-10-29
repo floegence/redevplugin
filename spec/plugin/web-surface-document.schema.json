@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/web-surface-document.schema.json",
+  "title": "ReDevPlugin Web surface document",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "origin",
+    "parent_origin",
+    "bootstrap_url",
+    "entry_url"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "redevplugin.web_surface.v1"
+    },
+    "origin": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "parent_origin": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "bootstrap_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "entry_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    }
+  }
+}

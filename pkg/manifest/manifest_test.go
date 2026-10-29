@@ -343,8 +343,8 @@ func TestValidateRejectsIntentMissingMethod(t *testing.T) {
 func TestValidateRejectsSameSurfaceIDAcrossKinds(t *testing.T) {
 	m := validManifest()
 	m.Surfaces = []SurfaceSpec{
-		{SurfaceID: "resources", Kind: SurfaceView, Label: "Resources", Entry: "ui/index.html"},
-		{SurfaceID: "resources", Kind: SurfaceCommand, Label: "Resources", Entry: "ui/index.html"},
+		{SurfaceID: "resources", Kind: SurfaceView, Label: "Resources", Entry: "ui/index.html", Web: SurfaceWebSpec{Root: "ui"}},
+		{SurfaceID: "resources", Kind: SurfaceCommand, Label: "Resources", Entry: "ui/index.html", Web: SurfaceWebSpec{Root: "ui"}},
 	}
 
 	if err := Validate(m); err == nil {
@@ -1078,7 +1078,7 @@ func validManifest() Manifest {
 			}},
 		},
 		Surfaces: []SurfaceSpec{
-			{SurfaceID: "resources.view", Kind: SurfaceView, Intent: SurfaceIntentPrimary, Label: "Resources", Entry: "ui/index.html"},
+			{SurfaceID: "resources.view", Kind: SurfaceView, Intent: SurfaceIntentPrimary, Label: "Resources", Entry: "ui/index.html", Web: SurfaceWebSpec{Root: "ui"}},
 		},
 		CapabilityBindings: []CapabilityBinding{
 			{BindingID: "resource_provider", Contract: validCapabilityPin()},
@@ -1184,7 +1184,7 @@ func validManifestJSON() string {
 			"locales": {"default": "en-US"}
 		},
 		"surfaces": [
-			{"surface_id": "resources.view", "kind": "view", "label": "Resources", "entry": "ui/index.html"}
+			{"surface_id": "resources.view", "kind": "view", "label": "Resources", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
 		],
 		"capability_bindings": [
 			{"binding_id": "resource_provider", "contract": %s}

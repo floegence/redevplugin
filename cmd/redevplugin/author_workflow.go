@@ -287,7 +287,16 @@ func runAuthorDev(ctx context.Context, args []string) error {
 		_, _ = runtimeModule.Close(context.Background())
 		return err
 	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	_, webPort, _ := net.SplitHostPort(listener.Addr().String())
+	webOrigins := localWebOrigins{port: webPort}
+	origin := webOrigins.parentOrigin()
 	config.Runtime = runtimeModule
+	config.Web = &host.WebModule{Origins: webOrigins}
 	config.Background = &host.BackgroundModule{RunnerFactory: host.NewBackgroundWorkerRunner}
 	pluginHost, err := host.Open(ctx, config)
 	if err != nil {
@@ -302,12 +311,6 @@ func runAuthorDev(ctx context.Context, args []string) error {
 	if _, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{Target: target}); err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	origin := "http://" + listener.Addr().String()
 	token, err := authorRandom()
 	if err != nil {
 		return err
@@ -375,13 +378,17 @@ func runAuthorDev(ctx context.Context, args []string) error {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if r.Host != listener.Addr().String() {
+		if r.Host != "localhost:"+webPort {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	webHandler, err := webOrigins.handler(pluginHost, handler)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{Handler: webHandler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.Serve(listener) }()
 	watchCtx, cancel := context.WithCancel(ctx)
@@ -484,6 +491,13 @@ func authorRuntimeCall(ctx context.Context, options authorOptions, raw []byte) (
 		_, _ = module.Close(context.Background())
 		return nil, err
 	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	defer listener.Close()
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	config.Web = &host.WebModule{Origins: localWebOrigins{port: port}}
 	config.Runtime = module
 	h, err := host.Open(ctx, config)
 	if err != nil {

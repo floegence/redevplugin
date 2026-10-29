@@ -47,7 +47,6 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionOpenSurface,
 		ManagementActionPrepareSurface,
 		ManagementActionMintBridgeToken,
-		ManagementActionReadSurfaceAsset,
 		ManagementActionRejectSurfaceConfirmation,
 		ManagementActionDisposeSurface,
 		ManagementActionRevokeSessionScope,
@@ -132,7 +131,6 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"open surface", ManagementActionOpenSurface, func() error { _, err := h.OpenSurface(ctx, OpenSurfaceRequest{}); return err }},
 		{"prepare surface", ManagementActionPrepareSurface, func() error { _, err := h.PrepareSurface(ctx, PrepareSurfaceRequest{}); return err }},
 		{"mint bridge token", ManagementActionMintBridgeToken, func() error { _, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{}); return err }},
-		{"read surface asset", ManagementActionReadSurfaceAsset, func() error { _, err := h.ReadSurfaceAsset(ctx, ReadSurfaceAssetRequest{}); return err }},
 		{"reject surface confirmation", ManagementActionRejectSurfaceConfirmation, func() error { _, err := h.RejectMethodConfirmation(ctx, RejectMethodConfirmationRequest{}); return err }},
 		{"dispose surface", ManagementActionDisposeSurface, func() error { return h.DisposeSurface(ctx, DisposeSurfaceRequest{}) }},
 		{"revoke session scope", ManagementActionRevokeSessionScope, func() error { _, err := h.RevokeSessionScope(ctx, RevokeSessionScopeRequest{}); return err }},
@@ -317,13 +315,6 @@ func TestDirectHostAPIsProjectClosedAuthorizationResources(t *testing.T) {
 			name: "prepare surface", action: ManagementActionPrepareSurface,
 			target: AuthorizationTarget{Kind: ResourceSurface, ID: "surface_1"}, call: func() error {
 				_, err := h.PrepareSurface(ctx, PrepareSurfaceRequest{SurfaceInstanceID: "surface_1"})
-				return err
-			},
-		},
-		{
-			name: "read surface asset", action: ManagementActionReadSurfaceAsset,
-			target: AuthorizationTarget{Kind: ResourceSurface, ID: "surface_1"}, related: []AuthorizationTarget{{Kind: ResourceAssetSession, ID: "asset_session_1"}, {Kind: ResourceSurfaceAsset, ID: "binding_1"}}, call: func() error {
-				_, err := h.ReadSurfaceAsset(ctx, ReadSurfaceAssetRequest{SurfaceInstanceID: "surface_1", AssetSessionID: "asset_session_1", BindingID: "binding_1"})
 				return err
 			},
 		},

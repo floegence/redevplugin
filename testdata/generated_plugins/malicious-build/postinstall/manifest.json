@@ -25,7 +25,7 @@
       "surface_id": "malicious.postinstall.view",
       "kind": "view",
       "label": "Malicious Postinstall",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

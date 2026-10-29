@@ -1,17 +1,17 @@
-import { PluginBridgeClient, type MessagePortLike, type MessageEventLike, type PluginJSONObject, type PluginUIElementVNode, type PluginSurfaceContext, type PluginUIActionEvent, type PluginBridgeClientOptions } from "./surface.js";
+import { PluginBridgeClient, type MessagePortLike, type MessageEventLike, type PluginJSONObject, type PluginSurfaceContext, type PluginBridgeClientOptions, type PluginBridgeClock } from "./surface.js";
 import { PluginBridgeError } from "./errors.js";
 
 /** Business/bridge fixture only. It does not certify Host permissions or WASM execution. */
 export type PluginTestCall = {
   method: string;
   input?: PluginJSONObject;
-  tree?: PluginUIElementVNode;
   cancelled: boolean;
   resolve(value: unknown): void;
   reject(error: Error): void;
 };
 export type PluginTestHarnessOptions = {
   context?: PluginSurfaceContext;
+  clock?: PluginBridgeClock;
   call?: (method: string, input?: PluginJSONObject) => unknown | Promise<unknown>;
 };
 
@@ -37,19 +37,16 @@ export function createPluginTestContext(languageTag = "en-US", revision = 1): Pl
 export function createPluginTestHarness(options: PluginTestHarnessOptions = {}) {
   const calls: PluginTestCall[] = [], pending = new Map<string, PluginTestCall>();
   const clients = new Set<PluginBridgeClient>();
-  let tree: PluginUIElementVNode | undefined, disposed = false;
+  let disposed = false;
   let context = options.context ?? createPluginTestContext();
   const port = new FixturePort(message => {
     const value = message as { type: string; id?: string; request?: { id: string; method: string; params?: PluginJSONObject } };
     if (value.type === "redevplugin.bridge.cancel") { const call = pending.get(value.id!); if (call) call.cancelled = true; pending.delete(value.id!); return; }
-    if (value.type === "redevplugin.ui.mount" || value.type === "redevplugin.ui.patch") {
-      port.emit({ type: "redevplugin.bridge.response", id: value.id, ok: true }); return;
-    }
     if (value.type !== "redevplugin.bridge.call" || !value.request) return;
     const request = value.request;
     if (calls.length >= 1024) { port.emit({ type: "redevplugin.bridge.response", id: request.id, ok: false, error_code: "PLUGIN_INVALID_REQUEST", error: "Fixture call history exceeds 1024 entries" }); return; }
     const finish = (response: Record<string, unknown>): void => { if (!pending.delete(request.id)) return; port.emit({ type: "redevplugin.bridge.response", id: request.id, ...response }); };
-    const call: PluginTestCall = { method: request.method, input: request.params, tree, cancelled: false,
+    const call: PluginTestCall = { method: request.method, input: request.params, cancelled: false,
       resolve: value => finish({ ok: true, data: value }),
       reject: failure => finish({ ok: false, error_code: failure instanceof PluginBridgeError ? failure.errorCode : "PLUGIN_CAPABILITY_ERROR", error: failure.message }),
     };
@@ -59,18 +56,46 @@ export function createPluginTestHarness(options: PluginTestHarnessOptions = {}) 
   class BridgeClient extends PluginBridgeClient {
     constructor(clientOptions: PluginBridgeClientOptions = {}) {
       if (clients.size || disposed) throw new Error("A fixture owns exactly one bridge client");
-      super({ ...clientOptions, port, surfaceHandle: "surface_author_fixture" }); clients.add(this);
+      super({ clock: options.clock, ...clientOptions, port, surfaceHandle: "surface_author_fixture" }); clients.add(this);
       queueMicrotask(() => { port.emit({ type: "redevplugin.bridge.context", context }); port.emit({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } }); });
     }
-    override async render(next: PluginUIElementVNode): Promise<void> { await super.render(next); tree = structuredClone(next); }
   }
   return {
     mode: "fixture" as const, BridgeClient, calls,
-    get tree() { return tree; },
     context(next: PluginSurfaceContext): void { context = next; port.emit({ type: "redevplugin.bridge.context", context }); },
-    action(action: string, event: Partial<PluginUIActionEvent> = {}): void {
-      port.emit({ type: "redevplugin.ui.action", action, event: event.event ?? "click", target_key: event.targetKey ?? "fixture-target", edit_revision: event.editRevision ?? 0, is_composing: event.isComposing ?? false, ...(event.value !== undefined ? { value: event.value } : {}), ...(event.checked !== undefined ? { checked: event.checked } : {}), ...(event.form_data ? { form_data: event.form_data } : {}) });
-    },
     dispose(): void { disposed = true; for (const client of clients) client.dispose(); clients.clear(); port.close(); pending.clear(); },
+  };
+}
+
+/** Virtual time affects only consumers explicitly given this clock, never global timers. */
+export function createPluginTestClock(initialTimeMs = 0) {
+  if (!Number.isFinite(initialTimeMs) || initialTimeMs < 0) throw new Error("Fixture time must be nonnegative and finite");
+  let now = initialTimeMs, nextID = 0, advancing = false;
+  const tasks = new Map<number, { at: number; callback: () => void }>();
+  const clock: PluginBridgeClock = {
+    schedule(callback, delayMs) {
+      if (!Number.isFinite(delayMs) || delayMs < 0 || typeof callback !== "function" || tasks.size >= 10000) throw new Error("Invalid fixture timer");
+      const id = ++nextID; tasks.set(id, { at: now + delayMs, callback });
+      return () => { tasks.delete(id); };
+    },
+  };
+  return {
+    clock, get now() { return now; }, get pending() { return tasks.size; },
+    async advanceBy(milliseconds: number): Promise<void> {
+      if (!Number.isFinite(milliseconds) || milliseconds < 0 || !Number.isFinite(now + milliseconds) || advancing) throw new Error("Invalid or concurrent fixture clock advance");
+      advancing = true;
+      const target = now + milliseconds;
+      try {
+        for (let count = 0; ; count++) {
+          await Promise.resolve();
+          const next = [...tasks.entries()].filter(([, task]) => task.at <= target).sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+          if (!next) break;
+          if (count >= 10000) throw new Error("Fixture timer loop exceeded its bound");
+          tasks.delete(next[0]); now = next[1].at; next[1].callback();
+        }
+        now = target;
+      } finally { advancing = false; }
+    },
+    dispose(): void { tasks.clear(); },
   };
 }

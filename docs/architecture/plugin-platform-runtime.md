@@ -15,7 +15,7 @@ ReDevPlugin owns reusable extension mechanics:
   PluginData export/import, retained bindings, and unreferenced object recovery;
 - permission grants, security policy evaluation, confirmation outcomes,
   stable errors, audit events, and diagnostics;
-- opaque iframe bootstrap, validated surface documents, asset tickets and
+- dedicated-origin Web bootstrap, verified application documents, asset tickets and
   sessions, typed `MessagePort` bridge messages, Execution/Event envelopes,
   and TypeScript SDK helpers;
 - one Host-owned control database for installed facts, authorization,
@@ -68,8 +68,8 @@ and marked that exact asset session prepared.
 
 - `pkg/manifest` validates the plugin manifest model and cross-field
   references.
-- `pkg/pluginpkg` reads and writes deterministic packages, builds validated
-  opaque surface documents from the generated bridge render policy, rejects
+- `pkg/pluginpkg` reads and writes deterministic packages, validates Web roots,
+  HTML entries and exact package resources, rejects
   native backend artifacts, and exposes filesystem-backed asset storage.
 - `pkg/host` coordinates lifecycle, permissions, policy, settings, storage,
   network grants, runtime execution, retained data, audit, and
@@ -357,80 +357,32 @@ error instead of silently running a plugin.
 
 ## TypeScript Surface Package
 
-The package `@floegence/redevplugin-ui` provides the `PluginSurfaceHost` handle,
-the trusted opaque renderer, the plugin-side `PluginBridgeClient`, generated
-render-policy constants, and a host-side `PluginPlatformClient`. It is a released
-npm artifact, not copied into host products through local paths.
+The released @floegence/redevplugin-ui package provides the surface slot and
+host handle, plugin-side bridge, generated management client, and author test
+helpers. Each plugin view is an ordinary Web document on a dedicated origin.
+There is one current runtime path, with no virtual-node compatibility renderer.
 
-`PluginPlatformClient.openSurfaceInSlot(...)` is the sole public opening and
-replacement orchestrator. It creates and owns a fresh iframe, hardens it before
-slot placement, and returns a handle exposing its read-only `element`. Callers
-cannot obtain a raw bootstrap, construct a host, adopt prepared options, or
-supply an existing frame.
-The frame uses explicit `src="about:blank"`, `sandbox="allow-scripts"`, a
-Permissions Policy deny-list for browser capabilities, and a generated
-`srcdoc`. It has a unique opaque
-origin and a restrictive CSP. The
-trusted renderer validates the prepared static document, injects nonce-bound
-styles, starts one classic Blob-backed Dedicated Worker, and transfers separate
-`runtime_control` and `plugin_bridge` ports. The parent transfers one distinct
-bootstrap port to the current frame generation and waits for a generation-bound
-`port_ack` before requesting the parent-only gateway lease; all later lifecycle, RPC,
-cancel, render, asset, Execution/Event, and confirmation traffic is typed and
-port-bound.
-Worker readiness does not run an active dynamic-import sandbox check. Dynamic
-imports remain denied by the strict CSP, sealed worker APIs, and package-time
-static validation. The dedicated browser harness performs the bounded denial
-check; normal plugin startup does not intentionally create a CSP violation.
-The worker receives only opaque
-surface and execution handles. Asset tickets, sessions, gateway credentials,
-internal transport credentials, confirmation tokens, plugin identity bindings, and owner/session
-hashes remain in the trusted parent.
+The platform allocates a random hostname per live surface through the
+host-provided SurfaceOriginAdapter, owns the single-use entry and short-lived
+resource session, and exposes NewWebSurfaceHandler for the isolated origin.
+Host products provide routing and TLS. Package resources are resolved and
+revalidated by the platform, never by a product-local package parser.
 
-Plugin UI v5 requires plugins to provide a globally unique, stable key for every
-element and text VNode. The SDK rejects string text VNodes and never derives
-identity from tree position or sibling index. Structural patches address keys
-and sibling anchors through `insert_child`, `remove_child`, and `move_child`;
-`set_text` addresses the plugin-provided text key directly.
-The SDK indexes the current and next trees once and uses longest-increasing-
-subsequence reconciliation for O(n log n) keyed movement. The renderer validates
-the complete patch in a copy-on-write key-graph overlay, then commits the DOM in
-one animation frame. Failed validation cannot partially mutate the DOM. Focus,
-selection, IME, scroll, canvas identity, edit revisions, and first-commit
-visibility retain their existing semantics.
+The trusted bootstrap verifies browser network confinement before executing
+application code. Source, exact origin, frame generation, and a transferred
+MessagePort bind the parent handshake. Parent-only gateway credentials remain
+outside application JavaScript. The application uses native DOM, events,
+modules, Workers, Canvas, WebGL, WASM, and origin-local cache storage.
+Privileged calls retain the same permission and execution contract.
 
-Bridge v5 uses one closed render budget: 512 KiB of canonical JSON per message,
-1,024 operations per atomic patch, 4,096 rendered nodes, and 32,768 JSON
-structural nodes. The schema generates the matching SDK, renderer, package
-validator, and performance-harness constants; no layer carries an independent
-limit.
+PluginPlatformClient.openSurfaceInSlot owns replacement and teardown. Opening
+is bounded independently of layout or paint. Async lifecycle observers receive
+a bounded close opportunity; revocation and expired leases close authority.
+Application interaction observations describe placement/focus intent only and
+cannot authorize capabilities. Each file export receives a host decision.
 
-The renderer owns a private liveness channel to the plugin worker. It sends a
-ping every 10 seconds and requires the matching pong within 5 seconds; timeout
-fails the surface closed. During disposal the parent sends a unique quiesce id,
-the plugin bridge awaits all async lifecycle observers, and the renderer returns
-an acknowledgement before teardown. The parent bounds that persistence window
-to 1.5 seconds before continuing revocation.
-
-Canvas and decoded-image resources are governed by the generated bridge render
-policy shared with Go package validation. A surface may transfer at most four
-canvases, each dimension is at most 4096 pixels, aggregate canvas area is at
-most 16,777,216 pixels, and pointer movement is capped at 120 events per second.
-PNG, JPEG, GIF, and WebP are identified from their bytes, independent of the
-package filename or declared MIME, and dimensions are read before decode. At
-most 32 images and 33,554,432 decoded pixels are allowed. The hardened worker
-cannot construct additional `OffscreenCanvas` values or call
-`createImageBitmap`. Form actions prevent native sandbox submission and emit
-one bounded typed payload even when a submit button contains nested visual
-elements.
-
-Lazy assets are addressed across the worker boundary by opaque `binding_id`
-values derived by the package builder and carried in the prepared surface
-document. The parent-side HTTP request contains that binding rather than a
-caller-selected path. The Go Host resolves the bound path and digest from the
-prepared-document cache keyed by active fingerprint, entry path, and entry
-digest, then revalidates path, size, content type, and package bytes before returning them to the trusted
-renderer.
+See docs/ui/plugin-surface-sdk.md for supported APIs, browser admission,
+resource policy, storage lifetimes, navigation limits, and the acceptance suite.
 
 ## Contracts
 
@@ -455,8 +407,8 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/release-revocation-pointer-v2.schema.json`;
 - `spec/plugin/token-ticket-v4.schema.json`;
 - `spec/plugin/bridge.schema.json`;
-- `spec/plugin/opaque-surface-document-v3.schema.json`;
-- `spec/plugin/opaque-surface-transport-v6.schema.json`;
+- `spec/plugin/web-surface-document.schema.json`;
+- `spec/plugin/web-surface-transport.schema.json`;
 - `spec/plugin/runtime-admission-v1.schema.json`;
 - `spec/plugin/process-containment-v1.schema.json`;
 - `spec/plugin/runtime-exec-journal-v1.schema.json`;

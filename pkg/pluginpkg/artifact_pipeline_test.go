@@ -310,7 +310,7 @@ func testAssetPackage(t *testing.T) Package {
 	t.Helper()
 	files := map[string][]byte{
 		"manifest.json":    []byte(validManifestJSON()),
-		"ui/index.html":    []byte("<!doctype html><title>Plugin</title><script type=\"text/redevplugin-worker\" src=\"assets/app.js\"></script>"),
+		"ui/index.html":    []byte("<!doctype html><title>Plugin</title><script type=\"module\" src=\"assets/app.js\"></script>"),
 		"ui/assets/app.js": []byte("void 0;"),
 	}
 	pkg, err := packageFromOwnedFiles(context.Background(), files, nil)

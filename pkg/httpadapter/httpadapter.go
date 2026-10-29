@@ -3,7 +3,6 @@ package httpadapter
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -531,12 +530,6 @@ type prepareSurfaceRequest struct {
 	AssetTicket string `json:"asset_ticket"`
 }
 
-type readSurfaceAssetRequest struct {
-	AssetSession   string `json:"asset_session"`
-	AssetSessionID string `json:"asset_session_id"`
-	BindingID      string `json:"binding_id"`
-}
-
 type rejectSurfaceConfirmationRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
 	BridgeChannelID  string `json:"bridge_channel_id"`
@@ -896,7 +889,6 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/session/revoke-scope", websecurity.RouteActionRevokeSessionScope, func(h *Handler) http.HandlerFunc { return h.handleRevokeSessionScope }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare", websecurity.RouteActionPrepareSurface, func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token", websecurity.RouteActionMintBridgeToken, func(h *Handler) http.HandlerFunc { return h.handleBridgeToken }),
-	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read", websecurity.RouteActionReadSurfaceAsset, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject", websecurity.RouteActionRejectSurfaceConfirmation, func(h *Handler) http.HandlerFunc { return h.handleRejectSurfaceConfirmation }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose", websecurity.RouteActionDisposeSurface, func(h *Handler) http.HandlerFunc { return h.handleDisposeSurface }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/rpc", websecurity.RouteActionCallPluginMethod, func(h *Handler) http.HandlerFunc { return h.handleRPC }),
@@ -1829,43 +1821,6 @@ func bridgeHandshake(handshake pluginBridgeHandshake) bridge.Handshake {
 		ManagementRevision: handshake.ManagementRevision,
 		RevokeEpoch:        handshake.RevokeEpoch,
 	}
-}
-
-func (h Handler) handleReadSurfaceAsset(w http.ResponseWriter, r *http.Request) {
-	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/assets/read")
-	if !ok {
-		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
-		return
-	}
-	var req readSurfaceAssetRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	result, err := h.host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
-		SurfaceInstanceID: surfaceInstanceID,
-		AssetSession:      req.AssetSession,
-		AssetSessionID:    req.AssetSessionID,
-		BindingID:         req.BindingID,
-	})
-	if err != nil {
-		code := errorCodeForAssetError(err)
-		writeJSON(w, httpStatusForAssetError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "surface.asset.read", code, err), Code: code})
-		return
-	}
-	if result.Session.SurfaceInstanceID != surfaceInstanceID {
-		code := errorCodeForAssetError(bridge.ErrTokenAudience)
-		writeJSON(w, http.StatusForbidden, errorResponse{OK: false, Message: publicPluginErrorMessage(code), Code: code})
-		return
-	}
-	contentType := result.Entry.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: surfaceAssetResponse{
-		Path: result.Entry.Path, SHA256: result.Entry.SHA256, ContentType: contentType,
-		ContentBase64: base64.StdEncoding.EncodeToString(result.Content),
-	}})
 }
 
 func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {

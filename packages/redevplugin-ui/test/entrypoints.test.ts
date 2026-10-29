@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as pluginEntrypoint from "../src/plugin.js";
-import * as jsxRuntimeEntrypoint from "../src/jsx-runtime.js";
 import * as rootEntrypoint from "../src/index.js";
 import * as trustedParentEntrypoint from "../src/trusted-parent.js";
 import type { RuntimeProcessFailureCode as RootRuntimeProcessFailureCode } from "../src/index.js";
-import type { PluginBridgeRequestOptions, PluginJSONObject, PluginUIVNode } from "../src/plugin.js";
+import type { PluginBridgeRequestOptions, PluginJSONObject } from "../src/plugin.js";
 import type {
   PluginCatalogResult,
   PluginDiagnosticDetails,
@@ -31,14 +30,9 @@ const pluginParams: PluginJSONObject = { ready: true };
 const pluginRequestOptions: PluginBridgeRequestOptions = { signal: new AbortController().signal };
 // @ts-expect-error capability effect is generated from the signed contract, not caller options
 const invalidPluginRequestOptions: PluginBridgeRequestOptions = { effect: "read" };
-const pluginTree: PluginUIVNode = { type: "text", key: "ready-text", text: "ready" };
-// @ts-expect-error raw string text nodes are not part of the v5 UI protocol
-const invalidPluginTree: PluginUIVNode = "ready";
 void pluginParams;
 void pluginRequestOptions;
 void invalidPluginRequestOptions;
-void pluginTree;
-void invalidPluginTree;
 void (null as unknown as ReDevPluginSurfaceTransport);
 
 // @ts-expect-error generated catalog lists require the plugins array
@@ -105,7 +99,7 @@ function assertTrustedSurfaceOrchestration(client: PluginPlatformClient, slot: P
 }
 void assertTrustedSurfaceOrchestration;
 
-test("plugin worker entrypoint exposes only bridge and generated capability client primitives", () => {
+test("Web application entrypoint exposes only bridge and generated capability client primitives", () => {
   assert.deepEqual(Object.keys(pluginEntrypoint), [
     "PluginBridgeClient",
     "PluginBridgeError",
@@ -126,10 +120,6 @@ test("plugin worker entrypoint exposes only bridge and generated capability clie
   ]) {
     assert.equal(forbidden in pluginEntrypoint, false);
   }
-});
-
-test("restricted JSX runtime exposes only VNode construction primitives", () => {
-  assert.deepEqual(Object.keys(jsxRuntimeEntrypoint).sort(), ["Fragment", "jsx", "jsxDEV", "jsxs"]);
 });
 
 test("root entrypoint is the trusted parent allowlist", () => {

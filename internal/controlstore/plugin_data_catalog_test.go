@@ -368,7 +368,7 @@ func freshPluginDataCatalogInstall(t *testing.T, ownerEnvHash, instanceID string
   "api": {"major": 1, "required_features": [], "optional_features": []},
   "permissions": [],
   "presentation": {"locales": {"default": "en-US"}},
-  "surfaces": [{"surface_id": "main", "kind": "view", "label": "Main", "entry": "ui/index.html"}],
+  "surfaces": [{"surface_id": "main", "kind": "view", "label": "Main", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}],
   "workers": [],
   "methods": []
 }`

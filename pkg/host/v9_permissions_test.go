@@ -204,7 +204,7 @@ func buildV9IOPermissionFixturePackage(t *testing.T) []byte {
   "api": {"major": 1, "required_features": ["io.stream.v1", "fs.environment.v1", "net.http.v1"], "optional_features": []},
   "permissions": ["fs.environment.read", "fs.environment.write", "network.client"],
   "presentation": {"locales": {"default": "en-US"}},
-  "surfaces": [{"surface_id": "io.view", "kind": "view", "label": "I/O", "entry": "ui/index.html"}],
+  "surfaces": [{"surface_id": "io.view", "kind": "view", "label": "I/O", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}],
   "workers": [{"worker_id": "io_worker", "artifact": "workers/io.wasm", "mode": "job", "scope": "environment", "memory_limit_bytes": 16777216}],
   "methods": [{"method": "io.run", "effect": "execute", "execution": "sync", "request_schema": {"type": "object", "additionalProperties": false}, "response_schema": {"type": "object", "additionalProperties": false}, "route": {"kind": "worker", "worker_id": "io_worker"}}]
 }`)

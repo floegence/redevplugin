@@ -513,6 +513,7 @@ type Config struct {
 	ExternalPackage *ExternalPackageModule
 	Process         *ProcessModule
 	Background      *BackgroundModule
+	Web             *WebModule
 }
 
 type internalStateOwnerOverrides struct {
@@ -571,7 +572,8 @@ type Host struct {
 	securityExporter     *observability.SecurityAuditExporter
 	securityExportMu     sync.Mutex
 	surfaceTokens        *bridge.SurfaceTokenService
-	surfaceDocuments     *surfaceDocumentCache
+	webSurfaces          *webSurfaceBindings
+	webOrigins           SurfaceOriginAdapter
 	surfaceGenerationID  string
 	lifecycleLocks       *pluginLifecycleLockRegistry
 	executions           *executionLeaseRegistry
@@ -837,11 +839,10 @@ type PrepareSurfaceRequest struct {
 	Now               time.Time `json:"-"`
 }
 
-type ReadSurfaceAssetRequest struct {
+type surfaceAssetSessionRequest struct {
 	SurfaceInstanceID string    `json:"surface_instance_id"`
 	AssetSession      string    `json:"asset_session"`
 	AssetSessionID    string    `json:"asset_session_id"`
-	BindingID         string    `json:"binding_id"`
 	Now               time.Time `json:"-"`
 }
 
@@ -874,7 +875,7 @@ type FinalizeSessionScopeRequest struct {
 	Identity sessionscope.TeardownIdentity `json:"-"`
 }
 
-type ReadSurfaceAssetResult struct {
+type WebSurfaceAsset struct {
 	Entry   pluginpkg.Entry
 	Content []byte
 	Session bridge.SurfaceSession
@@ -887,7 +888,7 @@ type ReadPluginIconResult struct {
 
 type PrepareSurfaceResult struct {
 	bridge.AssetSessionResult
-	Document pluginpkg.OpaqueSurfaceDocument `json:"document"`
+	Document WebSurfaceDocument `json:"document"`
 }
 
 type MintBridgeTokenRequest struct {
@@ -1489,7 +1490,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		features:             features,
 		securityJournal:      adapters.SecurityAudit,
 		surfaceTokens:        adapters.SurfaceTokens,
-		surfaceDocuments:     newSurfaceDocumentCache(defaultSurfaceDocumentCacheEntries, defaultSurfaceDocumentCacheBytes),
+		webSurfaces:          newWebSurfaceBindings(),
 		surfaceGenerationID:  surfaceGenerationID,
 		lifecycleLocks:       newPluginLifecycleLockRegistry(),
 		executions:           newExecutionLeaseRegistry(),
@@ -1506,6 +1507,9 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		runtimeIO:            runtimeIO,
 		processSupervisor:    adapters.ProcessSupervisor,
 		backgroundManager:    adapters.BackgroundManager,
+	}
+	if config.Web != nil {
+		host.webOrigins = config.Web.Origins
 	}
 	if config.Background != nil && host.backgroundManager == nil && config.Background.RunnerFactory != nil {
 		runner, err := config.Background.RunnerFactory(host)
@@ -1591,6 +1595,7 @@ func (h *Host) Close() error {
 	h.closeOnce.Do(func() {
 		h.lifecycleMu.Lock()
 		h.closed = true
+		h.removeWebSurfaces(func(*webSurfaceBinding) bool { return true })
 		if h.executions != nil {
 			h.executions.cancelAll(ErrHostClosed)
 		}
@@ -1933,7 +1938,7 @@ func (h *Host) PrepareSurface(ctx context.Context, req PrepareSurfaceRequest) (r
 			})
 		}
 	}()
-	assetRequest := ReadSurfaceAssetRequest{
+	assetRequest := surfaceAssetSessionRequest{
 		SurfaceInstanceID: req.SurfaceInstanceID,
 		AssetSession:      assetSession.AssetSession,
 		AssetSessionID:    assetSession.AssetSessionID,
@@ -1955,79 +1960,25 @@ func (h *Host) PrepareSurface(ctx context.Context, req PrepareSurfaceRequest) (r
 			Now:                  req.Now,
 		})
 	}
-	entry, err := h.readValidatedSurfaceAsset(ctx, validation, record, assetSession.EntryPath, assetSession.EntrySHA256)
-	if err != nil {
+	if _, err := h.readValidatedSurfaceAsset(ctx, validation, record, assetSession.EntryPath, assetSession.EntrySHA256); err != nil {
 		return PrepareSurfaceResult{}, err
 	}
-	if document, ok := h.surfaceDocuments.Get(entry.Session.ActiveFingerprint, assetSession.EntryPath, assetSession.EntrySHA256); ok {
-		if err := markPrepared(); err != nil {
-			return PrepareSurfaceResult{}, err
-		}
-		return PrepareSurfaceResult{AssetSessionResult: assetSession, Document: document}, nil
-	}
-	readAssets := map[string]pluginpkg.Asset{
-		assetSession.EntryPath: {Entry: entry.Entry, Content: entry.Content},
-	}
-	document, err := pluginpkg.BuildOpaqueSurfaceDocument(assetSession.EntryPath, func(assetPath string) (pluginpkg.Asset, error) {
-		if asset, ok := readAssets[assetPath]; ok {
-			return asset, nil
-		}
-		result, readErr := h.readValidatedSurfaceAsset(ctx, validation, record, assetPath, "")
-		if readErr != nil {
-			return pluginpkg.Asset{}, readErr
-		}
-		return pluginpkg.Asset{Entry: result.Entry, Content: result.Content}, nil
-	})
-	if err != nil {
-		return PrepareSurfaceResult{}, err
-	}
-	if document.EntrySHA256 != assetSession.EntrySHA256 {
+	surface, ok := manifestSurfaceByID(record.Manifest, validation.Session.SurfaceID)
+	if !ok {
 		return PrepareSurfaceResult{}, bridge.ErrTokenAudience
 	}
-	h.surfaceDocuments.Put(entry.Session.ActiveFingerprint, assetSession.EntryPath, assetSession.EntrySHA256, document)
+	document, err := h.prepareWebSurface(ctx, session, assetSession, validation, surface)
+	if err != nil {
+		return PrepareSurfaceResult{}, err
+	}
 	if err := markPrepared(); err != nil {
+		h.removeWebSurfaces(func(b *webSurfaceBinding) bool { return b.request.SurfaceInstanceID == req.SurfaceInstanceID })
 		return PrepareSurfaceResult{}, err
 	}
 	return PrepareSurfaceResult{AssetSessionResult: assetSession, Document: document}, nil
 }
 
-func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest) (ReadSurfaceAssetResult, error) {
-	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
-	req.AssetSessionID = strings.TrimSpace(req.AssetSessionID)
-	req.BindingID = strings.TrimSpace(req.BindingID)
-	if _, err := h.authorizeManagement(ctx, ManagementActionReadSurfaceAsset,
-		authorizationTarget(ResourceSurface, req.SurfaceInstanceID),
-		authorizationTarget(ResourceAssetSession, req.AssetSessionID),
-		authorizationTarget(ResourceSurfaceAsset, req.BindingID),
-	); err != nil {
-		return ReadSurfaceAssetResult{}, err
-	}
-	validation, record, err := h.validateSurfaceAssetSession(ctx, req)
-	if err != nil {
-		return ReadSurfaceAssetResult{}, err
-	}
-	document, ok := h.surfaceDocuments.Get(
-		validation.Session.ActiveFingerprint,
-		validation.Session.EntryPath,
-		validation.Session.EntrySHA256,
-	)
-	if !ok {
-		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
-	}
-	var binding *pluginpkg.OpaqueSurfaceAsset
-	for i := range document.Assets {
-		if document.Assets[i].BindingID == req.BindingID {
-			binding = &document.Assets[i]
-			break
-		}
-	}
-	if binding == nil {
-		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
-	}
-	return h.readValidatedSurfaceAsset(ctx, validation, record, binding.Path, binding.SHA256)
-}
-
-func (h *Host) validateSurfaceAssetSession(ctx context.Context, req ReadSurfaceAssetRequest) (bridge.AssetSessionValidation, registry.PluginRecord, error) {
+func (h *Host) validateSurfaceAssetSession(ctx context.Context, req surfaceAssetSessionRequest) (bridge.AssetSessionValidation, registry.PluginRecord, error) {
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, err
@@ -2066,17 +2017,17 @@ func (h *Host) validateSurfaceAssetSession(ctx context.Context, req ReadSurfaceA
 	return validation, record, nil
 }
 
-func (h *Host) readValidatedSurfaceAsset(ctx context.Context, validation bridge.AssetSessionValidation, record registry.PluginRecord, assetPath string, expectedSHA256 string) (ReadSurfaceAssetResult, error) {
+func (h *Host) readValidatedSurfaceAsset(ctx context.Context, validation bridge.AssetSessionValidation, record registry.PluginRecord, assetPath string, expectedSHA256 string) (WebSurfaceAsset, error) {
 	expectedEntry, ok := packageEntryByPath(record.PackageEntries, assetPath)
 	if !ok || strings.TrimSpace(expectedEntry.SHA256) == "" || expectedEntry.Size < 0 {
-		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
+		return WebSurfaceAsset{}, bridge.ErrTokenAudience
 	}
 	if expectedSHA256 != "" && expectedEntry.SHA256 != expectedSHA256 {
-		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
+		return WebSurfaceAsset{}, bridge.ErrTokenAudience
 	}
 	asset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, assetPath)
 	if err != nil {
-		return ReadSurfaceAssetResult{}, err
+		return WebSurfaceAsset{}, err
 	}
 	actualSHA256 := sha256.Sum256(asset.Content)
 	if asset.Entry.Path != expectedEntry.Path ||
@@ -2085,9 +2036,9 @@ func (h *Host) readValidatedSurfaceAsset(ctx context.Context, validation bridge.
 		asset.Entry.ContentType != expectedEntry.ContentType ||
 		int64(len(asset.Content)) != expectedEntry.Size ||
 		"sha256:"+hex.EncodeToString(actualSHA256[:]) != expectedEntry.SHA256 {
-		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
+		return WebSurfaceAsset{}, bridge.ErrTokenAudience
 	}
-	return ReadSurfaceAssetResult{
+	return WebSurfaceAsset{
 		Entry:   asset.Entry,
 		Content: asset.Content,
 		Session: validation.Session,
@@ -2115,6 +2066,9 @@ func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) er
 		SessionChannelIDHash: session.SessionChannelIDHash,
 		Now:                  req.Now,
 	})
+	if err == nil {
+		h.removeWebSurfaces(func(b *webSurfaceBinding) bool { return b.request.SurfaceInstanceID == req.SurfaceInstanceID })
+	}
 	return err
 }
 
@@ -2135,6 +2089,9 @@ func (h *Host) ReconcileSurfaceRevocation(ctx context.Context, req DisposeSurfac
 		OwnerSessionHash: session.OwnerSessionHash, OwnerUserHash: session.OwnerUserHash,
 		OwnerEnvHash: session.OwnerEnvHash, SessionChannelIDHash: session.SessionChannelIDHash, Now: req.Now,
 	})
+	if err == nil {
+		h.removeWebSurfaces(func(b *webSurfaceBinding) bool { return b.request.SurfaceInstanceID == req.SurfaceInstanceID })
+	}
 	return result, err
 }
 
@@ -2236,6 +2193,10 @@ func (h *Host) revokeAuthenticatedSessionScope(
 	if err != nil || bridgeResult != bridgePlan {
 		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
+	h.removeWebSurfaces(func(b *webSurfaceBinding) bool {
+		bound, err := b.owner.SessionScope()
+		return err == nil && bound == scope
+	})
 	confirmations, err := h.adapters.ConfirmationIntents.RevokeSessionConfirmationIntents(
 		teardownCtx,
 		security.RevokeSessionConfirmationIntentsRequest{
@@ -2437,6 +2398,8 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 		return bridge.GatewayTokenResult{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
+	h.webSurfaces.leaseMu.Lock()
+	defer h.webSurfaces.leaseMu.Unlock()
 	result, err = h.surfaceTokens.MintGatewayToken(bridge.MintGatewayTokenRequest{
 		Handshake:                 req.Handshake,
 		BridgeChannelID:           req.BridgeChannelID,
@@ -2447,6 +2410,7 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 	if err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
+	h.renewWebSurface(req.Handshake.SurfaceInstanceID, result)
 	return result, nil
 }
 
@@ -7902,6 +7866,9 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	if ownerEnvHash == "" {
 		return fmt.Errorf("%w: plugin owner environment is missing", ErrOwnerScopeMismatch)
 	}
+	h.removeWebSurfaces(func(b *webSurfaceBinding) bool {
+		return b.pluginInstanceID == record.PluginInstanceID && b.owner.OwnerEnvHash == record.OwnerEnvHash
+	})
 	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
 	var resultErr error
 	if h.processSupervisor != nil {

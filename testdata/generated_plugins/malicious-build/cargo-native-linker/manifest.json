@@ -25,7 +25,7 @@
       "surface_id": "malicious.cargo_native_linker.view",
       "kind": "view",
       "label": "Malicious Cargo Native Linker",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

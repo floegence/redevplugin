@@ -97,8 +97,8 @@ the same command shape.
 - OpenAPI/HTTP route/TypeScript SDK binding coverage, including release-reference
   install/update routes that keep official package bytes out of trusted browser
   requests;
-- generated opaque render-policy consistency across the bridge schema, Go
-  package builder, and TypeScript trusted renderer;
+- Web document/transport consistency across package validation, the Go
+  resource handler, browser bootstrap, and TypeScript SDK;
 - the platform release manifest schema, deterministic external-staging
   generator, and exact canonical contract set;
 - manifest, package signature, token/ticket, bridge, error-code, release
@@ -138,8 +138,8 @@ the same command shape.
 - TypeScript typecheck;
 - browser harness contract and smoke tests;
 - real runtime browser smoke through the Go Host library, HTTP adapter, Rust
-  runtime, opaque iframe, classic Dedicated Worker, parent-only asset/stream
-  transport, storage broker, and network broker.
+  runtime, isolated Web origins, native modules and Workers, resource leases,
+  parent-owned streams, storage broker, and network broker.
 
 ## Stress Gates
 
@@ -178,14 +178,14 @@ sink boundary.
 `--full`, and `--release`.
 
 - `--fast` runs deterministic admission, notification, backpressure, migration,
-  TypeScript type, and renderer reconciliation tests during focused development.
+  TypeScript type, and bridge lifecycle tests during focused development.
 - `--full` runs the real Go Host and Rust runtime, 32-way invocation and cache
   scenarios, blocking-hostcall isolation, queued and running cancellation, a
   bounded 10,000-frame IPC burst, indexed scheduler and module-cache stress,
   paired namespace/package/HTTP/authorization measurements, real
   Execution/Event snapshots, the fixed-capacity UDP limiter, 500 event waiters,
-  SQLite batch reads, Node reconciliation measurements, and a real
-  Chromium opaque-surface renderer measurement.
+  SQLite batch reads, and real Chromium Web application opening, native DOM
+  updates, and local reordering measurements.
 - `--smoke` executes every scenario and records actual measurements without
   enforcing absolute latency thresholds. It is used only by non-publishing
   bundle smoke tests.
@@ -277,53 +277,29 @@ The contracts npm package exposes one explicit root surface:
   strict decoders, and canonical signing helpers. It does not publish another
   contract registry or release index.
 
-The UI npm package exposes four deliberate import surfaces:
+The UI npm package exposes five deliberate import surfaces:
 
-- `@floegence/redevplugin-ui` is the trusted-parent default allowlist and is
-  equivalent to the explicit `/trusted-parent` entrypoint.
-- `@floegence/redevplugin-ui/trusted-parent` contains host-shell management,
-  surface ownership, transport, and policy clients. It does not export the
-  plugin worker bridge client or the internal bootstrap HTML factory.
-- `@floegence/redevplugin-ui/plugin` contains exactly six runtime exports for
-  untrusted plugin worker bundles: `PluginBridgeClient`, `PluginBridgeError`,
-  `callCapabilitySync`, `callCapabilityOperation`, `callCapabilityStream`, and
-  `isCapabilityBusinessError`. It cannot import management, surface-host,
-  transport, token, stream-decoder, or local-import APIs.
-- `@floegence/redevplugin-ui/local-import` contains the explicit dev/admin raw
-  package import client. Official release-reference product paths must not
-  import or bundle it.
+- The root and explicit /trusted-parent entrypoints contain host-shell
+  management, surface ownership, transport, and policy clients.
+- The /plugin entrypoint contains the ordinary Web application's bridge client,
+  capability helpers, process client, and plugin API identity. It does not
+  expose management, bearer tokens, or local package import.
+- The /local-import entrypoint contains the explicit dev/admin raw package
+  import client. Official release-reference product paths must not bundle it.
+- The /testing entrypoint contains the production bridge fixture, context
+  builder, and deterministic clock. Fixture results do not certify real Host
+  permission enforcement or WASM execution.
 
-The package verifier imports every packed entrypoint, requires this
-exact export set, checks the plugin runtime namespace, and scans the generated
-declarations for trusted-parent and bearer-token leakage. It also installs the
-packed contracts and UI tarballs into a standalone temporary consumer and runs
-`tsc --noEmit` without source aliases.
-The UI package uses one exact contracts dependency, while its root,
-`trusted-parent`, and `plugin` bundles are verified not to load contract bodies.
+The package verifier imports every packed entrypoint, checks the exact runtime
+export sets, and scans declarations for trusted-parent and bearer-token leakage.
+It installs the packed contracts and UI tarballs into a standalone consumer and
+runs TypeScript without source aliases. The clean UI build removes stale output
+before compiling, so removed UI renderers and platform-specific JSX entrypoints
+cannot survive in a published tarball.
 
-While the active v7 release-bundle verifier still exists, its unchanged v4
-`npm_package` field continues to describe the UI tarball. The exact-version
-contracts tarball is a bounded companion recorded by the existing closed
-`files` list and `SHA256SUMS`; the verifier validates both packages and installs
-them together offline. This is only a feature-branch transition to the v8
-package-only workflow, which removes the legacy bundle and v4 manifest rather
-than extending their wire format.
-
-The exact-main local gate builds synthetic package bytes and validates them in
-isolated consumer directories. Only the tagged release workflow publishes the
-immutable tag-derived identity. Registry readback remains independent of
-ambient checkout dependencies.
-
-Tagged release workflows publish both npm packages with the same version as the
-Git tag. Publish jobs receive only prebuilt, digest-pinned tarballs, declare
-job-local `id-token: write` permission for trusted publishing, and run without a
-checkout or repository scripts. If a version already exists, the job compares
-registry `dist.integrity` with the built tarball, downloads `dist.tarball`,
-recomputes SHA-512, reads the npm attestation endpoint, and validates the SLSA
-DSSE subject digest, repository, release workflow path/ref, tag, and source
-commit. A mismatch or missing provenance fails closed. Both immutable packing and registry publishing
-run with pinned `npm@11.18.0`, so tarball identity does not depend on the runner's
-ambient npm version.
+The UI package uses an exact contracts dependency. The platform release manifest
+binds both npm artifacts and their publication evidence at the single version
+in VERSION. No transitional or predecessor release-bundle contract is published.
 
 ## Package Publication
 

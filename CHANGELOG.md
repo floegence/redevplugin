@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.3.0
+
+- Expose a trusted-parent origin preparation adapter before child navigation, with aggregate opening deadlines, surface-lifetime cancellation, exact routing metadata, and no token or bootstrap override.
+- Replace the virtual-node surface contract with one ordinary Web application runtime. Remove custom JSX, UI patches, rendering proxies, retired asset routes, and legacy package exports. Existing plugin packages must rebuild for the current Web manifest.
+- Serve verified HTML, modules, styles, Workers, Canvas, WebGL, and WASM on independent per-container origins with one-use admission, source-bound ports, revocable resource leases, and browser-enforced outbound confinement. Unsupported browsers fail before application code executes.
+- Preserve native application routing and Unicode resources; bind each document reconnection to a fresh identity and reject overlapping or stale handshakes.
+- Add bounded unsaved-close negotiation and deterministic test clocks while keeping forced revocation independent of application confirmation.
+- Migrate all platform examples and author scaffolds to native DOM applications with published Floe styling, light/dark themes, and responsive interactions.
+- Validate packed SDK entrypoints in an independent consumer and cover real browser network receivers, lifecycle races, author workflows, and native application performance.
+
 ## v3.2.0
 
 - Add the explicit local author project contract and init/dev/test workflow with isolated real Host preview, bounded builds, immutable package updates, explicit grants, and process cleanup.

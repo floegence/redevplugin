@@ -175,7 +175,7 @@ func putCatalogPlugin(t *testing.T, store Store, instanceID string, now time.Tim
 			API:       manifest.PublicAPIRequirement{Major: manifest.PluginAPIMajor},
 			Presentation: manifest.PresentationSpec{DefaultLocale: "en-US", Summary: "Atomic", Description: []string{"Atomic"},
 				Keywords: []string{"atomic"}},
-			Surfaces: []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Atomic", Entry: "ui/index.html"}},
+			Surfaces: []manifest.SurfaceSpec{{SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Atomic", Entry: "ui/index.html", Web: manifest.SurfaceWebSpec{Root: "ui"}}},
 			Settings: &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{{Key: "theme", Type: "string", Scope: "user", Label: "Theme"}}},
 			Storage:  &manifest.StorageSpec{Stores: []manifest.StoreSpec{{StoreID: "files", Kind: "files", Scope: "user", QuotaBytes: 1024, QuotaFiles: &quotaFiles, SchemaVersion: 1}}},
 		},

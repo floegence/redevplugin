@@ -829,243 +829,6 @@ var sha256 = /* @__PURE__ */ createHasher(
   /* @__PURE__ */ oidNist(1)
 );
 
-// packages/redevplugin-ui/src/surface-integrity.gen.ts
-var surfaceIntegrityScript = '/* @noble/hashes 2.4.0\nThe MIT License (MIT)\n\nCopyright (c) 2022 Paul Miller (https://paulmillr.com)\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \u201CSoftware\u201D), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in\nall copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \u201CAS IS\u201D, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN\nTHE SOFTWARE.*/\nvar redevpluginIntegrity=(()=>{var w=Object.defineProperty;var k=Object.getOwnPropertyDescriptor;var M=Object.getOwnPropertyNames;var R=Object.prototype.hasOwnProperty;var N=(e,t)=>{for(var n in t)w(e,n,{get:t[n],enumerable:!0})},W=(e,t,n,r)=>{if(t&&typeof t=="object"||typeof t=="function")for(let o of M(t))!R.call(e,o)&&o!==n&&w(e,o,{get:()=>t[o],enumerable:!(r=k(t,o))||r.enumerable});return e};var I=e=>W(w({},"__esModule",{value:!0}),e);var q={};N(q,{sha256:()=>$});var K=e=>e/2**32|0,P=e=>e>>>0;function S(e,t,n,r){let o=K(n),c=P(n);e.setUint32(t,r?c:o,r),e.setUint32(t+4,r?o:c,r)}function _(e){return e instanceof Uint8Array||ArrayBuffer.isView(e)&&e.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in e&&e.BYTES_PER_ELEMENT===1}var m=e=>e?`"${e}" `:"";function X(e,t=""){if(typeof e!="number")throw new TypeError(m(t)+"expected number, got "+typeof e);if(!Number.isSafeInteger(e)||e<0)throw new RangeError(m(t)+"expected integer >= 0, got "+e);return e}function A(e,t,n=""){if(_(e)&&(t===void 0||e.length===t))return e;t!==void 0&&X(t,"length");let r=_(e),o=t!==void 0?` of length ${t}`:"",c=r?`length=${e.length}`:`type=${typeof e}`,f=m(n)+"expected Uint8Array"+o+", got "+c;throw r?new RangeError(f):new TypeError(f)}var J=(e,t)=>{if(e===null||typeof e!="object"||Array.isArray(e))throw new TypeError((t==="object"?"":`"${t}" `)+"expected object, got type="+typeof e)},T=(e,t)=>{J(e,t);let n=Object.getPrototypeOf(e);if(n!==Object.prototype&&n!==null)throw new TypeError(`"${t}" expected plain object`);if(Object.hasOwn(e,"__proto__"))throw new TypeError(`"${t}.__proto__" is not allowed`)};function E(e,t=!0){if(e.destroyed)throw new Error("hash was destroyed");if(t&&e.finished)throw new Error("digest() was already called")}function C(e,t){A(e,void 0,"output");let n=t.outputLen;if(!(e.length>=n))throw new RangeError(\'"output" expected length >= \'+n)}function H(...e){for(let t=0;t<e.length;t++)e[t].fill(0)}function p(e){return new DataView(e.buffer,e.byteOffset,e.byteLength)}function h(e,t){return e<<32-t|e>>>t}function Y(e,t,n="opts"){return T(e,"defaults"),t!==void 0&&T(t,n),Object.assign(Object.create(null),e,t)}function F(e,t={}){if(typeof e!="function")throw new TypeError(\'"hashCons" expected function, got type=\'+typeof e);t=Y({},t,"info");let n=(o,c)=>e(c).update(o).digest(),r=e(void 0);return n.outputLen=r.outputLen,n.blockLen=r.blockLen,n.canXOF=r.canXOF,n.create=o=>e(o),Object.assign(n,t),Object.freeze(n)}var D=e=>({oid:Uint8Array.from([6,9,96,134,72,1,101,3,4,2,e])});function O(e,t,n){return e&t^~e&n}function G(e,t,n){return e&t^e&n^t&n}var y=class{blockLen;outputLen;canXOF=!1;padOffset;isLE;buffer;view;finished=!1;length=0;pos=0;destroyed=!1;constructor(t,n,r,o){this.blockLen=t,this.outputLen=n,this.padOffset=r,this.isLE=o,this.buffer=new Uint8Array(t),this.view=p(this.buffer)}update(t){E(this),A(t);let{view:n,buffer:r,blockLen:o}=this,c=t.length,f=!1;for(let s=0;s<c;){let x=Math.min(o-this.pos,c-s);if(x===o){let a=p(t);for(;o<=c-s;s+=o)this.process(a,s);f=!0;continue}r.set(s===0&&x===c?t:t.subarray(s,s+x),this.pos),this.pos+=x,s+=x,this.pos===o&&(this.process(n,0),this.pos=0,f=!0)}return this.length+=t.length,f&&this.roundClean(),this}digestInto(t){E(this),C(t,this),this.finished=!0;let{buffer:n,view:r,blockLen:o,isLE:c}=this,{pos:f}=this;n[f++]=128,n.fill(0,f),this.padOffset>o-f&&(this.process(r,0),n.fill(0)),S(r,o-8,this.length*8,c),this.process(r,0),this.roundClean();let s=t===n?r:p(t),x=this.outputLen,a=x/4,d=this.get();if(x%4||a>d.length)throw new Error("invalid outputLen");for(let i=0;i<a;i++)s.setUint32(4*i,d[i],c)}digest(){let{buffer:t,outputLen:n}=this;this.digestInto(t);let r=t.slice(0,n);return this.destroy(),r}_cloneIntoMeta(t){let{buffer:n,length:r,finished:o,destroyed:c,pos:f}=this;return t.destroyed=c,t.finished=o,t.length=r,t.pos=f,f&&t.buffer.set(n),t}clone(){return this._cloneInto()}},j=Uint32Array.from([1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225]);var z=Uint32Array.from([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298]),u=new Uint32Array(64),L=class extends y{A=0;B=0;C=0;D=0;E=0;F=0;G=0;H=0;constructor(t,n){super(64,t,8,!1),this.A=n[0]|0,this.B=n[1]|0,this.C=n[2]|0,this.D=n[3]|0,this.E=n[4]|0,this.F=n[5]|0,this.G=n[6]|0,this.H=n[7]|0}get(){let{A:t,B:n,C:r,D:o,E:c,F:f,G:s,H:x}=this;return[t,n,r,o,c,f,s,x]}set(t,n,r,o,c,f,s,x){this.A=t|0,this.B=n|0,this.C=r|0,this.D=o|0,this.E=c|0,this.F=f|0,this.G=s|0,this.H=x|0}_cloneInto(t){return(t||=new this.constructor).set(...this.get()),this._cloneIntoMeta(t)}process(t,n){for(let i=0;i<16;i++,n+=4)u[i]=t.getUint32(n,!1);for(let i=16;i<64;i++){let l=u[i-15],b=u[i-2],U=h(l,7)^h(l,18)^l>>>3,g=h(b,17)^h(b,19)^b>>>10;u[i]=g+u[i-7]+U+u[i-16]|0}let{A:r,B:o,C:c,D:f,E:s,F:x,G:a,H:d}=this;for(let i=0;i<64;i++){let l=h(s,6)^h(s,11)^h(s,25),b=d+l+O(s,x,a)+z[i]+u[i]|0,g=(h(r,2)^h(r,13)^h(r,22))+G(r,o,c)|0;d=a,a=x,x=s,s=f+b|0,f=c,c=o,o=r,r=b+g|0}r=r+this.A|0,o=o+this.B|0,c=c+this.C|0,f=f+this.D|0,s=s+this.E|0,x=x+this.F|0,a=a+this.G|0,d=d+this.H|0,this.set(r,o,c,f,s,x,a,d)}roundClean(){H(u)}destroy(){this.destroyed=!0,this.set(0,0,0,0,0,0,0,0),H(this.buffer)}},B=class extends L{constructor(){super(32,j)}};var $=F(()=>new B,D(1));return I(q);})();\n';
-
-// packages/redevplugin-ui/src/opaque-surface-policy.gen.ts
-var opaqueSurfaceAllowedTags = [
-  "main",
-  "section",
-  "header",
-  "footer",
-  "nav",
-  "aside",
-  "article",
-  "div",
-  "span",
-  "p",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "h6",
-  "button",
-  "input",
-  "textarea",
-  "select",
-  "option",
-  "label",
-  "fieldset",
-  "legend",
-  "form",
-  "ul",
-  "ol",
-  "li",
-  "dl",
-  "dt",
-  "dd",
-  "table",
-  "thead",
-  "tbody",
-  "tfoot",
-  "tr",
-  "th",
-  "td",
-  "caption",
-  "details",
-  "summary",
-  "pre",
-  "code",
-  "kbd",
-  "samp",
-  "strong",
-  "em",
-  "small",
-  "mark",
-  "time",
-  "progress",
-  "meter",
-  "img",
-  "picture",
-  "source",
-  "audio",
-  "video",
-  "track",
-  "canvas"
-];
-var opaqueSurfaceGlobalAttributes = [
-  "id",
-  "class",
-  "role",
-  "title",
-  "hidden",
-  "tabindex",
-  "autofocus",
-  "lang",
-  "dir",
-  "data-redevplugin-action",
-  "data-redevplugin-escape-action",
-  "data-redevplugin-asset-binding",
-  "data-redevplugin-asset-attr"
-];
-var opaqueSurfaceTagAttributes = {
-  "button": [
-    "type",
-    "name",
-    "value",
-    "disabled",
-    "aria-pressed",
-    "aria-expanded"
-  ],
-  "input": [
-    "type",
-    "name",
-    "value",
-    "checked",
-    "disabled",
-    "readonly",
-    "required",
-    "placeholder",
-    "min",
-    "max",
-    "step",
-    "maxlength",
-    "autocomplete"
-  ],
-  "textarea": [
-    "name",
-    "value",
-    "disabled",
-    "readonly",
-    "required",
-    "placeholder",
-    "rows",
-    "cols",
-    "maxlength"
-  ],
-  "select": [
-    "name",
-    "disabled",
-    "required",
-    "multiple",
-    "size"
-  ],
-  "option": [
-    "value",
-    "selected",
-    "disabled",
-    "label"
-  ],
-  "label": [
-    "for"
-  ],
-  "form": [
-    "name",
-    "autocomplete"
-  ],
-  "th": [
-    "scope",
-    "colspan",
-    "rowspan"
-  ],
-  "td": [
-    "colspan",
-    "rowspan"
-  ],
-  "progress": [
-    "value",
-    "max"
-  ],
-  "meter": [
-    "value",
-    "min",
-    "max",
-    "low",
-    "high",
-    "optimum"
-  ],
-  "img": [
-    "alt",
-    "width",
-    "height",
-    "loading",
-    "decoding"
-  ],
-  "audio": [
-    "controls",
-    "autoplay",
-    "muted",
-    "loop",
-    "preload"
-  ],
-  "video": [
-    "controls",
-    "autoplay",
-    "muted",
-    "loop",
-    "preload",
-    "width",
-    "height",
-    "playsinline"
-  ],
-  "source": [
-    "type",
-    "media"
-  ],
-  "track": [
-    "kind",
-    "srclang",
-    "label",
-    "default"
-  ],
-  "time": [
-    "datetime"
-  ],
-  "canvas": [
-    "width",
-    "height",
-    "data-redevplugin-canvas"
-  ]
-};
-var opaqueSurfaceSafeInputTypes = [
-  "text",
-  "search",
-  "number",
-  "checkbox",
-  "radio",
-  "button",
-  "submit",
-  "reset"
-];
-var opaqueSurfaceCanvasContextTypes = [
-  "2d",
-  "webgl",
-  "webgl2"
-];
-var opaqueSurfaceRenderLimits = {
-  "max_message_bytes": 524288,
-  "max_in_flight_requests": 256,
-  "max_renders_per_second": 60,
-  "max_render_depth": 32,
-  "max_render_nodes": 4096,
-  "max_patch_operations": 1024,
-  "max_attributes_per_element": 64,
-  "max_text_length": 65536,
-  "max_attribute_value_length": 4096,
-  "max_form_fields": 128,
-  "max_keyboard_bindings": 128,
-  "max_canvas_count": 4,
-  "max_canvas_dimension": 4096,
-  "max_canvas_total_pixels": 16777216,
-  "max_canvas_pointer_events_per_second": 120,
-  "max_image_count": 32,
-  "max_image_dimension": 4096,
-  "max_image_total_pixels": 33554432,
-  "worker_heartbeat_interval_ms": 1e4,
-  "worker_heartbeat_timeout_ms": 5e3
-};
-
 // packages/redevplugin-ui/src/surface-scope.ts
 var scopes = /* @__PURE__ */ new WeakMap();
 function canonicalPluginInstanceId(pluginInstanceId) {
@@ -1129,25 +892,10 @@ async function invalidatePluginSurfaceScope(scope2) {
   if (failures.length > 1) throw new AggregateError(failures, "Plugin surface scope invalidation failed");
 }
 
-// packages/redevplugin-ui/src/ui-patch-validator.ts
-var keyPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
-var identifierPattern = new RegExp("^[A-Za-z0-9._:-]{1,128}$");
-var opaqueHandlePattern = new RegExp("^[A-Za-z0-9_-]{8,160}$");
-var allowedTags = new Set(opaqueSurfaceAllowedTags);
-var globalAttributes = new Set(opaqueSurfaceGlobalAttributes);
-var safeInputTypes = new Set(opaqueSurfaceSafeInputTypes);
-var tagAttributes = new Map(
-  Object.entries(opaqueSurfaceTagAttributes).map(([tag, attributes]) => [tag, new Set(attributes)])
-);
-
-// packages/redevplugin-ui/src/ui-reconciler.ts
-var maxPluginUIPatchOperations = opaqueSurfaceRenderLimits.max_patch_operations;
-
 // packages/redevplugin-ui/src/surface.ts
-var opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v3";
+var webSurfaceDocumentSchemaVersion = "redevplugin.web_surface.v1";
 var pluginSurfaceContextSchemaVersion = "redevplugin.surface_context.v1";
 var pluginSurfaceFileExportMaxBytes = 16 * 1024 * 1024;
-var pluginSurfaceFileExportActionWindowMs = 3e4;
 var pluginSurfaceFileExportMediaTypes = [
   "image/png",
   "image/jpeg",
@@ -1155,13 +903,9 @@ var pluginSurfaceFileExportMediaTypes = [
   "image/svg+xml",
   "text/plain"
 ];
-var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
 var maxPendingPluginBridgeRequests = 256;
-var maxPluginBridgeMessageBytes = opaqueSurfaceRenderLimits.max_message_bytes;
+var maxPluginBridgeMessageBytes = 1024 * 1024;
 var maxPluginJSONStructuralNodes = 32 * 1024;
-var maxOpaqueSurfaceLazyAssets = 128;
-var maxOpaqueSurfaceLazyBytes = 32 * 1024 * 1024;
-var maxConcurrentAssetReads = 4;
 var maxSurfaceQuiesceMs = 1500;
 var maxSurfaceInteractionEventsPerSecond = 120;
 var pluginBridgeErrorCodeSet = new Set(pluginBridgeErrorCodes);
@@ -1321,1899 +1065,35 @@ async function revokeSurfaceBootstrap(transport, bootstrap, timeoutMs, keepalive
     if (timer) clearTimeout(timer);
   }
 }
-function createOpaquePluginBootstrapHTML(options = {}) {
-  const scriptNonce = options.scriptNonce ?? randomOpaqueNonce();
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(scriptNonce)) {
-    throw new Error("scriptNonce must contain 8-128 URL-safe characters");
-  }
-  const csp = [
-    "default-src 'none'",
-    `script-src 'nonce-${scriptNonce}'`,
-    `style-src 'nonce-${scriptNonce}'`,
-    "img-src data: blob:",
-    "font-src data: blob:",
-    "media-src data: blob:",
-    "connect-src 'none'",
-    "frame-src 'none'",
-    "worker-src blob:",
-    "child-src blob:",
-    "form-action 'none'",
-    "base-uri 'none'",
-    "object-src 'none'",
-    "manifest-src 'none'"
-  ].join("; ");
-  const bootstrapScript = `(() => {
-  "use strict";
-  ${surfaceIntegrityScript}
-  const documentSchema = ${JSON.stringify(opaqueSurfaceDocumentSchemaVersion)};
-  const workerGlobalKey = ${JSON.stringify(opaquePluginBridgeGlobalKey)};
-  const scriptNonce = ${JSON.stringify(scriptNonce)};
-  const maxMessageBytes = ${opaqueSurfaceRenderLimits.max_message_bytes};
-  const maxInFlightRequests = ${opaqueSurfaceRenderLimits.max_in_flight_requests};
-  const maxRendersPerSecond = ${opaqueSurfaceRenderLimits.max_renders_per_second};
-  const maxRenderDepth = ${opaqueSurfaceRenderLimits.max_render_depth};
-  const maxRenderNodes = ${opaqueSurfaceRenderLimits.max_render_nodes};
-  const maxPatchOperations = ${opaqueSurfaceRenderLimits.max_patch_operations};
-  const maxAttributesPerElement = ${opaqueSurfaceRenderLimits.max_attributes_per_element};
-  const maxTextLength = ${opaqueSurfaceRenderLimits.max_text_length};
-  const maxAttributeValueLength = ${opaqueSurfaceRenderLimits.max_attribute_value_length};
-  const maxFormFields = ${opaqueSurfaceRenderLimits.max_form_fields};
-  const maxKeyboardBindings = ${opaqueSurfaceRenderLimits.max_keyboard_bindings};
-  const maxCanvasCount = ${opaqueSurfaceRenderLimits.max_canvas_count};
-  const maxCanvasDimension = ${opaqueSurfaceRenderLimits.max_canvas_dimension};
-  const maxCanvasTotalPixels = ${opaqueSurfaceRenderLimits.max_canvas_total_pixels};
-  const maxCanvasPointerEventsPerSecond = ${opaqueSurfaceRenderLimits.max_canvas_pointer_events_per_second};
-  const maxImageCount = ${opaqueSurfaceRenderLimits.max_image_count};
-  const maxImageDimension = ${opaqueSurfaceRenderLimits.max_image_dimension};
-  const maxImageTotalPixels = ${opaqueSurfaceRenderLimits.max_image_total_pixels};
-  const maxFileExportBytes = ${pluginSurfaceFileExportMaxBytes};
-  const fileExportActionWindowMs = ${pluginSurfaceFileExportActionWindowMs};
-  const fileExportMediaTypes = new Set(${JSON.stringify(pluginSurfaceFileExportMediaTypes)});
-  const workerHeartbeatIntervalMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_interval_ms};
-  const workerHeartbeatTimeoutMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_timeout_ms};
-  const rendererCommitFallbackMs = 100;
-  const maxCriticalDocumentBytes = ${8 * 1024 * 1024};
-  const maxPrivateAssetBase64Length = ${Math.ceil(32 * 1024 * 1024 / 3) * 4};
-  const maxLazyAssetCount = ${maxOpaqueSurfaceLazyAssets};
-  const maxLazyAssetBytes = ${maxOpaqueSurfaceLazyBytes};
-  const maxConcurrentAssetReads = ${maxConcurrentAssetReads};
-  const allowedTags = new Set(${JSON.stringify(opaqueSurfaceAllowedTags)});
-  const globalAttributes = new Set(${JSON.stringify(opaqueSurfaceGlobalAttributes)});
-  const tagAttributes = Object.freeze(Object.fromEntries(
-    Object.entries(${JSON.stringify(opaqueSurfaceTagAttributes)}).map(([tag, attributes]) => [tag, new Set(attributes)])
-  ));
-  const safeInputTypes = new Set(${JSON.stringify(opaqueSurfaceSafeInputTypes)});
-  const exactKeys = (value, keys) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-    const actual = Object.keys(value).sort();
-    const expected = [...keys].sort();
-    return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
-  };
-  const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-  const canonicalJSON = (value, depth = 0, state = { nodes: 0 }, seen = new Set()) => {
-    state.nodes += 1;
-    if (state.nodes > ${maxPluginJSONStructuralNodes} || depth > 64) return false;
-    if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-    if (typeof value === "number") return Number.isFinite(value);
-    if (typeof value !== "object" || seen.has(value)) return false;
-    seen.add(value);
-    if (Array.isArray(value)) {
-      const valid = value.every((item) => canonicalJSON(item, depth + 1, state, seen));
-      seen.delete(value);
-      return valid;
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    const keys = Reflect.ownKeys(value);
-    if (keys.some((key) => typeof key !== "string")) return false;
-    for (const key of keys) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (!descriptor || !descriptor.enumerable || !("value" in descriptor) || !canonicalJSON(descriptor.value, depth + 1, state, seen)) return false;
-    }
-    seen.delete(value);
-    return true;
-  };
-  const withinLimit = (value) => {
-    try { return canonicalJSON(value) && new TextEncoder().encode(JSON.stringify(value)).byteLength <= maxMessageBytes; }
-    catch { return false; }
-  };
-  const validIdentifier = (value) => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
-  const validResourceIdentifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
-  const validOpaqueHandle = (value, prefix) => typeof value === "string" && value.startsWith(prefix + "_") && /^[A-Za-z0-9_-]{8,160}$/.test(value);
-  const validDigest = (value) => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
-  const validPath = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 && !value.startsWith("/") && !value.includes("\\\\") && !value.split("/").some((part) => !part || part === "." || part === "..");
-  const validFileExportName = (value) => {
-    if (typeof value !== "string" || value.length === 0 || value.length > 128 || value.trim() !== value || value === "." || value === ".." || new TextEncoder().encode(value).byteLength > 255) return false;
-    for (let index = 0; index < value.length; index += 1) {
-      const code = value.charCodeAt(index);
-      if (code < 32 || code === 47 || code === 92 || code === 127) return false;
-    }
-    return true;
-  };
-  const validWorkerFileExport = (value) => exactKeys(value, ["type", "id", "file_name", "media_type", "content"]) &&
-    value.type === "redevplugin.ui.file.export" && typeof value.id === "string" && validFileExportName(value.file_name) &&
-    fileExportMediaTypes.has(value.media_type) && value.content instanceof ArrayBuffer &&
-    value.content.byteLength > 0 && value.content.byteLength <= maxFileExportBytes;
-  const validAttribute = (tag, name, value) => {
-    const lower = name.toLowerCase();
-    if (lower.startsWith("on") || lower === "style" || lower === "src" || lower === "srcset" || lower === "href" || lower === "srcdoc" || lower === "action" || lower === "formaction") return false;
-    if (!globalAttributes.has(lower) && !lower.startsWith("aria-") && !(tagAttributes[tag] && tagAttributes[tag].has(lower))) return false;
-    if (!["string", "number", "boolean"].includes(typeof value)) return false;
-    if (lower === "data-redevplugin-action" && !validIdentifier(String(value))) return false;
-    if (lower === "data-redevplugin-escape-action" && !validIdentifier(String(value))) return false;
-    if (lower === "data-redevplugin-asset-binding" && !validOpaqueHandle(String(value), "asset")) return false;
-    if (lower === "data-redevplugin-asset-attr" && !["src", "poster"].includes(String(value))) return false;
-    if (lower === "data-redevplugin-canvas" && (tag !== "canvas" || !validResourceIdentifier(String(value)))) return false;
-    if (lower === "maxlength" && (!/^(0|[1-9][0-9]*)$/.test(String(value)) || !Number.isSafeInteger(Number(value)))) return false;
-    if (tag === "canvas" && (lower === "width" || lower === "height") && (!/^[1-9][0-9]{0,4}$/.test(String(value)) || Number(value) > maxCanvasDimension)) return false;
-    if (tag === "input" && lower === "type" && !safeInputTypes.has(String(value).trim().toLowerCase() || "text")) return false;
-    return String(value).length <= maxAttributeValueLength;
-  };
-  const validateDOMTree = (root) => {
-    let nodes = 0;
-    const walk = (node, depth) => {
-      nodes += 1;
-      if (nodes > maxRenderNodes || depth > maxRenderDepth) return false;
-      if (node.nodeType === Node.TEXT_NODE) return (node.nodeValue || "").length <= maxTextLength;
-      if (node.nodeType !== Node.ELEMENT_NODE) return false;
-      const tag = node.tagName.toLowerCase();
-      if (!allowedTags.has(tag)) return false;
-      for (const attr of node.attributes) {
-        if (!validAttribute(tag, attr.name, attr.value)) return false;
-      }
-      for (const child of node.childNodes) if (!walk(child, depth + 1)) return false;
-      return true;
-    };
-    for (const child of root.childNodes) if (!walk(child, 1)) return false;
-    return true;
-  };
-  const validStyle = (value) => exactKeys(value, ["path", "sha256", "content"]) && validPath(value.path) && validDigest(value.sha256) && typeof value.content === "string" && value.content.length <= 2097152;
-  const validWorker = (value) => exactKeys(value, ["path", "sha256", "type", "content"]) && validPath(value.path) && validDigest(value.sha256) && value.type === "classic" && typeof value.content === "string" && value.content.length <= 4194304;
-  const validAsset = (value) => exactKeys(value, ["binding_id", "logical_ids", "path", "sha256", "size", "content_type"]) && validOpaqueHandle(value.binding_id, "asset") && Array.isArray(value.logical_ids) && value.logical_ids.length > 0 && value.logical_ids.length <= 16 && value.logical_ids.every(validResourceIdentifier) && new Set(value.logical_ids).size === value.logical_ids.length && validPath(value.path) && validDigest(value.sha256) && Number.isSafeInteger(value.size) && value.size >= 0 && value.size <= maxLazyAssetBytes && typeof value.content_type === "string" && value.content_type.length > 0 && value.content_type.length <= 256;
-  const validDocument = (value) => isRecord(value) && Object.keys(value).every((key) => ["schema_version", "entry_path", "entry_sha256", "title", "language", "direction", "body_html", "styles", "worker", "assets", "critical_bytes"].includes(key)) && value.schema_version === documentSchema && validPath(value.entry_path) && validDigest(value.entry_sha256) && (value.title === undefined || (typeof value.title === "string" && value.title.length <= 256)) && (value.language === undefined || (typeof value.language === "string" && value.language.length <= 64)) && (value.direction === undefined || ["ltr", "rtl", "auto"].includes(value.direction)) && typeof value.body_html === "string" && value.body_html.length <= 4194304 && Array.isArray(value.styles) && value.styles.every(validStyle) && validWorker(value.worker) && Array.isArray(value.assets) && value.assets.length <= maxLazyAssetCount && value.assets.every(validAsset) && new Set(value.assets.map((asset) => asset.binding_id)).size === value.assets.length && new Set(value.assets.map((asset) => asset.path)).size === value.assets.length && new Set(value.assets.flatMap((asset) => asset.logical_ids)).size === value.assets.reduce((total, asset) => total + asset.logical_ids.length, 0) && value.assets.reduce((total, asset) => total + asset.size, 0) <= maxLazyAssetBytes && Number.isSafeInteger(value.critical_bytes) && value.critical_bytes >= 0 && value.critical_bytes <= maxCriticalDocumentBytes;
-  const contextColorKeys = ["canvas", "surface", "surface_elevated", "text", "text_muted", "border", "accent", "accent_text", "success", "warning", "danger", "focus"];
-  const validContextColor = (value) => typeof value === "string" && /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(value);
-  const validSurfaceContext = (value) => {
-    if (!isRecord(value) || !exactKeys(value, ["schema_version", "revision", "appearance", "locale"]) || value.schema_version !== "redevplugin.surface_context.v1" || !Number.isSafeInteger(value.revision) || value.revision < 1) return false;
-    if (!isRecord(value.appearance) || !exactKeys(value.appearance, ["color_scheme", "colors"]) || !["light", "dark"].includes(value.appearance.color_scheme) || !isRecord(value.appearance.colors) || !exactKeys(value.appearance.colors, contextColorKeys) || contextColorKeys.some((key) => !validContextColor(value.appearance.colors[key]))) return false;
-    if (!isRecord(value.locale) || !exactKeys(value.locale, ["language_tag", "direction"]) || typeof value.locale.language_tag !== "string" || value.locale.language_tag.length < 2 || value.locale.language_tag.length > 64 || !["ltr", "rtl"].includes(value.locale.direction)) return false;
-    try { if (typeof Intl !== "undefined" && Intl.getCanonicalLocales(value.locale.language_tag).length !== 1) return false; } catch { return false; }
-    return true;
-  };
-  let accepted = false;
-  let initialized = false;
-  let parentPort;
-  let worker;
-  let workerControlPort;
-  let workerPort;
-  let frameGenerationID = "";
-  let surfaceHandle = "";
-  let currentDocument;
-  let currentContext;
-  let workerReady = false;
-  let workerHeartbeatSequence = 0;
-  let workerHeartbeatPendingID;
-  let workerHeartbeatTimer;
-  let workerHeartbeatTimeout;
-  let pendingQuiesceID;
-  let pendingFileExportAction;
-  let runtimeDisposed = false;
-  const pendingWorkerRequests = new Set();
-  const pendingRendererCommits = new Set();
-  const requestSequence = { rpc: 0, execution: 0, render: 0, canvas: 0, asset: 0, keyboard: 0, file: 0 };
-  let executionQuerySurfaceTokens = 8;
-  let executionQuerySurfaceRefillAt = performance.now();
-  const executionQueryStateIdleMS = 120000;
-  let executionQueryNextPruneAt = performance.now() + 30000;
-  const maxExecutionQueryStates = 1024;
-  const executionQueryStates = new Map();
-  const executionQueryRequests = new Map();
-  let renderWindowStartedAt = 0;
-  let renderCount = 0;
-  let uiRevision = 0;
-  let uiGraph = new Map();
-  let uiNodes = new Map();
-  const controlEdits = new Map();
-  let keyboardBindings = [];
-  let lastAutofocusIdentity = "";
-  const pendingAssets = new Map();
-  const queuedAssets = [];
-  let activeAssetReads = 0;
-  let assetSequence = 0;
-  const blobURLs = new Set();
-  const assetByLogicalID = new Map();
-  const verifiedAssetBytes = new Map();
-  const imageAssetDimensions = new Map();
-  const imageAssetTypes = new Map();
-  const pendingImageRequests = new Map();
-  const activeImageDecodes = new Set();
-  const imageReservations = new Map();
-  let retainedImageCount = 0;
-  let retainedImagePixels = 0;
-  const canvasRuntimes = new Map();
-
-  const keyboardTarget = (target) => {
-    const origin = target instanceof Element ? target : document.activeElement instanceof Element ? document.activeElement : null;
-    const keyed = origin?.closest("[data-redevplugin-key]");
-    const key = keyed?.getAttribute("data-redevplugin-key");
-    const targetKey = validResourceIdentifier(key) ? key : null;
-    const control = origin?.closest("canvas, input, textarea, select, button");
-    if (!control) return { targetKey, targetKind: "surface" };
-    const tag = control.tagName.toLowerCase();
-    if (tag === "canvas") return { targetKey, targetKind: "canvas" };
-    if (tag === "textarea") return { targetKey, targetKind: "editable" };
-    if (tag === "input" && ["text", "search", "number"].includes((control.getAttribute("type") || "text").toLowerCase())) {
-      return { targetKey, targetKind: "editable" };
-    }
-    return { targetKey, targetKind: "control" };
-  };
-  const handleSurfaceKeyboard = (event) => {
-    if (!initialized || runtimeDisposed || pendingQuiesceID || !workerPort || !["keydown", "keyup"].includes(event.type)) return;
-    const target = keyboardTarget(event.target);
-    const edit = target.targetKey === null ? undefined : controlEdits.get(target.targetKey);
-    const isComposing = Boolean(event.isComposing || edit?.isComposing);
-    const binding = isComposing ? undefined : keyboardBindings.find((candidate) =>
-      candidate.event === event.type && candidate.code === String(event.code || "") &&
-      candidate.repeat === Boolean(event.repeat) && candidate.alt_key === Boolean(event.altKey) &&
-      candidate.ctrl_key === Boolean(event.ctrlKey) && candidate.meta_key === Boolean(event.metaKey) &&
-      candidate.shift_key === Boolean(event.shiftKey) && candidate.target_key === target.targetKey &&
-      candidate.target_kind === target.targetKind
-    );
-    if (binding) event.preventDefault();
-    sendWorker({
-      type: "redevplugin.ui.keyboard.input",
-      event: {
-        event: event.type,
-        code: String(event.code || "").slice(0, 64),
-        key: String(event.key || "").slice(0, 64),
-        repeat: Boolean(event.repeat),
-        alt_key: Boolean(event.altKey),
-        ctrl_key: Boolean(event.ctrlKey),
-        meta_key: Boolean(event.metaKey),
-        shift_key: Boolean(event.shiftKey),
-        is_composing: isComposing,
-        target_key: target.targetKey,
-        target_kind: target.targetKind,
-        default_prevented: Boolean(event.defaultPrevented),
-        binding_id: binding?.binding_id || null,
-      },
-    });
-  };
-  for (const eventType of ["keydown", "keyup"]) document.addEventListener(eventType, handleSurfaceKeyboard, true);
-
-  const sendParent = (message) => {
-    if (parentPort && withinLimit(message)) parentPort.postMessage(message);
-  };
-  const sendParentTransfer = (message, transfer) => {
-    if (parentPort) parentPort.postMessage(message, transfer);
-  };
-  let interactionSequence = 0;
-  const interactionTargetKey = (target) => {
-    const element = target instanceof Element ? target.closest("[data-redevplugin-key]") : null;
-    const key = element?.getAttribute("data-redevplugin-key");
-    return validResourceIdentifier(key) ? key : null;
-  };
-  const ownsLocalScroll = (event) => {
-    const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
-    for (const candidate of path) {
-      if (!(candidate instanceof Element)) continue;
-      if (candidate === document.scrollingElement &&
-          (candidate.scrollHeight > candidate.clientHeight || candidate.scrollWidth > candidate.clientWidth)) return true;
-      const style = getComputedStyle(candidate);
-      const vertical = /(auto|scroll|overlay)/.test(style.overflowY) && candidate.scrollHeight > candidate.clientHeight;
-      const horizontal = /(auto|scroll|overlay)/.test(style.overflowX) && candidate.scrollWidth > candidate.clientWidth;
-      if (vertical || horizontal) return true;
-    }
-    return false;
-  };
-  const sendInteraction = (kind, target, options = {}) => {
-    if (!initialized || pendingQuiesceID) return 0;
-    interactionSequence += 1;
-    sendParent({
-      type: "redevplugin.surface.interaction",
-      frame_generation_id: frameGenerationID,
-      surface_handle: surfaceHandle,
-      sequence: interactionSequence,
-      kind,
-      target_key: interactionTargetKey(target),
-      action: options.action || null,
-      local_scroll: options.localScroll === true,
-      selection_active: options.selectionActive === true,
-    });
-    return interactionSequence;
-  };
-  document.addEventListener("pointerdown", (event) => sendInteraction("activation", event.target), true);
-  document.addEventListener("focusin", (event) => sendInteraction("focus", event.target), true);
-  const ownsCanvasWheel = (target) => {
-    const element = target instanceof Element ? target.closest("canvas[data-redevplugin-canvas]") : null;
-    const canvasID = element?.getAttribute("data-redevplugin-canvas");
-    return validResourceIdentifier(canvasID) && canvasRuntimes.has(canvasID);
-  };
-  document.addEventListener("wheel", (event) => sendInteraction("wheel", event.target, { localScroll: ownsCanvasWheel(event.target) || ownsLocalScroll(event) }), { capture: true, passive: true });
-  document.addEventListener("selectionchange", () => {
-    const selection = document.getSelection();
-    const target = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
-    sendInteraction("text-selection", target, { selectionActive: Boolean(selection && !selection.isCollapsed) });
-  });
-  const sendWorker = (message) => {
-    if (workerPort && withinLimit(message)) workerPort.postMessage(message);
-  };
-  const sendWorkerTransfer = (message, transfer) => {
-    if (workerPort) workerPort.postMessage(message, transfer);
-  };
-  const fail = (message) => {
-    document.documentElement.lang = "en";
-    document.body.replaceChildren();
-    const error = document.createElement("pre");
-    error.setAttribute("role", "alert");
-    error.textContent = "Plugin surface failed to initialize.";
-    document.body.append(error);
-    sendParent({ type: "redevplugin.surface.error", error: String(message).slice(0, 512) });
-    disposeRuntime();
-  };
-  const cancelPendingRendererCommits = () => {
-    for (const cancel of [...pendingRendererCommits]) cancel();
-  };
-  const disposeRuntime = () => {
-    if (runtimeDisposed) return;
-    runtimeDisposed = true;
-    cancelPendingRendererCommits();
-    if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
-    if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
-    workerHeartbeatTimer = undefined;
-    workerHeartbeatTimeout = undefined;
-    workerHeartbeatPendingID = undefined;
-    workerReady = false;
-    keyboardBindings = [];
-    for (const eventType of ["keydown", "keyup"]) document.removeEventListener(eventType, handleSurfaceKeyboard, true);
-    for (const runtime of canvasRuntimes.values()) runtime.dispose();
-    canvasRuntimes.clear();
-    if (workerControlPort) {
-      workerControlPort.close();
-      workerControlPort = undefined;
-    }
-    if (workerPort) {
-      try { workerPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "dispose" } }); } catch {}
-      workerPort.close();
-      workerPort = undefined;
-    }
-    if (worker) {
-      worker.terminate();
-      worker = undefined;
-    }
-    for (const url of blobURLs) URL.revokeObjectURL(url);
-    blobURLs.clear();
-    pendingWorkerRequests.clear();
-    executionQueryStates.clear();
-    executionQueryRequests.clear();
-    pendingAssets.clear();
-    queuedAssets.length = 0;
-    activeAssetReads = 0;
-    pendingImageRequests.clear();
-    activeImageDecodes.clear();
-    imageReservations.clear();
-    imageAssetDimensions.clear();
-    imageAssetTypes.clear();
-    retainedImageCount = 0;
-    retainedImagePixels = 0;
-    verifiedAssetBytes.clear();
-    assetByLogicalID.clear();
-  };
-  const terminateQuiescedWorker = () => {
-    cancelPendingRendererCommits();
-    for (const runtime of canvasRuntimes.values()) runtime.dispose();
-    canvasRuntimes.clear();
-    if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
-    if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
-    workerHeartbeatTimer = undefined;
-    workerHeartbeatTimeout = undefined;
-    workerHeartbeatPendingID = undefined;
-    workerReady = false;
-    if (workerControlPort) {
-      workerControlPort.close();
-      workerControlPort = undefined;
-    }
-    if (workerPort) {
-      workerPort.close();
-      workerPort = undefined;
-    }
-    if (worker) {
-      worker.terminate();
-      worker = undefined;
-    }
-    pendingWorkerRequests.clear();
-  };
-  const validateCanvasIdentifiers = (root) => {
-    const identifiers = new Set();
-    let totalPixels = 0;
-    for (const canvas of root.querySelectorAll("canvas[data-redevplugin-canvas]")) {
-      const identifier = canvas.getAttribute("data-redevplugin-canvas");
-      if (!validResourceIdentifier(identifier) || identifiers.has(identifier)) throw new Error("plugin canvas identifiers are invalid or ambiguous");
-      identifiers.add(identifier);
-      if (identifiers.size > maxCanvasCount) throw new Error("plugin document exceeds the canvas count limit");
-      const width = Number(canvas.getAttribute("width") || 300);
-      const height = Number(canvas.getAttribute("height") || 150);
-      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || width > maxCanvasDimension || height > maxCanvasDimension) {
-        throw new Error("plugin canvas dimensions are invalid");
-      }
-      totalPixels += width * height;
-      if (totalPixels > maxCanvasTotalPixels) throw new Error("plugin document exceeds the canvas pixel budget");
-    }
-  };
-  const applyStaticDocument = (surfaceDocument) => {
-    for (const asset of surfaceDocument.assets) {
-      for (const logicalID of asset.logical_ids) assetByLogicalID.set(logicalID, asset);
-    }
-    document.title = typeof surfaceDocument.title === "string" ? surfaceDocument.title.slice(0, 256) : "Plugin";
-    document.documentElement.lang = typeof surfaceDocument.language === "string" ? surfaceDocument.language.slice(0, 64) : "en";
-    if (["ltr", "rtl", "auto"].includes(surfaceDocument.direction)) document.documentElement.dir = surfaceDocument.direction;
-    const template = document.createElement("template");
-    template.innerHTML = surfaceDocument.body_html;
-    if (!validateDOMTree(template.content)) throw new Error("static plugin document failed renderer validation");
-    validateCanvasIdentifiers(template.content);
-    document.body.replaceChildren(template.content.cloneNode(true));
-    for (const styleAsset of surfaceDocument.styles) {
-      const style = document.createElement("style");
-      style.setAttribute("nonce", scriptNonce);
-      style.dataset.redevpluginAsset = styleAsset.path;
-      style.textContent = styleAsset.content;
-      document.head.append(style);
-    }
-  };
-  const applySurfaceContext = (context) => {
-    document.documentElement.lang = context.locale.language_tag;
-    document.documentElement.dir = context.locale.direction;
-    document.documentElement.style.colorScheme = context.appearance.color_scheme;
-    for (const [key, value] of Object.entries(context.appearance.colors)) document.documentElement.style.setProperty("--redevplugin-color-" + key.replaceAll("_", "-"), value);
-  };
-  const applyWorkerAttribute = (element, tag, name, attributeValue) => {
-    const lower = name.toLowerCase();
-    if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
-    if (lower === "value" && "value" in element) element.value = String(attributeValue);
-    if (lower === "checked" && "checked" in element) element.checked = attributeValue === true;
-    if (lower === "autofocus") {
-      if (attributeValue !== false) element.setAttribute("data-redevplugin-renderer-autofocus", "");
-      else element.removeAttribute("data-redevplugin-renderer-autofocus");
-      return;
-    }
-    if (typeof attributeValue === "boolean") {
-      const serialized = lower.startsWith("aria-") ? String(attributeValue) : "";
-      if (attributeValue || serialized) element.setAttribute(name, serialized);
-      else element.removeAttribute(name);
-      return;
-    }
-    element.setAttribute(name, String(attributeValue));
-  };
-  const buildWorkerSubtree = (value, state, depth, parentKey, graph = new Map(), nodes = new Map()) => {
-    state.nodes += 1;
-    if (state.nodes > maxRenderNodes || depth > maxRenderDepth || !isRecord(value) || typeof value.key !== "string" ||
-        !validResourceIdentifier(value.key) || graph.has(value.key)) {
-      throw new Error("plugin render tree exceeds limits or contains an invalid key");
-    }
-    if (value.type === "text") {
-      if (!exactKeys(value, ["type", "key", "text"]) || typeof value.text !== "string" || value.text.length > maxTextLength) {
-        throw new Error("plugin render text node is invalid");
-      }
-      const node = document.createTextNode(value.text);
-      graph.set(value.key, {
-        key: value.key,
-        type: "text",
-        text: value.text,
-        parentKey,
-        prevKey: null,
-        nextKey: null,
-        firstChildKey: null,
-        lastChildKey: null,
-        height: 1,
-        heightDirty: false,
-      });
-      nodes.set(value.key, node);
-      return { node, graph, nodes };
-    }
-    if (!Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) ||
-        value.type !== "element" || typeof value.tag !== "string") {
-      throw new Error("plugin render node is invalid");
-    }
-    const tag = value.tag.toLowerCase();
-    if (!allowedTags.has(tag)) throw new Error("plugin render tag is not allowed");
-    const attributes = {};
-    if (value.attributes !== undefined) {
-      if (!isRecord(value.attributes) || Object.keys(value.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
-      for (const [name, attributeValue] of Object.entries(value.attributes)) {
-        if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
-        attributes[name] = attributeValue;
-      }
-    }
-    if (value.children !== undefined && !Array.isArray(value.children)) throw new Error("plugin render children are invalid");
-    const element = document.createElement(tag);
-    element.setAttribute("data-redevplugin-key", value.key);
-    for (const [name, attributeValue] of Object.entries(attributes)) applyWorkerAttribute(element, tag, name, attributeValue);
-    const record = {
-      key: value.key,
-      type: "element",
-      tag,
-      attributes,
-      parentKey,
-      prevKey: null,
-      nextKey: null,
-      firstChildKey: null,
-      lastChildKey: null,
-      height: 1,
-      heightDirty: false,
-    };
-    graph.set(value.key, record);
-    nodes.set(value.key, element);
-    let previousKey = null;
-    for (const child of value.children || []) {
-      const built = buildWorkerSubtree(child, state, depth + 1, value.key, graph, nodes);
-      const childRecord = graph.get(child.key);
-      childRecord.prevKey = previousKey;
-      if (previousKey) graph.get(previousKey).nextKey = child.key;
-      else record.firstChildKey = child.key;
-      record.lastChildKey = child.key;
-      record.height = Math.max(record.height, childRecord.height + 1);
-      previousKey = child.key;
-      element.append(built.node);
-    }
-    return { node: element, graph, nodes };
-  };
-  const renderElementIdentity = (element) => ({
-    tag: element.tagName,
-    id: element.getAttribute("id") || "",
-    name: element.getAttribute("name") || "",
-    action: element.getAttribute("data-redevplugin-action") || "",
-    escapeAction: element.getAttribute("data-redevplugin-escape-action") || "",
-    ariaLabel: element.getAttribute("aria-label") || "",
-    value: element.tagName === "BUTTON" || element.tagName === "OPTION" ? element.getAttribute("value") || "" : "",
-  });
-  const sameRenderElementIdentity = (left, right) => left.tag === right.tag && left.id === right.id && left.name === right.name && left.action === right.action && left.escapeAction === right.escapeAction && left.ariaLabel === right.ariaLabel && left.value === right.value;
-  const captureRenderState = () => {
-    const active = document.activeElement instanceof Element && document.body.contains(document.activeElement) ? document.activeElement : undefined;
-    let selection;
-    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
-      selection = { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection };
-    }
-    return {
-      activeIdentity: active ? renderElementIdentity(active) : undefined,
-      selection,
-      activeScrollTop: active instanceof HTMLElement ? active.scrollTop : 0,
-      activeScrollLeft: active instanceof HTMLElement ? active.scrollLeft : 0,
-      documentScrollTop: document.documentElement.scrollTop,
-      documentScrollLeft: document.documentElement.scrollLeft,
-      bodyScrollTop: document.body.scrollTop,
-      bodyScrollLeft: document.body.scrollLeft,
-    };
-  };
-  const restoreRenderState = (snapshot) => {
-    const autofocus = document.body.querySelector("[data-redevplugin-renderer-autofocus]");
-    const autofocusIdentity = autofocus instanceof Element ? JSON.stringify(renderElementIdentity(autofocus)) : "";
-    if (autofocus instanceof Element) autofocus.removeAttribute("data-redevplugin-renderer-autofocus");
-    let target;
-    if (autofocus instanceof HTMLElement && !autofocus.hasAttribute("disabled") && autofocusIdentity !== lastAutofocusIdentity) {
-      target = autofocus;
-      lastAutofocusIdentity = autofocusIdentity;
-    } else {
-      if (!autofocusIdentity) lastAutofocusIdentity = "";
-      if (snapshot.activeIdentity) {
-        for (const candidate of document.body.querySelectorAll(snapshot.activeIdentity.tag.toLowerCase())) {
-          if (sameRenderElementIdentity(renderElementIdentity(candidate), snapshot.activeIdentity)) {
-            target = candidate;
-            break;
-          }
-        }
-      }
-    }
-    if (target instanceof HTMLElement && !target.hasAttribute("disabled")) {
-      try { target.focus({ preventScroll: true }); } catch { target.focus(); }
-      target.scrollTop = snapshot.activeScrollTop;
-      target.scrollLeft = snapshot.activeScrollLeft;
-      if (snapshot.selection && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
-        const length = target.value.length;
-        const start = Math.min(snapshot.selection.start ?? length, length);
-        const end = Math.min(snapshot.selection.end ?? start, length);
-        try { target.setSelectionRange(start, end, snapshot.selection.direction || "none"); } catch {}
-      }
-    }
-    document.documentElement.scrollTop = snapshot.documentScrollTop;
-    document.documentElement.scrollLeft = snapshot.documentScrollLeft;
-    document.body.scrollTop = snapshot.bodyScrollTop;
-    document.body.scrollLeft = snapshot.bodyScrollLeft;
-  };
-  const transferredCanvasKey = (key) => {
-    const element = uiNodes.get(key);
-    if (!(element instanceof HTMLCanvasElement)) return false;
-    for (const runtime of canvasRuntimes.values()) if (runtime.canvas === element) return true;
-    return false;
-  };
-  const editableControlAttribute = (tag, name) => {
-    const normalized = name.toLowerCase();
-    return (normalized === "value" && ["input", "textarea", "select", "option"].includes(tag)) ||
-      (normalized === "checked" && tag === "input");
-  };
-  const createGraphOverlay = (base) => {
-    const changed = new Map();
-    const deleted = new Set();
-    let count = base.size;
-    const get = (key) => changed.has(key) ? changed.get(key) : deleted.has(key) ? undefined : base.get(key);
-    const edit = (key) => {
-      const current = get(key);
-      if (!current) throw new Error("plugin UI patch target does not exist");
-      if (changed.has(key)) return current;
-      const copy = { ...current, ...(current.attributes ? { attributes: { ...current.attributes } } : {}) };
-      changed.set(key, copy);
-      return copy;
-    };
-    const add = (record) => {
-      if (get(record.key)) throw new Error("plugin UI insertion duplicates a key");
-      changed.set(record.key, { ...record, ...(record.attributes ? { attributes: { ...record.attributes } } : {}) });
-      count += 1;
-    };
-    const remove = (key) => {
-      if (!get(key)) throw new Error("plugin UI removal target does not exist");
-      changed.delete(key);
-      if (base.has(key)) deleted.add(key);
-      count -= 1;
-    };
-    const commit = () => {
-      for (const key of deleted) base.delete(key);
-      for (const [key, record] of changed) base.set(key, record);
-    };
-    return { get, edit, add, remove, commit, count: () => count };
-  };
-  const graphDepth = (graph, key) => {
-    let depth = 0;
-    let cursor = graph.get(key);
-    const seen = new Set();
-    while (cursor) {
-      if (seen.has(cursor.key)) throw new Error("plugin UI graph contains a cycle");
-      seen.add(cursor.key);
-      depth += 1;
-      cursor = cursor.parentKey ? graph.get(cursor.parentKey) : undefined;
-    }
-    return depth;
-  };
-  const graphSubtreeKeys = (graph, rootKey) => {
-    const keys = [];
-    const stack = [rootKey];
-    while (stack.length > 0) {
-      const key = stack.pop();
-      const record = key && graph.get(key);
-      if (!record) throw new Error("plugin UI graph is inconsistent");
-      keys.push(key);
-      const children = [];
-      let childKey = record.firstChildKey;
-      while (childKey) {
-        const child = graph.get(childKey);
-        if (!child || child.parentKey !== key) throw new Error("plugin UI child graph is inconsistent");
-        children.push(childKey);
-        childKey = child.nextKey;
-      }
-      stack.push(...children.reverse());
-    }
-    return keys;
-  };
-  const graphSubtreeHeight = (graph, rootKey) => {
-    const record = graph.get(rootKey);
-    if (!record) throw new Error("plugin UI graph is inconsistent");
-    if (!record.heightDirty) return record.height;
-    let height = 1;
-    let childKey = record.firstChildKey;
-    while (childKey) {
-      const child = graph.get(childKey);
-      if (!child || child.parentKey !== rootKey) throw new Error("plugin UI child graph is inconsistent");
-      height = Math.max(height, graphSubtreeHeight(graph, childKey) + 1);
-      childKey = child.nextKey;
-    }
-    const edited = graph.edit(rootKey);
-    edited.height = height;
-    edited.heightDirty = false;
-    return height;
-  };
-  const graphParentChainContains = (graph, rootKey, targetKey) => {
-    let cursor = graph.get(rootKey);
-    const seen = new Set();
-    while (cursor) {
-      if (cursor.key === targetKey) return true;
-      if (seen.has(cursor.key)) throw new Error("plugin UI graph contains a cycle");
-      seen.add(cursor.key);
-      cursor = cursor.parentKey ? graph.get(cursor.parentKey) : undefined;
-    }
-    return false;
-  };
-  const graphSubtreeHasTransferredCanvas = (graph, rootKey) => {
-    for (const runtime of canvasRuntimes.values()) {
-      const key = runtime.canvas.getAttribute("data-redevplugin-key");
-      if (!key) continue;
-      let cursor = graph.get(key);
-      const seen = new Set();
-      while (cursor) {
-        if (cursor.key === rootKey) return true;
-        if (seen.has(cursor.key)) throw new Error("plugin UI graph contains a cycle");
-        seen.add(cursor.key);
-        cursor = cursor.parentKey ? graph.get(cursor.parentKey) : undefined;
-      }
-    }
-    return false;
-  };
-  const markGraphHeightDirty = (graph, key) => {
-    let cursorKey = key;
-    const seen = new Set();
-    while (cursorKey) {
-      if (seen.has(cursorKey)) throw new Error("plugin UI graph contains a cycle");
-      seen.add(cursorKey);
-      const record = graph.edit(cursorKey);
-      record.heightDirty = true;
-      cursorKey = record.parentKey;
-    }
-  };
-  const detachGraphNode = (graph, key) => {
-    const record = graph.edit(key);
-    if (!record.parentKey) throw new Error("plugin UI root cannot be detached");
-    const parentKey = record.parentKey;
-    const parent = graph.edit(parentKey);
-    if (record.prevKey) graph.edit(record.prevKey).nextKey = record.nextKey;
-    else parent.firstChildKey = record.nextKey;
-    if (record.nextKey) graph.edit(record.nextKey).prevKey = record.prevKey;
-    else parent.lastChildKey = record.prevKey;
-    record.parentKey = undefined;
-    record.prevKey = null;
-    record.nextKey = null;
-    markGraphHeightDirty(graph, parentKey);
-  };
-  const attachGraphNode = (graph, key, parentKey, beforeKey) => {
-    const record = graph.edit(key);
-    const parent = graph.edit(parentKey);
-    if (parent.type !== "element" || record.parentKey) throw new Error("plugin UI insertion parent is invalid");
-    let previousKey = parent.lastChildKey;
-    if (beforeKey !== null) {
-      if (beforeKey === key) throw new Error("plugin UI anchor cannot target the moved node");
-      const before = graph.get(beforeKey);
-      if (!before || before.parentKey !== parentKey) throw new Error("plugin UI anchor is invalid");
-      previousKey = before.prevKey;
-      graph.edit(beforeKey).prevKey = key;
-    } else {
-      parent.lastChildKey = key;
-    }
-    if (previousKey) graph.edit(previousKey).nextKey = key;
-    else parent.firstChildKey = key;
-    record.parentKey = parentKey;
-    record.prevKey = previousKey;
-    record.nextKey = beforeKey;
-    if (beforeKey === null) parent.lastChildKey = key;
-    markGraphHeightDirty(graph, parentKey);
-  };
-  const validatePatch = (operations) => {
-    if (!Array.isArray(operations) || operations.length > maxPatchOperations) throw new Error("plugin UI patch exceeds limits");
-    const graph = createGraphOverlay(uiGraph);
-    const plan = [];
-    for (const operation of operations) {
-      if (!isRecord(operation) || typeof operation.type !== "string") throw new Error("plugin UI patch operation is invalid");
-      if (operation.type === "set_text") {
-        if (!exactKeys(operation, ["type", "target_key", "text"]) || !validResourceIdentifier(operation.target_key) ||
-            typeof operation.text !== "string" || operation.text.length > maxTextLength) throw new Error("plugin UI text patch is invalid");
-        const target = graph.edit(operation.target_key);
-        if (target.type !== "text") throw new Error("plugin UI text patch target is invalid");
-        target.text = operation.text;
-        plan.push(operation);
-      } else if (operation.type === "patch_attributes") {
-        if (!exactKeys(operation, ["type", "target_key", "set", "remove"]) || !validResourceIdentifier(operation.target_key) ||
-            !isRecord(operation.set) || Object.keys(operation.set).length > maxAttributesPerElement || !Array.isArray(operation.remove) ||
-            operation.remove.length > maxAttributesPerElement || new Set(operation.remove).size !== operation.remove.length ||
-            operation.remove.some((name) => typeof name !== "string")) throw new Error("plugin UI attribute patch is invalid");
-        const target = graph.edit(operation.target_key);
-        if (target.type !== "element" || transferredCanvasKey(target.key) || Object.keys(operation.set).some((name) => editableControlAttribute(target.tag, name)) ||
-            operation.remove.some((name) => editableControlAttribute(target.tag, name))) throw new Error("plugin UI attribute patch target is invalid");
-        target.attributes ||= {};
-        for (const [name, value] of Object.entries(operation.set)) {
-          if (!validAttribute(target.tag, name, value)) throw new Error("plugin UI attribute patch is not allowed");
-          target.attributes[name] = value;
-        }
-        for (const name of operation.remove) delete target.attributes[name];
-        plan.push(operation);
-      } else if (operation.type === "patch_control") {
-        if (!Object.keys(operation).every((key) => ["type", "target_key", "edit_revision", "value", "checked"].includes(key)) ||
-            !validResourceIdentifier(operation.target_key) || !Number.isSafeInteger(operation.edit_revision) || operation.edit_revision < 0 ||
-            (operation.value === undefined && operation.checked === undefined) ||
-            (operation.value !== undefined && operation.value !== null && typeof operation.value !== "string") ||
-            (operation.checked !== undefined && operation.checked !== null && typeof operation.checked !== "boolean")) throw new Error("plugin UI control patch is invalid");
-        const target = graph.edit(operation.target_key);
-        if (target.type !== "element" || !["input", "textarea", "select", "option"].includes(target.tag)) throw new Error("plugin UI control patch target is invalid");
-        target.attributes ||= {};
-        if (operation.value !== undefined) operation.value === null ? delete target.attributes.value : target.attributes.value = operation.value;
-        if (operation.checked !== undefined) operation.checked === null ? delete target.attributes.checked : target.attributes.checked = operation.checked;
-        plan.push(operation);
-      } else if (operation.type === "insert_child") {
-        if (!exactKeys(operation, ["type", "parent_key", "before_key", "node"]) || !validResourceIdentifier(operation.parent_key) ||
-            (operation.before_key !== null && !validResourceIdentifier(operation.before_key))) throw new Error("plugin UI insertion is invalid");
-        const parent = graph.get(operation.parent_key);
-        if (!parent || parent.type !== "element") throw new Error("plugin UI insertion target is invalid");
-        const state = { nodes: 0 };
-        const built = buildWorkerSubtree(operation.node, state, graphDepth(graph, operation.parent_key) + 1, undefined);
-        if (graph.count() + state.nodes > maxRenderNodes) throw new Error("plugin UI insertion exceeds node limits");
-        for (const record of built.graph.values()) graph.add(record);
-        attachGraphNode(graph, operation.node.key, operation.parent_key, operation.before_key);
-        plan.push({ ...operation, built });
-      } else if (operation.type === "remove_child") {
-        if (!exactKeys(operation, ["type", "target_key"]) || !validResourceIdentifier(operation.target_key)) throw new Error("plugin UI removal is invalid");
-        const target = graph.get(operation.target_key);
-        if (!target || !target.parentKey) throw new Error("plugin UI removal target is invalid");
-        if (graphSubtreeHasTransferredCanvas(graph, operation.target_key)) throw new Error("transferred canvas cannot be removed");
-        const removedKeys = graphSubtreeKeys(graph, operation.target_key);
-        detachGraphNode(graph, operation.target_key);
-        for (const key of removedKeys) graph.remove(key);
-        plan.push({ ...operation, removedKeys });
-      } else if (operation.type === "move_child") {
-        if (!exactKeys(operation, ["type", "target_key", "parent_key", "before_key"]) || !validResourceIdentifier(operation.target_key) ||
-            !validResourceIdentifier(operation.parent_key) || (operation.before_key !== null && !validResourceIdentifier(operation.before_key))) {
-          throw new Error("plugin UI move is invalid");
-        }
-        const target = graph.get(operation.target_key);
-        const parent = graph.get(operation.parent_key);
-        if (!target || !target.parentKey || !parent || parent.type !== "element" ||
-            graphParentChainContains(graph, operation.parent_key, operation.target_key) ||
-            graphSubtreeHasTransferredCanvas(graph, operation.target_key)) throw new Error("plugin UI move target is invalid");
-        if (graphDepth(graph, operation.parent_key) + graphSubtreeHeight(graph, operation.target_key) > maxRenderDepth) {
-          throw new Error("plugin UI move exceeds depth limits");
-        }
-        detachGraphNode(graph, operation.target_key);
-        attachGraphNode(graph, operation.target_key, operation.parent_key, operation.before_key);
-        plan.push(operation);
-      } else {
-        throw new Error("plugin UI patch operation type is unsupported");
-      }
-    }
-    return { graph, plan };
-  };
-  const applyPatchOperation = (operation) => {
-    const parent = operation.parent_key && uiNodes.get(operation.parent_key);
-    const target = operation.target_key && uiNodes.get(operation.target_key);
-    if (operation.type === "set_text") {
-      target.nodeValue = operation.text;
-    } else if (operation.type === "patch_attributes") {
-      for (const name of operation.remove) {
-        target.removeAttribute(name);
-        if (name.toLowerCase() === "autofocus") target.removeAttribute("data-redevplugin-renderer-autofocus");
-      }
-      for (const [name, value] of Object.entries(operation.set)) applyWorkerAttribute(target, target.tagName.toLowerCase(), name, value);
-    } else if (operation.type === "patch_control") {
-      const edit = controlEdits.get(operation.target_key) || { revision: 0, isComposing: false };
-      if (edit.revision !== operation.edit_revision || edit.isComposing) return;
-      if (operation.value !== undefined && "value" in target) target.value = operation.value === null ? "" : operation.value;
-      if (operation.checked !== undefined && "checked" in target) target.checked = operation.checked === true;
-    } else if (operation.type === "insert_child") {
-      const before = operation.before_key === null ? null : uiNodes.get(operation.before_key);
-      parent.insertBefore(operation.built.node, before || null);
-      for (const [key, node] of operation.built.nodes) uiNodes.set(key, node);
-    } else if (operation.type === "remove_child") {
-      for (const key of operation.removedKeys) uiNodes.delete(key);
-      target.remove();
-    } else if (operation.type === "move_child") {
-      const before = operation.before_key === null ? null : uiNodes.get(operation.before_key);
-      parent.insertBefore(target, before || null);
-    }
-  };
-  const commitOnRenderOpportunity = (commit) => new Promise((resolve, reject) => {
-    if (runtimeDisposed) return resolve(false);
-    let settled = false;
-    let frameID;
-    let fallbackTimer;
-    const finish = (shouldCommit) => {
-      if (settled) return;
-      settled = true;
-      if (frameID !== undefined) cancelAnimationFrame(frameID);
-      if (fallbackTimer !== undefined) clearTimeout(fallbackTimer);
-      pendingRendererCommits.delete(cancel);
-      if (!shouldCommit || runtimeDisposed) return resolve(false);
-      try { commit(); resolve(true); } catch (error) { reject(error); }
-    };
-    const cancel = () => finish(false);
-    pendingRendererCommits.add(cancel);
-    frameID = requestAnimationFrame(() => finish(true));
-    fallbackTimer = setTimeout(() => finish(true), rendererCommitFallbackMs);
-  });
-  const mountWorkerTree = async (tree) => {
-    if (uiRevision !== 0) throw new Error("plugin UI mount may only occur once");
-    const built = buildWorkerSubtree(tree, { nodes: 0 }, 1, undefined);
-    const root = built.node;
-    if (!(root instanceof Element)) throw new Error("plugin UI root must be an element");
-    validateCanvasIdentifiers(root);
-    const committed = await commitOnRenderOpportunity(() => {
-      const renderState = captureRenderState();
-      document.body.replaceChildren(root);
-      restoreRenderState(renderState);
-    });
-    if (!committed) return false;
-    uiGraph = built.graph;
-    uiNodes = built.nodes;
-    uiRevision = 1;
-    sendParent({ type: "redevplugin.surface.first_commit" });
-    return true;
-  };
-  const patchWorkerTree = async (baseRevision, revision, operations) => {
-    if (uiRevision < 1 || baseRevision !== uiRevision || revision !== baseRevision + 1) throw new Error("plugin UI patch revision is invalid");
-    const validated = validatePatch(operations);
-    const committed = await commitOnRenderOpportunity(() => {
-      const renderState = captureRenderState();
-      for (const operation of validated.plan) applyPatchOperation(operation);
-      validated.graph.commit();
-      restoreRenderState(renderState);
-    });
-    if (!committed) return false;
-    uiRevision = revision;
-    return true;
-  };
-  const actionPayload = (event, element, eventType = event.type) => {
-    const target = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : element;
-    const targetKey = target?.getAttribute("data-redevplugin-key") || element.getAttribute("data-redevplugin-key");
-    if (!validResourceIdentifier(targetKey)) throw new Error("plugin UI action target is invalid");
-    const edit = controlEdits.get(targetKey) || { revision: 0, isComposing: false };
-    if (eventType === "input" || eventType === "change") edit.revision += 1;
-    edit.isComposing = Boolean(event.isComposing || edit.isComposing);
-    controlEdits.set(targetKey, edit);
-    const payload = {
-      type: "redevplugin.ui.action",
-      action: element.getAttribute("data-redevplugin-action"),
-      event: eventType,
-      target_key: targetKey,
-      edit_revision: edit.revision,
-      is_composing: edit.isComposing,
-    };
-    const eventTarget = eventType === "click" && element.tagName === "BUTTON" ? element : event.target;
-    if (eventTarget && typeof eventTarget.value === "string") payload.value = eventTarget.value.slice(0, maxTextLength);
-    if (eventTarget && typeof eventTarget.checked === "boolean") payload.checked = eventTarget.checked;
-    if (eventType === "submit" && element.tagName === "FORM") {
-      const values = {};
-      let count = 0;
-      for (const [name, value] of new FormData(element)) {
-        if (typeof value !== "string" || !validIdentifier(name) || count >= maxFormFields) continue;
-        values[name] = value.slice(0, maxTextLength);
-        count += 1;
-      }
-      payload.form_data = values;
-    }
-    return payload;
-  };
-  document.addEventListener("compositionstart", (event) => {
-    const element = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : null;
-    const key = element?.getAttribute("data-redevplugin-key");
-    if (!validResourceIdentifier(key)) return;
-    const edit = controlEdits.get(key) || { revision: 0, isComposing: false };
-    edit.isComposing = true;
-    controlEdits.set(key, edit);
-  }, true);
-  document.addEventListener("compositionend", (event) => {
-    const element = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : null;
-    const key = element?.getAttribute("data-redevplugin-key");
-    if (!validResourceIdentifier(key)) return;
-    const edit = controlEdits.get(key) || { revision: 0, isComposing: true };
-    edit.isComposing = false;
-    controlEdits.set(key, edit);
-  }, true);
-  const handleAction = (event) => {
-    if (pendingQuiesceID) return;
-    if (!["click", "input", "change", "submit"].includes(event.type)) return;
-    const origin = event.target instanceof Element ? event.target : null;
-    const element = origin ? origin.closest("[data-redevplugin-action]") : null;
-    if (!element || !document.body.contains(element)) return;
-    if (element.tagName === "FORM" && event.type !== "submit") {
-      const submitButton = origin ? origin.closest("button") : null;
-      const buttonType = submitButton && element.contains(submitButton) ? (submitButton.getAttribute("type") || "submit").toLowerCase() : "";
-      if (event.type === "click" && buttonType === "submit") {
-        event.preventDefault();
-        const sequence = sendInteraction("action", event.target, { action: element.getAttribute("data-redevplugin-action") });
-        if (sequence > 0) pendingFileExportAction = { sequence, expires_at: performance.now() + fileExportActionWindowMs };
-        sendWorker(actionPayload(event, element, "submit"));
-      }
-      return;
-    }
-    if (event.type === "submit" || (event.type === "click" && element.tagName === "BUTTON")) event.preventDefault();
-    const action = element.getAttribute("data-redevplugin-action");
-    if (!validIdentifier(action)) return;
-    const sequence = sendInteraction("action", event.target, { action });
-    if (sequence > 0 && (event.type === "click" || event.type === "submit")) {
-      pendingFileExportAction = { sequence, expires_at: performance.now() + fileExportActionWindowMs };
-    }
-    sendWorker(actionPayload(event, element));
-  };
-  for (const eventType of ["click", "input", "change", "submit"]) document.addEventListener(eventType, handleAction, true);
-  const focusableModalElements = (modal) => Array.from(modal.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'))
-    .filter((element) => element instanceof HTMLElement && element.tabIndex >= 0 && element.getClientRects().length > 0);
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Tab" && !event.defaultPrevented && !event.repeat) {
-      const modal = document.body.querySelector('[role="dialog"][aria-modal="true"]');
-      if (modal instanceof HTMLElement) {
-        const focusable = focusableModalElements(modal);
-        if (focusable.length === 0) {
-          event.preventDefault();
-          return;
-        }
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        const active = document.activeElement;
-        const target = event.shiftKey
-          ? (active === first || !modal.contains(active) ? last : undefined)
-          : (active === last || !modal.contains(active) ? first : undefined);
-        if (target instanceof HTMLElement) {
-          event.preventDefault();
-          event.stopPropagation();
-          try { target.focus({ preventScroll: true }); } catch { target.focus(); }
-        }
-      }
-      return;
-    }
-    if (event.key !== "Escape" || event.defaultPrevented || event.repeat) return;
-    const origin = event.target instanceof Element ? event.target : document.activeElement instanceof Element ? document.activeElement : null;
-    const owner = origin ? origin.closest("[data-redevplugin-escape-action]") : null;
-    const action = owner?.getAttribute("data-redevplugin-escape-action");
-    if (!owner || !document.body.contains(owner) || !validIdentifier(action)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const targetKey = owner.getAttribute("data-redevplugin-key");
-    if (!validResourceIdentifier(targetKey)) return;
-    const edit = controlEdits.get(targetKey) || { revision: 0, isComposing: false };
-    sendInteraction("action", origin, { action });
-    sendWorker({
-      type: "redevplugin.ui.action",
-      action,
-      event: "escape",
-      target_key: targetKey,
-      edit_revision: edit.revision,
-      is_composing: edit.isComposing,
-    });
-  }, true);
-  const pumpAssets = () => {
-    while (activeAssetReads < maxConcurrentAssetReads && queuedAssets.length > 0) {
-      const asset = queuedAssets.shift();
-      const requestID = "asset_request_" + (++assetSequence);
-      pendingAssets.set(requestID, asset);
-      activeAssetReads += 1;
-      sendParent({ type: "redevplugin.surface.asset.read", request_id: requestID, binding_id: asset.binding_id, path: asset.path, sha256: asset.sha256 });
-    }
-  };
-  const loadAssets = () => {
-    queuedAssets.push(...currentDocument.assets);
-    pumpAssets();
-  };
-  const failTransferRequest = (id, error) => {
-    pendingImageRequests.delete(id);
-    activeImageDecodes.delete(id);
-    const reservedPixels = imageReservations.get(id);
-    if (reservedPixels !== undefined) {
-      imageReservations.delete(id);
-      retainedImageCount = Math.max(0, retainedImageCount - 1);
-      retainedImagePixels = Math.max(0, retainedImagePixels - reservedPixels);
-    }
-    completeWorkerRequest(id);
-    sendWorker({ type: "redevplugin.bridge.response", id, ok: false, error_code: "PLUGIN_CONTRACT_MISMATCH", error: String(error).slice(0, 512) });
-  };
-  const imageType = (contentType) => String(contentType).split(";", 1)[0].trim().toLowerCase();
-  const bytesMatch = (bytes, offset, values) => values.every((value, index) => bytes[offset + index] === value);
-  const asciiMatches = (bytes, offset, value) => Array.from(value).every((character, index) => bytes[offset + index] === character.charCodeAt(0));
-  const detectRasterImageType = (bytes) => {
-    if (bytes.length >= 8 && bytesMatch(bytes, 0, [137, 80, 78, 71, 13, 10, 26, 10])) return "image/png";
-    if (bytes.length >= 2 && bytesMatch(bytes, 0, [255, 216])) return "image/jpeg";
-    if (bytes.length >= 6 && (asciiMatches(bytes, 0, "GIF87a") || asciiMatches(bytes, 0, "GIF89a"))) return "image/gif";
-    if (bytes.length >= 12 && asciiMatches(bytes, 0, "RIFF") && asciiMatches(bytes, 8, "WEBP")) return "image/webp";
-    return "";
-  };
-  const uint16BE = (bytes, offset) => (bytes[offset] << 8) | bytes[offset + 1];
-  const uint16LE = (bytes, offset) => bytes[offset] | (bytes[offset + 1] << 8);
-  const uint24LE = (bytes, offset) => bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
-  const uint32BE = (bytes, offset) => ((bytes[offset] * 0x1000000) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]) >>> 0;
-  const readImageDimensions = (bytes, contentType) => {
-    const type = imageType(contentType);
-    let width = 0;
-    let height = 0;
-    if (type === "image/png") {
-      if (bytes.length < 24 || !bytesMatch(bytes, 0, [137, 80, 78, 71, 13, 10, 26, 10]) || !asciiMatches(bytes, 12, "IHDR")) throw new Error("PNG dimensions are invalid");
-      width = uint32BE(bytes, 16);
-      height = uint32BE(bytes, 20);
-    } else if (type === "image/gif") {
-      if (bytes.length < 10 || (!asciiMatches(bytes, 0, "GIF87a") && !asciiMatches(bytes, 0, "GIF89a"))) throw new Error("GIF dimensions are invalid");
-      width = uint16LE(bytes, 6);
-      height = uint16LE(bytes, 8);
-    } else if (type === "image/jpeg") {
-      if (bytes.length < 4 || !bytesMatch(bytes, 0, [255, 216])) throw new Error("JPEG dimensions are invalid");
-      let offset = 2;
-      const startOfFrame = new Set([192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207]);
-      while (offset + 4 <= bytes.length) {
-        if (bytes[offset] !== 255) throw new Error("JPEG marker sequence is invalid");
-        while (offset < bytes.length && bytes[offset] === 255) offset += 1;
-        const marker = bytes[offset++];
-        if (marker === 217 || marker === 218) break;
-        if (marker === 1 || (marker >= 208 && marker <= 215)) continue;
-        if (offset + 2 > bytes.length) break;
-        const length = uint16BE(bytes, offset);
-        if (length < 2 || offset + length > bytes.length) throw new Error("JPEG segment length is invalid");
-        if (startOfFrame.has(marker)) {
-          if (length < 7) throw new Error("JPEG frame dimensions are invalid");
-          height = uint16BE(bytes, offset + 3);
-          width = uint16BE(bytes, offset + 5);
-          break;
-        }
-        offset += length;
-      }
-    } else if (type === "image/webp") {
-      if (bytes.length < 30 || !asciiMatches(bytes, 0, "RIFF") || !asciiMatches(bytes, 8, "WEBP")) throw new Error("WebP dimensions are invalid");
-      if (asciiMatches(bytes, 12, "VP8X")) {
-        width = uint24LE(bytes, 24) + 1;
-        height = uint24LE(bytes, 27) + 1;
-      } else if (asciiMatches(bytes, 12, "VP8L") && bytes[20] === 47) {
-        width = 1 + bytes[21] + ((bytes[22] & 63) << 8);
-        height = 1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 15) << 10);
-      } else if (asciiMatches(bytes, 12, "VP8 ") && bytesMatch(bytes, 23, [157, 1, 42])) {
-        width = uint16LE(bytes, 26) & 0x3fff;
-        height = uint16LE(bytes, 28) & 0x3fff;
-      }
-    } else {
-      throw new Error("plugin raster image type is unsupported");
-    }
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || width > maxImageDimension || height > maxImageDimension) {
-      throw new Error("decoded image dimensions exceed the renderer budget");
-    }
-    return { width, height, pixels: width * height };
-  };
-  const retainImagePixels = (pixels) => {
-    if (!Number.isSafeInteger(pixels) || pixels <= 0 || retainedImageCount >= maxImageCount || retainedImagePixels + pixels > maxImageTotalPixels) {
-      throw new Error("decoded image assets exceed the renderer pixel budget");
-    }
-    retainedImageCount += 1;
-    retainedImagePixels += pixels;
-  };
-  const deliverImageAsset = async (id, assetID, asset) => {
-    if (!pendingImageRequests.has(id)) pendingImageRequests.set(id, { assetID, asset });
-    const bytes = verifiedAssetBytes.get(asset.binding_id);
-    if (!bytes) {
-      return;
-    }
-    if (activeImageDecodes.has(id)) return;
-    activeImageDecodes.add(id);
-    let image;
-    try {
-      const rasterType = imageAssetTypes.get(asset.binding_id) || imageType(asset.content_type);
-      const dimensions = imageAssetDimensions.get(asset.binding_id) || readImageDimensions(bytes, rasterType);
-      retainImagePixels(dimensions.pixels);
-      imageReservations.set(id, dimensions.pixels);
-      image = await createImageBitmap(new Blob([bytes], { type: rasterType }));
-      if (!pendingWorkerRequests.has(id) || !pendingImageRequests.has(id)) {
-        image.close();
-        const reservedPixels = imageReservations.get(id);
-        if (reservedPixels !== undefined) {
-          imageReservations.delete(id);
-          retainedImageCount = Math.max(0, retainedImageCount - 1);
-          retainedImagePixels = Math.max(0, retainedImagePixels - reservedPixels);
-        }
-        activeImageDecodes.delete(id);
-        return;
-      }
-      if (!image || image.width !== dimensions.width || image.height !== dimensions.height) throw new Error("decoded image dimensions changed after validation");
-      pendingImageRequests.delete(id);
-      activeImageDecodes.delete(id);
-      sendWorkerTransfer({ type: "redevplugin.ui.asset.image.ready", id, asset_id: assetID, image, width: image.width, height: image.height }, [image]);
-      imageReservations.delete(id);
-      completeWorkerRequest(id);
-    } catch (error) {
-      try { image && image.close(); } catch {}
-      failTransferRequest(id, error && error.message || "plugin image asset could not be decoded");
-    }
-  };
-  const applyAsset = async (asset, contentBase64) => {
-    if (contentBase64.length !== Math.ceil(asset.size / 3) * 4) throw new Error("plugin asset encoded size mismatch");
-    const binary = atob(contentBase64);
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    if (bytes.byteLength !== asset.size) throw new Error("plugin asset size mismatch");
-    const digestBytes = redevpluginIntegrity.sha256(bytes);
-    const actualDigest = "sha256:" + Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    if (actualDigest !== asset.sha256) throw new Error("plugin asset bytes failed SHA-256 verification");
-    const declaredType = imageType(asset.content_type);
-    const rasterType = detectRasterImageType(bytes);
-    if (rasterType || (declaredType.startsWith("image/") && declaredType !== "image/svg+xml")) {
-      const validatedType = rasterType || declaredType;
-      const dimensions = readImageDimensions(bytes, validatedType);
-      retainImagePixels(dimensions.pixels);
-      imageAssetDimensions.set(asset.binding_id, dimensions);
-      imageAssetTypes.set(asset.binding_id, validatedType);
-    }
-    verifiedAssetBytes.set(asset.binding_id, bytes);
-    const url = URL.createObjectURL(new Blob([bytes], { type: rasterType || asset.content_type }));
-    blobURLs.add(url);
-    document.documentElement.style.setProperty("--redevplugin-asset-" + asset.binding_id, 'url("' + url.replaceAll('"', '%22') + '")');
-    for (const element of document.querySelectorAll('[data-redevplugin-asset-binding="' + asset.binding_id + '"]')) {
-      const attribute = element.getAttribute("data-redevplugin-asset-attr");
-      if (attribute === "src" || attribute === "poster") element.setAttribute(attribute, url);
-      element.removeAttribute("data-redevplugin-asset-binding");
-      element.removeAttribute("data-redevplugin-asset-attr");
-    }
-    for (const [id, pending] of pendingImageRequests) {
-      if (pending.asset.binding_id === asset.binding_id) void deliverImageAsset(id, pending.assetID, pending.asset);
-    }
-  };
-  const workerRuntime = () => [
-    '{',
-    '"use strict";',
-    'const __rpTimer = setTimeout(() => close(), 30000);',
-    'const __rpListener = (event) => {',
-    '    const value = event.data;',
-    '    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "port_roles,surface_handle,type" || value.type !== "redevplugin.worker.initialize" || typeof value.surface_handle !== "string" || !Array.isArray(value.port_roles) || value.port_roles.join(",") !== "runtime_control,plugin_bridge" || !event.ports || event.ports.length !== 2) return;',
-    '    clearTimeout(__rpTimer); removeEventListener("message", __rpListener);',
-    '    const __rpSurfaceHandle = value.surface_handle;',
-    '    const __rpControlPort = event.ports[0];',
-    '    const __rpPort = event.ports[1];',
-    'const __rpControlPost = __rpControlPort.postMessage.bind(__rpControlPort);',
-    'const __rpControlStart = __rpControlPort.start.bind(__rpControlPort);',
-    'const __rpControlClose = __rpControlPort.close.bind(__rpControlPort);',
-    'const __rpControlAddEventListener = __rpControlPort.addEventListener.bind(__rpControlPort);',
-    'const __rpGetPrototypeOf = Object.getPrototypeOf;',
-    'const __rpGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;',
-    'const __rpDefineProperty = Object.defineProperty;',
-    'const __rpHasOwn = Object.prototype.hasOwnProperty;',
-    'const __rpObjectKeys = Object.keys;',
-    'const __rpApply = Reflect.apply;',
-    'const __rpAddEventListener = addEventListener.bind(globalThis);',
-    'const __rpRemoveEventListener = removeEventListener.bind(globalThis);',
-    'const __rpSetTimeout = setTimeout.bind(globalThis);',
-    'const __rpClearTimeout = clearTimeout.bind(globalThis);',
-    'const __rpNumberIsSafeInteger = Number.isSafeInteger.bind(Number);',
-    'const __rpOffscreenCanvas = globalThis.OffscreenCanvas;',
-    'const __rpCanvasPrototype = __rpOffscreenCanvas && __rpOffscreenCanvas.prototype;',
-    'const __rpTrackedCanvases = [];',
-    'const __rpBlocked = () => { throw new TypeError("API is unavailable in the ReDevPlugin worker sandbox"); };',
-    'const __rpSealDescriptor = (owner, name, value) => {',
-    '    const descriptor = __rpGetOwnPropertyDescriptor(owner, name);',
-    '    if (!descriptor) return;',
-    '    if (descriptor.configurable) __rpDefineProperty(owner, name, { configurable: false, enumerable: Boolean(descriptor.enumerable), writable: false, value });',
-    '    else if (Object.prototype.hasOwnProperty.call(descriptor, "value") && descriptor.writable) __rpDefineProperty(owner, name, { writable: false, value });',
-    '    else if (!Object.prototype.hasOwnProperty.call(descriptor, "value") || descriptor.value !== value) throw new TypeError("Unable to seal worker API " + name);',
-    '    const sealed = __rpGetOwnPropertyDescriptor(owner, name);',
-    '    if (!sealed || !Object.prototype.hasOwnProperty.call(sealed, "value") || sealed.configurable || sealed.writable || sealed.value !== value) throw new TypeError("Worker API remained available: " + name);',
-    '};',
-    'const __rpSealChain = (target, name, value) => {',
-    '    let current = target;',
-    '    let found = false;',
-    '    while (current) {',
-    '        if (__rpHasOwn.call(current, name)) { found = true; __rpSealDescriptor(current, name, value); }',
-    '        current = __rpGetPrototypeOf(current);',
-    '    }',
-    '    if (!found || !__rpHasOwn.call(target, name)) __rpDefineProperty(target, name, { configurable: false, enumerable: false, writable: false, value });',
-    '    __rpSealDescriptor(target, name, value);',
-    '};',
-    'const __rpSealMessagePortMethod = (name) => {',
-    '    let current = __rpGetPrototypeOf(__rpControlPort);',
-    '    let found = false;',
-    '    while (current) {',
-    '        const descriptor = __rpGetOwnPropertyDescriptor(current, name);',
-    '        if (descriptor && __rpHasOwn.call(descriptor, "value") && typeof descriptor.value === "function") { found = true; __rpSealDescriptor(current, name, descriptor.value); }',
-    '        current = __rpGetPrototypeOf(current);',
-    '    }',
-    '    if (!found) throw new TypeError("MessagePort method is unavailable: " + name);',
-    '};',
-    'const __rpTrackCanvas = (canvas) => {',
-    '    for (let index = 0; index < __rpTrackedCanvases.length; index += 1) if (__rpTrackedCanvases[index] === canvas) return;',
-    '    if (__rpTrackedCanvases.length >= ' + JSON.stringify(maxCanvasCount) + ') throw new RangeError("plugin canvas count exceeds the worker budget");',
-    '    __rpTrackedCanvases.push(canvas);',
-    '};',
-    'const __rpInstallCanvasBudget = () => {',
-    '    if (!__rpCanvasPrototype) return;',
-    '    const widthDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "width");',
-    '    const heightDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "height");',
-    '    const contextDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "getContext");',
-    '    const convertDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "convertToBlob");',
-    '    if (!widthDescriptor || !heightDescriptor || typeof widthDescriptor.get !== "function" || typeof widthDescriptor.set !== "function" || typeof heightDescriptor.get !== "function" || typeof heightDescriptor.set !== "function" || !contextDescriptor || typeof contextDescriptor.value !== "function" || !convertDescriptor || typeof convertDescriptor.value !== "function") throw new TypeError("OffscreenCanvas descriptors are unavailable");',
-    '    const readWidth = (canvas) => __rpApply(widthDescriptor.get, canvas, []);',
-    '    const readHeight = (canvas) => __rpApply(heightDescriptor.get, canvas, []);',
-    '    const validateResize = (canvas, axis, value) => {',
-    '        if (!__rpNumberIsSafeInteger(value) || value <= 0 || value > ' + JSON.stringify(maxCanvasDimension) + ') throw new RangeError("plugin canvas resize exceeds the worker dimension budget");',
-    '        __rpTrackCanvas(canvas);',
-    '        let pixels = 0;',
-    '        for (let index = 0; index < __rpTrackedCanvases.length; index += 1) {',
-    '            const current = __rpTrackedCanvases[index];',
-    '            const width = current === canvas && axis === "width" ? value : readWidth(current);',
-    '            const height = current === canvas && axis === "height" ? value : readHeight(current);',
-    '            pixels += width * height;',
-    '            if (pixels > ' + JSON.stringify(maxCanvasTotalPixels) + ') throw new RangeError("plugin canvas resize exceeds the worker pixel budget");',
-    '        }',
-    '    };',
-    '    __rpDefineProperty(__rpCanvasPrototype, "width", { configurable: false, enumerable: Boolean(widthDescriptor.enumerable), get() { return readWidth(this); }, set(value) { validateResize(this, "width", value); __rpApply(widthDescriptor.set, this, [value]); } });',
-    '    __rpDefineProperty(__rpCanvasPrototype, "height", { configurable: false, enumerable: Boolean(heightDescriptor.enumerable), get() { return readHeight(this); }, set(value) { validateResize(this, "height", value); __rpApply(heightDescriptor.set, this, [value]); } });',
-    '    __rpDefineProperty(__rpCanvasPrototype, "getContext", { configurable: false, enumerable: Boolean(contextDescriptor.enumerable), writable: false, value(type, ...options) { if (${opaqueSurfaceCanvasContextTypes.map((type) => "type !== " + JSON.stringify(type)).join(" && ")}) throw new TypeError("canvas context type is unavailable in the ReDevPlugin worker sandbox"); __rpTrackCanvas(this); return __rpApply(contextDescriptor.value, this, [type, ...options]); } });',
-    '    __rpSealDescriptor(__rpCanvasPrototype, "constructor", undefined);',
-    '    __rpSealDescriptor(__rpCanvasPrototype, "convertToBlob", convertDescriptor.value);',
-    '    __rpSealDescriptor(__rpCanvasPrototype, "transferToImageBitmap", __rpBlocked);',
-    '};',
-    'try {',
-    '    for (const name of ["postMessage", "start", "close", "addEventListener", "removeEventListener"]) __rpSealMessagePortMethod(name);',
-    '    __rpInstallCanvasBudget();',
-    '    for (const [name, value] of Object.entries({fetch:__rpBlocked,XMLHttpRequest:undefined,WebSocket:undefined,EventSource:undefined,WebTransport:undefined,Worker:undefined,SharedWorker:undefined,indexedDB:undefined,caches:undefined,RTCPeerConnection:undefined,webkitRTCPeerConnection:undefined,BroadcastChannel:undefined,importScripts:undefined,postMessage:undefined,eval:undefined,Function:undefined,Blob:undefined,File:undefined,FileReader:undefined,FileReaderSync:undefined,OffscreenCanvas:undefined,ImageBitmap:undefined,createImageBitmap:undefined})) __rpSealChain(globalThis, name, value);',
-    '    for (const [name, value] of Object.entries({storage:undefined,sendBeacon:undefined,serviceWorker:undefined})) __rpSealChain(navigator, name, value);',
-    '    const __rpFunctionPrototypes = [__rpGetPrototypeOf(function() {}), __rpGetPrototypeOf(async function() {}), __rpGetPrototypeOf(function*() {}), __rpGetPrototypeOf(async function*() {})];',
-    '    for (const prototype of __rpFunctionPrototypes) __rpSealDescriptor(prototype, "constructor", undefined);',
-    '} catch (error) {',
-    '    try { __rpControlPost({ type: "redevplugin.worker.error", error: String(error && error.message || error).slice(0, 512) }); } catch {}',
-    '    try { __rpControlClose(); } catch {}',
-    '    try { __rpPort.close(); } catch {}',
-    '    close();',
-    '    return;',
-    '}',
-    'let __rpClaimed = false;',
-    'const __rpBridge = Object.freeze({ claim() { if (__rpClaimed) return undefined; __rpClaimed = true; return Object.freeze({ surfaceHandle: __rpSurfaceHandle, port: __rpPort }); } });',
-    'Object.defineProperty(globalThis, ' + JSON.stringify(workerGlobalKey) + ', { configurable: false, enumerable: false, writable: false, value: __rpBridge });',
-    '__rpControlStart();',
-    '__rpPort.start();',
-    'const __rpControlListener = (event) => {',
-    '    const message = event.data;',
-    '    if (!message || typeof message !== "object" || Array.isArray(message)) return;',
-    '    const keys = __rpObjectKeys(message).sort();',
-    '    if (keys.length !== 2 || keys[0] !== "ping_id" || keys[1] !== "type" || message.type !== "redevplugin.worker.ping" || typeof message.ping_id !== "string" || !/^ping_[1-9][0-9]{0,15}$/.test(message.ping_id)) return;',
-    '    __rpControlPost({ type: "redevplugin.worker.pong", ping_id: message.ping_id });',
-    '};',
-    '__rpControlAddEventListener("message", __rpControlListener);',
-    'let __rpFailed = false;',
-    'const __rpReportFailure = (error) => { if (__rpFailed) return; __rpFailed = true; __rpControlPost({ type: "redevplugin.worker.error", error: String(error && error.message || error).slice(0, 512) }); };',
-    'addEventListener("error", (event) => __rpReportFailure(event.error || event.message || "plugin worker failed"), { capture: true });',
-    'addEventListener("unhandledrejection", (event) => __rpReportFailure(event.reason || "plugin worker rejected"), { capture: true });',
-    'void (async () => {',
-    '    try {',
-    '        __redevpluginPluginMain();',
-    '        setTimeout(() => { if (!__rpFailed) __rpControlPost({ type: "redevplugin.worker.ready" }); }, 0);',
-    '    } catch (error) {',
-    '        __rpReportFailure(error);',
-    '    }',
-    '})();',
-    '};',
-    'addEventListener("message", __rpListener);',
-    '}'
-  ].join("\\n");
-  const startWorker = (surfaceDocument) => {
-    const source = 'const __redevpluginPluginMain = () => {\\n"use strict";\\n' + surfaceDocument.worker.content + '\\n};\\n' + workerRuntime();
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    blobURLs.add(url);
-    worker = new Worker(url, { name: "redevplugin-surface" });
-    worker.addEventListener("error", (event) => fail(event.message || "plugin worker failed to load"));
-    worker.addEventListener("messageerror", () => fail("plugin worker message could not be decoded"));
-    const controlChannel = new MessageChannel();
-    const pluginChannel = new MessageChannel();
-    workerControlPort = controlChannel.port1;
-    workerControlPort.addEventListener("message", onWorkerControlMessage);
-    workerControlPort.start();
-    workerPort = pluginChannel.port1;
-    workerPort.addEventListener("message", onWorkerMessage);
-    workerPort.start();
-    worker.postMessage({ type: "redevplugin.worker.initialize", surface_handle: surfaceHandle, port_roles: ["runtime_control", "plugin_bridge"] }, [controlChannel.port2, pluginChannel.port2]);
-    if (currentContext) sendWorker({ type: "redevplugin.bridge.context", context: currentContext });
-  };
-  const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
-  const requestID = (value, expectedKind) => {
-    if (typeof value !== "string") return undefined;
-    const match = /^(rpc|execution|render|canvas|asset|keyboard|file)_([1-9][0-9]{0,15})$/.exec(value);
-    if (!match || match[1] !== expectedKind) return undefined;
-    const sequence = Number(match[2]);
-    return Number.isSafeInteger(sequence) ? { kind: match[1], sequence } : undefined;
-  };
-  const acceptWorkerRequest = (id, kind) => {
-    const parsed = requestID(id, kind);
-    if (!parsed || parsed.sequence <= requestSequence[kind] || pendingWorkerRequests.size >= maxInFlightRequests) return false;
-    requestSequence[kind] = parsed.sequence;
-    pendingWorkerRequests.add(id);
-    return true;
-  };
-  const completeWorkerRequest = (id) => pendingWorkerRequests.delete(id);
-  const validKeyboardBinding = (value) => exactKeys(value, ["binding_id", "event", "code", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "target_key", "target_kind"]) &&
-    validIdentifier(value.binding_id) && ["keydown", "keyup"].includes(value.event) &&
-    typeof value.code === "string" && value.code.length > 0 && value.code.length <= 64 &&
-    typeof value.repeat === "boolean" && typeof value.alt_key === "boolean" && typeof value.ctrl_key === "boolean" &&
-    typeof value.meta_key === "boolean" && typeof value.shift_key === "boolean" &&
-    (value.target_key === null || validResourceIdentifier(value.target_key)) &&
-    ["canvas", "editable", "control", "surface"].includes(value.target_kind);
-  const validKeyboardBindings = (value) => {
-    if (!Array.isArray(value) || value.length > maxKeyboardBindings || !value.every(validKeyboardBinding)) return false;
-    const ids = new Set();
-    const matchers = new Set();
-    for (const binding of value) {
-      if (ids.has(binding.binding_id)) return false;
-      ids.add(binding.binding_id);
-      const matcher = JSON.stringify([binding.event, binding.code, binding.repeat, binding.alt_key, binding.ctrl_key, binding.meta_key, binding.shift_key, binding.target_key, binding.target_kind]);
-      if (matchers.has(matcher)) return false;
-      matchers.add(matcher);
-    }
-    return true;
-  };
-  const completeExecutionQueryRequest = (id) => {
-    const executionID = executionQueryRequests.get(id);
-    executionQueryRequests.delete(id);
-    const state = executionQueryStates.get(executionID);
-    if (state) { state.inFlight = false; state.lastSeen = performance.now(); }
-    completeWorkerRequest(id);
-  };
-  const refillSnapshotTokens = (tokens, refillAt, rate, burst, now) => ({
-    tokens: Math.min(burst, tokens + Math.max(0, now - refillAt) * rate / 1000),
-    refillAt: Math.max(refillAt, now),
-  });
-  const executionQueryRateLimit = (executionID, requestID) => {
-    const now = performance.now();
-    const surface = refillSnapshotTokens(executionQuerySurfaceTokens, executionQuerySurfaceRefillAt, 8, 8, now);
-    executionQuerySurfaceTokens = surface.tokens;
-    executionQuerySurfaceRefillAt = surface.refillAt;
-    if (executionQuerySurfaceTokens < 1) return Math.max(500, Math.min(10000, Math.ceil((1 - executionQuerySurfaceTokens) / 8 * 1000)));
-    executionQuerySurfaceTokens -= 1;
-    let existing = executionQueryStates.get(executionID);
-    if (!existing) {
-      if (now >= executionQueryNextPruneAt) {
-        for (const [retainedExecutionID, state] of executionQueryStates) {
-          if (!state.inFlight && now - state.lastSeen >= executionQueryStateIdleMS) executionQueryStates.delete(retainedExecutionID);
-        }
-        executionQueryNextPruneAt = now + 30000;
-      }
-      if (executionQueryStates.size >= maxExecutionQueryStates) return 10000;
-      existing = { tokens: 2, refillAt: now, lastSeen: now, inFlight: false };
-      executionQueryStates.set(executionID, existing);
-    }
-    const operation = refillSnapshotTokens(existing.tokens, existing.refillAt, 2, 2, now);
-    existing.tokens = operation.tokens;
-    existing.refillAt = operation.refillAt;
-    existing.lastSeen = now;
-    let retryAfterMS = existing.inFlight ? 500 : 0;
-    if (existing.tokens < 1) retryAfterMS = Math.max(retryAfterMS, Math.ceil((1 - existing.tokens) / 2 * 1000));
-    if (retryAfterMS > 0) return Math.max(500, Math.min(10000, retryAfterMS));
-    existing.tokens -= 1;
-    existing.inFlight = true;
-    executionQueryRequests.set(requestID, executionID);
-    return 0;
-  };
-  const renderRateAllowed = () => {
-    const now = performance.now();
-    if (now - renderWindowStartedAt >= 1000) { renderWindowStartedAt = now; renderCount = 0; }
-    if (renderCount >= maxRendersPerSecond) return false;
-    renderCount += 1;
-    return true;
-  };
-  const rejectWorkerRequest = (id, error, errorCode = "PLUGIN_INVALID_REQUEST") => sendWorker({ type: "redevplugin.bridge.response", id, ok: false, error_code: errorCode, error });
-  const findCanvas = (canvasID) => {
-    for (const element of document.querySelectorAll("canvas[data-redevplugin-canvas]")) {
-      if (element.getAttribute("data-redevplugin-canvas") === canvasID) return element;
-    }
-    return undefined;
-  };
-  const updateCanvasAccessibility = (id, canvasID, label, description) => {
-    const runtime = canvasRuntimes.get(canvasID);
-    if (!runtime || typeof label !== "string" || label.length < 1 || label.length > 256 || typeof description !== "string" || description.length > 1024) {
-      completeWorkerRequest(id);
-      return rejectWorkerRequest(id, "plugin canvas accessibility state is invalid");
-    }
-    if (!runtime.description) {
-      const status = document.createElement("span");
-      status.id = "redevplugin-canvas-description-" + canvasID.replace(/[^A-Za-z0-9_-]/g, "-");
-      status.style.position = "absolute";
-      status.style.width = "1px";
-      status.style.height = "1px";
-      status.style.padding = "0";
-      status.style.margin = "-1px";
-      status.style.overflow = "hidden";
-      status.style.clip = "rect(0, 0, 0, 0)";
-      status.style.whiteSpace = "nowrap";
-      status.style.border = "0";
-      runtime.canvas.insertAdjacentElement("afterend", status);
-      runtime.canvas.setAttribute("aria-describedby", status.id);
-      runtime.description = status;
-    }
-    runtime.canvas.setAttribute("aria-label", label);
-    runtime.description.textContent = description;
-    completeWorkerRequest(id);
-    sendWorker({ type: "redevplugin.bridge.response", id, ok: true });
-  };
-  const canvasMetrics = (canvas) => {
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return undefined;
-    const cssWidth = Math.ceil(rect.width);
-    const cssHeight = Math.ceil(rect.height);
-    const devicePixelRatio = Math.min(4, Math.max(0.5, Number(globalThis.devicePixelRatio) || 1));
-    if (!Number.isSafeInteger(cssWidth) || !Number.isSafeInteger(cssHeight) || cssWidth <= 0 || cssHeight <= 0 || cssWidth > maxCanvasDimension || cssHeight > maxCanvasDimension) {
-      throw new Error("plugin canvas dimensions exceed the renderer budget");
-    }
-    const pixelWidth = Math.ceil(cssWidth * devicePixelRatio);
-    const pixelHeight = Math.ceil(cssHeight * devicePixelRatio);
-    if (pixelWidth > maxCanvasDimension || pixelHeight > maxCanvasDimension) throw new Error("plugin canvas dimensions exceed the renderer budget");
-    const pixelCount = pixelWidth * pixelHeight;
-    return { cssWidth, cssHeight, devicePixelRatio, pixelCount };
-  };
-  const openCanvas = (id, canvasID) => {
-    const canvas = findCanvas(canvasID);
-    if (!canvas || canvasRuntimes.has(canvasID) || typeof canvas.transferControlToOffscreen !== "function" || typeof ResizeObserver !== "function") {
-      completeWorkerRequest(id);
-      return rejectWorkerRequest(id, "plugin canvas is missing, already transferred, or unsupported");
-    }
-    if (canvasRuntimes.size >= maxCanvasCount) {
-      completeWorkerRequest(id);
-      return rejectWorkerRequest(id, "plugin canvas resources exceed renderer limits");
-    }
-    if (canvas.tabIndex < 0) canvas.tabIndex = 0;
-    let pointerWindowStartedAt = 0;
-    let pointerEvents = 0;
-    const listeners = [];
-    const listen = (type, handler) => {
-      canvas.addEventListener(type, handler, { passive: false });
-      listeners.push([type, handler]);
-    };
-    const sendInput = (event) => sendWorker({ type: "redevplugin.ui.canvas.input", canvas_id: canvasID, event });
-    const sendResize = () => {
-      if (runtimeDisposed || canvasRuntimes.get(canvasID) !== runtime) return;
-      const metrics = canvasMetrics(canvas);
-      if (!metrics) return;
-      let totalPixels = metrics.pixelCount;
-      for (const [identifier, active] of canvasRuntimes) {
-        if (identifier !== canvasID) totalPixels += active.metrics?.pixelCount ?? 0;
-      }
-      if (totalPixels > maxCanvasTotalPixels) throw new Error("plugin canvases exceed the renderer pixel budget");
-      if (runtime.openRequestID !== undefined) {
-        const offscreen = canvas.transferControlToOffscreen();
-        runtime.metrics = metrics;
-        runtime.openRequestID = undefined;
-        completeWorkerRequest(id);
-        sendWorkerTransfer({ type: "redevplugin.ui.canvas.ready", id, canvas_id: canvasID, canvas: offscreen, css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio }, [offscreen]);
-        return;
-      }
-      if (runtime.metrics?.cssWidth === metrics.cssWidth && runtime.metrics?.cssHeight === metrics.cssHeight && runtime.metrics?.devicePixelRatio === metrics.devicePixelRatio) return;
-      runtime.metrics = metrics;
-      sendInput({ type: "resize", css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio });
-    };
-    const updateCanvas = () => {
-      try { sendResize(); }
-      catch (error) {
-        if (runtime.openRequestID === undefined) return fail(error && error.message || "plugin canvas resize exceeded renderer limits");
-        dispose();
-        canvasRuntimes.delete(canvasID);
-        completeWorkerRequest(id);
-        rejectWorkerRequest(id, String(error && error.message || "plugin canvas transfer failed").slice(0, 512));
-      }
-    };
-    const handlePointer = (event) => {
-      const now = performance.now();
-      if (now - pointerWindowStartedAt >= 1000) { pointerWindowStartedAt = now; pointerEvents = 0; }
-      if (event.type === "pointermove") {
-        if (pointerEvents >= maxCanvasPointerEventsPerSecond) return;
-        pointerEvents += 1;
-      }
-      event.preventDefault();
-      if (event.type === "pointerdown") {
-        try { canvas.focus({ preventScroll: true }); } catch { canvas.focus(); }
-        try { canvas.setPointerCapture(event.pointerId); } catch {}
-      }
-      if (event.type === "pointerup" || event.type === "pointercancel") {
-        try { canvas.releasePointerCapture(event.pointerId); } catch {}
-      }
-      const rect = canvas.getBoundingClientRect();
-      sendInput({
-        type: "pointer",
-        event: event.type,
-        pointer_id: Math.max(0, Number.isSafeInteger(event.pointerId) ? event.pointerId : 0),
-        pointer_type: ["mouse", "pen", "touch"].includes(event.pointerType) ? event.pointerType : "unknown",
-        buttons: Math.min(31, Math.max(0, Number.isSafeInteger(event.buttons) ? event.buttons : 0)),
-        button: Math.min(4, Math.max(-1, Number.isSafeInteger(event.button) ? event.button : -1)),
-        x: Math.min(32768, Math.max(-16384, event.clientX - rect.left)),
-        y: Math.min(32768, Math.max(-16384, event.clientY - rect.top)),
-        pressure: Math.min(1, Math.max(0, Number.isFinite(event.pressure) ? event.pressure : 0)),
-      });
-    };
-    const handleKey = (event) => {
-      event.preventDefault();
-      sendInput({
-        type: "key",
-        event: event.type,
-        code: String(event.code || "").slice(0, 64),
-        key: String(event.key || "").slice(0, 64),
-        repeat: Boolean(event.repeat),
-        alt_key: Boolean(event.altKey),
-        ctrl_key: Boolean(event.ctrlKey),
-        meta_key: Boolean(event.metaKey),
-        shift_key: Boolean(event.shiftKey),
-      });
-    };
-    const handleWheel = (event) => {
-      event.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      sendInput({
-        type: "wheel",
-        x: Math.min(32768, Math.max(-16384, event.clientX - rect.left)),
-        y: Math.min(32768, Math.max(-16384, event.clientY - rect.top)),
-        delta_x: Math.min(32768, Math.max(-32768, Number.isFinite(event.deltaX) ? event.deltaX : 0)),
-        delta_y: Math.min(32768, Math.max(-32768, Number.isFinite(event.deltaY) ? event.deltaY : 0)),
-        delta_mode: [0, 1, 2].includes(event.deltaMode) ? event.deltaMode : 0,
-        alt_key: Boolean(event.altKey),
-        ctrl_key: Boolean(event.ctrlKey),
-        meta_key: Boolean(event.metaKey),
-        shift_key: Boolean(event.shiftKey),
-      });
-    };
-    for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) listen(type, handlePointer);
-    for (const type of ["keydown", "keyup"]) listen(type, handleKey);
-    listen("wheel", handleWheel);
-    listen("focus", () => sendInput({ type: "focus" }));
-    listen("blur", () => sendInput({ type: "blur" }));
-    const observer = new ResizeObserver(updateCanvas);
-    const runtime = { canvas, description: undefined, dispose: undefined, metrics: undefined, openRequestID: id };
-    const dispose = () => {
-      observer.disconnect();
-      for (const [type, handler] of listeners) canvas.removeEventListener(type, handler);
-      runtime.description?.remove();
-    };
-    runtime.dispose = dispose;
-    canvasRuntimes.set(canvasID, runtime);
-    observer.observe(canvas);
-    updateCanvas();
-  };
-  const scheduleWorkerHeartbeat = () => {
-    if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
-    workerHeartbeatTimer = undefined;
-    if (!workerReady || !workerControlPort || workerHeartbeatPendingID) return;
-    workerHeartbeatTimer = setTimeout(() => {
-      workerHeartbeatTimer = undefined;
-      if (!workerReady || !workerControlPort || workerHeartbeatPendingID) return;
-      const pingID = "ping_" + (++workerHeartbeatSequence);
-      workerHeartbeatPendingID = pingID;
-      try {
-        workerControlPort.postMessage({ type: "redevplugin.worker.ping", ping_id: pingID });
-      } catch {
-        fail("plugin worker heartbeat could not be sent");
-        return;
-      }
-      workerHeartbeatTimeout = setTimeout(() => {
-        workerHeartbeatTimeout = undefined;
-        if (workerHeartbeatPendingID !== pingID) return;
-        workerHeartbeatPendingID = undefined;
-        fail("plugin worker heartbeat timed out");
-      }, workerHeartbeatTimeoutMs);
-    }, workerHeartbeatIntervalMs);
-  };
-  const onWorkerControlMessage = (event) => {
-    if (!withinLimit(event.data)) return;
-    const message = event.data;
-    if (exactKeys(message, ["type"]) && message.type === "redevplugin.worker.ready") {
-      if (workerReady) return;
-      workerReady = true;
-      sendParent({ type: "redevplugin.surface.worker_ready" });
-      scheduleWorkerHeartbeat();
-      return;
-    }
-    if (exactKeys(message, ["type", "ping_id"]) && message.type === "redevplugin.worker.pong" && message.ping_id === workerHeartbeatPendingID) {
-      if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
-      workerHeartbeatTimeout = undefined;
-      workerHeartbeatPendingID = undefined;
-      scheduleWorkerHeartbeat();
-      return;
-    }
-    if (exactKeys(message, ["type", "error"]) && message.type === "redevplugin.worker.error" && typeof message.error === "string") {
-      fail(message.error);
-      return;
-    }
-  };
-  const onWorkerMessage = (event) => {
-    const message = event.data;
-    if (isRecord(message) && message.type === "redevplugin.ui.file.export" && typeof message.id === "string") {
-      if (!validWorkerFileExport(message)) return rejectWorkerRequest(message.id, "plugin file export request is invalid");
-      if (!acceptWorkerRequest(message.id, "file")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      const action = pendingFileExportAction;
-      if (!action || performance.now() > action.expires_at) {
-        completeWorkerRequest(message.id);
-        pendingFileExportAction = undefined;
-        return rejectWorkerRequest(message.id, "plugin file export requires a recent user action", "PLUGIN_ACTION_DENIED");
-      }
-      pendingFileExportAction = undefined;
-      sendParentTransfer({
-        type: "redevplugin.surface.file.export",
-        frame_generation_id: frameGenerationID,
-        surface_handle: surfaceHandle,
-        action_sequence: action.sequence,
-        id: message.id,
-        file_name: message.file_name,
-        media_type: message.media_type,
-        content: message.content,
-      }, [message.content]);
-      return;
-    }
-    if (!withinLimit(message)) return;
-    if (exactKeys(message, ["type", "quiesce_id"]) && message.type === "redevplugin.bridge.lifecycle_ack" && validOpaqueHandle(message.quiesce_id, "quiesce") && message.quiesce_id === pendingQuiesceID) {
-      pendingQuiesceID = undefined;
-      sendParent({ type: "redevplugin.surface.quiesce_ack", quiesce_id: message.quiesce_id });
-      terminateQuiescedWorker();
-      return;
-    }
-    if (validCall(message)) {
-      if (!acceptWorkerRequest(message.request.id, "rpc")) return rejectWorkerRequest(message.request.id, "duplicate, replayed, or excessive plugin request");
-      sendParent(message);
-      return;
-    }
-    if (isRecord(message) && Object.keys(message).every((key) => ["type", "id", "execution_id", "reason"].includes(key)) &&
-        message.type === "redevplugin.bridge.execution.cancel" && typeof message.id === "string" &&
-        validOpaqueHandle(message.execution_id, "execution") && (message.reason === undefined || (typeof message.reason === "string" && message.reason.length <= 256))) {
-      if (!acceptWorkerRequest(message.id, "execution")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      sendParent(message);
-      return;
-    }
-    if (exactKeys(message, ["type", "id", "execution_id"]) && message.type === "redevplugin.bridge.execution.query" &&
-        typeof message.id === "string" && validOpaqueHandle(message.execution_id, "execution")) {
-      if (!acceptWorkerRequest(message.id, "execution")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      const retryAfterMS = executionQueryRateLimit(message.execution_id, message.id);
-      if (retryAfterMS > 0) {
-        completeWorkerRequest(message.id);
-        return sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: false, error_code: "PLUGIN_EXECUTION_BLOCKED", error: "plugin execution query rate limited" });
-      }
-      sendParent(message);
-      return;
-    }
-    if (exactKeys(message, ["type", "id", "execution_id", "after_cursor"]) && message.type === "redevplugin.bridge.execution.events" &&
-        typeof message.id === "string" && validOpaqueHandle(message.execution_id, "execution") && Number.isSafeInteger(message.after_cursor) && message.after_cursor >= 0) {
-      if (!acceptWorkerRequest(message.id, "execution")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      sendParent(message);
-      return;
-    }
-    if (exactKeys(message, ["type", "id", "canvas_id"]) && message.type === "redevplugin.ui.canvas.open" && typeof message.id === "string" && validResourceIdentifier(message.canvas_id)) {
-      if (!acceptWorkerRequest(message.id, "canvas")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      openCanvas(message.id, message.canvas_id);
-      return;
-    }
-    if (exactKeys(message, ["type", "id", "canvas_id", "label", "description"]) && message.type === "redevplugin.ui.canvas.accessibility" && typeof message.id === "string" && validResourceIdentifier(message.canvas_id)) {
-      if (!acceptWorkerRequest(message.id, "canvas")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      updateCanvasAccessibility(message.id, message.canvas_id, message.label, message.description);
-      return;
-    }
-    if (exactKeys(message, ["type", "id", "bindings"]) && message.type === "redevplugin.ui.keyboard.bindings" && typeof message.id === "string") {
-      if (!acceptWorkerRequest(message.id, "keyboard")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      if (!validKeyboardBindings(message.bindings)) {
-        completeWorkerRequest(message.id);
-        return rejectWorkerRequest(message.id, "plugin surface keyboard bindings are invalid");
-      }
-      keyboardBindings = message.bindings.map((binding) => ({ ...binding }));
-      completeWorkerRequest(message.id);
-      sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
-      return;
-    }
-    if (exactKeys(message, ["type", "id", "asset_id"]) && message.type === "redevplugin.ui.asset.image.open" && typeof message.id === "string" && validResourceIdentifier(message.asset_id)) {
-      if (!acceptWorkerRequest(message.id, "asset")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      const asset = assetByLogicalID.get(message.asset_id);
-      if (!asset || !String(asset.content_type).toLowerCase().startsWith("image/") || String(asset.content_type).toLowerCase() === "image/svg+xml") {
-        completeWorkerRequest(message.id);
-        return rejectWorkerRequest(message.id, "plugin image asset is not declared");
-      }
-      void deliverImageAsset(message.id, message.asset_id, asset);
-      return;
-    }
-    if (exactKeys(message, ["type", "id", "revision", "tree"]) && message.type === "redevplugin.ui.mount" &&
-        typeof message.id === "string" && message.revision === 1) {
-      if (!acceptWorkerRequest(message.id, "render")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      if (!renderRateAllowed()) {
-        completeWorkerRequest(message.id);
-        return rejectWorkerRequest(message.id, "plugin render rate limit exceeded");
-      }
-      void mountWorkerTree(message.tree).then((committed) => {
-        completeWorkerRequest(message.id);
-        if (committed) sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
-      }, (error) => fail(error && error.message || "plugin UI mount violated the protocol"));
-      return;
-    }
-    if (exactKeys(message, ["type", "id", "base_revision", "revision", "operations"]) && message.type === "redevplugin.ui.patch" &&
-        typeof message.id === "string" && Number.isSafeInteger(message.base_revision) && Number.isSafeInteger(message.revision)) {
-      if (!acceptWorkerRequest(message.id, "render")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
-      if (!renderRateAllowed()) {
-        completeWorkerRequest(message.id);
-        return rejectWorkerRequest(message.id, "plugin render rate limit exceeded");
-      }
-      void patchWorkerTree(message.base_revision, message.revision, message.operations).then((committed) => {
-        completeWorkerRequest(message.id);
-        if (committed) sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
-      }, (error) => fail(error && error.message || "plugin UI patch violated the protocol"));
-      return;
-    }
-    if (exactKeys(message, ["type", "id"]) && message.type === "redevplugin.bridge.cancel" && typeof message.id === "string") {
-      if (!pendingWorkerRequests.has(message.id)) return rejectWorkerRequest(message.id, "plugin request is not pending");
-      for (const [canvasID, runtime] of canvasRuntimes) {
-        if (runtime.openRequestID !== message.id) continue;
-        runtime.dispose();
-        canvasRuntimes.delete(canvasID);
-        completeWorkerRequest(message.id);
-        return;
-      }
-      if (pendingImageRequests.has(message.id)) {
-        pendingImageRequests.delete(message.id);
-        completeWorkerRequest(message.id);
-        return;
-      }
-      if (executionQueryRequests.has(message.id)) completeExecutionQueryRequest(message.id);
-      else completeWorkerRequest(message.id);
-      sendParent(message);
-      return;
-    }
-  };
-  const onParentMessage = async (event) => {
-    const message = event.data;
-    if (!initialized) {
-      const initKeys = ["type", "frame_generation_id", "surface_handle", "document", "context"];
-      if (!isRecord(message) || !Object.keys(message).every((key) => initKeys.includes(key)) || !initKeys.slice(0, 4).every((key) => Object.prototype.hasOwnProperty.call(message, key)) || message.type !== "redevplugin.surface.initialize" || message.frame_generation_id !== frameGenerationID || !validOpaqueHandle(message.surface_handle, "surface") || !validDocument(message.document) || (message.context !== undefined && !validSurfaceContext(message.context))) return fail("invalid private initialize message");
-      initialized = true;
-      surfaceHandle = message.surface_handle;
-      currentDocument = message.document;
-      currentContext = message.context;
-      try { applyStaticDocument(currentDocument); if (currentContext) applySurfaceContext(currentContext); startWorker(currentDocument); }
-      catch (error) { return fail(error); }
-      // Readiness describes applied initialization, not a browser paint. Hidden
-      // and offscreen opaque frames may never receive an animation frame.
-      sendParent({ type: "redevplugin.surface.renderer_ready" });
-      loadAssets();
-      return;
-    }
-    if (isRecord(message) && exactKeys(message, ["type", "frame_generation_id", "surface_handle", "context"]) && message.type === "redevplugin.surface.context" && message.frame_generation_id === frameGenerationID && message.surface_handle === surfaceHandle && validSurfaceContext(message.context)) {
-      if (currentContext && message.context.revision <= currentContext.revision) return;
-      currentContext = message.context;
-      applySurfaceContext(currentContext);
-      sendWorker({ type: "redevplugin.bridge.context", context: currentContext });
-      return;
-    }
-    if (message && message.type === "redevplugin.bridge.response" && typeof message.id === "string" && pendingWorkerRequests.has(message.id) && withinLimit(message)) {
-	  if (executionQueryRequests.has(message.id)) completeExecutionQueryRequest(message.id);
-	  else completeWorkerRequest(message.id);
-      sendWorker(message);
-      return;
-    }
-    if (message && message.type === "redevplugin.bridge.lifecycle" && isRecord(message.event) && ["ready", "visible", "hidden", "dispose"].includes(message.event.type) && Object.keys(message).every((key) => ["type", "event", "quiesce_id"].includes(key)) && (message.quiesce_id === undefined || (message.event.type === "dispose" && validOpaqueHandle(message.quiesce_id, "quiesce")))) {
-      pendingQuiesceID = message.quiesce_id;
-      sendWorker(message);
-      if (message.event.type === "dispose" && !message.quiesce_id) disposeRuntime();
-      return;
-    }
-    if (exactKeys(message, ["type", "request_id", "binding_id", "ok", "path", "sha256", "content_type", "content_base64"]) && message.type === "redevplugin.surface.asset.response" && typeof message.content_base64 === "string" && message.content_base64.length <= maxPrivateAssetBase64Length) {
-      const asset = pendingAssets.get(message.request_id);
-      pendingAssets.delete(message.request_id);
-      if (asset) activeAssetReads = Math.max(0, activeAssetReads - 1);
-      if (!asset || message.ok !== true || message.binding_id !== asset.binding_id || message.path !== asset.path || message.sha256 !== asset.sha256 || message.content_type !== asset.content_type || typeof message.content_base64 !== "string") {
-        fail("plugin asset response did not match the prepared document");
-        return;
-      }
-      try {
-        await applyAsset(asset, message.content_base64);
-      } catch {
-        fail("plugin asset response failed renderer validation");
-        return;
-      }
-      pumpAssets();
-    }
-  };
-  const onWindowMessage = (event) => {
-    if (accepted || event.source !== parent || !event.ports || event.ports.length !== 1) return;
-    const message = event.data;
-    if (!exactKeys(message, ["type", "frame_generation_id"]) || message.type !== "redevplugin.surface.port" || !validOpaqueHandle(message.frame_generation_id, "frame")) return;
-    accepted = true;
-    frameGenerationID = message.frame_generation_id;
-    removeEventListener("message", onWindowMessage);
-    parentPort = event.ports[0];
-    parentPort.addEventListener("message", onParentMessage);
-    parentPort.start();
-    parentPort.postMessage({ type: "redevplugin.surface.port_ack", frame_generation_id: frameGenerationID });
-  };
-  addEventListener("message", onWindowMessage);
-})();`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${escapeHTMLAttribute(csp)}"><title>Plugin</title></head><body><script nonce="${scriptNonce}">${bootstrapScript}<\/script></body></html>`;
-}
 var PluginSurfaceHostImplementation = class {
   element;
   surfaceInstanceId;
   bootstrap;
   bridgeChannelId;
-  frameGenerationId;
+  #frameGenerationId;
+  get frameGenerationId() {
+    return this.#frameGenerationId;
+  }
   surfaceHandle;
   #iframe;
   #transport;
   #createMessageChannel;
   #bridgeReady = false;
-  #rendererInitialized = false;
+  #applicationInitialized = false;
   #loadTimeoutMs;
   #requestTimeoutMs;
   #leaseRenewalLeadMs;
   #reloadLimiter;
   #confirm;
+  #prepareWebOrigin;
   #onOpeningProgress;
   #onInteraction;
   #onFileExport;
+  #confirmClose;
+  #closeDecision;
+  #requestedClose;
   #onError;
   #lastInteractionSequence = 0;
-  #pendingFileExportAction;
   #interactionWindowStartedAt = 0;
   #interactionWindowCount = 0;
   #abortController = new AbortController();
@@ -3224,12 +1104,9 @@ var PluginSurfaceHostImplementation = class {
   #leaseRenewalPromise;
   #assetSession;
   #assetSessionID;
-  #document;
   #surfaceContext;
-  #assets = /* @__PURE__ */ new Map();
   #pendingRequestControllers = /* @__PURE__ */ new Map();
   #activeTransportRequests = 0;
-  #activeAssetReads = 0;
   #transportIdle;
   #port;
   #openSignals;
@@ -3239,8 +1116,11 @@ var PluginSurfaceHostImplementation = class {
   #openingStage = "preparing";
   #openingPending = /* @__PURE__ */ new Set();
   #quiesce;
-  #initialFrameLoad;
-  #frameLoaded = false;
+  #document;
+  #navigationPath;
+  #documentID;
+  #navigationPending = false;
+  #navigationTimer;
   #closePromise;
   #revokePromise;
   #unregisterSurfaceScope;
@@ -3251,26 +1131,35 @@ var PluginSurfaceHostImplementation = class {
   #onPortMessage = (event) => {
     void this.#handlePortMessage(event);
   };
-  #onFrameLoad = () => {
-    if (this.#disposed || !this.#opened) return;
-    if (!this.#frameLoaded) {
-      this.#frameLoaded = true;
-      this.#initialFrameLoad?.resolve();
-      return;
+  #onEntryMessage = (event) => {
+    if (this.#disposed || !this.#document || event.source !== this.#iframe.contentWindow || event.origin !== this.#document.origin) return;
+    if (hasExactKeys(event.data, ["type", "entry_path", "document_id"]) && event.data.type === "redevplugin.surface.entry_ready" && typeof event.data.entry_path === "string" && validOpaqueHandle(event.data.document_id, "document")) {
+      const path = event.data.entry_path;
+      if (!path.startsWith("/") || path.startsWith("//") || path.length > 2048 || path.includes("\\") || new URL(path, this.#document.origin).origin !== this.#document.origin) return;
+      if (event.data.document_id === this.#documentID) return;
+      if (this.#documentID && !this.#ready && !this.#navigationPending) {
+        void this.#failSurface(new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Application navigated before its connection completed; reopen the application"));
+        return;
+      }
+      if (this.#ready) this.#beginNavigation();
+      this.#documentID = event.data.document_id;
+      this.#navigationPath = path;
+      if (this.#navigationPending) {
+        void this.#resumeNavigation();
+        return;
+      }
+      this.#openingPending.delete("entry_ready");
+      this.#openSignals?.entryReady.resolve();
+    } else if (hasExactKeys(event.data, ["type", "error"]) && event.data.type === "redevplugin.surface.entry_error" && typeof event.data.error === "string") {
+      this.#openSignals?.entryReady.reject(new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", event.data.error));
     }
-    const decision = this.#reloadLimiter.recordCrash();
-    const error2 = new PluginBridgeError(
-      "PLUGIN_BRIDGE_HANDSHAKE_FAILED",
-      `Plugin iframe reloaded unexpectedly (attempt ${decision.attempt})`
-    );
-    void this.#failSurface(error2);
   };
   constructor(options, transport, iframe) {
     this.element = iframe;
     this.bootstrap = options.bootstrap;
     this.surfaceInstanceId = options.bootstrap.surfaceInstanceId;
     this.bridgeChannelId = options.bridgeChannelId ?? randomOpaqueHandle("bridge");
-    this.frameGenerationId = randomOpaqueHandle("frame");
+    this.#frameGenerationId = randomOpaqueHandle("frame");
     this.surfaceHandle = randomOpaqueHandle("surface");
     this.#iframe = iframe;
     this.#transport = transport;
@@ -3280,9 +1169,11 @@ var PluginSurfaceHostImplementation = class {
     this.#leaseRenewalLeadMs = normalizeLeaseRenewalLead(options.leaseRenewalLeadMs);
     this.#reloadLimiter = options.reloadLimiter ?? new PluginSurfaceReloadLimiter();
     this.#confirm = options.confirm;
+    this.#prepareWebOrigin = options.prepareWebOrigin;
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
     this.#onFileExport = options.onFileExport;
+    this.#confirmClose = options.confirmClose;
     this.#onError = options.onError;
     this.#surfaceContext = options.surfaceContext === void 0 ? void 0 : normalizePluginSurfaceContext(options.surfaceContext);
     hardenPluginSurfaceFrame(this.#iframe);
@@ -3301,7 +1192,7 @@ var PluginSurfaceHostImplementation = class {
     this.#opened = true;
     this.#openingFailure = void 0;
     this.#openingStartedAt = performance.now();
-    this.#setOpeningStage("preparing", ["frame_load", "prepare"]);
+    this.#setOpeningStage("preparing", ["prepare"]);
     const progressTimer = setInterval(() => {
       if (!this.#ready && !this.#disposed) {
         const progress = this.#openingProgress();
@@ -3310,25 +1201,18 @@ var PluginSurfaceHostImplementation = class {
     }, openingProgressDelayMs);
     const signals = {
       portAcknowledged: deferred(),
-      rendererReady: deferred(),
-      workerReady: deferred(),
-      firstCommit: deferred()
+      entryReady: deferred(),
+      appReady: deferred()
     };
     void signals.portAcknowledged.promise.catch(() => void 0);
-    void signals.rendererReady.promise.catch(() => void 0);
-    void signals.workerReady.promise.catch(() => void 0);
-    void signals.firstCommit.promise.catch(() => void 0);
+    void signals.entryReady.promise.catch(() => void 0);
+    void signals.appReady.promise.catch(() => void 0);
     this.#openSignals = signals;
-    const scriptNonce = randomOpaqueNonce();
-    this.#frameLoaded = false;
-    const initialFrameLoad = deferred();
-    this.#initialFrameLoad = initialFrameLoad;
-    this.#iframe.addEventListener("load", this.#onFrameLoad);
+    globalThis.addEventListener("message", this.#onEntryMessage);
     hardenPluginSurfaceFrame(this.#iframe);
-    this.#iframe.srcdoc = createOpaquePluginBootstrapHTML({ scriptNonce });
     try {
       await withTimeout(
-        this.#completeOpening(signals, initialFrameLoad.promise),
+        this.#completeOpening(signals),
         this.#loadTimeoutMs,
         "Plugin surface opening timed out"
       );
@@ -3348,28 +1232,45 @@ var PluginSurfaceHostImplementation = class {
       this.#openingPending.clear();
       this.#openSignals = void 0;
       this.#openingFailure = void 0;
-      this.#initialFrameLoad = void 0;
     }
   }
-  async #completeOpening(signals, initialFrameLoad) {
-    const [preparation] = await Promise.all([
-      this.#prepareSurface().then((value) => {
-        this.#openingPending.delete("prepare");
-        return value;
-      }),
-      initialFrameLoad.then(() => {
-        this.#openingPending.delete("frame_load");
-      })
-    ]);
+  async #completeOpening(signals) {
+    const preparation = await this.#prepareSurface();
     this.#assertActive();
     validateSurfacePreparation(this.bootstrap, preparation);
+    if (preparation.document.parent_origin !== globalThis.location.origin) {
+      throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Web surface parent origin does not match this host");
+    }
     this.#assetSession = preparation.asset_session;
     this.#assetSessionID = preparation.asset_session_id;
     this.#document = preparation.document;
-    this.#assets = new Map(preparation.document.assets.map((asset) => [asset.binding_id, asset]));
+    if (this.#prepareWebOrigin) {
+      this.#setOpeningStage("connecting", ["origin"]);
+      await abortableWebOriginPreparation(this.#prepareWebOrigin(Object.freeze({
+        origin: preparation.document.origin,
+        parentOrigin: preparation.document.parent_origin,
+        pluginInstanceId: this.bootstrap.pluginInstanceId,
+        surfaceInstanceId: this.surfaceInstanceId,
+        signal: this.#abortController.signal
+      })), this.#abortController.signal);
+      this.#assertActive();
+    }
+    this.#setOpeningStage("connecting", ["entry_ready"]);
+    this.#iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
+    this.#iframe.src = preparation.document.bootstrap_url;
+    await signals.entryReady.promise;
+    this.#assertActive();
+    await this.#connectApplication(signals, this.#navigationPath ?? new URL(preparation.document.entry_url).pathname);
+  }
+  async #connectApplication(signals, entryPath) {
+    const preparation = { document: this.#document };
     this.#setOpeningStage("connecting", ["port_ack"]);
     const channel = this.#createMessageChannel();
     this.#port = channel.port1;
+    const activePort = this.#port;
+    this.#onPortMessage = (event) => {
+      if (this.#port === activePort) void this.#handlePortMessage(event);
+    };
     this.#port.addEventListener("message", this.#onPortMessage);
     this.#port.start();
     const iframeWindow = this.#iframe.contentWindow;
@@ -3378,37 +1279,80 @@ var PluginSurfaceHostImplementation = class {
     }
     iframeWindow.postMessage({
       type: "redevplugin.surface.port",
-      frame_generation_id: this.frameGenerationId
-    }, "*", [channel.port2]);
+      frame_generation_id: this.frameGenerationId,
+      document_id: this.#documentID
+    }, preparation.document.origin, [channel.port2]);
     await signals.portAcknowledged.promise;
     this.#assertActive();
     this.#setOpeningStage("authorizing", ["token"]);
-    const token = await this.#mintBridgeToken();
+    if (this.#leaseRenewalPromise) await this.#leaseRenewalPromise;
+    const token = await this.#mintBridgeToken(this.#gatewayToken);
     this.#assertActive();
     this.#applyLease(token);
-    this.#setOpeningStage("initializing", ["renderer_ready", "worker_ready"]);
-    this.#postToRenderer(removeUndefined({
+    this.#setOpeningStage("initializing", ["app_ready"]);
+    this.#postToApplication(removeUndefined({
       type: "redevplugin.surface.initialize",
       frame_generation_id: this.frameGenerationId,
       surface_handle: this.surfaceHandle,
-      document: preparation.document,
+      entry_path: entryPath,
       context: this.#surfaceContext
     }));
-    this.#rendererInitialized = true;
-    await Promise.all([signals.rendererReady.promise, signals.workerReady.promise]);
+    this.#applicationInitialized = true;
+    this.#bridgeReady = true;
+    this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+    await signals.appReady.promise;
     this.#assertActive();
     this.#bridgeReady = true;
-    this.#scheduleLeaseRenewal();
-    this.#setOpeningStage("committing", ["first_commit"]);
-    this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
-    await signals.firstCommit.promise;
-    this.#assertActive();
     this.#ready = true;
+    this.#scheduleLeaseRenewal();
+    this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
     this.#reloadLimiter.recordHealthyLoad();
+  }
+  #beginNavigation() {
+    if (this.#disposed || this.#navigationPending) return;
+    if (!this.#ready && this.#openSignals) {
+      void this.#failSurface(new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Application navigated before its connection completed; reopen the application"));
+      return;
+    }
+    this.#navigationPending = true;
+    clearTimeout(this.#leaseRenewalTimer);
+    this.#leaseRenewalTimer = void 0;
+    this.#ready = false;
+    this.#bridgeReady = false;
+    this.#applicationInitialized = false;
+    this.#lastInteractionSequence = 0;
+    this.#frameGenerationId = randomOpaqueHandle("frame");
+    for (const controller of this.#pendingRequestControllers.values()) controller.abort();
+    this.#pendingRequestControllers.clear();
+    this.#cancelCloseDecision();
+    this.#port?.removeEventListener("message", this.#onPortMessage);
+    this.#port?.close();
+    this.#port = void 0;
+    this.#navigationTimer = setTimeout(() => {
+      void this.#failSurface(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", "Application document did not reconnect"));
+    }, this.#loadTimeoutMs);
+  }
+  async #resumeNavigation() {
+    if (!this.#navigationPending || this.#disposed) return;
+    this.#navigationPending = false;
+    clearTimeout(this.#navigationTimer);
+    this.#navigationTimer = void 0;
+    const signals = { entryReady: deferred(), portAcknowledged: deferred(), appReady: deferred() };
+    for (const signal of Object.values(signals)) void signal.promise.catch(() => void 0);
+    this.#openSignals = signals;
+    try {
+      await withTimeout(this.#connectApplication(signals, this.#navigationPath), this.#loadTimeoutMs, "Application document reconnection timed out");
+    } catch (error2) {
+      const failure = this.#openingFailure ?? toBridgeError(error2, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
+      this.#reportError(failure);
+      await this.#failSurface(failure);
+    } finally {
+      if (this.#openSignals === signals) this.#openSignals = void 0;
+    }
   }
   sendLifecycle(event) {
     this.#assertReady();
-    this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event });
+    this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event });
   }
   updateContext(context) {
     this.#assertActive();
@@ -3417,11 +1361,57 @@ var PluginSurfaceHostImplementation = class {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context revision must increase monotonically");
     }
     this.#surfaceContext = normalized;
-    if (this.#port && this.#rendererInitialized) {
-      this.#postToRenderer({ type: "redevplugin.surface.context", frame_generation_id: this.frameGenerationId, surface_handle: this.surfaceHandle, context: normalized });
+    if (this.#port && this.#applicationInitialized) {
+      this.#postToApplication({ type: "redevplugin.surface.context", frame_generation_id: this.frameGenerationId, surface_handle: this.surfaceHandle, context: normalized });
     }
   }
+  /** User-initiated close. Cancellation leaves the live application and lease intact. */
+  requestClose() {
+    if (this.#requestedClose) return this.#requestedClose;
+    const pending = this.#requestClose();
+    this.#requestedClose = pending;
+    void pending.finally(() => {
+      if (this.#requestedClose === pending) this.#requestedClose = void 0;
+    }).catch(() => void 0);
+    return pending;
+  }
+  async #requestClose() {
+    if (this.#disposed) return this.close();
+    if (!this.#ready) return void 0;
+    const generation2 = this.#frameGenerationId;
+    const decision = { id: randomOpaqueHandle("close"), result: deferred(), controller: new AbortController() };
+    this.#closeDecision = decision;
+    try {
+      let allow = false;
+      let reason = "unsaved";
+      try {
+        this.#postToApplication({ type: "redevplugin.bridge.close_request", close_id: decision.id });
+        allow = await withTimeout(decision.result.promise, Math.min(this.#requestTimeoutMs, maxSurfaceQuiesceMs), "Application close decision timed out");
+      } catch {
+        reason = "unresponsive";
+      }
+      if (decision.controller.signal.aborted || generation2 !== this.#frameGenerationId) return void 0;
+      if (!allow && this.#confirmClose) {
+        try {
+          allow = confirmationDecisionAccepted(await abortableConfirmationDecision(this.#confirmClose({ reason, signal: decision.controller.signal }), decision.controller.signal));
+        } catch {
+          allow = false;
+        }
+      }
+      if (!allow || decision.controller.signal.aborted || generation2 !== this.#frameGenerationId) return void 0;
+      return this.close();
+    } finally {
+      if (this.#closeDecision === decision) this.#closeDecision = void 0;
+    }
+  }
+  #cancelCloseDecision() {
+    const decision = this.#closeDecision;
+    this.#closeDecision = void 0;
+    decision?.controller.abort();
+    decision?.result.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Application close decision was cancelled"));
+  }
   close() {
+    this.#cancelCloseDecision();
     if (this.#disposed) {
       const result = {
         quiesce: { outcome: "not_ready", durationMs: 0 },
@@ -3475,32 +1465,30 @@ var PluginSurfaceHostImplementation = class {
   #disposeLocal() {
     if (this.#disposed) return;
     this.#disposed = true;
+    clearTimeout(this.#navigationTimer);
+    this.#navigationPending = false;
     this.#unregisterSurfaceScope?.();
     this.#unregisterSurfaceScope = void 0;
     this.#ready = false;
     this.#bridgeReady = false;
-    this.#rendererInitialized = false;
+    this.#applicationInitialized = false;
     if (this.#leaseRenewalTimer) clearTimeout(this.#leaseRenewalTimer);
     this.#leaseRenewalTimer = void 0;
-    this.#iframe.removeEventListener("load", this.#onFrameLoad);
+    globalThis.removeEventListener("message", this.#onEntryMessage);
     this.#abortController.abort();
     for (const controller of this.#pendingRequestControllers.values()) controller.abort();
     this.#pendingRequestControllers.clear();
     const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface host was disposed");
-    this.#openSignals?.rendererReady.reject(disposedError);
-    this.#openSignals?.workerReady.reject(disposedError);
-    this.#openSignals?.firstCommit.reject(disposedError);
+    this.#openSignals?.entryReady.reject(disposedError);
+    this.#openSignals?.appReady.reject(disposedError);
     this.#openSignals?.portAcknowledged.reject(disposedError);
-    this.#initialFrameLoad?.reject(disposedError);
+    this.#cancelCloseDecision();
     this.#quiesce?.acknowledged.reject(disposedError);
     this.#quiesce = void 0;
     this.#gatewayToken = void 0;
     this.#leaseExpiresAtMs = 0;
     this.#assetSession = void 0;
     this.#assetSessionID = void 0;
-    this.#document = void 0;
-    this.#assets.clear();
-    this.#pendingFileExportAction = void 0;
     if (this.#port) {
       try {
         this.#port.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "dispose" } });
@@ -3510,7 +1498,8 @@ var PluginSurfaceHostImplementation = class {
       this.#port.close();
       this.#port = void 0;
     }
-    this.#iframe.srcdoc = "";
+    this.#iframe.setAttribute("sandbox", "allow-scripts allow-forms");
+    this.#iframe.src = "about:blank";
   }
   #invalidateLocal() {
     this.#disposeLocal();
@@ -3529,24 +1518,22 @@ var PluginSurfaceHostImplementation = class {
         return;
       }
       if (!messageWithinLimit(data)) return;
-      if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.renderer_ready") {
-        this.#openingPending.delete("renderer_ready");
-        this.#openSignals?.rendererReady.resolve();
-        return;
-      }
       if (hasExactKeys(data, ["type", "frame_generation_id"]) && data.type === "redevplugin.surface.port_ack" && data.frame_generation_id === this.frameGenerationId) {
         this.#openingPending.delete("port_ack");
         this.#openSignals?.portAcknowledged.resolve();
         return;
       }
-      if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.worker_ready") {
-        this.#openingPending.delete("worker_ready");
-        this.#openSignals?.workerReady.resolve();
+      if (hasExactKeys(data, ["type", "frame_generation_id"]) && data.type === "redevplugin.surface.app_ready" && data.frame_generation_id === this.frameGenerationId) {
+        this.#openingPending.delete("app_ready");
+        this.#openSignals?.appReady.resolve();
         return;
       }
-      if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.first_commit") {
-        this.#openingPending.delete("first_commit");
-        this.#openSignals?.firstCommit.resolve();
+      if (hasExactKeys(data, ["type", "frame_generation_id"]) && data.type === "redevplugin.surface.navigation" && data.frame_generation_id === this.frameGenerationId) {
+        this.#beginNavigation();
+        return;
+      }
+      if (hasExactKeys(data, ["type", "close_id", "allow"]) && data.type === "redevplugin.bridge.close_response" && typeof data.allow === "boolean" && data.close_id === this.#closeDecision?.id) {
+        this.#closeDecision?.result.resolve(data.allow);
         return;
       }
       if (isSurfaceInteractionMessage(data)) {
@@ -3582,9 +1569,6 @@ var PluginSurfaceHostImplementation = class {
         await this.#handleExecutionEvents(data);
         return;
       }
-      if (isAssetReadMessage(data)) {
-        await this.#handleAssetRead(data);
-      }
     } catch (error2) {
       await this.#failSurface(toBridgeError(error2, "PLUGIN_CONTRACT_MISMATCH"));
     }
@@ -3594,12 +1578,6 @@ var PluginSurfaceHostImplementation = class {
     if (message.sequence <= this.#lastInteractionSequence) return;
     this.#lastInteractionSequence = message.sequence;
     const now = performance.now();
-    if (message.kind === "action") {
-      this.#pendingFileExportAction = {
-        sequence: message.sequence,
-        expiresAt: now + pluginSurfaceFileExportActionWindowMs
-      };
-    }
     if (now - this.#interactionWindowStartedAt >= 1e3) {
       this.#interactionWindowStartedAt = now;
       this.#interactionWindowCount = 0;
@@ -3630,12 +1608,6 @@ var PluginSurfaceHostImplementation = class {
       return;
     }
     if (message.frame_generation_id !== this.frameGenerationId || message.surface_handle !== this.surfaceHandle) return;
-    const action = this.#pendingFileExportAction;
-    if (!action || action.sequence !== message.action_sequence || performance.now() > action.expiresAt) {
-      this.#postError(message.id, "PLUGIN_ACTION_DENIED", "Plugin file export requires a recent user action");
-      return;
-    }
-    this.#pendingFileExportAction = void 0;
     if (!this.#onFileExport) {
       this.#postError(message.id, "PLUGIN_FEATURE_NOT_CONFIGURED", "Plugin file export is not configured by the host");
       return;
@@ -3654,7 +1626,7 @@ var PluginSurfaceHostImplementation = class {
       const bridgeError = toBridgeError(error2, "PLUGIN_ADAPTER_FAILURE");
       this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
-      this.#pendingRequestControllers.delete(message.id);
+      if (this.#pendingRequestControllers.get(message.id) === controller) this.#pendingRequestControllers.delete(message.id);
     }
   }
   async #handleCall(request) {
@@ -3675,7 +1647,7 @@ var PluginSurfaceHostImplementation = class {
       }
       this.#postError(request.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
-      this.#pendingRequestControllers.delete(request.id);
+      if (this.#pendingRequestControllers.get(request.id) === controller) this.#pendingRequestControllers.delete(request.id);
     }
   }
   async #handleConfirmationRequired(request, originalError, signal) {
@@ -3724,7 +1696,7 @@ var PluginSurfaceHostImplementation = class {
       const bridgeError = toBridgeError(error2, "PLUGIN_EXECUTION_BLOCKED");
       this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
-      this.#pendingRequestControllers.delete(message.id);
+      if (this.#pendingRequestControllers.get(message.id) === controller) this.#pendingRequestControllers.delete(message.id);
     }
   }
   async #handleExecutionQuery(message) {
@@ -3744,7 +1716,7 @@ var PluginSurfaceHostImplementation = class {
       const bridgeError = toBridgeError(error2, "PLUGIN_EXECUTION_NOT_FOUND");
       this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
-      this.#pendingRequestControllers.delete(message.id);
+      if (this.#pendingRequestControllers.get(message.id) === controller) this.#pendingRequestControllers.delete(message.id);
     }
   }
   async #handleExecutionEvents(message) {
@@ -3764,42 +1736,7 @@ var PluginSurfaceHostImplementation = class {
       const bridgeError = toBridgeError(error2, "PLUGIN_EXECUTION_NOT_FOUND");
       this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
-      this.#pendingRequestControllers.delete(message.id);
-    }
-  }
-  async #handleAssetRead(message) {
-    if (this.#activeAssetReads >= maxConcurrentAssetReads) {
-      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin asset reads exceed the concurrency limit");
-    }
-    const asset = this.#assets.get(message.binding_id);
-    if (!asset || asset.path !== message.path || asset.sha256 !== message.sha256 || !this.#assetSession || !this.#assetSessionID) {
-      throw new PluginBridgeError("PLUGIN_ASSET_SESSION_INVALID", "Plugin asset request did not match the prepared surface document");
-    }
-    this.#activeAssetReads += 1;
-    try {
-      const result = await this.#postJSON(
-        `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/assets/read`,
-        () => ({
-          asset_session: this.#assetSession,
-          asset_session_id: this.#assetSessionID,
-          binding_id: asset.binding_id
-        })
-      );
-      if (!isAssetReadResult(result) || result.path !== asset.path || result.sha256 !== asset.sha256 || result.content_type !== asset.content_type) {
-        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin asset endpoint returned mismatched content");
-      }
-      this.#postToRenderer({
-        type: "redevplugin.surface.asset.response",
-        request_id: message.request_id,
-        binding_id: asset.binding_id,
-        ok: true,
-        path: result.path,
-        sha256: result.sha256,
-        content_type: result.content_type,
-        content_base64: result.content_base64
-      });
-    } finally {
-      this.#activeAssetReads -= 1;
+      if (this.#pendingRequestControllers.get(message.id) === controller) this.#pendingRequestControllers.delete(message.id);
     }
   }
   #registerPendingRequest(id) {
@@ -3987,7 +1924,7 @@ var PluginSurfaceHostImplementation = class {
   }
   #scheduleLeaseRenewal() {
     if (this.#leaseRenewalTimer) clearTimeout(this.#leaseRenewalTimer);
-    if (this.#disposed || this.#leaseRenewAtMs <= 0) return;
+    if (this.#disposed || !this.#ready || this.#leaseRenewAtMs <= 0) return;
     this.#leaseRenewalTimer = setTimeout(() => {
       this.#leaseRenewalTimer = void 0;
       void this.#startLeaseRenewal().catch(() => void 0);
@@ -4049,7 +1986,7 @@ var PluginSurfaceHostImplementation = class {
     this.#quiesce = quiesce;
     this.#ready = false;
     try {
-      this.#postToRenderer({
+      this.#postToApplication({
         type: "redevplugin.bridge.lifecycle",
         event: { type: "dispose" },
         quiesce_id: quiesce.id
@@ -4073,12 +2010,11 @@ var PluginSurfaceHostImplementation = class {
     const opening2 = !this.#ready && this.#openSignals !== void 0;
     this.#ready = false;
     this.#bridgeReady = false;
-    this.#rendererInitialized = false;
+    this.#applicationInitialized = false;
     const terminalError = opening2 ? this.#openingFailure ??= error2 : error2;
     this.#openSignals?.portAcknowledged.reject(terminalError);
-    this.#openSignals?.rendererReady.reject(terminalError);
-    this.#openSignals?.workerReady.reject(terminalError);
-    this.#openSignals?.firstCommit.reject(terminalError);
+    this.#openSignals?.entryReady.reject(terminalError);
+    this.#openSignals?.appReady.reject(terminalError);
     if (!opening2) this.#reportError(terminalError);
     const revoke = this.#revokeSurface(true);
     this.#disposeLocal();
@@ -4090,7 +2026,7 @@ var PluginSurfaceHostImplementation = class {
       this.#postError(id, "PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin response exceeds the bridge message limit");
       return;
     }
-    this.#postToRenderer(response);
+    this.#postToApplication(response);
   }
   #postError(id, errorCode, error2, details, mutationOutcome) {
     const errorDetails = details === void 0 ? void 0 : normalizePluginJSONObject(details);
@@ -4104,7 +2040,7 @@ var PluginSurfaceHostImplementation = class {
       mutation_outcome: mutationOutcome
     });
     if (!messageWithinLimit(response)) {
-      this.#postToRenderer(removeUndefined({
+      this.#postToApplication(removeUndefined({
         type: "redevplugin.bridge.response",
         id,
         ok: false,
@@ -4114,9 +2050,9 @@ var PluginSurfaceHostImplementation = class {
       }));
       return;
     }
-    this.#postToRenderer(response);
+    this.#postToApplication(response);
   }
-  #postToRenderer(message) {
+  #postToApplication(message) {
     if (!this.#port) {
       throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Plugin surface port is not ready");
     }
@@ -4415,6 +2351,27 @@ var PluginSurfaceSlot = class _PluginSurfaceSlot {
       throw error2;
     }
   }
+  /** Ask before removing a user-owned application; forced scope invalidation bypasses this. */
+  requestClose() {
+    this.#assertActive();
+    return this.#tail.then(async () => {
+      if (this.#disposed) return void 0;
+      const host = this.#active;
+      if (!host) return void 0;
+      const result = await host.requestClose();
+      if (!result) return void 0;
+      if (this.#active === host) {
+        this.#active = void 0;
+        if (!this.#disposed) this.#setState("empty");
+      }
+      host.element.remove();
+      try {
+        this.#onSurfaceClosed?.(result);
+      } catch {
+      }
+      return result;
+    });
+  }
   async close() {
     this.#assertActive();
     this.#transitionController?.abort();
@@ -4586,12 +2543,11 @@ function isSurfaceFileExportMessage(value) {
     "type",
     "frame_generation_id",
     "surface_handle",
-    "action_sequence",
     "id",
     "file_name",
     "media_type",
     "content"
-  ]) && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") && Number.isSafeInteger(value.action_sequence) && Number(value.action_sequence) > 0 && validBridgeRequestID(value.id, "file") && validFileExportName(value.file_name) && validFileExportMediaType(value.media_type) && value.content instanceof ArrayBuffer && value.content.byteLength > 0 && value.content.byteLength <= pluginSurfaceFileExportMaxBytes;
+  ]) && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") && validBridgeRequestID(value.id, "file") && validFileExportName(value.file_name) && validFileExportMediaType(value.media_type) && value.content instanceof ArrayBuffer && value.content.byteLength > 0 && value.content.byteLength <= pluginSurfaceFileExportMaxBytes;
 }
 function isSurfaceInteractionMessage(value) {
   if (!hasExactKeys(value, [
@@ -4627,10 +2583,9 @@ function createPluginSurfaceFrame() {
 }
 function hardenPluginSurfaceFrame(frame) {
   frame.setAttribute("src", "about:blank");
-  frame.setAttribute("sandbox", "allow-scripts");
+  frame.setAttribute("sandbox", "allow-scripts allow-forms");
   frame.setAttribute("allow", deniedPluginPermissionsPolicy);
   frame.setAttribute("referrerpolicy", "no-referrer");
-  if ("credentialless" in frame) frame.credentialless = true;
 }
 var deniedPluginPermissionsPolicy = [
   "accelerometer 'none'",
@@ -4658,15 +2613,6 @@ var deniedPluginPermissionsPolicy = [
   "xr-spatial-tracking 'none'"
 ].join("; ");
 var openingProgressDelayMs = 300;
-function randomOpaqueNonce() {
-  const cryptoLike = globalThis.crypto;
-  if (!cryptoLike?.getRandomValues) {
-    throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Web Crypto random values are unavailable");
-  }
-  const bytes = new Uint8Array(24);
-  cryptoLike.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 function randomOpaqueHandle(prefix) {
   const cryptoLike = globalThis.crypto;
   if (!cryptoLike?.getRandomValues) {
@@ -4675,9 +2621,6 @@ function randomOpaqueHandle(prefix) {
   const bytes = new Uint8Array(18);
   cryptoLike.getRandomValues(bytes);
   return `${prefix}_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
-function escapeHTMLAttribute(value) {
-  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 function validateHostBootstrap(bootstrap) {
   for (const value of [
@@ -4704,7 +2647,7 @@ function validateHostBootstrap(bootstrap) {
 }
 function validateSurfacePreparation(bootstrap, preparation) {
   if (!isSurfacePreparationResult(preparation)) {
-    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface prepare returned an invalid opaque document");
+    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface prepare returned an invalid Web document");
   }
   if (preparation.management_revision !== bootstrap.managementRevision || preparation.revoke_epoch !== bootstrap.revokeEpoch) {
     throw new PluginBridgeError("PLUGIN_GATEWAY_TOKEN_INVALID", "Plugin surface state changed during prepare");
@@ -4712,7 +2655,7 @@ function validateSurfacePreparation(bootstrap, preparation) {
   if (preparation.asset_session_nonce !== bootstrap.assetSessionNonce) {
     throw new PluginBridgeError("PLUGIN_ASSET_SESSION_INVALID", "Plugin asset session nonce changed during prepare");
   }
-  if (preparation.entry_path !== bootstrap.entryPath || preparation.entry_sha256 !== bootstrap.entrySHA256 || preparation.document.entry_path !== bootstrap.entryPath || preparation.document.entry_sha256 !== bootstrap.entrySHA256) {
+  if (preparation.entry_path !== bootstrap.entryPath || preparation.entry_sha256 !== bootstrap.entrySHA256) {
     throw new PluginBridgeError("PLUGIN_ASSET_SESSION_INVALID", "Plugin surface entry changed during prepare");
   }
 }
@@ -4731,34 +2674,19 @@ function isSurfacePreparationResult(value) {
   ])) return false;
   const issuedAt = Date.parse(String(value.issued_at));
   const expiresAt = Date.parse(String(value.expires_at));
-  return typeof value.asset_session === "string" && value.asset_session.length > 0 && typeof value.asset_session_id === "string" && value.asset_session_id.length > 0 && typeof value.asset_session_nonce === "string" && value.asset_session_nonce.length > 0 && validPackagePath(value.entry_path) && validSHA256(value.entry_sha256) && Number.isSafeInteger(value.management_revision) && Number(value.management_revision) >= 1 && Number.isSafeInteger(value.revoke_epoch) && Number(value.revoke_epoch) >= 1 && Number.isFinite(issuedAt) && Number.isFinite(expiresAt) && expiresAt > issuedAt && isOpaqueSurfaceDocument(value.document);
+  return typeof value.asset_session === "string" && value.asset_session.length > 0 && typeof value.asset_session_id === "string" && value.asset_session_id.length > 0 && typeof value.asset_session_nonce === "string" && value.asset_session_nonce.length > 0 && validPackagePath(value.entry_path) && validSHA256(value.entry_sha256) && Number.isSafeInteger(value.management_revision) && Number(value.management_revision) >= 1 && Number.isSafeInteger(value.revoke_epoch) && Number(value.revoke_epoch) >= 1 && Number.isFinite(issuedAt) && Number.isFinite(expiresAt) && expiresAt > issuedAt && isWebSurfaceDocument(value.document);
 }
-function isOpaqueSurfaceDocument(value) {
-  if (!hasAllowedKeys(value, [
-    "schema_version",
-    "entry_path",
-    "entry_sha256",
-    "title",
-    "language",
-    "direction",
-    "body_html",
-    "styles",
-    "worker",
-    "assets",
-    "critical_bytes"
-  ])) return false;
-  if (!Array.isArray(value.assets) || value.assets.length > maxOpaqueSurfaceLazyAssets) return false;
-  let lazyBytes = 0;
-  const logicalIDs = /* @__PURE__ */ new Set();
-  for (const asset of value.assets) {
-    if (!hasExactKeys(asset, ["binding_id", "logical_ids", "path", "sha256", "size", "content_type"]) || !validOpaqueHandle(asset.binding_id, "asset") || !validPackagePath(asset.path) || !validSHA256(asset.sha256) || !Array.isArray(asset.logical_ids) || asset.logical_ids.length < 1 || asset.logical_ids.length > 16 || asset.logical_ids.some((logicalID) => !validUIIdentifier(logicalID) || logicalIDs.has(logicalID)) || !Number.isSafeInteger(asset.size) || Number(asset.size) < 0 || Number(asset.size) > maxOpaqueSurfaceLazyBytes || typeof asset.content_type !== "string" || asset.content_type.length < 1 || asset.content_type.length > 256) {
-      return false;
-    }
-    for (const logicalID of asset.logical_ids) logicalIDs.add(logicalID);
-    lazyBytes += Number(asset.size);
-    if (!Number.isSafeInteger(lazyBytes) || lazyBytes > maxOpaqueSurfaceLazyBytes) return false;
+function isWebSurfaceDocument(value) {
+  if (!hasExactKeys(value, ["schema_version", "origin", "parent_origin", "bootstrap_url", "entry_url"]) || value.schema_version !== webSurfaceDocumentSchemaVersion) return false;
+  try {
+    if ([value.origin, value.parent_origin, value.bootstrap_url, value.entry_url].some((v) => typeof v !== "string")) return false;
+    const origin = new URL(String(value.origin)), parent = new URL(String(value.parent_origin));
+    const bootstrap = new URL(String(value.bootstrap_url)), entry = new URL(String(value.entry_url));
+    const validOrigin = (u, raw) => u.origin === raw && !u.username && !u.password && (u.protocol === "https:" || u.protocol === "http:" && (u.hostname === "localhost" || u.hostname.endsWith(".localhost")));
+    return validOrigin(origin, value.origin) && validOrigin(parent, value.parent_origin) && origin.hostname !== parent.hostname && bootstrap.origin === origin.origin && !bootstrap.username && !bootstrap.password && bootstrap.pathname === "/_redevplugin_web/bootstrap" && !bootstrap.search && /^#[a-f0-9]{64}$/.test(bootstrap.hash) && entry.origin === origin.origin && !entry.username && !entry.password && !entry.search && !entry.hash && !entry.pathname.startsWith("/_redevplugin_web/");
+  } catch {
+    return false;
   }
-  return value.schema_version === opaqueSurfaceDocumentSchemaVersion && validPackagePath(value.entry_path) && validSHA256(value.entry_sha256) && (value.title === void 0 || typeof value.title === "string" && value.title.length <= 256) && (value.language === void 0 || typeof value.language === "string" && value.language.length <= 64) && (value.direction === void 0 || value.direction === "ltr" || value.direction === "rtl" || value.direction === "auto") && typeof value.body_html === "string" && value.body_html.length <= 4 * 1024 * 1024 && Array.isArray(value.styles) && value.styles.every((style) => hasExactKeys(style, ["path", "sha256", "content"]) && validPackagePath(style.path) && validSHA256(style.sha256) && typeof style.content === "string" && style.content.length <= 2 * 1024 * 1024) && hasExactKeys(value.worker, ["path", "sha256", "type", "content"]) && validPackagePath(value.worker.path) && validSHA256(value.worker.sha256) && value.worker.type === "classic" && typeof value.worker.content === "string" && value.worker.content.length <= 4 * 1024 * 1024 && new Set(value.assets.map((asset) => asset.binding_id)).size === value.assets.length && new Set(value.assets.map((asset) => asset.path)).size === value.assets.length && Number.isSafeInteger(value.critical_bytes) && Number(value.critical_bytes) >= 0 && Number(value.critical_bytes) <= 8 * 1024 * 1024;
 }
 function isPluginSurfaceContext(value) {
   if (!isRecord(value) || !hasExactKeys(value, ["schema_version", "revision", "appearance", "locale"]) || value.schema_version !== pluginSurfaceContextSchemaVersion || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) return false;
@@ -4834,12 +2762,6 @@ function isPluginExecutionEventList(value, executionID, afterCursor) {
 function isBridgeCancelMessage(value) {
   return hasExactKeys(value, ["type", "id"]) && value.type === "redevplugin.bridge.cancel" && validBridgeRequestID(value.id);
 }
-function isAssetReadMessage(value) {
-  return hasExactKeys(value, ["type", "request_id", "binding_id", "path", "sha256"]) && value.type === "redevplugin.surface.asset.read" && typeof value.request_id === "string" && value.request_id.length > 0 && value.request_id.length <= 128 && validOpaqueHandle(value.binding_id, "asset") && validPackagePath(value.path) && validSHA256(value.sha256);
-}
-function isAssetReadResult(value) {
-  return hasExactKeys(value, ["path", "sha256", "content_type", "content_base64"]) && validPackagePath(value.path) && validSHA256(value.sha256) && typeof value.content_type === "string" && value.content_type.length > 0 && value.content_type.length <= 256 && typeof value.content_base64 === "string";
-}
 function isGatewayTokenResult(value) {
   return hasExactKeys(value, ["plugin_gateway_token", "plugin_gateway_token_id", "asset_session", "asset_session_id", "issued_at", "expires_at"]) && typeof value.plugin_gateway_token === "string" && value.plugin_gateway_token.length > 0 && typeof value.plugin_gateway_token_id === "string" && value.plugin_gateway_token_id.length > 0 && typeof value.asset_session === "string" && value.asset_session.length > 0 && typeof value.asset_session_id === "string" && value.asset_session_id.length > 0 && typeof value.issued_at === "string" && typeof value.expires_at === "string";
 }
@@ -4855,8 +2777,8 @@ function validRPCParams(value) {
 var pluginMethodPattern = new RegExp("^[-A-Za-z0-9._:]{1,256}$");
 var pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
 var pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
-var opaqueHandlePattern2 = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-var bridgeRequestIDPattern = /^(rpc|execution|render|canvas|asset|keyboard|file)_([1-9][0-9]{0,15})$/;
+var opaqueHandlePattern = new RegExp("^[-A-Za-z0-9_]{8,160}$");
+var bridgeRequestIDPattern = /^(rpc|execution|file)_([1-9][0-9]{0,15})$/;
 function validBridgeRequestID(value, expectedKind) {
   if (typeof value !== "string") return false;
   const match = bridgeRequestIDPattern.exec(value);
@@ -4884,7 +2806,7 @@ function validFileExportMediaType(value) {
   return pluginSurfaceFileExportMediaTypes.includes(value);
 }
 function validOpaqueHandle(value, prefix) {
-  return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern2.test(value);
+  return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern.test(value);
 }
 function validSHA256(value) {
   return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
@@ -4947,6 +2869,14 @@ function hasEncodedPathSeparatorOrDot(value) {
 }
 function confirmationDecisionAccepted(decision) {
   return typeof decision === "boolean" ? decision : decision.confirmed;
+}
+function abortableWebOriginPreparation(operation, signal) {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Web origin preparation was aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(operation).then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    if (signal.aborted) onAbort();
+  });
 }
 function abortableConfirmationDecision(decision, signal) {
   if (signal.aborted) {

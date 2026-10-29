@@ -1,3 +1,4 @@
+import { builtInShellThemePresets } from "@floegence/floe-webapp-core/themes";
 import {
   PluginPlatformClient,
   PluginSurfaceSlot,
@@ -6,6 +7,7 @@ import {
   type PluginConfirmationIntent,
   type FetchLike,
   type PluginSurfaceHost,
+  type PluginSurfaceContext,
 } from "../../packages/redevplugin-ui/src/trusted-parent.js";
 
 type CatalogPlugin = {
@@ -63,6 +65,16 @@ const surfaceTransport = createReDevPluginSurfaceTransport({ fetch: authenticate
 const platformClient = new PluginPlatformClient({ fetch: authenticatedFetch, surfaceScope, surfaceTransport });
 const surfaceSlot = PluginSurfaceSlot.create({ stage: elements.stage });
 let openSequence = 0;
+const colorScheme = matchMedia("(prefers-color-scheme: dark)");
+let contextRevision = 0;
+function surfaceContext(): PluginSurfaceContext {
+  const mode = colorScheme.matches ? "dark" : "light";
+  const palette = builtInShellThemePresets.find(preset => preset.name === "classic-" + mode)!.semanticTokens!;
+  const mapping = { canvas: "--background", surface: "--card", surface_elevated: "--popover", text: "--foreground", text_muted: "--muted-foreground", border: "--border", accent: "--primary", accent_text: "--primary-foreground", success: "--success", warning: "--warning", danger: "--error", focus: "--ring" } as const;
+  const colors = Object.fromEntries(Object.entries(mapping).map(([name, token]) => [name, palette[token]])) as PluginSurfaceContext["appearance"]["colors"];
+  return { schema_version: "redevplugin.surface_context.v1", revision: ++contextRevision, appearance: { color_scheme: mode, colors }, locale: { language_tag: navigator.language, direction: "ltr" } };
+}
+colorScheme.addEventListener("change", () => { surfaceHost?.updateContext(surfaceContext()); });
 let inspectorReturnFocus: HTMLButtonElement | undefined;
 
 elements.reload.addEventListener("click", () => {
@@ -149,9 +161,17 @@ async function openPlugin(
   historyMode: "preserve" | "push" | "replace",
   navigationTrigger?: HTMLButtonElement,
 ): Promise<void> {
+  const sequence = ++openSequence;
+  if (surfaceHost) {
+    const closed = await surfaceSlot.requestClose();
+    if (sequence !== openSequence) return;
+    if (!closed) {
+      if (activePlugin) updatePluginURL(activePlugin.slug, "replace");
+      return;
+    }
+  }
   setInspectorOpen(false);
   navigationTrigger?.focus({ preventScroll: true });
-  const sequence = ++openSequence;
   updatePluginURL(plugin.slug, historyMode);
   activePlugin = plugin;
   updateNavigationState();
@@ -168,6 +188,8 @@ async function openPlugin(
       expected_management_revision: plugin.management_revision,
     }, {
       confirm: confirmAction,
+      surfaceContext: surfaceContext(),
+      confirmClose: ({ reason, signal }) => showConfirmation("Leave this app?", reason === "unsaved" ? "Some changes have not been saved. Stay here to finish saving, or leave and discard them." : "The app is not responding. Leave only if you are prepared to lose unsaved changes.", "Leave app", signal),
       onError: (error) => {
         surfaceError ??= error;
         if (sequence === openSequence) showError(error);
@@ -284,20 +306,25 @@ function renderMetadata(plugin: CatalogPlugin): void {
   }));
 }
 
-function confirmAction(intent: PluginConfirmationIntent): Promise<{ confirmed: boolean }> {
-  elements.confirmationTitle.textContent = intent.method;
-  elements.confirmationSummary.textContent = riskSummary(intent);
+async function confirmAction(intent: PluginConfirmationIntent): Promise<{ confirmed: boolean }> {
+  return { confirmed: await showConfirmation(intent.method, riskSummary(intent), "Allow", intent.signal) };
+}
+
+function showConfirmation(title: string, summary: string, action: string, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted || elements.confirmation.open) return Promise.resolve(false);
+  elements.confirmationTitle.textContent = title;
+  elements.confirmationSummary.textContent = summary;
+  elements.confirmation.querySelector<HTMLButtonElement>('button[value="approve"]')!.textContent = action;
+  elements.confirmation.returnValue = "deny";
   elements.confirmation.showModal();
-  return new Promise((resolve) => {
-    const finish = (confirmed: boolean) => {
-      elements.confirmation.removeEventListener("close", onClose);
-      resolve({ confirmed });
+  return new Promise(resolve => {
+    const onAbort = () => elements.confirmation.close("deny");
+    const onClose = () => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(!signal.aborted && elements.confirmation.returnValue === "approve");
     };
-    const onClose = () => finish(elements.confirmation.returnValue === "approve");
     elements.confirmation.addEventListener("close", onClose, { once: true });
-    intent.signal.addEventListener("abort", () => {
-      if (elements.confirmation.open) elements.confirmation.close("deny");
-    }, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 

@@ -211,11 +211,6 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read",
-    "effect": "query"
-  },
-  {
-    "method": "POST",
     "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token",
     "effect": "mutation"
   },

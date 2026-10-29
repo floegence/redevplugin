@@ -106,7 +106,8 @@
           "surface_id",
           "kind",
           "label",
-          "entry"
+          "entry",
+          "web"
         ],
         "properties": {
           "surface_id": {
@@ -165,6 +166,24 @@
             "items": {
               "type": "string",
               "minLength": 1
+            }
+          },
+          "web": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "root",
+              "spa"
+            ],
+            "properties": {
+              "root": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "spa": {
+                "type": "boolean"
+              }
             }
           }
         }

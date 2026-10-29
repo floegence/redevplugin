@@ -30,7 +30,7 @@
       "kind": "view",
       "intent": "primary",
       "label": "Weather",
-      "entry": "ui/index.html",
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false},
       "default_size": {
         "width": 1120,
         "height": 760

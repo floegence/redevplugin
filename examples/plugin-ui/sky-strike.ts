@@ -1,4 +1,5 @@
-import { PluginBridgeClient, type PluginCanvasInputEvent, type PluginMethodResult, type PluginUIElementVNode, type PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
+import { connectTheme } from "./theme.js";
+import { PluginBridgeClient, type PluginMethodResult } from "../../packages/redevplugin-ui/src/plugin.js";
 
 type Vec = { x: number; y: number };
 type Bullet = Vec & { vy: number; enemy: boolean };
@@ -7,10 +8,6 @@ type Particle = Vec & { vx: number; vy: number; life: number; color: string };
 type GamePhase = "ready" | "running" | "paused" | "game-over";
 type InputMode = "keyboard" | "pointer";
 
-function textNode(key: string, value: string): PluginUIVNode {
-  return { type: "text", key, text: value };
-}
-
 const LANDSCAPE_WIDTH = 960;
 const LANDSCAPE_HEIGHT = 540;
 const PORTRAIT_WIDTH = 540;
@@ -18,11 +15,12 @@ const PORTRAIT_HEIGHT = 1080;
 let WIDTH = LANDSCAPE_WIDTH;
 let HEIGHT = LANDSCAPE_HEIGHT;
 const bridge = new PluginBridgeClient({ timeoutMs: 20_000 });
+connectTheme(bridge);
 const keys = new Set<string>();
 const images = new Map<string, ImageBitmap>();
 const player = { x: WIDTH / 2, y: HEIGHT - 72, speed: 330, cooldown: 0 };
-let canvas: OffscreenCanvas;
-let context: OffscreenCanvasRenderingContext2D;
+let canvas: HTMLCanvasElement;
+let context: CanvasRenderingContext2D;
 let bullets: Bullet[] = [];
 let enemies: Enemy[] = [];
 let particles: Particle[] = [];
@@ -48,25 +46,13 @@ let renderOffsetY = 0;
 let spawnedEnemies = 0;
 let scorePersistTimer: ReturnType<typeof setTimeout> | undefined;
 let scorePersistInFlight: Promise<void> | undefined;
-let frameTimer: ReturnType<typeof setTimeout> | undefined;
+let frameTimer: number | undefined;
 let surfaceVisible = true;
 let disposed = false;
 let gameReady = false;
-let accessibilityUpdateInFlight: Promise<void> | undefined;
 let lastAccessibilityUpdateAt = 0;
 let lastAccessibilitySignature = "";
 
-bridge.onAction("pause-game", () => {
-  if (phase === "ready" || phase === "game-over") startMission();
-  else phase = phase === "running" ? "paused" : "running";
-  syncCanvasAccessibility(true);
-});
-bridge.onAction("restart-game", () => {
-  void persistHighScore();
-  restart(false);
-  syncCanvasAccessibility(true);
-});
-bridge.onCanvasInput("playfield", handleInput);
 const initialization = initialize();
 bridge.onLifecycle(async (event) => {
   if (event.type === "visible") {
@@ -90,6 +76,8 @@ bridge.onLifecycle(async (event) => {
     stopFrameLoop();
     clearScorePersistTimer();
     await persistHighScore();
+    resizeObserver?.disconnect();
+    inputs.abort();
     for (const image of images.values()) image.close();
   }
 });
@@ -98,21 +86,19 @@ void initialization.catch((error) => void showFatalError(error));
 
 async function initialize(): Promise<void> {
   await bridge.ready();
-  await bridge.render(gameSurface(false));
+  mountGame();
   await bridge.call("game.initialize", {});
-  const [surface, backgroundImage, playerImage, enemyImage, laserImage, meteorImage, saved] = await Promise.all([
-    bridge.openCanvas("playfield"),
-    bridge.loadImageAsset("starfield-background"),
-    bridge.loadImageAsset("player-ship"),
-    bridge.loadImageAsset("enemy-ship"),
-    bridge.loadImageAsset("player-laser"),
-    bridge.loadImageAsset("meteor"),
+  const [backgroundImage, playerImage, enemyImage, laserImage, meteorImage, saved] = await Promise.all([
+    loadImage("assets/starfield-v2.webp"),
+    loadImage("assets/player.png"),
+    loadImage("assets/enemy.png"),
+    loadImage("assets/laser.png"),
+    loadImage("assets/meteor.png"),
     bridge.call<PluginMethodResult<{ score: number }>>("game.highScore.load", {}),
   ]);
-  canvas = surface.canvas;
-  cssWidth = surface.cssWidth;
-  cssHeight = surface.cssHeight;
-  devicePixelRatio = surface.devicePixelRatio;
+  cssWidth = canvas.clientWidth;
+  cssHeight = canvas.clientHeight;
+  devicePixelRatio = window.devicePixelRatio;
   configureWorld(cssWidth, cssHeight, devicePixelRatio);
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) throw new Error("2D canvas is unavailable");
@@ -131,57 +117,60 @@ async function initialize(): Promise<void> {
   scheduleFrame();
 }
 
-async function showFatalError(_error: unknown): Promise<void> {
-  try {
-    await bridge.ready();
-    await bridge.render(gameSurface(true));
-  } catch {
-    // The host renders the unavailable state when the plugin bridge cannot start.
-  }
+const inputs = new AbortController();
+let resizeObserver: ResizeObserver | undefined;
+
+async function loadImage(path: string): Promise<ImageBitmap> {
+  const response = await fetch(path, { signal: inputs.signal });
+  if (!response.ok) throw new Error(`Image unavailable: ${path}`);
+  return createImageBitmap(await response.blob());
 }
 
-function gameSurface(fatal: boolean): PluginUIElementVNode {
-  return {
-    type: "element" as const,
-    key: "game-root",
-    tag: "main" as const,
-    attributes: { class: fatal ? "game-shell arcade-shell game-failed" : "game-shell arcade-shell" },
-    children: [
-      { type: "element" as const, key: "canvas-stage", tag: "section" as const, attributes: { class: "canvas-stage", "aria-label": "Sky Strike game" }, children: [
-        { type: "element" as const, key: "playfield", tag: "canvas" as const, attributes: { "data-redevplugin-canvas": "playfield", width: 960, height: 540, tabindex: 0, "aria-label": "Sky Strike mission playfield", "aria-describedby": "control-hint" }, children: [] },
-        { type: "element" as const, key: "game-actions", tag: "div" as const, attributes: { class: "game-actions" }, children: [
-          { type: "element" as const, key: "pause-game", tag: "button" as const, attributes: { type: "button", "data-redevplugin-action": "pause-game", title: "Play, pause, or resume", "aria-label": "Play, pause, or resume" }, children: [
-            { type: "element" as const, key: "pause-game-icon", tag: "span" as const, attributes: { class: "icon-play-pause", "aria-hidden": true }, children: [] },
-          ] },
-          { type: "element" as const, key: "restart-game", tag: "button" as const, attributes: { type: "button", "data-redevplugin-action": "restart-game", title: "Restart mission", "aria-label": "Restart mission" }, children: [
-            { type: "element" as const, key: "restart-game-icon", tag: "span" as const, attributes: { class: "icon-restart", "aria-hidden": true }, children: [] },
-          ] },
-        ] },
-        { type: "element" as const, key: "control-hint", tag: "div" as const, attributes: { id: "control-hint", class: "control-hint" }, children: [
-          { type: "element" as const, key: "keyboard-hint", tag: "span" as const, attributes: { class: "keyboard-copy" }, children: [textNode("keyboard-hint-text", "WASD or arrows to fly / Space to fire")] },
-          { type: "element" as const, key: "touch-hint", tag: "span" as const, attributes: { class: "touch-copy" }, children: [textNode("touch-hint-text", "Drag to fly / Hold to fire")] },
-        ] },
-      ] },
-      { type: "element" as const, key: "game-error", tag: "section" as const, attributes: { class: "game-error", hidden: !fatal, role: "alert" }, children: [
-        { type: "element" as const, key: "game-error-mark", tag: "span" as const, attributes: { class: "game-error-mark", "aria-hidden": true }, children: [textNode("game-error-mark-text", "07")] },
-        { type: "element" as const, key: "game-error-eyebrow", tag: "p" as const, attributes: { class: "game-error-eyebrow" }, children: [textNode("game-error-eyebrow-text", "Mission unavailable")] },
-        { type: "element" as const, key: "game-error-title", tag: "h1" as const, children: [textNode("game-error-title-text", "Sky Strike could not start")] },
-        { type: "element" as const, key: "game-error-message", tag: "p" as const, children: [textNode("game-error-message-text", "The flight system did not finish loading. Reopen the app to try again.")] },
-      ] },
-    ],
-  };
+async function showFatalError(_error: unknown): Promise<void> {
+  if (disposed) return;
+  document.querySelector(".game-shell")?.classList.add("game-failed");
+  const error = document.querySelector<HTMLElement>(".game-error");
+  if (error) error.hidden = false;
+}
+
+function mountGame(): void {
+  const root = document.createElement("main");
+  root.className = "game-shell arcade-shell";
+  root.innerHTML = `<section class="canvas-stage" aria-label="Sky Strike game">
+    <canvas width="960" height="540" tabindex="0" aria-label="Sky Strike mission playfield" aria-describedby="control-hint"></canvas>
+    <div class="game-actions"><button type="button" class="pause-game" data-floe-surface="floating" aria-label="Play, pause, or resume" title="Play, pause, or resume"><span class="icon-play-pause" aria-hidden="true"></span></button>
+    <button type="button" class="restart-game" data-floe-surface="floating" aria-label="Restart mission" title="Restart mission"><span class="icon-restart" aria-hidden="true"></span></button></div>
+    <div id="control-hint" class="control-hint" data-floe-surface="floating"><span class="keyboard-copy">WASD or arrows to fly / Space to fire</span><span class="touch-copy">Drag to fly / Hold to fire</span></div>
+    <p id="game-state" class="sr-only" role="status"></p></section>
+    <section class="game-error" role="alert" hidden><h1>Sky Strike could not start</h1><p>Reopen the app to try again.</p></section>`;
+  document.body.replaceChildren(root);
+  canvas = root.querySelector("canvas")!;
+  canvas.style.touchAction = "none";
+  root.querySelector(".pause-game")!.addEventListener("click", () => {
+    if (phase === "ready" || phase === "game-over") startMission();
+    else phase = phase === "running" ? "paused" : "running";
+    syncCanvasAccessibility(true);
+  }, { signal: inputs.signal });
+  root.querySelector(".restart-game")!.addEventListener("click", () => { void persistHighScore(); restart(false); syncCanvasAccessibility(true); }, { signal: inputs.signal });
+  for (const type of ["keydown", "keyup"] as const) canvas.addEventListener(type, handleKey, { signal: inputs.signal });
+  for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) canvas.addEventListener(type, handlePointer, { signal: inputs.signal });
+  canvas.addEventListener("blur", resetInput, { signal: inputs.signal });
+  canvas.addEventListener("lostpointercapture", () => { pointerDown = false; pointerTarget = undefined; }, { signal: inputs.signal });
+  window.addEventListener("blur", resetInput, { signal: inputs.signal });
+  resizeObserver = new ResizeObserver(() => configureWorld(canvas.clientWidth, canvas.clientHeight, window.devicePixelRatio));
+  resizeObserver.observe(canvas);
 }
 
 function scheduleFrame(): void {
   if (disposed || !surfaceVisible || !gameReady || frameTimer !== undefined) return;
-  frameTimer = setTimeout(() => {
+  frameTimer = requestAnimationFrame(() => {
     frameTimer = undefined;
     frame();
-  }, 1000 / 60);
+  });
 }
 
 function stopFrameLoop(): void {
-  if (frameTimer !== undefined) clearTimeout(frameTimer);
+  if (frameTimer !== undefined) cancelAnimationFrame(frameTimer);
   frameTimer = undefined;
 }
 
@@ -392,49 +381,45 @@ function startMission(): void {
   syncCanvasAccessibility(true);
 }
 
-function handleInput(event: PluginCanvasInputEvent): void {
-  if (event.type === "key") {
-    inputMode = "keyboard";
-    pointerTarget = undefined;
-    pointerDown = false;
-    if (event.event === "keydown") keys.add(event.code);
-    else keys.delete(event.code);
-    if (event.event === "keydown" && (event.code === "Enter" || event.code === "Space") && (phase === "ready" || phase === "game-over")) {
-      startMission();
-      return;
-    }
-    if (event.event === "keydown" && event.code === "KeyP") {
-      if (phase === "running") phase = "paused";
-      else if (phase === "paused") phase = "running";
-      syncCanvasAccessibility(true);
-    }
-    return;
-  }
-  if (event.type === "blur") {
-    keys.clear();
-    pointerDown = false;
+function handleKey(event: KeyboardEvent): void {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "KeyA", "KeyD", "KeyW", "KeyS", "Space", "Enter", "KeyP"].includes(event.code)) return;
+  event.preventDefault();
+  inputMode = "keyboard";
+  pointerTarget = undefined;
+  pointerDown = false;
+  if (event.type === "keydown") keys.add(event.code); else keys.delete(event.code);
+  if (event.type !== "keydown" || event.repeat) return;
+  if (["Enter", "Space"].includes(event.code) && phase !== "running") startMission();
+  if (event.code === "KeyP") {
     if (phase === "running") phase = "paused";
-    syncCanvasAccessibility(true);
-    return;
+    else if (phase === "paused") phase = "running";
   }
-  if (event.type === "resize") {
-    configureWorld(event.cssWidth, event.cssHeight, event.devicePixelRatio);
-    return;
-  }
-  if (event.type !== "pointer") return;
-  if (event.event === "pointermove" && event.buttons === 0) return;
+  syncCanvasAccessibility(true);
+}
+
+function resetInput(): void {
+  keys.clear(); pointerDown = false; pointerTarget = undefined;
+  if (phase === "running") phase = "paused";
+  syncCanvasAccessibility(true);
+}
+
+function handlePointer(event: PointerEvent): void {
+  if (!event.isPrimary || (event.type === "pointermove" && event.buttons === 0)) return;
   inputMode = "pointer";
+  const bounds = canvas.getBoundingClientRect();
   pointerTarget = {
-    x: clamp((event.x - renderOffsetX) / Math.max(renderScale, 0.001), 0, WIDTH),
-    y: clamp((event.y - renderOffsetY) / Math.max(renderScale, 0.001), 0, HEIGHT),
+    x: clamp((event.clientX - bounds.left - renderOffsetX) / Math.max(renderScale, 0.001), 0, WIDTH),
+    y: clamp((event.clientY - bounds.top - renderOffsetY) / Math.max(renderScale, 0.001), 0, HEIGHT),
   };
-  if (event.event === "pointerdown" && (phase === "ready" || phase === "game-over")) {
-    startMission();
-    pointerDown = false;
-    return;
-  }
-  pointerDown = event.event === "pointerdown" || (event.event === "pointermove" && event.buttons > 0);
-  if (event.event === "pointerup" || event.event === "pointercancel") pointerDown = false;
+  if (event.type === "pointerdown") {
+    canvas.focus({ preventScroll: true });
+    canvas.setPointerCapture(event.pointerId);
+    if (phase !== "running") startMission();
+    pointerDown = true;
+  } else if (event.type === "pointerup" || event.type === "pointercancel") {
+    pointerDown = false; pointerTarget = undefined;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  } else pointerDown = event.buttons > 0;
 }
 
 function draw(time: number): void {
@@ -733,7 +718,6 @@ function syncCanvasAccessibility(force: boolean, now = performance.now()): void 
   const finalScore = phase === "game-over" ? score : 0;
   const signature = `${phase}:${lives}:${inputMode}:${finalScore}`;
   if (!force && signature === lastAccessibilitySignature) return;
-  if (accessibilityUpdateInFlight) return;
   lastAccessibilityUpdateAt = now;
   lastAccessibilitySignature = signature;
   const label = "Sky Strike game canvas";
@@ -742,10 +726,10 @@ function syncCanvasAccessibility(force: boolean, now = performance.now()): void 
     ? "Use WASD or arrow keys to fly, Space to fire, and P to pause or resume."
     : "Drag to fly, hold to fire, and use the play button to pause or resume.";
   const description = `${phaseLabel()}. ${lives} ${lives === 1 ? "life" : "lives"} remaining.${scoreSummary} ${controls}`;
-  const update = bridge.updateCanvasAccessibility("playfield", { label, description }).catch(() => undefined).finally(() => {
-    if (accessibilityUpdateInFlight === update) accessibilityUpdateInFlight = undefined;
-  });
-  accessibilityUpdateInFlight = update;
+  canvas.setAttribute("aria-label", label);
+  canvas.setAttribute("aria-describedby", "game-state");
+  const status = document.getElementById("game-state");
+  if (status) status.textContent = description;
 }
 
 function phaseLabel(): string {

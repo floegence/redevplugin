@@ -1,0 +1,6 @@
+export const webEvidenceChecks = ["origin_preparation", "native_modules", "dynamic_import", "worker", "canvas", "webgl", "wasm", "indexeddb", "native_input_undo_selection", "independent_origins", "parent_isolation", "network_denied", "receiver_network_boundary", "service_worker_denied", "quiesce_acknowledged", "unsaved_close_protected", "native_navigation", "independent_close", "retained_container_opening", "unsupported_before_application"];
+export function validateWebEvidence(report) {
+ if (!report || report.schema_version !== "redevplugin.web_acceptance.v1" || report.evidence_source !== "go-host-http-adapter-chromium" || typeof report.browser !== "string" || !report.browser.length || Object.keys(report).sort().join() !== ["schema_version", "evidence_source", "browser", "checks"].sort().join()) throw new Error("invalid Web evidence identity");
+ if (!report.checks || Object.keys(report.checks).sort().join() !== [...webEvidenceChecks].sort().join()) throw new Error("invalid Web evidence checks");
+ for (const check of webEvidenceChecks) if (report.checks[check] !== true) throw new Error("missing Web evidence: " + check);
+}

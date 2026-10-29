@@ -1,6 +1,6 @@
 {
   "name": "@floegence/redevplugin-ui",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -23,14 +23,6 @@
       "types": "./dist/plugin.d.ts",
       "default": "./dist/plugin.js"
     },
-    "./jsx-runtime": {
-      "types": "./dist/jsx-runtime.d.ts",
-      "default": "./dist/jsx-runtime.js"
-    },
-    "./jsx-dev-runtime": {
-      "types": "./dist/jsx-dev-runtime.d.ts",
-      "default": "./dist/jsx-dev-runtime.js"
-    },
     "./local-import": {
       "types": "./dist/local-import.d.ts",
       "default": "./dist/local-import.js"
@@ -44,15 +36,15 @@
     "dist"
   ],
   "dependencies": {
-    "@floegence/redevplugin-contracts": "3.2.0",
+    "@floegence/redevplugin-contracts": "3.3.0",
     "@noble/hashes": "2.4.0"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node ../../scripts/build_ui_package.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node ../../scripts/clean_typescript_test_output.mjs dist-test && tsc -p tsconfig.json && tsc -p tsconfig.test.json && node --test dist-test/test/*.js"
+    "test": "node ../../scripts/clean_typescript_test_output.mjs dist-test && npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.js"
   }
 }

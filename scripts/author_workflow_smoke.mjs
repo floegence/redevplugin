@@ -16,6 +16,7 @@ const directory = await mkdtemp(join(tmpdir(), "redevplugin-author-smoke-"));
 let child;
 let browser;
 let exited;
+let page;
 try {
 const project = join(directory, "source");
 const initialized = spawnSync(cli, ["init", "dev.example.author", "Author Preview", project], { encoding: "utf8" });
@@ -38,11 +39,11 @@ exited = new Promise(resolveExit=>child.once("exit",(code,signal)=>resolveExit({
 browser=await chromium.launch({headless:true});
 try{
  let preview;
- for(let attempt=0;attempt<100;attempt++){preview=logs.match(/Preview: (http:\/\/127\.0\.0\.1:\d+\/#[a-f0-9]+)/u)?.[1];if(preview)break;await new Promise(resolveWait=>setTimeout(resolveWait,100))}
+ for(let attempt=0;attempt<100;attempt++){preview=logs.match(/Preview: (http:\/\/localhost:\d+\/#[a-f0-9]+)/u)?.[1];if(preview)break;await new Promise(resolveWait=>setTimeout(resolveWait,100))}
  assert.ok(preview,logs);const origin=new URL(preview).origin;
  assert.equal((await fetch(origin+"/dev/status")).status,403);
  assert.equal((await fetch(origin+"/manifest.json")).status,404);
- const page=await browser.newPage();await page.goto(preview);
+ page=await browser.newPage();await page.goto(preview);
  const frame=page.frameLocator("#stage > iframe");await frame.getByRole("heading",{name:"Author Preview"}).waitFor({timeout:30000});
  await frame.getByLabel("Message",{exact:true}).fill("Browser worker acceptance");await frame.getByRole("button",{name:"Send to worker"}).click();await frame.getByText("Browser worker acceptance",{exact:true}).waitFor({timeout:15000});
  await page.locator("#confirmation").evaluate(dialog=>dialog.showModal());
@@ -63,8 +64,11 @@ try{
  await writeFile(join(project,"redevplugin.project.json"),(await readFile(join(project,"redevplugin.project.json"),"utf8"))+" ");
  await page.getByText("project configuration changed; restart the developer preview to apply it",{exact:true}).waitFor({timeout:10000});
  assert.equal(await current.evaluate(element=>element.isConnected),true);
- console.log("Author workflow passed: real WASM call, opaque preview, failed-build retention, fresh reload generation, responsive layout, private API.");
-}catch(error){throw new Error(String(error)+"\n"+logs,{cause:error})}
+ console.log("Author workflow passed: real WASM call, isolated Web preview, failed-build retention, fresh reload generation, responsive layout, private API.");
+}catch(error){
+ const diagnostic = page ? await page.evaluate(async () => ({ status: await (await fetch("/dev/status")).json(), text: document.body.innerText, frames: [...document.querySelectorAll("iframe")].map(frame => ({src:frame.src,hidden:frame.hidden,style:frame.getAttribute("style")})) })).catch(String) : undefined;
+ throw new Error(String(error)+"\n"+JSON.stringify(diagnostic)+"\n"+logs,{cause:error});
+}
 } finally {
  try {
   if (browser) await browser.close();

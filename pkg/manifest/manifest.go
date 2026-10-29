@@ -205,6 +205,7 @@ type SurfaceSpec struct {
 	Intent          SurfaceIntent   `json:"intent,omitempty"`
 	Label           string          `json:"label"`
 	Entry           string          `json:"entry"`
+	Web             SurfaceWebSpec  `json:"web"`
 	Icon            string          `json:"icon,omitempty"`
 	DefaultSize     *WidgetSizeSpec `json:"default_size,omitempty"`
 }
@@ -212,6 +213,13 @@ type SurfaceSpec struct {
 type WidgetSizeSpec struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
+}
+
+// SurfaceWebSpec maps the application's origin root to one package directory.
+// SPA fallback applies only to document navigations, never module or API reads.
+type SurfaceWebSpec struct {
+	Root string `json:"root"`
+	SPA  bool   `json:"spa"`
 }
 
 type WorkerMode string
@@ -499,6 +507,9 @@ func Validate(m Manifest) error {
 		}
 		if strings.TrimSpace(surface.Entry) == "" {
 			return ValidationError{Field: fmt.Sprintf("surfaces[%d].entry", i), Message: "is required"}
+		}
+		if err := validateSurfaceWeb(surface); err != nil {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].web", i), Message: err.Error()}
 		}
 		if err := validateSurfaceIcon(surface.Icon); err != nil {
 			return ValidationError{Field: fmt.Sprintf("surfaces[%d].icon", i), Message: err.Error()}

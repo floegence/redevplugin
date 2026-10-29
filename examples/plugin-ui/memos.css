@@ -1,0 +1,62 @@
+.memos-app { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100dvh; }
+.memos-explorer { padding: 22px 18px; border-right: 1px solid var(--border); background: var(--card); }
+.explorer-header, .calendar header, .tags-panel header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
+.explorer-header strong { font-size: 20px; }
+.explorer-close, .mobile-header, .explorer-scrim { display: none; }
+.search-form { display: flex; gap: 4px; margin-bottom: 20px; }
+.search-form input { width: 100%; }
+.view-nav { display: grid; gap: 4px; }
+.view-nav button, .tag-list button { display: flex; justify-content: space-between; gap: 8px; width: 100%; }
+.calendar, .tags-panel { margin-top: 26px; }
+.calendar h2, .tags-panel h2 { font-size: 13px; }
+.calendar header { margin-bottom: 10px; }
+.calendar header button { min-height: 28px; padding: 1px 8px; }
+.calendar-weekdays, .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; text-align: center; }
+.calendar-weekdays { color: var(--muted-foreground); font-size: 11px; margin-bottom: 4px; }
+.calendar-grid button { min-height: 28px; padding: 2px; border-color: transparent; font-size: 12px; }
+.calendar-grid .has-memos { text-decoration: underline; text-underline-offset: 4px; }
+.calendar-grid .today { border-color: var(--primary); }
+.tag-list { padding: 0; margin: 0; list-style: none; display: grid; gap: 4px; }
+.memos-workspace { min-width: 0; padding: 28px; }
+.feed-shell { max-width: 760px; margin: auto; }
+.memo-composer, .memo-card { padding: 20px; border-radius: 14px; background: var(--card); }
+.composer-footer, .inline-editor footer { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; font-size: 11px; }
+.composer-footer > button, .inline-editor footer > button { margin-left: auto; }
+.save-state { font-size: 11px; color: var(--muted-foreground); }
+.feed-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 28px 0 20px; }
+.feed-header h1 { font-size: 20px; }
+.feed-header p { font-size: 12px; color: var(--muted-foreground); }
+.memo-feed { display: grid; gap: 16px; }
+.memo-card-header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.memo-card-header time { display: block; font-size: 11px; color: var(--muted-foreground); }
+.memo-card-actions { display: flex; align-items: start; gap: 6px; position: relative; }
+.memo-card-actions > button { min-height: 28px; padding: 3px 8px; font-size: 11px; }
+.memo-menu { position: absolute; z-index: 10; right: 0; top: 34px; display: grid; gap: 4px; min-width: 150px; padding: 6px; border-radius: 10px; background: var(--popover); }
+.memo-menu button { text-align: left; }
+.memo-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.memo-tags:empty { display: none; }
+.memo-tags button { padding: 2px 6px; min-height: 26px; margin-top: 10px; color: var(--primary); font-size: 11px; }
+.markdown-body { overflow-wrap: anywhere; line-height: 1.7; }
+.markdown-body > * { margin: 0 0 12px; }
+.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-code-block { white-space: pre-wrap; padding: 12px; border-radius: 8px; background: var(--background); }
+.markdown-inline-code { background: var(--background); padding: 2px 4px; border-radius: 4px; }
+.markdown-quote { padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted-foreground); }
+.markdown-table-wrap { overflow: auto; }
+.markdown-table { border-collapse: collapse; width: 100%; }
+.markdown-table th, .markdown-table td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.task-item { display: flex; align-items: start; gap: 8px; }
+.markdown-task { margin: 7px 0 0; accent-color: var(--primary); }
+.markdown-list-copy > p { margin: 0; }
+.expand-content { margin-top: 12px; }
+.feed-message { padding: 36px 20px; text-align: center; color: var(--muted-foreground); }
+.feed-message p { margin-top: 10px; }
+.sync-notice { max-width: 760px; margin: 0 auto 20px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
+.delete-dialog { width: min(420px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border); border-radius: 14px; background: var(--popover); color: var(--foreground); }
+.delete-dialog::backdrop { background: rgb(0 0 0 / .24); }
+.delete-dialog p { margin-top: 12px; color: var(--muted-foreground); }
+.delete-actions { display: flex; justify-content: end; gap: 10px; margin-top: 24px; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); padding: 10px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--popover); }
+@media(max-width:700px) { .memos-app { display: block; } .memos-workspace { padding: 16px; } .mobile-header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; } .memos-explorer { display: none; } .explorer-open .memos-explorer { display: block; position: fixed; inset: 0 auto 0 0; width: min(360px, 100vw); padding: 22px 16px; overflow: auto; z-index: 30; } .explorer-open .explorer-scrim { display: block; position: fixed; inset: 0; width: 100%; height: 100%; background: rgb(0 0 0 / .24); border: 0; border-radius: 0; z-index: 29; } .explorer-close { display: block; } .memo-composer, .memo-card { padding: 16px; } }
+
+@media(max-width:700px) { .calendar-grid button, .memo-card-actions > button, .explorer-close { min-height: 44px; min-width: 44px; } .explorer-close, .memo-card-actions > button { min-width: 44px; } }

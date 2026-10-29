@@ -418,8 +418,8 @@ func externalPackageProjectionFixture() (manifest.Manifest, []capabilitycontract
 			{IntentID: "jobs.open", Method: "jobs.run"},
 		},
 		Surfaces: []manifest.SurfaceSpec{
-			{SurfaceID: "main", Kind: manifest.SurfaceView, Intent: manifest.SurfaceIntentPrimary, Label: "Main", Entry: "ui/main.html", Icon: "icons/main.png", DefaultSize: &manifest.WidgetSizeSpec{Width: 720, Height: 480}},
-			{SurfaceID: "background", Kind: manifest.SurfaceBackground, Intent: manifest.SurfaceIntentUtility, Label: "Background", Entry: "ui/background.html"},
+			{SurfaceID: "main", Kind: manifest.SurfaceView, Intent: manifest.SurfaceIntentPrimary, Label: "Main", Entry: "ui/main.html", Web: manifest.SurfaceWebSpec{Root: "ui"}, Icon: "icons/main.png", DefaultSize: &manifest.WidgetSizeSpec{Width: 720, Height: 480}},
+			{SurfaceID: "background", Kind: manifest.SurfaceBackground, Intent: manifest.SurfaceIntentUtility, Label: "Background", Entry: "ui/background.html", Web: manifest.SurfaceWebSpec{Root: "ui"}},
 		},
 	}
 	required := map[string][]string{

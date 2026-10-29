@@ -132,7 +132,7 @@ func TestRegistryViewPreservesCanonicalManifestAcrossDurableMutations(t *testing
   "api": {"major": 1, "required_features": ["fs.environment.v1", "net.http.v1"]},
   "permissions": ["fs.environment.read", "network.client"],
   "presentation": {"locales": {"default": "en-US"}},
-  "surfaces": [{"surface_id": "main", "kind": "view", "label": "Main", "entry": "ui/index.html"}],
+  "surfaces": [{"surface_id": "main", "kind": "view", "label": "Main", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}],
   "workers": [{"worker_id": "worker", "artifact": "workers/main.wasm", "mode": "job", "scope": "environment", "memory_limit_bytes": 16777216}],
   "methods": [{"method": "io.run", "route": {"kind": "worker", "worker_id": "worker"}, "effect": "execute", "execution": "sync", "request_schema": {"type": "object", "additionalProperties": false}, "response_schema": {"type": "object", "additionalProperties": false}}]
 }`
@@ -275,7 +275,7 @@ func externalControlRecord(instanceID, version string, now time.Time) registry.P
 			Highlights: []string{}, Keywords: []string{"example"}, Localizations: []manifest.PresentationLocalizationSpec{},
 		},
 		Surfaces: []manifest.SurfaceSpec{{
-			SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Main", Entry: "ui/index.html",
+			SurfaceID: "main", Kind: manifest.SurfaceView, Label: "Main", Entry: "ui/index.html", Web: manifest.SurfaceWebSpec{Root: "ui"},
 		}},
 		Workers: []manifest.WorkerSpec{},
 		Methods: []manifest.MethodSpec{},

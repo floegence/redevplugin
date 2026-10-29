@@ -11,7 +11,7 @@ export default tseslint.config(
       "packages/redevplugin-ui/test/**/*.ts",
       "packages/redevplugin-contracts/src/**/*.ts",
       "packages/redevplugin-contracts/test/**/*.ts",
-      "examples/plugin-ui/**/*.ts",
+      "examples/plugin-ui/**/*.{ts,tsx}",
       "examples/showcase/**/*.ts",
       "internal/scaffoldtemplate/**/*.{ts,tsx}",
       "testdata/browser-harness/**/*.ts",

@@ -584,16 +584,16 @@ func publicRecoverySnapshot(snapshot host.RecoverySnapshot) recoverySnapshotResp
 }
 
 type surfacePreparationResponse struct {
-	AssetSession       string                        `json:"asset_session"`
-	AssetSessionID     string                        `json:"asset_session_id"`
-	AssetSessionNonce  string                        `json:"asset_session_nonce"`
-	EntryPath          string                        `json:"entry_path"`
-	EntrySHA256        string                        `json:"entry_sha256"`
-	ManagementRevision uint64                        `json:"management_revision"`
-	RevokeEpoch        uint64                        `json:"revoke_epoch"`
-	IssuedAt           time.Time                     `json:"issued_at"`
-	ExpiresAt          time.Time                     `json:"expires_at"`
-	Document           opaqueSurfaceDocumentResponse `json:"document"`
+	AssetSession       string                     `json:"asset_session"`
+	AssetSessionID     string                     `json:"asset_session_id"`
+	AssetSessionNonce  string                     `json:"asset_session_nonce"`
+	EntryPath          string                     `json:"entry_path"`
+	EntrySHA256        string                     `json:"entry_sha256"`
+	ManagementRevision uint64                     `json:"management_revision"`
+	RevokeEpoch        uint64                     `json:"revoke_epoch"`
+	IssuedAt           time.Time                  `json:"issued_at"`
+	ExpiresAt          time.Time                  `json:"expires_at"`
+	Document           webSurfaceDocumentResponse `json:"document"`
 }
 
 func publicSurfacePreparation(result host.PrepareSurfaceResult) surfacePreparationResponse {
@@ -601,7 +601,7 @@ func publicSurfacePreparation(result host.PrepareSurfaceResult) surfacePreparati
 		AssetSession: result.AssetSession, AssetSessionID: result.AssetSessionID,
 		AssetSessionNonce: result.AssetSessionNonce, EntryPath: result.EntryPath, EntrySHA256: result.EntrySHA256,
 		ManagementRevision: result.ManagementRevision, RevokeEpoch: result.RevokeEpoch,
-		IssuedAt: result.IssuedAt, ExpiresAt: result.ExpiresAt, Document: publicOpaqueSurfaceDocument(result.Document),
+		IssuedAt: result.IssuedAt, ExpiresAt: result.ExpiresAt, Document: publicWebSurfaceDocument(result.Document),
 	}
 }
 
@@ -838,13 +838,6 @@ func publicDiagnosticDetails(details host.DiagnosticDetails) *diagnosticDetailsR
 		Transport: details.Transport, RevokeEpoch: details.RevokeEpoch, StageID: details.StageID,
 		Reason: details.Reason, SurfaceInstanceID: details.SurfaceInstanceID,
 	}
-}
-
-type surfaceAssetResponse struct {
-	Path          string `json:"path"`
-	SHA256        string `json:"sha256"`
-	ContentType   string `json:"content_type"`
-	ContentBase64 string `json:"content_base64"`
 }
 
 type pluginCatalogResponse struct {

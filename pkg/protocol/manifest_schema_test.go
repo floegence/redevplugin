@@ -73,6 +73,18 @@ func TestManifestSchemaAndGoDecoderAcceptOnlyCurrentContract(t *testing.T) {
 		{name: "unknown plugin field", mutate: func(value map[string]any) { value["plugin"].(map[string]any)["api_version"] = "plugin-v1" }},
 		{name: "unknown plugin API", mutate: func(value map[string]any) { value["api"].(map[string]any)["major"] = float64(2) }},
 		{name: "missing workers", mutate: func(value map[string]any) { delete(value, "workers") }},
+		{name: "missing Web declaration", mutate: func(value map[string]any) {
+			delete(value["surfaces"].([]any)[0].(map[string]any), "web")
+		}},
+		{name: "missing SPA policy", mutate: func(value map[string]any) {
+			delete(value["surfaces"].([]any)[0].(map[string]any)["web"].(map[string]any), "spa")
+		}},
+		{name: "null SPA policy", mutate: func(value map[string]any) {
+			value["surfaces"].([]any)[0].(map[string]any)["web"].(map[string]any)["spa"] = nil
+		}},
+		{name: "unknown Web field", mutate: func(value map[string]any) {
+			value["surfaces"].([]any)[0].(map[string]any)["web"].(map[string]any)["future"] = true
+		}},
 		{name: "worker ABI axis", mutate: func(value map[string]any) {
 			value["workers"] = []any{map[string]any{"worker_id": "legacy", "artifact": "workers/legacy.wasm", "abi": "redevplugin-wasm-worker-v2", "mode": "job", "scope": "user", "memory_limit_bytes": float64(1024)}}
 		}},

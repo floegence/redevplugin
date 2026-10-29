@@ -25,7 +25,7 @@
       "surface_id": "storage.view",
       "kind": "view",
       "label": "Storage",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],

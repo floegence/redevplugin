@@ -1,4 +1,3 @@
-import type { PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
 
 type BlockToken =
   | { type: "heading"; depth: number; tokens: InlineToken[] }
@@ -25,13 +24,15 @@ type InlineToken =
   | { type: "html"; text: string };
 
 export type MarkdownRenderResult = {
-  nodes: PluginUIVNode[];
+  nodes: Node[];
   truncated: boolean;
 };
 
 export type MarkdownIdentity = Readonly<{
   rootKey: string;
   keyForSlot(slot: string): string;
+  text(key: string, value: string): Text;
+  element(key: string, tag: string, attributes: Record<string, string | number | boolean>, children: Node[]): HTMLElement;
 }>;
 
 type RenderContext = {
@@ -48,10 +49,6 @@ type RenderContext = {
 const MARKDOWN_IDENTITY_ROOT = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const MAX_IDENTITY_ROOT_LENGTH = 112;
 const MAX_IDENTITY_SLOTS = 4096;
-
-function textNode(key: string, value: string): PluginUIVNode {
-  return { type: "text", key, text: value };
-}
 
 export function renderMarkdown(
   content: string,
@@ -77,9 +74,32 @@ export function createMarkdownIdentity(rootKey: string): MarkdownIdentity {
     throw new TypeError("markdown identity root must be a valid UI identifier of at most 112 characters");
   }
   const keys = new Map<string, string>();
+  const nodes = new Map<string, Node>();
   let next = 0;
   return Object.freeze({
     rootKey,
+    text(key: string, value: string): Text {
+      let node = nodes.get(key);
+      if (!(node instanceof Text)) { node = document.createTextNode(value); nodes.set(key, node); }
+      if (node.textContent !== value) node.textContent = value;
+      return node as Text;
+    },
+    element(key: string, tag: string, attributes: Record<string, string | number | boolean>, children: Node[]): HTMLElement {
+      let node = nodes.get(key);
+      if (!(node instanceof HTMLElement) || node.localName !== tag) { node = document.createElement(tag); nodes.set(key, node); }
+      const element = node as HTMLElement;
+      element.dataset.markdownKey = key;
+      for (const attribute of Array.from(element.attributes)) {
+        if (attribute.name !== "data-markdown-key" && !(attribute.name in attributes)) element.removeAttribute(attribute.name);
+      }
+      for (const [name, value] of Object.entries(attributes)) {
+        if (name === "checked" || name === "disabled") (element as HTMLInputElement)[name] = value === true;
+        else if (element.getAttribute(name) !== String(value)) element.setAttribute(name, String(value));
+      }
+      children.forEach((child, index) => { if (element.childNodes[index] !== child) element.insertBefore(child, element.childNodes[index] ?? null); });
+      while (element.childNodes.length > children.length) element.lastChild!.remove();
+      return element;
+    },
     keyForSlot(slot: string): string {
       const existing = keys.get(slot);
       if (existing !== undefined) return existing;
@@ -376,8 +396,8 @@ function readStyled(value: string, index: number): { token: InlineToken; next: n
   return undefined;
 }
 
-function renderBlocks(tokens: BlockToken[], context: RenderContext, scope: string): PluginUIVNode[] {
-  const output: PluginUIVNode[] = [];
+function renderBlocks(tokens: BlockToken[], context: RenderContext, scope: string): Node[] {
+  const output: Node[] = [];
   const entries = slotEntries(context, scope, "block", tokens);
   for (const { item: token, key } of entries) {
     if (context.blockCount >= context.blockLimit || context.budget <= 0) {
@@ -391,149 +411,63 @@ function renderBlocks(tokens: BlockToken[], context: RenderContext, scope: strin
   return output;
 }
 
-function renderBlock(token: BlockToken, context: RenderContext, key: string): PluginUIVNode | undefined {
+function renderBlock(token: BlockToken, context: RenderContext, key: string): Node | undefined {
   if (!claim(context)) return undefined;
+  const { element, text } = context.identity;
   switch (token.type) {
-    case "heading": {
-      const heading = token;
-      const tag = heading.depth <= 1 ? "h2" : heading.depth === 2 ? "h3" : "h4";
-      return { type: "element", key, tag, attributes: { class: `markdown-heading level-${Math.min(heading.depth, 4)}` }, children: renderInline(heading.tokens, context, key) };
-    }
-    case "paragraph": {
-      const paragraph = token;
-      return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: renderInline(paragraph.tokens, context, key) };
-    }
-    case "code": {
-      const code = token;
-      return { type: "element", key, tag: "pre", attributes: { class: "markdown-code-block" }, children: [
-        { type: "element", key: `${key}-code`, tag: "code", attributes: code.lang ? { class: "markdown-code", title: code.lang } : { class: "markdown-code" }, children: [textNode(`${key}-code-text`, code.text)] },
-      ] };
-    }
-    case "blockquote": {
-      const quote = token;
-      return { type: "element", key, tag: "div", attributes: { class: "markdown-quote" }, children: renderBlocks(quote.tokens, context, key) };
-    }
-    case "hr":
-      return { type: "element", key, tag: "div", attributes: { class: "markdown-rule", role: "separator" }, children: [] };
-    case "list":
-      return renderList(token, context, key);
-    case "table":
-      return renderTable(token, context, key);
-    case "html": {
-      const html = token;
-      return { type: "element", key, tag: "code", attributes: { class: "markdown-raw" }, children: [textNode(`${key}-text`, html.text)] };
-    }
-    case "text": {
-      const text = token;
-      return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: text.tokens ? renderInline(text.tokens, context, key) : [textNode(`${key}-text`, text.text)] };
-    }
-    default: {
-      throw new TypeError("unsupported markdown block token");
-    }
+    case "heading": return element(key, token.depth <= 1 ? "h2" : token.depth === 2 ? "h3" : "h4", { class: "markdown-heading" }, renderInline(token.tokens, context, key));
+    case "paragraph": return element(key, "p", { class: "markdown-paragraph" }, renderInline(token.tokens, context, key));
+    case "code": return element(key, "pre", { class: "markdown-code-block" }, [element(key + "-code", "code", { class: "markdown-code", title: token.lang || "" }, [text(key + "-text", token.text)])]);
+    case "blockquote": return element(key, "blockquote", { class: "markdown-quote" }, renderBlocks(token.tokens, context, key));
+    case "hr": return element(key, "hr", { class: "markdown-rule" }, []);
+    case "list": return renderList(token, context, key);
+    case "table": return renderTable(token, context, key);
+    case "html": return element(key, "code", { class: "markdown-raw" }, [text(key + "-text", token.text)]);
+    case "text": return element(key, "p", { class: "markdown-paragraph" }, token.tokens ? renderInline(token.tokens, context, key) : [text(key + "-text", token.text)]);
   }
 }
 
-function renderList(token: Extract<BlockToken, { type: "list" }>, context: RenderContext, key: string): PluginUIVNode {
+function renderList(token: Extract<BlockToken, { type: "list" }>, context: RenderContext, key: string): Node {
+  const { element, text } = context.identity;
   const items = slotEntries(context, key, "item", token.items).map(({ item, key: itemKey }) => {
-    if (!claim(context)) return textNode(`${itemKey}-empty`, "");
-    const children: PluginUIVNode[] = [];
+    if (!claim(context)) return text(itemKey + "-empty", "");
+    const children: Node[] = [];
     if (item.task) {
       const taskIndex = context.taskIndex++;
-      children.push({
-        type: "element",
-        key: `${itemKey}-task`,
-        tag: "input",
-        attributes: {
-          class: "markdown-task",
-          type: "checkbox",
-          checked: item.checked === true,
-          disabled: !context.interactiveTasks,
-          value: `${context.taskMemoId}:${taskIndex}`,
-          title: item.checked ? "Mark incomplete" : "Mark complete",
-          "data-redevplugin-action": "toggle-task",
-        },
-        children: [],
-      });
+      children.push(element(itemKey + "-task", "input", {
+        class: "markdown-task", type: "checkbox", checked: item.checked === true,
+        disabled: !context.interactiveTasks, value: context.taskMemoId + ":" + taskIndex,
+        title: item.checked ? "Mark incomplete" : "Mark complete", "data-memo-task": true,
+        "aria-label": item.checked ? "Mark incomplete" : "Mark complete",
+      }, []));
     }
-    const bodyTokens = item.tokens;
-    children.push({ type: "element", key: `${itemKey}-body`, tag: "div", attributes: { class: "markdown-list-copy" }, children: renderBlocks(bodyTokens, context, itemKey) });
-    return { type: "element", key: itemKey, tag: "li", attributes: item.task ? { class: "markdown-list-item task-item" } : { class: "markdown-list-item" }, children } satisfies PluginUIVNode;
+    children.push(element(itemKey + "-body", "div", { class: "markdown-list-copy" }, renderBlocks(item.tokens, context, itemKey)));
+    return element(itemKey, "li", { class: item.task ? "markdown-list-item task-item" : "markdown-list-item" }, children);
   });
-  return { type: "element", key, tag: token.ordered ? "ol" : "ul", attributes: { class: token.ordered ? "markdown-list ordered" : "markdown-list" }, children: items };
+  return element(key, token.ordered ? "ol" : "ul", { class: "markdown-list" }, items);
 }
 
-function renderTable(token: Extract<BlockToken, { type: "table" }>, context: RenderContext, key: string): PluginUIVNode {
-  const header = slotEntries(context, key, "head", token.header).map(({ item: cell, key: cellKey }) => ({
-    type: "element",
-    key: cellKey,
-    tag: "th",
-    attributes: { scope: "col" },
-    children: renderInline(cell.tokens, context, cellKey),
-  }) satisfies PluginUIVNode);
-  const body = slotEntries(context, key, "row", token.rows)
-    .map(({ item: row, key: rowKey }) => ({
-    type: "element",
-    key: rowKey,
-    tag: "tr",
-    children: slotEntries(context, rowKey, "cell", row).map(({ item: cell, key: cellKey }) => ({
-      type: "element",
-      key: cellKey,
-      tag: "td",
-      children: renderInline(cell.tokens, context, cellKey),
-    })),
-  }) satisfies PluginUIVNode);
-  return { type: "element", key, tag: "div", attributes: { class: "markdown-table-wrap" }, children: [
-    { type: "element", key: `${key}-table`, tag: "table", attributes: { class: "markdown-table" }, children: [
-      { type: "element", key: `${key}-thead`, tag: "thead", children: [{ type: "element", key: `${key}-head-row`, tag: "tr", children: header }] },
-      { type: "element", key: `${key}-tbody`, tag: "tbody", children: body },
-    ] },
-  ] };
+function renderTable(token: Extract<BlockToken, { type: "table" }>, context: RenderContext, key: string): Node {
+  const { element } = context.identity;
+  const header = slotEntries(context, key, "head", token.header).map(({ item, key: cellKey }) => element(cellKey, "th", { scope: "col" }, renderInline(item.tokens, context, cellKey)));
+  const body = slotEntries(context, key, "row", token.rows).map(({ item: row, key: rowKey }) => element(rowKey, "tr", {}, slotEntries(context, rowKey, "cell", row).map(({ item, key: cellKey }) => element(cellKey, "td", {}, renderInline(item.tokens, context, cellKey)))));
+  return element(key, "div", { class: "markdown-table-wrap" }, [element(key + "-table", "table", { class: "markdown-table" }, [element(key + "-head", "thead", {}, [element(key + "-row", "tr", {}, header)]), element(key + "-body", "tbody", {}, body)])]);
 }
 
-function renderInline(tokens: InlineToken[], context: RenderContext, scope: string): PluginUIVNode[] {
-  const output: PluginUIVNode[] = [];
-  const entries = slotEntries(context, scope, "inline", tokens);
-  for (const { item: token, key } of entries) {
+function renderInline(tokens: InlineToken[], context: RenderContext, scope: string): Node[] {
+  const { element, text } = context.identity;
+  const output: Node[] = [];
+  for (const { item: token, key } of slotEntries(context, scope, "inline", tokens)) {
     if (!claim(context)) break;
     switch (token.type) {
-      case "text": {
-        const text = token;
-        output.push(...(text.tokens ? renderInline(text.tokens, context, key) : [textNode(key, text.text)]));
-        break;
-      }
-      case "escape":
-        output.push(textNode(key, token.text));
-        break;
-      case "strong":
-        output.push({ type: "element", key, tag: "strong", children: renderInline(token.tokens, context, key) });
-        break;
-      case "em":
-        output.push({ type: "element", key, tag: "em", children: renderInline(token.tokens, context, key) });
-        break;
-      case "del":
-        output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-strike" }, children: renderInline(token.tokens, context, key) });
-        break;
-      case "codespan":
-        output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-inline-code" }, children: [textNode(`${key}-text`, token.text)] });
-        break;
-      case "br":
-        output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-break", "aria-hidden": true }, children: [] });
-        break;
-      case "link": {
-        const link = token;
-        output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-link", title: link.href }, children: renderInline(link.tokens, context, key) });
-        break;
-      }
-      case "image": {
-        const image = token;
-        output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-image-reference", title: image.href }, children: [textNode(`${key}-text`, `[Image: ${image.text || "untitled"}]`)] });
-        break;
-      }
-      case "html":
-        output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-raw inline" }, children: [textNode(`${key}-text`, token.text)] });
-        break;
-      default:
-        throw new TypeError("unsupported markdown inline token");
+      case "text": output.push(...(token.tokens ? renderInline(token.tokens, context, key) : [text(key, token.text)])); break;
+      case "escape": output.push(text(key, token.text)); break;
+      case "strong": case "em": case "del": output.push(element(key, token.type, {}, renderInline(token.tokens, context, key))); break;
+      case "codespan": output.push(element(key, "code", { class: "markdown-inline-code" }, [text(key + "-text", token.text)])); break;
+      case "br": output.push(element(key, "br", {}, [])); break;
+      case "link": output.push(element(key, "span", { class: "markdown-link", title: token.href }, renderInline(token.tokens, context, key))); break;
+      case "image": output.push(element(key, "span", { class: "markdown-image-reference", title: token.href }, [text(key + "-text", "[Image: " + (token.text || "untitled") + "]")])); break;
+      case "html": output.push(element(key, "code", { class: "markdown-raw inline" }, [text(key + "-text", token.text)])); break;
     }
   }
   return output;

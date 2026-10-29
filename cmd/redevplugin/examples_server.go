@@ -259,8 +259,24 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	if err != nil {
 		return err
 	}
+	listener := options.Listener
+	if listener == nil {
+		port := strings.TrimSpace(os.Getenv("REDEVPLUGIN_EXAMPLES_PORT"))
+		if port == "" {
+			port = examplesDefaultPort
+		}
+		listener, err = net.Listen("tcp", "127.0.0.1:"+port)
+		if err != nil {
+			return err
+		}
+	}
+	defer listener.Close()
+	_, webPort, _ := net.SplitHostPort(listener.Addr().String())
+	webOrigins := localWebOrigins{port: webPort}
+	origin := webOrigins.parentOrigin()
 	pluginHost, err := host.Open(ctx, host.Config{
 		StateRoot: stateRoot,
+		Web:       &host.WebModule{Origins: webOrigins},
 		Core: host.CoreAdapters{
 			Policy:               staticPolicyAdapter{},
 			Authorization:        staticAuthorizationAdapter{},
@@ -321,19 +337,6 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		options.OnReady(pluginHost)
 	}
 
-	listener := options.Listener
-	if listener == nil {
-		port := strings.TrimSpace(os.Getenv("REDEVPLUGIN_EXAMPLES_PORT"))
-		if port == "" {
-			port = examplesDefaultPort
-		}
-		listener, err = net.Listen("tcp", "127.0.0.1:"+port)
-		if err != nil {
-			return err
-		}
-	}
-	defer listener.Close()
-	origin := "http://" + listener.Addr().String()
 	platformHandler, err := httpadapter.NewHandler(httpadapter.Dependencies{
 		Host:  pluginHost,
 		Guard: examplesWebSecurityGuard{origin: origin, csrfToken: examplesCSRFToken},
@@ -358,7 +361,11 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	mux.HandleFunc("/api/health", examplesHealthHandler(pluginHost, len(installed)))
 	mux.Handle("/", noStoreStatic(showcaseRoot))
 
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	webHandler, err := webOrigins.handler(pluginHost, mux)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{Handler: webHandler, ReadHeaderTimeout: 5 * time.Second}
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Serve(listener) }()
 	output := options.Output

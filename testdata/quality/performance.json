@@ -189,28 +189,57 @@
       ]
     },
     {
-      "id": "ui.chromium-renderer",
+      "id": "ui.web-opening",
       "sample_count": 10,
       "metrics": [
-        { "name": "reverse_patch_p95", "unit": "milliseconds", "comparator": "lte", "limit": 50 },
-        { "name": "long_tasks", "unit": "long_tasks", "comparator": "eq", "limit": 0 },
-        { "name": "max_long_task", "unit": "milliseconds", "comparator": "lte", "limit": 50 }
+        {
+          "name": "p95",
+          "unit": "milliseconds",
+          "comparator": "lte",
+          "limit": 1500
+        },
+        {
+          "name": "max",
+          "unit": "milliseconds",
+          "comparator": "lte",
+          "limit": 2500
+        }
       ]
     },
     {
-      "id": "ui.keyed-reversal",
+      "id": "ui.native-reordering",
       "sample_count": 30,
       "metrics": [
-        { "name": "moves", "unit": "count", "comparator": "eq", "limit": 999 },
-        { "name": "p95", "unit": "milliseconds", "comparator": "lte", "limit": 50 }
+        {
+          "name": "p95",
+          "unit": "milliseconds",
+          "comparator": "lte",
+          "limit": 50
+        },
+        {
+          "name": "max",
+          "unit": "milliseconds",
+          "comparator": "lte",
+          "limit": 100
+        }
       ]
     },
     {
-      "id": "ui.single-leaf-reconciliation",
+      "id": "ui.native-leaf-update",
       "sample_count": 40,
       "metrics": [
-        { "name": "p95", "unit": "milliseconds", "comparator": "lte", "limit": 16 },
-        { "name": "max", "unit": "milliseconds", "comparator": "lte", "limit": 50 }
+        {
+          "name": "p95",
+          "unit": "milliseconds",
+          "comparator": "lte",
+          "limit": 16
+        },
+        {
+          "name": "max",
+          "unit": "milliseconds",
+          "comparator": "lte",
+          "limit": 50
+        }
       ]
     }
   ]

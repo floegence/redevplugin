@@ -22,13 +22,8 @@ const trustedParentFields = [
 const commonFrames = [
   "redevplugin.bridge.call",
   ...executionFrames,
-  "redevplugin.ui.mount",
-  "redevplugin.ui.patch",
-  "redevplugin.ui.keyboard.bindings",
-  "redevplugin.ui.keyboard.input",
   "redevplugin.ui.file.export",
   "redevplugin.bridge.cancel",
-  "redevplugin.ui.action",
   "redevplugin.bridge.response",
   "redevplugin.bridge.lifecycle",
 ];
@@ -55,8 +50,8 @@ export function currentBridgeContractDescriptors() {
     active: {
       bridgeSchemaVersion: "bridge",
       path: "spec/plugin/bridge.schema.json",
-      transportSchemaVersion: "opaque-surface-transport-v6",
-      transportPath: "spec/plugin/opaque-surface-transport-v6.schema.json",
+      transportSchemaVersion: "web-surface-transport",
+      transportPath: "spec/plugin/web-surface-transport.schema.json",
     },
   };
 }
@@ -77,8 +72,19 @@ export function validateUIBridgeInputs({
   validatePluginVisibleIsolation(activeSchema, "active bridge schema");
 
   validateExecutionSchemas(activeSchema);
-  validateKeyboardSchemas(activeSchema);
   validateFileExportSchema(activeSchema);
+  const routing = activeTransportSchema.$defs?.origin_preparation;
+  const routingKeys = ["origin", "parentOrigin", "pluginInstanceId", "surfaceInstanceId", "signal"];
+  if (routing?.type !== "object" || routing.additionalProperties !== false ||
+      JSON.stringify(routing.required) !== JSON.stringify(routingKeys) || !hasExactKeys(routing.properties, routingKeys) ||
+      activeTransportSchema.oneOf.some(entry => entry.$ref === "#/$defs/origin_preparation")) {
+    throw new Error("origin preparation must remain a closed secret-free host-local adapter contract");
+  }
+  const milestones = activeTransportSchema.$defs?.opening_progress?.properties?.pendingMilestones?.items?.enum;
+  if (JSON.stringify(milestones) !== JSON.stringify(["prepare", "origin", "entry_ready", "port_ack", "token", "app_ready"])) {
+    throw new Error("opening progress must identify the origin preparation milestone");
+  }
+
   const activeText = JSON.stringify(activeSchema);
   for (const frame of commonFrames) {
     if (!activeText.includes(frame)) throw new Error(`active bridge schema is missing ${frame}`);
@@ -104,12 +110,14 @@ export function validateUIBridgeInputs({
   for (const forbidden of trustedParentFields.slice(3)) {
     if (responseDef.includes(forbidden)) throw new Error(`plugin-visible bridge response exposes ${forbidden}`);
   }
-  for (const forbidden of ["window.parent.postMessage", "parent_origin", "sandbox_origin", "allow-same-origin"]) {
-    if (surface.includes(forbidden)) throw new Error(`surface SDK contains forbidden bridge mechanism ${forbidden}`);
+  for (const obsolete of ["redevplugin.ui.mount", "redevplugin.ui.patch", "redevplugin.ui.keyboard", "redevplugin.ui.canvas", "x-redevplugin-render-policy"]) {
+    if ([activeText, ...currentSources].some(source => source.includes(obsolete))) throw new Error("current Web contract retains obsolete rendering mechanism " + obsolete);
   }
-  if (!activeSchema["x-redevplugin-render-policy"]) {
-    throw new Error("active bridge schema is missing the generated renderer policy source");
+  for (const required of ["redevplugin.surface.entry_ready", "redevplugin.surface.port_ack", "redevplugin.surface.app_ready", "redevplugin.surface.navigation", "redevplugin.surface.file.export"]) {
+    if (!surface.includes(required) || !JSON.stringify(activeTransportSchema).includes(required)) throw new Error("Web surface contract is missing " + required);
   }
+  if (!surface.includes('event.source !== this.#iframe.contentWindow') || !surface.includes('event.origin !== this.#document.origin')) throw new Error("Web bootstrap must bind source and exact origin");
+
 }
 
 function validateFileExportSchema(schema) {
@@ -124,43 +132,13 @@ function validateFileExportSchema(schema) {
       JSON.stringify(properties?.media_type?.enum) !== JSON.stringify(["image/png", "image/jpeg", "image/webp", "image/svg+xml", "text/plain"]) ||
       !isRecord(properties?.content) ||
       JSON.stringify(fileExport["x-redevplugin-transfer"]) !== JSON.stringify(["content"]) ||
-      fileExport["x-redevplugin-user-action"] !== "A current click or submit action authorizes exactly one export for 30000ms.") {
+      fileExport["x-redevplugin-host-authorization"] !== "The host explicitly authorizes every export; interaction metadata grants no authority.") {
     throw new Error("current file_export frame is not closed and exact");
   }
   const references = Array.isArray(schema.oneOf)
     ? schema.oneOf.filter((entry) => entry?.$ref === "#/$defs/file_export")
     : [];
   if (references.length !== 1) throw new Error("current contract must publish exactly one file_export frame reference");
-}
-
-function validateKeyboardSchemas(schema) {
-  const bindings = schema.$defs?.keyboard_bindings;
-  const binding = schema.$defs?.keyboard_binding;
-  const input = schema.$defs?.keyboard_input;
-  if (!isRecord(bindings) || bindings.type !== "object" || bindings.additionalProperties !== false ||
-      JSON.stringify(bindings.required) !== JSON.stringify(["type", "id", "bindings"]) ||
-      bindings.properties?.type?.const !== "redevplugin.ui.keyboard.bindings" ||
-      bindings.properties?.id?.$ref !== "#/$defs/request_id" ||
-      bindings.properties?.bindings?.maxItems !== 128 ||
-      bindings.properties?.bindings?.items?.$ref !== "#/$defs/keyboard_binding") {
-    throw new Error("current keyboard_bindings frame is not closed and exact");
-  }
-  if (!isRecord(binding) || binding.type !== "object" || binding.additionalProperties !== false ||
-      !hasExactKeys(binding.properties, ["binding_id", "event", "code", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "target_key", "target_kind"])) {
-    throw new Error("current keyboard_binding declaration is not closed and exact");
-  }
-  if (!isRecord(input) || input.type !== "object" || input.additionalProperties !== false ||
-      input.properties?.type?.const !== "redevplugin.ui.keyboard.input" ||
-      !isRecord(input.properties?.event) || input.properties.event.additionalProperties !== false ||
-      !hasExactKeys(input.properties.event.properties, ["event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key", "is_composing", "target_key", "target_kind", "default_prevented", "binding_id"])) {
-    throw new Error("current keyboard_input frame is not closed and exact");
-  }
-  for (const definition of ["keyboard_bindings", "keyboard_input"]) {
-    const references = Array.isArray(schema.oneOf)
-      ? schema.oneOf.filter((entry) => entry?.$ref === `#/$defs/${definition}`)
-      : [];
-    if (references.length !== 1) throw new Error(`current contract must publish exactly one ${definition} frame reference`);
-  }
 }
 
 function validateExecutionSchemas(schema) {

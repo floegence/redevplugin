@@ -125,19 +125,12 @@ an English fallback or mix locales within one resolved presentation.
   serving, and the package hash to avoid self-referential signatures. The
   signature directory is closed-world: package IO rejects any signature entry
   other than `signatures/package.sig`.
-- Package validation requires every surface entry to declare exactly one
-  package-local `text/redevplugin-worker` classic bundled worker. The builder
-  and trusted renderer consume one generated render policy, so unsupported
-  elements, attributes, input types, URL-bearing markup, inline script/style,
-  event handlers, `srcdoc`, embedded browsing contexts, excessive render trees,
-  and direct Service Worker API references fail during package validation as an
-  early diagnostic. Runtime hardening removes `navigator.serviceWorker` inside
-  the opaque renderer/worker boundary, which remains authoritative even when a
-  source-level reference is dynamically constructed. Script imports/exports are
-  rejected because the worker must be a
-  self-contained classic bundle. Surface icons must be packaged
-  raster image assets, not SVG or external URLs, so product shells do not need
-  to inline or sanitize plugin-provided SVG markup. The same validation path rejects
+- Package validation accepts package-local HTML entries under a declared Web
+  root and rejects unsafe paths, reserved platform paths, missing entries, and
+  the removed worker-UI format. Ordinary modules, inline scripts, styles, and
+  framework DOM are application-owned. Runtime CSP and network admission
+  enforce the external boundary. Package-local raster icons remain separate
+  verified presentation evidence. The package validator also rejects
   shell/shebang scripts, native executable or dynamic-library artifacts,
   package-manager install lifecycle scripts, package-manager dependency fields,
   Cargo `build.rs` / build scripts, proc-macro crates, native linker
@@ -227,28 +220,17 @@ an English fallback or mix locales within one resolved presentation.
   reads requires CSRF validation, and every route carries a closed
   `RouteAction`. The authenticated session and product-specific origin, CSRF,
   and authorization policy stay in the host product.
-- `PluginPlatformClient.openSurfaceInSlot(...)` is the only public surface
-  opening path. It owns the HTTP bootstrap, opening lease, replacement ordering,
-  and fresh SDK-owned iframe, then returns a `PluginSurfaceHost` handle whose
-  read-only `element` is available for product-shell metadata. The slot places
-  the element and the SDK immediately applies `src="about:blank"`,
-  `sandbox="allow-scripts"`, no same-origin capability, no plugin URL, and a
-  fail-closed CSP. The trusted parent prepares the validated surface document,
-  marks the server session prepared only after the closed document succeeds,
-  transfers one secret-free `MessagePort`, waits for the current frame generation
-  to acknowledge that port, then mints and applies the initial parent-only lease
-  before renderer initialization. The iframe also carries an explicit
-  Permissions Policy deny-list. One aggregate opening deadline covers frame
-  load, prepare, acknowledgement, lease minting, first paint, and worker
-  readiness; timeout revokes server state, tears down locally, and consumes one
-  bounded reload-limiter attempt. It reads lazy assets and streams
-  through parent-only POST routes. Asset reads accept only the opaque `binding_id`
-  from the server-prepared document; the Host resolves and revalidates the bound
-  registry path, size, content type, and SHA-256 against the returned bytes. Prepared documents
-  allow at most 128 lazy assets and 32 MiB total, with at most four reads in
-  flight. Plugin code receives opaque surface and stream handles, never
-  asset tickets, stream tickets, gateway credentials, parent origins, cookies,
-  or host storage.
+- PluginPlatformClient.openSurfaceInSlot is the sole opening path. Each slot
+  owns a fresh iframe and a separate application origin. The host registers
+  SurfaceOriginAdapter and mounts NewWebSurfaceHandler; the platform owns
+  single-use entry, browser network admission, resource cookies, exact package
+  validation, source/origin/port binding, leases, and revocation. Ordinary HTML,
+  CSS, DOM, modules, dynamic imports, Workers, Canvas, WebGL, and WASM run inside
+  the app. Parent management credentials remain outside plugin JavaScript.
+- Browser storage is a container-local cache. Durable data and privileged
+  network/file/service operations use declared platform methods and brokers.
+  Unsupported browser confinement fails before application execution. No VNode,
+  dedicated JSX runtime, or legacy rendering path remains.
 - A trusted parent that rejects a dangerous-method confirmation first calls the
   surface-scoped rejection route. The Host validates the current gateway token,
   session, bridge channel, active fingerprint, policy/management revisions, and
@@ -256,7 +238,7 @@ an English fallback or mix locales within one resolved presentation.
   audit/diagnostic evidence before the plugin receives
   `PLUGIN_CONFIRMATION_REJECTED`.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
-  generated render policy, TypeScript SDK route coverage, and package validator
+  Web surface contracts, TypeScript SDK route coverage, and package validator
   aligned.
 - Manifest v9 requires every method to declare closed request and response
   object schemas. Package validation compiles those schemas without remote
@@ -370,41 +352,16 @@ an English fallback or mix locales within one resolved presentation.
   `PluginSurfaceReloadLimiter` to cap consecutive automatic iframe reloads
   after crashes or load failures before showing a host-owned error state.
 - Dispose uses a private quiesce/ack lifecycle. The SDK waits up to 1.5 seconds
-  for async plugin lifecycle observers to flush state before revoking the
-  surface, while a renderer-worker ping/pong heartbeat detects a stalled worker
-  on a 10-second interval with a 5-second response deadline.
-- Generated render policy limits a surface to four canvases, 4096 pixels per
-  dimension, 16,777,216 total canvas pixels, and 120 pointer events per second.
-  Canvas input includes focus, resize, keyboard, pointer, and bounded wheel
-  events. Resize events report changed CSS dimensions or device pixel ratio;
-  unchanged and zero-size layouts retain the existing backing store.
-  Wheel coordinates are canvas-local and canvas wheel ownership prevents
-  the same gesture from scrolling the surrounding host surface.
-  Raster type is detected from PNG, JPEG, GIF, or WebP bytes rather than the
-  filename or declared MIME. Images are dimension-checked before decode and
-  limited to 32 images and 33,554,432 decoded pixels. Plugin workers cannot
-  allocate additional `OffscreenCanvas` instances or call `createImageBitmap`
-  directly. Canvas apps use `updateCanvasAccessibility(...)` to bind concise
-  live phase, score, lives, FPS, and control descriptions to the declared
-  canvas without gaining general DOM mutation access.
-- Typed form actions prevent sandbox navigation and serialize at most 128
-  bounded string fields. Submit buttons work consistently when the click lands
-  on nested icons or labels.
-- The npm API boundary is split into six auditable entrypoints. The package
-  root and `@floegence/redevplugin-ui/trusted-parent` expose the same
-  trusted-parent allowlist for host shells. `@floegence/redevplugin-ui/plugin`
-  exposes exactly six runtime values to untrusted plugin worker bundles:
-  `PluginBridgeClient`, `PluginBridgeError`, `callCapabilitySync`,
-  `callCapabilityOperation`, `callCapabilityStream`, and
-  `isCapabilityBusinessError`. Stream decoding remains an internal detail of
-  the typed capability helpers and is not a plugin entrypoint export.
-  `@floegence/redevplugin-ui/jsx-runtime` and `jsx-dev-runtime` expose only the
-  restricted automatic JSX VNode constructors and Fragment rejection marker;
-  they do not expose DOM or trusted-parent capabilities.
-  `@floegence/redevplugin-ui/local-import` exposes the explicit dev/admin raw
-  package client and must not be imported by official release-reference product
-  paths. The opaque bootstrap HTML factory remains internal and is not exported
-  by any public entrypoint.
+  for async application lifecycle observers to flush state, then revokes the
+  surface. Unknown close outcomes reconcile only the exact single surface.
+- The npm boundary exposes trusted-parent management, the plugin-only bridge,
+  explicit local-import tooling, and testing helpers. Application frameworks
+  use their own DOM and JSX runtimes. Native input, selection, composition,
+  canvas events, and accessibility remain application-owned.
+- Appearance and locale flow through the bridge context. Templates and examples
+  consume the published Floe standalone material and current surface roles.
+  File export requires an explicit host decision on every request; click or
+  interaction metadata never grants authority.
 - Execution cancellation is a durable Host decision: `CancelExecution`
   records `cancel_requested`, emits audit evidence, and signals the live
   execution lease. The lease captures an optional route-local cancellation hook
@@ -544,7 +501,7 @@ an English fallback or mix locales within one resolved presentation.
   session, origin, CSRF, and route-authorization guard. Memos is a complete
   private Markdown
   timeline: its always-available composer persists a safe draft before explicit
-  publication, the feed renders controlled Markdown VNodes without admitting
+  publication, the feed renders identity-preserving native Markdown DOM without admitting
   raw HTML, images, or arbitrary navigation, and search invalidates stale
   requests. Tags, local-date calendar facets, pinning, and archives share one
   bounded query contract. Published memo edits use serialized autosave; failed
@@ -552,22 +509,14 @@ an English fallback or mix locales within one resolved presentation.
   flushes pending drafts and edits, and compact layouts use a full-height
   explorer drawer with modal deletion confirmation. The Showcase asks
   `PluginPlatformClient.openSurfaceInSlot(...)` to create and place a fresh
-  opaque `srcdoc` iframe in the selected slot; no caller-provided
-  iframe, plugin server, subdomain, cookie bootstrap, GET asset
-  route, or query credential exists. The trusted renderer loads a static
-  validated document, starts one classic Dedicated Worker, and connects it to
-  the parent through typed `MessagePort` channels. The separate
-  `internal/browserharness` and `testdata/browser-harness` trees contain only
-  platform conformance fixtures. `npm run test:browser-harness:smoke`
-  proves opaque origin isolation, parent DOM/cookie/storage denial, blocked
-  direct network and browser persistence APIs, first paint before lazy assets,
-  RPC, parent-owned stream redemption, confirmation, Memos draft recovery,
-  Markdown tasks, autosave, search, facets, pinning, archives, persistence,
-  deletion recovery, and navigation protection, Weather
-  network and saved-location behavior, atomic forecast replacement, Sky Strike
-  canvas/FPS/input and semantic
-  accessibility behavior,
-  Rust runtime storage and network calls, and deterministic worker/iframe
+  isolated-origin iframe in the selected slot. The Go Host serves verified
+  package resources through its dedicated Web handler; the trusted loader
+  connects the application through a source/origin/port-bound bridge. The
+  internal browser fixtures exercise native modules, Workers, browser storage,
+  input, undo, drawing, independent containers, resource revocation, and browser
+  admission. The real Rust/WASM Showcase retains draft recovery, Markdown tasks,
+  autosave, search, pinning, archives, deletion recovery, Weather persistence,
+  game input/animation, accessible status, and deterministic application
   disposal. Memos requests at most 10 complete memo records per page and its
   worker clamps every caller to that same limit; a compiled-WASM regression
   proves a 61-item pinned timeline returns bounded 10-item pages and a one-item

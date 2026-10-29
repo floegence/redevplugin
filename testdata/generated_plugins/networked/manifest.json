@@ -32,7 +32,7 @@
       "surface_id": "networked.view",
       "kind": "view",
       "label": "Networked",
-      "entry": "ui/index.html"
+      "entry": "ui/index.html", "web": {"root": "ui", "spa": false}
     }
   ],
   "workers": [],
