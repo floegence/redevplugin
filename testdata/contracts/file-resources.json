@@ -1,0 +1,88 @@
+{
+  "valid": [
+    {
+      "resource_id": "selected-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "uri": "redevfs://selected-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+      "name": "note.txt",
+      "kind": "file",
+      "recursive": false,
+      "writable": true,
+      "revision": 1,
+      "expires_at": "2026-10-30T00:00:00Z",
+      "status": "active"
+    },
+    {
+      "review_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "plugin_instance_id": "plugini_selected",
+      "name": "note.txt",
+      "kind": "file",
+      "recursive": false,
+      "writable": true,
+      "review_expires_at": "2026-10-29T00:05:00Z",
+      "resource_expires_at": "2026-10-30T00:00:00Z"
+    },
+    {
+      "operation": "fs.open",
+      "arguments": {
+        "uri": "redevfs://selected-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+        "options": {
+          "read": true,
+          "write": true
+        }
+      }
+    },
+    {
+      "operation": "seek",
+      "arguments": {
+        "handle": "9223372036854775807",
+        "offset": "0",
+        "whence": 0
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "resource_id": "selected-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "uri": "redevfs://selected-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+      "name": "note.txt",
+      "kind": "file",
+      "recursive": true,
+      "writable": true,
+      "revision": 1,
+      "expires_at": "2026-10-30T00:00:00Z",
+      "status": "active"
+    },
+    {
+      "review_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "plugin_instance_id": "plugini_selected",
+      "name": "note.txt",
+      "kind": "file",
+      "recursive": false,
+      "writable": true,
+      "review_expires_at": "2026-10-29T00:05:00Z",
+      "resource_expires_at": "2026-10-30T00:00:00Z",
+      "host_path": "/private/file"
+    },
+    {
+      "operation": "select",
+      "arguments": {
+        "kind": "file",
+        "recursive": true
+      }
+    },
+    {
+      "operation": "read_dir.next",
+      "arguments": {
+        "handle": "1",
+        "limit": 257
+      }
+    },
+    {
+      "operation": "read",
+      "arguments": {
+        "handle": 1,
+        "length": 1
+      }
+    }
+  ]
+}

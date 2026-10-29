@@ -4293,6 +4293,7 @@ func newHTTPTestHost(t *testing.T) *host.Host {
 
 type httpTestHostOptions struct {
 	webOrigins              host.SurfaceOriginAdapter
+	files                   *host.FilesModule
 	authorization           host.AuthorizationAdapter
 	secrets                 host.SecretStoreAdapter
 	diagnostics             host.DiagnosticsSink
@@ -4351,6 +4352,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	}
 	h, err := host.Open(httpTestContext(), host.Config{
 		Web:       &host.WebModule{Origins: webOrigins},
+		Files:     opts.files,
 		StateRoot: filepath.Join(t.TempDir(), "control"),
 		Core: host.CoreAdapters{
 			Policy:               httpTestPolicy{},

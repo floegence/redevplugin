@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.4.0
+  version: 3.5.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -12,6 +12,102 @@ x-redevplugin-query-policy:
     post_query: required
     mutation: required
 paths:
+  /_redevplugin/api/plugins/file-resources/select:
+    post:
+      operationId: selectFileResource
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/file-resources.schema.json#/$defs/select_request" }
+      responses:
+        "200":
+          description: Selected file operation result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SelectFileResourceSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/file-resources/approve:
+    post:
+      operationId: approveFileResource
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/file-resources.schema.json#/$defs/review_request" }
+      responses:
+        "200":
+          description: Selected file operation result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApproveFileResourceSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/file-resources/cancel:
+    post:
+      operationId: cancelFileResource
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/file-resources.schema.json#/$defs/review_request" }
+      responses:
+        "200":
+          description: Selected file operation result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CancelFileResourceSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/file-resources/query:
+    post:
+      operationId: listFileResources
+      x-redevplugin-route-effect: query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/file-resources.schema.json#/$defs/list_request" }
+      responses:
+        "200":
+          description: Selected file operation result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListFileResourcesSuccessResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/file-resources/revoke:
+    post:
+      operationId: revokeFileResource
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/file-resources.schema.json#/$defs/revoke_request" }
+      responses:
+        "200":
+          description: Selected file operation result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevokeFileResourceSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/file-resources/surface-io:
+    post:
+      operationId: surfaceFileIO
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/file-resources.schema.json#/$defs/surface_request" }
+      responses:
+        "200":
+          description: Selected file operation result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SurfaceFileIOSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/{plugin_instance_id}/local-import:
     post:
       operationId: importLocalPackage
@@ -1111,6 +1207,85 @@ components:
           schema:
             $ref: "#/components/schemas/PatchSettingsRequest"
   schemas:
+    SelectFileResourceSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "../plugin/file-resources.schema.json#/$defs/selection_result" }
+    ApproveFileResourceSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "../plugin/file-resources.schema.json#/$defs/resource" }
+    CancelFileResourceSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { type: object, additionalProperties: false, required: [canceled], properties: { canceled: { const: true } } }
+    ListFileResourcesSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "../plugin/file-resources.schema.json#/$defs/resource_list" }
+    RevokeFileResourceSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { type: object, additionalProperties: false, required: [revoked], properties: { revoked: { const: true } } }
+    SurfaceFileIOSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "../plugin/file-resources.schema.json#/$defs/io_result" }
+    FileSelectRequest:
+      $ref: "../plugin/file-resources.schema.json#/$defs/select_request"
+    FileReviewRequest:
+      $ref: "../plugin/file-resources.schema.json#/$defs/review_request"
+    FileListRequest:
+      $ref: "../plugin/file-resources.schema.json#/$defs/list_request"
+    FileRevokeRequest:
+      $ref: "../plugin/file-resources.schema.json#/$defs/revoke_request"
+    FileResource:
+      $ref: "../plugin/file-resources.schema.json#/$defs/resource"
+    FileResourceReview:
+      $ref: "../plugin/file-resources.schema.json#/$defs/review"
+    FileIORequest:
+      $ref: "../plugin/file-resources.schema.json#/$defs/io_request"
+    FileIOResult:
+      $ref: "../plugin/file-resources.schema.json#/$defs/io_result"
+    FileSelectionOptions:
+      $ref: "../plugin/file-resources.schema.json#/$defs/select_options"
+    FileErrorDetails:
+      $ref: "../plugin/file-resources.schema.json#/$defs/error_details"
+    FilePlatformError:
+      type: object
+      additionalProperties: false
+      required: [code, message, details]
+      properties:
+        code: { const: PLUGIN_FILE_OPERATION_FAILED }
+        message: { $ref: "#/components/schemas/PlatformErrorMessage" }
+        details: { $ref: "#/components/schemas/FileErrorDetails" }
+    MutationFilePlatformError:
+      type: object
+      additionalProperties: false
+      required: [code, message, details, mutation_outcome]
+      properties:
+        code: { const: PLUGIN_FILE_OPERATION_FAILED }
+        message: { $ref: "#/components/schemas/PlatformErrorMessage" }
+        details: { $ref: "#/components/schemas/FileErrorDetails" }
+        mutation_outcome: { $ref: "#/components/schemas/MutationOutcome" }
     PlatformErrorResponse:
       type: object
       required: [ok, error]
@@ -1208,7 +1383,7 @@ components:
           uniqueItems: true
           items:
             type: string
-            enum: [release, runtime, capability, connectivity, secrets, core_action, external_package]
+            enum: [release, runtime, capability, io, connectivity, secrets, core_action, external_package, process, background, files]
     PluginMethodConfirmationPreparationSuccessResponse:
       type: object
       required: [ok, data]
@@ -1409,6 +1584,7 @@ components:
         - $ref: "#/components/schemas/ValuesRevisionPlatformError"
         - $ref: "#/components/schemas/CapabilityPlatformError"
         - $ref: "#/components/schemas/WorkerPlatformError"
+        - $ref: "#/components/schemas/FilePlatformError"
     MutationPlatformError:
       oneOf:
         - $ref: "#/components/schemas/MutationGenericPlatformError"
@@ -1420,6 +1596,7 @@ components:
         - $ref: "#/components/schemas/MutationValuesRevisionPlatformError"
         - $ref: "#/components/schemas/MutationCapabilityPlatformError"
         - $ref: "#/components/schemas/MutationWorkerPlatformError"
+        - $ref: "#/components/schemas/MutationFilePlatformError"
         - $ref: "#/components/schemas/MutationSessionTeardownPlatformError"
     GenericPlatformError:
       type: object
@@ -1908,6 +2085,10 @@ components:
           type: array
           uniqueItems: true
           items: { type: string, minLength: 1 }
+        resource_permissions:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [fs.selected.read, fs.selected.write] }
     PluginPermissionRequirementContract:
       type: object
       required: [contract_id, contract_version, contract_sha256, capability_id, capability_version, methods]
@@ -1940,6 +2121,10 @@ components:
           type: array
           uniqueItems: true
           items: { type: string, minLength: 1 }
+        resource_permissions:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [fs.selected.read, fs.selected.write] }
     AuthorizationRevisions:
       type: object
       required: [policy_revision, management_revision, revoke_epoch]

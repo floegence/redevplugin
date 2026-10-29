@@ -4889,6 +4889,7 @@ func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, 
 }
 
 type testHostOptions struct {
+	filePicker              FileSelectionAdapter
 	openContext             context.Context
 	stateRoot               string
 	assets                  pluginpkg.AssetStore
@@ -5074,10 +5075,15 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		openContext = hostTestContext()
 	}
 	var backgroundModule *BackgroundModule
+	var filesModule *FilesModule
+	if opts.filePicker != nil {
+		filesModule = &FilesModule{Picker: opts.filePicker}
+	}
 	if opts.backgroundRunnerFactory != nil {
 		backgroundModule = &BackgroundModule{RunnerFactory: opts.backgroundRunnerFactory}
 	}
 	host, err := Open(openContext, Config{
+		Files:     filesModule,
 		Web:       &WebModule{Origins: testSurfaceOrigins{}},
 		StateRoot: stateRoot,
 		Core: CoreAdapters{

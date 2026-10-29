@@ -64,6 +64,8 @@
         if (ready) appPeer.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
       } else if (value?.type === "redevplugin.ui.file.export") {
         send({ ...value, type: "redevplugin.surface.file.export", frame_generation_id: frameGeneration, surface_handle: surfaceHandle }, [value.content]);
+      } else if (value?.type === "redevplugin.bridge.file_io") {
+        send({ ...value, type: "redevplugin.surface.file_io", frame_generation_id: frameGeneration, surface_handle: surfaceHandle });
       } else if (value?.type === "redevplugin.bridge.lifecycle_ack") {
         send({ type: "redevplugin.surface.quiesce_ack", quiesce_id: value.quiesce_id });
       } else if (applicationMessages.has(value?.type)) send(value);

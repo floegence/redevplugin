@@ -1,0 +1,1960 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/file-resources.schema.json",
+  "title": "Selected file resources",
+  "description": "Host-owned selection, approval, durable authority and bounded surface I/O. Permission declarations are ceilings, never grants. Selected resource watches are unsupported.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/resource"
+    },
+    {
+      "$ref": "#/$defs/review"
+    },
+    {
+      "$ref": "#/$defs/io_request"
+    }
+  ],
+  "$defs": {
+    "resource_id": {
+      "type": "string",
+      "pattern": "^selected-[0-9a-f]{64}$"
+    },
+    "handle": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "description": "Canonical positive 63-bit decimal handle. Values above 9223372036854775807 are rejected."
+    },
+    "uri": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^redevfs://selected-[0-9a-f]{64}/",
+      "description": "Opaque resource URI. Unicode paths normalize to NFC; traversal, encoded separators and empty segments are rejected."
+    },
+    "select_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "file",
+            "directory"
+          ]
+        },
+        "recursive": {
+          "type": "boolean"
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "file"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "recursive": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "select_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_instance_id",
+        "kind"
+      ],
+      "properties": {
+        "plugin_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory"
+          ]
+        },
+        "recursive": {
+          "type": "boolean"
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "file"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "recursive": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_id",
+        "plugin_instance_id",
+        "name",
+        "kind",
+        "recursive",
+        "writable",
+        "review_expires_at",
+        "resource_expires_at"
+      ],
+      "properties": {
+        "review_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "plugin_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory"
+          ]
+        },
+        "recursive": {
+          "type": "boolean"
+        },
+        "writable": {
+          "type": "boolean"
+        },
+        "review_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "resource_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "file"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "recursive": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "review_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_instance_id",
+        "review_id"
+      ],
+      "properties": {
+        "plugin_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "review_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "list_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_instance_id"
+      ],
+      "properties": {
+        "plugin_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "revoke_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_instance_id",
+        "resource_id",
+        "expected_revision"
+      ],
+      "properties": {
+        "plugin_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "resource_id": {
+          "$ref": "#/$defs/resource_id"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resource_id",
+        "uri",
+        "name",
+        "kind",
+        "recursive",
+        "writable",
+        "revision",
+        "expires_at",
+        "status"
+      ],
+      "properties": {
+        "resource_id": {
+          "$ref": "#/$defs/resource_id"
+        },
+        "uri": {
+          "$ref": "#/$defs/uri"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory"
+          ]
+        },
+        "recursive": {
+          "type": "boolean"
+        },
+        "writable": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "revoked",
+            "expired",
+            "unavailable"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "file"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "recursive": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "selection_result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "canceled"
+          ],
+          "properties": {
+            "canceled": {
+              "const": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "review"
+          ],
+          "properties": {
+            "review": {
+              "$ref": "#/$defs/review"
+            }
+          }
+        }
+      ]
+    },
+    "resource_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resources"
+      ],
+      "properties": {
+        "resources": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/resource"
+          }
+        }
+      }
+    },
+    "error_details": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file_error_code",
+        "file_retryable"
+      ],
+      "properties": {
+        "file_error_code": {
+          "enum": [
+            "INVALID_ARGUMENT",
+            "PERMISSION_DENIED",
+            "NOT_FOUND",
+            "NOT_EMPTY",
+            "ALREADY_EXISTS",
+            "RESOURCE_CLOSED",
+            "RESOURCE_LIMIT",
+            "CROSS_DEVICE",
+            "MOUNT_UNAVAILABLE",
+            "RUNTIME_UNAVAILABLE",
+            "CANCELED",
+            "TIMEOUT",
+            "IO_ERROR"
+          ]
+        },
+        "file_retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "operation": {
+      "enum": [
+        "select",
+        "fs.open",
+        "fs.stat",
+        "fs.read_dir.open",
+        "fs.mkdir",
+        "fs.remove",
+        "fs.rename",
+        "fs.copy",
+        "fs.set_times",
+        "read",
+        "write",
+        "seek",
+        "close",
+        "sync",
+        "read_dir.next"
+      ]
+    },
+    "io_request": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "select"
+            },
+            "arguments": {
+              "$ref": "#/$defs/select_options"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "fs.open"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri",
+                "options"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "options": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [],
+                  "properties": {
+                    "read": {
+                      "type": "boolean"
+                    },
+                    "write": {
+                      "type": "boolean"
+                    },
+                    "create": {
+                      "type": "boolean"
+                    },
+                    "create_new": {
+                      "type": "boolean"
+                    },
+                    "truncate": {
+                      "type": "boolean"
+                    },
+                    "append": {
+                      "type": "boolean"
+                    },
+                    "mode": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 511
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "fs.stat"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "follow_symlinks": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "fs.read_dir.open"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "fs.mkdir"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "recursive": {
+                  "type": "boolean"
+                },
+                "mode": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 511
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "fs.remove"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "recursive": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "fs.rename"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "from",
+                "to"
+              ],
+              "properties": {
+                "from": {
+                  "$ref": "#/$defs/uri"
+                },
+                "to": {
+                  "$ref": "#/$defs/uri"
+                },
+                "overwrite": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "fs.copy"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "from",
+                "to"
+              ],
+              "properties": {
+                "from": {
+                  "$ref": "#/$defs/uri"
+                },
+                "to": {
+                  "$ref": "#/$defs/uri"
+                },
+                "overwrite": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "fs.set_times"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri",
+                "accessed_unix_ms",
+                "modified_unix_ms"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "accessed_unix_ms": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "modified_unix_ms": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "read"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "length"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                },
+                "length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65536
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "write"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "data"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                },
+                "data": {
+                  "type": "string",
+                  "maxLength": 87384,
+                  "contentEncoding": "base64"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "seek"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "offset"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                },
+                "offset": {
+                  "type": "string",
+                  "pattern": "^(0|-?[1-9][0-9]{0,18})$"
+                },
+                "whence": {
+                  "enum": [
+                    0,
+                    1,
+                    2
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "close"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "sync"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "operation": {
+              "const": "read_dir.next"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "limit"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 256
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "surface_request": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "select"
+            },
+            "arguments": {
+              "$ref": "#/$defs/select_options"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "fs.open"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri",
+                "options"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "options": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [],
+                  "properties": {
+                    "read": {
+                      "type": "boolean"
+                    },
+                    "write": {
+                      "type": "boolean"
+                    },
+                    "create": {
+                      "type": "boolean"
+                    },
+                    "create_new": {
+                      "type": "boolean"
+                    },
+                    "truncate": {
+                      "type": "boolean"
+                    },
+                    "append": {
+                      "type": "boolean"
+                    },
+                    "mode": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 511
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "fs.stat"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "follow_symlinks": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "fs.read_dir.open"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "fs.mkdir"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "recursive": {
+                  "type": "boolean"
+                },
+                "mode": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 511
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "fs.remove"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "recursive": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "fs.rename"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "from",
+                "to"
+              ],
+              "properties": {
+                "from": {
+                  "$ref": "#/$defs/uri"
+                },
+                "to": {
+                  "$ref": "#/$defs/uri"
+                },
+                "overwrite": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "fs.copy"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "from",
+                "to"
+              ],
+              "properties": {
+                "from": {
+                  "$ref": "#/$defs/uri"
+                },
+                "to": {
+                  "$ref": "#/$defs/uri"
+                },
+                "overwrite": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "fs.set_times"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uri",
+                "accessed_unix_ms",
+                "modified_unix_ms"
+              ],
+              "properties": {
+                "uri": {
+                  "$ref": "#/$defs/uri"
+                },
+                "accessed_unix_ms": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "modified_unix_ms": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "read"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "length"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                },
+                "length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65536
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "write"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "data"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                },
+                "data": {
+                  "type": "string",
+                  "maxLength": 87384,
+                  "contentEncoding": "base64"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "seek"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "offset"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                },
+                "offset": {
+                  "type": "string",
+                  "pattern": "^(0|-?[1-9][0-9]{0,18})$"
+                },
+                "whence": {
+                  "enum": [
+                    0,
+                    1,
+                    2
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "close"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "sync"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "plugin_instance_id",
+            "surface_instance_id",
+            "bridge_channel_id",
+            "plugin_gateway_token",
+            "operation",
+            "arguments"
+          ],
+          "properties": {
+            "plugin_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "surface_instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "bridge_channel_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "plugin_gateway_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "operation": {
+              "const": "read_dir.next"
+            },
+            "arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "limit"
+              ],
+              "properties": {
+                "handle": {
+                  "$ref": "#/$defs/handle"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 256
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "io_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "canceled": {
+          "const": true
+        },
+        "review": {
+          "$ref": "#/$defs/review"
+        },
+        "resource": {
+          "$ref": "#/$defs/resource"
+        },
+        "handle": {
+          "$ref": "#/$defs/handle"
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 87384,
+          "contentEncoding": "base64"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "eof": {
+          "type": "boolean"
+        },
+        "offset": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,18})$"
+        },
+        "value": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/stat"
+            },
+            {
+              "$ref": "#/$defs/directory_page"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "ok"
+              ],
+              "properties": {
+                "ok": {
+                  "const": true
+                }
+              }
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "canceled"
+          ],
+          "propertyNames": {
+            "enum": [
+              "canceled"
+            ]
+          }
+        },
+        {
+          "required": [
+            "review"
+          ],
+          "propertyNames": {
+            "enum": [
+              "review"
+            ]
+          }
+        },
+        {
+          "required": [
+            "resource"
+          ],
+          "propertyNames": {
+            "enum": [
+              "resource"
+            ]
+          }
+        },
+        {
+          "required": [
+            "handle"
+          ],
+          "propertyNames": {
+            "enum": [
+              "handle"
+            ]
+          }
+        },
+        {
+          "required": [
+            "data",
+            "count",
+            "eof"
+          ],
+          "propertyNames": {
+            "enum": [
+              "data",
+              "count",
+              "eof"
+            ]
+          }
+        },
+        {
+          "required": [
+            "count"
+          ],
+          "propertyNames": {
+            "enum": [
+              "count"
+            ]
+          }
+        },
+        {
+          "required": [
+            "offset"
+          ],
+          "propertyNames": {
+            "enum": [
+              "offset"
+            ]
+          }
+        },
+        {
+          "required": [
+            "value"
+          ],
+          "propertyNames": {
+            "enum": [
+              "value"
+            ]
+          }
+        },
+        {
+          "maxProperties": 0
+        }
+      ]
+    },
+    "stat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uri",
+        "kind",
+        "size",
+        "mode",
+        "modified_unix_ms"
+      ],
+      "properties": {
+        "uri": {
+          "$ref": "#/$defs/uri"
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory"
+          ]
+        },
+        "size": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,18})$"
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "modified_unix_ms": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "created_unix_ms": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "directory_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "uri",
+        "kind"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "uri": {
+          "$ref": "#/$defs/uri"
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory",
+            "symlink",
+            "other"
+          ]
+        }
+      }
+    },
+    "directory_page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "eof"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/directory_entry"
+          }
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -296,3 +296,56 @@ without sleeping or replacing global timers. The fixture always uses the
 production bridge client. Cancelled/completed requests remove timers; time never
 moves backward and timer loops are bounded. It does not certify Host policy,
 WASM execution, native browser behavior, or security boundaries.
+
+## Open And Save Existing Files
+
+An ordinary application keeps its DOM, document model and undo stack. Use the
+bridge files client only where the application accesses host files:
+
+~~~ts
+const resource = await bridge.files.select({ kind: "file", writable: true });
+if (resource) {
+  const file = await bridge.files.open(resource.uri, { read: true });
+  try {
+    // Consume bounded chunks into the application's existing document model.
+    for (;;) {
+      const { bytes, eof } = await file.read();
+      consumeDocumentBytes(bytes);
+      if (eof) break;
+    }
+  } finally {
+    await file.close();
+  }
+}
+~~~
+
+Saving opens the approved URI with write and truncate when replacement is
+intended, writes the application's encoded bytes, then syncs and closes. Preserve
+the in-memory document until success. A truncate/write sequence is not atomic;
+after an uncertain result inspect the file and let the user resolve it rather
+than silently retrying. Single-file authority cannot create a sibling temporary
+file for atomic rename. That operation requires explicit directory authority.
+
+The trusted parent supplies confirmFileAccess when opening the surface slot.
+It presents the verified name, file/directory kind, recursive scope, writable
+status and expiry, then returns the user's decision. Without that handler,
+selection is unavailable. The platform performs approval or cancellation; the
+application never receives the review credential. A canceled selection resolves
+to null. Product management uses selectFileResource, approveFileResource,
+cancelFileResource, listFileResources and revokeFileResource on the published
+PluginPlatformClient; these are authenticated host operations.
+
+files also exposes stat, entries, mkdir, remove, rename and copy. File handles
+expose read, write, seek, sync and close. Handles are individual to a surface and
+survive the HTTP request that opened them; closing one surface leaves siblings
+intact. URI/resource authority can be reused only within its current owner and
+plugin binding. Bigint preserves file length and seek precision; wire handles
+and offsets are canonical decimal strings. Reads and writes are bounded to
+64 KiB chunks. Web directory pages accept at most 256 requested entries (the SDK
+requests 128); Worker pages retain their 1000-entry ceiling. Both stop earlier
+at 60 KiB encoded payload, retaining the next entry without loss or duplication.
+Names and returned URIs use the platform's NFC normalization.
+
+Browser-local imports and downloads remain ordinary Web interactions. They do
+not grant access to environment files. The selected-file API and its management
+contracts are defined by spec/plugin/file-resources.schema.json and OpenAPI.

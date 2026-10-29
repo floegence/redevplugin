@@ -16,6 +16,12 @@ var ErrActionDenied = errors.New("host platform action is denied")
 type ManagementAction string
 
 const (
+	ManagementActionSurfaceFile                ManagementAction = "file_resource.surface_io"
+	ManagementActionSelectFileResource         ManagementAction = "file_resource.select"
+	ManagementActionApproveFileResource        ManagementAction = "file_resource.approve"
+	ManagementActionCancelFileResource         ManagementAction = "file_resource.cancel"
+	ManagementActionListFileResources          ManagementAction = "file_resource.list"
+	ManagementActionRevokeFileResource         ManagementAction = "file_resource.revoke"
 	ManagementActionOpenSurface                ManagementAction = "surface.open"
 	ManagementActionPrepareSurface             ManagementAction = "surface.prepare"
 	ManagementActionMintBridgeToken            ManagementAction = "surface.mint_bridge_token"
@@ -82,6 +88,8 @@ func (action ManagementAction) Valid() bool {
 
 func (action ManagementAction) Resource() ResourceRef {
 	switch action {
+	case ManagementActionSurfaceFile, ManagementActionSelectFileResource, ManagementActionApproveFileResource, ManagementActionCancelFileResource, ManagementActionListFileResources, ManagementActionRevokeFileResource:
+		return ResourcePlugin
 	case ManagementActionOpenSurface, ManagementActionPrepareSurface,
 		ManagementActionMintBridgeToken,
 		ManagementActionDisposeSurface:

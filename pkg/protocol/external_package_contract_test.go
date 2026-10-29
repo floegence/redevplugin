@@ -16,7 +16,7 @@ func TestExternalPackageFeatureIsPublishedByTheOpenAPIContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	block := openAPISchemaBlock(t, string(raw), "PluginFeaturesSuccessResponse")
-	if !strings.Contains(block, "enum: [release, runtime, capability, connectivity, secrets, core_action, external_package]") {
+	if !strings.Contains(block, "enum: [release, runtime, capability, io, connectivity, secrets, core_action, external_package, process, background, files]") {
 		t.Fatalf("PluginFeaturesSuccessResponse does not publish external_package:\n%s", block)
 	}
 }

@@ -30,3 +30,29 @@ document.querySelector("button")!.addEventListener("click", () => {
   document.querySelector("output")!.textContent = input.value;
   history.pushState(null, "", "/notes/current");
 });
+
+const editor = document.createElement("textarea"); editor.setAttribute("aria-label", "Selected document");
+const openFile = document.createElement("button"); openFile.textContent = "Open file";
+const saveFile = document.createElement("button"); saveFile.textContent = "Save file"; saveFile.disabled = true;
+const fileStatus = document.createElement("p"); fileStatus.setAttribute("role", "status");
+document.body.append(editor, openFile, saveFile, fileStatus);
+let selectedURI = "";
+openFile.addEventListener("click", () => { void (async () => {
+  try {
+    const resource = await bridge.files.select({ kind: "file", writable: true });
+    if (!resource) return;
+    selectedURI = resource.uri;
+    const file = await bridge.files.open(selectedURI);
+    try { editor.value = new TextDecoder().decode((await file.read()).bytes); }
+    finally { await file.close(); }
+    saveFile.disabled = false; fileStatus.textContent = "Opened";
+  } catch (error) { fileStatus.textContent = String(error); }
+})(); });
+saveFile.addEventListener("click", () => { void (async () => {
+  try {
+    const file = await bridge.files.open(selectedURI, { write: true, truncate: true });
+    try { await file.write(new TextEncoder().encode(editor.value)); await file.sync(); }
+    finally { await file.close(); }
+    fileStatus.textContent = "Saved";
+  } catch (error) { fileStatus.textContent = String(error); }
+})(); });

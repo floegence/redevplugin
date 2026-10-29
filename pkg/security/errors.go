@@ -63,6 +63,7 @@ const (
 	ErrJSONLimitExceeded             ErrorCode = "PLUGIN_JSON_LIMIT_EXCEEDED"
 	ErrCapabilityError               ErrorCode = "PLUGIN_CAPABILITY_ERROR"
 	ErrWorkerError                   ErrorCode = "PLUGIN_WORKER_ERROR"
+	ErrFileOperationFailed           ErrorCode = "PLUGIN_FILE_OPERATION_FAILED"
 	ErrContractMismatch              ErrorCode = "PLUGIN_CONTRACT_MISMATCH"
 	ErrManagementRevisionMismatch    ErrorCode = "PLUGIN_MANAGEMENT_REVISION_MISMATCH"
 	ErrAuthorizationRevisionMismatch ErrorCode = "PLUGIN_AUTHORIZATION_REVISION_MISMATCH"
@@ -141,6 +142,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrJSONLimitExceeded,
 	ErrCapabilityError,
 	ErrWorkerError,
+	ErrFileOperationFailed,
 	ErrContractMismatch,
 	ErrManagementRevisionMismatch,
 	ErrAuthorizationRevisionMismatch,

@@ -23,6 +23,12 @@ type RouteAction = host.ManagementAction
 
 const (
 	RouteActionImportLocalPackage         = host.ManagementActionImportLocalPackage
+	RouteActionSurfaceFile                = host.ManagementActionSurfaceFile
+	RouteActionSelectFileResource         = host.ManagementActionSelectFileResource
+	RouteActionApproveFileResource        = host.ManagementActionApproveFileResource
+	RouteActionCancelFileResource         = host.ManagementActionCancelFileResource
+	RouteActionListFileResources          = host.ManagementActionListFileResources
+	RouteActionRevokeFileResource         = host.ManagementActionRevokeFileResource
 	RouteActionInstallReleaseRef          = host.ManagementActionInstallReleaseRef
 	RouteActionInspectExternalPackage     = host.ManagementActionInspectExternalPackage
 	RouteActionInstallInspectedPackage    = host.ManagementActionInstallInspectedPackage

@@ -48,3 +48,59 @@ validation, or execution semantics. The runner uses the existing method dispatch
 and event lifecycle without overriding execution mode or cancellation policy.
 Explicit entries authorize only the selected method; existing entries retain
 their aggregate startup requirement. This feature does not add timers or services.
+
+## Selected File Resources
+
+The optional FilesModule supplies a trusted FileSelectionAdapter. The adapter
+returns an absolute path from product selection UI; only the Host opens it,
+validates object identity, and creates authority. Hosts register the module and
+mount the released HTTP adapter. They do not parse paths from plugin messages,
+issue resource IDs, duplicate the approval state machine, or grant a whole root.
+
+Packages requiring this API declare fs.selected.v1 plus fs.selected.read and/or
+fs.selected.write. These permissions are capability ceilings, not boolean
+grants. The permission inventory marks resource selection separately. The normal
+grant API rejects them. A Worker method uses its exact declared ceiling; the Web
+surface uses the package's selected-resource ceiling. Both share the Host's
+resource table and per-operation authorization. A package declaring only selected
+access cannot open home, workspace, environment, or private-storage roots.
+
+Selection creates a five-minute, session-bound review. Approval checks the exact
+owner, current plugin revisions, live originating surface, session read/write
+caps, object identity, and 24-hour resource expiry before persisting authority.
+A persistence attempt consumes the review, including unknown commit outcomes.
+After a lost response or audit completion failure, query resource inventory;
+do not replay approval. Cancellation produces no durable authorization. The
+plugin receives only an opaque redevfs://selected-<id>/ URI, never host paths,
+review credentials, gateway tokens, or object identity evidence.
+
+Each user/plugin has at most 128 active resources and 256 retained rows. Older
+inactive rows may be pruned; audit history is separate. Listing is authoritative
+for current inventory, not an unlimited audit log. Revoke binds the exact
+resource revision and is idempotent while that retained row exists. An absent
+row has no authority. Adding or revoking one resource does not reload unrelated
+surfaces. Disable, version and policy changes retain the global revoke chain.
+Removing the Files module prevents use of retained grants; list/revoke remain
+available for management.
+
+A selected file grants no parent-directory authority. Rename/remove of that
+file are unsupported. A nonrecursive directory permits its root and direct
+children; recursive access remains within the opened root. Symlinks are never
+followed, hard-linked regular files are rejected, and device/special files are
+not opened as ordinary files. Every read/write/seek/control rechecks expiry,
+owner, active fingerprint, revisions and object identity. Restart reopens only
+an exact identity match; replacement requires a new selection. Open descriptors
+are not a promise that an external process can never move the selected object.
+
+Control schema 2 adds selected_file_resources via one transactional migration
+from the exact schema 1. Existing registry, grants and settings remain intact.
+Unknown, future or drifted schemas are rejected without mutation. The Host owns
+migration and cleanup; product code selects only its state root.
+
+Copy and recursive mutations are not filesystem transactions. Admission errors
+must precede truncation. Failure after effects may have occurred reports an
+unknown mutation outcome; callers inspect the result before retrying. Dispatched
+raw Worker write failures are nonretryable and report unknown through last_error.
+Rust File::write_all adds acknowledged_bytes for earlier completed chunks, while
+Web PluginFileWriteError.bytesWritten carries the same lower-bound meaning.
+Selected resource watches are unsupported.

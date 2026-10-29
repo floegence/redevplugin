@@ -21,6 +21,23 @@ type recordingRuntimeIOBroker struct {
 	closes   []string
 }
 
+func TestRuntimeIOPreservesZeroWriteAndSeekResult(t *testing.T) {
+	supervisor := &ProcessSupervisor{ioBroker: &recordingRuntimeIOBroker{}}
+	for _, tc := range []struct {
+		kind  IPCFrameType
+		field string
+	}{{IPCFrameIOWrite, "bytes_written"}, {IPCFrameIOSeek, "offset"}} {
+		frame := supervisor.executeRuntimeIO(context.Background(), IPCFrame{Type: tc.kind}, runtimeIORequestMetadata{InvocationID: "zero", ResourceID: 1})
+		var metadata map[string]any
+		if err := json.Unmarshal(frame.Metadata, &metadata); err != nil {
+			t.Fatal(err)
+		}
+		if metadata[tc.field] != float64(0) {
+			t.Errorf("missing zero %s: %s", tc.field, frame.Metadata)
+		}
+	}
+}
+
 func (broker *recordingRuntimeIOBroker) Control(ctx context.Context, invocationID string, raw []byte) ([]byte, error) {
 	broker.mu.Lock()
 	broker.controls = append(broker.controls, invocationID)

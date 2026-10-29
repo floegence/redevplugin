@@ -242,7 +242,7 @@ func (h *Host) authorizePermissionRequirements(ctx context.Context, record regis
 	}
 	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
 		PluginInstanceID: record.PluginInstanceID,
-		PermissionIDs:    requirements.requiredPermissions,
+		PermissionIDs:    permissions.MethodGrantIDs(requirements.requiredPermissions),
 	})
 	if err != nil {
 		return err

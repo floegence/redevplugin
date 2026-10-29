@@ -3,11 +3,12 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
-	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestWebSurfaceDocumentIsOneClosedOriginBinding(t *testing.T) {
@@ -23,7 +24,7 @@ func TestWebSurfaceDocumentIsOneClosedOriginBinding(t *testing.T) {
 
 func TestWebSurfaceTransportIsClosedAndSecretFree(t *testing.T) {
 	schema := readPluginSchema(t, "web-surface-transport.schema.json")
-	names := []string{"port_envelope", "port_ack", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "navigation", "quiesce_ack", "file_export", "close_request", "close_response"}
+	names := []string{"port_envelope", "port_ack", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response"}
 	refs := requireObjectArray(t, schema["oneOf"], "transport variants")
 	var got []string
 	for _, ref := range refs {
@@ -52,6 +53,7 @@ func TestWebSurfaceTransportRejectsRetiredAndAuthorityBearingMessages(t *testing
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	addFileResourcesSchema(t, compiler)
 	if err := compiler.AddResource("urn:web", bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +127,7 @@ func TestWebSurfaceOpeningDiagnostics(t *testing.T) {
 	root := repoRoot(t)
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	addFileResourcesSchema(t, compiler)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "web-surface-transport.schema.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -168,5 +171,16 @@ func TestWebSurfaceOpeningDiagnostics(t *testing.T) {
 				t.Fatalf("accepted invalid %s", key)
 			}
 		})
+	}
+}
+
+func addFileResourcesSchema(t *testing.T, compiler *jsonschema.Compiler) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec/plugin/file-resources.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin/file-resources.schema.json", bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
 	}
 }

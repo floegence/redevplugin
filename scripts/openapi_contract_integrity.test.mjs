@@ -393,3 +393,27 @@ test("runtime module cache metrics stay within negotiated platform maxima", asyn
   assert.equal(metrics.properties.source_bytes.minimum, 0);
   assert.equal(metrics.properties.source_bytes.maximum, 134217728);
 });
+
+
+test("selected file requests and results have closed authority-bound contracts", async () => {
+  const schema = JSON.parse(await readFile(join(root, "spec/plugin/file-resources.schema.json"), "utf8"));
+  const ajv = new Ajv2020({ strict: false, validateFormats: false }); ajv.addSchema(schema);
+  const validator = name => ajv.compile({ $ref: schema.$id + "#/$defs/" + name });
+  const request = validator("io_request"), result = validator("io_result");
+  const uri = "redevfs://selected-" + "a".repeat(64) + "/";
+  assert.equal(request({ operation: "fs.open", arguments: { uri, options: { read: true } } }), true);
+  for (const value of [
+    { operation: "read", arguments: { handle: "1", length: 65537 } },
+    { operation: "read", arguments: { handle: 1, length: 1 } },
+    { operation: "sync", arguments: { handle: "1", writable: true } },
+    { operation: "select", arguments: { kind: "file", recursive: true } },
+  ]) assert.equal(request(value), false, JSON.stringify(value));
+  assert.equal(result({ data: "", count: 0, eof: true }), true);
+  assert.equal(result({ value: { uri, kind: "file", size: "9007199254740993", mode: 384, modified_unix_ms: 0 } }), true);
+  assert.equal(result({ value: { entries: [], eof: true } }), true);
+  for (const value of [{ data: "", count: 0 }, { canceled: true, handle: "1" }, { value: { arbitrary: true } }, { handle: 1 }]) assert.equal(result(value), false, JSON.stringify(value));
+  const bridge = JSON.parse(await readFile(join(root, "spec/plugin/bridge.schema.json"), "utf8"));
+  assert.equal(bridge.$defs.file_io.properties.request.$ref, schema.$id + "#/$defs/io_request");
+  const surface = JSON.parse(await readFile(join(root, "spec/plugin/web-surface-transport.schema.json"), "utf8"));
+  assert.deepEqual(surface.$defs.file_io.required, ["type", "id", "request", "frame_generation_id", "surface_handle"]);
+});

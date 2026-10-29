@@ -2,6 +2,7 @@ package resourceio
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -25,6 +26,7 @@ type Mount struct {
 	Root     *os.Root
 	ReadOnly bool
 	Scope    sessionctx.ResourceScope
+	selected *selectedMount
 }
 
 type OpenOptions struct {
@@ -111,6 +113,7 @@ type DirectoryStream struct {
 	mountID string
 	path    string
 	closed  bool
+	pending *DirectoryEntry
 }
 
 func OpenMount(id, path string, readOnly bool, scope sessionctx.ResourceScope) (Mount, error) {
@@ -139,6 +142,11 @@ func (mount Mount) relative(uri URI) (string, error) {
 }
 
 func (mount Mount) Stat(uri URI, followSymlinks bool) (FileStat, error) {
+	if mount.selected != nil {
+		var result FileStat
+		err := mount.selected.use(uri, false, func(s *Selection) error { var err error; result, err = s.Stat(uri); return err })
+		return result, err
+	}
 	path, err := mount.relative(uri)
 	if err != nil {
 		return FileStat{}, err
@@ -178,7 +186,15 @@ func fileKind(mode fs.FileMode) FileKind {
 	}
 }
 
-func (mount Mount) OpenFile(uri URI, options OpenOptions) (*os.File, error) {
+func (mount Mount) OpenFile(uri URI, options OpenOptions) (FileStream, error) {
+	if mount.selected != nil {
+		var file SelectedFile
+		err := mount.selected.use(uri, options.Write, func(s *Selection) error { var err error; file, err = s.OpenFile(uri, options); return err })
+		if err != nil {
+			return nil, err
+		}
+		return &selectedAuthorizedFile{mount: mount.selected.persistent(), uri: uri, file: file}, nil
+	}
 	path, err := mount.relative(uri)
 	if err != nil {
 		return nil, err
@@ -245,6 +261,9 @@ func normalizeOpenOptions(options OpenOptions) (int, fs.FileMode, error) {
 }
 
 func (mount Mount) Mkdir(uri URI, recursive bool, mode fs.FileMode) error {
+	if mount.selected != nil {
+		return mount.selected.use(uri, true, func(s *Selection) error { return s.Mkdir(uri, recursive, mode) })
+	}
 	if mount.ReadOnly {
 		return os.ErrPermission
 	}
@@ -265,6 +284,9 @@ func (mount Mount) Mkdir(uri URI, recursive bool, mode fs.FileMode) error {
 }
 
 func (mount Mount) Remove(uri URI, recursive bool) error {
+	if mount.selected != nil {
+		return mount.selected.use(uri, true, func(s *Selection) error { return s.Remove(uri, recursive) })
+	}
 	if mount.ReadOnly {
 		return os.ErrPermission
 	}
@@ -282,6 +304,9 @@ func (mount Mount) Remove(uri URI, recursive bool) error {
 }
 
 func (mount Mount) Rename(from, to URI, overwrite bool) error {
+	if mount.selected != nil {
+		return mount.selected.use(from, true, func(s *Selection) error { return s.Rename(from, to, overwrite) })
+	}
 	if mount.ReadOnly {
 		return os.ErrPermission
 	}
@@ -353,7 +378,15 @@ func (mount Mount) Copy(from, to URI, overwrite bool, mode fs.FileMode) error {
 	return errors.Join(copyErr, syncErr, closeErr)
 }
 
-func (mount Mount) OpenDirectory(uri URI) (*DirectoryStream, error) {
+func (mount Mount) OpenDirectory(uri URI) (DirectoryReader, error) {
+	if mount.selected != nil {
+		var directory DirectoryReader
+		err := mount.selected.use(uri, false, func(s *Selection) error { var err error; directory, err = s.OpenDirectory(uri); return err })
+		if err != nil {
+			return nil, err
+		}
+		return &selectedAuthorizedDirectory{mount: mount.selected.persistent(), uri: uri, directory: directory}, nil
+	}
 	path, err := mount.relative(uri)
 	if err != nil {
 		return nil, err
@@ -374,6 +407,9 @@ func (mount Mount) OpenDirectory(uri URI) (*DirectoryStream, error) {
 }
 
 func (mount Mount) OpenWatch(uri URI) (*WatchStream, error) {
+	if mount.selected != nil {
+		return nil, ErrWatchUnsupported
+	}
 	path, err := mount.relative(uri)
 	if err != nil {
 		return nil, err
@@ -405,22 +441,42 @@ func (stream *DirectoryStream) Next(limit int) (DirectoryPage, error) {
 	if limit < 1 || limit > 1000 {
 		return DirectoryPage{}, ErrResourceLimit
 	}
-	entries, err := stream.file.ReadDir(limit)
-	eof := errors.Is(err, io.EOF)
-	if err != nil && !eof {
-		return DirectoryPage{}, err
-	}
-	page := DirectoryPage{Entries: make([]DirectoryEntry, 0, len(entries)), EOF: eof}
-	for _, entry := range entries {
-		path := entry.Name()
-		if stream.path != "." {
-			path = stream.path + "/" + path
+	// Leave room for the control and surface envelopes inside their 64 KiB cap.
+	const maxPageBytes = 60 << 10
+	page := DirectoryPage{Entries: make([]DirectoryEntry, 0, limit)}
+	encodedBytes := len(`{"entries":[],"eof":false}`)
+	for len(page.Entries) < limit {
+		if stream.pending == nil {
+			entries, err := stream.file.ReadDir(1)
+			if errors.Is(err, io.EOF) {
+				page.EOF = true
+				_ = stream.Close()
+				break
+			}
+			if err != nil {
+				return DirectoryPage{}, err
+			}
+			entry := entries[0]
+			path := entry.Name()
+			if stream.path != "." {
+				path = stream.path + "/" + path
+			}
+			uri := URI{MountID: stream.mountID, Path: path}
+			stream.pending = &DirectoryEntry{Name: entry.Name(), URI: uri.String(), Kind: fileKind(entry.Type())}
 		}
-		uri := URI{MountID: stream.mountID, Path: path}
-		page.Entries = append(page.Entries, DirectoryEntry{Name: entry.Name(), URI: uri.String(), Kind: fileKind(entry.Type())})
-	}
-	if eof {
-		_ = stream.Close()
+		raw, err := json.Marshal(stream.pending)
+		if err != nil {
+			return DirectoryPage{}, err
+		}
+		if encodedBytes+len(raw)+1 > maxPageBytes {
+			if len(page.Entries) == 0 {
+				return DirectoryPage{}, ErrResourceLimit
+			}
+			break
+		}
+		encodedBytes += len(raw) + 1
+		page.Entries = append(page.Entries, *stream.pending)
+		stream.pending = nil
 	}
 	return page, nil
 }
@@ -434,7 +490,7 @@ func (stream *DirectoryStream) Close() error {
 }
 
 func Sync(resource io.Closer) error {
-	file, ok := resource.(*os.File)
+	file, ok := resource.(interface{ Sync() error })
 	if !ok {
 		return ErrInvalidHandle
 	}
@@ -442,6 +498,9 @@ func Sync(resource io.Closer) error {
 }
 
 func (mount Mount) SetTimes(uri URI, accessed, modified time.Time) error {
+	if mount.selected != nil {
+		return mount.selected.use(uri, true, func(s *Selection) error { return s.SetTimes(uri, accessed, modified) })
+	}
 	if mount.ReadOnly {
 		return os.ErrPermission
 	}

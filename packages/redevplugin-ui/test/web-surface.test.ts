@@ -3417,3 +3417,41 @@ for (const outcome of ["reject", "throw", "timeout", "dispose", "invalidate"] as
     await host.dispose();
   });
 }
+
+for (const decision of [true, false, undefined]) test("selected files require trusted-parent approval: " + String(decision), async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  fetch.push(preparation()); fetch.push(gatewayLease());
+  let confirmations = 0;
+  const review = { review_id: "a".repeat(64), plugin_instance_id: hostBootstrap.pluginInstanceId, name: "document.txt", kind: "file", recursive: false, writable: true, review_expires_at: "2030-01-01T00:05:00Z", resource_expires_at: "2030-01-02T00:00:00Z" };
+  const resource = { resource_id: "selected-" + "b".repeat(64), uri: "redevfs://selected-" + "b".repeat(64) + "/", name: "document.txt", kind: "file", recursive: false, writable: true, revision: 1, status: "active", expires_at: review.resource_expires_at };
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap, testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+    confirmFileAccess: decision === undefined ? undefined : approved => { confirmations++; assert.equal(approved.name, review.name); return decision; },
+  });
+  const opening = host.open(); frame.load();
+  await waitFor(() => frame.transferred.length === 1); channel.port2.applicationReady(); await opening;
+  const baseline = fetch.calls.length;
+  const message = { type: "redevplugin.surface.file_io", id: "file_1", frame_generation_id: host.frameGenerationId, surface_handle: host.surfaceHandle, request: { operation: "select", arguments: { kind: "file", writable: true } } };
+  channel.port2.postMessage({ ...message, frame_generation_id: "frame_stale" });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(fetch.calls.length, baseline);
+  if (decision !== undefined) { fetch.push({ review }); fetch.push(decision ? resource : { canceled: true }); }
+  channel.port2.postMessage(message);
+  await waitFor(() => channel.port1.sent.some(value => isMessageType(value, "redevplugin.bridge.response") && (value as { id?: string }).id === "file_1"));
+  const response = channel.port1.sent.at(-1) as { ok: boolean; data?: unknown; error_code?: string };
+  assert.equal(confirmations, decision === undefined ? 0 : 1);
+  if (decision === undefined) {
+    assert.equal(fetch.calls.length, baseline);
+    assert.equal(response.error_code, "PLUGIN_FEATURE_NOT_CONFIGURED");
+  } else {
+    assert.equal(response.ok, true);
+    assert.deepEqual(response.data, decision ? { resource } : { canceled: true });
+    assert.equal(fetch.calls[baseline]?.input.endsWith("/surface-io"), true);
+    assert.equal(fetch.calls[baseline + 1]?.input.endsWith(decision ? "/approve" : "/cancel"), true);
+    assert.equal(JSON.stringify(response).includes(review.review_id), false);
+  }
+  await host.dispose();
+});

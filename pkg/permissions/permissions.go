@@ -57,7 +57,7 @@ var (
 func NewGrant(req GrantRequest) (Record, error) {
 	pluginInstanceID := normalizeID(req.PluginInstanceID)
 	permissionID := normalizeID(req.PermissionID)
-	if pluginInstanceID == "" || permissionID == "" {
+	if pluginInstanceID == "" || permissionID == "" || ResourceScoped(permissionID) {
 		return Record{}, ErrInvalidPermission
 	}
 	now := normalizeNow(req.Now)

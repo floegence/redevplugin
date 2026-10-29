@@ -24,6 +24,6 @@ try {
       .then(response => { if (response.ok) state.released.push(route.origin); }).catch(() => undefined); };
     signal.addEventListener("abort", release, { once: true });
     if (signal.aborted) release();
-  }, onInteraction: event => state.interactions.push(event.kind), onError: error => { state.error = error.message; } });
+  }, confirmFileAccess: async review => review.name === "selected.txt" && review.writable, onInteraction: event => state.interactions.push(event.kind), onError: error => { state.error = error.message; } });
   state.ready = true;
 } catch (error) { state.error = String(error); }

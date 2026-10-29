@@ -121,10 +121,7 @@ impl File {
     }
 
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        for chunk in bytes.chunks(MAX_IO_CHUNK_BYTES) {
-            self.handle.write(chunk, 0)?;
-        }
-        Ok(())
+        write_file_chunks(bytes, |chunk| self.handle.write(chunk, 0))
     }
 
     pub fn seek(&mut self, offset: i64, whence: u32) -> Result<u64> {
@@ -148,6 +145,25 @@ impl File {
     pub fn close(mut self) -> Result<()> {
         self.handle.close()
     }
+}
+
+fn write_file_chunks(bytes: &[u8], mut write: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
+    let mut acknowledged = 0;
+    for chunk in bytes.chunks(MAX_IO_CHUNK_BYTES) {
+        if let Err(mut error) = write(chunk) {
+            // A later failure cannot undo earlier chunks. The failing chunk may
+            // also have changed bytes; only prior acknowledgements are counted.
+            if !error.details.is_object() {
+                error.details = serde_json::json!({});
+            }
+            error.details["mutation_outcome"] = serde_json::json!("unknown");
+            error.details["acknowledged_bytes"] = serde_json::json!(acknowledged);
+            error.retryable = false;
+            return Err(error);
+        }
+        acknowledged += chunk.len();
+    }
+    Ok(())
 }
 
 pub struct Directory {
@@ -404,6 +420,26 @@ fn atomic_temporary_uri(uri: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunk_failure_preserves_acknowledged_bytes_and_never_replays() {
+        let bytes = vec![0; MAX_IO_CHUNK_BYTES + 1];
+        let mut calls = 0;
+        let error = write_file_chunks(&bytes, |_| {
+            calls += 1;
+            if calls == 1 {
+                Ok(())
+            } else {
+                Err(Error::from_abi_status(-2))
+            }
+        })
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert_eq!(error.code, ErrorCode::PermissionDenied);
+        assert_eq!(error.details["mutation_outcome"], "unknown");
+        assert_eq!(error.details["acknowledged_bytes"], MAX_IO_CHUNK_BYTES);
+        assert!(!error.retryable);
+    }
 
     #[test]
     fn atomic_temporary_file_stays_in_the_same_directory() {

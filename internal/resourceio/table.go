@@ -201,6 +201,37 @@ func (table *Table) Open(owner Owner, kind Kind, resource io.Closer) (HandleID, 
 	}
 }
 
+// OpenCreated reserves handle capacity before a constructor can mutate files.
+// The factory must not reenter Table. A failed admission never runs it.
+func (table *Table) OpenCreated(owner Owner, kind Kind, create func() (io.Closer, error)) (HandleID, error) {
+	if table == nil || create == nil || !owner.valid() || !validKind(kind) {
+		return 0, ErrInvalidHandle
+	}
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	if table.ownerKindCountLocked(owner, kindClassFor(kind)) >= table.limitFor(kind) {
+		return 0, ErrResourceLimit
+	}
+	for {
+		id, err := randomHandle()
+		if err != nil {
+			return 0, err
+		}
+		if _, exists := table.entries[id]; exists {
+			continue
+		}
+		resource, err := create()
+		if err != nil {
+			return 0, err
+		}
+		if resource == nil {
+			return 0, ErrInvalidHandle
+		}
+		table.entries[id] = &Entry{ID: id, Owner: owner, Kind: kind, Resource: resource}
+		return id, nil
+	}
+}
+
 type kindClass uint8
 
 const (
@@ -343,20 +374,26 @@ func (table *Table) WriteChunk(ctx context.Context, id HandleID, owner Owner, so
 	if writer, ok := entry.Resource.(OwnedChunkWriter); ok {
 		n, err := writer.WriteOwnedChunk(ctx, owner, source, flags)
 		if entry.isClosed() {
-			return 0, ErrResourceClosed
+			return n, ErrResourceClosed
 		}
-		if n < 0 || n > len(source) || err == nil && n != len(source) {
+		if n < 0 || n > len(source) {
 			return 0, io.ErrShortWrite
+		}
+		if err == nil && n != len(source) {
+			return n, io.ErrShortWrite
 		}
 		return n, err
 	}
 	if writer, ok := entry.Resource.(ChunkWriter); ok {
 		n, err := writer.WriteChunk(ctx, source, flags)
 		if entry.isClosed() {
-			return 0, ErrResourceClosed
+			return n, ErrResourceClosed
 		}
-		if n < 0 || n > len(source) || err == nil && n != len(source) {
+		if n < 0 || n > len(source) {
 			return 0, io.ErrShortWrite
+		}
+		if err == nil && n != len(source) {
+			return n, io.ErrShortWrite
 		}
 		return n, err
 	}
@@ -374,7 +411,7 @@ func (table *Table) WriteChunk(ctx context.Context, id HandleID, owner Owner, so
 	}
 	n, err := writer.Write(source)
 	if entry.isClosed() {
-		return 0, ErrResourceClosed
+		return n, ErrResourceClosed
 	}
 	if err == nil && n != len(source) {
 		return n, io.ErrShortWrite
@@ -382,7 +419,7 @@ func (table *Table) WriteChunk(ctx context.Context, id HandleID, owner Owner, so
 	return n, err
 }
 
-func (table *Table) Seek(id HandleID, owner Owner, offset int64, whence int) (int64, error) {
+func (table *Table) Seek(ctx context.Context, id HandleID, owner Owner, offset int64, whence int) (int64, error) {
 	entry, release, err := table.acquire(id, owner, false)
 	if err != nil {
 		return 0, err
@@ -392,7 +429,14 @@ func (table *Table) Seek(id HandleID, owner Owner, offset int64, whence int) (in
 	if !ok {
 		return 0, ErrInvalidHandle
 	}
-	position, err := seeker.Seek(offset, whence)
+	var position int64
+	if contextual, ok := seeker.(interface {
+		SeekContext(context.Context, int64, int) (int64, error)
+	}); ok {
+		position, err = contextual.SeekContext(ctx, offset, whence)
+	} else {
+		position, err = seeker.Seek(offset, whence)
+	}
 	if entry.isClosed() {
 		return 0, ErrResourceClosed
 	}

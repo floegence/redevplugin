@@ -64,7 +64,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatalf("bridge error response must be closed: %#v", responseVariants[1])
 	}
 	mutationOutcome := requireNestedObject(t, errorResponse, "properties", "mutation_outcome")
-	assertStringSet(t, requireStringSlice(t, mutationOutcome["enum"], "bridge mutation outcome enum"), []string{"not_committed", "unknown"}, "bridge mutation outcome enum")
+	assertStringSet(t, requireStringSlice(t, mutationOutcome["enum"], "bridge mutation outcome enum"), []string{"committed", "not_committed", "unknown"}, "bridge mutation outcome enum")
 
 	lifecycle := requireDef(t, defs, "lifecycle")
 	event := requireNestedObject(t, lifecycle, "properties", "event")

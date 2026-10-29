@@ -103,6 +103,9 @@ test("Web application entrypoint exposes only bridge and generated capability cl
   assert.deepEqual(Object.keys(pluginEntrypoint), [
     "PluginBridgeClient",
     "PluginBridgeError",
+    "PluginFileHandle",
+    "PluginFileWriteError",
+    "PluginFilesClient",
     "callCapabilityOperation",
     "callCapabilityStream",
     "callCapabilitySync",

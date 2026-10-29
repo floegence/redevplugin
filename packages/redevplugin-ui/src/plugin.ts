@@ -1,4 +1,6 @@
 export { PluginBridgeClient } from "./surface.js";
+export { PluginFilesClient, PluginFileHandle, PluginFileWriteError } from "./files.js";
+export type { PluginFileResource, PluginFileSelectionOptions, PluginFileOpenOptions, PluginFileStat, PluginDirectoryEntry } from "./files.js";
 export { PluginBridgeError } from "./errors.js";
 export { pluginAPIMajor } from "./contracts.gen.js";
 export { createPluginProcessClient } from "./process.js";

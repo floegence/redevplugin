@@ -398,7 +398,9 @@ only the published versioned evidence and extracted bytes; they must not parse a
 identity. A market may retain only the current evidence-bound derived image and
 must not treat it as package or installation authority.
 
-The 3.0 control database kind is `redevplugin_control_v3` at schema version 1.
+The control database kind is `redevplugin_control_v3` at schema version 2.
+Schema 2 transactionally migrates the exact released schema 1 and adds selected-file
+resource authority without changing existing registry, grants, or settings.
 The Host accepts only an explicit state root and never discovers or imports a
 2.x sibling root. A wrong, legacy, drifted, or future root fails closed without
 changing its bytes. The v3 kind is the permanent lineage once 3.0 is released;

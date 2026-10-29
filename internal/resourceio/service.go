@@ -11,11 +11,13 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
 )
 
 const (
@@ -66,9 +68,10 @@ type NetworkAuthorizer interface {
 }
 
 type Service struct {
-	table   *Table
-	mounts  MountResolver
-	network NetworkAuthorizer
+	table    *Table
+	mounts   MountResolver
+	network  NetworkAuthorizer
+	selected SelectedResources
 }
 
 func NewService(table *Table, mounts MountResolver, network NetworkAuthorizer) (*Service, error) {
@@ -108,6 +111,9 @@ func (service *Service) Control(ctx context.Context, invocation Invocation, raw 
 	result, err := service.dispatch(ctx, invocation, request.Operation, request.Arguments)
 	if err != nil {
 		code, retryable := stableServiceError(err)
+		if outcome, explicit := mutation.Explicit(err); explicit {
+			return json.Marshal(controlResponse{OK: false, Error: &serviceError{Code: code, Message: publicServiceMessage(code), Retryable: retryable, Details: map[string]any{"mutation_outcome": outcome}}})
+		}
 		return marshalControlFailure(code, publicServiceMessage(code), retryable), nil
 	}
 	return json.Marshal(controlResponse{OK: true, Result: result})
@@ -124,9 +130,14 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 		if err := requireEmptyArguments(arguments); err != nil {
 			return nil, err
 		}
+		features := []string{"fs.environment.v1", "fs.home.v1", "fs.watch.v1", "fs.workspace.v1", "io.stream.v1", "net.http.v1", "net.tcp.v1", "net.udp.v1", "net.websocket.v1"}
+		if service.selected != nil {
+			features = append(features, "fs.selected.v1")
+			slices.Sort(features)
+		}
 		return map[string]any{
 			"plugin_api": PluginAPI,
-			"features":   []string{"fs.environment.v1", "fs.home.v1", "fs.watch.v1", "fs.workspace.v1", "io.stream.v1", "net.http.v1", "net.tcp.v1", "net.udp.v1", "net.websocket.v1"},
+			"features":   features,
 			"limits": map[string]any{
 				"control_response_bytes": 64 << 10,
 				"io_chunk_bytes":         MaxIOChunkBytes,
@@ -174,13 +185,8 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 			return nil, err
 		}
 		defer mount.Close()
-		file, err := mount.OpenFile(uri, args.Options)
+		handle, err := service.table.OpenCreated(invocation.Owner, KindFile, func() (io.Closer, error) { return mount.OpenFile(uri, args.Options) })
 		if err != nil {
-			return nil, err
-		}
-		handle, err := service.table.Open(invocation.Owner, KindFile, file)
-		if err != nil {
-			_ = file.Close()
 			return nil, err
 		}
 		return map[string]any{"handle": uint64(handle)}, nil
@@ -222,19 +228,20 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 		if err := decodeClosedJSON(arguments, &args); err != nil {
 			return nil, ErrInvalidURI
 		}
-		from, mount, err := service.resolveMount(ctx, invocation, args.From, true)
+		from, mount, err := service.resolveMount(ctx, invocation, args.From, operation == "fs.rename")
 		if err != nil {
 			return nil, err
 		}
 		defer mount.Close()
-		to, err := ParseURI(args.To)
+		to, destination, err := service.resolveMount(ctx, invocation, args.To, true)
 		if err != nil {
 			return nil, err
 		}
+		defer destination.Close()
 		if operation == "fs.rename" {
 			err = mount.Rename(from, to, args.Overwrite)
 		} else {
-			err = mount.Copy(from, to, args.Overwrite, 0)
+			err = copyBetweenMounts(ctx, mount, destination, from, to, args.Overwrite)
 		}
 		return map[string]any{"ok": true}, err
 	case "fs.read_dir.open":
@@ -269,12 +276,18 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 		}
 		var page DirectoryPage
 		err := service.table.Use(HandleID(args.Handle), invocation.Owner, KindDirectory, func(resource io.Closer) error {
-			stream, ok := resource.(*DirectoryStream)
+			stream, ok := resource.(DirectoryReader)
 			if !ok {
 				return ErrInvalidHandle
 			}
 			var nextErr error
-			page, nextErr = stream.Next(args.Limit)
+			if contextual, ok := stream.(interface {
+				NextContext(context.Context, int) (DirectoryPage, error)
+			}); ok {
+				page, nextErr = contextual.NextContext(ctx, args.Limit)
+			} else {
+				page, nextErr = stream.Next(args.Limit)
+			}
 			return nextErr
 		})
 		if err == nil && page.EOF {
@@ -330,7 +343,12 @@ func (service *Service) dispatch(ctx context.Context, invocation Invocation, ope
 		if err := decodeClosedJSON(arguments, &args); err != nil {
 			return nil, ErrInvalidHandle
 		}
-		err := service.table.Use(HandleID(args.Handle), invocation.Owner, KindFile, Sync)
+		err := service.table.Use(HandleID(args.Handle), invocation.Owner, KindFile, func(resource io.Closer) error {
+			if contextual, ok := resource.(interface{ SyncContext(context.Context) error }); ok {
+				return contextual.SyncContext(ctx)
+			}
+			return Sync(resource)
+		})
 		return map[string]any{"ok": true}, err
 	case "fs.set_times":
 		var args struct {
@@ -404,6 +422,16 @@ func (service *Service) resolveMount(ctx context.Context, invocation Invocation,
 	uri, err := ParseURI(rawURI)
 	if err != nil {
 		return URI{}, Mount{}, err
+	}
+	if selectedMountID(uri.MountID) {
+		if service.selected == nil {
+			return URI{}, Mount{}, os.ErrPermission
+		}
+		m := &selectedMount{authority: service.selected, invocation: invocation, ctx: ctx}
+		if err := m.use(uri, write, func(*Selection) error { return nil }); err != nil {
+			return URI{}, Mount{}, err
+		}
+		return uri, Mount{ID: uri.MountID, Scope: invocation.Owner.Scope, selected: m}, nil
 	}
 	if service.mounts == nil || !service.allowedMount(invocation, uri.MountID, write) {
 		return URI{}, Mount{}, os.ErrPermission
@@ -721,8 +749,8 @@ func (service *Service) Write(ctx context.Context, invocation Invocation, handle
 	return service.table.WriteChunk(ctx, HandleID(handle), invocation.Owner, source, flags)
 }
 
-func (service *Service) Seek(invocation Invocation, handle uint64, offset int64, whence int) (int64, error) {
-	return service.table.Seek(HandleID(handle), invocation.Owner, offset, whence)
+func (service *Service) Seek(ctx context.Context, invocation Invocation, handle uint64, offset int64, whence int) (int64, error) {
+	return service.table.Seek(ctx, HandleID(handle), invocation.Owner, offset, whence)
 }
 
 func (service *Service) Close(invocation Invocation, handle uint64) error {

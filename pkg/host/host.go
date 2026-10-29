@@ -214,6 +214,7 @@ const (
 	FeatureExternalPackage Feature = "external_package"
 	FeatureProcess         Feature = "process"
 	FeatureBackground      Feature = "background"
+	FeatureFiles           Feature = "files"
 )
 
 // FeatureNotConfiguredError identifies an optional module that was not
@@ -514,6 +515,7 @@ type Config struct {
 	Process         *ProcessModule
 	Background      *BackgroundModule
 	Web             *WebModule
+	Files           *FilesModule
 }
 
 type internalStateOwnerOverrides struct {
@@ -574,6 +576,7 @@ type Host struct {
 	surfaceTokens        *bridge.SurfaceTokenService
 	webSurfaces          *webSurfaceBindings
 	webOrigins           SurfaceOriginAdapter
+	selectedFiles        *selectedFileAuthority
 	surfaceGenerationID  string
 	lifecycleLocks       *pluginLifecycleLockRegistry
 	executions           *executionLeaseRegistry
@@ -585,6 +588,7 @@ type Host struct {
 	lifecycleMu          sync.RWMutex
 	lifecycleWG          sync.WaitGroup
 	securityAuditWG      sync.WaitGroup
+	selectedFilesWG      sync.WaitGroup
 	closed               bool
 	closeOnce            sync.Once
 	closeErr             error
@@ -731,6 +735,7 @@ type GetPermissionRequirementsRequest struct {
 type PermissionRequirementMethod struct {
 	Method              string   `json:"method"`
 	RequiredPermissions []string `json:"required_permissions"`
+	ResourcePermissions []string `json:"resource_permissions,omitempty"`
 }
 
 type PermissionRequirementContract struct {
@@ -743,6 +748,7 @@ type PermissionRequirementContract struct {
 }
 
 type PermissionRequirementsResult struct {
+	ResourcePermissions []string                        `json:"resource_permissions,omitempty"`
 	Methods             []PermissionRequirementMethod   `json:"methods,omitempty"`
 	PluginInstanceID    string                          `json:"plugin_instance_id"`
 	PluginVersion       string                          `json:"plugin_version"`
@@ -1099,6 +1105,9 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 		adapters.BackgroundManager = module.Manager
 		features[FeatureBackground] = struct{}{}
 	}
+	if config.Files != nil {
+		features[FeatureFiles] = struct{}{}
+	}
 	return adapters, features, validateConfig(adapters, config)
 }
 
@@ -1188,6 +1197,9 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 	}
 	if module := config.Process; module != nil && module.Supervisor == nil {
 		return &HostConfigError{Module: string(FeatureProcess), Adapter: "supervisor", Cause: ErrProcessModuleRequired}
+	}
+	if module := config.Files; module != nil && isNilInterfaceValue(module.Picker) {
+		return &HostConfigError{Module: string(FeatureFiles), Adapter: "file picker"}
 	}
 	if module := config.Background; module != nil && module.Manager == nil && module.RunnerFactory == nil {
 		return &HostConfigError{Module: string(FeatureBackground), Adapter: "manager", Cause: ErrBackgroundModuleRequired}
@@ -1508,6 +1520,14 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		processSupervisor:    adapters.ProcessSupervisor,
 		backgroundManager:    adapters.BackgroundManager,
 	}
+	var picker FileSelectionAdapter
+	if config.Files != nil {
+		picker = config.Files.Picker
+	}
+	host.selectedFiles = newSelectedFileAuthority(host, picker)
+	if config.Files != nil {
+		host.runtimeIO.service.SetSelectedResources(host.selectedFiles)
+	}
 	if config.Web != nil {
 		host.webOrigins = config.Web.Origins
 	}
@@ -1584,6 +1604,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	if _, hasSession := sessionctx.FromContext(ctx); !hasSession {
 		host.startStartupWorkerPrewarm()
 	}
+	host.startSelectedFileMaintenance()
 	openedHost = host
 	return openedHost, nil
 }
@@ -1595,7 +1616,6 @@ func (h *Host) Close() error {
 	h.closeOnce.Do(func() {
 		h.lifecycleMu.Lock()
 		h.closed = true
-		h.removeWebSurfaces(func(*webSurfaceBinding) bool { return true })
 		if h.executions != nil {
 			h.executions.cancelAll(ErrHostClosed)
 		}
@@ -1603,11 +1623,13 @@ func (h *Host) Close() error {
 			h.lifecycleCancel()
 		}
 		h.lifecycleMu.Unlock()
+		h.removeWebSurfaces(func(*webSurfaceBinding) bool { return true })
 		if h.executions != nil {
 			h.executions.finishAll()
 		}
 		h.lifecycleWG.Wait()
 		h.securityAuditWG.Wait()
+		h.selectedFilesWG.Wait()
 		externalStageCleanupErr := h.drainExternalPackageInspectionArtifacts()
 		var externalStageCloseErr error
 		if h.externalStage != nil {
@@ -1650,6 +1672,10 @@ func (h *Host) Close() error {
 		if h.runtimeIO != nil {
 			runtimeIOCloseErr = h.runtimeIO.closeAll()
 		}
+		var selectedFilesCloseErr error
+		if h.selectedFiles != nil {
+			selectedFilesCloseErr = h.selectedFiles.close()
+		}
 		var processCloseErr error
 		if h.processSupervisor != nil {
 			processCloseErr = h.processSupervisor.Shutdown(context.Background())
@@ -1658,7 +1684,7 @@ func (h *Host) Close() error {
 		if h.environmentLock != nil {
 			environmentLockCloseErr = h.environmentLock.Close()
 		}
-		h.closeErr = errors.Join(runtimeCloseErr, runtimeIOCloseErr, processCloseErr, backgroundCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr, environmentLockCloseErr)
+		h.closeErr = errors.Join(selectedFilesCloseErr, runtimeCloseErr, runtimeIOCloseErr, processCloseErr, backgroundCloseErr, externalStageCleanupErr, externalStageCloseErr, pluginDataCloseErr, assetStoreCloseErr, controlStoreCloseErr, environmentLockCloseErr)
 	})
 	return h.closeErr
 }
@@ -1667,7 +1693,7 @@ func (h *Host) configuredFeatures() []Feature {
 	if h == nil || len(h.features) == 0 {
 		return []Feature{}
 	}
-	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage, FeatureProcess, FeatureBackground}
+	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage, FeatureProcess, FeatureBackground, FeatureFiles}
 	result := make([]Feature, 0, len(h.features))
 	for _, feature := range ordered {
 		if _, ok := h.features[feature]; ok {
@@ -1691,7 +1717,7 @@ func (h *Host) requireFeature(feature Feature) error {
 
 func (h *Host) requireFeatures(required []Feature) error {
 	missing := make([]Feature, 0, len(required))
-	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage, FeatureProcess, FeatureBackground} {
+	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureIO, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage, FeatureProcess, FeatureBackground, FeatureFiles} {
 		if slices.Contains(required, candidate) && !h.featureConfigured(candidate) {
 			missing = append(missing, candidate)
 		}
@@ -1731,6 +1757,8 @@ func (h *Host) featureConfigured(feature Feature) bool {
 		return h.adapters.ProcessSupervisor != nil
 	case FeatureBackground:
 		return h.adapters.BackgroundManager != nil
+	case FeatureFiles:
+		return h.selectedFiles != nil && h.selectedFiles.picker != nil
 	default:
 		return false
 	}
@@ -4239,6 +4267,9 @@ func requiredPackageFeatures(pluginManifest manifest.Manifest, input packageTrus
 	if pluginManifest.Process != nil || containsManifestFeature(pluginManifest.API.RequiredFeatures, manifest.FeatureProcessLocal) {
 		required = append(required, FeatureProcess)
 	}
+	if containsManifestFeature(pluginManifest.API.RequiredFeatures, manifest.FeatureFSSelected) {
+		required = append(required, FeatureFiles)
+	}
 	if pluginManifest.Background != nil {
 		required = append(required, FeatureBackground)
 	}
@@ -5259,12 +5290,12 @@ func (h *Host) GetPermissionRequirements(ctx context.Context, req GetPermissionR
 		if err != nil {
 			return PermissionRequirementsResult{}, err
 		}
-		methods = append(methods, PermissionRequirementMethod{Method: method.Method, RequiredPermissions: append([]string{}, required...)})
+		methods = append(methods, PermissionRequirementMethod{Method: method.Method, RequiredPermissions: permissions.MethodGrantIDs(required), ResourcePermissions: permissions.ResourceCeilingIDs(required)})
 	}
 	return PermissionRequirementsResult{
 		Methods:          methods,
 		PluginInstanceID: record.PluginInstanceID, PluginVersion: record.Version, ActiveFingerprint: record.ActiveFingerprint,
-		ManagementRevision: record.ManagementRevision, Contracts: requirements.contracts, RequiredPermissions: requirements.requiredPermissions,
+		ManagementRevision: record.ManagementRevision, Contracts: requirements.contracts, RequiredPermissions: permissions.MethodGrantIDs(requirements.requiredPermissions), ResourcePermissions: permissions.ResourceCeilingIDs(requirements.requiredPermissions),
 	}, nil
 }
 
@@ -6913,7 +6944,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Execution:            string(method.Execution),
 		Permissions: capability.PermissionEvidence{
 			Required: append([]string{}, requiredPermissions...),
-			Granted:  append([]string{}, requiredPermissions...),
+			Granted:  permissions.MethodGrantIDs(requiredPermissions),
 		},
 		Confirmation:           req.executionAuthorization.confirmation,
 		Revision:               capability.RevisionEvidence{PolicyRevision: record.PolicyRevision, ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch},
@@ -7456,7 +7487,7 @@ func (h *Host) requireCurrentPermissionGrants(ctx context.Context, pluginInstanc
 	}
 	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
 		PluginInstanceID: pluginInstanceID,
-		PermissionIDs:    required,
+		PermissionIDs:    permissions.MethodGrantIDs(required),
 	})
 	if err != nil {
 		return err
@@ -7871,6 +7902,9 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	})
 	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
 	var resultErr error
+	if h.selectedFiles != nil {
+		resultErr = errors.Join(resultErr, h.selectedFiles.revokePlugin(ownerEnvHash, record.PluginInstanceID))
+	}
 	if h.processSupervisor != nil {
 		resultErr = errors.Join(resultErr, h.processSupervisor.RevokePlugin(ctx, record.PluginInstanceID, ownerEnvHash))
 	}

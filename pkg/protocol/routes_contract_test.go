@@ -797,6 +797,12 @@ func readOpenAPIRoutes(path string) ([]routeFixture, error) {
 
 func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 	return []typeScriptSDKRouteBinding{
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/file-resources/select"}, Owner: "selectFileResource", Snippets: []string{"selectFileResource(", "/_redevplugin/api/plugins/file-resources/select"}},
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/file-resources/approve"}, Owner: "approveFileResource", Snippets: []string{"approveFileResource(", "/_redevplugin/api/plugins/file-resources/approve"}},
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/file-resources/cancel"}, Owner: "cancelFileResource", Snippets: []string{"cancelFileResource(", "/_redevplugin/api/plugins/file-resources/cancel"}},
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/file-resources/query"}, Owner: "listFileResources", Snippets: []string{"listFileResources(", "/_redevplugin/api/plugins/file-resources/query"}},
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/file-resources/revoke"}, Owner: "revokeFileResource", Snippets: []string{"revokeFileResource(", "/_redevplugin/api/plugins/file-resources/revoke"}},
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/file-resources/surface-io"}, Owner: "#handleFileIO", Snippets: []string{"#handleFileIO(", "/_redevplugin/api/plugins/file-resources/surface-io"}},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/local-import"},
 			Owner:        "PluginLocalImportClient.importLocalPackage",

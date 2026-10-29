@@ -40,6 +40,7 @@ type Options struct {
 	Runtime      *host.RuntimeModule
 	Capability   *host.CapabilityModule
 	IO           *host.IOModule
+	Files        *host.FilesModule
 	Connectivity *host.ConnectivityModule
 	Secrets      *host.SecretsModule
 	CoreAction   *host.CoreActionModule
@@ -153,7 +154,7 @@ func Open(ctx context.Context, options Options) (opened *Harness, err error) {
 	config := host.Config{StateRoot: h.stateRoot, Core: host.CoreAdapters{
 		Policy: testPolicy{h}, Authorization: testPolicy{h}, PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
 		Audit: h.events, SecurityAudit: h.events, Diagnostics: h.events, Assets: assets,
-	}, Runtime: options.Runtime, Capability: options.Capability, IO: options.IO, Connectivity: options.Connectivity, Secrets: options.Secrets, CoreAction: options.CoreAction, Background: options.Background}
+	}, Runtime: options.Runtime, Capability: options.Capability, IO: options.IO, Files: options.Files, Connectivity: options.Connectivity, Secrets: options.Secrets, CoreAction: options.CoreAction, Background: options.Background}
 	if h.origin != "" {
 		config.Web = &host.WebModule{Origins: loopbackOrigins{h.origin, h.port}}
 	}

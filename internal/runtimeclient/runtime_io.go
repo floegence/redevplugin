@@ -35,9 +35,9 @@ type runtimeIOResultMetadata struct {
 	ResourceID   uint64 `json:"resource_id"`
 	OK           bool   `json:"ok"`
 	BytesRead    int    `json:"bytes_read"`
-	BytesWritten int    `json:"bytes_written,omitempty"`
+	BytesWritten int    `json:"bytes_written"`
 	Flags        uint32 `json:"flags,omitempty"`
-	Offset       int64  `json:"offset,omitempty"`
+	Offset       int64  `json:"offset"`
 	Code         string `json:"code,omitempty"`
 	Message      string `json:"message,omitempty"`
 	Retryable    bool   `json:"retryable,omitempty"`

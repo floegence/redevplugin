@@ -4,6 +4,102 @@
  */
 
 export interface paths {
+    "/_redevplugin/api/plugins/file-resources/select": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["selectFileResource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/file-resources/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["approveFileResource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/file-resources/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelFileResource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/file-resources/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["listFileResources"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/file-resources/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["revokeFileResource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/file-resources/surface-io": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["surfaceFileIO"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_redevplugin/api/plugins/{plugin_instance_id}/local-import": {
         parameters: {
             query?: never;
@@ -873,6 +969,65 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        SelectFileResourceSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["FileResourcesSelectionResult"];
+        };
+        ApproveFileResourceSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["FileResourcesResource"];
+        };
+        CancelFileResourceSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: {
+                /** @constant */
+                canceled: true;
+            };
+        };
+        ListFileResourcesSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["FileResourcesResourceList"];
+        };
+        RevokeFileResourceSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: {
+                /** @constant */
+                revoked: true;
+            };
+        };
+        SurfaceFileIOSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["FileResourcesIoResult"];
+        };
+        FileSelectRequest: components["schemas"]["FileResourcesSelectRequest"];
+        FileReviewRequest: components["schemas"]["FileResourcesReviewRequest"];
+        FileListRequest: components["schemas"]["FileResourcesListRequest"];
+        FileRevokeRequest: components["schemas"]["FileResourcesRevokeRequest"];
+        FileResource: components["schemas"]["FileResourcesResource"];
+        FileResourceReview: components["schemas"]["FileResourcesReview"];
+        FileIORequest: components["schemas"]["FileResourcesIoRequest"];
+        FileIOResult: components["schemas"]["FileResourcesIoResult"];
+        FileSelectionOptions: components["schemas"]["FileResourcesSelectOptions"];
+        FileErrorDetails: components["schemas"]["FileResourcesErrorDetails"];
+        FilePlatformError: {
+            /** @constant */
+            code: "PLUGIN_FILE_OPERATION_FAILED";
+            message: components["schemas"]["PlatformErrorMessage"];
+            details: components["schemas"]["FileErrorDetails"];
+        };
+        MutationFilePlatformError: {
+            /** @constant */
+            code: "PLUGIN_FILE_OPERATION_FAILED";
+            message: components["schemas"]["PlatformErrorMessage"];
+            details: components["schemas"]["FileErrorDetails"];
+            mutation_outcome: components["schemas"]["MutationOutcome"];
+        };
         PlatformErrorResponse: {
             /** @constant */
             ok: false;
@@ -936,7 +1091,7 @@ export interface components {
         PluginFeaturesSuccessResponse: {
             /** @constant */
             ok: true;
-            data: ("release" | "runtime" | "capability" | "connectivity" | "secrets" | "core_action" | "external_package")[];
+            data: ("release" | "runtime" | "capability" | "io" | "connectivity" | "secrets" | "core_action" | "external_package" | "process" | "background" | "files")[];
         };
         PluginMethodConfirmationPreparationSuccessResponse: {
             /** @constant */
@@ -1073,8 +1228,8 @@ export interface components {
             ok: true;
             data: components["schemas"]["PluginSettingsSnapshot"];
         };
-        PlatformError: components["schemas"]["GenericPlatformError"] | components["schemas"]["JSONLimitPlatformError"] | components["schemas"]["PackageValidationPlatformError"] | components["schemas"]["ManagementRevisionPlatformError"] | components["schemas"]["AuthorizationRevisionPlatformError"] | components["schemas"]["BindingRevisionPlatformError"] | components["schemas"]["ValuesRevisionPlatformError"] | components["schemas"]["CapabilityPlatformError"] | components["schemas"]["WorkerPlatformError"];
-        MutationPlatformError: components["schemas"]["MutationGenericPlatformError"] | components["schemas"]["MutationJSONLimitPlatformError"] | components["schemas"]["MutationPackageValidationPlatformError"] | components["schemas"]["MutationManagementRevisionPlatformError"] | components["schemas"]["MutationAuthorizationRevisionPlatformError"] | components["schemas"]["MutationBindingRevisionPlatformError"] | components["schemas"]["MutationValuesRevisionPlatformError"] | components["schemas"]["MutationCapabilityPlatformError"] | components["schemas"]["MutationWorkerPlatformError"] | components["schemas"]["MutationSessionTeardownPlatformError"];
+        PlatformError: components["schemas"]["GenericPlatformError"] | components["schemas"]["JSONLimitPlatformError"] | components["schemas"]["PackageValidationPlatformError"] | components["schemas"]["ManagementRevisionPlatformError"] | components["schemas"]["AuthorizationRevisionPlatformError"] | components["schemas"]["BindingRevisionPlatformError"] | components["schemas"]["ValuesRevisionPlatformError"] | components["schemas"]["CapabilityPlatformError"] | components["schemas"]["WorkerPlatformError"] | components["schemas"]["FilePlatformError"];
+        MutationPlatformError: components["schemas"]["MutationGenericPlatformError"] | components["schemas"]["MutationJSONLimitPlatformError"] | components["schemas"]["MutationPackageValidationPlatformError"] | components["schemas"]["MutationManagementRevisionPlatformError"] | components["schemas"]["MutationAuthorizationRevisionPlatformError"] | components["schemas"]["MutationBindingRevisionPlatformError"] | components["schemas"]["MutationValuesRevisionPlatformError"] | components["schemas"]["MutationCapabilityPlatformError"] | components["schemas"]["MutationWorkerPlatformError"] | components["schemas"]["MutationFilePlatformError"] | components["schemas"]["MutationSessionTeardownPlatformError"];
         GenericPlatformError: {
             code: components["schemas"]["GenericPlatformErrorCode"];
             message: components["schemas"]["PlatformErrorMessage"];
@@ -1343,6 +1498,7 @@ export interface components {
         PluginPermissionRequirementMethod: {
             method: string;
             required_permissions: string[];
+            resource_permissions?: ("fs.selected.read" | "fs.selected.write")[];
         };
         PluginPermissionRequirementContract: {
             contract_id: string;
@@ -1360,6 +1516,7 @@ export interface components {
             contracts: components["schemas"]["PluginPermissionRequirementContract"][];
             methods?: components["schemas"]["PluginPermissionRequirementMethod"][];
             required_permissions: string[];
+            resource_permissions?: ("fs.selected.read" | "fs.selected.write")[];
         };
         AuthorizationRevisions: {
             policy_revision: number;
@@ -2445,13 +2602,410 @@ export interface components {
             };
             remove?: string[];
         };
+        /** @description Host-owned selection, approval, durable authority and bounded surface I/O. Permission declarations are ceilings, never grants. Selected resource watches are unsupported. */
+        FileResources: components["schemas"]["FileResourcesResource"] | components["schemas"]["FileResourcesReview"] | components["schemas"]["FileResourcesIoRequest"];
+        FileResourcesResourceId: string;
+        /** @description Canonical positive 63-bit decimal handle. Values above 9223372036854775807 are rejected. */
+        FileResourcesHandle: string;
+        /** @description Opaque resource URI. Unicode paths normalize to NFC; traversal, encoded separators and empty segments are rejected. */
+        FileResourcesUri: string;
+        FileResourcesSelectOptions: {
+            /** @enum {unknown} */
+            kind: "file" | "directory";
+            recursive?: boolean;
+            writable?: boolean;
+        } & unknown;
+        FileResourcesSelectRequest: {
+            plugin_instance_id: string;
+            /** @enum {unknown} */
+            kind: "file" | "directory";
+            recursive?: boolean;
+            writable?: boolean;
+        } & unknown;
+        FileResourcesReview: {
+            review_id: string;
+            plugin_instance_id: string;
+            name: string;
+            /** @enum {unknown} */
+            kind: "file" | "directory";
+            recursive: boolean;
+            writable: boolean;
+            /** Format: date-time */
+            review_expires_at: string;
+            /** Format: date-time */
+            resource_expires_at: string;
+        } & unknown;
+        FileResourcesReviewRequest: {
+            plugin_instance_id: string;
+            review_id: string;
+        };
+        FileResourcesListRequest: {
+            plugin_instance_id: string;
+        };
+        FileResourcesRevokeRequest: {
+            plugin_instance_id: string;
+            resource_id: components["schemas"]["FileResourcesResourceId"];
+            expected_revision: number;
+        };
+        FileResourcesResource: {
+            resource_id: components["schemas"]["FileResourcesResourceId"];
+            uri: components["schemas"]["FileResourcesUri"];
+            name: string;
+            /** @enum {unknown} */
+            kind: "file" | "directory";
+            recursive: boolean;
+            writable: boolean;
+            revision: number;
+            /** Format: date-time */
+            expires_at: string;
+            /** @enum {unknown} */
+            status: "active" | "revoked" | "expired" | "unavailable";
+        } & unknown;
+        FileResourcesSelectionResult: {
+            /** @constant */
+            canceled: true;
+        } | {
+            review: components["schemas"]["FileResourcesReview"];
+        };
+        FileResourcesResourceList: {
+            resources: components["schemas"]["FileResourcesResource"][];
+        };
+        FileResourcesErrorDetails: {
+            /** @enum {unknown} */
+            file_error_code: "INVALID_ARGUMENT" | "PERMISSION_DENIED" | "NOT_FOUND" | "NOT_EMPTY" | "ALREADY_EXISTS" | "RESOURCE_CLOSED" | "RESOURCE_LIMIT" | "CROSS_DEVICE" | "MOUNT_UNAVAILABLE" | "RUNTIME_UNAVAILABLE" | "CANCELED" | "TIMEOUT" | "IO_ERROR";
+            file_retryable: boolean;
+        };
+        /** @enum {unknown} */
+        FileResourcesOperation: "select" | "fs.open" | "fs.stat" | "fs.read_dir.open" | "fs.mkdir" | "fs.remove" | "fs.rename" | "fs.copy" | "fs.set_times" | "read" | "write" | "seek" | "close" | "sync" | "read_dir.next";
+        FileResourcesIoRequest: {
+            /** @constant */
+            operation: "select";
+            arguments: components["schemas"]["FileResourcesSelectOptions"];
+        } | {
+            /** @constant */
+            operation: "fs.open";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                options: {
+                    read?: boolean;
+                    write?: boolean;
+                    create?: boolean;
+                    create_new?: boolean;
+                    truncate?: boolean;
+                    append?: boolean;
+                    mode?: number;
+                };
+            };
+        } | {
+            /** @constant */
+            operation: "fs.stat";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                follow_symlinks?: boolean;
+            };
+        } | {
+            /** @constant */
+            operation: "fs.read_dir.open";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+            };
+        } | {
+            /** @constant */
+            operation: "fs.mkdir";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                recursive?: boolean;
+                mode?: number;
+            };
+        } | {
+            /** @constant */
+            operation: "fs.remove";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                recursive?: boolean;
+            };
+        } | {
+            /** @constant */
+            operation: "fs.rename";
+            arguments: {
+                from: components["schemas"]["FileResourcesUri"];
+                to: components["schemas"]["FileResourcesUri"];
+                overwrite?: boolean;
+            };
+        } | {
+            /** @constant */
+            operation: "fs.copy";
+            arguments: {
+                from: components["schemas"]["FileResourcesUri"];
+                to: components["schemas"]["FileResourcesUri"];
+                overwrite?: boolean;
+            };
+        } | {
+            /** @constant */
+            operation: "fs.set_times";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                accessed_unix_ms: number;
+                modified_unix_ms: number;
+            };
+        } | {
+            /** @constant */
+            operation: "read";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+                length: number;
+            };
+        } | {
+            /** @constant */
+            operation: "write";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+                data: string;
+            };
+        } | {
+            /** @constant */
+            operation: "seek";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+                offset: string;
+                /** @enum {unknown} */
+                whence?: 0 | 1 | 2;
+            };
+        } | {
+            /** @constant */
+            operation: "close";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+            };
+        } | {
+            /** @constant */
+            operation: "sync";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+            };
+        } | {
+            /** @constant */
+            operation: "read_dir.next";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+                limit: number;
+            };
+        };
+        FileResourcesSurfaceRequest: {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "select";
+            arguments: components["schemas"]["FileResourcesSelectOptions"];
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "fs.open";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                options: {
+                    read?: boolean;
+                    write?: boolean;
+                    create?: boolean;
+                    create_new?: boolean;
+                    truncate?: boolean;
+                    append?: boolean;
+                    mode?: number;
+                };
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "fs.stat";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                follow_symlinks?: boolean;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "fs.read_dir.open";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "fs.mkdir";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                recursive?: boolean;
+                mode?: number;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "fs.remove";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                recursive?: boolean;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "fs.rename";
+            arguments: {
+                from: components["schemas"]["FileResourcesUri"];
+                to: components["schemas"]["FileResourcesUri"];
+                overwrite?: boolean;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "fs.copy";
+            arguments: {
+                from: components["schemas"]["FileResourcesUri"];
+                to: components["schemas"]["FileResourcesUri"];
+                overwrite?: boolean;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "fs.set_times";
+            arguments: {
+                uri: components["schemas"]["FileResourcesUri"];
+                accessed_unix_ms: number;
+                modified_unix_ms: number;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "read";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+                length: number;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "write";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+                data: string;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "seek";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+                offset: string;
+                /** @enum {unknown} */
+                whence?: 0 | 1 | 2;
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "close";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "sync";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+            };
+        } | {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+            /** @constant */
+            operation: "read_dir.next";
+            arguments: {
+                handle: components["schemas"]["FileResourcesHandle"];
+                limit: number;
+            };
+        };
+        FileResourcesIoResult: {
+            /** @constant */
+            canceled?: true;
+            review?: components["schemas"]["FileResourcesReview"];
+            resource?: components["schemas"]["FileResourcesResource"];
+            handle?: components["schemas"]["FileResourcesHandle"];
+            data?: string;
+            count?: number;
+            eof?: boolean;
+            offset?: string;
+            value?: components["schemas"]["FileResourcesStat"] | components["schemas"]["FileResourcesDirectoryPage"] | {
+                /** @constant */
+                ok: true;
+            };
+        } & (unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
+        FileResourcesStat: {
+            uri: components["schemas"]["FileResourcesUri"];
+            /** @enum {unknown} */
+            kind: "file" | "directory";
+            size: string;
+            mode: number;
+            modified_unix_ms: number;
+            created_unix_ms?: number;
+        };
+        FileResourcesDirectoryEntry: {
+            name: string;
+            uri: components["schemas"]["FileResourcesUri"];
+            /** @enum {unknown} */
+            kind: "file" | "directory" | "symlink" | "other";
+        };
+        FileResourcesDirectoryPage: {
+            entries: components["schemas"]["FileResourcesDirectoryEntry"][];
+            eof: boolean;
+        };
         ErrorCodes: Record<string, never>;
         /** @enum {string} */
-        ErrorCodesPlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_RETAINED_DATA_INCOMPATIBLE" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
+        ErrorCodesPlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_RETAINED_DATA_INCOMPATIBLE" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_FILE_OPERATION_FAILED" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
         /** @enum {string} */
-        ErrorCodesBridgeErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_RETAINED_DATA_INCOMPATIBLE" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED";
+        ErrorCodesBridgeErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_RETAINED_DATA_INCOMPATIBLE" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_FILE_OPERATION_FAILED" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED";
         /** @enum {string} */
-        ErrorCodesTypescriptClientErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_RETAINED_DATA_INCOMPATIBLE" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED" | "PLUGIN_PLATFORM_REQUEST_FAILED" | "PLUGIN_STREAM_FAILED";
+        ErrorCodesTypescriptClientErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_RETAINED_DATA_INCOMPATIBLE" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_FILE_OPERATION_FAILED" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED" | "PLUGIN_PLATFORM_REQUEST_FAILED" | "PLUGIN_STREAM_FAILED";
         /** @enum {string} */
         ErrorCodesRustIpcErrorCode: "ARTIFACT_HANDLE_FAILED" | "WORKER_INVOCATION_INVALID" | "RUNTIME_CAPABILITY_REVOKED" | "RUNTIME_CONTROL_CHANNEL_STALE" | "RUNTIME_LEASE_INVALID" | "RUNTIME_LEASE_SIGNATURE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "WASM_WORKER_INVALID" | "WASM_WORKER_FAILED" | "RUNTIME_CAPACITY_EXCEEDED" | "RUNTIME_INVOCATION_CANCELED" | "PLUGIN_SESSION_REVOKED" | "SESSION_REVOKE_SEQUENCE_STALE" | "SESSION_REVOKE_DRAIN_TIMEOUT" | "UNSUPPORTED_FRAME";
         /** @enum {string} */
@@ -2650,7 +3204,7 @@ export interface components {
                     additionalProperties: false;
                 };
                 /** @description Explicit Worker permission ceiling. Omitted retains the package ceiling; an empty array grants no resource permissions. Requires authorization.scoped.v1. */
-                permissions?: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local")[];
+                permissions?: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local" | "fs.selected.read" | "fs.selected.write")[];
             } & (unknown & unknown & unknown & unknown & unknown))[];
             workers: {
                 worker_id: string;
@@ -2723,7 +3277,7 @@ export interface components {
                 required_features?: components["schemas"]["ManifestV9RequiredFeatures"];
                 optional_features?: components["schemas"]["ManifestV9OptionalFeatures"];
             };
-            permissions: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local")[];
+            permissions: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local" | "fs.selected.read" | "fs.selected.write")[];
         } & (unknown & unknown & unknown);
         ManifestV9Locale: string;
         ManifestV9Summary: string;
@@ -2793,7 +3347,7 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1")[];
+        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1")[];
         ManifestV9OptionalFeatures: string[];
         HostCapabilityPinV1: {
             publisher_id: components["schemas"]["HostCapabilityPinV1Id"];
@@ -3407,6 +3961,156 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    selectFileResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileResourcesSelectRequest"];
+            };
+        };
+        responses: {
+            /** @description Selected file operation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelectFileResourceSuccessResponse"];
+                };
+            };
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    approveFileResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileResourcesReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Selected file operation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApproveFileResourceSuccessResponse"];
+                };
+            };
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    cancelFileResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileResourcesReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Selected file operation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancelFileResourceSuccessResponse"];
+                };
+            };
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    listFileResources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileResourcesListRequest"];
+            };
+        };
+        responses: {
+            /** @description Selected file operation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListFileResourcesSuccessResponse"];
+                };
+            };
+            default: components["responses"]["PlatformErrorResponse"];
+        };
+    };
+    revokeFileResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileResourcesRevokeRequest"];
+            };
+        };
+        responses: {
+            /** @description Selected file operation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevokeFileResourceSuccessResponse"];
+                };
+            };
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    surfaceFileIO: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileResourcesSurfaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Selected file operation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SurfaceFileIOSuccessResponse"];
+                };
+            };
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
     updateLocalPackage: {
         parameters: {
             query?: never;

@@ -91,6 +91,36 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/file-resources/approve",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/file-resources/cancel",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/file-resources/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/file-resources/revoke",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/file-resources/select",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/file-resources/surface-io",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/intents/invoke",
     "effect": "mutation"
   },

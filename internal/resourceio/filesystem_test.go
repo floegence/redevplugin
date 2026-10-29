@@ -222,7 +222,7 @@ func TestMountValidatedTruncateAppendAndExclusiveCreate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := file.WriteString(test.write); err != nil {
+			if _, err := file.Write([]byte(test.write)); err != nil {
 				_ = file.Close()
 				t.Fatal(err)
 			}

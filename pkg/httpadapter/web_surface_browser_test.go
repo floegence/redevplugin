@@ -17,6 +17,7 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 type browserWebOrigins struct {
@@ -29,6 +30,12 @@ func (o *browserWebOrigins) AllocateSurfaceOrigin(_ context.Context, req host.Su
 	origin := "http://" + req.OriginKey + ".localhost:" + o.port
 	o.allocated.Store(origin, req.SurfaceInstanceID)
 	return host.SurfaceOrigin{Origin: origin, ParentOrigin: "http://localhost:" + o.port}, nil
+}
+
+type browserFilePicker struct{ path string }
+
+func (p browserFilePicker) SelectFile(context.Context, host.FileSelectionRequest) (host.FileSelectionResult, error) {
+	return host.FileSelectionResult{Path: p.path}, nil
 }
 
 func TestNativeWebApplicationBrowser(t *testing.T) {
@@ -62,13 +69,18 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 	defer listener.Close()
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 	origins := &browserWebOrigins{port: port}
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{webOrigins: origins})
+	selectedPath := filepath.Join(t.TempDir(), "selected.txt")
+	if err := os.WriteFile(selectedPath, []byte("Existing document"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{webOrigins: origins, files: &host.FilesModule{Picker: browserFilePicker{path: selectedPath}}})
 	defer h.Close()
 	dir := t.TempDir()
 	var document map[string]any
 	if err := json.Unmarshal([]byte(httpFixtureManifestJSON()), &document); err != nil {
 		t.Fatal(err)
 	}
+	document["permissions"] = append(document["permissions"].([]any), "fs.selected.read", "fs.selected.write")
 	surfaces := document["surfaces"].([]any)
 	surfaces[0].(map[string]any)["entry"] = "ui/文档.html"
 	surfaces[0].(map[string]any)["web"].(map[string]any)["spa"] = true
@@ -101,7 +113,9 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision := mustManagementRevision(t, h, installed.PluginInstanceID)
-	platform := mustNewHandler(t, h, allowHTTPTestGuard())
+	fileSession, _ := sessionctx.FromContext(httpTestContext())
+	fileSession.CanRead, fileSession.CanWrite = true, true
+	platform := mustNewHandler(t, h, &httpTestWebSecurityGuard{scope: fileSession})
 	web, err := NewWebSurfaceHandler(h, func(r *http.Request) (string, error) {
 		hostname, p, err := net.SplitHostPort(r.Host)
 		if err != nil || p != port || !strings.HasSuffix(hostname, ".localhost") {
@@ -185,6 +199,12 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 	out, err := run.CombinedOutput()
 	if err != nil {
 		t.Fatalf("browser failed: %v\n%s", err, out)
+	}
+	if mode == "--run" {
+		saved, err := os.ReadFile(selectedPath)
+		if err != nil || string(saved) != "Saved 中文 document" {
+			t.Fatalf("selected file saved bytes = %q, %v", saved, err)
+		}
 	}
 	t.Log(string(out))
 }

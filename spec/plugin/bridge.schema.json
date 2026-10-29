@@ -42,6 +42,9 @@
     },
     {
       "$ref": "#/$defs/close_response"
+    },
+    {
+      "$ref": "#/$defs/file_io"
     }
   ],
   "$defs": {
@@ -395,6 +398,7 @@
                 "PLUGIN_JSON_LIMIT_EXCEEDED",
                 "PLUGIN_CAPABILITY_ERROR",
                 "PLUGIN_WORKER_ERROR",
+                "PLUGIN_FILE_OPERATION_FAILED",
                 "PLUGIN_CONTRACT_MISMATCH",
                 "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
                 "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
@@ -423,6 +427,7 @@
             "mutation_outcome": {
               "type": "string",
               "enum": [
+                "committed",
                 "not_committed",
                 "unknown"
               ]
@@ -469,6 +474,28 @@
                 "properties": {
                   "error_details": {
                     "$ref": "#/$defs/worker_error_details"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "error_code": {
+                    "const": "PLUGIN_FILE_OPERATION_FAILED"
+                  }
+                },
+                "required": [
+                  "error_code"
+                ]
+              },
+              "then": {
+                "required": [
+                  "error_details"
+                ],
+                "properties": {
+                  "error_details": {
+                    "$ref": "file-resources.schema.json#/$defs/error_details"
                   }
                 }
               }
@@ -595,6 +622,27 @@
         },
         "allow": {
           "type": "boolean"
+        }
+      }
+    },
+    "file_io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "request"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.file_io"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^file_[1-9][0-9]{0,15}$"
+        },
+        "request": {
+          "$ref": "https://schemas.redevplugin.dev/plugin/file-resources.schema.json#/$defs/io_request"
         }
       }
     }

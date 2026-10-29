@@ -211,7 +211,7 @@ func normalizePublicAPI(api PublicAPIRequirement) (PublicAPIRequirement, error) 
 
 func knownFeature(feature FeatureID) bool {
 	switch feature {
-	case FeatureIOStream, FeatureFSWorkspace, FeatureFSHome, FeatureFSEnvironment, FeatureFSWatch, FeatureNetHTTP, FeatureNetWebSocket, FeatureNetTCP, FeatureNetUDP, FeatureProcessLocal, FeatureScopedAuthorization, FeatureBackgroundMethod:
+	case FeatureIOStream, FeatureFSWorkspace, FeatureFSHome, FeatureFSEnvironment, FeatureFSWatch, FeatureFSSelected, FeatureNetHTTP, FeatureNetWebSocket, FeatureNetTCP, FeatureNetUDP, FeatureProcessLocal, FeatureScopedAuthorization, FeatureBackgroundMethod:
 		return true
 	default:
 		return false
@@ -237,7 +237,7 @@ func normalizePermissions(values []PermissionID) ([]PermissionID, error) {
 
 func knownPermission(value PermissionID) bool {
 	switch value {
-	case PermissionFSWorkspaceRead, PermissionFSWorkspaceWrite, PermissionFSHomeRead, PermissionFSHomeWrite, PermissionFSEnvironmentRead, PermissionFSEnvironmentWrite, PermissionNetworkClient, PermissionNetworkListen, PermissionProcessLocal:
+	case PermissionFSWorkspaceRead, PermissionFSWorkspaceWrite, PermissionFSHomeRead, PermissionFSHomeWrite, PermissionFSEnvironmentRead, PermissionFSEnvironmentWrite, PermissionFSSelectedRead, PermissionFSSelectedWrite, PermissionNetworkClient, PermissionNetworkListen, PermissionProcessLocal:
 		return true
 	default:
 		return false

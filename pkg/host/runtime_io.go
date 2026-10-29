@@ -962,14 +962,14 @@ func (broker *hostRuntimeIOBroker) Write(ctx context.Context, invocationID strin
 	return broker.service.Write(ctx, invocation.resource, handle, source, flags)
 }
 
-func (broker *hostRuntimeIOBroker) Seek(_ context.Context, invocationID string, handle uint64, offset int64, whence int) (int64, error) {
+func (broker *hostRuntimeIOBroker) Seek(ctx context.Context, invocationID string, handle uint64, offset int64, whence int) (int64, error) {
 	broker.mu.RLock()
 	defer broker.mu.RUnlock()
 	invocation, err := broker.invocationLocked(invocationID)
 	if err != nil {
 		return 0, err
 	}
-	return broker.service.Seek(invocation.resource, handle, offset, whence)
+	return broker.service.Seek(ctx, invocation.resource, handle, offset, whence)
 }
 
 func (broker *hostRuntimeIOBroker) Close(_ context.Context, invocationID string, handle uint64) error {

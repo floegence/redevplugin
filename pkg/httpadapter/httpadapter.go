@@ -86,6 +86,8 @@ type mutationErrorBody struct {
 }
 
 type errorDetails struct {
+	FileErrorCode              string                      `json:"file_error_code,omitempty"`
+	FileRetryable              *bool                       `json:"file_retryable,omitempty"`
 	Reason                     string                      `json:"reason,omitempty"`
 	Path                       string                      `json:"path,omitempty"`
 	Pointer                    string                      `json:"pointer,omitempty"`
@@ -188,6 +190,17 @@ func (r mutationErrorResponse) MarshalJSON() ([]byte, error) {
 }
 
 func (d errorDetails) validateForCode(code security.ErrorCode) error {
+	if code == security.ErrFileOperationFailed {
+		value := d
+		value.FileErrorCode, value.FileRetryable = "", nil
+		if !validFileErrorCode(d.FileErrorCode) || d.FileRetryable == nil || !reflect.DeepEqual(value, errorDetails{}) {
+			return errors.New("file operation error details are invalid")
+		}
+		return nil
+	}
+	if d.FileErrorCode != "" || d.FileRetryable != nil {
+		return errors.New("file operation details have wrong error code")
+	}
 	switch code {
 	case security.ErrManagementRevisionMismatch:
 		if d.PluginInstanceID == "" || d.ExpectedManagementRevision == 0 || d.ActualManagementRevision == 0 ||
@@ -910,6 +923,12 @@ var routes = []routeSpec{
 	queryRoute("/_redevplugin/api/plugins/retained-data/query", websecurity.RouteActionListRetainedData, func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", websecurity.RouteActionDeleteRetainedData, func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", websecurity.RouteActionCleanupExpiredRetainedData, func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/file-resources/surface-io", websecurity.RouteActionSurfaceFile, func(h *Handler) http.HandlerFunc { return h.handleSurfaceFile }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/file-resources/select", websecurity.RouteActionSelectFileResource, func(h *Handler) http.HandlerFunc { return h.handleSelectFileResource }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/file-resources/approve", websecurity.RouteActionApproveFileResource, func(h *Handler) http.HandlerFunc { return h.handleApproveFileResource }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/file-resources/cancel", websecurity.RouteActionCancelFileResource, func(h *Handler) http.HandlerFunc { return h.handleCancelFileResource }),
+	queryRoute("/_redevplugin/api/plugins/file-resources/query", websecurity.RouteActionListFileResources, func(h *Handler) http.HandlerFunc { return h.handleListFileResources }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/file-resources/revoke", websecurity.RouteActionRevokeFileResource, func(h *Handler) http.HandlerFunc { return h.handleRevokeFileResource }),
 	queryRoute("/_redevplugin/api/plugins/permissions/query", websecurity.RouteActionListPermissions, func(h *Handler) http.HandlerFunc { return h.handleListPermissions }),
 	queryRoute("/_redevplugin/api/plugins/permissions/requirements/query", websecurity.RouteActionGetPermissionRequirements, func(h *Handler) http.HandlerFunc { return h.handlePermissionRequirements }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/grant", websecurity.RouteActionGrantPermission, func(h *Handler) http.HandlerFunc { return h.handleGrantPermission }),

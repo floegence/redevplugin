@@ -42,6 +42,7 @@ const canonicalContractPaths = Object.freeze([
   "plugin/wasm-abi.json",
   "plugin/web-surface-document.schema.json",
   "plugin/web-surface-transport.schema.json",
+  "plugin/file-resources.schema.json",
   "plugin/worker-invocation.schema.json",
 ]);
 

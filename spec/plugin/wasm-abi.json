@@ -114,6 +114,7 @@
       }
     },
     "write_import": {
+      "description": "A successful call acknowledges the full chunk. After dispatch, failures may have partial side effects: rdp_last_error_v1 reports details.mutation_outcome=unknown and retryable=false. Do not replay without inspecting the resource. Rust File::write_all additionally reports details.acknowledged_bytes for earlier completed chunks.",
       "type": "object",
       "additionalProperties": false,
       "required": ["module", "name", "params", "results"],

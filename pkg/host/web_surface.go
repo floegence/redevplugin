@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
@@ -59,6 +60,7 @@ type webSurfaceBinding struct {
 	pluginInstanceID string
 }
 type webSurfaceBindings struct {
+	fileMu   sync.RWMutex
 	leaseMu  sync.RWMutex
 	mu       sync.Mutex
 	byOrigin map[string]*webSurfaceBinding
@@ -299,11 +301,18 @@ func (h *Host) renewWebSurface(surfaceID string, result bridge.GatewayTokenResul
 }
 
 func (h *Host) removeWebSurfaces(match func(*webSurfaceBinding) bool) {
+	h.webSurfaces.fileMu.Lock()
+	defer h.webSurfaces.fileMu.Unlock()
 	h.webSurfaces.mu.Lock()
 	defer h.webSurfaces.mu.Unlock()
 	for key, binding := range h.webSurfaces.byOrigin {
 		if match(binding) {
 			delete(h.webSurfaces.byOrigin, key)
+			if h.runtimeIO != nil {
+				_ = h.runtimeIO.service.Revoke(func(owner resourceio.Owner) bool {
+					return owner.InvocationID == "surface-files:"+binding.request.SurfaceInstanceID && owner.PluginInstanceID == binding.pluginInstanceID
+				})
+			}
 		}
 	}
 }

@@ -1335,6 +1335,7 @@ var pluginPlatformErrorCodes = [
   "PLUGIN_JSON_LIMIT_EXCEEDED",
   "PLUGIN_CAPABILITY_ERROR",
   "PLUGIN_WORKER_ERROR",
+  "PLUGIN_FILE_OPERATION_FAILED",
   "PLUGIN_CONTRACT_MISMATCH",
   "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
   "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
@@ -1404,6 +1405,7 @@ var pluginBridgeErrorCodes = [
   "PLUGIN_JSON_LIMIT_EXCEEDED",
   "PLUGIN_CAPABILITY_ERROR",
   "PLUGIN_WORKER_ERROR",
+  "PLUGIN_FILE_OPERATION_FAILED",
   "PLUGIN_CONTRACT_MISMATCH",
   "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
   "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
@@ -1681,6 +1683,9 @@ function isPlatformErrorDetails(code, value) {
   }
   if (code === "PLUGIN_WORKER_ERROR") {
     return hasExactKeys(value, ["worker_error_code", "worker_error_message", "worker_error_origin"]) && typeof value.worker_error_code === "string" && /^[A-Z][A-Z0-9_]*$/.test(value.worker_error_code) && typeof value.worker_error_message === "string" && value.worker_error_message.length > 0 && Array.from(value.worker_error_message).length <= 4096 && ["runtime", "hostcall", "plugin"].includes(String(value.worker_error_origin));
+  }
+  if (code === "PLUGIN_FILE_OPERATION_FAILED") {
+    return hasExactKeys(value, ["file_error_code", "file_retryable"]) && typeof value.file_retryable === "boolean" && ["INVALID_ARGUMENT", "PERMISSION_DENIED", "NOT_FOUND", "NOT_EMPTY", "ALREADY_EXISTS", "RESOURCE_CLOSED", "RESOURCE_LIMIT", "CROSS_DEVICE", "MOUNT_UNAVAILABLE", "RUNTIME_UNAVAILABLE", "CANCELED", "TIMEOUT", "IO_ERROR"].includes(String(value.file_error_code));
   }
   if (code === "PLUGIN_JSON_LIMIT_EXCEEDED") {
     return hasExactKeys(value, ["reason"]) && typeof value.reason === "string" && jsonLimitReasons.includes(value.reason);
@@ -2104,6 +2109,85 @@ var sha256 = /* @__PURE__ */ createHasher(
   /* @__PURE__ */ oidNist(1)
 );
 
+// packages/redevplugin-ui/src/files.ts
+var chunkBytes = 65536;
+function isPluginFileResourceReview(value) {
+  return hasExactKeys(value, ["review_id", "plugin_instance_id", "name", "kind", "recursive", "writable", "review_expires_at", "resource_expires_at"]) && typeof value.review_id === "string" && /^[0-9a-f]{64}$/.test(value.review_id) && typeof value.plugin_instance_id === "string" && value.plugin_instance_id.length > 0 && value.plugin_instance_id.length <= 256 && typeof value.name === "string" && value.name.length > 0 && [...value.name].length <= 255 && (value.kind === "file" || value.kind === "directory") && typeof value.recursive === "boolean" && (value.kind !== "file" || !value.recursive) && typeof value.writable === "boolean" && typeof value.review_expires_at === "string" && Number.isFinite(Date.parse(value.review_expires_at)) && typeof value.resource_expires_at === "string" && Number.isFinite(Date.parse(value.resource_expires_at));
+}
+function isPluginFileResource(value) {
+  return hasExactKeys(value, ["resource_id", "uri", "name", "kind", "recursive", "writable", "revision", "expires_at", "status"]) && typeof value.resource_id === "string" && /^selected-[0-9a-f]{64}$/.test(value.resource_id) && value.uri === `redevfs://${value.resource_id}/` && typeof value.name === "string" && value.name.length > 0 && [...value.name].length <= 255 && (value.kind === "file" || value.kind === "directory") && typeof value.recursive === "boolean" && (value.kind !== "file" || !value.recursive) && typeof value.writable === "boolean" && Number.isSafeInteger(value.revision) && Number(value.revision) >= 1 && typeof value.expires_at === "string" && Number.isFinite(Date.parse(value.expires_at)) && ["active", "revoked", "expired", "unavailable"].includes(String(value.status));
+}
+function validURI(value) {
+  if (typeof value !== "string" || value.length > 4096 || !/^redevfs:\/\/selected-[0-9a-f]{64}\//.test(value)) return false;
+  const path = value.slice(value.indexOf("/", 10) + 1);
+  if (path === "") return true;
+  try {
+    return path.split("/").every((part) => {
+      if (/[?#]/.test(part)) return false;
+      const decoded = decodeURIComponent(part);
+      return decoded !== "" && decoded !== "." && decoded !== ".." && !/[\\/\u0000]/.test(decoded);
+    });
+  } catch {
+    return false;
+  }
+}
+function boundedInteger(value, min, max) {
+  return Number.isSafeInteger(value) && Number(value) >= min && Number(value) <= max;
+}
+function decimal(value, signed = false) {
+  return typeof value === "string" && (signed ? /^(0|-?[1-9][0-9]{0,18})$/ : /^[1-9][0-9]{0,18}$/).test(value) && BigInt(value) <= 9223372036854775807n && BigInt(value) >= (signed ? -9223372036854775808n : 1n);
+}
+function base64(value) {
+  if (typeof value !== "string" || value.length > 87384) return false;
+  try {
+    const raw = atob(value);
+    return raw.length <= chunkBytes && btoa(raw) === value;
+  } catch {
+    return false;
+  }
+}
+function validFileIORequest(value) {
+  if (!hasExactKeys(value, ["operation", "arguments"]) || !isRecord(value.arguments)) return false;
+  const a = value.arguments;
+  const keys = (required2, optional = []) => required2.every((key) => Object.hasOwn(a, key)) && hasAllowedKeys(a, [...required2, ...optional]);
+  const flags = (...names) => names.every((name) => a[name] === void 0 || typeof a[name] === "boolean");
+  switch (value.operation) {
+    case "select":
+      return keys(["kind"], ["recursive", "writable"]) && ["file", "directory"].includes(String(a.kind)) && flags("recursive", "writable") && (a.kind !== "file" || !a.recursive);
+    case "fs.open": {
+      if (!keys(["uri", "options"]) || !validURI(a.uri) || !isRecord(a.options) || !hasAllowedKeys(a.options, ["read", "write", "create", "create_new", "truncate", "append", "mode"])) return false;
+      const o3 = a.options;
+      return ["read", "write", "create", "create_new", "truncate", "append"].every((key) => o3[key] === void 0 || typeof o3[key] === "boolean") && (o3.mode === void 0 || boundedInteger(o3.mode, 0, 511));
+    }
+    case "fs.stat":
+      return keys(["uri"], ["follow_symlinks"]) && validURI(a.uri) && flags("follow_symlinks");
+    case "fs.read_dir.open":
+      return keys(["uri"]) && validURI(a.uri);
+    case "fs.mkdir":
+      return keys(["uri"], ["recursive", "mode"]) && validURI(a.uri) && flags("recursive") && (a.mode === void 0 || boundedInteger(a.mode, 0, 511));
+    case "fs.remove":
+      return keys(["uri"], ["recursive"]) && validURI(a.uri) && flags("recursive");
+    case "fs.rename":
+    case "fs.copy":
+      return keys(["from", "to"], ["overwrite"]) && validURI(a.from) && validURI(a.to) && flags("overwrite");
+    case "fs.set_times":
+      return keys(["uri", "accessed_unix_ms", "modified_unix_ms"]) && validURI(a.uri) && Number.isSafeInteger(a.accessed_unix_ms) && Number.isSafeInteger(a.modified_unix_ms);
+    case "read":
+      return keys(["handle", "length"]) && decimal(a.handle) && boundedInteger(a.length, 1, chunkBytes);
+    case "write":
+      return keys(["handle", "data"]) && decimal(a.handle) && base64(a.data);
+    case "seek":
+      return keys(["handle", "offset"], ["whence"]) && decimal(a.handle) && decimal(a.offset, true) && (a.whence === void 0 || boundedInteger(a.whence, 0, 2));
+    case "close":
+    case "sync":
+      return keys(["handle"]) && decimal(a.handle);
+    case "read_dir.next":
+      return keys(["handle", "limit"]) && decimal(a.handle) && boundedInteger(a.limit, 1, 256);
+    default:
+      return false;
+  }
+}
+
 // packages/redevplugin-ui/src/surface-scope.ts
 var scopes = /* @__PURE__ */ new WeakMap();
 function canonicalPluginInstanceId(pluginInstanceId) {
@@ -2360,6 +2444,7 @@ var PluginSurfaceHostImplementation = class {
   #leaseRenewalLeadMs;
   #reloadLimiter;
   #confirm;
+  #confirmFileAccess;
   #prepareWebOrigin;
   #onOpeningProgress;
   #onInteraction;
@@ -2444,6 +2529,7 @@ var PluginSurfaceHostImplementation = class {
     this.#leaseRenewalLeadMs = normalizeLeaseRenewalLead(options.leaseRenewalLeadMs);
     this.#reloadLimiter = options.reloadLimiter ?? new PluginSurfaceReloadLimiter();
     this.#confirm = options.confirm;
+    this.#confirmFileAccess = options.confirmFileAccess;
     this.#prepareWebOrigin = options.prepareWebOrigin;
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
@@ -2832,6 +2918,11 @@ var PluginSurfaceHostImplementation = class {
         await this.#handleCall(data.request);
         return;
       }
+      if (hasExactKeys(data, ["type", "id", "request", "frame_generation_id", "surface_handle"]) && data.type === "redevplugin.surface.file_io" && validBridgeRequestID(data.id, "file") && validFileIORequest(data.request)) {
+        if (data.frame_generation_id !== this.frameGenerationId || data.surface_handle !== this.surfaceHandle) return;
+        await this.#handleFileIO(data.id, data.request);
+        return;
+      }
       if (isExecutionCancelMessage(data)) {
         await this.#handleExecutionCancel(data);
         return;
@@ -2923,6 +3014,52 @@ var PluginSurfaceHostImplementation = class {
       this.#postError(request2.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
       if (this.#pendingRequestControllers.get(request2.id) === controller) this.#pendingRequestControllers.delete(request2.id);
+    }
+  }
+  async #handleFileIO(id, request2) {
+    if (!this.#ready || !this.#bridgeReady || !this.#gatewayToken) {
+      this.#postError(id, "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "File operation arrived before the surface became ready");
+      return;
+    }
+    if (request2.operation === "select" && !this.#confirmFileAccess) {
+      this.#postError(id, "PLUGIN_FEATURE_NOT_CONFIGURED", "File access confirmation is not configured");
+      return;
+    }
+    const controller = this.#registerPendingRequest(id);
+    let reviewID;
+    let approvalSent = false;
+    try {
+      let result = await this.#postMutationJSON("/_redevplugin/api/plugins/file-resources/surface-io", () => ({ plugin_instance_id: this.bootstrap.pluginInstanceId, surface_instance_id: this.bootstrap.surfaceInstanceId, bridge_channel_id: this.bridgeChannelId, plugin_gateway_token: this.#gatewayToken, ...request2 }), controller.signal);
+      if (request2.operation === "select" && result.canceled !== true) {
+        if (!isPluginFileResourceReview(result.review) || result.review.plugin_instance_id !== this.bootstrap.pluginInstanceId) throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "File review is invalid");
+        reviewID = result.review.review_id;
+        const approved = await abortableConfirmationDecision(this.#confirmFileAccess({ ...result.review, signal: controller.signal }), controller.signal);
+        if (controller.signal.aborted || this.#disposed) return;
+        if (!confirmationDecisionAccepted(approved)) {
+          await this.#postMutationJSON("/_redevplugin/api/plugins/file-resources/cancel", { plugin_instance_id: this.bootstrap.pluginInstanceId, review_id: reviewID }, controller.signal);
+          reviewID = void 0;
+          result = { canceled: true };
+        } else {
+          approvalSent = true;
+          const resource = await this.#postMutationJSON("/_redevplugin/api/plugins/file-resources/approve", { plugin_instance_id: this.bootstrap.pluginInstanceId, review_id: reviewID }, controller.signal);
+          if (!isPluginFileResource(resource)) throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Approved file resource is invalid");
+          reviewID = void 0;
+          result = { resource };
+        }
+      }
+      if (!controller.signal.aborted && !this.#disposed) this.#postResponse(id, result);
+    } catch (error) {
+      if (controller.signal.aborted || this.#disposed) return;
+      const failure = toBridgeError(error, "PLUGIN_INTERNAL_FAILURE");
+      this.#postError(id, failure.errorCode, failure.message, failure.details, failure.mutationOutcome);
+    } finally {
+      if (reviewID && !approvalSent) {
+        try {
+          await this.#fetchJSONRequest("/_redevplugin/api/plugins/file-resources/cancel", { plugin_instance_id: this.bootstrap.pluginInstanceId, review_id: reviewID }, { mutation: true, independentLifecycle: true });
+        } catch {
+        }
+      }
+      if (this.#pendingRequestControllers.get(id) === controller) this.#pendingRequestControllers.delete(id);
     }
   }
   async #handleConfirmationRequired(request2, originalError, signal) {
@@ -4512,6 +4649,21 @@ var PluginPlatformClient = class {
   }
   cleanupExpiredRetainedData(request2 = {}, options = {}) {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/cleanup-expired", request2, options);
+  }
+  selectFileResource(request2, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/select", request2, options);
+  }
+  approveFileResource(request2, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/approve", request2, options);
+  }
+  cancelFileResource(request2, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/cancel", request2, options);
+  }
+  listFileResources(request2, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/file-resources/query", request2, options);
+  }
+  revokeFileResource(request2, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/revoke", request2, options);
   }
   listPermissions(options = {}, requestOptions = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/permissions/query", options, requestOptions);

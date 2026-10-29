@@ -60,6 +60,7 @@ var pluginBridgeErrorCodes = [
   "PLUGIN_JSON_LIMIT_EXCEEDED",
   "PLUGIN_CAPABILITY_ERROR",
   "PLUGIN_WORKER_ERROR",
+  "PLUGIN_FILE_OPERATION_FAILED",
   "PLUGIN_CONTRACT_MISMATCH",
   "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
   "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
@@ -77,6 +78,30 @@ var pluginBridgeErrorCodes = [
 ];
 
 // packages/redevplugin-ui/src/errors.ts
+var PluginPlatformRequestError = class extends Error {
+  errorCode;
+  details;
+  mutationOutcome;
+  constructor(errorCode, message, details = {}, mutationOutcome2) {
+    super(message);
+    this.name = "PluginPlatformRequestError";
+    this.errorCode = errorCode;
+    this.details = details;
+    this.mutationOutcome = mutationOutcome2;
+  }
+};
+var PluginTransportError = class extends Error {
+  mutationOutcome;
+  httpStatus;
+  cause;
+  constructor(message, cause, mutationOutcome2, httpStatus) {
+    super(message, { cause });
+    this.name = "PluginTransportError";
+    this.cause = cause;
+    this.mutationOutcome = mutationOutcome2;
+    this.httpStatus = httpStatus;
+  }
+};
 var PluginBridgeError = class extends Error {
   errorCode;
   data;
@@ -91,9 +116,12 @@ var PluginBridgeError = class extends Error {
     this.mutationOutcome = mutationOutcome2;
   }
 };
-
-// packages/redevplugin-ui/src/bridge-capability.ts
-var pluginBridgeCapabilityEffect = /* @__PURE__ */ Symbol("redevplugin.capability.effect");
+function pluginMutationOutcome(error) {
+  if (error instanceof PluginPlatformRequestError || error instanceof PluginTransportError || error instanceof PluginBridgeError) {
+    return error.mutationOutcome;
+  }
+  return void 0;
+}
 
 // packages/redevplugin-ui/src/http.ts
 function isRecord(value) {
@@ -108,6 +136,239 @@ function hasExactKeys(value, keys) {
 function hasAllowedKeys(value, keys) {
   return isRecord(value) && Object.keys(value).every((key) => keys.includes(key));
 }
+
+// packages/redevplugin-ui/src/files.ts
+var chunkBytes = 65536;
+function invalid(message) {
+  throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", message);
+}
+function handle(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,18}$/.test(value) || BigInt(value) > 9223372036854775807n) return invalid("File handle is invalid");
+  return value;
+}
+function uri(value) {
+  if (!validURI(value)) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Selected file URI is invalid");
+  return value;
+}
+function isPluginFileResource(value) {
+  return hasExactKeys(value, ["resource_id", "uri", "name", "kind", "recursive", "writable", "revision", "expires_at", "status"]) && typeof value.resource_id === "string" && /^selected-[0-9a-f]{64}$/.test(value.resource_id) && value.uri === `redevfs://${value.resource_id}/` && typeof value.name === "string" && value.name.length > 0 && [...value.name].length <= 255 && (value.kind === "file" || value.kind === "directory") && typeof value.recursive === "boolean" && (value.kind !== "file" || !value.recursive) && typeof value.writable === "boolean" && Number.isSafeInteger(value.revision) && Number(value.revision) >= 1 && typeof value.expires_at === "string" && Number.isFinite(Date.parse(value.expires_at)) && ["active", "revoked", "expired", "unavailable"].includes(String(value.status));
+}
+var PluginFilesClient = class {
+  constructor(call) {
+    this.call = call;
+  }
+  call;
+  async select(selection, options) {
+    const result = await this.call({ operation: "select", arguments: selection }, options);
+    if (hasExactKeys(result, ["canceled"]) && result.canceled === true) return null;
+    if (!hasExactKeys(result, ["resource"]) || !isPluginFileResource(result.resource)) return invalid("File selection response is invalid");
+    return result.resource;
+  }
+  async open(resourceURI, flags = { read: true }, options) {
+    const result = await this.call({ operation: "fs.open", arguments: { uri: uri(resourceURI), options: flags } }, options);
+    return new PluginFileHandle(this.call, handle(result.handle));
+  }
+  async stat(resourceURI, options) {
+    const result = await this.call({ operation: "fs.stat", arguments: { uri: uri(resourceURI) } }, options);
+    const value = result.value;
+    if (!hasExactKeys(result, ["value"]) || !isRecord(value) || !hasAllowedKeys(value, ["uri", "kind", "size", "mode", "modified_unix_ms", "created_unix_ms"]) || !sameFileURI(value.uri, resourceURI) || !["file", "directory"].includes(String(value.kind)) || typeof value.size !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(value.size) || BigInt(value.size) > 9223372036854775807n || !boundedInteger(value.mode, 0, 4294967295) || !Number.isSafeInteger(value.modified_unix_ms) || value.created_unix_ms !== void 0 && !Number.isSafeInteger(value.created_unix_ms)) return invalid("File stat response is invalid");
+    return { ...value, size: BigInt(value.size) };
+  }
+  async *entries(resourceURI, options) {
+    const opened = await this.call({ operation: "fs.read_dir.open", arguments: { uri: uri(resourceURI) } }, options);
+    const id = handle(opened.handle);
+    let finished = false;
+    let failed = false;
+    try {
+      for (; ; ) {
+        const result = await this.call({ operation: "read_dir.next", arguments: { handle: id, limit: 128 } }, options);
+        const value = result.value;
+        if (!hasExactKeys(value, ["entries", "eof"]) || !Array.isArray(value.entries) || value.entries.length > 128 || typeof value.eof !== "boolean") return invalid("Directory page is invalid");
+        for (const entry of value.entries) {
+          if (!hasExactKeys(entry, ["name", "uri", "kind"]) || typeof entry.name !== "string" || typeof entry.uri !== "string" || !["file", "directory", "symlink", "other"].includes(String(entry.kind))) return invalid("Directory entry is invalid");
+          yield entry;
+        }
+        if (value.eof) {
+          finished = true;
+          return;
+        }
+        if (value.entries.length === 0) return invalid("Directory made no progress");
+      }
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      if (!finished) {
+        try {
+          await this.call({ operation: "close", arguments: { handle: id } });
+        } catch (error) {
+          if (!failed) throw error;
+        }
+      }
+    }
+  }
+  async mkdir(resourceURI, recursive = false, options) {
+    await this.call({ operation: "fs.mkdir", arguments: { uri: uri(resourceURI), recursive } }, options);
+  }
+  async remove(resourceURI, recursive = false, options) {
+    await this.call({ operation: "fs.remove", arguments: { uri: uri(resourceURI), recursive } }, options);
+  }
+  async rename(from, to, overwrite = false, options) {
+    await this.call({ operation: "fs.rename", arguments: { from: uri(from), to: uri(to), overwrite } }, options);
+  }
+  async copy(from, to, overwrite = false, options) {
+    await this.call({ operation: "fs.copy", arguments: { from: uri(from), to: uri(to), overwrite } }, options);
+  }
+};
+var PluginFileHandle = class {
+  constructor(call, id) {
+    this.call = call;
+    this.id = id;
+  }
+  call;
+  id;
+  #closed = false;
+  #active() {
+    if (this.#closed) throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "File handle is closed");
+  }
+  async read(length = chunkBytes, options) {
+    this.#active();
+    if (!Number.isSafeInteger(length) || length < 1 || length > chunkBytes) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Read length must be between 1 and 65536");
+    const result = await this.call({ operation: "read", arguments: { handle: this.id, length } }, options);
+    if (!hasExactKeys(result, ["data", "count", "eof"]) || typeof result.data !== "string" || typeof result.eof !== "boolean" || !Number.isSafeInteger(result.count)) return invalid("File read response is invalid");
+    let decoded;
+    try {
+      decoded = atob(result.data);
+    } catch {
+      return invalid("File data is invalid");
+    }
+    if (decoded.length !== result.count || decoded.length > length || btoa(decoded) !== result.data) return invalid("File read length is invalid");
+    return { bytes: Uint8Array.from(decoded, (c) => c.charCodeAt(0)), eof: result.eof };
+  }
+  async write(bytes, options) {
+    this.#active();
+    let written = 0;
+    for (let offset = 0; offset < bytes.byteLength; offset += chunkBytes) {
+      const part = bytes.subarray(offset, offset + chunkBytes);
+      let binary = "";
+      for (const byte of part) binary += String.fromCharCode(byte);
+      try {
+        const result = await this.call({ operation: "write", arguments: { handle: this.id, data: btoa(binary) } }, options);
+        if (!hasExactKeys(result, ["count"]) || result.count !== part.length) {
+          throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "File write length is invalid", void 0, void 0, "unknown");
+        }
+        written += result.count;
+      } catch (error) {
+        if (written > 0 || pluginMutationOutcome(error) !== "not_committed") throw new PluginFileWriteError(written, error);
+        throw error;
+      }
+    }
+    return written;
+  }
+  async seek(offset, whence = 0, options) {
+    this.#active();
+    const result = await this.call({ operation: "seek", arguments: { handle: this.id, offset: offset.toString(), whence } }, options);
+    if (!hasExactKeys(result, ["offset"]) || typeof result.offset !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(result.offset) || BigInt(result.offset) > 9223372036854775807n) return invalid("File offset is invalid");
+    return BigInt(result.offset);
+  }
+  async sync(options) {
+    this.#active();
+    await this.call({ operation: "sync", arguments: { handle: this.id } }, options);
+  }
+  async close() {
+    if (this.#closed) return;
+    await this.call({ operation: "close", arguments: { handle: this.id } });
+    this.#closed = true;
+  }
+};
+var PluginFileWriteError = class extends PluginBridgeError {
+  constructor(bytesWritten, cause) {
+    super(cause instanceof PluginBridgeError ? cause.errorCode : "PLUGIN_FILE_OPERATION_FAILED", "File write did not finish; inspect the file before retrying", void 0, cause instanceof PluginBridgeError ? cause.details : void 0, "unknown");
+    this.bytesWritten = bytesWritten;
+    this.name = "PluginFileWriteError";
+    this.cause = cause;
+  }
+  bytesWritten;
+  cause;
+};
+function validURI(value) {
+  if (typeof value !== "string" || value.length > 4096 || !/^redevfs:\/\/selected-[0-9a-f]{64}\//.test(value)) return false;
+  const path = value.slice(value.indexOf("/", 10) + 1);
+  if (path === "") return true;
+  try {
+    return path.split("/").every((part) => {
+      if (/[?#]/.test(part)) return false;
+      const decoded = decodeURIComponent(part);
+      return decoded !== "" && decoded !== "." && decoded !== ".." && !/[\\/\u0000]/.test(decoded);
+    });
+  } catch {
+    return false;
+  }
+}
+function sameFileURI(actual, expected) {
+  if (!validURI(actual) || !validURI(expected)) return false;
+  const normalized = (value) => value.split("/").map((part) => decodeURIComponent(part).normalize("NFC")).join("/");
+  return normalized(actual) === normalized(expected);
+}
+function boundedInteger(value, min, max) {
+  return Number.isSafeInteger(value) && Number(value) >= min && Number(value) <= max;
+}
+function decimal(value, signed = false) {
+  return typeof value === "string" && (signed ? /^(0|-?[1-9][0-9]{0,18})$/ : /^[1-9][0-9]{0,18}$/).test(value) && BigInt(value) <= 9223372036854775807n && BigInt(value) >= (signed ? -9223372036854775808n : 1n);
+}
+function base64(value) {
+  if (typeof value !== "string" || value.length > 87384) return false;
+  try {
+    const raw = atob(value);
+    return raw.length <= chunkBytes && btoa(raw) === value;
+  } catch {
+    return false;
+  }
+}
+function validFileIORequest(value) {
+  if (!hasExactKeys(value, ["operation", "arguments"]) || !isRecord(value.arguments)) return false;
+  const a = value.arguments;
+  const keys = (required, optional = []) => required.every((key) => Object.hasOwn(a, key)) && hasAllowedKeys(a, [...required, ...optional]);
+  const flags = (...names) => names.every((name) => a[name] === void 0 || typeof a[name] === "boolean");
+  switch (value.operation) {
+    case "select":
+      return keys(["kind"], ["recursive", "writable"]) && ["file", "directory"].includes(String(a.kind)) && flags("recursive", "writable") && (a.kind !== "file" || !a.recursive);
+    case "fs.open": {
+      if (!keys(["uri", "options"]) || !validURI(a.uri) || !isRecord(a.options) || !hasAllowedKeys(a.options, ["read", "write", "create", "create_new", "truncate", "append", "mode"])) return false;
+      const o = a.options;
+      return ["read", "write", "create", "create_new", "truncate", "append"].every((key) => o[key] === void 0 || typeof o[key] === "boolean") && (o.mode === void 0 || boundedInteger(o.mode, 0, 511));
+    }
+    case "fs.stat":
+      return keys(["uri"], ["follow_symlinks"]) && validURI(a.uri) && flags("follow_symlinks");
+    case "fs.read_dir.open":
+      return keys(["uri"]) && validURI(a.uri);
+    case "fs.mkdir":
+      return keys(["uri"], ["recursive", "mode"]) && validURI(a.uri) && flags("recursive") && (a.mode === void 0 || boundedInteger(a.mode, 0, 511));
+    case "fs.remove":
+      return keys(["uri"], ["recursive"]) && validURI(a.uri) && flags("recursive");
+    case "fs.rename":
+    case "fs.copy":
+      return keys(["from", "to"], ["overwrite"]) && validURI(a.from) && validURI(a.to) && flags("overwrite");
+    case "fs.set_times":
+      return keys(["uri", "accessed_unix_ms", "modified_unix_ms"]) && validURI(a.uri) && Number.isSafeInteger(a.accessed_unix_ms) && Number.isSafeInteger(a.modified_unix_ms);
+    case "read":
+      return keys(["handle", "length"]) && decimal(a.handle) && boundedInteger(a.length, 1, chunkBytes);
+    case "write":
+      return keys(["handle", "data"]) && decimal(a.handle) && base64(a.data);
+    case "seek":
+      return keys(["handle", "offset"], ["whence"]) && decimal(a.handle) && decimal(a.offset, true) && (a.whence === void 0 || boundedInteger(a.whence, 0, 2));
+    case "close":
+    case "sync":
+      return keys(["handle"]) && decimal(a.handle);
+    case "read_dir.next":
+      return keys(["handle", "limit"]) && decimal(a.handle) && boundedInteger(a.limit, 1, 256);
+    default:
+      return false;
+  }
+}
+
+// packages/redevplugin-ui/src/bridge-capability.ts
+var pluginBridgeCapabilityEffect = /* @__PURE__ */ Symbol("redevplugin.capability.effect");
 
 // packages/redevplugin-ui/src/surface-scope.ts
 var scopes = /* @__PURE__ */ new WeakMap();
@@ -150,6 +411,7 @@ var hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
 var lowercaseSHA256Pattern = new RegExp("^[0-9a-f]{64}$");
 var businessErrorCodePattern = new RegExp("^[A-Z][A-Z0-9_]*$");
 var PluginBridgeClient = class {
+  files = new PluginFilesClient((request, options) => this.#fileIO(request, options));
   surfaceHandle;
   timeoutMs;
   #nextID = 1;
@@ -192,6 +454,12 @@ var PluginBridgeClient = class {
   call(method, params, options = {}) {
     const effect = options[pluginBridgeCapabilityEffect];
     return this.#call(method, params, options, effect === void 0 || effect !== "read");
+  }
+  #fileIO(request, options = {}) {
+    this.#assertActive();
+    if (!validFileIORequest(request)) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "File operation is invalid");
+    const id = this.#requestID("file");
+    return this.#request(id, { type: "redevplugin.bridge.file_io", id, request }, { mutation: true, signal: options.signal });
   }
   #call(method, params, options, mutation) {
     this.#assertActive();
@@ -587,6 +855,7 @@ function isBridgeResponse(value) {
   }
   if (value.error_code === "PLUGIN_CAPABILITY_ERROR") return isCapabilityBusinessErrorDetails(value.error_details);
   if (value.error_code === "PLUGIN_WORKER_ERROR") return isWorkerErrorDetails(value.error_details);
+  if (value.error_code === "PLUGIN_FILE_OPERATION_FAILED") return hasExactKeys(value.error_details, ["file_error_code", "file_retryable"]) && typeof value.error_details.file_retryable === "boolean" && ["INVALID_ARGUMENT", "PERMISSION_DENIED", "NOT_FOUND", "NOT_EMPTY", "ALREADY_EXISTS", "RESOURCE_CLOSED", "RESOURCE_LIMIT", "CROSS_DEVICE", "MOUNT_UNAVAILABLE", "RUNTIME_UNAVAILABLE", "CANCELED", "TIMEOUT", "IO_ERROR"].includes(String(value.error_details.file_error_code));
   if (value.error_details === void 0) return true;
   try {
     return Object.keys(normalizePluginJSONObject(value.error_details)).length <= 8;

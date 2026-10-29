@@ -105,12 +105,28 @@ func Evaluate(policy *PolicyRecord, req EvaluatePolicyRequest) (PolicyEvaluation
 			DeniedMethod: method,
 		}, nil
 	}
+	return EvaluatePermissionCeiling(policy, req.PluginInstanceID, req.RequiredPermissions)
+}
+
+// EvaluatePermissionCeiling checks resource authority without inventing a
+// callable method. Method entry still evaluates denied methods separately.
+func EvaluatePermissionCeiling(policy *PolicyRecord, pluginInstanceID string, required []string) (PolicyEvaluation, error) {
+	if normalizePolicyID(pluginInstanceID) == "" {
+		return PolicyEvaluation{}, ErrInvalidPolicy
+	}
+	if policy == nil {
+		return PolicyEvaluation{Allowed: true}, nil
+	}
+	record := NormalizePolicy(*policy)
+	if err := ValidatePolicy(record); err != nil || record.PluginInstanceID != normalizePolicyID(pluginInstanceID) {
+		return PolicyEvaluation{}, ErrInvalidPolicy
+	}
 	if len(record.AllowedPermissions) == 0 {
 		return PolicyEvaluation{Allowed: true}, nil
 	}
 	allowedPermissions := stringSet(record.AllowedPermissions)
 	missing := make([]string, 0)
-	for _, permissionID := range normalizePolicyValues(req.RequiredPermissions) {
+	for _, permissionID := range normalizePolicyValues(required) {
 		if _, ok := allowedPermissions[permissionID]; !ok {
 			missing = append(missing, permissionID)
 		}

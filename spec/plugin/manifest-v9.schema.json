@@ -705,7 +705,9 @@
                 "fs.environment.write",
                 "network.client",
                 "network.listen",
-                "process.local"
+                "process.local",
+                "fs.selected.read",
+                "fs.selected.write"
               ]
             }
           }
@@ -1196,7 +1198,9 @@
           "fs.environment.write",
           "network.client",
           "network.listen",
-          "process.local"
+          "process.local",
+          "fs.selected.read",
+          "fs.selected.write"
         ]
       }
     }
@@ -1701,7 +1705,8 @@
           "net.udp.v1",
           "process.local.v1",
           "authorization.scoped.v1",
-          "background.method.v1"
+          "background.method.v1",
+          "fs.selected.v1"
         ]
       }
     },

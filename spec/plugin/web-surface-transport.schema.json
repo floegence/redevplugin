@@ -45,6 +45,9 @@
     },
     {
       "$ref": "#/$defs/close_response"
+    },
+    {
+      "$ref": "#/$defs/file_io"
     }
   ],
   "$defs": {
@@ -658,6 +661,35 @@
         },
         "signal": {
           "description": "A native AbortSignal. It is aborted on close, invalidation, failure, and opening timeout; the request is never serialized to the plugin."
+        }
+      }
+    },
+    "file_io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "request",
+        "frame_generation_id",
+        "surface_handle"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.surface.file_io"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^file_[1-9][0-9]{0,15}$"
+        },
+        "request": {
+          "$ref": "file-resources.schema.json#/$defs/io_request"
+        },
+        "frame_generation_id": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "surface_handle": {
+          "$ref": "#/$defs/opaque_handle"
         }
       }
     }

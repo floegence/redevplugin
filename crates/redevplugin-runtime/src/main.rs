@@ -3507,6 +3507,15 @@ fn record_io_error(
     status: i32,
     message: impl AsRef<str>,
 ) -> i32 {
+    record_io_failure(caller, status, message, false)
+}
+
+fn record_io_failure(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    status: i32,
+    message: impl AsRef<str>,
+    dispatched_write: bool,
+) -> i32 {
     let message = message.as_ref().trim();
     let message = if message.is_empty() {
         abi_error_code(status).to_string()
@@ -3517,8 +3526,8 @@ fn record_io_error(
         serde_json::json!({
             "code": abi_error_code(status),
             "message": message,
-            "retryable": matches!(status, ABI_STATUS_TIMEOUT | ABI_STATUS_WOULD_BLOCK | ABI_STATUS_RUNTIME_UNAVAILABLE),
-            "details": {},
+            "retryable": !dispatched_write && matches!(status, ABI_STATUS_TIMEOUT | ABI_STATUS_WOULD_BLOCK | ABI_STATUS_RUNTIME_UNAVAILABLE),
+            "details": if dispatched_write { serde_json::json!({"mutation_outcome":"unknown"}) } else { serde_json::json!({}) },
         })
         .to_string()
         .into_bytes(),
@@ -3761,19 +3770,21 @@ fn perform_io_write_hostcall(
     }) {
         Ok(WorkerHostcallResponse::Written(written)) => written,
         Ok(_) => {
-            return record_io_error(
+            return record_io_failure(
                 caller,
                 ABI_STATUS_INTERNAL,
                 "write hostcall returned an invalid response kind",
+                true,
             );
         }
-        Err(error) => return callback_io_error(caller, error),
+        Err(error) => return record_io_failure(caller, abi_status_for_error(&error), error, true),
     };
     if written != source_len {
-        return record_io_error(
+        return record_io_failure(
             caller,
             ABI_STATUS_IO_ERROR,
             "write hostcall returned a partial write",
+            true,
         );
     }
     let written = match i32::try_from(written) {
@@ -6075,6 +6086,43 @@ mod tests {
         .expect("execute plugin API hostcall fixture");
         assert_eq!(execution.response_json, response);
         assert_eq!(close_count, 2);
+    }
+
+    #[test]
+    fn dispatched_write_failures_report_unknown_without_retry() {
+        let module = wat::parse_str(r#"(module
+            (import "redevplugin.io" "rdp_write_v1" (func $write (param i64 i32 i32 i32) (result i32)))
+            (import "redevplugin.io" "rdp_last_error_v1" (func $error (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+            (func (export "redevplugin_worker_dealloc") (param i32 i32))
+            (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                i64.const 7 i32.const 3000 i32.const 10 i32.const 0 call $write
+                i32.const 0 i32.ge_s if unreachable end
+                i64.const 8589934592000
+                i32.const 2000 i32.const 1024 call $error i64.extend_i32_u i64.or)
+        )"#).unwrap();
+        for failure in 0..3 {
+            let mut calls = 0;
+            let result = execute_worker_module_with_io_for_test(
+                &module,
+                br#"{"method":"write","params":{}}"#,
+                TEST_WORKER_MEMORY_LIMIT_BYTES,
+                |_| {
+                    calls += 1;
+                    match failure {
+                        0 => Err("TIMEOUT: lost write acknowledgement".to_string()),
+                        1 => Ok(WorkerHostcallResponse::Written(3)),
+                        _ => Ok(WorkerHostcallResponse::Closed),
+                    }
+                },
+            )
+            .unwrap();
+            let error: serde_json::Value = serde_json::from_str(&result.response_json).unwrap();
+            assert_eq!(error["details"]["mutation_outcome"], "unknown");
+            assert_eq!(error["retryable"], false);
+            assert_eq!(calls, 1);
+        }
     }
 
     #[test]

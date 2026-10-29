@@ -8,6 +8,8 @@ pub enum ErrorCode {
     InvalidArgument,
     PermissionDenied,
     NotFound,
+    NotEmpty,
+    CrossDevice,
     AlreadyExists,
     ResourceClosed,
     Canceled,
@@ -30,6 +32,8 @@ impl ErrorCode {
             Self::InvalidArgument => "INVALID_ARGUMENT",
             Self::PermissionDenied => "PERMISSION_DENIED",
             Self::NotFound => "NOT_FOUND",
+            Self::NotEmpty => "NOT_EMPTY",
+            Self::CrossDevice => "CROSS_DEVICE",
             Self::AlreadyExists => "ALREADY_EXISTS",
             Self::ResourceClosed => "RESOURCE_CLOSED",
             Self::Canceled => "CANCELED",
@@ -108,6 +112,20 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::{Error, ErrorCode};
+
+    #[test]
+    fn preserves_selected_file_codes_and_unknown_mutation() {
+        for (code, expected) in [
+            ("NOT_EMPTY", ErrorCode::NotEmpty),
+            ("CROSS_DEVICE", ErrorCode::CrossDevice),
+        ] {
+            let raw = serde_json::json!({"code":code,"message":"file operation","retryable":false,"details":{"mutation_outcome":"unknown"}});
+            let decoded: Error = serde_json::from_value(raw).unwrap();
+            assert_eq!(decoded.code, expected);
+            assert_eq!(decoded.details["mutation_outcome"], "unknown");
+            assert_eq!(decoded.code.as_str(), code);
+        }
+    }
 
     #[test]
     fn preserves_mount_unavailable_abi_status() {

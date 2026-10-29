@@ -15,6 +15,7 @@ import {
   pluginMutationOutcome,
 } from "./errors.js";
 import type { components } from "./openapi.gen.js";
+import type { PluginFileAccessConfirmation } from "./files.js";
 import {
   createReDevPluginSurfaceTransport,
   openPluginSurfaceInSlot,
@@ -91,6 +92,7 @@ export type PluginDisableRequest = PlatformSchemas["DisableRequest"];
 export type PluginUninstallRequest = PlatformSchemas["UninstallRequest"];
 export type PluginOpenSurfaceRequest = PlatformSchemas["OpenSurfaceRequest"];
 export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
+  confirmFileAccess?: PluginFileAccessConfirmation;
   bridgeChannelId?: string;
   loadTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -480,6 +482,22 @@ export class PluginPlatformClient {
   }
   cleanupExpiredRetainedData(request: PluginRetainedDataCleanupRequest = {}, options: PluginRequestOptions = {}): Promise<PluginRetainedDataCleanupResult> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/cleanup-expired", request, options);
+  }
+
+  selectFileResource(request: PlatformSchemas["FileSelectRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["SelectFileResourceSuccessResponse"]["data"]> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/select", request, options);
+  }
+  approveFileResource(request: PlatformSchemas["FileReviewRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["FileResource"]> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/approve", request, options);
+  }
+  cancelFileResource(request: PlatformSchemas["FileReviewRequest"], options: PluginRequestOptions = {}): Promise<{ canceled: true }> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/cancel", request, options);
+  }
+  listFileResources(request: PlatformSchemas["FileListRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["ListFileResourcesSuccessResponse"]["data"]> {
+    return this.#requestQuery("/_redevplugin/api/plugins/file-resources/query", request, options);
+  }
+  revokeFileResource(request: PlatformSchemas["FileRevokeRequest"], options: PluginRequestOptions = {}): Promise<{ revoked: true }> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/file-resources/revoke", request, options);
   }
 
   listPermissions(options: PluginPermissionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginPermissionList> {

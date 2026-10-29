@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2.js";
+import { PluginFilesClient, isPluginFileResource, isPluginFileResourceReview, validFileIORequest, type PluginFileAccessConfirmation, type PluginFileIORequest, type PluginFileIOResult } from "./files.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   PluginBridgeError,
@@ -352,6 +353,7 @@ const lowercaseSHA256Pattern = new RegExp("^[0-9a-f]{64}$");
 const businessErrorCodePattern = new RegExp("^[A-Z][A-Z0-9_]*$");
 
 export class PluginBridgeClient {
+  readonly files = new PluginFilesClient((request, options) => this.#fileIO(request, options));
   readonly surfaceHandle: string;
   readonly timeoutMs: number;
   #nextID = 1;
@@ -403,6 +405,13 @@ export class PluginBridgeClient {
   ): Promise<T> {
     const effect = (options as PluginBridgeCapabilityRequestOptions)[pluginBridgeCapabilityEffect];
     return this.#call(method, params, options, effect === undefined || effect !== "read");
+  }
+
+  #fileIO(request: PluginFileIORequest, options: PluginBridgeRequestOptions = {}): Promise<PluginFileIOResult> {
+    this.#assertActive();
+    if (!validFileIORequest(request)) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "File operation is invalid");
+    const id = this.#requestID("file");
+    return this.#request<PluginFileIOResult>(id, { type: "redevplugin.bridge.file_io", id, request }, { mutation: true, signal: options.signal });
   }
 
   #call<T>(
@@ -968,6 +977,7 @@ export type PluginWebOriginPreparation = Readonly<{
 export type PluginWebOriginPreparationHandler = (request: PluginWebOriginPreparation) => void | Promise<void>;
 
 export type PluginSurfaceHostOptions = {
+  confirmFileAccess?: PluginFileAccessConfirmation;
   bootstrap: PluginSurfaceHostBootstrap;
   hostTransport: ReDevPluginSurfaceTransport;
   surfaceScope?: PluginSurfaceScope;
@@ -1180,6 +1190,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #leaseRenewalLeadMs: number;
   #reloadLimiter: PluginSurfaceReloadLimiter;
   #confirm?: PluginConfirmationHandler;
+  #confirmFileAccess?: PluginFileAccessConfirmation;
   #prepareWebOrigin?: PluginWebOriginPreparationHandler;
   #onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   #onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
@@ -1266,6 +1277,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#leaseRenewalLeadMs = normalizeLeaseRenewalLead(options.leaseRenewalLeadMs);
     this.#reloadLimiter = options.reloadLimiter ?? new PluginSurfaceReloadLimiter();
     this.#confirm = options.confirm;
+    this.#confirmFileAccess = options.confirmFileAccess;
     this.#prepareWebOrigin = options.prepareWebOrigin;
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
@@ -1667,6 +1679,11 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         await this.#handleCall(data.request);
         return;
       }
+      if (hasExactKeys(data, ["type", "id", "request", "frame_generation_id", "surface_handle"]) && data.type === "redevplugin.surface.file_io" && validBridgeRequestID(data.id, "file") && validFileIORequest(data.request)) {
+        if (data.frame_generation_id !== this.frameGenerationId || data.surface_handle !== this.surfaceHandle) return;
+        await this.#handleFileIO(data.id, data.request);
+        return;
+      }
       if (isExecutionCancelMessage(data)) {
         await this.#handleExecutionCancel(data);
         return;
@@ -1763,6 +1780,44 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       this.#postError(request.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
       if (this.#pendingRequestControllers.get(request.id) === controller) this.#pendingRequestControllers.delete(request.id);
+    }
+  }
+
+  async #handleFileIO(id: string, request: PluginFileIORequest): Promise<void> {
+    if (!this.#ready || !this.#bridgeReady || !this.#gatewayToken) { this.#postError(id, "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "File operation arrived before the surface became ready"); return; }
+    if (request.operation === "select" && !this.#confirmFileAccess) { this.#postError(id, "PLUGIN_FEATURE_NOT_CONFIGURED", "File access confirmation is not configured"); return; }
+    const controller = this.#registerPendingRequest(id);
+    let reviewID: string | undefined;
+    let approvalSent = false;
+    try {
+      let result = await this.#postMutationJSON<PluginFileIOResult>("/_redevplugin/api/plugins/file-resources/surface-io", () => ({ plugin_instance_id: this.bootstrap.pluginInstanceId, surface_instance_id: this.bootstrap.surfaceInstanceId, bridge_channel_id: this.bridgeChannelId, plugin_gateway_token: this.#gatewayToken, ...request }), controller.signal);
+      if (request.operation === "select" && result.canceled !== true) {
+        if (!isPluginFileResourceReview(result.review) || result.review.plugin_instance_id !== this.bootstrap.pluginInstanceId) throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "File review is invalid");
+        reviewID = result.review.review_id;
+        const approved = await abortableConfirmationDecision(this.#confirmFileAccess!({ ...result.review, signal: controller.signal }), controller.signal);
+        if (controller.signal.aborted || this.#disposed) return;
+        if (!confirmationDecisionAccepted(approved)) {
+          await this.#postMutationJSON("/_redevplugin/api/plugins/file-resources/cancel", { plugin_instance_id: this.bootstrap.pluginInstanceId, review_id: reviewID }, controller.signal);
+          reviewID = undefined;
+          result = { canceled: true };
+        } else {
+          approvalSent = true;
+          const resource = await this.#postMutationJSON<unknown>("/_redevplugin/api/plugins/file-resources/approve", { plugin_instance_id: this.bootstrap.pluginInstanceId, review_id: reviewID }, controller.signal);
+          if (!isPluginFileResource(resource)) throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Approved file resource is invalid");
+          reviewID = undefined;
+          result = { resource };
+        }
+      }
+      if (!controller.signal.aborted && !this.#disposed) this.#postResponse(id, result);
+    } catch (error) {
+      if (controller.signal.aborted || this.#disposed) return;
+      const failure = toBridgeError(error, "PLUGIN_INTERNAL_FAILURE");
+      this.#postError(id, failure.errorCode, failure.message, failure.details, failure.mutationOutcome);
+    } finally {
+      if (reviewID && !approvalSent) {
+        try { await this.#fetchJSONRequest("/_redevplugin/api/plugins/file-resources/cancel", { plugin_instance_id: this.bootstrap.pluginInstanceId, review_id: reviewID }, { mutation: true, independentLifecycle: true }); } catch { /* Expired reviews are reclaimed by Host maintenance. */ }
+      }
+      if (this.#pendingRequestControllers.get(id) === controller) this.#pendingRequestControllers.delete(id);
     }
   }
 
@@ -3140,6 +3195,7 @@ function isBridgeResponse(value: unknown): value is PluginBridgeResponse {
   }
   if (value.error_code === "PLUGIN_CAPABILITY_ERROR") return isCapabilityBusinessErrorDetails(value.error_details);
   if (value.error_code === "PLUGIN_WORKER_ERROR") return isWorkerErrorDetails(value.error_details);
+  if (value.error_code === "PLUGIN_FILE_OPERATION_FAILED") return hasExactKeys(value.error_details, ["file_error_code", "file_retryable"]) && typeof value.error_details.file_retryable === "boolean" && ["INVALID_ARGUMENT", "PERMISSION_DENIED", "NOT_FOUND", "NOT_EMPTY", "ALREADY_EXISTS", "RESOURCE_CLOSED", "RESOURCE_LIMIT", "CROSS_DEVICE", "MOUNT_UNAVAILABLE", "RUNTIME_UNAVAILABLE", "CANCELED", "TIMEOUT", "IO_ERROR"].includes(String(value.error_details.file_error_code));
   if (value.error_details === undefined) return true;
   try {
     return Object.keys(normalizePluginJSONObject(value.error_details)).length <= 8;

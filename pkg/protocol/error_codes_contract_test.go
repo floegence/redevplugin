@@ -48,6 +48,7 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 		string(security.ErrValuesRevisionMismatch),
 		string(security.ErrCapabilityError),
 		string(security.ErrWorkerError),
+		string(security.ErrFileOperationFailed),
 	}
 	genericCodes := readOpenAPIEnum(t, string(openAPIRaw), "GenericPlatformErrorCode")
 	assertStringSlicesEqual(t, genericCodes, diffStrings(platformCodes, typedCodes), "OpenAPI generic platform error code partition")

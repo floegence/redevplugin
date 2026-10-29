@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -36,6 +37,7 @@ func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {
 		"Process",
 		"Background",
 		"Web",
+		"Files",
 	}
 	if configType.NumField() != len(want) {
 		t.Fatalf("Config has %d fields, want %d state and module fields", configType.NumField(), len(want))
@@ -200,6 +202,65 @@ func TestFeaturesReturnsClosedConfiguredSet(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("configuredFeatures() = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestSelectedFilesModuleDiscoveryAndAdmission(t *testing.T) {
+	config := modularTestConfig(t)
+	config.Files = &FilesModule{Picker: selectedPickerFixture{canceled: true}}
+	h, err := Open(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	if got := h.configuredFeatures(); len(got) != 1 || got[0] != Feature("files") {
+		t.Fatalf("features = %v", got)
+	}
+	declaration := manifest.Manifest{API: manifest.PublicAPIRequirement{Major: 1, RequiredFeatures: []manifest.FeatureID{manifest.FeatureFSSelected}}}
+	if err := h.preflightPackageFeatures(declaration, packageTrustInput{}); err != nil {
+		t.Fatal(err)
+	}
+	delete(h.features, Feature("files"))
+	if err := h.preflightPackageFeatures(declaration, packageTrustInput{}); err == nil {
+		t.Fatal("missing required file module was accepted")
+	}
+}
+
+func TestSelectedFilesModuleRejectsMissingPicker(t *testing.T) {
+	config := modularTestConfig(t)
+	config.Files = &FilesModule{}
+	h, err := Open(context.Background(), config)
+	if h != nil {
+		_ = h.Close()
+	}
+	if err == nil {
+		t.Fatal("configured files module accepted no picker")
+	}
+}
+
+func TestSelectedFilesDiscoveryRequiresConfiguredModule(t *testing.T) {
+	h, err := Open(context.Background(), modularTestConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	inv := runtimeIOTestInvocation("file-discovery", "session-file", "channel-file")
+	raw, err := h.runtimeIO.service.Control(context.Background(), inv, []byte(`{"plugin_api":1,"operation":"platform.capabilities","arguments":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Result struct {
+			Features []string `json:"features"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	for _, feature := range response.Result.Features {
+		if feature == "fs.selected.v1" {
+			t.Fatal("unconfigured file module was advertised")
 		}
 	}
 }

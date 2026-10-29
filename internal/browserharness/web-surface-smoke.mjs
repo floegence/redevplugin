@@ -42,7 +42,7 @@ if (process.argv[2] === "--build") {
     assert.deepEqual(state.pixel, [18,52,86,255]); assert.equal(state.wasm, true); assert.equal(state.webgl, true); assert.equal(state.indexedDB, true);
     assert.equal(state.parentBlocked, true); assert.equal(state.cookie, ""); assert.equal(state.storage, "isolated");
     assert.notEqual(new URL(frames[0].url()).origin, new URL(frames[1].url()).origin);
-    await frames[0].locator("input").fill("中文 native selection"); await frames[0].locator("button").click();
+    await frames[0].locator("input").fill("中文 native selection"); await frames[0].getByRole("button", { name: "Apply", exact: true }).click();
     assert.equal(await frames[0].locator("output").textContent(), "中文 native selection");
     assert.equal(new URL(frames[0].url()).pathname, "/notes/current");
     const input = frames[0].locator("input");
@@ -51,6 +51,13 @@ if (process.argv[2] === "--build") {
     assert.equal(await input.inputValue(), "native");
     await input.evaluate(element => element.setSelectionRange(1, 4));
     assert.deepEqual(await input.evaluate(element => [element.selectionStart, element.selectionEnd]), [1, 4]);
+    await frames[0].getByRole("button", { name: "Open file", exact: true }).click();
+    await frames[0].getByRole("status").filter({ hasText: /^Opened$/ }).waitFor();
+    assert.equal(await frames[0].getByLabel("Selected document").inputValue(), "Existing document");
+    await frames[0].getByLabel("Selected document").fill("Saved 中文 document");
+    await frames[0].getByRole("button", { name: "Save file", exact: true }).click();
+    await frames[0].getByRole("status").filter({ hasText: /^Saved$/ }).waitFor();
+    assert.equal(await frames[1].getByLabel("Selected document").inputValue(), "");
     const originalOrigin = new URL(frames[0].url()).origin;
     await frames[0].evaluate(() => location.reload());
     await frames[0].waitForFunction(() => globalThis.appState?.ready);

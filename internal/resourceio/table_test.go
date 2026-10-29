@@ -341,3 +341,21 @@ func (resource *duplexResource) Write(source []byte) (int, error) {
 	return len(source), nil
 }
 func (*duplexResource) Close() error { return nil }
+
+type partialChunkFile struct{}
+
+func (*partialChunkFile) Close() error                                            { return nil }
+func (*partialChunkFile) WriteChunk(context.Context, []byte, uint32) (int, error) { return 1, nil }
+func TestFilePartialChunkPreservesAcknowledgedBytes(t *testing.T) {
+	table, _ := NewTable(1)
+	owner := testOwner("partial")
+	handle, err := table.Open(owner, KindFile, &partialChunkFile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer table.Close(handle, owner)
+	n, err := table.WriteChunk(context.Background(), handle, owner, []byte("ab"), 0)
+	if n != 1 || !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("partial write = %d, %v", n, err)
+	}
+}

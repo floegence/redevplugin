@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.5.0
+
+- Add explicit selected-file and directory approval, durable owner-scoped resource authority, bounded lifetimes and quotas, independent revocation, and exact object identity checks.
+- Publish Go file-picker adapters, management HTTP routes, closed file-resource contracts, and an ordinary Web SDK over the existing Host I/O table and Worker filesystem API.
+- Migrate the exact control schema 1 to schema 2 transactionally, retaining existing state and rejecting unknown or drifted databases without mutation.
+- Bind Web handles to their individual surface and revalidate resource authority on every bounded operation, including after restart, policy changes, replacement, and revocation.
+- Preserve zero write and seek results across runtime IPC, bound directory pages by encoded size without losing entries, and report dispatched write failures as uncertain without automatic replay.
+- Cover real Rust Worker and Chromium open/save flows, partial mutations, concurrent lifecycle changes, approval reconciliation, Unicode paths, and private host-path exclusion.
+
 ## v3.4.0
 
 - Publish pkg/testhost to compose the real Host, HTTP adapter, isolated Web surfaces, durable assets, explicit test adapters, bounded events, and verified runtime ownership.

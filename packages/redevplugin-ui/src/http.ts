@@ -276,6 +276,10 @@ function isPlatformErrorDetails(code: PluginPlatformErrorCode, value: unknown): 
       Array.from(value.worker_error_message).length <= 4096 &&
       ["runtime", "hostcall", "plugin"].includes(String(value.worker_error_origin));
   }
+  if (code === "PLUGIN_FILE_OPERATION_FAILED") {
+    return hasExactKeys(value, ["file_error_code", "file_retryable"]) && typeof value.file_retryable === "boolean" &&
+      ["INVALID_ARGUMENT", "PERMISSION_DENIED", "NOT_FOUND", "NOT_EMPTY", "ALREADY_EXISTS", "RESOURCE_CLOSED", "RESOURCE_LIMIT", "CROSS_DEVICE", "MOUNT_UNAVAILABLE", "RUNTIME_UNAVAILABLE", "CANCELED", "TIMEOUT", "IO_ERROR"].includes(String(value.file_error_code));
+  }
   if (code === "PLUGIN_JSON_LIMIT_EXCEEDED") {
     return hasExactKeys(value, ["reason"]) &&
       typeof value.reason === "string" && (jsonLimitReasons as readonly string[]).includes(value.reason);

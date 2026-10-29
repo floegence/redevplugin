@@ -62,6 +62,7 @@ const expectedCanonicalContracts = [
   "contract:plugin/wasm-abi.json",
   "contract:plugin/web-surface-document.schema.json",
   "contract:plugin/web-surface-transport.schema.json",
+  "contract:plugin/file-resources.schema.json",
   "contract:plugin/worker-invocation.schema.json",
 ];
 

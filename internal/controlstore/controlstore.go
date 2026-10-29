@@ -19,7 +19,7 @@ import (
 
 const (
 	schemaKind    = "redevplugin_control_v3"
-	schemaVersion = 1
+	schemaVersion = 2
 )
 
 var (
@@ -82,11 +82,41 @@ func (s *Store) initialize(ctx context.Context) error {
 		return err
 	}
 	if schemaObjects == 0 {
-		if err := createSchema(ctx, s.db); err != nil {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
 			return err
 		}
-	} else if err := validateSchema(ctx, s.db); err != nil {
-		return err
+		defer func() { _ = tx.Rollback() }()
+		if err := createSchema(ctx, tx); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	} else {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := validateSchema(ctx, tx); err != nil {
+			return err
+		}
+		var version int
+		if err := tx.QueryRowContext(ctx, "SELECT version FROM control_schema WHERE id=1").Scan(&version); err != nil {
+			return err
+		}
+		if version == 1 {
+			if err := migrateSelectedResources(ctx, tx); err != nil {
+				return err
+			}
+		}
+		if err := validateSchema(ctx, tx); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	var generation uint64
 	if err := s.db.QueryRowContext(ctx, `SELECT generation FROM control_generation WHERE id=1`).Scan(&generation); err != nil {
@@ -113,7 +143,7 @@ func openSQLiteReadOnly(path string) (*sql.DB, error) {
 	return sql.Open("sqlite", uri)
 }
 
-func createSchema(ctx context.Context, q interface {
+func createSchemaOne(ctx context.Context, q interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }) error {
 	for _, statement := range []string{
@@ -137,7 +167,7 @@ func createSchema(ctx context.Context, q interface {
 			return err
 		}
 	}
-	if _, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO control_schema(id,kind,version) VALUES(1,?,?)`, schemaKind, schemaVersion); err != nil {
+	if _, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO control_schema(id,kind,version) VALUES(1,?,?)`, schemaKind, 1); err != nil {
 		return err
 	}
 	_, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO control_generation(id,generation,created_at) VALUES(1,1,?)`, time.Now().UTC().UnixNano())
@@ -147,13 +177,26 @@ func createSchema(ctx context.Context, q interface {
 	return nil
 }
 
-func validateSchema(ctx context.Context, db *sql.DB) error {
+type schemaReader interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func createSchema(ctx context.Context, q interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}) error {
+	if err := createSchemaOne(ctx, q); err != nil {
+		return err
+	}
+	return migrateSelectedResources(ctx, q)
+}
+func validateSchema(ctx context.Context, db schemaReader) error {
 	var kind string
 	var version int
 	if err := db.QueryRowContext(ctx, `SELECT kind, version FROM control_schema WHERE id=1`).Scan(&kind, &version); err != nil {
 		return fmt.Errorf("%w: control_schema: %v", ErrIncompatible, err)
 	}
-	if kind != schemaKind || version != schemaVersion {
+	if kind != schemaKind || version < 1 || version > schemaVersion {
 		return fmt.Errorf("%w: schema identity %q version %d", ErrIncompatible, kind, version)
 	}
 	var generation int
@@ -163,7 +206,7 @@ func validateSchema(ctx context.Context, db *sql.DB) error {
 	if generation <= 0 {
 		return fmt.Errorf("%w: generation metadata", ErrIncompatible)
 	}
-	expected, err := expectedSchemaShape(ctx)
+	expected, err := expectedSchemaShapeVersion(ctx, version)
 	if err != nil {
 		return fmt.Errorf("%w: build expected schema: %v", ErrIncompatible, err)
 	}
@@ -190,19 +233,24 @@ type schemaColumn struct {
 	primaryKey int
 }
 
-func expectedSchemaShape(ctx context.Context) ([]schemaObject, error) {
+func expectedSchemaShapeVersion(ctx context.Context, version int) ([]schemaObject, error) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
-	if err := createSchema(ctx, db); err != nil {
+	if err := createSchemaOne(ctx, db); err != nil {
 		return nil, err
+	}
+	if version >= 2 {
+		if err := migrateSelectedResources(ctx, db); err != nil {
+			return nil, err
+		}
 	}
 	return readSchemaShape(ctx, db)
 }
 
-func readSchemaShape(ctx context.Context, db *sql.DB) ([]schemaObject, error) {
+func readSchemaShape(ctx context.Context, db schemaReader) ([]schemaObject, error) {
 	rows, err := db.QueryContext(ctx, `SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`)
 	if err != nil {
 		return nil, err
@@ -232,7 +280,7 @@ func readSchemaShape(ctx context.Context, db *sql.DB) ([]schemaObject, error) {
 	return result, nil
 }
 
-func readSchemaColumns(ctx context.Context, db *sql.DB, table string) ([]schemaColumn, error) {
+func readSchemaColumns(ctx context.Context, db schemaReader, table string) ([]schemaColumn, error) {
 	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
 	if err != nil {
 		return nil, err

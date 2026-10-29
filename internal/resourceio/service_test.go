@@ -99,7 +99,7 @@ func TestServiceFileControlAndRawDataPlane(t *testing.T) {
 	if n, err := service.Write(context.Background(), invocation, handle, payload, 0); err != nil || n != len(payload) {
 		t.Fatalf("Write() = %d, %v", n, err)
 	}
-	if position, err := service.Seek(invocation, handle, 0, 0); err != nil || position != 0 {
+	if position, err := service.Seek(context.Background(), invocation, handle, 0, 0); err != nil || position != 0 {
 		t.Fatalf("Seek() = %d, %v", position, err)
 	}
 	buffer := make([]byte, len(payload))

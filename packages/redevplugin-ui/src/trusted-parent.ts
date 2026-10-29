@@ -60,3 +60,5 @@ export type {
   WindowLike,
 } from "./surface.js";
 export type { FetchInitLike, FetchLike, FetchResponseLike, PlatformResponse } from "./http.js";
+
+export type { PluginFileAccessConfirmation, PluginFileResourceReview, PluginFileResource } from "./files.js";
