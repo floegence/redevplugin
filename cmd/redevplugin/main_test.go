@@ -445,7 +445,7 @@ func TestCommandRuntimeModuleRejectsBinaryReplacedAfterInspection(t *testing.T) 
 		t.Skip("verified runtime executable admission is unsupported on this platform")
 	}
 	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
-	original, err := os.ReadFile(os.Args[0])
+	original, err := os.ReadFile(buildExamplesRuntime(t, cliRepoRoot(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,6 +454,13 @@ func TestCommandRuntimeModuleRejectsBinaryReplacedAfterInspection(t *testing.T) 
 	}
 	identity, err := inspectCommandRuntimeArtifact(runtimePath, mustCurrentCommandRuntimeTarget(t))
 	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := newCommandRuntimeModule(context.Background(), runtimePath, t.TempDir(), identity, time.Second)
+	if err != nil {
+		t.Fatalf("newCommandRuntimeModule(original binary) error = %v", err)
+	}
+	if _, err := module.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(runtimePath, append(original, '\n'), 0o700); err != nil {
