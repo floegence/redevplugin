@@ -1,6 +1,6 @@
 {
   "name": "@floegence/redevplugin-ui",
-  "version": "3.7.4",
+  "version": "3.8.0",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -36,7 +36,7 @@
     "dist"
   ],
   "dependencies": {
-    "@floegence/redevplugin-contracts": "3.7.4",
+    "@floegence/redevplugin-contracts": "3.8.0",
     "@noble/hashes": "2.4.0"
   },
   "publishConfig": {

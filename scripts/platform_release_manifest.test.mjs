@@ -60,6 +60,7 @@ const expectedCanonicalContracts = [
   "contract:plugin/resource-scope-v1.schema.json",
   "contract:plugin/runtime-admission-v1.schema.json",
   "contract:plugin/runtime-exec-journal-v1.schema.json",
+  "contract:plugin/security-summary-fixtures.json",
   "contract:plugin/session-scope-v1.schema.json",
   "contract:plugin/surface-methods.schema.json",
   "contract:plugin/target-classifier-v2.json",

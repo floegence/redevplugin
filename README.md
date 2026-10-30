@@ -40,6 +40,10 @@ capabilities.
   metadata contract.
 - Source policy and revocation documents remain mutable security facts. They do
   not create an additional platform compatibility matrix.
+- The contracts npm package owns strict security-summary normalization and
+  canonical SHA-256 APIs, generated from OpenAPI and verified against Go byte
+  fixtures. Hosts and markets consume this complete evidence contract instead
+  of maintaining summary field lists or hash payloads independently.
 
 ## Localized Plugin Presentation
 

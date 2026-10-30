@@ -700,7 +700,7 @@ func externalPackageNetworkSummaries(spec *manifest.NetworkAccessSpec, access ma
 		items = make([]ExternalPackageNetworkSummary, 0, len(spec.Connectors))
 		for _, connector := range spec.Connectors {
 			key := externalPackageNetworkKey(connector.ConnectorID, connector.Transport)
-			methodAccess := append([]ExternalPackageNetworkMethodAccessSummary(nil), access[key]...)
+			methodAccess := append([]ExternalPackageNetworkMethodAccessSummary{}, access[key]...)
 			delete(access, key)
 			sort.Slice(methodAccess, func(i, j int) bool { return methodAccess[i].Method < methodAccess[j].Method })
 			items = append(items, ExternalPackageNetworkSummary{
@@ -722,7 +722,7 @@ func externalPackageStorageSummaries(spec *manifest.StorageSpec, access map[stri
 	if spec != nil {
 		items = make([]ExternalPackageStorageSummary, 0, len(spec.Stores))
 		for _, store := range spec.Stores {
-			methodAccess := append([]ExternalPackageStorageMethodAccessSummary(nil), access[store.StoreID]...)
+			methodAccess := append([]ExternalPackageStorageMethodAccessSummary{}, access[store.StoreID]...)
 			delete(access, store.StoreID)
 			sort.Slice(methodAccess, func(i, j int) bool { return methodAccess[i].Method < methodAccess[j].Method })
 			items = append(items, ExternalPackageStorageSummary{
@@ -740,21 +740,9 @@ func externalPackageStorageSummaries(spec *manifest.StorageSpec, access map[stri
 
 func externalPackageSecuritySummaryHash(summary ExternalPackageSecuritySummary) (string, error) {
 	payload := struct {
-		Permissions         []ExternalPackagePermissionSummary         `json:"permissions"`
-		Methods             []ExternalPackageMethodSummary             `json:"methods"`
-		CapabilityContracts []ExternalPackageCapabilityContractSummary `json:"capability_contracts"`
-		Workers             []ExternalPackageWorkerSummary             `json:"workers"`
-		Network             []ExternalPackageNetworkSummary            `json:"network"`
-		Storage             []ExternalPackageStorageSummary            `json:"storage"`
-		SecretRefs          []ExternalPackageSecretRefSummary          `json:"secret_refs"`
-		CoreActions         []ExternalPackageCoreActionSummary         `json:"core_actions"`
-		Intents             []ExternalPackageIntentSummary             `json:"intents"`
-		Surfaces            []ExternalPackageSurfaceSummary            `json:"surfaces"`
-	}{
-		Permissions: summary.Permissions, Methods: summary.Methods, CapabilityContracts: summary.CapabilityContracts,
-		Workers: summary.Workers, Network: summary.Network, Storage: summary.Storage, SecretRefs: summary.SecretRefs,
-		CoreActions: summary.CoreActions, Intents: summary.Intents, Surfaces: summary.Surfaces,
-	}
+		ExternalPackageSecuritySummary
+		SummarySHA256 string `json:"summary_sha256,omitempty"`
+	}{ExternalPackageSecuritySummary: summary}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal external package security summary: %w", err)

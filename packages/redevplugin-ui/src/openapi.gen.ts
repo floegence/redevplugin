@@ -2044,13 +2044,13 @@ export interface components {
             effects: ("read" | "write" | "delete" | "execute" | "admin")[];
         };
         ExternalPackageMethodRouteSummary: {
+            surface_id?: string;
             /** @enum {string} */
             kind: "capability" | "worker" | "core_action" | "surface";
             binding_id?: string;
             target_method?: string;
             worker_id?: string;
             action_id?: string;
-            surface_id?: string;
         };
         ExternalPackageConfirmationSummary: {
             /** @enum {string} */
@@ -2179,7 +2179,7 @@ export interface components {
             width: number;
             height: number;
         };
-        /** @description Closed, display-ready projection of every security-relevant declaration in the inspected manifest. */
+        /** @description Closed, display-ready projection of every security-relevant declaration in the inspected manifest. Canonical hash payloads omit only summary_sha256, preserve schema property and array order, include present process and background declarations, and use compact Go JSON string escaping. Optional absent properties stay absent. */
         ExternalPackageSecuritySummary: {
             summary_sha256: string;
             permissions: components["schemas"]["ExternalPackagePermissionSummary"][];
