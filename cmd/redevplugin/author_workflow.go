@@ -448,6 +448,7 @@ func authorHostOptions(root, origin string, runtime *host.RuntimeModule) testhos
 			host.ManagementActionImportLocalPackage, host.ManagementActionUpdateLocalPackage,
 			host.ManagementActionOpenSurface, host.ManagementActionPrepareSurface,
 			host.ManagementActionMintBridgeToken, host.ManagementActionDisposeSurface,
+			host.ManagementActionSurfaceMethods, host.ManagementActionPrepareIntentConfirmation,
 			host.ManagementActionCallPluginMethod, host.ManagementActionPrepareMethodConfirmation,
 			host.ManagementActionMintStorageHandleGrant,
 			host.ManagementActionRejectSurfaceConfirmation,

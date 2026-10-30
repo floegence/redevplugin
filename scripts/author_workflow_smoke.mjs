@@ -46,6 +46,16 @@ try{
  page=await browser.newPage();await page.goto(preview);
  const frame=page.frameLocator("#stage > iframe");await frame.getByRole("heading",{name:"Author Preview"}).waitFor({timeout:30000});
  await frame.getByLabel("Message",{exact:true}).fill("Browser worker acceptance");await frame.getByRole("button",{name:"Send to worker"}).click();await frame.getByText("Browser worker acceptance",{exact:true}).waitFor({timeout:15000});
+ const application = await page.evaluate(async () => {
+  const state = await (await fetch("/dev/status")).json();
+  const response = await fetch("/_redevplugin/api/plugins/intents/invoke", {
+   method: "POST", headers: {"Content-Type": "application/json", "X-ReDevPlugin-CSRF": state.csrf},
+   body: JSON.stringify({plugin_instance_id: state.plugin_instance_id, intent_id: "application.read", params: {}}),
+  });
+  return {status: response.status, body: await response.json()};
+ });
+ assert.equal(application.status, 200, JSON.stringify(application.body));
+ assert.equal(application.body.data.data.message, "Browser worker acceptance");
  await page.locator("#confirmation").evaluate(dialog=>dialog.showModal());
  await page.getByRole("button",{name:"Cancel",exact:true}).waitFor();
  assert.equal(await page.getByRole("button",{name:"Cancel",exact:true}).evaluate(button=>button===document.activeElement),true);
@@ -64,7 +74,7 @@ try{
  await writeFile(join(project,"redevplugin.project.json"),(await readFile(join(project,"redevplugin.project.json"),"utf8"))+" ");
  await page.getByText("project configuration changed; restart the developer preview to apply it",{exact:true}).waitFor({timeout:10000});
  assert.equal(await current.evaluate(element=>element.isConnected),true);
- console.log("Author workflow passed: real WASM call, isolated Web preview, failed-build retention, fresh reload generation, responsive layout, private API.");
+ console.log("Author workflow passed: real WASM call, application intent, isolated Web preview, failed-build retention, fresh reload generation, responsive layout, private API.");
 }catch(error){
  const diagnostic = page ? await page.evaluate(async () => ({ status: await (await fetch("/dev/status")).json(), text: document.body.innerText, frames: [...document.querySelectorAll("iframe")].map(frame => ({src:frame.src,hidden:frame.hidden,style:frame.getAttribute("style")})) })).catch(String) : undefined;
  throw new Error(String(error)+"\n"+JSON.stringify(diagnostic)+"\n"+logs,{cause:error});
