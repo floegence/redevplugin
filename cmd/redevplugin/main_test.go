@@ -1257,7 +1257,7 @@ func makeScaffoldUIOnly(t *testing.T, filename string) {
 			t.Fatalf("manifest method has unexpected shape: %#v", item)
 		}
 		route, _ := method["route"].(map[string]any)
-		if route["kind"] == "worker" || strings.TrimSpace(fmt.Sprint(method["worker_id"])) != "" {
+		if route["kind"] == "worker" {
 			continue
 		}
 		uiMethods = append(uiMethods, method)
