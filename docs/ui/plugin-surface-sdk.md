@@ -39,7 +39,11 @@ hostname prefix. The origin must differ from the parent hostname. The host's
 SurfaceOriginAdapter provides DNS/TLS routing and the authenticated parent
 origin; the platform validates the allocation and owns the resource session.
 Production origins require HTTPS; dedicated .localhost origins support local
-development. Mount NewWebSurfaceHandler only on those application origins.
+development. A native host may retain its exact canonical HTTP loopback IP
+parent origin (IPv4 127.0.0.0/8 or IPv6 ::1). Short, octal, hexadecimal, mapped
+IPv6 and noncanonical port spellings are rejected; the parent is never rewritten
+to localhost. This exception applies only to the parent. Mount
+NewWebSurfaceHandler only on dedicated application origins.
 Never mount authenticated management routes on a child origin.
 
 The frame starts as a restricted blank document. The allocated application
@@ -346,7 +350,9 @@ save/delete reconciliation, Weather persistence, and game input and rendering.
 Browser fault fixtures distinguish intentional failures from unexpected errors.
 
 npm run test:browser-harness:smoke writes web-acceptance.json and supported and
-unsupported screenshots under dist/web-evidence, or REDEVPLUGIN_WEB_EVIDENCE_DIR.
+unsupported screenshots in per-parent-hostname directories under dist/web-evidence,
+or REDEVPLUGIN_WEB_EVIDENCE_DIR. Both localhost and canonical IPv4 loopback
+parents exercise the same application and isolation assertions.
 The exact-main gate uses dist/web-pre-push. Evidence is local acceptance output,
 not a published artifact. Do not label a Go/HTTP-only fixture as Rust evidence.
 

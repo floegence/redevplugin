@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.7.1
+
+- Accept exact canonical HTTP loopback IP parent origins for native host listeners without rewriting their authenticated identity.
+- Keep child applications on independent allocated hostnames; reject noncanonical IP/port spellings, mapped IPv6, private-network and non-loopback HTTP parents.
+- Share parent-origin fixtures across Go and TypeScript and verify native applications, source-bound handshakes, revocation and network isolation in real Chromium with both localhost and IPv4 loopback parents.
+
 ## v3.7.0
 
 - Expose declared application methods through the existing source-bound Web bridge and Host intent, authorization, confirmation, and Execution/Event pipeline.

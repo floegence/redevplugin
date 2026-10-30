@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,6 +87,37 @@ func validateWebOrigin(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// The trusted parent may be a native host's canonical loopback IP listener.
+// Child origins still require their own hostname and the allocated random key.
+func validateWebParentOrigin(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" {
+		return validateWebOrigin(raw)
+	}
+	ip, err := netip.ParseAddr(u.Hostname())
+	if err != nil || !ip.IsLoopback() {
+		return validateWebOrigin(raw)
+	}
+	if ip.Is4In6() || ip.String() != u.Hostname() || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(raw, "?#") {
+		return nil, errors.New("surface parent origin must be canonical")
+	}
+	authority := ip.String()
+	if ip.Is6() {
+		authority = "[" + authority + "]"
+	}
+	if port := u.Port(); port != "" {
+		number, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || number == 80 || strconv.FormatUint(number, 10) != port {
+			return nil, errors.New("surface parent origin must have a canonical port")
+		}
+		authority += ":" + port
+	}
+	if raw != "http://"+authority {
+		return nil, errors.New("surface parent origin must be canonical")
+	}
+	return u, nil
+}
+
 func randomWebToken() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -109,7 +142,7 @@ func (h *Host) prepareWebSurface(ctx context.Context, session sessionctx.Context
 	if err != nil {
 		return WebSurfaceDocument{}, err
 	}
-	parent, err := validateWebOrigin(origin.ParentOrigin)
+	parent, err := validateWebParentOrigin(origin.ParentOrigin)
 	if err != nil {
 		return WebSurfaceDocument{}, err
 	}

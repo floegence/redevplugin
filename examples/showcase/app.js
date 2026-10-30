@@ -4194,7 +4194,8 @@ function isWebSurfaceDocument(value) {
     const origin = new URL(String(value.origin)), parent = new URL(String(value.parent_origin));
     const bootstrap = new URL(String(value.bootstrap_url)), entry = new URL(String(value.entry_url));
     const validOrigin = (u2, raw) => u2.origin === raw && !u2.username && !u2.password && (u2.protocol === "https:" || u2.protocol === "http:" && (u2.hostname === "localhost" || u2.hostname.endsWith(".localhost")));
-    return validOrigin(origin, value.origin) && validOrigin(parent, value.parent_origin) && origin.hostname !== parent.hostname && bootstrap.origin === origin.origin && !bootstrap.username && !bootstrap.password && bootstrap.pathname === "/_redevplugin_web/bootstrap" && !bootstrap.search && /^#[a-f0-9]{64}$/.test(bootstrap.hash) && entry.origin === origin.origin && !entry.username && !entry.password && !entry.search && !entry.hash && !entry.pathname.startsWith("/_redevplugin_web/");
+    const loopbackParent = parent.origin === value.parent_origin && !parent.username && !parent.password && parent.protocol === "http:" && (parent.hostname === "[::1]" || /^127(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(parent.hostname));
+    return validOrigin(origin, value.origin) && (validOrigin(parent, value.parent_origin) || loopbackParent) && origin.hostname !== parent.hostname && bootstrap.origin === origin.origin && !bootstrap.username && !bootstrap.password && bootstrap.pathname === "/_redevplugin_web/bootstrap" && !bootstrap.search && /^#[a-f0-9]{64}$/.test(bootstrap.hash) && entry.origin === origin.origin && !entry.username && !entry.password && !entry.search && !entry.hash && !entry.pathname.startsWith("/_redevplugin_web/");
   } catch {
     return false;
   }

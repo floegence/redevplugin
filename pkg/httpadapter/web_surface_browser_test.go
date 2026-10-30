@@ -26,6 +26,7 @@ import (
 
 type browserWebOrigins struct {
 	port      string
+	parent    string
 	allocated sync.Map
 	prepared  sync.Map
 }
@@ -33,7 +34,7 @@ type browserWebOrigins struct {
 func (o *browserWebOrigins) AllocateSurfaceOrigin(_ context.Context, req host.SurfaceOriginRequest) (host.SurfaceOrigin, error) {
 	origin := "http://" + req.OriginKey + ".localhost:" + o.port
 	o.allocated.Store(origin, req.SurfaceInstanceID)
-	return host.SurfaceOrigin{Origin: origin, ParentOrigin: "http://localhost:" + o.port}, nil
+	return host.SurfaceOrigin{Origin: origin, ParentOrigin: o.parent}, nil
 }
 
 type browserFilePicker struct{ path string }
@@ -52,6 +53,16 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 	if os.Getenv("REDEVPLUGIN_RUN_BROWSER_SMOKE") != "1" {
 		t.Skip("set REDEVPLUGIN_RUN_BROWSER_SMOKE=1 to run the real browser")
 	}
+	hostnames := []string{"localhost", "127.0.0.1"}
+	if os.Getenv("REDEVPLUGIN_WEB_PERFORMANCE_OUTPUT") != "" {
+		hostnames = hostnames[:1]
+	}
+	for _, hostname := range hostnames {
+		t.Run(hostname, func(t *testing.T) { testNativeWebApplicationBrowser(t, hostname) })
+	}
+}
+
+func testNativeWebApplicationBrowser(t *testing.T, parentHostname string) {
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +89,9 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 	}
 	defer listener.Close()
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
-	origins := &browserWebOrigins{port: port}
+	parentAuthority := net.JoinHostPort(parentHostname, port)
+	parentOrigin := "http://" + parentAuthority
+	origins := &browserWebOrigins{port: port, parent: parentOrigin}
 	selectedPath := filepath.Join(t.TempDir(), "selected.txt")
 	if err := os.WriteFile(selectedPath, []byte("Existing document"), 0600); err != nil {
 		t.Fatal(err)
@@ -185,7 +198,7 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Host != "localhost:"+port {
+		if r.Host != parentAuthority {
 			if _, prepared := origins.prepared.Load("http://" + r.Host); !prepared {
 				http.Error(w, "route not prepared", http.StatusForbidden)
 				return
@@ -207,7 +220,7 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 			fmt.Fprint(w, files["host.js"])
 		case "/fixture/routes":
 			cookie, err := r.Cookie("fixture-parent")
-			if err != nil || cookie.Value != "authenticated" || r.Header.Get("Origin") != "http://localhost:"+port {
+			if err != nil || cookie.Value != "authenticated" || r.Header.Get("Origin") != parentOrigin {
 				http.Error(w, "parent session required", http.StatusForbidden)
 				return
 			}
@@ -224,7 +237,7 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 				return
 			}
 			allocated, ok := origins.allocated.Load(request.Origin)
-			if !ok || allocated != request.SurfaceInstanceID || request.ParentOrigin != "http://localhost:"+port || request.PluginInstanceID != installed.PluginInstanceID {
+			if !ok || allocated != request.SurfaceInstanceID || request.ParentOrigin != parentOrigin || request.PluginInstanceID != installed.PluginInstanceID {
 				http.Error(w, "route binding mismatch", http.StatusForbidden)
 				return
 			}
@@ -252,8 +265,13 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 	if os.Getenv("REDEVPLUGIN_WEB_PERFORMANCE_OUTPUT") != "" {
 		mode = "--performance"
 	}
-	run := exec.CommandContext(ctx, "node", "internal/browserharness/web-surface-smoke.mjs", mode, "http://localhost:"+port)
+	run := exec.CommandContext(ctx, "node", "internal/browserharness/web-surface-smoke.mjs", mode, parentOrigin)
 	run.Dir = root
+	evidenceRoot := os.Getenv("REDEVPLUGIN_WEB_EVIDENCE_DIR")
+	if evidenceRoot == "" {
+		evidenceRoot = filepath.Join(root, "dist", "web-evidence")
+	}
+	run.Env = append(os.Environ(), "REDEVPLUGIN_WEB_EVIDENCE_DIR="+filepath.Join(evidenceRoot, parentHostname))
 	out, err := run.CombinedOutput()
 	if err != nil {
 		t.Fatalf("browser failed: %v\n%s", err, out)

@@ -3633,7 +3633,10 @@ export interface components {
             schema_version: "redevplugin.web_surface.v1";
             /** Format: uri */
             origin: string;
-            /** Format: uri */
+            /**
+             * Format: uri
+             * @description Exact canonical authenticated host origin: HTTPS, HTTP localhost, or HTTP canonical IPv4 127.0.0.0/8 or IPv6 ::1. Loopback IP permission applies only to the parent; child origins retain their independent allocated hostname.
+             */
             parent_origin: string;
             /** Format: uri */
             bootstrap_url: string;

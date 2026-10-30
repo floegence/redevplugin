@@ -1,0 +1,29 @@
+{
+  "cases": [
+    { "origin": "https://host.example", "accepted": true },
+    { "origin": "http://localhost:4100", "accepted": true },
+    { "origin": "http://127.0.0.1:4100", "accepted": true },
+    { "origin": "http://127.2.3.4:4100", "accepted": true },
+    { "origin": "http://127.0.0.1", "accepted": true },
+    { "origin": "http://[::1]:4100", "accepted": true },
+    { "origin": "http://[::1]", "accepted": true },
+    { "origin": "http://192.168.1.1:4100", "accepted": false },
+    { "origin": "http://0.0.0.0:4100", "accepted": false },
+    { "origin": "http://example.com:4100", "accepted": false },
+    { "origin": "http://127.0.0.1.example:4100", "accepted": false },
+    { "origin": "http://127.1:4100", "accepted": false },
+    { "origin": "http://2130706433:4100", "accepted": false },
+    { "origin": "http://0x7f000001:4100", "accepted": false },
+    { "origin": "http://127.000.0.1:4100", "accepted": false },
+    { "origin": "http://[0:0:0:0:0:0:0:1]:4100", "accepted": false },
+    { "origin": "http://[::ffff:127.0.0.1]:4100", "accepted": false },
+    { "origin": "http://127.0.0.1:80", "accepted": false },
+    { "origin": "http://127.0.0.1:04100", "accepted": false },
+    { "origin": "http://127.0.0.1:65536", "accepted": false },
+    { "origin": "http://127.0.0.1:", "accepted": false },
+    { "origin": "http://127.0.0.1:4100/", "accepted": false },
+    { "origin": "http://127.0.0.1:4100?", "accepted": false },
+    { "origin": "http://127.0.0.1:4100#", "accepted": false },
+    { "origin": "http://user@127.0.0.1:4100", "accepted": false }
+  ]
+}

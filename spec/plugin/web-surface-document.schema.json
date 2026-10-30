@@ -23,6 +23,7 @@
     "parent_origin": {
       "type": "string",
       "format": "uri",
+      "description": "Exact canonical authenticated host origin: HTTPS, HTTP localhost, or HTTP canonical IPv4 127.0.0.0/8 or IPv6 ::1. Loopback IP permission applies only to the parent; child origins retain their independent allocated hostname.",
       "maxLength": 2048
     },
     "bootstrap_url": {
