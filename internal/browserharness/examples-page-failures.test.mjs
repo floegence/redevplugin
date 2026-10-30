@@ -7,6 +7,20 @@ import { observePageFailures } from "./examples-page-failures.mjs";
 const applicationBaseURL = "https://host.example";
 const rpcURL = `${applicationBaseURL}/_redevplugin/api/plugins/rpc`;
 
+test("unsupported Bluetooth policy warnings preserve unrelated console failures", async () => {
+  const page = new EventEmitter();
+  const observer = observePageFailures(page, applicationBaseURL);
+  for (const text of [
+    "Unrecognized feature: 'bluetooth'.",
+    "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'.",
+  ]) {
+    page.emit("console", { ...consoleMessage(text, applicationBaseURL), type: () => "warning" });
+  }
+  await observer.assertClean();
+  page.emit("console", { ...consoleMessage("Error with Permissions-Policy header: Unrecognized feature: 'camera'.", applicationBaseURL), type: () => "warning" });
+  await assert.rejects(observer.assertClean());
+});
+
 test("expected RPC transport failure is correlated by method and URL", async () => {
   const page = new EventEmitter();
   const observer = observePageFailures(page, applicationBaseURL);

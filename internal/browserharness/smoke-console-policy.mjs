@@ -6,5 +6,6 @@ const expectedSecurityProbeFragments = [
 
 export function isExpectedSandboxConsoleLine(entry) {
   if (entry === "warning: Unrecognized feature: 'bluetooth'.") return true;
+  if (entry === "warning: Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'.") return true;
   return expectedSecurityProbeFragments.some((fragment) => entry.includes(fragment));
 }
