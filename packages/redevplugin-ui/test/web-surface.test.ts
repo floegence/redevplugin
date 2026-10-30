@@ -3513,7 +3513,7 @@ test("application delivery waits for polling before lease rotation and keeps cre
   };
   const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel, hostTransport: createReDevPluginSurfaceTransport({ fetch: transport }), leaseRenewalLeadMs: 100 });
   const opening = host.open(); frame.load(); await waitFor(() => frame.transferred.length === 1); channel.port2.applicationReady(); await opening;
-  channel.port2.postMessage({ type: "redevplugin.bridge.methods", id: "rpc_register", methods: ["document.apply"] });
+  channel.port2.postMessage({ type: "redevplugin.bridge.methods", id: "rpc_1", methods: ["document.apply"] });
   await waitFor(() => finishClaim !== undefined);
   await new Promise(resolve => setTimeout(resolve, 125));
   assert.equal(rotating, false, "renewal waits for the active claim to settle");
@@ -3536,10 +3536,33 @@ test("unknown application registration invalidates only its exact surface withou
   fetch.pushHandler(async () => { throw new Error("registration response lost"); });
   const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel, hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }) });
   const opening = host.open(); frame.load(); await waitFor(() => frame.transferred.length === 1); channel.port2.applicationReady(); await opening;
-  channel.port2.postMessage({ type: "redevplugin.bridge.methods", id: "rpc_register", methods: ["document.apply"] });
+  channel.port2.postMessage({ type: "redevplugin.bridge.methods", id: "rpc_1", methods: ["document.apply"] });
   await waitFor(() => channel.port1.closed);
   assert.equal(fetch.calls.filter(call => call.input.endsWith("/methods")).length, 1);
   assert.equal(fetch.calls.filter(call => call.input.endsWith("/dispose")).length, 1);
   assert.equal(fetch.calls.some(call => call.input.includes("sessions")), false);
   assert.equal(channel.port1.sent.some(message => isMessageType(message, "redevplugin.bridge.method_invoke")), false);
+});
+
+test("application method registration shares the bounded parent request budget", async () => {
+  const frame = new FakeFrame(); const channel = fakeChannel(); const fetch = new FakeFetch();
+  fetch.push(preparation()); fetch.push(gatewayLease());
+  let registrations = 0;
+  const transport: FetchLike = async (input, init) => {
+    if (!input.endsWith("/methods")) return fetch.fetch(input, init);
+    registrations++;
+    return new Promise<FetchResponseLike>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+  };
+  const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel, hostTransport: createReDevPluginSurfaceTransport({ fetch: transport }) });
+  try {
+    const opening = host.open(); frame.load(); await waitFor(() => frame.transferred.length === 1); channel.port2.applicationReady(); await opening;
+    for (let index = 0; index < 257; index++) {
+      channel.port2.postMessage({ type: "redevplugin.bridge.methods", id: `rpc_${index + 1}`, methods: ["document.apply"] });
+    }
+    await waitFor(() => channel.port1.closed);
+    assert.equal(channel.port1.closed, true, "request overflow must fence the exact surface");
+    assert.equal(registrations <= 1, true, "queued registrations cannot continue after invalidation");
+  } finally { await host.dispose(); }
 });

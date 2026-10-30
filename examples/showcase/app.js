@@ -2940,26 +2940,29 @@ var PluginSurfaceHostImplementation = class {
         await this.#failSurface(error);
         return;
       }
-      if (hasExactKeys(data, ["type", "id", "methods"]) && data.type === "redevplugin.bridge.methods" && typeof data.id === "string" && Array.isArray(data.methods) && data.methods.length <= 128 && data.methods.every((name) => typeof name === "string" && validMethod(name))) {
+      if (hasExactKeys(data, ["type", "id", "methods"]) && data.type === "redevplugin.bridge.methods" && validBridgeRequestID(data.id, "rpc") && Array.isArray(data.methods) && data.methods.length <= 128 && data.methods.every((name) => typeof name === "string" && validMethod(name))) {
         const id = data.id;
+        const controller = this.#registerPendingRequest(id);
         const methods = [...new Set(data.methods)].sort();
         const generation = this.frameGenerationId;
         this.#receiverTransition = this.#receiverTransition.then(async () => {
-          if (generation !== this.frameGenerationId || this.#disposed) return;
+          if (generation !== this.frameGenerationId || this.#disposed || controller.signal.aborted) return;
           const registering = !this.#receiverController || this.#receiverController.signal.aborted;
-          const result = await this.#receiverRequest(registering ? "register" : "configure", { methods });
+          const result = await this.#receiverRequest(registering ? "register" : "configure", { methods }, controller.signal);
           this.#receiverID = result.receiver_id;
           if (generation !== this.frameGenerationId || this.#disposed) return;
           this.#postToApplication({ type: "redevplugin.bridge.response", id, ok: true, data: null });
           if (registering) {
-            const controller = new AbortController();
-            this.#receiverController = controller;
-            void this.#pollMethods(generation, controller).catch((error) => {
-              if (!controller.signal.aborted) void this.#failSurface(toBridgeError(error, "PLUGIN_SURFACE_METHOD_CONFLICT"));
+            const controller2 = new AbortController();
+            this.#receiverController = controller2;
+            void this.#pollMethods(generation, controller2).catch((error) => {
+              if (!controller2.signal.aborted) void this.#failSurface(toBridgeError(error, "PLUGIN_SURFACE_METHOD_CONFLICT"));
             });
           }
         }).catch(async (error) => {
           await this.#failSurface(toBridgeError(error, "PLUGIN_SURFACE_METHOD_CONFLICT"));
+        }).finally(() => {
+          if (this.#pendingRequestControllers.get(id) === controller) this.#pendingRequestControllers.delete(id);
         });
         return;
       }
