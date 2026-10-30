@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -47,10 +46,8 @@ export function normalizeReleaseVersion(rawVersion) {
 }
 
 function cargoMetadata(root) {
-  const cargo = join(homedir(), ".cargo", "bin", "cargo");
-  const result = spawnSync(cargo, ["metadata", "--format-version", "1", "--no-deps"], {
+  const result = spawnSync("cargo", ["metadata", "--format-version", "1", "--no-deps"], {
     cwd: root,
-    env: { ...process.env, PATH: `${join(homedir(), ".cargo", "bin")}:${process.env.PATH ?? ""}` },
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
   });
