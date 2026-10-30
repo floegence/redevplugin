@@ -34,13 +34,24 @@ func TestServiceWatchUsesInotifyAndCloseWakesWaiter(t *testing.T) {
 	if event["ok"] != true || !ok || result["kind"] != string(WatchKindCreate) || result["uri"] != "redevfs://workspace/created.txt" {
 		t.Fatalf("watch event = %#v", event)
 	}
+	if err := service.Close(invocation, handle); err != nil {
+		t.Fatal(err)
+	}
+	// Writing the file can queue modify and close-write events after creation.
+	// A fresh watch has no pending events and isolates close wakeup behavior.
+	opened = callControl(t, service, invocation, "fs.watch", `{"uri":"redevfs://workspace/","recursive":false}`)
+	handle = resultHandle(t, opened, "handle")
 
 	waiting := make(chan []byte, 1)
 	go func() {
 		raw, _ := service.Control(context.Background(), invocation, []byte(`{"plugin_api":1,"operation":"fs.watch_next","arguments":{"handle":`+jsonNumber(handle)+`,"timeout_ms":5000}}`))
 		waiting <- raw
 	}()
-	time.Sleep(25 * time.Millisecond)
+	select {
+	case raw := <-waiting:
+		t.Fatalf("empty watch returned before close: %s", raw)
+	case <-time.After(25 * time.Millisecond):
+	}
 	if err := service.Close(invocation, handle); err != nil {
 		t.Fatal(err)
 	}
