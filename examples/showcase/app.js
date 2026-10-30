@@ -1345,6 +1345,7 @@ var pluginPlatformErrorCodes = [
   "PLUGIN_CONTRACT_MISMATCH",
   "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
   "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
+  "PLUGIN_RETAINED_RECOVERY_CONFLICT",
   "PLUGIN_BINDING_REVISION_MISMATCH",
   "PLUGIN_VALUES_REVISION_MISMATCH",
   "PLUGIN_CSRF_REQUIRED",
@@ -1421,6 +1422,7 @@ var pluginBridgeErrorCodes = [
   "PLUGIN_CONTRACT_MISMATCH",
   "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
   "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
+  "PLUGIN_RETAINED_RECOVERY_CONFLICT",
   "PLUGIN_BINDING_REVISION_MISMATCH",
   "PLUGIN_VALUES_REVISION_MISMATCH",
   "PLUGIN_CSRF_REQUIRED",
@@ -4746,6 +4748,15 @@ var PluginPlatformClient = class {
   }
   importData(request2, options = {}) {
     return this.#mutatePluginAt("POST", "/_redevplugin/api/plugins/data/import", request2.plugin_instance_id, request2, options);
+  }
+  inspectRetainedRecovery(request2, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/inspect", request2, options);
+  }
+  commitRetainedRecovery(request2, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit", request2, options);
+  }
+  getRetainedRecoveryStatus(request2, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/status", request2, options);
   }
   listRetainedData(options = {}, requestOptions = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/retained-data/query", options, requestOptions);

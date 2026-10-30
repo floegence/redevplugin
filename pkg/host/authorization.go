@@ -72,6 +72,9 @@ const (
 	ManagementActionEnablePlugin               ManagementAction = "plugin.enable"
 	ManagementActionDisablePlugin              ManagementAction = "plugin.disable"
 	ManagementActionUninstallPlugin            ManagementAction = "plugin.uninstall"
+	ManagementActionInspectRetainedRecovery    ManagementAction = "retained_data.inspect_recovery"
+	ManagementActionCommitRetainedRecovery     ManagementAction = "retained_data.commit_recovery"
+	ManagementActionGetRetainedRecoveryStatus  ManagementAction = "retained_data.recovery_status"
 	ManagementActionListRetainedData           ManagementAction = "retained_data.list"
 	ManagementActionDeleteRetainedData         ManagementAction = "retained_data.delete"
 	ManagementActionCleanupExpiredRetainedData ManagementAction = "retained_data.cleanup_expired"
@@ -134,7 +137,7 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourceConnector
 	case ManagementActionMintStorageHandleGrant:
 		return ResourceStore
-	case ManagementActionListRetainedData, ManagementActionDeleteRetainedData,
+	case ManagementActionInspectRetainedRecovery, ManagementActionCommitRetainedRecovery, ManagementActionGetRetainedRecoveryStatus, ManagementActionListRetainedData, ManagementActionDeleteRetainedData,
 		ManagementActionCleanupExpiredRetainedData:
 		return ResourceRetainedData
 	case ManagementActionExportPluginData, ManagementActionImportPluginData,

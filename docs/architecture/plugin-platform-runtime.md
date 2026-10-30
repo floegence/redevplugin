@@ -634,3 +634,32 @@ presentation contract and the normal durable and host-projected sinks. They
 carry stable plugin identities and the `startup_prewarm` operation, never raw
 adapter errors or synthetic authenticated session identities. A completion event
 reports compilation only; it does not authorize execution or publish a surface.
+
+## Explicit retained-data recovery
+
+The Host exposes inspect, commit, and read-only status operations for a retained
+installation and a different, explicitly disabled installation of the same
+publisher, plugin, and data shape. Inspection binds both generation/binding
+identities, the target management revision and active fingerprint, and the
+stable authenticated environment/user owners. Commit expires after 15 minutes;
+status remains usable after a Host restart and authenticates the same owners.
+
+The existing catalog transaction exchanges the generation references without
+moving files. The previous target generation stays retained under the source
+installation identity. Both binding revisions advance in their own identity
+lineage; target management revision and revoke epoch advance atomically.
+Recovery takes both instance write locks, waits for existing readers, and keeps
+publication/collection serialized. Expired source data and stale source, target,
+shape, fingerprint, or owner evidence fail before commit. Concurrent cleanup
+using the previous retained binding cannot delete its replacement.
+
+A commit is never replayed. Lost responses are reconciled by comparing the exact
+expected post-state through the status query; subsequent conflicting lifecycle
+changes return PLUGIN_RETAINED_RECOVERY_CONFLICT. SQLite commit errors whose
+outcome cannot be proven are unknown mutations. Failed transactions retain both
+original bindings. The control schema and Rust wire are unchanged.
+
+Recovery leaves the target disabled and transfers no grants, credentials,
+approvals, tokens or live surfaces. Hosts present the retained source and current
+target before the explicit action, then offer enablement separately. Retained
+user-scoped namespaces keep their original user ownership inside the generation.

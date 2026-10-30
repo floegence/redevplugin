@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.9.0
+
+- Add explicit retained-data recovery inspection, exact-plan commit, and read-only outcome reconciliation through the Go Host, HTTP adapter, and TypeScript client.
+- Atomically exchange a retained generation with an existing disabled installation while retaining both data generations, checking owner, shape, fingerprint and revisions, and preserving disabled state.
+- Reject duplicate commits, stale plans and cross-owner requests; reconcile unknown responses after Host restart without replaying the exchange or restoring grants, secrets or prior approvals.
+- Keep the existing control schema and Rust runtime wire unchanged: the Host catalog owns the transaction, and existing runtime revocation applies before subsequent execution.
+
 ## v3.8.0
 
 - Publish strict security-summary normalization, standalone JSON Schema, canonical JSON, and SHA-256 APIs in the contracts npm package, with types and validators generated from the platform OpenAPI schema.

@@ -196,6 +196,21 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/recovery/commit",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/recovery/inspect",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/recovery/status",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/rpc",
     "effect": "mutation"
   },

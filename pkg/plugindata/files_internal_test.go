@@ -997,3 +997,31 @@ func sameInternalTime(left, right *time.Time) bool {
 	}
 	return left.Equal(*right)
 }
+
+func (c *internalCatalog) CommitRetainedRecovery(context.Context, RetainedRecoveryPlan, Shape) (RetainedRecoveryResult, error) {
+	return RetainedRecoveryResult{}, ErrBindingConflict
+}
+
+func TestRetainedRecoveryWaitsForBothReaderLeases(t *testing.T) {
+	for _, id := range []string{"source", "target"} {
+		t.Run(id, func(t *testing.T) {
+			store, _, shape := newInternalStore(t)
+			ctx := internalTestContext()
+			unlock := store.locks.lockRead(scopedLockKey(internalEnvironmentScope(), id))
+			done := make(chan error, 1)
+			go func() {
+				_, err := store.CommitRetainedRecovery(ctx, RetainedRecoveryPlan{Source: Binding{PluginInstanceID: "source"}, Target: Binding{PluginInstanceID: "target"}}, shape)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				t.Fatalf("recovery bypassed %s reader lease: %v", id, err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			unlock()
+			if err := <-done; !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("validation after reader release: %v", err)
+			}
+		})
+	}
+}

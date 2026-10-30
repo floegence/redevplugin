@@ -244,6 +244,11 @@ export type PluginDataExportDeleteRequest = PlatformSchemas["DeleteDataExportReq
 export type PluginDataExportDeleteResult = PlatformSchemas["PluginDataExportDeleteResult"];
 export type PluginDataImportRequest = PlatformSchemas["ImportDataRequest"];
 export type PluginDataBinding = PlatformSchemas["PluginDataBinding"];
+export type PluginRetainedRecoveryInspection = PlatformSchemas["RetainedRecoveryInspection"];
+export type PluginRetainedRecoveryRequest = PlatformSchemas["RetainedRecoveryRequest"];
+export type PluginRetainedRecoveryResult = PlatformSchemas["RetainedRecoveryResult"];
+export type PluginRetainedRecoveryStatus = PlatformSchemas["RetainedRecoveryStatus"];
+export type PluginRetainedRecoveryInspectOptions = PlatformSchemas["InspectRetainedRecoveryRequest"];
 export type PluginRetainedDataListOptions = PlatformSchemas["ListRetainedDataQueryRequest"];
 export type PluginRetainedDataList = PlatformSchemas["RetainedDataList"];
 export type PluginRetainedDataDeleteRequest = PlatformSchemas["DeleteRetainedDataRequest"];
@@ -477,6 +482,15 @@ export class PluginPlatformClient {
     return this.#mutatePluginAt("POST", "/_redevplugin/api/plugins/data/import", request.plugin_instance_id, request, options);
   }
 
+  inspectRetainedRecovery(request: PluginRetainedRecoveryInspectOptions, options: PluginRequestOptions = {}): Promise<PluginRetainedRecoveryInspection> {
+    return this.#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/inspect", request, options);
+  }
+  commitRetainedRecovery(request: PluginRetainedRecoveryRequest, options: PluginRequestOptions = {}): Promise<PluginRetainedRecoveryResult> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit", request, options);
+  }
+  getRetainedRecoveryStatus(request: PluginRetainedRecoveryRequest, options: PluginRequestOptions = {}): Promise<PluginRetainedRecoveryStatus> {
+    return this.#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/status", request, options);
+  }
   listRetainedData(options: PluginRetainedDataListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginRetainedDataList> {
     return this.#requestQuery("/_redevplugin/api/plugins/retained-data/query", options, requestOptions);
   }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.8.0
+  version: 3.9.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -614,6 +614,75 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/DataImportResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/retained-data/recovery/inspect:
+    post:
+      tags: [PluginData]
+      operationId: inspectRetainedDataRecovery
+      x-redevplugin-route-effect: query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InspectRetainedRecoveryRequest" }
+      responses:
+        "200":
+          description: Exact retained-data recovery inspect result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                additionalProperties: false
+                properties:
+                  ok: { const: true }
+                  data: { $ref: "#/components/schemas/RetainedRecoveryInspection" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/retained-data/recovery/commit:
+    post:
+      tags: [PluginData]
+      operationId: commitRetainedDataRecovery
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RetainedRecoveryRequest" }
+      responses:
+        "200":
+          description: Exact retained-data recovery commit result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                additionalProperties: false
+                properties:
+                  ok: { const: true }
+                  data: { $ref: "#/components/schemas/RetainedRecoveryResult" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/retained-data/recovery/status:
+    post:
+      tags: [PluginData]
+      operationId: getRetainedDataRecoveryStatus
+      x-redevplugin-route-effect: query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RetainedRecoveryRequest" }
+      responses:
+        "200":
+          description: Exact retained-data recovery status result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                additionalProperties: false
+                properties:
+                  ok: { const: true }
+                  data: { $ref: "#/components/schemas/RetainedRecoveryStatus" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/retained-data/query:
     post:
       operationId: listPluginRetainedData
@@ -3875,6 +3944,50 @@ components:
         shape_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
         retained_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
+    InspectRetainedRecoveryRequest:
+      type: object
+      required: [source_plugin_instance_id, target_plugin_instance_id]
+      additionalProperties: false
+      properties:
+        source_plugin_instance_id: { type: string, minLength: 1 }
+        target_plugin_instance_id: { type: string, minLength: 1 }
+    RetainedRecoveryPlan:
+      description: Exact disabled target and retained source bindings. Resource ownership is authenticated by the Host and excluded from the payload. Plans expire for commit after 15 minutes; read-only reconciliation remains available.
+      type: object
+      required: [source, target, target_management_revision, target_active_fingerprint, retained_at]
+      additionalProperties: false
+      properties:
+        source: { $ref: "#/components/schemas/PluginDataBinding" }
+        target: { $ref: "#/components/schemas/PluginDataBinding" }
+        target_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        target_active_fingerprint: { type: string, minLength: 1 }
+        retained_at: { type: string, format: date-time }
+    RetainedRecoveryInspection:
+      type: object
+      required: [plan, plan_hash]
+      additionalProperties: false
+      properties:
+        plan: { $ref: "#/components/schemas/RetainedRecoveryPlan" }
+        plan_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+    RetainedRecoveryRequest:
+      $ref: "#/components/schemas/RetainedRecoveryInspection"
+    RetainedRecoveryResult:
+      description: Both generations remain catalog-referenced; prior target data becomes retained. Permissions, secrets, approvals and enabled state are not restored.
+      type: object
+      required: [active, retained, management_revision]
+      additionalProperties: false
+      properties:
+        active: { $ref: "#/components/schemas/PluginDataBinding" }
+        retained: { $ref: "#/components/schemas/PluginDataBinding" }
+        management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+    RetainedRecoveryStatus:
+      description: Read-only exact post-state reconciliation. Conflicting subsequent changes return a conflict; commit is never replayed.
+      type: object
+      required: [state]
+      additionalProperties: false
+      properties:
+        state: { type: string, enum: [pending, applied] }
+        result: { $ref: "#/components/schemas/RetainedRecoveryResult" }
     RetainedDataList:
       type: object
       required: [retained_data]

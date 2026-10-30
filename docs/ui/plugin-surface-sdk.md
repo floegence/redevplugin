@@ -444,3 +444,14 @@ Worker WebSocket, TCP and UDP use the bounded Worker SDK resources.
 ## Author presentation collections
 
 Host inspection, inventory and release verification expose normalized author presentation through the published contract. Required collection fields remain JSON arrays even when empty: highlights, surfaces, settings and setting options never become null. Hosts consume the locale resolver directly and do not add product-specific null adapters. Presentation hashes bind that normalized projection; package bytes and embedded signatures are unchanged by presentation projection.
+
+## Retained data recovery in host management UI
+
+Use PluginPlatformClient.inspectRetainedRecovery with explicit source and target
+installation IDs after the target is disabled. Present the returned exact plan
+for confirmation. Pass that plan and its hash once to commitRetainedRecovery.
+If the write result is unknown, call getRetainedRecoveryStatus with the same
+plan; do not repeat commit or automatically create a new plan. An applied result
+contains both the active recovered generation and the retained previous target
+generation. A conflict requires a fresh user review. Enablement is a separate
+explicit operation and recovery never grants permissions.

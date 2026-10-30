@@ -58,6 +58,7 @@ const expectedCanonicalContracts = [
   "contract:plugin/release-source-policy-pointer-v2.schema.json",
   "contract:plugin/release-source-policy-v3.schema.json",
   "contract:plugin/resource-scope-v1.schema.json",
+  "contract:plugin/retained-recovery-fixture.json",
   "contract:plugin/runtime-admission-v1.schema.json",
   "contract:plugin/runtime-exec-journal-v1.schema.json",
   "contract:plugin/security-summary-fixtures.json",

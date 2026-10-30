@@ -2061,3 +2061,21 @@ test("platform client maps management envelope errors", async () => {
     (err) => err instanceof PluginPlatformRequestError && err.errorCode === "PLUGIN_INVALID_REQUEST" && err.message === "plugin settings are not declared",
   );
 });
+
+test("retained recovery uses one mutation followed by explicit read-only reconciliation", async () => {
+  const fetch = new FakeFetch();
+  const source = { plugin_instance_id: "source", generation_id: "old", state: "retained" as const, revision: 2, shape_hash: "a".repeat(64), retained_at: "2026-10-30T00:00:00Z" };
+  const target = { plugin_instance_id: "target", generation_id: "new", state: "active" as const, revision: 1, shape_hash: "a".repeat(64) };
+  const inspection = { plan: { source, target, target_management_revision: 2, target_active_fingerprint: "sha256:target", retained_at: "2026-10-30T00:01:00Z" }, plan_hash: "b".repeat(64) };
+  const result = { active: { ...target, generation_id: "old", revision: 2 }, retained: { ...source, generation_id: "new", revision: 3 }, management_revision: 3 };
+  fetch.push({ ok: true, data: inspection });
+  fetch.push({ ok: true, data: result });
+  fetch.push({ ok: true, data: { state: "applied", result } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const plan = await client.inspectRetainedRecovery({ source_plugin_instance_id: "source", target_plugin_instance_id: "target" });
+  assert.deepEqual(await client.commitRetainedRecovery(plan), result);
+  assert.equal((await client.getRetainedRecoveryStatus(plan)).state, "applied");
+  assert.deepEqual(fetch.calls.map(call => call.input), ["inspect", "commit", "status"].map(action => "/_redevplugin/api/plugins/retained-data/recovery/" + action));
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), inspection);
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), inspection);
+});

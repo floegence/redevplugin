@@ -1,0 +1,40 @@
+{
+  "plan": {
+    "source": {
+      "plugin_instance_id": "source",
+      "generation_id": "gen_old",
+      "state": "retained",
+      "revision": 2,
+      "shape_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retained_at": "2026-10-30T00:00:00Z"
+    },
+    "target": {
+      "plugin_instance_id": "target",
+      "generation_id": "gen_new",
+      "state": "active",
+      "revision": 1,
+      "shape_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "target_management_revision": 2,
+    "target_active_fingerprint": "sha256:target",
+    "retained_at": "2026-10-30T00:01:00Z"
+  },
+  "result": {
+    "active": {
+      "plugin_instance_id": "target",
+      "generation_id": "gen_old",
+      "state": "active",
+      "revision": 2,
+      "shape_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "retained": {
+      "plugin_instance_id": "source",
+      "generation_id": "gen_new",
+      "state": "retained",
+      "revision": 3,
+      "shape_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retained_at": "2026-10-30T00:01:00Z"
+    },
+    "management_revision": 3
+  }
+}

@@ -68,6 +68,9 @@ const (
 	RouteActionExportData                 = host.ManagementActionExportPluginData
 	RouteActionDeleteDataExport           = host.ManagementActionDeleteExportedPluginData
 	RouteActionImportData                 = host.ManagementActionImportPluginData
+	RouteActionInspectRetainedRecovery    = host.ManagementActionInspectRetainedRecovery
+	RouteActionCommitRetainedRecovery     = host.ManagementActionCommitRetainedRecovery
+	RouteActionGetRetainedRecoveryStatus  = host.ManagementActionGetRetainedRecoveryStatus
 	RouteActionListRetainedData           = host.ManagementActionListRetainedData
 	RouteActionDeleteRetainedData         = host.ManagementActionDeleteRetainedData
 	RouteActionCleanupExpiredRetainedData = host.ManagementActionCleanupExpiredRetainedData

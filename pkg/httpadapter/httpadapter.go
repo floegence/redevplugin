@@ -924,6 +924,9 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export", websecurity.RouteActionExportData, func(h *Handler) http.HandlerFunc { return h.handleExportData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export/delete", websecurity.RouteActionDeleteDataExport, func(h *Handler) http.HandlerFunc { return h.handleDeleteDataExport }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/import", websecurity.RouteActionImportData, func(h *Handler) http.HandlerFunc { return h.handleImportData }),
+	queryRoute("/_redevplugin/api/plugins/retained-data/recovery/inspect", websecurity.RouteActionInspectRetainedRecovery, func(h *Handler) http.HandlerFunc { return h.handleInspectRetainedRecovery }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/recovery/commit", websecurity.RouteActionCommitRetainedRecovery, func(h *Handler) http.HandlerFunc { return h.handleCommitRetainedRecovery }),
+	queryRoute("/_redevplugin/api/plugins/retained-data/recovery/status", websecurity.RouteActionGetRetainedRecoveryStatus, func(h *Handler) http.HandlerFunc { return h.handleRetainedRecoveryStatus }),
 	queryRoute("/_redevplugin/api/plugins/retained-data/query", websecurity.RouteActionListRetainedData, func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", websecurity.RouteActionDeleteRetainedData, func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", websecurity.RouteActionCleanupExpiredRetainedData, func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }),
@@ -3294,6 +3297,8 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin management revision changed"
 	case security.ErrAuthorizationRevisionMismatch:
 		return "plugin authorization revision changed"
+	case security.ErrRetainedRecoveryConflict:
+		return "retained data changed; inspect it again before recovery"
 	case security.ErrBindingRevisionMismatch:
 		return "plugin data binding revision changed"
 	case security.ErrValuesRevisionMismatch:
@@ -3842,6 +3847,8 @@ func httpStatusForIntentError(err error) int {
 
 func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, plugindata.ErrRetainedRecoveryConflict):
+		return security.ErrRetainedRecoveryConflict
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrOwnerScopeMismatch):
@@ -4121,6 +4128,8 @@ func httpStatusForSecurityPolicyError(err error) int {
 
 func httpStatusForDataLifecycleError(err error) int {
 	switch {
+	case errors.Is(err, plugindata.ErrRetainedRecoveryConflict):
+		return http.StatusConflict
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, host.ErrStorageScopeMismatch):

@@ -38,6 +38,7 @@ const canonicalContractPaths = Object.freeze([
   "plugin/release-source-policy-pointer-v2.schema.json",
   "plugin/release-source-policy-v3.schema.json",
   "plugin/resource-scope-v1.schema.json",
+  "plugin/retained-recovery-fixture.json",
   "plugin/runtime-admission-v1.schema.json",
   "plugin/runtime-exec-journal-v1.schema.json",
   "plugin/security-summary-fixtures.json",

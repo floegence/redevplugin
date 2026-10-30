@@ -103,6 +103,7 @@ type MaintenanceObject struct {
 }
 
 type Catalog interface {
+	CommitRetainedRecovery(ctx context.Context, plan RetainedRecoveryPlan, shape Shape) (RetainedRecoveryResult, error)
 	GetBinding(ctx context.Context, pluginInstanceID string) (Binding, bool, error)
 	ListBindings(ctx context.Context, cursor string, limit int) ([]Binding, string, error)
 	ListAllBindingsForMaintenance(ctx context.Context, cursor string, limit int) ([]MaintenanceBinding, string, error)
@@ -206,6 +207,8 @@ type PatchSettingsRequest struct {
 }
 
 type Store interface {
+	ValidateRetainedRecovery(ctx context.Context, plan RetainedRecoveryPlan, shape Shape) error
+	CommitRetainedRecovery(ctx context.Context, plan RetainedRecoveryPlan, shape Shape) (RetainedRecoveryResult, error)
 	Durable() bool
 	InstallCommit(ctx context.Context, req InstallCommitRequest, commit InstallCatalogCommit) (Dataset, error)
 	Export(ctx context.Context, req ExportRequest) (Export, error)

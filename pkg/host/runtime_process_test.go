@@ -400,6 +400,47 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 	if string(read.Data) != string(body) {
 		t.Fatalf("stored file = %q, want %q", read.Data, body)
 	}
+	target, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildWorkerStorageMemoryHostcallFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.WritePluginDataFile(ctx, WritePluginDataFileRequest{PluginInstanceID: target.PluginInstanceID, Scope: sessionctx.ScopeUser, StoreID: "workspace", Path: "target-only.txt", Data: []byte("retain previous target")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.DisablePlugin(ctx, DisableRequest{PluginInstanceID: target.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, target.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := h.InspectRetainedRecovery(ctx, InspectRetainedRecoveryRequest{SourcePluginInstanceID: installed.PluginInstanceID, TargetPluginInstanceID: target.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CommitRetainedRecovery(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CallPluginMethod(ctx, CallMethodRequest{PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "worker.echo", Params: map[string]any{}}); err == nil {
+		t.Fatal("old runtime authority survived recovery")
+	}
+	read, err = h.ReadPluginDataFile(ctx, ReadPluginDataFileRequest{PluginInstanceID: target.PluginInstanceID, Scope: sessionctx.ScopeUser, StoreID: "workspace", Path: "notes/from-memory.txt"})
+	if err != nil || string(read.Data) != string(body) {
+		t.Fatalf("recovered runtime-written bytes=%q %v", read.Data, err)
+	}
+	target, err = h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: target.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, target.PluginInstanceID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantDeclaredPermissions(t, h, target)
+	_, freshGateway := openSurfaceAndMintGatewayForAudience(t, h, target.PluginInstanceID, "worker.view", "surface_recovered", "bridge_recovered")
+	if _, err := h.CallPluginMethod(ctx, CallMethodRequest{PluginInstanceID: target.PluginInstanceID, SurfaceInstanceID: "surface_recovered", BridgeChannelID: "bridge_recovered", GatewayToken: freshGateway.GatewayToken, Method: "worker.echo", Params: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	read, err = h.ReadPluginDataFile(ctx, ReadPluginDataFileRequest{PluginInstanceID: target.PluginInstanceID, Scope: sessionctx.ScopeUser, StoreID: "workspace", Path: "notes/from-memory.txt"})
+	if err != nil || string(read.Data) != string(body) {
+		t.Fatalf("runtime after recovery=%q %v", read.Data, err)
+	}
+
 }
 
 func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t *testing.T) {

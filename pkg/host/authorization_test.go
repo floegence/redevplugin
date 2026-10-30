@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,6 +84,9 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionEnablePlugin,
 		ManagementActionDisablePlugin,
 		ManagementActionUninstallPlugin,
+		ManagementActionInspectRetainedRecovery,
+		ManagementActionCommitRetainedRecovery,
+		ManagementActionGetRetainedRecoveryStatus,
 		ManagementActionListRetainedData,
 		ManagementActionDeleteRetainedData,
 		ManagementActionCleanupExpiredRetainedData,
@@ -170,6 +174,18 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"enable plugin", ManagementActionEnablePlugin, func() error { _, err := h.EnablePlugin(ctx, EnableRequest{}); return err }},
 		{"disable plugin", ManagementActionDisablePlugin, func() error { _, err := h.DisablePlugin(ctx, DisableRequest{}); return err }},
 		{"uninstall plugin", ManagementActionUninstallPlugin, func() error { _, err := h.UninstallPlugin(ctx, UninstallRequest{}); return err }},
+		{"inspect retained recovery", ManagementActionInspectRetainedRecovery, func() error {
+			_, err := h.InspectRetainedRecovery(ctx, InspectRetainedRecoveryRequest{SourcePluginInstanceID: "source", TargetPluginInstanceID: "target"})
+			return err
+		}},
+		{"commit retained recovery", ManagementActionCommitRetainedRecovery, func() error {
+			_, err := h.CommitRetainedRecovery(ctx, RetainedRecoveryRequest{Plan: plugindata.RetainedRecoveryPlan{Source: plugindata.Binding{PluginInstanceID: "source"}, Target: plugindata.Binding{PluginInstanceID: "target"}}})
+			return err
+		}},
+		{"read retained recovery status", ManagementActionGetRetainedRecoveryStatus, func() error {
+			_, err := h.GetRetainedRecoveryStatus(ctx, RetainedRecoveryRequest{Plan: plugindata.RetainedRecoveryPlan{Source: plugindata.Binding{PluginInstanceID: "source"}, Target: plugindata.Binding{PluginInstanceID: "target"}}})
+			return err
+		}},
 		{"list retained data", ManagementActionListRetainedData, func() error { _, err := h.ListRetainedData(ctx, ListRetainedDataRequest{}); return err }},
 		{"delete retained data", ManagementActionDeleteRetainedData, func() error { _, err := h.DeleteRetainedData(ctx, DeleteRetainedDataRequest{}); return err }},
 		{"cleanup retained data", ManagementActionCleanupExpiredRetainedData, func() error {

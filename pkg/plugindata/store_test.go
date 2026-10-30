@@ -1037,3 +1037,73 @@ func resolvedTempDir(t *testing.T) string {
 	}
 	return root
 }
+
+func TestRetainedRecoveryMemoryCatalogAndReopenPreserveBytes(t *testing.T) {
+	ctx := pluginDataTestContext()
+	catalog := registry.NewMemoryStore()
+	root := resolvedTempDir(t)
+	store, err := plugindata.Open(ctx, root, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	now := time.Now().UTC()
+	shape := testShape()
+	source := putPlugin(t, catalog, "recovery_source", now)
+	target := putPlugin(t, catalog, "recovery_target", now)
+	sourceData, err := installFileStore(t, store, catalog, ctx, source, shape, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetData, err := installFileStore(t, store, catalog, ctx, target, shape, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, value := range map[string]string{source.PluginInstanceID: "source bytes", target.PluginInstanceID: "target bytes"} {
+		if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: id, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt", Data: []byte(value)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err = catalog.GetPlugin(ctx, source.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{PluginInstanceID: source.PluginInstanceID, ExpectedManagementRevision: source.ManagementRevision, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	target, err = catalog.SetEnableState(ctx, target.PluginInstanceID, registry.EnableDisabledByUser, "recovery", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := store.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: source.PluginInstanceID})
+	if err != nil || len(retained) != 1 {
+		t.Fatalf("retained=%#v %v", retained, err)
+	}
+	plan := plugindata.RetainedRecoveryPlan{OwnerEnvHash: "owner_env_hash_test", Source: retained[0], Target: targetData.Binding, TargetManagementRevision: target.ManagementRevision, TargetActiveFingerprint: target.ActiveFingerprint, RetainedAt: now}
+	result, err := store.CommitRetainedRecovery(ctx, plan, shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Active.GenerationID != sourceData.Binding.GenerationID || result.Retained.GenerationID != targetData.Binding.GenerationID {
+		t.Fatal("lost generation")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = plugindata.Open(ctx, root, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: target.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt"})
+	if err != nil || string(active.Data) != "source bytes" {
+		t.Fatalf("active=%q %v", active.Data, err)
+	}
+	for _, binding := range []plugindata.Binding{result.Active, result.Retained} {
+		if _, err := os.Stat(pluginDataWorkspacePath(root, "owner_env_hash_test", binding.GenerationID)); err != nil {
+			t.Fatalf("collector removed %s: %v", binding.GenerationID, err)
+		}
+	}
+	if err := store.DeleteRetained(ctx, plugindata.DeleteRetainedRequest{PluginInstanceID: source.PluginInstanceID, ExpectedBindingRevision: plan.Source.Revision}); !errors.Is(err, plugindata.ErrBindingRevisionConflict) {
+		t.Fatalf("stale delete=%v", err)
+	}
+}

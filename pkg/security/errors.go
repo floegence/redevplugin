@@ -73,6 +73,7 @@ const (
 	ErrContractMismatch              ErrorCode = "PLUGIN_CONTRACT_MISMATCH"
 	ErrManagementRevisionMismatch    ErrorCode = "PLUGIN_MANAGEMENT_REVISION_MISMATCH"
 	ErrAuthorizationRevisionMismatch ErrorCode = "PLUGIN_AUTHORIZATION_REVISION_MISMATCH"
+	ErrRetainedRecoveryConflict      ErrorCode = "PLUGIN_RETAINED_RECOVERY_CONFLICT"
 	ErrBindingRevisionMismatch       ErrorCode = "PLUGIN_BINDING_REVISION_MISMATCH"
 	ErrValuesRevisionMismatch        ErrorCode = "PLUGIN_VALUES_REVISION_MISMATCH"
 	ErrCSRFRequired                  ErrorCode = "PLUGIN_CSRF_REQUIRED"
@@ -158,6 +159,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrContractMismatch,
 	ErrManagementRevisionMismatch,
 	ErrAuthorizationRevisionMismatch,
+	ErrRetainedRecoveryConflict,
 	ErrBindingRevisionMismatch,
 	ErrValuesRevisionMismatch,
 	ErrCSRFRequired,
