@@ -146,6 +146,11 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/intents/confirmations/prepare",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/intents/invoke",
     "effect": "mutation"
   },
@@ -257,6 +262,11 @@
   {
     "method": "POST",
     "path": "/_redevplugin/api/plugins/session/revoke-scope",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/surfaces/methods",
     "effect": "mutation"
   },
   {

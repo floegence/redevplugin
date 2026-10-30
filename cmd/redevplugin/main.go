@@ -86,6 +86,7 @@ type scaffoldManifestV9 struct {
 	Surfaces      []manifest.SurfaceSpec        `json:"surfaces"`
 	Workers       []scaffoldWorkerV9            `json:"workers"`
 	Methods       []scaffoldMethodV9            `json:"methods"`
+	Intents       []manifest.IntentSpec         `json:"intents"`
 }
 
 type scaffoldPluginV9 struct {
@@ -525,6 +526,14 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			ResponseSchema: scaffoldEchoResponseSchema(),
 		}},
 	}
+	manifestDoc.Methods = append(manifestDoc.Methods, scaffoldMethodV9{
+		Method: "application.read", Effect: manifest.MethodEffectRead, Execution: manifest.MethodExecutionSync,
+		Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteSurface, SurfaceID: pluginID + ".view"},
+		RequestSchema:  map[string]any{"type": "object", "additionalProperties": false},
+		ResponseSchema: closedRequiredMethodObjectSchema(map[string]any{"message": map[string]any{"type": "string"}}, []string{"message"}),
+	})
+	manifestDoc.Intents = []manifest.IntentSpec{{IntentID: "application.read", Method: "application.read"}}
+
 	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
 	if err != nil {
 		return scaffoldSummary{}, err
@@ -750,6 +759,11 @@ and package the plugin from this directory:
 
     redevplugin validate dist/manifest.json
     redevplugin package dist %s.redevplugin
+
+The application.read intent reads the current native input through an awaited
+bridge.registerMethod handler. A trusted host invokes it against the exact open
+surface; it cannot run when the page is closed. Add document revisions and use
+your existing undo transaction when exposing application write operations.
 
 Edit ui/src/app.ts for the surface and worker/src/lib.rs for the WASM backend.
 Add permissions to manifest.json only when the plugin

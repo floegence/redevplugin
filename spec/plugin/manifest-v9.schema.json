@@ -356,7 +356,8 @@
                 "enum": [
                   "capability",
                   "worker",
-                  "core_action"
+                  "core_action",
+                  "surface"
                 ]
               },
               "binding_id": {
@@ -372,6 +373,10 @@
                 "minLength": 1
               },
               "action_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "surface_id": {
                 "type": "string",
                 "minLength": 1
               }
@@ -403,6 +408,11 @@
                       {
                         "required": [
                           "action_id"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "surface_id"
                         ]
                       }
                     ]
@@ -440,6 +450,11 @@
                         "required": [
                           "action_id"
                         ]
+                      },
+                      {
+                        "required": [
+                          "surface_id"
+                        ]
                       }
                     ]
                   }
@@ -475,6 +490,52 @@
                       {
                         "required": [
                           "worker_id"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "surface_id"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "surface"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "surface_id"
+                  ],
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "binding_id"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "target_method"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "worker_id"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "action_id"
                         ]
                       }
                     ]
@@ -819,6 +880,35 @@
                       "const": "worker"
                     }
                   }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "route": {
+                  "properties": {
+                    "kind": {
+                      "const": "surface"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                }
+              },
+              "required": [
+                "route"
+              ]
+            },
+            "then": {
+              "properties": {
+                "execution": {
+                  "enum": [
+                    "sync",
+                    "operation"
+                  ]
                 }
               }
             }

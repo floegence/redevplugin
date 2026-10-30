@@ -3455,3 +3455,91 @@ for (const decision of [true, false, undefined]) test("selected files require tr
   }
   await host.dispose();
 });
+
+test("application handlers preserve document revisions and receive cancellation", async () => {
+  const channel = fakeChannel();
+  const client = new PluginBridgeClient({ port: channel.port2, surfaceHandle: "surface_handle_methods", timeoutMs: 1000 });
+  channel.port1.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  const received: Array<Record<string, unknown>> = [];
+  channel.port1.addEventListener("message", event => {
+    const data = event.data as Record<string, unknown>; received.push(data);
+    if (data.type === "redevplugin.bridge.methods") channel.port1.postMessage({ type: "redevplugin.bridge.response", id: data.id, ok: true, data: null });
+  });
+  let revision = 0;
+  const undo: number[] = [];
+  const unregister = await client.registerMethod("document.apply", params => {
+    if (params.expected_revision !== revision) return { conflict: true, revision };
+    undo.push(revision); return { revision: ++revision };
+  });
+  await assert.rejects(client.registerMethod("document.apply", () => null), error => error instanceof Error && /duplicated/u.test(error.message));
+  const invoke = (id: string, expected: number): void => channel.port1.postMessage({ type: "redevplugin.bridge.method_invoke", invocation: { invocation_id: id, method: "document.apply", params: { expected_revision: expected }, deadline: new Date(Date.now() + 1000).toISOString() } });
+  invoke("invoke_first", 0);
+  await waitFor(() => received.some(m => m.invocation_id === "invoke_first"));
+  invoke("invoke_conflict", 0);
+  await waitFor(() => received.some(m => m.invocation_id === "invoke_conflict"));
+  assert.equal(revision, 1); assert.deepEqual(undo, [0]);
+  assert.deepEqual(received.find(m => m.invocation_id === "invoke_conflict")?.data, { conflict: true, revision: 1 });
+  await unregister();
+  let signal: AbortSignal | undefined;
+  await client.registerMethod("document.wait", (_params, context) => { signal = context.signal; return new Promise(() => undefined); });
+  channel.port1.postMessage({ type: "redevplugin.bridge.method_invoke", invocation: { invocation_id: "invoke_wait", method: "document.wait", params: {}, deadline: new Date(Date.now() + 1000).toISOString() } });
+  await waitFor(() => signal !== undefined);
+  channel.port1.postMessage({ type: "redevplugin.bridge.method_cancel", invocation_id: "invoke_wait" });
+  await waitFor(() => signal!.aborted);
+  assert.equal(received.some(m => m.invocation_id === "invoke_wait"), false);
+  client.dispose();
+});
+
+test("application delivery waits for polling before lease rotation and keeps credentials private", async () => {
+  const frame = new FakeFrame(); const channel = fakeChannel(); const fetch = new FakeFetch();
+  const initial = gatewayLease({ expires_at: new Date(Date.now() + 200).toISOString() });
+  fetch.push(preparation()); fetch.push(initial);
+  const methodRequests: Array<Record<string, unknown>> = [];
+  let finishClaim: ((response: FetchResponseLike) => void) | undefined;
+  let rotating = false;
+  const response = (data: unknown): FetchResponseLike => ({ ok: true, status: 200, json: async () => ({ ok: true, data }) });
+  const transport: FetchLike = async (input, init) => {
+    if (input.endsWith("/methods")) {
+      const req = JSON.parse(init.body as string) as Record<string, unknown>; methodRequests.push(req);
+      if (req.operation === "complete") return { ok: false, status: 409, json: async () => ({ ok: false, error: { code: "PLUGIN_SURFACE_METHOD_CONFLICT", message: "Invocation ended", details: {}, mutation_outcome: "not_committed" } }) };
+      if (req.operation === "register" || req.operation === "configure") return response({ receiver_id: "receiver_one", cancelled: [] });
+      return new Promise<FetchResponseLike>((resolve, reject) => {
+        finishClaim = resolve;
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }
+    if (input.endsWith("/bridge-token") && fetch.responses.length === 0) { rotating = true; return response(gatewayLease({ plugin_gateway_token: "rotated_gateway" })); }
+    return fetch.fetch(input, init);
+  };
+  const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel, hostTransport: createReDevPluginSurfaceTransport({ fetch: transport }), leaseRenewalLeadMs: 100 });
+  const opening = host.open(); frame.load(); await waitFor(() => frame.transferred.length === 1); channel.port2.applicationReady(); await opening;
+  channel.port2.postMessage({ type: "redevplugin.bridge.methods", id: "rpc_register", methods: ["document.apply"] });
+  await waitFor(() => finishClaim !== undefined);
+  await new Promise(resolve => setTimeout(resolve, 125));
+  assert.equal(rotating, false, "renewal waits for the active claim to settle");
+  finishClaim!(response({ receiver_id: "receiver_one", cancelled: [], invocation: { invocation_id: "invoke_live", method: "document.apply", params: { expected_revision: 2 }, deadline: new Date(Date.now() + 30000).toISOString() } }));
+  await waitFor(() => rotating && methodRequests.filter(req => req.operation === "claim").length === 2);
+  assert.equal(methodRequests.filter(req => req.operation === "claim")[1]?.plugin_gateway_token, "rotated_gateway");
+  channel.port2.postMessage({ type: "redevplugin.bridge.method_result", invocation_id: "invoke_live", data: { revision: 3 }, failed: false });
+  await waitFor(() => methodRequests.some(req => req.operation === "complete"));
+  assert.equal(methodRequests.find(req => req.operation === "complete")?.receiver_id, "receiver_one");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(channel.port1.closed, false, "an already canceled invocation must not close the application");
+  assert.equal(JSON.stringify(channel.port1.sent).includes("rotated_gateway"), false);
+  assert.equal(JSON.stringify(channel.port1.sent).includes("receiver_one"), false);
+  await host.dispose();
+});
+
+test("unknown application registration invalidates only its exact surface without retry", async () => {
+  const frame = new FakeFrame(); const channel = fakeChannel(); const fetch = new FakeFetch();
+  fetch.push(preparation()); fetch.push(gatewayLease());
+  fetch.pushHandler(async () => { throw new Error("registration response lost"); });
+  const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel, hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }) });
+  const opening = host.open(); frame.load(); await waitFor(() => frame.transferred.length === 1); channel.port2.applicationReady(); await opening;
+  channel.port2.postMessage({ type: "redevplugin.bridge.methods", id: "rpc_register", methods: ["document.apply"] });
+  await waitFor(() => channel.port1.closed);
+  assert.equal(fetch.calls.filter(call => call.input.endsWith("/methods")).length, 1);
+  assert.equal(fetch.calls.filter(call => call.input.endsWith("/dispose")).length, 1);
+  assert.equal(fetch.calls.some(call => call.input.includes("sessions")), false);
+  assert.equal(channel.port1.sent.some(message => isMessageType(message, "redevplugin.bridge.method_invoke")), false);
+});

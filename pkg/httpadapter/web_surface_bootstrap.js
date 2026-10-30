@@ -50,6 +50,7 @@
     }, { once: true });
   };
   const applicationMessages = new Set([
+    "redevplugin.bridge.methods", "redevplugin.bridge.method_result",
     "redevplugin.bridge.call", "redevplugin.bridge.cancel", "redevplugin.bridge.execution.cancel",
     "redevplugin.bridge.execution.query", "redevplugin.bridge.execution.events", "redevplugin.bridge.close_response",
   ]);

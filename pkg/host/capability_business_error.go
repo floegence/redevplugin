@@ -467,6 +467,7 @@ func validateWorkerExecutionError(value *runtimeclient.WorkerExecutionError) (ru
 func stableRPCSentinel(err error) error {
 	for _, sentinel := range []error{
 		context.Canceled, context.DeadlineExceeded,
+		ErrSurfaceMethodUnavailable, ErrSurfaceMethodConflict, ErrSurfaceMethodAmbiguous, ErrSurfaceMethodFailed,
 		ErrPluginDataNotDeclared, ErrPluginStorageNotDeclared, ErrPluginSettingsNotDeclared,
 		ErrPluginDataContractChanged, ErrExecutionCancelDispatchFailed, ErrMethodRequestContract, ErrMethodResponseContract,
 		ErrMethodAdapterPanic, ErrManagementRevisionMismatch, ErrPluginAlreadyInstalled,

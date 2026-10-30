@@ -215,7 +215,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"PluginBridgeClient", "redevplugin.bridge.call", "worker.echo", "echo-form", "Generated Plugin"} {
+	for _, want := range []string{"PluginBridgeClient", "redevplugin.bridge.call", "worker.echo", "echo-form", "Generated Plugin", "application.read", "registerMethod"} {
 		if !bytes.Contains(appRaw, []byte(want)) {
 			t.Fatalf("scaffold app.js missing %q: %s", want, appRaw)
 		}

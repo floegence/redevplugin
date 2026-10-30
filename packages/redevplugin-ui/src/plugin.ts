@@ -25,6 +25,7 @@ export type {
   PluginBridgeClientOptions,
   PluginBridgeClock,
   PluginBridgeRequestOptions,
+  PluginMethodHandler,
   PluginFileExportRequest,
   PluginJSONObject,
   PluginJSONValue,

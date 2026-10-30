@@ -141,6 +141,7 @@ const (
 	RouteCapability RouteKind = "capability"
 	RouteWorker     RouteKind = "worker"
 	RouteCoreAction RouteKind = "core_action"
+	RouteSurface    RouteKind = "surface"
 )
 
 type ExecutionBinding struct {
@@ -483,7 +484,7 @@ func validateExecutionBindingScalars(binding ExecutionBinding) error {
 
 func validExecutionRouteKind(kind RouteKind) bool {
 	switch kind {
-	case RouteCapability, RouteWorker, RouteCoreAction:
+	case RouteCapability, RouteWorker, RouteCoreAction, RouteSurface:
 		return true
 	default:
 		return false

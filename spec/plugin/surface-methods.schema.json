@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://redevplugin.dev/schemas/surface-methods.schema.json",
+  "title": "Live application method delivery",
+  "description": "Parent SDK control plane with exact receiver CAS and one-time claiming. Plugin handlers run on the source-bound MessagePort. No Worker or runtime IPC is involved.",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_instance_id",
+        "surface_instance_id",
+        "bridge_channel_id",
+        "plugin_gateway_token",
+        "operation"
+      ],
+      "properties": {
+        "plugin_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "surface_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bridge_channel_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plugin_gateway_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "enum": [
+            "register",
+            "configure",
+            "claim",
+            "complete",
+            "close"
+          ]
+        },
+        "receiver_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "methods": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "invocation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "active_invocations": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "data": {},
+        "failed": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "enum": [
+                  "register",
+                  "configure"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "active_invocations"
+                  ]
+                },
+                {
+                  "required": [
+                    "invocation_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "data"
+                  ]
+                },
+                {
+                  "required": [
+                    "failed"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "enum": [
+                  "claim"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "methods"
+                  ]
+                },
+                {
+                  "required": [
+                    "invocation_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "data"
+                  ]
+                },
+                {
+                  "required": [
+                    "failed"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "enum": [
+                  "complete"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "methods"
+                  ]
+                },
+                {
+                  "required": [
+                    "active_invocations"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "enum": [
+                  "close"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "methods"
+                  ]
+                },
+                {
+                  "required": [
+                    "active_invocations"
+                  ]
+                },
+                {
+                  "required": [
+                    "invocation_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "data"
+                  ]
+                },
+                {
+                  "required": [
+                    "failed"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "not": {
+                  "const": "register"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "receiver_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "complete"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "invocation_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "failed"
+            ],
+            "properties": {
+              "failed": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocation_id",
+        "method",
+        "params",
+        "deadline"
+      ],
+      "properties": {
+        "invocation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "deadline": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiver_id",
+        "cancelled"
+      ],
+      "properties": {
+        "receiver_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invocation": {
+          "$ref": "#/$defs/invocation"
+        },
+        "cancelled": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxItems": 32
+        }
+      }
+    }
+  }
+}

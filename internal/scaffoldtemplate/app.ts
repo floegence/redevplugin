@@ -31,7 +31,7 @@ let busy = false;
 let disposed = false;
 bridge.onLifecycle((event) => { if (event.type === "dispose") { disposed = true; button.disabled = true; } });
 form.addEventListener("submit", (event) => { event.preventDefault(); void echo(); });
-void bridge.ready().then(() => { if (!disposed) { status.textContent = "Ready"; button.disabled = false; } }).catch(reportError);
+void bridge.registerMethod("application.read", (_params, { signal }) => { signal.throwIfAborted(); return { message: input.value }; }).then(() => { if (!disposed) { status.textContent = "Ready"; button.disabled = false; } }).catch(reportError);
 
 async function echo(): Promise<void> {
   if (busy || disposed) return;

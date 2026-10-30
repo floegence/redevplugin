@@ -593,9 +593,11 @@ type prepareMethodConfirmationRequest struct {
 }
 
 type invokeIntentRequest struct {
-	PluginInstanceID string         `json:"plugin_instance_id,omitempty"`
-	IntentID         string         `json:"intent_id"`
-	Params           map[string]any `json:"params,omitempty"`
+	SurfaceInstanceID string         `json:"surface_instance_id,omitempty"`
+	ConfirmationID    string         `json:"confirmation_id,omitempty"`
+	PluginInstanceID  string         `json:"plugin_instance_id,omitempty"`
+	IntentID          string         `json:"intent_id"`
+	Params            map[string]any `json:"params,omitempty"`
 }
 
 type exportDataRequest struct {
@@ -907,6 +909,8 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/rpc", websecurity.RouteActionCallPluginMethod, func(h *Handler) http.HandlerFunc { return h.handleRPC }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/confirmations/prepare", websecurity.RouteActionPrepareMethodConfirmation, func(h *Handler) http.HandlerFunc { return h.handlePrepareMethodConfirmation }),
 	queryRoute("/_redevplugin/api/plugins/intents/query", websecurity.RouteActionListIntents, func(h *Handler) http.HandlerFunc { return h.handleListIntents }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/methods", websecurity.RouteActionSurfaceMethods, func(h *Handler) http.HandlerFunc { return h.handleSurfaceMethods }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/intents/confirmations/prepare", websecurity.RouteActionPrepareIntentConfirmation, func(h *Handler) http.HandlerFunc { return h.handlePrepareIntentConfirmation }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", websecurity.RouteActionInvokeIntent, func(h *Handler) http.HandlerFunc { return h.handleInvokeIntent }),
 	queryRoute("/_redevplugin/api/plugins/executions/query", websecurity.RouteActionListExecutions, func(h *Handler) http.HandlerFunc { return h.handleListExecutions }),
 	queryRoute("/_redevplugin/api/plugins/executions/{execution_id}/query", websecurity.RouteActionGetExecution, func(h *Handler) http.HandlerFunc { return h.handleGetExecution }),
@@ -1991,9 +1995,9 @@ func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.host.InvokeIntent(r.Context(), host.InvokeIntentRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		IntentID:         req.IntentID,
-		Params:           req.Params,
+		PluginInstanceID: req.PluginInstanceID, SurfaceInstanceID: req.SurfaceInstanceID, ConfirmationID: req.ConfirmationID,
+		IntentID: req.IntentID,
+		Params:   req.Params,
 	})
 	if err != nil {
 		code := errorCodeForIntentError(err)
@@ -3136,6 +3140,14 @@ func httpStatusForBridgeError(err error) int {
 
 func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrSurfaceMethodUnavailable):
+		return security.ErrSurfaceMethodUnavailable
+	case errors.Is(err, host.ErrSurfaceMethodConflict):
+		return security.ErrSurfaceMethodConflict
+	case errors.Is(err, host.ErrSurfaceMethodAmbiguous):
+		return security.ErrSurfaceMethodAmbiguous
+	case errors.Is(err, host.ErrSurfaceMethodFailed):
+		return security.ErrSurfaceMethodFailed
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
@@ -3175,6 +3187,15 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 
 func publicPluginErrorMessage(code security.ErrorCode) string {
 	switch code {
+	case security.ErrSurfaceMethodUnavailable:
+		return "application method is unavailable; open the application and try again"
+	case security.ErrSurfaceMethodConflict:
+		return "application changed; read its current state before retrying"
+	case security.ErrSurfaceMethodAmbiguous:
+		return "choose the application window for this operation"
+	case security.ErrSurfaceMethodFailed:
+		return "application could not complete the operation"
+
 	case security.ErrFeatureNotConfigured:
 		return "plugin host feature is not configured"
 	case security.ErrInvalidRequest:
@@ -3595,6 +3616,11 @@ func httpStatusForExecutionError(err error) int {
 
 func httpStatusForRPCError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrSurfaceMethodUnavailable), errors.Is(err, host.ErrSurfaceMethodConflict), errors.Is(err, host.ErrSurfaceMethodAmbiguous):
+		return http.StatusConflict
+	case errors.Is(err, host.ErrSurfaceMethodFailed):
+		return http.StatusBadGateway
+
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, host.ErrFeatureNotConfigured):
@@ -3626,6 +3652,14 @@ func httpStatusForRPCError(err error) int {
 
 func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrSurfaceMethodUnavailable):
+		return security.ErrSurfaceMethodUnavailable
+	case errors.Is(err, host.ErrSurfaceMethodConflict):
+		return security.ErrSurfaceMethodConflict
+	case errors.Is(err, host.ErrSurfaceMethodAmbiguous):
+		return security.ErrSurfaceMethodAmbiguous
+	case errors.Is(err, host.ErrSurfaceMethodFailed):
+		return security.ErrSurfaceMethodFailed
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
@@ -3772,6 +3806,11 @@ func publicWorkerErrorMessage(value string) string {
 
 func httpStatusForIntentError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrSurfaceMethodUnavailable), errors.Is(err, host.ErrSurfaceMethodConflict), errors.Is(err, host.ErrSurfaceMethodAmbiguous):
+		return http.StatusConflict
+	case errors.Is(err, host.ErrSurfaceMethodFailed):
+		return http.StatusBadGateway
+
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, host.ErrActionDenied):

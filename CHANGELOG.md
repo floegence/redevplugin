@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.7.0
+
+- Expose declared application methods through the existing source-bound Web bridge and Host intent, authorization, confirmation, and Execution/Event pipeline.
+- Bind delivery to an explicit live surface and receiver generation; reject ambiguous windows, stale confirmations, duplicate claims, and late results.
+- Publish asynchronous handler registration, exact receiver CAS, bounded queues and cancellation without granting application management credentials.
+- Reject unclaimed calls when handlers unregister and preserve unknown outcomes for dispatched writes without automatic replay.
+- Cover real Chromium document selection, revision conflicts, native undo, multi-window routing and reload, plus race-sensitive lifecycle, closed request shapes and SDK lease renewal.
+
 ## v3.6.0
 
 - Route Worker HTTP, WebSocket, TCP and UDP through one connector-scoped network authority with explicit method declarations, pinned destinations, bounded streams and cancellation.

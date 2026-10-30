@@ -50,6 +50,10 @@ var pluginPlatformErrorCodes = [
   "PLUGIN_EXECUTION_BLOCKED",
   "PLUGIN_EXECUTION_NOT_FOUND",
   "PLUGIN_EXECUTION_NOT_CANCELABLE",
+  "PLUGIN_SURFACE_METHOD_UNAVAILABLE",
+  "PLUGIN_SURFACE_METHOD_CONFLICT",
+  "PLUGIN_SURFACE_METHOD_AMBIGUOUS",
+  "PLUGIN_SURFACE_METHOD_FAILED",
   "PLUGIN_CONNECTION_UNAVAILABLE",
   "PLUGIN_CONNECTION_CONFLICT",
   "PLUGIN_NETWORK_TARGET_DENIED",
@@ -122,6 +126,10 @@ var pluginBridgeErrorCodes = [
   "PLUGIN_EXECUTION_BLOCKED",
   "PLUGIN_EXECUTION_NOT_FOUND",
   "PLUGIN_EXECUTION_NOT_CANCELABLE",
+  "PLUGIN_SURFACE_METHOD_UNAVAILABLE",
+  "PLUGIN_SURFACE_METHOD_CONFLICT",
+  "PLUGIN_SURFACE_METHOD_AMBIGUOUS",
+  "PLUGIN_SURFACE_METHOD_FAILED",
   "PLUGIN_CONNECTION_UNAVAILABLE",
   "PLUGIN_CONNECTION_CONFLICT",
   "PLUGIN_NETWORK_TARGET_DENIED",
@@ -1158,6 +1166,10 @@ var PluginSurfaceHostImplementation = class {
   surfaceInstanceId;
   bootstrap;
   bridgeChannelId;
+  #receiverID;
+  #receiverController;
+  #receiverTransition = Promise.resolve();
+  #receiverInvocations = /* @__PURE__ */ new Set();
   #frameGenerationId;
   get frameGenerationId() {
     return this.#frameGenerationId;
@@ -1374,6 +1386,8 @@ var PluginSurfaceHostImplementation = class {
     }, preparation.document.origin, [channel.port2]);
     await signals.portAcknowledged.promise;
     this.#assertActive();
+    await this.#receiverTransition;
+    this.#assertActive();
     this.#setOpeningStage("authorizing", ["token"]);
     if (this.#leaseRenewalPromise) await this.#leaseRenewalPromise;
     const token = await this.#mintBridgeToken(this.#gatewayToken);
@@ -1405,6 +1419,16 @@ var PluginSurfaceHostImplementation = class {
       return;
     }
     this.#navigationPending = true;
+    this.#receiverController?.abort();
+    this.#receiverInvocations.clear();
+    this.#receiverTransition = this.#receiverTransition.then(async () => {
+      if (!this.#receiverID) return;
+      await this.#receiverRequest("close");
+    }).catch(async (error2) => {
+      await this.#failSurface(toBridgeError(error2, "PLUGIN_SURFACE_METHOD_CONFLICT"));
+      throw error2;
+    });
+    void this.#receiverTransition.catch(() => void 0);
     clearTimeout(this.#leaseRenewalTimer);
     this.#leaseRenewalTimer = void 0;
     this.#ready = false;
@@ -1555,6 +1579,8 @@ var PluginSurfaceHostImplementation = class {
   #disposeLocal() {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#receiverController?.abort();
+    this.#receiverInvocations.clear();
     clearTimeout(this.#navigationTimer);
     this.#navigationPending = false;
     this.#unregisterSurfaceScope?.();
@@ -1637,6 +1663,41 @@ var PluginSurfaceHostImplementation = class {
       if (hasExactKeys(data, ["type", "error"]) && data.type === "redevplugin.surface.error" && typeof data.error === "string") {
         const error2 = new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", data.error);
         await this.#failSurface(error2);
+        return;
+      }
+      if (hasExactKeys(data, ["type", "id", "methods"]) && data.type === "redevplugin.bridge.methods" && typeof data.id === "string" && Array.isArray(data.methods) && data.methods.length <= 128 && data.methods.every((name) => typeof name === "string" && validMethod(name))) {
+        const id = data.id;
+        const methods = [...new Set(data.methods)].sort();
+        const generation2 = this.frameGenerationId;
+        this.#receiverTransition = this.#receiverTransition.then(async () => {
+          if (generation2 !== this.frameGenerationId || this.#disposed) return;
+          const registering = !this.#receiverController || this.#receiverController.signal.aborted;
+          const result = await this.#receiverRequest(registering ? "register" : "configure", { methods });
+          this.#receiverID = result.receiver_id;
+          if (generation2 !== this.frameGenerationId || this.#disposed) return;
+          this.#postToApplication({ type: "redevplugin.bridge.response", id, ok: true, data: null });
+          if (registering) {
+            const controller = new AbortController();
+            this.#receiverController = controller;
+            void this.#pollMethods(generation2, controller).catch((error2) => {
+              if (!controller.signal.aborted) void this.#failSurface(toBridgeError(error2, "PLUGIN_SURFACE_METHOD_CONFLICT"));
+            });
+          }
+        }).catch(async (error2) => {
+          await this.#failSurface(toBridgeError(error2, "PLUGIN_SURFACE_METHOD_CONFLICT"));
+        });
+        return;
+      }
+      if (hasExactKeys(data, ["type", "invocation_id", "data", "failed"]) && data.type === "redevplugin.bridge.method_result" && typeof data.invocation_id === "string" && typeof data.failed === "boolean") {
+        if (!this.#receiverInvocations.delete(data.invocation_id)) return;
+        const generation2 = this.frameGenerationId;
+        try {
+          await this.#receiverRequest("complete", { invocation_id: data.invocation_id, data: data.data, failed: data.failed });
+        } catch (error2) {
+          const failure = toBridgeError(error2, "PLUGIN_SURFACE_METHOD_CONFLICT");
+          if (failure.errorCode === "PLUGIN_SURFACE_METHOD_CONFLICT" && failure.mutationOutcome === "not_committed") return;
+          if (generation2 === this.frameGenerationId && !this.#disposed) await this.#failSurface(failure);
+        }
         return;
       }
       if (isBridgeCancelMessage(data)) {
@@ -1960,6 +2021,37 @@ var PluginSurfaceHostImplementation = class {
       management_revision: this.bootstrap.managementRevision,
       revoke_epoch: this.bootstrap.revokeEpoch
     };
+  }
+  async #receiverRequest(operation, extra = {}, signal) {
+    const result = await this.#postMutationJSON("/_redevplugin/api/plugins/surfaces/methods", () => removeUndefined({
+      plugin_instance_id: this.bootstrap.pluginInstanceId,
+      surface_instance_id: this.surfaceInstanceId,
+      bridge_channel_id: this.bridgeChannelId,
+      plugin_gateway_token: this.#gatewayToken,
+      receiver_id: this.#receiverID,
+      operation,
+      ...extra
+    }), signal);
+    if (!hasExactKeys(result, result.invocation === void 0 ? ["receiver_id", "cancelled"] : ["receiver_id", "cancelled", "invocation"]) || typeof result.receiver_id !== "string" || !result.receiver_id.startsWith("receiver_") || !Array.isArray(result.cancelled) || result.cancelled.length > 32 || !result.cancelled.every((id) => typeof id === "string") || result.invocation !== void 0 && !isSurfaceMethodDelivery(result.invocation)) {
+      throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Application receiver returned an invalid response");
+    }
+    return result;
+  }
+  async #pollMethods(generation2, controller) {
+    while (!controller.signal.aborted && !this.#disposed && generation2 === this.frameGenerationId) {
+      const result = await this.#receiverRequest("claim", { active_invocations: [...this.#receiverInvocations] }, controller.signal);
+      if (controller.signal.aborted || this.#disposed || generation2 !== this.frameGenerationId) return;
+      for (const id of result.cancelled) {
+        if (this.#receiverInvocations.delete(id)) this.#postToApplication({ type: "redevplugin.bridge.method_cancel", invocation_id: id });
+      }
+      const invocation = result.invocation;
+      if (!invocation) continue;
+      if (this.#receiverInvocations.has(invocation.invocation_id) || this.#receiverInvocations.size >= 32) {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Application invocation is invalid or duplicated");
+      }
+      this.#receiverInvocations.add(invocation.invocation_id);
+      this.#postToApplication({ type: "redevplugin.bridge.method_invoke", invocation });
+    }
   }
   async #postJSON(path, body, signal) {
     return this.#requestJSON(path, body, false, signal);
@@ -3147,6 +3239,9 @@ function toBridgeError(error2, defaultCode) {
   if (error2 instanceof Error) return new PluginBridgeError(defaultCode, error2.message);
   return new PluginBridgeError(defaultCode, String(error2));
 }
+function isSurfaceMethodDelivery(value) {
+  return hasExactKeys(value, ["invocation_id", "method", "params", "deadline"]) && typeof value.invocation_id === "string" && value.invocation_id.startsWith("invoke_") && value.invocation_id.length <= 128 && typeof value.method === "string" && validMethod(value.method) && (value.params !== null && typeof value.params === "object" && !Array.isArray(value.params)) && typeof value.deadline === "string" && Number.isFinite(Date.parse(value.deadline));
+}
 
 // packages/redevplugin-ui/src/platform.ts
 function getPluginSurfaceActionState(record2, surfaceId) {
@@ -3364,6 +3459,9 @@ var PluginPlatformClient = class {
   }
   listIntents(options = {}, requestOptions = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/intents/query", options, requestOptions);
+  }
+  prepareIntentConfirmation(request, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/intents/confirmations/prepare", request, options);
   }
   invokeIntent(request, options = {}) {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/intents/invoke", request, options);

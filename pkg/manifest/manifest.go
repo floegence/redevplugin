@@ -81,6 +81,7 @@ const (
 	MethodRouteCapability MethodRouteKind = "capability"
 	MethodRouteWorker     MethodRouteKind = "worker"
 	MethodRouteCoreAction MethodRouteKind = "core_action"
+	MethodRouteSurface    MethodRouteKind = "surface"
 )
 
 type MethodRouteSpec struct {
@@ -89,6 +90,7 @@ type MethodRouteSpec struct {
 	TargetMethod string          `json:"target_method,omitempty"`
 	WorkerID     string          `json:"worker_id,omitempty"`
 	ActionID     string          `json:"action_id,omitempty"`
+	SurfaceID    string          `json:"surface_id,omitempty"`
 }
 
 type MethodSpec struct {
@@ -522,6 +524,23 @@ func Validate(m Manifest) error {
 		}
 		if surface.DefaultSize != nil && surface.DefaultSize.Height <= 0 {
 			return ValidationError{Field: fmt.Sprintf("surfaces[%d].default_size.height", i), Message: "must be positive"}
+		}
+	}
+
+	for i, method := range m.Methods {
+		if method.Route.Kind != MethodRouteSurface {
+			continue
+		}
+		if _, ok := surfaces[method.Route.SurfaceID]; !ok {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].route.surface_id", i), Message: "must reference a declared surface"}
+		}
+		if method.Execution == MethodExecutionSubscription {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].execution", i), Message: "surface methods support only sync or operation"}
+		}
+		for _, surface := range m.Surfaces {
+			if surface.SurfaceID == method.Route.SurfaceID && surface.Kind != SurfaceView {
+				return ValidationError{Field: fmt.Sprintf("methods[%d].route.surface_id", i), Message: "must reference a view surface"}
+			}
 		}
 	}
 
@@ -1057,7 +1076,17 @@ func validExecutionMode(mode MethodExecutionMode) bool {
 }
 
 func validateMethodRoute(field string, route MethodRouteSpec, bindings map[string]struct{}, workers map[string]struct{}) error {
+	if route.Kind != MethodRouteSurface && route.SurfaceID != "" {
+		return ValidationError{Field: field + ".surface_id", Message: "is only allowed for surface routes"}
+	}
 	switch route.Kind {
+	case MethodRouteSurface:
+		if strings.TrimSpace(route.SurfaceID) == "" {
+			return ValidationError{Field: field + ".surface_id", Message: "is required for surface routes"}
+		}
+		if route.BindingID != "" || route.TargetMethod != "" || route.WorkerID != "" || route.ActionID != "" {
+			return ValidationError{Field: field, Message: "surface routes accept only kind and surface_id"}
+		}
 	case MethodRouteCapability:
 		if _, ok := bindings[route.BindingID]; !ok {
 			return ValidationError{Field: field + ".binding_id", Message: "must reference a declared capability binding"}
@@ -1098,7 +1127,7 @@ func validateMethodRoute(field string, route MethodRouteSpec, bindings map[strin
 			return ValidationError{Field: field + ".worker_id", Message: "is only allowed for worker routes"}
 		}
 	default:
-		return ValidationError{Field: field + ".kind", Message: "must be capability, worker, or core_action"}
+		return ValidationError{Field: field + ".kind", Message: "must be capability, worker, core_action, or surface"}
 	}
 	return nil
 }

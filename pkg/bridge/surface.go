@@ -257,7 +257,7 @@ type ConfirmationTokenResult struct {
 type ValidateConfirmationTokenRequest struct {
 	ConfirmationToken string          `json:"confirmation_token"`
 	Audience          Audience        `json:"-"`
-	Revision          RevisionBinding `json:"revision"`
+	Revision          RevisionBinding `json:"-"`
 	Now               time.Time       `json:"-"`
 }
 
@@ -292,9 +292,11 @@ type InspectBoundSurfaceRequest struct {
 }
 
 type BoundSurfaceSession struct {
-	PluginInstanceID  string `json:"plugin_instance_id"`
-	PluginVersion     string `json:"plugin_version"`
-	ActiveFingerprint string `json:"active_fingerprint"`
+	Audience          Audience        `json:"-"`
+	Revision          RevisionBinding `json:"-"`
+	PluginInstanceID  string          `json:"plugin_instance_id"`
+	PluginVersion     string          `json:"plugin_version"`
+	ActiveFingerprint string          `json:"active_fingerprint"`
 }
 
 type MintRuntimeExecutionLeaseRequest struct {
@@ -1037,6 +1039,7 @@ func (s *SurfaceTokenService) InspectBoundSurface(req InspectBoundSurfaceRequest
 		return BoundSurfaceSession{}, ErrTokenAudience
 	}
 	return BoundSurfaceSession{
+		Audience: state.session.audience(req.BridgeChannelID), Revision: state.session.revision(),
 		PluginInstanceID: state.session.PluginInstanceID, PluginVersion: state.session.PluginVersion,
 		ActiveFingerprint: state.session.ActiveFingerprint,
 	}, nil

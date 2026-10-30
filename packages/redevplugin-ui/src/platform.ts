@@ -459,6 +459,10 @@ export class PluginPlatformClient {
     return this.#requestQuery("/_redevplugin/api/plugins/intents/query", options, requestOptions);
   }
 
+  prepareIntentConfirmation(request: PluginIntentInvokeRequest, options: PluginRequestOptions = {}): Promise<PlatformSchemas["PluginMethodConfirmationPreparation"]> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/intents/confirmations/prepare", request, options);
+  }
+
   invokeIntent<T = unknown>(request: PluginIntentInvokeRequest, options: PluginRequestOptions = {}): Promise<PluginMethodResult<T>> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/intents/invoke", request, options);
   }

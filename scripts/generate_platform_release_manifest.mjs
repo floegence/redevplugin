@@ -40,6 +40,7 @@ const canonicalContractPaths = Object.freeze([
   "plugin/runtime-admission-v1.schema.json",
   "plugin/runtime-exec-journal-v1.schema.json",
   "plugin/session-scope-v1.schema.json",
+  "plugin/surface-methods.schema.json",
   "plugin/target-classifier-v2.json",
   "plugin/token-ticket-v4.schema.json",
   "plugin/wasm-abi.json",

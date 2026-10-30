@@ -417,3 +417,25 @@ test("selected file requests and results have closed authority-bound contracts",
   const surface = JSON.parse(await readFile(join(root, "spec/plugin/web-surface-transport.schema.json"), "utf8"));
   assert.deepEqual(surface.$defs.file_io.required, ["type", "id", "request", "frame_generation_id", "surface_handle"]);
 });
+
+test("application method control operations reject foreign fields and missing identities", async () => {
+  const schema = JSON.parse(await readFile(join(root, "spec/plugin/surface-methods.schema.json"), "utf8"));
+  const ajv = new Ajv2020({ strict: false, validateFormats: false });
+  ajv.addSchema(schema);
+  const validate = ajv.compile({ $ref: schema.$id + "#/$defs/request" });
+  const base = { plugin_instance_id: "plugin", surface_instance_id: "surface", bridge_channel_id: "channel", plugin_gateway_token: "token", receiver_id: "receiver" };
+  for (const operation of ["register", "configure", "claim", "complete", "close"]) {
+    const value = { ...base, operation, ...(operation === "complete" ? { invocation_id: "invoke", data: null } : {}) };
+    assert.equal(validate(value), true, JSON.stringify(validate.errors));
+    for (const key of ["plugin_instance_id", "surface_instance_id", "bridge_channel_id", "plugin_gateway_token"]) {
+      const missing = { ...value }; delete missing[key]; assert.equal(validate(missing), false);
+    }
+    const extras = { unknown: true };
+    if (operation !== "complete") Object.assign(extras, { data: null, failed: false, invocation_id: "" });
+    if (operation !== "register" && operation !== "configure") extras.methods = [];
+    if (operation !== "claim") extras.active_invocations = [];
+    for (const [key, data] of Object.entries(extras)) assert.equal(validate({ ...value, [key]: data }), false, operation + ": " + key);
+  }
+  assert.equal(validate({ ...base, operation: "claim", active_invocations: ["id", "id"] }), false);
+  assert.equal(validate({ ...base, operation: "complete", invocation_id: "id", failed: true, data: {} }), false);
+});

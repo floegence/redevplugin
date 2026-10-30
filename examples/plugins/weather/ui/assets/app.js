@@ -1254,6 +1254,10 @@ var pluginBridgeErrorCodes = [
   "PLUGIN_EXECUTION_BLOCKED",
   "PLUGIN_EXECUTION_NOT_FOUND",
   "PLUGIN_EXECUTION_NOT_CANCELABLE",
+  "PLUGIN_SURFACE_METHOD_UNAVAILABLE",
+  "PLUGIN_SURFACE_METHOD_CONFLICT",
+  "PLUGIN_SURFACE_METHOD_AMBIGUOUS",
+  "PLUGIN_SURFACE_METHOD_FAILED",
   "PLUGIN_CONNECTION_UNAVAILABLE",
   "PLUGIN_CONNECTION_CONFLICT",
   "PLUGIN_NETWORK_TARGET_DENIED",
@@ -1620,6 +1624,8 @@ var PluginBridgeClient = class {
   files = new PluginFilesClient((request, options) => this.#fileIO(request, options));
   surfaceHandle;
   timeoutMs;
+  #methodHandlers = /* @__PURE__ */ new Map();
+  #methodInvocations = /* @__PURE__ */ new Map();
   #nextID = 1;
   #clock;
   #port;
@@ -1660,6 +1666,50 @@ var PluginBridgeClient = class {
   call(method, params, options = {}) {
     const effect = options[pluginBridgeCapabilityEffect];
     return this.#call(method, params, options, effect === void 0 || effect !== "read");
+  }
+  /** Register a declared application method after the authenticated bridge is ready. */
+  async registerMethod(name, handler) {
+    this.#assertActive();
+    if (!validMethod(name) || typeof handler !== "function" || this.#methodHandlers.has(name) || this.#methodHandlers.size >= 128) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Application method registration is invalid or duplicated");
+    }
+    this.#methodHandlers.set(name, handler);
+    try {
+      await this.ready();
+      await this.#publishMethods();
+    } catch (error) {
+      if (this.#methodHandlers.get(name) === handler) this.#methodHandlers.delete(name);
+      throw error;
+    }
+    return async () => {
+      if (this.#methodHandlers.get(name) !== handler) return;
+      this.#methodHandlers.delete(name);
+      if (this.#lifecycleState === "active") await this.#publishMethods();
+    };
+  }
+  #publishMethods() {
+    const id = this.#requestID("rpc");
+    return this.#request(id, { type: "redevplugin.bridge.methods", id, methods: Array.from(this.#methodHandlers.keys()).sort() }, { mutation: true });
+  }
+  async #invokeRegisteredMethod(invocation) {
+    if (this.#methodInvocations.has(invocation.invocation_id) || this.#methodInvocations.size >= 32) return;
+    const handler = this.#methodHandlers.get(invocation.method);
+    const controller = new AbortController();
+    this.#methodInvocations.set(invocation.invocation_id, controller);
+    const timeout = setTimeout(() => controller.abort(), Math.max(0, Math.min(3e4, Date.parse(invocation.deadline) - Date.now())));
+    try {
+      controller.signal.throwIfAborted();
+      if (!handler) throw new Error("Application method is not registered");
+      const value = await handler(normalizePluginJSONObject(invocation.params), Object.freeze({ signal: controller.signal }));
+      const data = normalizePluginJSONValue(value === void 0 ? null : value);
+      if (!messageWithinLimit(data)) throw new Error("Application result exceeds the message limit");
+      if (!controller.signal.aborted && this.#lifecycleState === "active") this.#port.postMessage({ type: "redevplugin.bridge.method_result", invocation_id: invocation.invocation_id, data, failed: false });
+    } catch {
+      if (!controller.signal.aborted && this.#lifecycleState === "active") this.#port.postMessage({ type: "redevplugin.bridge.method_result", invocation_id: invocation.invocation_id, data: null, failed: true });
+    } finally {
+      clearTimeout(timeout);
+      this.#methodInvocations.delete(invocation.invocation_id);
+    }
   }
   #fileIO(request, options = {}) {
     this.#assertActive();
@@ -1780,6 +1830,9 @@ var PluginBridgeClient = class {
   dispose() {
     if (this.#lifecycleState === "disposed") return;
     this.#lifecycleState = "disposed";
+    for (const controller of this.#methodInvocations.values()) controller.abort();
+    this.#methodInvocations.clear();
+    this.#methodHandlers.clear();
     const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
     if (!this.#ready) this.#rejectReady(disposedError);
     this.#port.removeEventListener("message", this.#onMessage);
@@ -1881,6 +1934,14 @@ var PluginBridgeClient = class {
     if (this.#lifecycleState === "disposed") return;
     const data = event.data;
     if (!messageWithinLimit(data)) return;
+    if (hasExactKeys(data, ["type", "invocation"]) && data.type === "redevplugin.bridge.method_invoke" && isSurfaceMethodDelivery(data.invocation)) {
+      void this.#invokeRegisteredMethod(data.invocation);
+      return;
+    }
+    if (hasExactKeys(data, ["type", "invocation_id"]) && data.type === "redevplugin.bridge.method_cancel" && typeof data.invocation_id === "string") {
+      this.#methodInvocations.get(data.invocation_id)?.abort();
+      return;
+    }
     if (isBridgeResponseCandidate(data)) {
       const pending = this.#takePending(data.id);
       if (!pending) return;
@@ -2247,6 +2308,9 @@ function withTimeout(promise, timeoutMs, message) {
 function removeUndefined(value) {
   for (const key of Object.keys(value)) if (value[key] === void 0) delete value[key];
   return value;
+}
+function isSurfaceMethodDelivery(value) {
+  return hasExactKeys(value, ["invocation_id", "method", "params", "deadline"]) && typeof value.invocation_id === "string" && value.invocation_id.startsWith("invoke_") && value.invocation_id.length <= 128 && typeof value.method === "string" && validMethod(value.method) && (value.params !== null && typeof value.params === "object" && !Array.isArray(value.params)) && typeof value.deadline === "string" && Number.isFinite(Date.parse(value.deadline));
 }
 
 // examples/plugin-ui/weather.tsx

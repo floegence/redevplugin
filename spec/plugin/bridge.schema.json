@@ -45,6 +45,18 @@
     },
     {
       "$ref": "#/$defs/file_io"
+    },
+    {
+      "$ref": "#/$defs/methods"
+    },
+    {
+      "$ref": "#/$defs/method_invoke"
+    },
+    {
+      "$ref": "#/$defs/method_result"
+    },
+    {
+      "$ref": "#/$defs/method_cancel"
     }
   ],
   "$defs": {
@@ -388,6 +400,10 @@
                 "PLUGIN_EXECUTION_BLOCKED",
                 "PLUGIN_EXECUTION_NOT_FOUND",
                 "PLUGIN_EXECUTION_NOT_CANCELABLE",
+                "PLUGIN_SURFACE_METHOD_UNAVAILABLE",
+                "PLUGIN_SURFACE_METHOD_CONFLICT",
+                "PLUGIN_SURFACE_METHOD_AMBIGUOUS",
+                "PLUGIN_SURFACE_METHOD_FAILED",
                 "PLUGIN_CONNECTION_UNAVAILABLE",
                 "PLUGIN_CONNECTION_CONFLICT",
                 "PLUGIN_NETWORK_TARGET_DENIED",
@@ -645,6 +661,85 @@
         },
         "request": {
           "$ref": "https://schemas.redevplugin.dev/plugin/file-resources.schema.json#/$defs/io_request"
+        }
+      }
+    },
+    "methods": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "methods"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.methods"
+        },
+        "id": {
+          "type": "string"
+        },
+        "methods": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "method_invoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "invocation"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.method_invoke"
+        },
+        "invocation": {
+          "$ref": "surface-methods.schema.json#/$defs/invocation"
+        }
+      }
+    },
+    "method_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "invocation_id",
+        "data",
+        "failed"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.method_result"
+        },
+        "invocation_id": {
+          "type": "string"
+        },
+        "data": {},
+        "failed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "method_cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "invocation_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.method_cancel"
+        },
+        "invocation_id": {
+          "type": "string"
         }
       }
     }

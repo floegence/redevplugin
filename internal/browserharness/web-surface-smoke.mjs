@@ -62,9 +62,27 @@ if (process.argv[2] === "--build") {
     await frames[0].getByRole("button", { name: "Save file", exact: true }).click();
     await frames[0].getByRole("status").filter({ hasText: /^Saved$/ }).waitFor();
     assert.equal(await frames[1].getByLabel("Selected document").inputValue(), "");
+
+    for (const frame of frames) await frame.waitForFunction(() => globalThis.appState?.methodsReady);
+    const documentState = await page.evaluate(() => globalThis.invokeDocument(0, "document.read"));
+    assert.equal(documentState.data.text, "Saved 中文 document");
+    const changed = await page.evaluate(revision => globalThis.invokeDocument(0, "document.apply", { expected_revision: revision, text: "Agent 中文 change" }), documentState.data.revision);
+    assert.equal(changed.data.conflict, false);
+    assert.equal(await frames[0].getByLabel("Selected document").inputValue(), "Agent 中文 change");
+    assert.equal(await frames[1].getByLabel("Selected document").inputValue(), "");
+    const conflict = await page.evaluate(revision => globalThis.invokeDocument(0, "document.apply", { expected_revision: revision, text: "Must not overwrite" }), documentState.data.revision);
+    assert.equal(conflict.data.conflict, true);
+    assert.equal(await frames[0].getByLabel("Selected document").inputValue(), "Agent 中文 change");
+    await frames[0].getByLabel("Selected document").press(process.platform === "darwin" ? "Meta+z" : "Control+z");
+    assert.equal(await frames[0].getByLabel("Selected document").inputValue(), "Saved 中文 document");
+    const ambiguous = await page.evaluate(async () => { try { await globalThis.invokeDocument(undefined, "document.read"); return "accepted"; } catch (error) { return error.errorCode; } });
+    assert.equal(ambiguous, "PLUGIN_SURFACE_METHOD_AMBIGUOUS");
     const originalOrigin = new URL(frames[0].url()).origin;
     await frames[0].evaluate(() => location.reload());
     await frames[0].waitForFunction(() => globalThis.appState?.ready);
+    await frames[0].waitForFunction(() => globalThis.appState?.methodsReady);
+    const reloadedDocument = await page.evaluate(() => globalThis.invokeDocument(0, "document.read"));
+    assert.equal(reloadedDocument.data.text, "");
     assert.equal(new URL(frames[0].url()).origin, originalOrigin);
     assert.equal(new URL(frames[0].url()).pathname, "/notes/current");
     assert.equal(await frames[0].evaluate(() => localStorage.getItem("sample")), "isolated");
@@ -128,7 +146,7 @@ if (process.argv[2] === "--build") {
       await unsupported.screenshot({ path: join(evidenceDir, "web-unsupported.png") });
     } finally { await unsupported.close(); }
     await verifyNetworkBoundary(browser, process.argv[3]);
-    const report = { schema_version: "redevplugin.web_acceptance.v1", evidence_source: "go-host-http-adapter-chromium", browser: browser.version(), checks: { origin_preparation: true, native_modules: true, dynamic_import: true, worker: true, canvas: true, webgl: true, wasm: true, indexeddb: true, native_input_undo_selection: true, independent_origins: true, parent_isolation: true, network_denied: true, receiver_network_boundary: true, service_worker_denied: true, quiesce_acknowledged: true, unsaved_close_protected: true, native_navigation: true, independent_close: true, retained_container_opening: true, unsupported_before_application: true } };
+    const report = { schema_version: "redevplugin.web_acceptance.v1", evidence_source: "go-host-http-adapter-chromium", browser: browser.version(), checks: { application_method_targeting: true, application_revision_conflict: true, application_agent_undo: true, application_receiver_reload: true, origin_preparation: true, native_modules: true, dynamic_import: true, worker: true, canvas: true, webgl: true, wasm: true, indexeddb: true, native_input_undo_selection: true, independent_origins: true, parent_isolation: true, network_denied: true, receiver_network_boundary: true, service_worker_denied: true, quiesce_acknowledged: true, unsaved_close_protected: true, native_navigation: true, independent_close: true, retained_container_opening: true, unsupported_before_application: true } };
     validateWebEvidence(report);
     await writeFile(join(evidenceDir, "web-acceptance.json"), JSON.stringify(report, null, 2) + "\n");
     assert.deepEqual(errors, []);

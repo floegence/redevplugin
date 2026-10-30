@@ -149,6 +149,7 @@ type ExternalPackagePermissionSummary struct {
 }
 
 type ExternalPackageMethodRouteSummary struct {
+	SurfaceID    string `json:"surface_id,omitempty"`
 	Kind         string `json:"kind"`
 	BindingID    string `json:"binding_id,omitempty"`
 	TargetMethod string `json:"target_method,omitempty"`
@@ -353,6 +354,7 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 		methods = append(methods, ExternalPackageMethodSummary{
 			Method: method.Method,
 			Route: ExternalPackageMethodRouteSummary{
+				SurfaceID:    method.Route.SurfaceID,
 				Kind:         string(method.Route.Kind),
 				BindingID:    method.Route.BindingID,
 				TargetMethod: method.Route.TargetMethod,

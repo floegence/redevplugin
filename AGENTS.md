@@ -282,6 +282,12 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   transferred `MessagePort`, asset session, surface instance, bridge nonce,
   active fingerprint, session hash, management revision, and revoke epoch. Host UI
   chrome may surround the surface but must not replace that path.
+- Live application methods use declared surface routes, source-bound bridge
+  registration and the same Host intent, confirmation and Execution/Event APIs.
+  The platform owns exact receiver targeting, one-time claiming, cancellation,
+  bounded queues and unknown-outcome handling; hosts own Agent orchestration,
+  document placement and review UX. Applications keep their own revision and
+  undo model. Hosts must not implement a second application-call dispatcher.
 - Host UI interaction ownership observations must travel over that same
   source/port-bound surface channel and remain tied to the current frame
   generation and opaque surface handle. They may report activation, focus,

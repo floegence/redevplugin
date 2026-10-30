@@ -668,6 +668,7 @@ type confirmationRejectionResponse struct {
 }
 
 type intentResponse struct {
+	SurfaceID         string         `json:"surface_id,omitempty"`
 	PluginID          string         `json:"plugin_id"`
 	PluginInstanceID  string         `json:"plugin_instance_id"`
 	PublisherID       string         `json:"publisher_id"`
@@ -694,7 +695,7 @@ func publicIntent(record host.IntentRecord) (intentResponse, error) {
 		PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, PublisherID: record.PublisherID,
 		DisplayName: record.DisplayName, Version: record.Version, ActiveFingerprint: record.ActiveFingerprint,
 		IntentID: record.IntentID, Method: record.Method, Effect: string(record.Effect), Execution: string(record.Execution),
-		PayloadSchema: payloadSchema,
+		PayloadSchema: payloadSchema, SurfaceID: record.SurfaceID,
 	}, nil
 }
 

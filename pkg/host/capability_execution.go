@@ -525,7 +525,7 @@ func validateExecutionBindingShape(binding capability.ExecutionBinding) error {
 		if binding.Contract == nil {
 			return errors.New("capability execution contract is required")
 		}
-	case capability.RouteWorker, capability.RouteCoreAction:
+	case capability.RouteWorker, capability.RouteCoreAction, capability.RouteSurface:
 		if binding.Contract != nil {
 			return errors.New("non-capability execution must not contain a capability contract")
 		}

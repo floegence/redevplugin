@@ -22,6 +22,10 @@ const trustedParentFields = [
 const commonFrames = [
   "redevplugin.bridge.call",
   ...executionFrames,
+  "redevplugin.bridge.methods",
+  "redevplugin.bridge.method_invoke",
+  "redevplugin.bridge.method_result",
+  "redevplugin.bridge.method_cancel",
   "redevplugin.ui.file.export",
   "redevplugin.bridge.cancel",
   "redevplugin.bridge.response",

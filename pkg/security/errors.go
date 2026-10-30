@@ -53,6 +53,10 @@ const (
 	ErrExecutionBlocked              ErrorCode = "PLUGIN_EXECUTION_BLOCKED"
 	ErrExecutionNotFound             ErrorCode = "PLUGIN_EXECUTION_NOT_FOUND"
 	ErrExecutionNotCancelable        ErrorCode = "PLUGIN_EXECUTION_NOT_CANCELABLE"
+	ErrSurfaceMethodUnavailable      ErrorCode = "PLUGIN_SURFACE_METHOD_UNAVAILABLE"
+	ErrSurfaceMethodConflict         ErrorCode = "PLUGIN_SURFACE_METHOD_CONFLICT"
+	ErrSurfaceMethodAmbiguous        ErrorCode = "PLUGIN_SURFACE_METHOD_AMBIGUOUS"
+	ErrSurfaceMethodFailed           ErrorCode = "PLUGIN_SURFACE_METHOD_FAILED"
 	ErrConnectionUnavailable         ErrorCode = "PLUGIN_CONNECTION_UNAVAILABLE"
 	ErrConnectionConflict            ErrorCode = "PLUGIN_CONNECTION_CONFLICT"
 	ErrNetworkTargetDenied           ErrorCode = "PLUGIN_NETWORK_TARGET_DENIED"
@@ -134,6 +138,10 @@ var platformErrorCodes = []ErrorCode{
 	ErrExecutionBlocked,
 	ErrExecutionNotFound,
 	ErrExecutionNotCancelable,
+	ErrSurfaceMethodUnavailable,
+	ErrSurfaceMethodConflict,
+	ErrSurfaceMethodAmbiguous,
+	ErrSurfaceMethodFailed,
 	ErrConnectionUnavailable,
 	ErrConnectionConflict,
 	ErrNetworkTargetDenied,

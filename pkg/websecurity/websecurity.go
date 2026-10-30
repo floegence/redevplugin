@@ -28,6 +28,8 @@ const (
 	RouteActionCancelConnectionReview     = host.ManagementActionCancelConnectionReview
 	RouteActionListConnections            = host.ManagementActionListConnections
 	RouteActionRevokeConnection           = host.ManagementActionRevokeConnection
+	RouteActionSurfaceMethods             = host.ManagementActionSurfaceMethods
+	RouteActionPrepareIntentConfirmation  = host.ManagementActionPrepareIntentConfirmation
 	RouteActionSurfaceFile                = host.ManagementActionSurfaceFile
 	RouteActionSelectFileResource         = host.ManagementActionSelectFileResource
 	RouteActionApproveFileResource        = host.ManagementActionApproveFileResource

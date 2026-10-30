@@ -797,6 +797,8 @@ func readOpenAPIRoutes(path string) ([]routeFixture, error) {
 
 func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 	return []typeScriptSDKRouteBinding{
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/methods"}, Owner: "PluginSurfaceHost.receiver", Snippets: []string{"#receiverRequest(", "/_redevplugin/api/plugins/surfaces/methods"}},
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/intents/confirmations/prepare"}, Owner: "PluginPlatformClient.prepareIntentConfirmation", Snippets: []string{"prepareIntentConfirmation(", "/_redevplugin/api/plugins/intents/confirmations/prepare"}},
 		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/connections/review"}, Owner: "reviewConnection", Snippets: []string{"reviewConnection(", "/_redevplugin/api/plugins/connections/review"}},
 		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/connections/approve"}, Owner: "approveConnection", Snippets: []string{"approveConnection(", "/_redevplugin/api/plugins/connections/approve"}},
 		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/connections/cancel"}, Owner: "cancelConnectionReview", Snippets: []string{"cancelConnectionReview(", "/_redevplugin/api/plugins/connections/cancel"}},

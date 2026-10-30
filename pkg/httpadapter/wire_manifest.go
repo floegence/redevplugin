@@ -149,6 +149,7 @@ type manifestCapabilityBindingResponse struct {
 }
 
 type manifestMethodRouteResponse struct {
+	SurfaceID    string `json:"surface_id,omitempty"`
 	Kind         string `json:"kind"`
 	BindingID    string `json:"binding_id,omitempty"`
 	TargetMethod string `json:"target_method,omitempty"`
@@ -349,7 +350,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 			RequestSchema: requestSchema, ResponseSchema: responseSchema,
 			Route: manifestMethodRouteResponse{
 				Kind: string(method.Route.Kind), BindingID: method.Route.BindingID, TargetMethod: method.Route.TargetMethod,
-				WorkerID: method.Route.WorkerID, ActionID: method.Route.ActionID,
+				WorkerID: method.Route.WorkerID, ActionID: method.Route.ActionID, SurfaceID: method.Route.SurfaceID,
 			},
 		}
 		if method.Confirmation != nil {

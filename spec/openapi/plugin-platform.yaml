@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.6.0
+  version: 3.7.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -12,6 +12,32 @@ x-redevplugin-query-policy:
     post_query: required
     mutation: required
 paths:
+  /_redevplugin/api/plugins/surfaces/methods:
+    post:
+      operationId: surfaceMethods
+      x-redevplugin-route-effect: mutation
+      description: Parent SDK receiver control. Each claim is delivered at most once; failed transport never retries it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../plugin/surface-methods.schema.json#/$defs/request" }
+      responses:
+        "200":
+          description: Exact receiver result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SurfaceMethodsSuccessResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/intents/confirmations/prepare:
+    post:
+      operationId: preparePluginIntentConfirmation
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        $ref: "#/components/requestBodies/InvokeIntentRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginMethodConfirmationPreparationResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/connections/review:
     post:
       operationId: reviewConnection
@@ -1287,6 +1313,14 @@ components:
           schema:
             $ref: "#/components/schemas/PatchSettingsRequest"
   schemas:
+    SurfaceMethodsSuccessResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data, mutation_outcome]
+      properties:
+        ok: { const: true }
+        data: { $ref: "../plugin/surface-methods.schema.json#/$defs/result" }
+        mutation_outcome: { const: committed }
     ReviewConnectionSuccessResponse:
       type: object
       additionalProperties: false
@@ -2058,6 +2092,10 @@ components:
         - PLUGIN_EXECUTION_BLOCKED
         - PLUGIN_EXECUTION_NOT_FOUND
         - PLUGIN_EXECUTION_NOT_CANCELABLE
+        - PLUGIN_SURFACE_METHOD_UNAVAILABLE
+        - PLUGIN_SURFACE_METHOD_CONFLICT
+        - PLUGIN_SURFACE_METHOD_AMBIGUOUS
+        - PLUGIN_SURFACE_METHOD_FAILED
         - PLUGIN_CONNECTION_UNAVAILABLE
         - PLUGIN_CONNECTION_CONFLICT
         - PLUGIN_NETWORK_TARGET_DENIED
@@ -2160,6 +2198,7 @@ components:
       required: [plugin_id, plugin_instance_id, publisher_id, display_name, version, active_fingerprint, intent_id, method, effect, execution]
       additionalProperties: false
       properties:
+        surface_id: { type: string }
         plugin_id: { type: string }
         plugin_instance_id: { type: string }
         publisher_id: { type: string }
@@ -2780,11 +2819,12 @@ components:
       required: [kind]
       additionalProperties: false
       properties:
-        kind: { type: string, enum: [capability, worker, core_action] }
+        kind: { type: string, enum: [capability, worker, core_action, surface] }
         binding_id: { type: string, minLength: 1 }
         target_method: { type: string, minLength: 1 }
         worker_id: { type: string, minLength: 1 }
         action_id: { type: string, minLength: 1 }
+        surface_id: { type: string, minLength: 1 }
     ExternalPackageConfirmationSummary:
       type: object
       required: [mode, request_hash_fields, plan_hash_required]
@@ -3715,6 +3755,8 @@ components:
       required: [intent_id]
       additionalProperties: false
       properties:
+        surface_instance_id: { type: string, minLength: 1 }
+        confirmation_id: { type: string, minLength: 1 }
         plugin_instance_id: { type: string }
         intent_id: { type: string, minLength: 1 }
         params:

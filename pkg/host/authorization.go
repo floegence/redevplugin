@@ -16,6 +16,8 @@ var ErrActionDenied = errors.New("host platform action is denied")
 type ManagementAction string
 
 const (
+	ManagementActionSurfaceMethods             ManagementAction = "surface.methods"
+	ManagementActionPrepareIntentConfirmation  ManagementAction = "intent.prepare_confirmation"
 	ManagementActionReviewConnection           ManagementAction = "connection.review"
 	ManagementActionApproveConnection          ManagementAction = "connection.approve"
 	ManagementActionCancelConnectionReview     ManagementAction = "connection.cancel_review"
@@ -95,7 +97,7 @@ func (action ManagementAction) Resource() ResourceRef {
 	switch action {
 	case ManagementActionReviewConnection, ManagementActionApproveConnection, ManagementActionCancelConnectionReview, ManagementActionListConnections, ManagementActionRevokeConnection, ManagementActionSurfaceFile, ManagementActionSelectFileResource, ManagementActionApproveFileResource, ManagementActionCancelFileResource, ManagementActionListFileResources, ManagementActionRevokeFileResource:
 		return ResourcePlugin
-	case ManagementActionOpenSurface, ManagementActionPrepareSurface,
+	case ManagementActionSurfaceMethods, ManagementActionOpenSurface, ManagementActionPrepareSurface,
 		ManagementActionMintBridgeToken,
 		ManagementActionDisposeSurface:
 		return ResourceSurface
@@ -105,7 +107,7 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourceConfirmation
 	case ManagementActionCallPluginMethod, ManagementActionPrepareMethodConfirmation:
 		return ResourceMethod
-	case ManagementActionListIntents, ManagementActionInvokeIntent:
+	case ManagementActionListIntents, ManagementActionInvokeIntent, ManagementActionPrepareIntentConfirmation:
 		return ResourceIntent
 	case ManagementActionImportLocalPackage, ManagementActionInstallReleaseRef,
 		ManagementActionInspectExternalPackage, ManagementActionInstallInspectedPackage,

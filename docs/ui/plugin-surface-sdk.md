@@ -90,6 +90,75 @@ mapping, direction, and accessible controls. The examples consume the published
 Floe standalone stylesheet, current soft-neumorphic material, and
 flat/raised/inset/floating surface roles. They do not import a host shell.
 
+## Methods In A Live Application
+
+Declare a method with a surface route and an optional host-mediated intent:
+
+~~~json
+{
+  "method": "document.read",
+  "effect": "read",
+  "execution": "sync",
+  "route": { "kind": "surface", "surface_id": "editor" },
+  "request_schema": { "type": "object", "additionalProperties": false },
+  "response_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["document_id", "revision", "text"],
+    "properties": {
+      "document_id": { "type": "string" },
+      "revision": { "type": "integer", "minimum": 0 },
+      "text": { "type": "string" }
+    }
+  }
+}
+~~~
+
+After creating the bridge, register handlers for methods declared by the package:
+
+~~~ts
+const unregister = await bridge.registerMethod("document.read", (_params, { signal }) => {
+  signal.throwIfAborted();
+  return documents.currentSnapshot();
+});
+// When the application no longer offers this operation:
+await unregister();
+~~~
+
+Registration resolves only after Host acknowledgement. Duplicate or undeclared
+methods fail. Handlers receive JSON parameters and an AbortSignal; they never
+receive transport credentials. The application implements document identity,
+expected revision checks, selections, and undo transactions in its existing
+model. A write handler must return a declared business conflict result when
+its expected revision is stale. The platform does not infer those fields.
+
+The trusted parent calls PluginPlatformClient.invokeIntent with the exact
+surface_instance_id, plugin instance, intent and parameters. Omitting the
+surface is accepted only when exactly one matching registered application is
+live in the same authenticated four-hash session. The Host never opens a new
+window or selects an arbitrary editor to perform a write. Discovery exposes
+surface_id so product placement can locate the appropriate open container.
+Dangerous methods use prepareIntentConfirmation and the existing reviewed,
+one-shot confirmation ID. The confirmation binds parameters and receiver
+generation; navigation or a different window invalidates it.
+
+The platform owns registration CAS, a bounded queue, one-time claiming, response
+validation, cancellation, and Execution/Event termination. The limits are 128
+registered methods, 32 pending calls per surface, 1 MiB control messages, and
+30 seconds per invocation. Sync and operation executions are supported; surface
+subscriptions are not. Browser Workers remain ordinary application internals,
+not an alternative platform backend or a separate Agent execution channel.
+
+Unregistering rejects unclaimed calls as not_committed and does not replay
+claimed calls. After claiming a write, cancellation, navigation, lost delivery,
+or an invalid result can produce unknown; read authoritative application state
+before deciding whether a new edit is appropriate. Handler exceptions use a
+stable error without exposing stacks. Cancellation is cooperative inside the
+application, while Host authority and acceptance of late results are revoked
+independently. Gateway renewal preserves the receiver; document navigation
+closes the old receiver and registers a fresh one. Unknown registration or close
+outcomes invalidate only the exact surface. The parent SDK never retries claims.
+
 ## Management Client
 
 `PluginPlatformClient` is for trusted host pages. It wraps platform management

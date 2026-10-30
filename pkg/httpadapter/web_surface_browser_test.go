@@ -126,6 +126,16 @@ func TestNativeWebApplicationBrowser(t *testing.T) {
 		"surface_id": "plain.view", "kind": "view", "label": "Existing application", "entry": "ui/plain.html",
 		"web": map[string]any{"root": "ui", "spa": false},
 	})
+
+	emptySchema := map[string]any{"type": "object", "additionalProperties": false}
+	readSchema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"revision", "text", "selection"}, "properties": map[string]any{"revision": map[string]any{"type": "integer"}, "text": map[string]any{"type": "string"}, "selection": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "minItems": 2, "maxItems": 2}}}
+	applySchema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"expected_revision", "text"}, "properties": map[string]any{"expected_revision": map[string]any{"type": "integer"}, "text": map[string]any{"type": "string"}}}
+	resultSchema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"revision", "conflict"}, "properties": map[string]any{"revision": map[string]any{"type": "integer"}, "conflict": map[string]any{"type": "boolean"}}}
+	document["methods"] = []any{
+		map[string]any{"method": "document.read", "effect": "read", "execution": "sync", "route": map[string]any{"kind": "surface", "surface_id": "http.view"}, "request_schema": emptySchema, "response_schema": readSchema},
+		map[string]any{"method": "document.apply", "effect": "write", "execution": "sync", "route": map[string]any{"kind": "surface", "surface_id": "http.view"}, "request_schema": applySchema, "response_schema": resultSchema},
+	}
+	document["intents"] = []any{map[string]any{"intent_id": "document.read", "method": "document.read"}, map[string]any{"intent_id": "document.apply", "method": "document.apply"}}
 	manifestJSON, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)

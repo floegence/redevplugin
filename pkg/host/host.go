@@ -935,6 +935,7 @@ type CallMethodResult struct {
 }
 
 type IntentRecord struct {
+	SurfaceID         string                       `json:"surface_id,omitempty"`
 	PluginID          string                       `json:"plugin_id"`
 	PluginInstanceID  string                       `json:"plugin_instance_id"`
 	PublisherID       string                       `json:"publisher_id"`
@@ -954,11 +955,13 @@ type ListIntentsRequest struct {
 }
 
 type InvokeIntentRequest struct {
-	PluginInstanceID string         `json:"plugin_instance_id,omitempty"`
-	IntentID         string         `json:"intent_id"`
-	Params           map[string]any `json:"params,omitempty"`
-	Now              time.Time      `json:"-"`
-	session          sessionctx.Context
+	SurfaceInstanceID string         `json:"surface_instance_id,omitempty"`
+	ConfirmationID    string         `json:"confirmation_id,omitempty"`
+	PluginInstanceID  string         `json:"plugin_instance_id,omitempty"`
+	IntentID          string         `json:"intent_id"`
+	Params            map[string]any `json:"params,omitempty"`
+	Now               time.Time      `json:"-"`
+	session           sessionctx.Context
 }
 
 type workerInvocationPayload struct {
@@ -2496,86 +2499,19 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 		return CallMethodResult{}, err
 	}
 	resolvedCall = &call
-	if methodRequiresConfirmation(call.method) {
+	if methodRequiresConfirmation(call.method) && req.ConfirmationID == "" {
 		if err := h.validateMethodRequest(call.method, req.Params); err != nil {
 			return CallMethodResult{}, err
 		}
-		requestHash, err := methodRequestHash(call.method, req.Params)
+		hash, err := methodRequestHash(call.method, req.Params)
 		if err != nil {
 			return CallMethodResult{}, err
 		}
-		if req.ConfirmationID == "" {
-			return CallMethodResult{
-				ConfirmationRequired: true,
-				RequestHash:          requestHash,
-			}, ErrConfirmationRequired
-		}
-		confirmationAudit, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.confirmation.consumed", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
-		if err != nil {
-			return CallMethodResult{}, err
-		}
-		intent, consumeErr := h.consumeConfirmationIntent(ctx, req.session, req.ConfirmationID, req.Now)
-		if err := confirmationAudit.complete(context.WithoutCancel(ctx), consumeErr); err != nil {
-			if consumeErr != nil && !errors.Is(err, ErrSecurityEventPersistence) {
-				return CallMethodResult{}, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
-			}
-			return CallMethodResult{}, err
-		}
-		if intent.PluginInstanceID != call.record.PluginInstanceID ||
-			intent.SurfaceInstanceID != req.SurfaceInstanceID ||
-			intent.BridgeChannelID != req.BridgeChannelID ||
-			intent.Method != call.method.Method ||
-			intent.RequestHash != requestHash ||
-			intent.Scope.ActiveFingerprint != call.record.ActiveFingerprint ||
-			intent.Scope.OwnerSessionHash != req.session.OwnerSessionHash ||
-			intent.Scope.OwnerUserHash != req.session.OwnerUserHash ||
-			intent.Scope.OwnerEnvHash != req.session.OwnerEnvHash ||
-			intent.Scope.SessionChannelIDHash != req.session.SessionChannelIDHash ||
-			intent.Scope.PolicyRevision != call.record.PolicyRevision ||
-			intent.Scope.ManagementRevision != call.record.ManagementRevision ||
-			intent.Scope.RevokeEpoch != call.record.RevokeEpoch {
-			return CallMethodResult{}, ErrConfirmationInvalid
-		}
-		target, targetHash, err := h.resolveMethodConfirmationTarget(ctx, call.record, call.method, req)
-		if err != nil {
-			return CallMethodResult{}, err
-		}
-		if targetHash != intent.Scope.TargetDescriptorSHA256 {
-			return CallMethodResult{}, ErrConfirmationInvalid
-		}
-		_, currentPlanHash, err := h.prepareConfirmationPlan(ctx, call, req, requestHash)
-		if err != nil {
-			return CallMethodResult{}, err
-		}
-		if currentPlanHash != intent.PlanHash {
-			return CallMethodResult{}, ErrConfirmationInvalid
-		}
-		confirmationAudience := call.audience
-		confirmationAudience.ConfirmationID = intent.ConfirmationID
-		confirmationAudience.Method = call.method.Method
-		confirmationAudience.RequestHash = requestHash
-		confirmationAudience.PlanHash = intent.PlanHash
-		confirmationAudience.TargetDescriptorSHA256 = targetHash
-		if _, err := h.surfaceTokens.ValidateConfirmationTokenID(bridge.ValidateConfirmationTokenIDRequest{
-			ConfirmationTokenID: intent.ConfirmationTokenID,
-			Audience:            confirmationAudience,
-			Revision:            call.revision,
-			Now:                 req.Now,
-		}); err != nil {
-			return CallMethodResult{}, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
-		}
-		req.executionAuthorization = methodExecutionAuthorization{
-			confirmation: capability.ConfirmationEvidence{
-				Required:       true,
-				Confirmed:      true,
-				ConfirmationID: intent.ConfirmationID,
-				RequestSHA256:  intent.RequestHash,
-				PlanSHA256:     intent.PlanHash,
-				TargetSHA256:   targetHash,
-			},
-			target:     target,
-			targetHash: targetHash,
-		}
+		return CallMethodResult{ConfirmationRequired: true, RequestHash: hash}, ErrConfirmationRequired
+	}
+	req, err = h.consumeMethodConfirmation(ctx, call, req)
+	if err != nil {
+		return CallMethodResult{}, err
 	}
 	result, err = h.dispatchMethod(ctx, call.record, call.method, req)
 	if err != nil {
@@ -2630,6 +2566,12 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodC
 	if err != nil {
 		return PrepareMethodConfirmationResult{}, err
 	}
+	return h.prepareResolvedMethodConfirmation(ctx, call, callRequest)
+}
+
+func (h *Host) prepareResolvedMethodConfirmation(ctx context.Context, call resolvedMethodCall, callRequest CallMethodRequest) (response PrepareMethodConfirmationResult, resultErr error) {
+	req := callRequest
+	session := req.session
 	if !methodRequiresConfirmation(call.method) {
 		return PrepareMethodConfirmationResult{}, errors.New("method does not require confirmation")
 	}
@@ -2858,6 +2800,7 @@ func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]Inten
 				Effect:            method.Effect,
 				Execution:         method.Execution,
 				PayloadSchema:     cloneParams(intent.PayloadSchema),
+				SurfaceID:         method.Route.SurfaceID,
 			})
 		}
 	}
@@ -2904,25 +2847,45 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (respo
 	if err := h.authorizeResolvedIntent(ctx, req, resolved); err != nil {
 		return CallMethodResult{}, err
 	}
-	if methodRequiresConfirmation(resolved.method) {
-		if err := h.validateMethodRequest(resolved.method, req.Params); err != nil {
+	callReq := CallMethodRequest{PluginInstanceID: resolved.record.PluginInstanceID, SurfaceInstanceID: req.SurfaceInstanceID, ConfirmationID: req.ConfirmationID, Method: resolved.method.Method, Params: req.Params, Now: req.Now, session: session}
+	callReq.Params, err = deepCloneParams(req.Params)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	if resolved.method.Route.Kind == manifest.MethodRouteSurface {
+		receiver, bound, resolveErr := h.resolveSurfaceMethodTarget(ctx, resolved.record, resolved.method, callReq)
+		if resolveErr != nil {
+			return CallMethodResult{}, resolveErr
+		}
+		callReq.SurfaceInstanceID = bound.Audience.SurfaceInstanceID
+		callReq.BridgeChannelID = bound.Audience.BridgeChannelID
+		_, callReq.executionAuthorization.targetHash, err = surfaceMethodTarget(receiver, bound)
+		if err != nil {
 			return CallMethodResult{}, err
 		}
-		requestHash, hashErr := methodRequestHash(resolved.method, req.Params)
+		if methodRequiresConfirmation(resolved.method) && req.ConfirmationID == "" {
+			if err := h.validateMethodRequest(resolved.method, callReq.Params); err != nil {
+				return CallMethodResult{}, err
+			}
+			hash, hashErr := methodRequestHash(resolved.method, callReq.Params)
+			if hashErr != nil {
+				return CallMethodResult{}, hashErr
+			}
+			return CallMethodResult{ConfirmationRequired: true, RequestHash: hash}, ErrConfirmationRequired
+		}
+		callReq, err = h.consumeMethodConfirmation(ctx, resolvedMethodCall{record: resolved.record, method: resolved.method, audience: bound.Audience, revision: bound.Revision}, callReq)
+		if err != nil {
+			return CallMethodResult{}, err
+		}
+	} else if methodRequiresConfirmation(resolved.method) {
+		if err := h.validateMethodRequest(resolved.method, callReq.Params); err != nil {
+			return CallMethodResult{}, err
+		}
+		hash, hashErr := methodRequestHash(resolved.method, callReq.Params)
 		if hashErr != nil {
 			return CallMethodResult{}, hashErr
 		}
-		return CallMethodResult{
-			ConfirmationRequired: true,
-			RequestHash:          requestHash,
-		}, ErrConfirmationRequired
-	}
-	callReq := CallMethodRequest{
-		PluginInstanceID: resolved.record.PluginInstanceID,
-		Method:           resolved.method.Method,
-		Params:           cloneParams(req.Params),
-		Now:              req.Now,
-		session:          session,
+		return CallMethodResult{ConfirmationRequired: true, RequestHash: hash}, ErrConfirmationRequired
 	}
 	result, err := h.dispatchMethod(ctx, resolved.record, resolved.method, callReq)
 	if err != nil {
@@ -6626,6 +6589,13 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if err != nil {
 			err = normalizeCapabilityBusinessError(resolved.contract.Contract, err)
 		}
+	case manifest.MethodRouteSurface:
+		surfaceDispatch, surfaceErr := h.invokeSurfaceMethod(ctx, record, method, req)
+		result = surfaceDispatch.result
+		executionID = surfaceDispatch.executionID
+		finish = surfaceDispatch.finish
+		dispatched = surfaceDispatch.dispatched
+		err = surfaceErr
 	case manifest.MethodRouteWorker:
 		workerDispatch, workerErr := h.invokeWorker(ctx, record, method, req)
 		result = workerDispatch.result
@@ -7635,6 +7605,12 @@ func methodRequiresConfirmation(method manifest.MethodSpec) bool {
 
 func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (capability.TargetDescriptor, string, error) {
 	switch method.Route.Kind {
+	case manifest.MethodRouteSurface:
+		receiver, bound, err := h.resolveSurfaceMethodTarget(ctx, record, method, req)
+		if err != nil {
+			return capability.TargetDescriptor{}, "", err
+		}
+		return surfaceMethodTarget(receiver, bound)
 	case manifest.MethodRouteCapability:
 		resolved, err := h.resolveCapabilityMethod(record, method)
 		if err != nil {
@@ -8520,4 +8496,86 @@ func ImportLocalPackageBytes(ctx context.Context, h *Host, pluginInstanceID stri
 		PackageSize:      int64(len(data)),
 		PluginInstanceID: pluginInstanceID,
 	})
+}
+
+func (h *Host) consumeMethodConfirmation(ctx context.Context, call resolvedMethodCall, req CallMethodRequest) (CallMethodRequest, error) {
+	if methodRequiresConfirmation(call.method) {
+		if err := h.validateMethodRequest(call.method, req.Params); err != nil {
+			return req, err
+		}
+		requestHash, err := methodRequestHash(call.method, req.Params)
+		if err != nil {
+			return req, err
+		}
+		if req.ConfirmationID == "" {
+			return req, ErrConfirmationRequired
+		}
+		confirmationAudit, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.confirmation.consumed", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
+		if err != nil {
+			return req, err
+		}
+		intent, consumeErr := h.consumeConfirmationIntent(ctx, req.session, req.ConfirmationID, req.Now)
+		if err := confirmationAudit.complete(context.WithoutCancel(ctx), consumeErr); err != nil {
+			if consumeErr != nil && !errors.Is(err, ErrSecurityEventPersistence) {
+				return req, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
+			}
+			return req, err
+		}
+		if intent.PluginInstanceID != call.record.PluginInstanceID ||
+			intent.SurfaceInstanceID != req.SurfaceInstanceID ||
+			intent.BridgeChannelID != req.BridgeChannelID ||
+			intent.Method != call.method.Method ||
+			intent.RequestHash != requestHash ||
+			intent.Scope.ActiveFingerprint != call.record.ActiveFingerprint ||
+			intent.Scope.OwnerSessionHash != req.session.OwnerSessionHash ||
+			intent.Scope.OwnerUserHash != req.session.OwnerUserHash ||
+			intent.Scope.OwnerEnvHash != req.session.OwnerEnvHash ||
+			intent.Scope.SessionChannelIDHash != req.session.SessionChannelIDHash ||
+			intent.Scope.PolicyRevision != call.record.PolicyRevision ||
+			intent.Scope.ManagementRevision != call.record.ManagementRevision ||
+			intent.Scope.RevokeEpoch != call.record.RevokeEpoch {
+			return req, ErrConfirmationInvalid
+		}
+		target, targetHash, err := h.resolveMethodConfirmationTarget(ctx, call.record, call.method, req)
+		if err != nil {
+			return req, err
+		}
+		if targetHash != intent.Scope.TargetDescriptorSHA256 {
+			return req, ErrConfirmationInvalid
+		}
+		_, currentPlanHash, err := h.prepareConfirmationPlan(ctx, call, req, requestHash)
+		if err != nil {
+			return req, err
+		}
+		if currentPlanHash != intent.PlanHash {
+			return req, ErrConfirmationInvalid
+		}
+		confirmationAudience := call.audience
+		confirmationAudience.ConfirmationID = intent.ConfirmationID
+		confirmationAudience.Method = call.method.Method
+		confirmationAudience.RequestHash = requestHash
+		confirmationAudience.PlanHash = intent.PlanHash
+		confirmationAudience.TargetDescriptorSHA256 = targetHash
+		if _, err := h.surfaceTokens.ValidateConfirmationTokenID(bridge.ValidateConfirmationTokenIDRequest{
+			ConfirmationTokenID: intent.ConfirmationTokenID,
+			Audience:            confirmationAudience,
+			Revision:            call.revision,
+			Now:                 req.Now,
+		}); err != nil {
+			return req, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
+		}
+		req.executionAuthorization = methodExecutionAuthorization{
+			confirmation: capability.ConfirmationEvidence{
+				Required:       true,
+				Confirmed:      true,
+				ConfirmationID: intent.ConfirmationID,
+				RequestSHA256:  intent.RequestHash,
+				PlanSHA256:     intent.PlanHash,
+				TargetSHA256:   targetHash,
+			},
+			target:     target,
+			targetHash: targetHash,
+		}
+	}
+	return req, nil
 }

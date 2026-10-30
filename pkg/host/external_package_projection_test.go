@@ -300,7 +300,7 @@ func TestExternalPackageSecuritySummaryJSONFieldsMatchOpenAPI(t *testing.T) {
 		want  []string
 	}{
 		{value: ExternalPackagePermissionSummary{}, want: []string{"effects", "methods", "permission_id", "required"}},
-		{value: ExternalPackageMethodRouteSummary{}, want: []string{"action_id", "binding_id", "kind", "target_method", "worker_id"}},
+		{value: ExternalPackageMethodRouteSummary{}, want: []string{"action_id", "binding_id", "kind", "surface_id", "target_method", "worker_id"}},
 		{value: ExternalPackageConfirmationSummary{}, want: []string{"mode", "plan_hash_required", "preflight_method", "request_hash_fields"}},
 		{value: ExternalPackageCancelSummary{}, want: []string{"ack_timeout_ms", "cancelable", "disable_behavior", "uninstall_behavior"}},
 		{value: ExternalPackageMethodSummary{}, want: []string{"cancel", "confirmation", "dangerous", "effect", "execution", "method", "preflight_only", "required_permissions", "route"}},

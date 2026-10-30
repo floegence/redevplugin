@@ -58,6 +58,7 @@ type webSurfaceBinding struct {
 	resourceToken    string
 	entered          bool
 	gatewayReady     bool
+	methodReceiver   *surfaceMethodReceiver
 	expiresAt        time.Time
 	pluginInstanceID string
 }

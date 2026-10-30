@@ -71,3 +71,18 @@ saveFile.addEventListener("click", () => { void (async () => {
     fileStatus.textContent = "Saved";
   } catch (error) { fileStatus.textContent = String(error); }
 })(); });
+
+let documentRevision = 0;
+editor.addEventListener("input", () => { documentRevision++; });
+await bridge.registerMethod("document.read", () => ({ revision: documentRevision, text: editor.value, selection: [editor.selectionStart, editor.selectionEnd] }));
+await bridge.registerMethod("document.apply", (params, { signal }) => {
+  signal.throwIfAborted();
+  if (params.expected_revision !== documentRevision) return { revision: documentRevision, conflict: true };
+  editor.focus();
+  editor.select();
+  // This fixture exercises the browser's native editing history. Real editors
+  // integrate the same operation with their own document transaction model.
+  if (!document.execCommand("insertText", false, String(params.text))) throw new Error("Native editing transaction failed");
+  return { revision: documentRevision, conflict: false };
+});
+Object.assign(state, { methodsReady: true });
