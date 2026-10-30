@@ -2,7 +2,7 @@
 
 ## v3.8.0
 
-- Publish strict security-summary normalization, canonical JSON, and SHA-256 APIs in the contracts npm package, with types and validators generated from the platform OpenAPI schema.
+- Publish strict security-summary normalization, standalone JSON Schema, canonical JSON, and SHA-256 APIs in the contracts npm package, with types and validators generated from the platform OpenAPI schema.
 - Bind optional process and background declarations into the Go summary digest without a second payload field list. Preserve existing hashes when those declarations are absent.
 - Preserve required empty method-access arrays for declared network and storage resources. Reject unknown fields, null collections, invalid values, and unsafe numbers without downstream adapters.
 - Share canonical byte fixtures across Go and TypeScript for native Web routes, configurable connections, execution declarations, Unicode and numeric boundaries; include the fixtures in the exact release contract set.

@@ -27,3 +27,8 @@ Compare the calculated digest to the claimed digest explicitly; normalization
 does not establish package trust, installation authority, or permission grants.
 Markets and hosts should consume these APIs rather than keep their own field
 allowlists, summary DTOs, or hash payload builders.
+
+`securitySummaryJSONSchema` exposes the same generated contract as a standalone
+JSON Schema 2020-12 document with local definitions. Use it to generate a
+downstream schema file or validate transport evidence without copying field
+definitions. Treat the exported schema as immutable.

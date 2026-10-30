@@ -1006,3 +1006,846 @@ export const securitySummarySchemas = {
     }
   }
 } as const;
+
+export const securitySummaryJSONSchema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/ExternalPackageSecuritySummary",
+  "$defs": {
+    "ExternalPackageSecuritySummary": {
+      "type": "object",
+      "required": [
+        "summary_sha256",
+        "permissions",
+        "methods",
+        "capability_contracts",
+        "workers",
+        "network",
+        "storage",
+        "secret_refs",
+        "core_actions",
+        "intents",
+        "surfaces"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "summary_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackagePermissionSummary"
+          }
+        },
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageMethodSummary"
+          }
+        },
+        "capability_contracts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageCapabilityContractSummary"
+          }
+        },
+        "workers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageWorkerSummary"
+          }
+        },
+        "process": {
+          "$ref": "#/$defs/ExternalPackageProcessSummary"
+        },
+        "background": {
+          "$ref": "#/$defs/ExternalPackageBackgroundSummary"
+        },
+        "network": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageNetworkSummary"
+          }
+        },
+        "storage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageStorageSummary"
+          }
+        },
+        "secret_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageSecretRefSummary"
+          }
+        },
+        "core_actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageCoreActionSummary"
+          }
+        },
+        "intents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageIntentSummary"
+          }
+        },
+        "surfaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageSurfaceSummary"
+          }
+        }
+      }
+    },
+    "ExternalPackagePermissionSummary": {
+      "type": "object",
+      "required": [
+        "permission_id",
+        "methods",
+        "required",
+        "effects"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "permission_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "methods": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": {
+          "type": "boolean",
+          "const": true
+        },
+        "effects": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "delete",
+              "execute",
+              "admin"
+            ]
+          }
+        }
+      }
+    },
+    "ExternalPackageMethodSummary": {
+      "type": "object",
+      "required": [
+        "method",
+        "route",
+        "effect",
+        "execution",
+        "dangerous",
+        "preflight_only",
+        "required_permissions",
+        "confirmation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route": {
+          "$ref": "#/$defs/ExternalPackageMethodRouteSummary"
+        },
+        "effect": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write",
+            "delete",
+            "execute",
+            "admin"
+          ]
+        },
+        "execution": {
+          "type": "string",
+          "enum": [
+            "sync",
+            "operation",
+            "subscription"
+          ]
+        },
+        "dangerous": {
+          "type": "boolean"
+        },
+        "preflight_only": {
+          "type": "boolean"
+        },
+        "required_permissions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "confirmation": {
+          "$ref": "#/$defs/ExternalPackageConfirmationSummary"
+        },
+        "cancel": {
+          "$ref": "#/$defs/ExternalPackageCancelSummary"
+        }
+      }
+    },
+    "ExternalPackageMethodRouteSummary": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "surface_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "capability",
+            "worker",
+            "core_action",
+            "surface"
+          ]
+        },
+        "binding_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ExternalPackageConfirmationSummary": {
+      "type": "object",
+      "required": [
+        "mode",
+        "request_hash_fields",
+        "plan_hash_required"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "required",
+            "risk_based"
+          ]
+        },
+        "preflight_method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_hash_fields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "plan_hash_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ExternalPackageCancelSummary": {
+      "type": "object",
+      "required": [
+        "cancelable",
+        "disable_behavior",
+        "uninstall_behavior",
+        "ack_timeout_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "cancelable": {
+          "type": "boolean"
+        },
+        "disable_behavior": {
+          "type": "string",
+          "enum": [
+            "cancel",
+            "orphan",
+            "wait"
+          ]
+        },
+        "uninstall_behavior": {
+          "type": "string",
+          "enum": [
+            "cancel_then_block_delete",
+            "force_cleanup_allowed"
+          ]
+        },
+        "ack_timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "ExternalPackageCapabilityContractSummary": {
+      "type": "object",
+      "required": [
+        "binding_id",
+        "capability_id",
+        "capability_version",
+        "contract_sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "binding_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capability_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capability_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "ExternalPackageWorkerSummary": {
+      "type": "object",
+      "required": [
+        "worker_id",
+        "artifact",
+        "mode",
+        "scope",
+        "memory_limit_bytes",
+        "idle_timeout_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "worker_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "const": "job"
+        },
+        "scope": {
+          "$ref": "#/$defs/ResourceScopeKind"
+        },
+        "memory_limit_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456
+        },
+        "idle_timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "ResourceScopeKind": {
+      "type": "string",
+      "enum": [
+        "user",
+        "environment"
+      ]
+    },
+    "ExternalPackageProcessSummary": {
+      "type": "object",
+      "required": [
+        "resource_limits",
+        "method_access"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "resource_limits": {
+          "$ref": "#/$defs/ExternalPackageProcessResourceLimits"
+        },
+        "method_access": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageProcessMethodAccessSummary"
+          }
+        }
+      }
+    },
+    "ExternalPackageProcessResourceLimits": {
+      "type": "object",
+      "required": [
+        "output_buffer_bytes",
+        "max_runtime_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "output_buffer_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216
+        },
+        "max_runtime_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400000
+        }
+      }
+    },
+    "ExternalPackageProcessMethodAccessSummary": {
+      "type": "object",
+      "required": [
+        "method",
+        "operations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "start",
+              "attach",
+              "status",
+              "write_stdin",
+              "close_stdin",
+              "read_stdout",
+              "read_stderr",
+              "wait",
+              "terminate",
+              "kill",
+              "close"
+            ]
+          }
+        }
+      }
+    },
+    "ExternalPackageBackgroundSummary": {
+      "type": "object",
+      "required": [
+        "strategy",
+        "worker_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "runtime_start",
+            "on_demand"
+          ]
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ExternalPackageNetworkSummary": {
+      "type": "object",
+      "required": [
+        "connector_id",
+        "transport",
+        "scope",
+        "destinations",
+        "auth_declared",
+        "tls_declared",
+        "method_access",
+        "configurable",
+        "surface_access"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "configurable": {
+          "type": "boolean"
+        },
+        "surface_access": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageNetworkSurfaceAccessSummary"
+          }
+        },
+        "connector_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "type": "string",
+          "enum": [
+            "http",
+            "websocket",
+            "tcp",
+            "udp"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/ResourceScopeKind"
+        },
+        "destinations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "auth_declared": {
+          "type": "boolean"
+        },
+        "tls_declared": {
+          "type": "boolean"
+        },
+        "method_access": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageNetworkMethodAccessSummary"
+          }
+        }
+      }
+    },
+    "ExternalPackageNetworkSurfaceAccessSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface_id",
+        "operations",
+        "http_methods"
+      ],
+      "properties": {
+        "surface_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "http",
+              "http_stream"
+            ]
+          }
+        },
+        "http_methods": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "GET",
+              "HEAD",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE",
+              "OPTIONS"
+            ]
+          }
+        }
+      }
+    },
+    "ExternalPackageNetworkMethodAccessSummary": {
+      "type": "object",
+      "required": [
+        "method",
+        "operations",
+        "http_methods"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "http",
+              "http_stream",
+              "websocket",
+              "tcp",
+              "udp"
+            ]
+          }
+        },
+        "http_methods": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "HEAD",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE",
+              "OPTIONS"
+            ]
+          }
+        }
+      }
+    },
+    "ExternalPackageStorageSummary": {
+      "type": "object",
+      "required": [
+        "store_id",
+        "kind",
+        "scope",
+        "quota_bytes",
+        "schema_version",
+        "method_access"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "kv",
+            "files",
+            "sqlite"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/ResourceScopeKind"
+        },
+        "quota_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "quota_files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "method_access": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageStorageMethodAccessSummary"
+          }
+        }
+      }
+    },
+    "ExternalPackageStorageMethodAccessSummary": {
+      "type": "object",
+      "required": [
+        "method",
+        "operations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "delete",
+              "list",
+              "get",
+              "put",
+              "query",
+              "exec"
+            ]
+          }
+        }
+      }
+    },
+    "ExternalPackageSecretRefSummary": {
+      "type": "object",
+      "required": [
+        "setting_key",
+        "secret_ref",
+        "scope"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "setting_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "secret_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/ResourceScopeKind"
+        }
+      }
+    },
+    "ExternalPackageCoreActionSummary": {
+      "type": "object",
+      "required": [
+        "method",
+        "action_id",
+        "effect"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effect": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write",
+            "delete",
+            "execute",
+            "admin"
+          ]
+        }
+      }
+    },
+    "ExternalPackageIntentSummary": {
+      "type": "object",
+      "required": [
+        "intent_id",
+        "method"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "intent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ExternalPackageSurfaceSummary": {
+      "type": "object",
+      "required": [
+        "surface_id",
+        "kind",
+        "intent",
+        "label",
+        "entry"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "surface_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "view",
+            "command",
+            "background"
+          ]
+        },
+        "intent": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "secondary",
+            "utility"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entry": {
+          "type": "string",
+          "minLength": 1
+        },
+        "icon": {
+          "type": "string",
+          "minLength": 1
+        },
+        "default_size": {
+          "$ref": "#/$defs/ExternalPackageSizeSummary"
+        }
+      }
+    },
+    "ExternalPackageSizeSummary": {
+      "type": "object",
+      "required": [
+        "width",
+        "height"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+} as const;
