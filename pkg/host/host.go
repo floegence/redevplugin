@@ -6327,6 +6327,10 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 		}
 		set[key] = raw
 	}
+	secretMetadata, err := h.settingsSecretMetadata(ctx, record, scope)
+	if err != nil {
+		return SettingsResult{}, err
+	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.settings.updated", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if err != nil {
 		return SettingsResult{}, err
@@ -6344,10 +6348,6 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 			return SettingsResult{}, errors.Join(ErrOwnerScopeMismatch, err)
 		}
 		return SettingsResult{}, err
-	}
-	secretMetadata, err := h.settingsSecretMetadata(ctx, record, scope)
-	if err != nil {
-		return SettingsResult{}, mutation.Unknown(err)
 	}
 	return pluginSettingsResult(record, snapshot, secretMetadata)
 }
@@ -8343,6 +8343,20 @@ func storageNamespaceByStoreID(record registry.PluginRecord, storeID string) (st
 }
 
 func (h *Host) settingsSecretMetadata(ctx context.Context, record registry.PluginRecord, requestedScope sessionctx.ScopeKind) ([]SettingsSecretMetadata, error) {
+	metadata := make([]SettingsSecretMetadata, 0)
+	for _, field := range record.Manifest.Settings.Fields {
+		if field.Type == settings.FieldSecret && sessionctx.ScopeKind(field.Scope) == requestedScope {
+			metadata = append(metadata, SettingsSecretMetadata{
+				Key: field.Key, SecretRef: strings.TrimSpace(field.SecretRef), Scope: strings.TrimSpace(field.Scope),
+			})
+		}
+	}
+	if len(metadata) == 0 {
+		return metadata, nil
+	}
+	if err := h.requireFeature(FeatureSecrets); err != nil {
+		return nil, err
+	}
 	records, err := h.adapters.Secrets.List(ctx, secrets.ListRequest{PluginInstanceID: record.PluginInstanceID})
 	if err != nil {
 		return nil, err
@@ -8351,16 +8365,9 @@ func (h *Host) settingsSecretMetadata(ctx context.Context, record registry.Plugi
 	for _, item := range records {
 		recordByRef[item.Scope+"\x00"+item.SecretRef] = item
 	}
-	metadata := make([]SettingsSecretMetadata, 0)
-	for _, field := range record.Manifest.Settings.Fields {
-		if field.Type != settings.FieldSecret || sessionctx.ScopeKind(field.Scope) != requestedScope {
-			continue
-		}
-		secretRef := strings.TrimSpace(field.SecretRef)
-		scope := strings.TrimSpace(field.Scope)
-		lookupKey := scope + "\x00" + secretRef
-		item := SettingsSecretMetadata{Key: field.Key, SecretRef: secretRef, Scope: scope}
-		if stored, exists := recordByRef[lookupKey]; exists {
+	for i := range metadata {
+		item := &metadata[i]
+		if stored, exists := recordByRef[item.Scope+"\x00"+item.SecretRef]; exists {
 			item.Bound = stored.Bound
 			item.LastTestStatus = stored.LastTestStatus
 			item.BoundAt = stored.BoundAt
@@ -8368,7 +8375,6 @@ func (h *Host) settingsSecretMetadata(ctx context.Context, record registry.Plugi
 			updatedAt := stored.UpdatedAt
 			item.UpdatedAt = &updatedAt
 		}
-		metadata = append(metadata, item)
 	}
 	return metadata, nil
 }

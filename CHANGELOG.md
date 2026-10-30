@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.7.4
+
+- Keep ordinary settings available with a Core-only Host and while an unrelated secret store is unavailable. Return an empty secret metadata array when the requested scope declares no secret fields.
+- Require the Secrets module only for scoped secret metadata, with the existing explicit feature-not-configured error instead of a nil-adapter panic.
+- Resolve required secret metadata before patching settings so a known unavailable authority rejects the operation without committing values or producing an unknown write outcome.
+- Cover Core-only reads and writes, persisted revisions, scope isolation, unavailable adapters, and unchanged secret authority behavior.
+
 ## v3.7.3
 
 - Preserve required JSON arrays in author presentation catalogs and locale resolution, including empty highlights, surfaces and setting options.

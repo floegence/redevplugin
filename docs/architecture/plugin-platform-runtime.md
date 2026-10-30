@@ -466,6 +466,14 @@ target management revision before publishing a new generation.
 
 ## Runtime State Model
 
+Ordinary settings require only Core. A requested owner scope without secret
+fields returns an empty `secret_metadata` array without contacting a vault. If
+that scope declares secret fields, the configured Secrets module is their sole
+metadata authority; a missing module returns the existing feature-not-configured
+error. Settings patches resolve this metadata before committing values, so a
+known unavailable secret authority rejects the operation without changing the
+settings revision. Secret binding and settings values retain separate authority.
+
 ReDevPlugin uses explicit authorities instead of implicit process memory:
 
 - control records track installed plugin package, lifecycle, grants, runtime,

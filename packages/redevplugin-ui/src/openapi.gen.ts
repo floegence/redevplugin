@@ -1055,6 +1055,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Read values and redacted secret metadata for the requested owner scope. A scope without secret fields does not require or contact the Secrets module. */
         post: operations["getPluginSettings"];
         delete?: never;
         options?: never;
@@ -1075,6 +1076,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /** @description Patch ordinary settings using the expected values revision. When the requested scope declares secret fields, resolve their metadata before committing values; an unavailable secret authority rejects the write without mutation. */
         patch: operations["patchPluginSettings"];
         trace?: never;
     };
@@ -1894,6 +1896,7 @@ export interface components {
             values: {
                 [key: string]: unknown;
             };
+            /** @description An empty array when the requested owner scope declares no secret fields. Otherwise the configured Secrets module is the sole metadata authority. */
             secret_metadata: components["schemas"]["PluginSettingsSecretMetadata"][];
         };
         PluginSettingsSecretMetadata: {

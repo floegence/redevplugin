@@ -3812,7 +3812,7 @@ func TestHandlerRuntimeModuleAbsenceUsesStableUnavailableResponse(t *testing.T) 
 	}
 }
 
-func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *testing.T) {
+func TestHandlerPatchSettingsRejectsUnavailableMetadataBeforeCommit(t *testing.T) {
 	secretStore := &httpRecordingSecretStore{listErr: errors.New("secret metadata unavailable")}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secretStore})
 	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSettingsFixturePackage(t))
@@ -3832,14 +3832,14 @@ func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *t
 		"expected_values_revision": 1,
 		"set":                      map[string]any{"default_engine": "podman"},
 	}, http.StatusForbidden)
-	if envelope.MutationOutcome != string(mutation.OutcomeUnknown) {
-		t.Fatalf("settings mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeUnknown, envelope)
+	if envelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("settings mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeNotCommitted, envelope)
 	}
 
 	secretStore.listErr = nil
 	snapshot := postJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings/query", map[string]any{"scope": "user"})
-	if snapshot.ValuesRevision != 2 || snapshot.Values["default_engine"] != "podman" {
-		t.Fatalf("committed settings snapshot mismatch: %#v", snapshot)
+	if snapshot.ValuesRevision != 1 || snapshot.Values["default_engine"] != "docker" {
+		t.Fatalf("settings changed after rejected preflight: %#v", snapshot)
 	}
 }
 
