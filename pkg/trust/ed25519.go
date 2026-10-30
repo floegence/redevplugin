@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 const AlgorithmEd25519 = pluginpkg.PackageSignatureAlgorithmEd25519
@@ -122,7 +122,8 @@ func (v Ed25519Verifier) VerifyPackageTrust(ctx context.Context, req host.Packag
 	if err != nil || len(signature) != ed25519.SignatureSize {
 		return host.PackageTrustVerificationResult{}, ErrSignatureInvalid
 	}
-	if !ed25519.Verify(key.PublicKey, payload, signature) {
+	digest := sha256.Sum256(payload)
+	if !ed25519.Verify(key.PublicKey, digest[:], signature) {
 		return host.PackageTrustVerificationResult{}, ErrSignatureInvalid
 	}
 	return host.PackageTrustVerificationResult{
@@ -186,7 +187,8 @@ func (v Ed25519Verifier) AssessExternalPackageSignature(ctx context.Context, req
 		return setStatus(registry.SignatureInvalid, "signature_payload_invalid")
 	}
 	signature, err := base64.StdEncoding.DecodeString(sig.Signature)
-	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(key.PublicKey, payload, signature) {
+	digest := sha256.Sum256(payload)
+	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(key.PublicKey, digest[:], signature) {
 		return setStatus(registry.SignatureInvalid, "signature_verification_failed")
 	}
 	result.Status = registry.SignatureVerified
@@ -285,30 +287,10 @@ func trustRequestFromPolicy(req host.PackageTrustVerificationRequest) (registry.
 	return registry.TrustVerified, true, nil
 }
 
-type packageSignaturePayload struct {
-	SchemaVersion string `json:"schema_version"`
-	Algorithm     string `json:"algorithm"`
-	KeyID         string `json:"key_id"`
-	PublisherID   string `json:"publisher_id,omitempty"`
-	PluginID      string `json:"plugin_id,omitempty"`
-	PackageHash   string `json:"package_hash"`
-	ManifestHash  string `json:"manifest_hash"`
-	EntriesHash   string `json:"entries_hash"`
-	SignedAt      string `json:"signed_at,omitempty"`
-}
-
+// CanonicalPackageSignaturePayload returns the platform's single domain-separated
+// signing preimage. Ed25519 signs its SHA-256 digest, as external signers do.
 func CanonicalPackageSignaturePayload(sig pluginpkg.PackageSignature) ([]byte, error) {
-	return json.Marshal(packageSignaturePayload{
-		SchemaVersion: sig.SchemaVersion,
-		Algorithm:     sig.Algorithm,
-		KeyID:         sig.KeyID,
-		PublisherID:   sig.PublisherID,
-		PluginID:      sig.PluginID,
-		PackageHash:   sig.PackageHash,
-		ManifestHash:  sig.ManifestHash,
-		EntriesHash:   sig.EntriesHash,
-		SignedAt:      sig.SignedAt,
-	})
+	return releasecontract.PackageSignatureSigningPreimage(releasecontract.PackageSignatureV1(sig))
 }
 
 func SignatureForPackage(pkg pluginpkg.Package, keyID string, publisherID string, pluginID string, privateKey ed25519.PrivateKey, signedAt time.Time) (pluginpkg.PackageSignature, error) {
@@ -338,7 +320,8 @@ func SignatureForPackage(pkg pluginpkg.Package, keyID string, publisherID string
 	if err != nil {
 		return pluginpkg.PackageSignature{}, err
 	}
-	signature := ed25519.Sign(privateKey, payload)
+	digest := sha256.Sum256(payload)
+	signature := ed25519.Sign(privateKey, digest[:])
 	sig.Signature = base64.StdEncoding.EncodeToString(signature)
 	return sig, nil
 }

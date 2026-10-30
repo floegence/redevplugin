@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.7.2
+
+- Unify local package signing, external-signer publication, release verification, and Host admission on one domain-separated SHA-256 package preimage.
+- Keep source, channel, version and distribution authorization in the independently verified release metadata and source policy; package identity remains portable.
+- Verify embedded signatures during publication and cover publish-to-admission, revoked keys, tampering and cross-language fixtures.
+- Require newly signed packages for the corrected preimage; reject prior raw-JSON and release-context package signatures without compatibility fallback.
+
 ## v3.7.1
 
 - Accept exact canonical HTTP loopback IP parent origins for native host listeners without rewriting their authenticated identity.

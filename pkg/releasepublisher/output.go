@@ -212,6 +212,14 @@ func verifyOutputSnapshot(ctx context.Context, output string, contracts []capabi
 		return ErrInvalidWorkspace
 	}
 	presentation := pkg.Manifest.PresentationCatalog()
+	// Verify the exact embedded envelope through the same portable preimage as
+	// Host admission, not only the detached release artifact's signature bytes.
+	if err := releasecontract.VerifyPackageSignature(
+		releasecontract.PackageVerificationContext{SourceID: reference.ReleaseRef.SourceID, Channel: reference.ReleaseRef.Channel, Version: pkg.Manifest.Version()},
+		releasecontract.PackageSignatureV1(*pkg.PackageSignature), verifier,
+	); err != nil {
+		return err
+	}
 	presentationSHA256, err := manifest.PresentationCatalogSHA256(presentation)
 	if err != nil {
 		return err

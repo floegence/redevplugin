@@ -61,6 +61,18 @@ messages.
 
 ## Signatures And Trust
 
+All package entry points use one preimage from
+releasecontract.PackageSignatureSigningPreimage: the signing domain prefix,
+package usage, and canonical signature object with its signature field removed.
+Ed25519 signs its SHA-256 digest. Local signing, release external-signer
+requests, release verification, and Host admission share that exact operation.
+The manifest hash already binds the plugin version. Source, channel, and
+distribution authorization belong to the independently signed release metadata
+and source policy; local package inspection does not guess them. Version 3.7.2
+rejects both previous incompatible signature encodings. Affected packages must
+be rebuilt and signed at a new immutable release coordinate; no trusted-key or
+integrity bypass is provided.
+
 Detached package signatures live in `signatures/package.sig`. Signature metadata
 is retained for trust verification but excluded from canonical package entries
 and canonical package hashes, avoiding self-referential signatures. The

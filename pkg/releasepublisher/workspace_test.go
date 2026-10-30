@@ -15,8 +15,11 @@ import (
 	"testing"
 
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/pkg/trust"
 )
 
 func TestPublisherWorkspaceCompletesExternalSigningFlow(t *testing.T) {
@@ -106,6 +109,30 @@ func finalizeTestRelease(t *testing.T, ctx context.Context, packageDir string, c
 	output := filepath.Join(t.TempDir(), "release")
 	if _, err := Finalize(ctx, workspace, output, contracts...); err != nil {
 		t.Fatal(err)
+	}
+	packageBytes, err := os.ReadFile(mustSingleMatch(t, filepath.Join(output, "*.redevplugin")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := pluginpkg.Read(ctx, bytes.NewReader(packageBytes), int64(len(packageBytes)), pluginpkg.DefaultReadLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := trust.Ed25519Verifier{Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
+		Algorithm: "ed25519", KeyID: config.Signing.KeyID, PublicKey: signingPublic,
+	}}}}
+	assessment, err := verifier.AssessExternalPackageSignature(ctx, host.ExternalPackageSignatureAssessmentRequest{Package: pkg})
+	if err != nil || assessment.Status != registry.SignatureVerified {
+		t.Fatalf("released package failed runtime admission: %+v, %v", assessment, err)
+	}
+	verifiedTrust, err := verifier.VerifyPackageTrust(ctx, host.PackageTrustVerificationRequest{Package: pkg})
+	if err != nil || verifiedTrust.TrustState != registry.TrustVerified {
+		t.Fatalf("released package failed local-import admission: %+v, %v", verifiedTrust, err)
+	}
+	pkg.PackageSignature.SignedAt = "2026-08-01T00:00:01Z"
+	tampered, err := verifier.AssessExternalPackageSignature(ctx, host.ExternalPackageSignatureAssessmentRequest{Package: pkg})
+	if err != nil || tampered.Status != registry.SignatureInvalid {
+		t.Fatalf("changed embedded envelope admitted: %+v, %v", tampered, err)
 	}
 	return output
 }

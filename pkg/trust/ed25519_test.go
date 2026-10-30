@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
 )
 
 func TestEd25519VerifierAcceptsSignedVerifiedPackage(t *testing.T) {
@@ -185,15 +187,30 @@ func TestSignatureForPackageProducesCanonicalPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal(payload, &decoded); err != nil {
+	want, err := releasecontract.PackageSignatureSigningPreimage(releasecontract.PackageSignatureV1(sig))
+	if err != nil || !bytes.Equal(payload, want) {
+		t.Fatalf("package preimage diverged: %v", err)
+	}
+	digest := sha256.Sum256(payload)
+	signature, err := base64.StdEncoding.DecodeString(sig.Signature)
+	if err != nil || !ed25519.Verify(priv.Public().(ed25519.PublicKey), digest[:], signature) {
+		t.Fatal("local signing does not match the external signer digest contract")
+	}
+	if ed25519.Verify(priv.Public().(ed25519.PublicKey), payload, signature) {
+		t.Fatal("raw-preimage signature unexpectedly accepted")
+	}
+}
+
+func TestPackageAdmissionRejectsRawPreimageSignature(t *testing.T) {
+	pkg, _, privateKey, verifier := signedFixture(t)
+	payload, err := CanonicalPackageSignaturePayload(*pkg.PackageSignature)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := decoded["signature"]; ok {
-		t.Fatal("canonical signature payload must not include signature bytes")
-	}
-	if decoded["package_hash"] != pkg.PackageHash || decoded["signed_at"] != signedAt.Format(time.RFC3339) {
-		t.Fatalf("payload mismatch: %s", payload)
+	pkg.PackageSignature.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+	assessment, err := verifier.AssessExternalPackageSignature(context.Background(), host.ExternalPackageSignatureAssessmentRequest{Package: pkg})
+	if err != nil || assessment.Status != registry.SignatureInvalid {
+		t.Fatalf("raw preimage admitted: %+v, %v", assessment, err)
 	}
 }
 

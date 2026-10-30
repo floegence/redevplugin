@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import {
   InvalidReleaseDocumentError,
+  InvalidReleaseSignatureError,
   buildPackageSignature,
   buildReleaseMetadata,
   buildRevocation,
@@ -161,6 +162,13 @@ test("release signing projection verifies all domains and rejects the 7x6 substi
       assert.equal(valid, signedUsage === verifiedUsage, `${signedUsage} as ${verifiedUsage}`);
     }
   }
+});
+
+test("portable packages retain identity while release routing stays authenticated", async () => {
+  const documents = fixture.documents;
+  await verifyPackageSignature({ ...fixture.package_context, source_id: "other_registry", channel: "preview" }, documents.package_signature, verifier);
+  await assert.rejects(verifyReleaseMetadata("preview", documents.release_metadata, decodeBase64(fixture.detached_signatures.release_metadata), verifier), InvalidReleaseSignatureError);
+  await assert.rejects(verifyReleaseMetadata(fixture.release_metadata_channel, { ...documents.release_metadata, source_id: "other_registry" }, decodeBase64(fixture.detached_signatures.release_metadata), verifier), InvalidReleaseSignatureError);
 });
 
 test("release signing builders and strict decoders preserve canonical documents", () => {

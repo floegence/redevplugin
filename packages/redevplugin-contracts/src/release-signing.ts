@@ -766,23 +766,20 @@ export function buildPackageSignature(input: PackageSigningInput, signature: Uin
   return deepFreeze(document);
 }
 
+// Portable package identity is independent of its distribution route. Release
+// metadata and source policy separately authenticate the source and channel.
 export function packageSigningPreimage(input: PackageSigningInput): Uint8Array {
   validatePackageInput(input);
   return signingPreimage(signingUsages.package, {
-    channel: input.channel,
-    package_signature: {
-      algorithm: input.algorithm,
-      entries_hash: input.entries_hash,
-      key_id: input.key_id,
-      manifest_hash: input.manifest_hash,
-      package_hash: input.package_hash,
-      plugin_id: input.plugin_id,
-      publisher_id: input.publisher_id,
-      schema_version: packageSignatureSchemaVersion,
-      signed_at: input.signed_at,
-    },
-    source_id: input.source_id,
-    version: input.version,
+    algorithm: input.algorithm,
+    entries_hash: input.entries_hash,
+    key_id: input.key_id,
+    manifest_hash: input.manifest_hash,
+    package_hash: input.package_hash,
+    plugin_id: input.plugin_id,
+    publisher_id: input.publisher_id,
+    schema_version: packageSignatureSchemaVersion,
+    signed_at: input.signed_at,
   });
 }
 

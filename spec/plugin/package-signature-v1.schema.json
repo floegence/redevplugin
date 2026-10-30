@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.redevplugin.dev/plugin/package-signature-v1.schema.json",
   "title": "ReDevPlugin package detached signature v1",
+  "description": "Ed25519 signs SHA-256 of REDEVPLUGIN-SIGNING-V1\u0000 + redevplugin.release-signing.package.v1\u0000 + the canonical signature object with its signature field removed. Local packages and releases use the same preimage. Source and channel are authenticated by release metadata, not the portable package envelope. Prior raw-JSON and release-context package signatures are not accepted.",
   "type": "object",
   "additionalProperties": false,
   "required": [

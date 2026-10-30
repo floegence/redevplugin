@@ -85,6 +85,24 @@ func TestReleaseSigningDomainsAreCanonicalAndSeparated(t *testing.T) {
 	}
 }
 
+func TestPortablePackageSignatureDoesNotDependOnDistributionRoute(t *testing.T) {
+	fixture := newReleaseSigningFixture(t)
+	other := fixture.PackageContext
+	other.SourceID = "another_registry"
+	other.Channel = "preview"
+	if err := VerifyPackageSignature(other, fixture.Package, fixture.Verifier); err != nil {
+		t.Fatalf("portable package signature depends on distribution context: %v", err)
+	}
+	metadata := fixture.Metadata
+	metadata.SourceID = other.SourceID
+	if err := VerifyReleaseMetadata(fixture.MetadataChannel, metadata, fixture.MetadataSignature, fixture.Verifier); err == nil {
+		t.Fatal("changed release source accepted")
+	}
+	if err := VerifyReleaseMetadata(other.Channel, fixture.Metadata, fixture.MetadataSignature, fixture.Verifier); err == nil {
+		t.Fatal("changed release channel accepted")
+	}
+}
+
 func TestCurrentTrustDocumentsUseOnlyCurrentSchemas(t *testing.T) {
 	fixture := newReleaseSigningFixture(t)
 	privateKey := ed25519.NewKeyFromSeed(releaseSigningFixtureSeed())

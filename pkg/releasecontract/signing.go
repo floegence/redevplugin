@@ -101,40 +101,36 @@ func BuildPackageSignature(input PackageSigningInput, signature []byte) (Package
 	return document, nil
 }
 
+// PackageSigningPreimage binds the portable package identity. Source and channel
+// are release authority and remain signed by release metadata and source policy.
 func PackageSigningPreimage(input PackageSigningInput) ([]byte, error) {
 	if err := validatePackageInput(input); err != nil {
 		return nil, err
 	}
-	payload := struct {
-		Channel          string `json:"channel"`
-		PackageSignature struct {
-			Algorithm     string `json:"algorithm"`
-			EntriesHash   string `json:"entries_hash"`
-			KeyID         string `json:"key_id"`
-			ManifestHash  string `json:"manifest_hash"`
-			PackageHash   string `json:"package_hash"`
-			PluginID      string `json:"plugin_id"`
-			PublisherID   string `json:"publisher_id"`
-			SchemaVersion string `json:"schema_version"`
-			SignedAt      string `json:"signed_at"`
-		} `json:"package_signature"`
-		SourceID string `json:"source_id"`
-		Version  string `json:"version"`
-	}{
-		Channel:  input.Channel,
-		SourceID: input.SourceID,
-		Version:  input.Version,
+	return PackageSignatureSigningPreimage(PackageSignatureV1{
+		SchemaVersion: PackageSignatureSchemaVersion, Algorithm: input.Algorithm,
+		KeyID: input.KeyID, PublisherID: input.PublisherID, PluginID: input.PluginID,
+		PackageHash: input.PackageHash, ManifestHash: input.ManifestHash,
+		EntriesHash: input.EntriesHash, SignedAt: input.SignedAt,
+	})
+}
+
+// PackageSignatureSigningPreimage is shared by release publication, local signing,
+// and Host admission. Ed25519 signs SHA-256 of this domain-separated preimage.
+// Verification never guesses a release source or attempts an alternate encoding.
+func PackageSignatureSigningPreimage(document PackageSignatureV1) ([]byte, error) {
+	if document.SchemaVersion != PackageSignatureSchemaVersion || document.Algorithm != SignatureAlgorithmEd25519 || document.KeyID == "" {
+		return nil, invalid("package signing identity")
 	}
-	payload.PackageSignature.Algorithm = input.Algorithm
-	payload.PackageSignature.EntriesHash = input.EntriesHash
-	payload.PackageSignature.KeyID = input.KeyID
-	payload.PackageSignature.ManifestHash = input.ManifestHash
-	payload.PackageSignature.PackageHash = input.PackageHash
-	payload.PackageSignature.PluginID = input.PluginID
-	payload.PackageSignature.PublisherID = input.PublisherID
-	payload.PackageSignature.SchemaVersion = PackageSignatureSchemaVersion
-	payload.PackageSignature.SignedAt = input.SignedAt
-	return signingPreimage(SigningUsagePackage, payload)
+	if !prefixedSHA256Pattern.MatchString(document.PackageHash) || !prefixedSHA256Pattern.MatchString(document.ManifestHash) || !prefixedSHA256Pattern.MatchString(document.EntriesHash) {
+		return nil, invalid("package signing hashes")
+	}
+	if document.SignedAt != "" {
+		if _, err := parseCanonicalTime(document.SignedAt); err != nil {
+			return nil, invalid("package signed_at")
+		}
+	}
+	return signingPreimageWithoutTopLevelSignature(SigningUsagePackage, document)
 }
 
 func CanonicalPackageSignature(context PackageVerificationContext, document PackageSignatureV1) ([]byte, error) {
