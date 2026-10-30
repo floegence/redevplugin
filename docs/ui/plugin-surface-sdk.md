@@ -439,3 +439,8 @@ Response bodies retain native browser behavior. Failed writes are never retried
 by the SDK. Redirect responses fail and require an explicit new application
 request. Native WebSocket is not exposed through this HTTP data path; declared
 Worker WebSocket, TCP and UDP use the bounded Worker SDK resources.
+
+
+## Author presentation collections
+
+Host inspection, inventory and release verification expose normalized author presentation through the published contract. Required collection fields remain JSON arrays even when empty: highlights, surfaces, settings and setting options never become null. Hosts consume the locale resolver directly and do not add product-specific null adapters. Presentation hashes bind that normalized projection; package bytes and embedded signatures are unchanged by presentation projection.

@@ -56,3 +56,15 @@ test("resolvePresentation returns a detached resolved projection", () => {
     (resolved.description as string[])[0] = "Changed";
     assert.equal(catalog.locales[0]?.description[0], "Original");
 });
+
+
+test("resolvePresentation consumes the shared empty-array catalog without null adapters", () => {
+    const catalog = JSON.parse(readFileSync(
+      new URL("../../../../spec/plugin/presentation-empty-collections-v1.json", import.meta.url), "utf8",
+    )) as PresentationCatalog;
+    const resolved = resolvePresentation(catalog, "en-US");
+    assert.deepEqual(resolved.highlights, []);
+    assert.deepEqual(resolved.surfaces, []);
+    assert.deepEqual(resolved.settings[0]?.options, []);
+    assert.equal(resolved.plugin_name, "Example");
+});

@@ -472,15 +472,15 @@ func localeLookupCandidates(locale string) []string {
 }
 
 func cloneStrings(values []string) []string {
-	return append([]string(nil), values...)
+	return append([]string{}, values...)
 }
 
 func cloneSettingOptions(values []SettingOptionSpec) []SettingOptionSpec {
-	return append([]SettingOptionSpec(nil), values...)
+	return append([]SettingOptionSpec{}, values...)
 }
 
 func cloneSurfaces(values []ResolvedSurfacePresentation) []ResolvedSurfacePresentation {
-	return append([]ResolvedSurfacePresentation(nil), values...)
+	return append([]ResolvedSurfacePresentation{}, values...)
 }
 
 func cloneSettings(values []ResolvedSettingPresentation) []ResolvedSettingPresentation {

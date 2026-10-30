@@ -1,0 +1,26 @@
+{
+  "default_locale": "en-US",
+  "locales": [
+    {
+      "locale": "en-US",
+      "plugin_name": "Example",
+      "publisher_name": "Example Publisher",
+      "summary": "Example",
+      "description": [
+        "Example application"
+      ],
+      "highlights": [],
+      "keywords": [
+        "example"
+      ],
+      "surfaces": [],
+      "settings": [
+        {
+          "key": "title",
+          "label": "Title",
+          "options": []
+        }
+      ]
+    }
+  ]
+}

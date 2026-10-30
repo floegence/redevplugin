@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.7.3
+
+- Preserve required JSON arrays in author presentation catalogs and locale resolution, including empty highlights, surfaces and setting options.
+- Fix package inspection and published presentation readback for ordinary Web applications without adding downstream null adapters or changing signed package bytes.
+- Cover empty collections in Go serialization and a shared TypeScript presentation fixture; retain detached copies and the existing array-only schema.
+
 ## v3.7.2
 
 - Unify local package signing, external-signer publication, release verification, and Host admission on one domain-separated SHA-256 package preimage.

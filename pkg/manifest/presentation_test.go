@@ -181,3 +181,97 @@ func localizedPresentation(locale, name, summary string) PresentationLocalizatio
 		}},
 	}
 }
+
+func TestPresentationEmptyCollectionsMarshalAsArrays(t *testing.T) {
+	m := validManifest()
+	m.Presentation.Highlights = []string{}
+	m.Surfaces = nil
+	m.Settings = nil
+	for i := range m.Presentation.Localizations {
+		m.Presentation.Localizations[i].Highlights = []string{}
+	}
+	catalog := m.PresentationCatalog()
+	for _, locale := range catalog.Locales {
+		t.Run(locale.Locale, func(t *testing.T) {
+			for name, value := range map[string]any{"catalog": locale, "resolved": ResolvePresentation(catalog, locale.Locale)} {
+				raw, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &fields); err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{"highlights", "surfaces", "settings"} {
+					if string(fields[field]) != "[]" {
+						t.Errorf("%s %s = %s, want []", name, field, fields[field])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPresentationEmptySettingOptionsMarshalAsArray(t *testing.T) {
+	m := validManifest()
+	for i := range m.Settings.Fields {
+		m.Settings.Fields[i].Options = nil
+	}
+	catalog := m.PresentationCatalog()
+	for _, locale := range catalog.Locales {
+		for _, value := range []any{locale, ResolvePresentation(catalog, locale.Locale)} {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded struct {
+				Settings []struct{ Options json.RawMessage }
+			}
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			for _, setting := range decoded.Settings {
+				if string(setting.Options) != "[]" {
+					t.Errorf("options = %s, want []", setting.Options)
+				}
+			}
+		}
+	}
+}
+
+func TestPresentationArrayCatalogMatchesSharedFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../spec/plugin/presentation-empty-collections-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected PresentationCatalog
+	if err := json.Unmarshal(raw, &expected); err != nil {
+		t.Fatal(err)
+	}
+	m := validManifest()
+	locale := expected.Locales[0]
+	m.Plugin.DisplayName = locale.PluginName
+	m.Publisher.DisplayName = locale.PublisherName
+	m.Presentation.DefaultLocale = expected.DefaultLocale
+	m.Presentation.Summary = locale.Summary
+	m.Presentation.Description = locale.Description
+	m.Presentation.Highlights = locale.Highlights
+	m.Presentation.Keywords = locale.Keywords
+	m.Presentation.Localizations = nil
+	m.Surfaces = nil
+	m.Settings.Fields = m.Settings.Fields[:1]
+	m.Settings.Fields[0].Key = "title"
+	m.Settings.Fields[0].Label = "Title"
+	m.Settings.Fields[0].Options = nil
+	gotJSON, err := json.Marshal(m.PresentationCatalog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("catalog = %s, want %s", gotJSON, wantJSON)
+	}
+}
