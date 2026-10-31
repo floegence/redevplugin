@@ -86,7 +86,7 @@ export function reusableReceipt({ cache, root, key, stage, now = Date.now() }) {
 export function failureKind(stage, status, log) {
   if (status.signal) return "interrupted";
   if (stage.kind === "environment") return "environment";
-  if (/(?:AssertionError|ERR_ASSERTION|severity vulnerabilit|test result: FAILED|^FAIL[ \t]|✖|threshold_failed)/m.test(log)) return "check";
+  if (/(?:AssertionError|ERR_ASSERTION|severity vulnerabilit|threshold_failed)/m.test(log)) return "check";
   if (/(?:error: failed to download|failed to get successful HTTP response|npm error (?:code (?:ECONNRESET|ETIMEDOUT|EAI_AGAIN)|audit endpoint)|network socket disconnected|Could not resolve host|remained unavailable)/i.test(log)) return "environment";
   return "check";
 }
@@ -171,6 +171,10 @@ export function executionEnvironment(input) {
   const names = new Set(["HOME", "PATH", "SHELL", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP", "LANG", "LANGUAGE", "TZ", "CC", "CXX", "AR", "CFLAGS", "CPPFLAGS", "CXXFLAGS", "LDFLAGS", "PKG_CONFIG_PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "CI", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]);
   return Object.fromEntries(Object.entries(input).filter(([key]) => names.has(key) || /^(?:GO[A-Z_]|CGO_|RUST|CARGO_|NODE_|npm_config_|NPM_CONFIG_|REDEVPLUGIN_|PLAYWRIGHT_|LC_|DOCKER_)/.test(key)).sort(([a], [b]) => a.localeCompare(b)));
 }
+export function normalizedGoConfiguration(configuration) {
+  // Go allocates a new work directory even for `go env`; keep every other flag.
+  return { ...configuration, GOGCCFLAGS: configuration.GOGCCFLAGS?.replace(/-ffile-prefix-map=([^ ]*\/)?go-build[0-9]+=/g, "-ffile-prefix-map=<go-work>=") };
+}
 function environmentIdentity(root, mode) {
   const tools = Object.fromEntries([
     ["go", ["version"]], ["node", ["--version"]], ["npm", ["--version"]], ["rustc", ["-vV"]], ["cargo", ["--version"]], ["rustup", ["show", "active-toolchain"]], ["golangci-lint", ["--version"]], ["cargo-deny", ["--version"]], ["bash", ["--version"]], ["cc", ["--version"]], ["git", ["--version"]], ["docker", ["version", "--format", "json"]],
@@ -181,7 +185,7 @@ function environmentIdentity(root, mode) {
   const require = createRequire(join(root, "package.json"));
   const chromium = require("playwright").chromium;
   const browser = pathDigest(chromium.executablePath());
-  return { mode, root: realpathSync(root), host: os.hostname(), platform: os.platform(), release: os.release(), arch: os.arch(), cpus: os.cpus().map(({ model }) => model), parallelism: os.availableParallelism(), memory: os.totalmem(), tools, browser, configurations, environmentSha256: jsonDigest(env), goConfigSha256: digest(command(root, "go", ["env", "-json"])), baselines: verifyBaselines(root) };
+  return { mode, root: realpathSync(root), host: os.hostname(), platform: os.platform(), release: os.release(), arch: os.arch(), cpus: os.cpus().map(({ model }) => model), parallelism: os.availableParallelism(), memory: os.totalmem(), tools, browser, configurations, environmentSha256: jsonDigest(env), goConfigSha256: jsonDigest(normalizedGoConfiguration(JSON.parse(command(root, "go", ["env", "-json"])))), baselines: verifyBaselines(root) };
 }
 async function prepareResources(root) {
   const image = canonicalRustImage(await readPinnedRustVersion(root));

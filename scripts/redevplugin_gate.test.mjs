@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireLock, digest, evidenceKey, execute, executionEnvironment, failureKind, runStage, sourceFingerprint, stages, verifyBaselines } from "./redevplugin_gate.mjs";
+import { acquireLock, digest, evidenceKey, execute, executionEnvironment, failureKind, normalizedGoConfiguration, runStage, sourceFingerprint, stages, verifyBaselines } from "./redevplugin_gate.mjs";
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "redevplugin-gate-test-"));
@@ -168,4 +168,12 @@ test("real execution records complete stdout and stderr and preserves failure st
   assert.equal(result.code, 7);
   const log = readFileSync(path, "utf8");
   assert.ok(log.includes("stdout")); assert.ok(log.includes("stderr"));
+});
+
+
+test("Go temporary work directory identity is normalized without discarding compiler flags", () => {
+  const a = { GOOS: "linux", GOGCCFLAGS: "-fPIC -ffile-prefix-map=/tmp/go-build123=/tmp/go-build -pthread" };
+  const b = { ...a, GOGCCFLAGS: "-fPIC -ffile-prefix-map=/tmp/go-build999=/tmp/go-build -pthread" };
+  assert.deepEqual(normalizedGoConfiguration(a), normalizedGoConfiguration(b));
+  assert.notDeepEqual(normalizedGoConfiguration(a), normalizedGoConfiguration({ ...b, GOGCCFLAGS: b.GOGCCFLAGS + " -O3" }));
 });
