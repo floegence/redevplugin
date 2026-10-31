@@ -90,6 +90,14 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 		t.Fatal(err)
 	}
 	prePush := string(prePushRaw)
+	if !strings.Contains(prePush, "exec node scripts/redevplugin_gate.mjs") {
+		t.Fatal("exact-main pre-push must delegate to the complete stage plan")
+	}
+	stagePlanRaw, err := os.ReadFile(filepath.Join(root, "scripts", "redevplugin_gate.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prePush = string(stagePlanRaw)
 	wasmTargetStart := strings.Index(prePush, "rustup target add wasm32-unknown-unknown")
 	canonicalCheckStart := strings.Index(prePush, "npm run examples:check:canonical")
 	if wasmTargetStart < 0 || canonicalCheckStart <= wasmTargetStart {
