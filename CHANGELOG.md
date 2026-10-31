@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.11.2
+
+- Preserve exact signed pre-Web v9 manifests in installed records and version history when opening released control schemas, including transactional generation binding and idempotent reopen.
+- Keep historical packages non-executable while allowing inventory, disable, uninstall, and upgrade to a current Web package without discarding data or signed history.
+- Reject retired package enablement before any state mutation and preserve explicit package-update approval independently of a disabled state.
+- Publish an explicit read-only stored-manifest projection and generated inventory types; package admission still requires the current Web contract.
+- Cover supported schemas, interruption rollback, corrupt-state rejection, real Host restart, sibling availability, and migration to the current Web package.
+
 ## v3.11.1
 
 - Authorize private environment storage for durably claimed intervals without requiring an online-user management session. Preserve exact claim, method, namespace, owner, revision, token, quota and audit checks.

@@ -65,10 +65,12 @@
     "ui-package:check": "node scripts/check_ui_package.mjs",
     "security-summary:generate": "node scripts/generate_security_summary.mjs",
     "security-summary:check": "node scripts/generate_security_summary.mjs --check",
-    "check:contracts": "npm run data-upgrade:check && npm run author-preview:check && npm run platform-identity:check && npm run error-codes:check && npm run security-summary:check && npm run openapi:check && npm run openapi-contract:test && npm run ui-bridge-contract:test && npm run ui-contracts:check && npm run release-metadata:check && npm run node-toolchain-contract:test && npm run repository-boundary:test && npm run release-workflow-security:test && npm run release-audit-retry:test && node --test scripts/redevplugin_gate.test.mjs",
+    "check:contracts": "npm run stored-manifest:check && npm run data-upgrade:check && npm run author-preview:check && npm run platform-identity:check && npm run error-codes:check && npm run security-summary:check && npm run openapi:check && npm run openapi-contract:test && npm run ui-bridge-contract:test && npm run ui-contracts:check && npm run release-metadata:check && npm run node-toolchain-contract:test && npm run repository-boundary:test && npm run release-workflow-security:test && npm run release-audit-retry:test && node --test scripts/redevplugin_gate.test.mjs",
     "check:web": "npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run build && npm run ui-package:check && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates",
     "data-upgrade:generate": "node scripts/generate_data_upgrade_contract.mjs",
-    "data-upgrade:check": "node scripts/generate_data_upgrade_contract.mjs --check"
+    "data-upgrade:check": "node scripts/generate_data_upgrade_contract.mjs --check",
+    "stored-manifest:generate": "node scripts/generate_stored_manifest.mjs",
+    "stored-manifest:check": "node scripts/generate_stored_manifest.mjs --check && node --test scripts/stored_manifest_contract.test.mjs"
   },
   "devDependencies": {
     "@babel/core": "7.29.7",

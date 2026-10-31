@@ -551,7 +551,7 @@ func (s *Store) pluginDataMutation(ctx context.Context, mutate func(*sql.Tx) err
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := mutate(tx); err != nil {
 		return err
 	}

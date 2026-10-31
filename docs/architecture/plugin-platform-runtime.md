@@ -663,3 +663,29 @@ Recovery leaves the target disabled and transfers no grants, credentials,
 approvals, tokens or live surfaces. Hosts present the retained source and current
 target before the explicit action, then offer enablement separately. Retained
 user-scoped namespaces keep their original user ownership inside the generation.
+
+
+### Persisted Package Identity And Current Execution
+
+Control-store migration and inventory retain original canonical bytes and hashes
+of installed pre-Web v9 packages, including historical versions. The bounded
+`manifest.DecodeStoredCanonical` reader shares current parsing and normalization,
+but recognizes the released all-pre-Web surface shape for data retention only.
+Mixed, partial, unknown, and future declarations remain rejected. It never assigns
+a Web root, changes a signature, or authorizes an old package.
+
+Current package admission remains strict. The registry excludes retained pre-Web
+packages from execution and startup prewarming. Host requests report the existing
+incompatible action state while inventory and lifecycle management remain usable.
+Enablement and downgrade validate the current contract before changing state.
+An explicit update approves its exact package independently of the retained disabled
+state. Updating to a current package preserves data and signed history. No retired
+renderer, bridge, or execution fallback exists.
+
+Schemas 1–3 bind proven same-shape history in the existing schema-4 transaction.
+Schemas 4–5 read the retained identity without rewriting the schema. Validation
+precedes writes; interrupted migration rolls back. No host-owned state is migrated.
+The generated `stored-manifest.schema.json` describes read-only inventory only.
+New package admission exclusively uses `manifest-v9.schema.json`. HTTP inventory
+omits absent historical Web metadata instead of inventing it. Hosts consume the
+generated types and action state without parsing historical package archives.

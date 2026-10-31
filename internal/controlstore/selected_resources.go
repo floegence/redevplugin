@@ -58,7 +58,7 @@ func (s *Store) CreateSelectedResource(ctx context.Context, r SelectedResource, 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var actual registry.AuthorizationRevisions
 	var fingerprint, state string
 	err = tx.QueryRowContext(ctx, `SELECT active_fingerprint,state,policy_revision,management_revision,revoke_epoch FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL`, r.OwnerEnvHash, r.PluginInstanceID).Scan(&fingerprint, &state, &actual.PolicyRevision, &actual.ManagementRevision, &actual.RevokeEpoch)
@@ -141,7 +141,7 @@ func (s *Store) WithSelectedResource(ctx context.Context, key SelectedResourceKe
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	r, err := readSelectedResource(ctx, tx, key)
 	if err != nil {
 		return err
@@ -175,7 +175,7 @@ func (s *Store) RevokeSelectedResource(ctx context.Context, key SelectedResource
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	r, err := readSelectedResource(ctx, tx, key)
 	if err != nil {
 		return err

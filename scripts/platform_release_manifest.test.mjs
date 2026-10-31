@@ -65,6 +65,7 @@ const expectedCanonicalContracts = [
   "contract:plugin/runtime-exec-journal-v1.schema.json",
   "contract:plugin/security-summary-fixtures.json",
   "contract:plugin/session-scope-v1.schema.json",
+  "contract:plugin/stored-manifest.schema.json",
   "contract:plugin/surface-methods.schema.json",
   "contract:plugin/target-classifier-v2.json",
   "contract:plugin/token-ticket-v4.schema.json",

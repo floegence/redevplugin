@@ -12,7 +12,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
@@ -366,11 +365,17 @@ func validatePluginDataPackageIdentity(record registry.PluginRecord) error {
 		record.PluginID != decoded.PluginID() || record.PublisherID != decoded.Publisher.PublisherID {
 		return fmt.Errorf("%w: package identity differs from its canonical manifest", plugindata.ErrInvalidArgument)
 	}
-	expected, err := manifest.MarshalCanonical(decoded)
+	// Presentation hydration is derived from package-local locale assets, not a
+	// second signed manifest source. Compare the remaining normalized data exactly.
+	actualManifest := record.Manifest
+	actualManifest.Presentation = decoded.Presentation
+	actualManifest.Presentation.DefaultLocale = record.Manifest.Presentation.DefaultLocale
+	actualManifest.Presentation.Icon = record.Manifest.Presentation.Icon
+	expected, err := json.Marshal(decoded)
 	if err != nil {
 		return err
 	}
-	actual, err := manifest.MarshalCanonical(record.Manifest)
+	actual, err := json.Marshal(actualManifest)
 	if err != nil {
 		return err
 	}

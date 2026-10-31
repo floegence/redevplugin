@@ -392,6 +392,17 @@ decoders, compatibility ranges, or a second ABI/version axis. The staging-only
 after package artifacts, signed as a release asset, and is not checked into any
 package whose hash it contains.
 
+Persisted package identity is not executable admission. Installed pre-Web v9
+records released before 3.3 may retain the exact signed manifests without a
+`surfaces[].web` declaration, including their version and data history. The
+bounded `DecodeStoredCanonical` reader and read-only inventory projection exist
+only while such records remain. They must never synthesize Web declarations,
+rewrite signed content, authorize execution, or revive the retired renderer.
+Current package admission and execution remain strict; a user can disable,
+uninstall, or update the retained installation to a current package. Unknown,
+mixed, corrupt, and future declarations remain rejected. Removing this reader
+requires proving no supported installed or historical data still needs it.
+
 Manifest presentation is author-owned signed package content. ReDevPlugin owns
 its validation, canonicalization, locale resolution, inspection, and installed
 inventory projection. A host or market must consume the verified normalized

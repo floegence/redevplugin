@@ -49,7 +49,7 @@ func (s *Store) PutConnection(ctx context.Context, c Connection, expected uint64
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var fingerprint, state string
 	var current registry.AuthorizationRevisions
 	err = tx.QueryRowContext(ctx, "SELECT active_fingerprint,state,policy_revision,management_revision,revoke_epoch FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL", c.OwnerEnvHash, c.PluginInstanceID).Scan(&fingerprint, &state, &current.PolicyRevision, &current.ManagementRevision, &current.RevokeEpoch)

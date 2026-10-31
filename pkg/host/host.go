@@ -3372,7 +3372,7 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if upgradeData && current.EnableState != registry.EnableEnabled {
+	if current.EnableState != registry.EnableEnabled {
 		// This explicit update approves the exact target package independently
 		// of the user's disabled state. The temporary candidate is never stored
 		// or activated; the durable transaction retains the current enable state.
@@ -3974,6 +3974,9 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 	next, err := recordFromVersionSnapshot(current, snapshot)
 	if err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if err := manifest.Validate(next.Manifest); err != nil {
+		return registry.PluginRecord{}, fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
 	}
 	previous, found, err := h.controlStore.GetBinding(ctx, current.PluginInstanceID)
 	if err != nil {
@@ -6117,6 +6120,9 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 // enablePluginLocked performs the authoritative enable transaction after the
 // caller has acquired the plugin lifecycle write lock.
 func (h *Host) enablePluginLocked(ctx context.Context, record registry.PluginRecord, now time.Time) (result registry.PluginRecord, retErr error) {
+	if err := manifest.Validate(record.Manifest); err != nil {
+		return registry.PluginRecord{}, fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+	}
 	if record.EnableState == registry.EnableEnabled {
 		return record, nil
 	}
@@ -8215,6 +8221,9 @@ func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
 // own execution. Resource admission uses this read-only check before taking locks.
 func (h *Host) checkRunnable(ctx context.Context, record registry.PluginRecord) (bool, error) {
 	if !registry.RunnablePluginRecord(record) {
+		if err := manifest.Validate(record.Manifest); err != nil {
+			return false, fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+		}
 		if record.TrustState == registry.TrustUnavailable || record.SignatureAssessment.Status == registry.SignatureUnavailable {
 			return false, fmt.Errorf("%w: trust_state %q", ErrPluginTrustUnavailable, record.TrustState)
 		}

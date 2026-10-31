@@ -326,6 +326,10 @@ func DecodeCanonical(r io.Reader) (Manifest, []byte, error) {
 }
 
 func Validate(m Manifest) error {
+	return validate(m, false)
+}
+
+func validate(m Manifest, retainedPreWeb bool) error {
 	if m.SchemaVersion != SchemaVersionV9 {
 		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v9"}
 	}
@@ -517,8 +521,10 @@ func Validate(m Manifest) error {
 		if strings.TrimSpace(surface.Entry) == "" {
 			return ValidationError{Field: fmt.Sprintf("surfaces[%d].entry", i), Message: "is required"}
 		}
-		if err := validateSurfaceWeb(surface); err != nil {
-			return ValidationError{Field: fmt.Sprintf("surfaces[%d].web", i), Message: err.Error()}
+		if !retainedPreWeb {
+			if err := validateSurfaceWeb(surface); err != nil {
+				return ValidationError{Field: fmt.Sprintf("surfaces[%d].web", i), Message: err.Error()}
+			}
 		}
 		if err := validateSurfaceIcon(surface.Icon); err != nil {
 			return ValidationError{Field: fmt.Sprintf("surfaces[%d].icon", i), Message: err.Error()}

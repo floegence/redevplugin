@@ -173,6 +173,9 @@ func (h *Host) pluginActionStateWithAuthorization(record registry.PluginRecord, 
 	if state.BlockedReason == "" && !registry.RunnablePluginRecord(record) {
 		state.BlockedReason = PluginActionBlockedPackageInvalid
 	}
+	if state.BlockedReason == PluginActionBlockedPackageInvalid && manifest.Validate(record.Manifest) != nil {
+		state.BlockedReason = PluginActionBlockedIncompatible
+	}
 	if state.BlockedReason == "" && record.EnableState == registry.EnableEnabled {
 		state.BlockedReason = authorizationBlockedReason(authorize())
 	}

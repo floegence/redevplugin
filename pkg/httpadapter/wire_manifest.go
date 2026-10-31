@@ -131,7 +131,7 @@ type manifestSurfaceWebResponse struct {
 }
 
 type manifestSurfaceResponse struct {
-	Web manifestSurfaceWebResponse `json:"web"`
+	Web *manifestSurfaceWebResponse `json:"web,omitempty"`
 
 	RequiredMethods []string                    `json:"required_methods,omitzero"`
 	SurfaceID       string                      `json:"surface_id"`
@@ -338,7 +338,9 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		mapped := manifestSurfaceResponse{
 			SurfaceID: surface.SurfaceID, Kind: string(surface.Kind), Intent: string(surface.Intent),
 			Label: surface.Label, Entry: surface.Entry, Icon: surface.Icon,
-			Web: manifestSurfaceWebResponse{Root: surface.Web.Root, SPA: surface.Web.SPA, Network: publicNetworkAccess(surface.Web.Network)},
+		}
+		if surface.Web.Root != "" {
+			mapped.Web = &manifestSurfaceWebResponse{Root: surface.Web.Root, SPA: surface.Web.SPA, Network: publicNetworkAccess(surface.Web.Network)}
 		}
 		if surface.DefaultSize != nil {
 			mapped.DefaultSize = &manifestWidgetSizeResponse{Width: surface.DefaultSize.Width, Height: surface.DefaultSize.Height}

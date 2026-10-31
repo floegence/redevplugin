@@ -2373,7 +2373,7 @@ export interface components {
             update_eligibility?: components["schemas"]["ExternalPackageUpdateEligibility"];
             security_summary?: components["schemas"]["ExternalPackageSecuritySummary"];
             capability_contracts?: components["schemas"]["CapabilityContractPin"][];
-            manifest: components["schemas"]["ManifestV9"];
+            manifest: components["schemas"]["StoredManifest"];
             presentation: components["schemas"]["PresentationCatalog"];
             presentation_sha256: string;
             package_entries: components["schemas"]["PackageEntry"][];
@@ -2412,7 +2412,7 @@ export interface components {
             policy_revision: number;
             management_revision: number;
             revoke_epoch: number;
-            manifest: components["schemas"]["ManifestV9"];
+            manifest: components["schemas"]["StoredManifest"];
             presentation: components["schemas"]["PresentationCatalog"];
             presentation_sha256: string;
             package_entries: components["schemas"]["PackageEntry"][];
@@ -3475,7 +3475,8 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        ManifestV9: {
+        /** @description Read-only installed and historical package identity. Pre-Web surfaces have no web declaration and cannot execute. New package admission uses manifest-v9.schema.json exclusively. */
+        StoredManifest: {
             /** @constant */
             schema_version: "redevplugin.manifest.v9";
             publisher: {
@@ -3485,11 +3486,11 @@ export interface components {
             plugin: {
                 plugin_id: string;
                 display_name: string;
-                version: components["schemas"]["ManifestV9Semver"];
+                version: components["schemas"]["StoredManifestSemver"];
             };
             presentation: {
                 locales: {
-                    default: components["schemas"]["ManifestV9Locale"];
+                    default: components["schemas"]["StoredManifestLocale"];
                 };
                 icon?: {
                     path: string;
@@ -3510,15 +3511,15 @@ export interface components {
                 };
                 /** @description Methods required to open this surface. Omitted retains aggregate authorization. An empty array allows opening without method grants; calls remain individually authorized. Requires authorization.scoped.v1. */
                 required_methods?: string[];
-                web: {
+                web?: {
                     root: string;
                     spa: boolean;
-                    network?: (components["schemas"]["ManifestV9NetworkAccess"] & {
+                    network?: (components["schemas"]["StoredManifestNetworkAccess"] & {
                         /** @constant */
                         transport?: "http";
                     })[];
                 };
-            }[];
+            }[] & (unknown | unknown);
             capability_bindings?: {
                 binding_id: string;
                 contract: components["schemas"]["HostCapabilityPinV1"];
@@ -3536,7 +3537,7 @@ export interface components {
                         store_id: string;
                         operations: ("read" | "write" | "delete" | "list" | "get" | "put" | "query" | "exec")[];
                     }[];
-                    network?: components["schemas"]["ManifestV9NetworkAccess"][];
+                    network?: components["schemas"]["StoredManifestNetworkAccess"][];
                     process?: {
                         operations: ("start" | "attach" | "status" | "write_stdin" | "close_stdin" | "read_stdout" | "read_stderr" | "wait" | "terminate" | "kill" | "close")[];
                     }[];
@@ -3565,13 +3566,13 @@ export interface components {
                     uninstall_behavior?: "cancel_then_block_delete" | "force_cleanup_allowed";
                     ack_timeout_ms?: number;
                 } & (unknown & unknown);
-                request_schema?: components["schemas"]["ManifestV9MethodSchema"] & {
+                request_schema?: components["schemas"]["StoredManifestMethodSchema"] & {
                     /** @constant */
                     type: "object";
                     /** @constant */
                     additionalProperties: false;
                 };
-                response_schema?: components["schemas"]["ManifestV9MethodSchema"] & {
+                response_schema?: components["schemas"]["StoredManifestMethodSchema"] & {
                     /** @constant */
                     type: "object";
                     /** @constant */
@@ -3640,7 +3641,7 @@ export interface components {
                     label: string;
                     default?: unknown;
                     secret_ref?: string;
-                    options?: components["schemas"]["ManifestV9SettingOption"][];
+                    options?: components["schemas"]["StoredManifestSettingOption"][];
                     validation?: Record<string, never>;
                 }[];
             };
@@ -3652,13 +3653,13 @@ export interface components {
             api: {
                 /** @constant */
                 major: 1;
-                required_features?: components["schemas"]["ManifestV9RequiredFeatures"];
-                optional_features?: components["schemas"]["ManifestV9OptionalFeatures"];
+                required_features?: components["schemas"]["StoredManifestRequiredFeatures"];
+                optional_features?: components["schemas"]["StoredManifestOptionalFeatures"];
             };
             permissions: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local" | "fs.selected.read" | "fs.selected.write")[];
             data_upgrade?: {
                 from: {
-                    version: components["schemas"]["ManifestV9Semver"];
+                    version: components["schemas"]["StoredManifestSemver"];
                     shape_sha256: string;
                 }[];
                 method: string;
@@ -3666,55 +3667,55 @@ export interface components {
                 max_runtime_ms: number;
             };
         } & (unknown & unknown & unknown & unknown & unknown);
-        ManifestV9Locale: string;
-        ManifestV9Summary: string;
-        ManifestV9Description: string[];
-        ManifestV9Highlights: string[];
-        ManifestV9Keywords: string[];
-        ManifestV9SettingOption: {
+        StoredManifestLocale: string;
+        StoredManifestSummary: string;
+        StoredManifestDescription: string[];
+        StoredManifestHighlights: string[];
+        StoredManifestKeywords: string[];
+        StoredManifestSettingOption: {
             value: string;
             label: string;
         };
-        ManifestV9LocalizedSurface: {
+        StoredManifestLocalizedSurface: {
             surface_id: string;
             label: string;
         };
-        ManifestV9LocalizedSetting: {
+        StoredManifestLocalizedSetting: {
             key: string;
             label: string;
-            options: components["schemas"]["ManifestV9SettingOption"][];
+            options: components["schemas"]["StoredManifestSettingOption"][];
         };
-        ManifestV9Localization: {
-            locale: components["schemas"]["ManifestV9Locale"];
+        StoredManifestLocalization: {
+            locale: components["schemas"]["StoredManifestLocale"];
             plugin_name: string;
             publisher_name?: string;
-            summary: components["schemas"]["ManifestV9Summary"];
-            description: components["schemas"]["ManifestV9Description"];
-            highlights: components["schemas"]["ManifestV9Highlights"];
-            keywords: components["schemas"]["ManifestV9Keywords"];
-            surfaces: components["schemas"]["ManifestV9LocalizedSurface"][];
-            settings: components["schemas"]["ManifestV9LocalizedSetting"][];
+            summary: components["schemas"]["StoredManifestSummary"];
+            description: components["schemas"]["StoredManifestDescription"];
+            highlights: components["schemas"]["StoredManifestHighlights"];
+            keywords: components["schemas"]["StoredManifestKeywords"];
+            surfaces: components["schemas"]["StoredManifestLocalizedSurface"][];
+            settings: components["schemas"]["StoredManifestLocalizedSetting"][];
         };
-        ManifestV9Semver: string;
-        ManifestV9MethodSchema: false | (({
+        StoredManifestSemver: string;
+        StoredManifestMethodSchema: false | (({
             description?: string;
             readOnly?: boolean;
             writeOnly?: boolean;
             $ref?: string;
             type?: ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string") | ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string")[];
             properties?: {
-                [key: string]: components["schemas"]["ManifestV9MethodSchema"];
+                [key: string]: components["schemas"]["StoredManifestMethodSchema"];
             };
             patternProperties?: {
-                [key: string]: components["schemas"]["ManifestV9MethodSchema"];
+                [key: string]: components["schemas"]["StoredManifestMethodSchema"];
             };
             required?: string[];
             /** @constant */
             additionalProperties?: false;
-            items?: components["schemas"]["ManifestV9MethodSchema"];
-            allOf?: components["schemas"]["ManifestV9MethodSchema"][];
-            anyOf?: components["schemas"]["ManifestV9MethodSchema"][];
-            oneOf?: components["schemas"]["ManifestV9MethodSchema"][];
+            items?: components["schemas"]["StoredManifestMethodSchema"];
+            allOf?: components["schemas"]["StoredManifestMethodSchema"][];
+            anyOf?: components["schemas"]["StoredManifestMethodSchema"][];
+            oneOf?: components["schemas"]["StoredManifestMethodSchema"][];
             enum?: unknown[];
             const?: unknown;
             default?: unknown;
@@ -3734,9 +3735,9 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1" | "background.interval.v1")[];
-        ManifestV9OptionalFeatures: string[];
-        ManifestV9NetworkAccess: {
+        StoredManifestRequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1" | "background.interval.v1")[];
+        StoredManifestOptionalFeatures: string[];
+        StoredManifestNetworkAccess: {
             connector_id: string;
             /** @enum {unknown} */
             transport: "http" | "websocket" | "tcp" | "udp";

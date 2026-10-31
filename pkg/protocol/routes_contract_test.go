@@ -350,7 +350,7 @@ func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 	for _, snippet := range []string{
 		"additionalProperties: false",
 		"capability_contracts:",
-		`$ref: "../plugin/manifest-v9.schema.json"`,
+		`$ref: "../plugin/stored-manifest.schema.json"`,
 		`items: { $ref: "#/components/schemas/PackageEntry" }`,
 	} {
 		if !strings.Contains(pluginRecord, snippet) {

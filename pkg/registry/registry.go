@@ -466,6 +466,12 @@ func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
 }
 
 func RunnablePluginRecord(record PluginRecord) bool {
+	// Persisted pre-Web packages remain manageable data, never execution input.
+	for _, surface := range record.Manifest.Surfaces {
+		if surface.Web.Root == "" {
+			return false
+		}
+	}
 	if !validPackageSourceProvenance(record.PackageSourceProvenance) ||
 		!validSignatureAssessmentStatus(record.SignatureAssessment.Status) ||
 		!validExecutionApprovalStatus(record.ExecutionApproval.Status) {

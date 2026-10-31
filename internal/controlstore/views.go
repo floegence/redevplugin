@@ -150,7 +150,7 @@ func decodeExactCanonicalManifest(raw json.RawMessage) (manifest.Manifest, strin
 	if len(raw) == 0 {
 		return manifest.Manifest{}, "", errors.New("canonical manifest is required")
 	}
-	decoded, canonical, err := manifest.DecodeCanonical(bytes.NewReader(raw))
+	decoded, canonical, err := manifest.DecodeStoredCanonical(bytes.NewReader(raw))
 	if err != nil {
 		return manifest.Manifest{}, "", err
 	}
@@ -240,7 +240,7 @@ func (v RegistryView) UpdateExternalPackage(ctx context.Context, ownerEnvHash st
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var raw string
 	err = tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL`, ownerEnvHash, req.Record.PluginInstanceID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -438,7 +438,7 @@ func (v RegistryView) PutPlugin(ctx context.Context, ownerEnvHash string, record
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var raw string
 	err = tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -516,7 +516,7 @@ func (v RegistryView) BumpRevokeEpoch(ctx context.Context, ownerEnvHash, pluginI
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var raw string
 	if err := tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL`, ownerEnvHash, pluginInstanceID).Scan(&raw); errors.Is(err, sql.ErrNoRows) {
 		return registry.PluginRecord{}, registry.ErrNotFound
@@ -600,7 +600,7 @@ func (v RegistryView) ReplaceAuthorization(ctx context.Context, record PluginRec
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `UPDATE plugin_records SET policy_revision=?,management_revision=?,revoke_epoch=?,updated_at=?,record_json=? WHERE owner_env_hash=? AND plugin_instance_id=? AND policy_revision=? AND management_revision=? AND revoke_epoch=?`, record.PolicyRevision, record.ManagementRevision, record.RevokeEpoch, record.UpdatedAt, string(record.RawJSON), record.OwnerEnvHash, record.PluginInstanceID, expected.PolicyRevision, expected.ManagementRevision, expected.RevokeEpoch)
 	if err != nil {
 		return err
@@ -646,7 +646,7 @@ func (v RegistryView) Install(ctx context.Context, value PluginInstall) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	record := value.Record
 	if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_records(owner_env_hash,plugin_instance_id,publisher_id,plugin_id,version,active_fingerprint,package_sha256,manifest_sha256,entries_sha256,state,disabled_reason,policy_revision,management_revision,revoke_epoch,installed_at,enabled_at,updated_at,deleted_at,record_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.OwnerEnvHash, record.PluginInstanceID, record.PublisherID, record.PluginID, record.Version, record.ActiveFingerprint, record.PackageSHA256, record.ManifestSHA256, record.EntriesSHA256, record.State, record.DisabledReason, record.PolicyRevision, record.ManagementRevision, record.RevokeEpoch, record.InstalledAt, optionalInt64(record.EnabledAt), record.UpdatedAt, optionalInt64(record.DeletedAt), string(record.RawJSON)); err != nil {
 		return err
@@ -763,7 +763,7 @@ func (v ExecutionView) StartReleaseInstall(ctx context.Context, owner ExecutionO
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, releaseInstallSelect+` WHERE owner_session_hash=? AND owner_user_hash=? AND owner_env_hash=? AND session_channel_id_hash=? AND kind=? ORDER BY created_at,execution_id`, owner.OwnerSessionHash, owner.OwnerUserHash, owner.OwnerEnvHash, owner.SessionChannelIDHash, execution.KindOperation)
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, false, err
@@ -840,7 +840,7 @@ func (v ExecutionView) UpdateReleaseInstall(ctx context.Context, ownerEnvHash st
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	current, err := scanReleaseInstallOperation(tx.QueryRowContext(ctx, releaseInstallSelect+` WHERE owner_env_hash=? AND execution_id=? AND kind=?`, ownerEnvHash, req.ExecutionID, execution.KindOperation))
 	if err != nil {
 		return registry.ReleaseInstallOperation{}, err
@@ -905,7 +905,8 @@ func releaseInstallEventPayload(updated registry.ReleaseInstallOperation, status
 	if status != execution.StatusRunning {
 		payload["status"] = status
 	}
-	if status == execution.StatusFailed {
+	switch status {
+	case execution.StatusFailed:
 		payload["failure_phase"] = updated.Phase
 		installProgress.Status = registry.ReleaseInstallStageFailed
 		installProgress.FailureCode = updated.Failure.Code
@@ -913,7 +914,7 @@ func releaseInstallEventPayload(updated registry.ReleaseInstallOperation, status
 		retryable := updated.Failure.Retryable
 		installProgress.Retryable = &retryable
 		payload["install_progress"] = installProgress
-	} else if status == execution.StatusCompleted {
+	case execution.StatusCompleted:
 		installProgress.Status = registry.ReleaseInstallStageCompleted
 		payload["install_progress"] = installProgress
 	}
@@ -1117,7 +1118,7 @@ func (v ExecutionView) Append(ctx context.Context, event execution.Event) error 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	value, err := scanExecution(tx.QueryRowContext(ctx, executionSelect+` WHERE execution_id=?`, event.ExecutionID))
 	if err != nil {
 		return err
@@ -1147,7 +1148,7 @@ func (v ExecutionView) RequestCancel(ctx context.Context, id string, now time.Ti
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	value, err := scanExecution(tx.QueryRowContext(ctx, executionSelect+` WHERE execution_id=?`, id))
 	if err != nil {
 		return err
@@ -1169,7 +1170,7 @@ func (v ExecutionView) Finish(ctx context.Context, id, status, failureCode strin
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	value, err := scanExecution(tx.QueryRowContext(ctx, executionSelect+` WHERE execution_id=?`, id))
 	if err != nil {
 		return err
@@ -1207,7 +1208,7 @@ func (v ExecutionView) ReconcileOrphans(ctx context.Context, now time.Time) (Exe
 	if err != nil {
 		return ExecutionReconcileResult{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, executionSelect+` WHERE status IN (?,?) ORDER BY created_at,execution_id`, execution.StatusRunning, execution.StatusCancelRequested)
 	if err != nil {
 		return ExecutionReconcileResult{}, err
@@ -1314,7 +1315,7 @@ func (v ExecutionView) PruneTerminal(ctx context.Context, req ExecutionPruneRequ
 	if err != nil {
 		return ExecutionPruneResult{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT execution_id FROM (
 			SELECT execution_id,terminal_at,
@@ -1481,7 +1482,7 @@ func (v ConfirmationView) Resolve(ctx context.Context, id, status string, now ti
 	if err != nil {
 		return Confirmation{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var expiresAt int64
 	if err := tx.QueryRowContext(ctx, `SELECT expires_at FROM confirmation_intents WHERE confirmation_id=? AND status='pending'`, id).Scan(&expiresAt); errors.Is(err, sql.ErrNoRows) {
 		return Confirmation{}, ErrStateConflict
@@ -1511,7 +1512,7 @@ func (v ConfirmationView) RevokeSession(ctx context.Context, value ConfirmationR
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var previous int
 	err = tx.QueryRowContext(ctx, `SELECT revoked_count FROM confirmation_session_revocations WHERE owner_session_hash=? AND owner_user_hash=? AND owner_env_hash=? AND session_channel_id_hash=? AND teardown_operation_id=?`, value.OwnerSessionHash, value.OwnerUserHash, value.OwnerEnvHash, value.SessionChannelIDHash, value.TeardownOperationID).Scan(&previous)
 	if err == nil {
@@ -1551,7 +1552,7 @@ func (v ConfirmationView) PutConfirmationIntentRecord(ctx context.Context, recor
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM confirmation_intents WHERE status='pending' AND expires_at<=?`, now.UTC().UnixNano()); err != nil {
 		return err
 	}
@@ -1594,7 +1595,7 @@ func (v ConfirmationView) ConsumeConfirmationIntentRecord(ctx context.Context, i
 	if err != nil {
 		return security.ConfirmationIntentRecord{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	record, err := getConfirmationIntentRecord(ctx, tx, id)
 	if errors.Is(err, ErrRecordNotFound) {
 		return security.ConfirmationIntentRecord{}, security.ErrConfirmationIntentNotFound
@@ -1625,7 +1626,7 @@ func (v ConfirmationView) RejectConfirmationIntentRecord(ctx context.Context, re
 	if err != nil {
 		return security.ConfirmationIntentRecord{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	record, err := getConfirmationIntentRecord(ctx, tx, req.ConfirmationID)
 	if errors.Is(err, ErrRecordNotFound) {
 		return security.ConfirmationIntentRecord{}, security.ErrConfirmationIntentNotFound
@@ -1700,7 +1701,7 @@ func (v ConfirmationView) RevokeSessionConfirmationIntentRecords(ctx context.Con
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var previous int
 	err = tx.QueryRowContext(ctx, `SELECT revoked_count FROM confirmation_session_revocations WHERE owner_session_hash=? AND owner_user_hash=? AND owner_env_hash=? AND session_channel_id_hash=? AND teardown_operation_id=?`, scope.OwnerSessionHash, scope.OwnerUserHash, scope.OwnerEnvHash, scope.SessionChannelIDHash, operationID).Scan(&previous)
 	if err == nil {
@@ -1992,7 +1993,7 @@ func (v SessionView) BeginSessionControlTeardown(ctx context.Context, proposed s
 	if err != nil {
 		return sessionscope.ControlRecord{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	current, err := getSessionControlRecord(ctx, tx, proposed.Scope)
 	if errors.Is(err, ErrRecordNotFound) {
 		var count int
@@ -2054,7 +2055,7 @@ func (v SessionView) AccumulateSessionControlPhase(ctx context.Context, scope se
 	if err != nil {
 		return sessionscope.ControlRecord{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	current, err := getSessionControlRecord(ctx, tx, scope)
 	if errors.Is(err, ErrRecordNotFound) {
 		return sessionscope.ControlRecord{}, sessionscope.ErrScopeNotFound
@@ -2122,7 +2123,7 @@ func (v SessionView) FinalizeSessionControl(ctx context.Context, scope sessionct
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	current, err := getSessionControlRecord(ctx, tx, scope)
 	if err != nil || current.State != sessionscope.StateComplete || current.TeardownOperationID != operationID || !bytes.Equal(current.ProofSHA256, proof) {
 		return sessionscope.ErrClosedSessionProofInvalid
@@ -2148,7 +2149,7 @@ func (v SessionView) updateSessionControl(ctx context.Context, scope sessionctx.
 	if err != nil {
 		return sessionscope.ControlRecord{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	current, err := getSessionControlRecord(ctx, tx, scope)
 	if errors.Is(err, ErrRecordNotFound) {
 		return sessionscope.ControlRecord{}, sessionscope.ErrScopeNotFound

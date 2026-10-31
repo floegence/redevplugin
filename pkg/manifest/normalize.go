@@ -11,6 +11,19 @@ import (
 )
 
 func decodeCurrent(r io.Reader) (Manifest, []byte, error) {
+	return decodeManifest(r, false)
+}
+
+// DecodeStoredCanonical reads exact persisted package identity, including the
+// pre-Web v9 surface declarations released before 3.3. It never invents Web
+// authority. Use DecodeCanonical for every package installation or execution.
+// This data-retention reader is required while those installed records or their
+// version/data history exist; it does not support the retired surface renderer.
+func DecodeStoredCanonical(r io.Reader) (Manifest, []byte, error) {
+	return decodeManifest(r, true)
+}
+
+func decodeManifest(r io.Reader, stored bool) (Manifest, []byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(r, 1<<20+1))
 	if err != nil {
 		return Manifest{}, nil, err
@@ -22,7 +35,7 @@ func decodeCurrent(r io.Reader) (Manifest, []byte, error) {
 	if err != nil {
 		return Manifest{}, nil, err
 	}
-	decoded, err := decodeV9(raw)
+	decoded, err := decodeV9(raw, stored)
 	if err != nil {
 		return Manifest{}, nil, err
 	}
@@ -123,7 +136,7 @@ type v9Worker struct {
 	MemoryLimitBytes int64      `json:"memory_limit_bytes"`
 }
 
-func decodeV9(raw []byte) (Manifest, error) {
+func decodeV9(raw []byte, stored bool) (Manifest, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return Manifest{}, err
@@ -182,7 +195,20 @@ func decodeV9(raw []byte) (Manifest, error) {
 	for _, worker := range document.Workers {
 		current.Workers = append(current.Workers, WorkerSpec{WorkerID: worker.WorkerID, Artifact: worker.Artifact, Mode: worker.Mode, Scope: worker.Scope, MemoryLimitBytes: worker.MemoryLimitBytes})
 	}
-	if err := Validate(current); err != nil {
+	preWeb := false
+	if stored && len(current.Surfaces) > 0 && current.Surfaces[0].Web.Root == "" {
+		var surfaces []map[string]json.RawMessage
+		if err := json.Unmarshal(fields["surfaces"], &surfaces); err != nil {
+			return Manifest{}, err
+		}
+		preWeb = true
+		for _, surface := range surfaces {
+			if _, present := surface["web"]; present {
+				preWeb = false
+			}
+		}
+	}
+	if err := validate(current, preWeb); err != nil {
 		return Manifest{}, err
 	}
 	return current, nil

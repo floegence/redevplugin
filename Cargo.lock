@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-runtime"
-version = "3.11.1"
+version = "3.11.2"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-worker-sdk"
-version = "3.11.1"
+version = "3.11.2"
 dependencies = [
  "base64",
  "serde",
