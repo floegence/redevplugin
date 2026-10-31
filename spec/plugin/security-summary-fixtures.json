@@ -317,6 +317,32 @@
       "canonical_json": "{\"permissions\":[{\"permission_id\":\"files.read\",\"methods\":[\"document.read\"],\"required\":true,\"effects\":[\"read\"]}],\"methods\":[{\"method\":\"document.read\",\"route\":{\"surface_id\":\"editor\",\"kind\":\"surface\",\"binding_id\":\"files\",\"target_method\":\"read\",\"worker_id\":\"worker\",\"action_id\":\"open\"},\"effect\":\"read\",\"execution\":\"sync\",\"dangerous\":false,\"preflight_only\":false,\"required_permissions\":[],\"confirmation\":{\"mode\":\"required\",\"preflight_method\":\"plan\",\"request_hash_fields\":[\"document_id\"],\"plan_hash_required\":true},\"cancel\":{\"cancelable\":true,\"disable_behavior\":\"cancel\",\"uninstall_behavior\":\"cancel_then_block_delete\",\"ack_timeout_ms\":1000}}],\"capability_contracts\":[{\"binding_id\":\"files\",\"capability_id\":\"example.files\",\"capability_version\":\"1.0.0\",\"contract_sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],\"workers\":[{\"worker_id\":\"worker\",\"artifact\":\"worker.wasm\",\"mode\":\"job\",\"scope\":\"environment\",\"memory_limit_bytes\":268435456,\"idle_timeout_ms\":0}],\"process\":{\"resource_limits\":{\"output_buffer_bytes\":4096,\"max_runtime_ms\":1000},\"method_access\":[{\"method\":\"process.run\",\"operations\":[\"start\",\"wait\"]}]},\"background\":{\"method\":\"refresh\",\"strategy\":\"runtime_start\",\"worker_id\":\"worker\"},\"network\":[{\"configurable\":true,\"surface_access\":[{\"surface_id\":\"editor\",\"operations\":[\"http\"],\"http_methods\":[\"GET\"]}],\"connector_id\":\"api\",\"transport\":\"http\",\"scope\":\"environment\",\"destinations\":[\"https://example.com/a?x=1\\u0026y=2\"],\"auth_declared\":false,\"tls_declared\":false,\"method_access\":[]}],\"storage\":[{\"store_id\":\"data\",\"kind\":\"files\",\"scope\":\"environment\",\"quota_bytes\":1073741824,\"quota_files\":100000,\"schema_version\":1,\"method_access\":[{\"method\":\"document.read\",\"operations\":[\"read\"]}]}],\"secret_refs\":[{\"setting_key\":\"key\",\"secret_ref\":\"api-key\",\"scope\":\"environment\"}],\"core_actions\":[{\"method\":\"open\",\"action_id\":\"open\",\"effect\":\"read\"}],\"intents\":[{\"intent_id\":\"open\",\"method\":\"open\"}],\"surfaces\":[{\"surface_id\":\"editor\",\"kind\":\"view\",\"intent\":\"primary\",\"label\":\"中文 ☀ \\u003cApp\\u003e \\u0026 café\\u2028line\\u2029end\",\"entry\":\"ui/index.html\",\"icon\":\"ui/icon.png\",\"default_size\":{\"width\":9007199254740991,\"height\":390}}]}",
       "sha256": "sha256:4ec06ea065580bfda4ba4742062f5fc49e50a0cab320bb04da5195db983afba5",
       "capability_contract_set_sha256": "sha256:3919f6930f4e6765313f0ca9ff281f33cfe6495b0725731a78162071e1bb48b7"
+    },
+    {
+      "name": "durable-background-interval",
+      "summary": {
+        "summary_sha256": "sha256:c2458696d5e5369024c05c7fc5d29df1ff098433064a95f804615d30267996db",
+        "permissions": [],
+        "methods": [],
+        "capability_contracts": [],
+        "workers": [],
+        "network": [],
+        "storage": [],
+        "secret_refs": [],
+        "core_actions": [],
+        "intents": [],
+        "surfaces": [],
+        "background": {
+          "interval_ms": 60000,
+          "max_runtime_ms": 10000,
+          "method": "refresh",
+          "strategy": "interval",
+          "worker_id": "worker"
+        }
+      },
+      "canonical_json": "{\"permissions\":[],\"methods\":[],\"capability_contracts\":[],\"workers\":[],\"background\":{\"interval_ms\":60000,\"max_runtime_ms\":10000,\"method\":\"refresh\",\"strategy\":\"interval\",\"worker_id\":\"worker\"},\"network\":[],\"storage\":[],\"secret_refs\":[],\"core_actions\":[],\"intents\":[],\"surfaces\":[]}",
+      "sha256": "sha256:c2458696d5e5369024c05c7fc5d29df1ff098433064a95f804615d30267996db",
+      "capability_contract_set_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
     }
   ],
   "invalid": [

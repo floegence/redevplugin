@@ -133,13 +133,16 @@ type BackgroundStartStrategy string
 const (
 	BackgroundRuntimeStart BackgroundStartStrategy = "runtime_start"
 	BackgroundOnDemand     BackgroundStartStrategy = "on_demand"
+	BackgroundInterval     BackgroundStartStrategy = "interval"
 )
 
 type BackgroundSpec struct {
-	Method   string                  `json:"method,omitempty"`
-	Params   map[string]any          `json:"params,omitempty"`
-	Strategy BackgroundStartStrategy `json:"strategy"`
-	WorkerID string                  `json:"worker_id"`
+	IntervalMS   int                     `json:"interval_ms,omitempty"`
+	MaxRuntimeMS int                     `json:"max_runtime_ms,omitempty"`
+	Method       string                  `json:"method,omitempty"`
+	Params       map[string]any          `json:"params,omitempty"`
+	Strategy     BackgroundStartStrategy `json:"strategy"`
+	WorkerID     string                  `json:"worker_id"`
 }
 
 type StorageBrokerAccessSpec struct {
@@ -362,8 +365,8 @@ func Validate(m Manifest) error {
 		}
 	}
 	if m.Background != nil {
-		if m.Background.Strategy != BackgroundRuntimeStart && m.Background.Strategy != BackgroundOnDemand {
-			return ValidationError{Field: "background.strategy", Message: "must be runtime_start or on_demand"}
+		if m.Background.Strategy != BackgroundRuntimeStart && m.Background.Strategy != BackgroundOnDemand && m.Background.Strategy != BackgroundInterval {
+			return ValidationError{Field: "background.strategy", Message: "must be runtime_start, on_demand or interval"}
 		}
 		if strings.TrimSpace(m.Background.WorkerID) == "" {
 			return ValidationError{Field: "background.worker_id", Message: "is required"}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.10.0
+  version: 3.11.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -2238,6 +2238,19 @@ components:
           required: [action_state]
           properties:
             action_state: { $ref: "#/components/schemas/PluginActionState" }
+            background_interval: { $ref: "#/components/schemas/BackgroundIntervalStatus" }
+    BackgroundIntervalStatus:
+      type: object
+      additionalProperties: false
+      required: [state, interval_ms, max_runtime_ms]
+      properties:
+        state: { type: string, enum: [scheduled, running, stopped, blocked] }
+        interval_ms: { type: integer, minimum: 1000, maximum: 86400000 }
+        max_runtime_ms: { type: integer, minimum: 1, maximum: 300000 }
+        next_run_at: { type: string, format: date-time }
+        last_started_at: { type: string, format: date-time }
+        last_finished_at: { type: string, format: date-time }
+        last_outcome: { type: string, enum: [success, failed, unknown, blocked, canceled] }
     PluginCatalogResult:
       type: object
       required: [plugins]
@@ -2989,8 +3002,10 @@ components:
       required: [strategy, worker_id]
       additionalProperties: false
       properties:
+        interval_ms: { type: integer, minimum: 1000, maximum: 86400000 }
+        max_runtime_ms: { type: integer, minimum: 1, maximum: 300000 }
         method: { type: string, minLength: 1 }
-        strategy: { type: string, enum: [runtime_start, on_demand] }
+        strategy: { type: string, enum: [runtime_start, on_demand, interval] }
         worker_id: { type: string, minLength: 1 }
     ExternalPackageNetworkMethodAccessSummary:
       type: object

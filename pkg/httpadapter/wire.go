@@ -153,6 +153,7 @@ type pluginRecordResponse struct {
 	DeletedAt             *time.Time                               `json:"deleted_at,omitempty"`
 	Metadata              map[string]string                        `json:"metadata,omitempty"`
 	ActionState           *host.PluginActionState                  `json:"action_state,omitempty"`
+	BackgroundInterval    *host.BackgroundIntervalStatus           `json:"background_interval,omitempty"`
 }
 
 func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, error) {
@@ -274,6 +275,7 @@ func publicPluginInventory(records []host.PluginInventoryRecord) ([]pluginRecord
 		}
 		action := record.ActionState
 		mapped.ActionState = &action
+		mapped.BackgroundInterval = record.BackgroundInterval
 		responses[index] = mapped
 	}
 	return responses, nil

@@ -63,6 +63,9 @@ func (r *backgroundWorkerRunner) Start(ctx context.Context, owner background.Own
 	if record.Manifest.Background == nil || record.Manifest.Background.WorkerID != workerID {
 		return background.Session{}, fmt.Errorf("background worker %q is not declared as the plugin background entry", workerID)
 	}
+	if record.Manifest.Background.Strategy == manifest.BackgroundInterval {
+		return background.Session{}, errors.New("interval work requires a durable Host claim")
+	}
 	if err := r.host.canRun(authorizationContext, record); err != nil {
 		return background.Session{}, err
 	}

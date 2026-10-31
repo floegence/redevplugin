@@ -93,8 +93,10 @@ export type ExternalPackageProcessMethodAccessSummary = {
 };
 
 export type ExternalPackageBackgroundSummary = {
+  interval_ms?: number;
+  max_runtime_ms?: number;
   method?: string;
-  strategy: "runtime_start" | "on_demand";
+  strategy: "runtime_start" | "on_demand" | "interval";
   worker_id: string;
 };
 
@@ -639,6 +641,16 @@ export const securitySummarySchemas = {
     ],
     "additionalProperties": false,
     "properties": {
+      "interval_ms": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 86400000
+      },
+      "max_runtime_ms": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300000
+      },
       "method": {
         "type": "string",
         "minLength": 1
@@ -647,7 +659,8 @@ export const securitySummarySchemas = {
         "type": "string",
         "enum": [
           "runtime_start",
-          "on_demand"
+          "on_demand",
+          "interval"
         ]
       },
       "worker_id": {
@@ -1538,6 +1551,16 @@ export const securitySummaryJSONSchema = {
       ],
       "additionalProperties": false,
       "properties": {
+        "interval_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000
+        },
+        "max_runtime_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        },
         "method": {
           "type": "string",
           "minLength": 1
@@ -1546,7 +1569,8 @@ export const securitySummaryJSONSchema = {
           "type": "string",
           "enum": [
             "runtime_start",
-            "on_demand"
+            "on_demand",
+            "interval"
           ]
         },
         "worker_id": {

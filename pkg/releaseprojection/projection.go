@@ -215,9 +215,11 @@ type ExternalPackageProcessResourceLimits struct {
 }
 
 type ExternalPackageBackgroundSummary struct {
-	Method   string `json:"method,omitempty"`
-	Strategy string `json:"strategy"`
-	WorkerID string `json:"worker_id"`
+	IntervalMS   int    `json:"interval_ms,omitempty"`
+	MaxRuntimeMS int    `json:"max_runtime_ms,omitempty"`
+	Method       string `json:"method,omitempty"`
+	Strategy     string `json:"strategy"`
+	WorkerID     string `json:"worker_id"`
 }
 
 type ExternalPackageNetworkMethodAccessSummary struct {
@@ -450,7 +452,7 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 	}
 	var background *ExternalPackageBackgroundSummary
 	if m.Background != nil {
-		background = &ExternalPackageBackgroundSummary{Strategy: string(m.Background.Strategy), WorkerID: m.Background.WorkerID, Method: m.Background.Method}
+		background = &ExternalPackageBackgroundSummary{IntervalMS: m.Background.IntervalMS, MaxRuntimeMS: m.Background.MaxRuntimeMS, Strategy: string(m.Background.Strategy), WorkerID: m.Background.WorkerID, Method: m.Background.Method}
 	}
 	var dataUpgrade *ExternalPackageDataUpgradeSummary
 	if spec := m.DataUpgrade; spec != nil {

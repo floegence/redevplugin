@@ -1129,7 +1129,8 @@
         "strategy": {
           "enum": [
             "runtime_start",
-            "on_demand"
+            "on_demand",
+            "interval"
           ]
         },
         "worker_id": {
@@ -1142,13 +1143,57 @@
         },
         "params": {
           "type": "object"
+        },
+        "interval_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000
+        },
+        "max_runtime_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
         }
       },
       "dependentRequired": {
         "params": [
           "method"
         ]
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "strategy": {
+                "const": "interval"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "method",
+              "interval_ms",
+              "max_runtime_ms"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "interval_ms"
+                  ]
+                },
+                {
+                  "required": [
+                    "max_runtime_ms"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
     },
     "settings": {
       "type": "object",
@@ -1823,7 +1868,8 @@
           "authorization.scoped.v1",
           "background.method.v1",
           "fs.selected.v1",
-          "data.upgrade.v1"
+          "data.upgrade.v1",
+          "background.interval.v1"
         ]
       }
     },
@@ -2029,6 +2075,38 @@
               "required_features": {
                 "contains": {
                   "const": "data.upgrade.v1"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "background"
+        ],
+        "properties": {
+          "background": {
+            "properties": {
+              "strategy": {
+                "const": "interval"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "api": {
+            "required": [
+              "required_features"
+            ],
+            "properties": {
+              "required_features": {
+                "contains": {
+                  "const": "background.interval.v1"
                 }
               }
             }

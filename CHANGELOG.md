@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.11.0
+
+- Run declared environment-scoped WASM methods on durable bounded intervals, with one invocation per plan and missed periods coalesced.
+- Reuse method authorization, grants, runtime leases and cancellation; authorize unattended work through an explicit host-neutral background policy adapter.
+- Persist claims before dispatch, reject stale completion after lifecycle changes, and mark interrupted work unknown without replaying its side effects.
+- Migrate released control schemas 1–4 transactionally to schema 5 and expose owner-scoped interval status through the existing inventory API and generated clients.
+- Bind interval limits and methods into shared Go/TypeScript security summaries; cover real WASM execution, restart, sibling isolation and lifecycle cancellation.
+
 ## v3.10.0
 
 - Convert plugin settings and private files, KV, and SQLite data through declared isolated WASM upgrade methods, using the existing update API and author SDK.

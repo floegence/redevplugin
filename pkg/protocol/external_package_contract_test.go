@@ -216,6 +216,8 @@ func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) 
 		{schema: "ExternalPackageMethodSummary", properties: []string{"cancel", "confirmation", "dangerous", "effect", "execution", "method", "preflight_only", "required_permissions", "route"}},
 		{schema: "ExternalPackageCapabilityContractSummary", properties: []string{"binding_id", "capability_id", "capability_version", "contract_sha256"}},
 		{schema: "ExternalPackageWorkerSummary", properties: []string{"artifact", "idle_timeout_ms", "memory_limit_bytes", "mode", "scope", "worker_id"}},
+		{schema: "ExternalPackageBackgroundSummary", properties: []string{"interval_ms", "max_runtime_ms", "method", "strategy", "worker_id"}},
+		{schema: "BackgroundIntervalStatus", properties: []string{"interval_ms", "last_finished_at", "last_outcome", "last_started_at", "max_runtime_ms", "next_run_at", "state"}},
 		{schema: "ExternalPackageDataUpgradePredecessor", properties: []string{"shape_sha256", "version"}},
 		{schema: "ExternalPackageDataUpgradeSummary", properties: []string{"from", "max_bytes", "max_runtime_ms", "method"}},
 		{schema: "ExternalPackageNetworkMethodAccessSummary", properties: []string{"http_methods", "method", "operations"}},

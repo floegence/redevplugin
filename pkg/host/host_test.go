@@ -4925,6 +4925,7 @@ type testHostOptions struct {
 	runtimeManager          runtimeclient.Manager
 	runtimeManagerFactory   func(testRuntimeManagerDependencies) (runtimeclient.Manager, error)
 	backgroundRunnerFactory func(*Host) (background.Runner, error)
+	backgroundPolicy        BackgroundPolicyAdapter
 	withoutRuntimeManager   bool
 	sessionScopePath        string
 	sessionScopeMaxScopes   int
@@ -5099,7 +5100,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		filesModule = &FilesModule{Picker: opts.filePicker}
 	}
 	if opts.backgroundRunnerFactory != nil {
-		backgroundModule = &BackgroundModule{RunnerFactory: opts.backgroundRunnerFactory}
+		backgroundModule = &BackgroundModule{RunnerFactory: opts.backgroundRunnerFactory, Policy: opts.backgroundPolicy}
 	}
 	host, err := Open(openContext, Config{
 		Files:     filesModule,

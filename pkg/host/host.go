@@ -481,6 +481,9 @@ type ProcessModule struct {
 type BackgroundModule struct {
 	Manager       *background.Manager
 	RunnerFactory func(*Host) (background.Runner, error)
+	// Policy authorizes declared interval work independently of live UI sessions.
+	// A nil policy denies interval execution; it never falls back to a user.
+	Policy BackgroundPolicyAdapter
 }
 
 // ExternalPackageModule configures the host-neutral public HTTPS and GitHub
@@ -609,6 +612,8 @@ type Host struct {
 	runtimeIO            *hostRuntimeIOBroker
 	processSupervisor    *processruntime.Supervisor
 	backgroundManager    *background.Manager
+	backgroundIntervals  *backgroundIntervalScheduler
+	backgroundPolicy     BackgroundPolicyAdapter
 	workerPreparations   sync.Map
 }
 
@@ -1549,6 +1554,10 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	if config.Web != nil {
 		host.webOrigins = config.Web.Origins
 	}
+	if config.Background != nil {
+		host.backgroundPolicy = config.Background.Policy
+		host.backgroundIntervals = &backgroundIntervalScheduler{host: host, running: make(map[string]context.CancelFunc)}
+	}
 	if config.Background != nil && host.backgroundManager == nil && config.Background.RunnerFactory != nil {
 		runner, err := config.Background.RunnerFactory(host)
 		if err != nil {
@@ -1623,6 +1632,13 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		host.startStartupWorkerPrewarm()
 	}
 	host.startSelectedFileMaintenance()
+	if host.backgroundIntervals != nil {
+		if err := host.controlStore.RecoverIntervalClaims(ctx, time.Now().UTC()); err != nil {
+			_ = host.Close()
+			return nil, fmt.Errorf("recover background intervals: %w", err)
+		}
+		host.startLifecycleJob(host.backgroundIntervals.run)
+	}
 	openedHost = host
 	return openedHost, nil
 }
@@ -3078,6 +3094,10 @@ func (h *Host) authorizeHeadlessMethod(ctx context.Context, session sessionctx.C
 	if decision != PolicyAllow {
 		return fmt.Errorf("%w: headless method denied by local policy", security.ErrPolicyDenied)
 	}
+	return h.authorizeDeclaredMethod(ctx, record, method, now)
+}
+
+func (h *Host) authorizeDeclaredMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, now time.Time) error {
 	requiredPermissions, err := h.requiredPermissionsForMethod(record, method)
 	if err != nil {
 		return err
@@ -8040,6 +8060,9 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	}
 	if h.backgroundManager != nil {
 		resultErr = errors.Join(resultErr, h.stopBackgroundEntry(ctx, record))
+	}
+	if h.backgroundIntervals != nil {
+		h.backgroundIntervals.cancel(record.OwnerEnvHash, record.PluginInstanceID)
 	}
 	if err := h.runtimeIO.revokePlugin(ownerEnvHash, record.PluginInstanceID); err != nil {
 		resultErr = errors.Join(resultErr, err)

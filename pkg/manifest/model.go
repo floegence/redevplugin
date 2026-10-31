@@ -22,6 +22,7 @@ const (
 	FeatureScopedAuthorization FeatureID = "authorization.scoped.v1"
 	FeatureDataUpgrade         FeatureID = "data.upgrade.v1"
 	FeatureBackgroundMethod    FeatureID = "background.method.v1"
+	FeatureBackgroundInterval  FeatureID = "background.interval.v1"
 )
 
 const (

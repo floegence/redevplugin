@@ -193,10 +193,12 @@ type manifestProcessResponse struct {
 }
 
 type manifestBackgroundResponse struct {
-	Method   string         `json:"method,omitempty"`
-	Params   map[string]any `json:"params,omitempty"`
-	Strategy string         `json:"strategy"`
-	WorkerID string         `json:"worker_id"`
+	IntervalMS   int            `json:"interval_ms,omitempty"`
+	MaxRuntimeMS int            `json:"max_runtime_ms,omitempty"`
+	Method       string         `json:"method,omitempty"`
+	Params       map[string]any `json:"params,omitempty"`
+	Strategy     string         `json:"strategy"`
+	WorkerID     string         `json:"worker_id"`
 }
 
 type manifestMethodBrokerAccessResponse struct {
@@ -454,7 +456,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		if err != nil {
 			return manifestResponse{}, err
 		}
-		response.Background = &manifestBackgroundResponse{Strategy: string(source.Background.Strategy), WorkerID: source.Background.WorkerID, Method: source.Background.Method, Params: params}
+		response.Background = &manifestBackgroundResponse{IntervalMS: source.Background.IntervalMS, MaxRuntimeMS: source.Background.MaxRuntimeMS, Strategy: string(source.Background.Strategy), WorkerID: source.Background.WorkerID, Method: source.Background.Method, Params: params}
 	}
 	if source.Settings != nil {
 		settings := &manifestSettingsResponse{

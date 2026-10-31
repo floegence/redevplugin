@@ -13,7 +13,7 @@
   "scripts": {
     "openapi:generate": "node scripts/generate_openapi_types.mjs",
     "openapi:check": "node scripts/generate_openapi_types.mjs --check",
-    "openapi-contract:test": "node --test scripts/openapi_contract_integrity.test.mjs scripts/openapi_generator_security.test.mjs scripts/runtime_targets.test.mjs scripts/retained_recovery_contract.test.mjs scripts/data_upgrade_contract.test.mjs",
+    "openapi-contract:test": "node --test scripts/openapi_contract_integrity.test.mjs scripts/openapi_generator_security.test.mjs scripts/runtime_targets.test.mjs scripts/retained_recovery_contract.test.mjs scripts/data_upgrade_contract.test.mjs scripts/background_interval_contract.test.mjs",
     "ui-bridge-contract:test": "node --test scripts/ui_bridge_contract.test.mjs",
     "error-codes:generate": "node scripts/generate_error_codes.mjs",
     "error-codes:check": "node scripts/generate_error_codes.mjs --check",

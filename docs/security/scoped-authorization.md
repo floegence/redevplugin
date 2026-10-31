@@ -49,6 +49,47 @@ and event lifecycle without overriding execution mode or cancellation policy.
 Explicit entries authorize only the selected method; existing entries retain
 their aggregate startup requirement. This feature does not add timers or services.
 
+## Durable Background Intervals
+
+A package requiring both background.method.v1 and background.interval.v1 may
+set background.strategy to interval, with an explicit method and params,
+interval_ms between 1,000 and 86,400,000, and max_runtime_ms between 1 and
+300,000 and no greater than interval_ms. The method must be synchronous, use an
+environment-scoped job Worker, and require neither confirmation nor preflight.
+The existing Worker SDK, method dispatcher, broker grants and WASM ABI apply.
+
+The Host persists one plan per environment and installed instance in control
+schema 5. An invocation receives a random durable claim before dispatch; it
+rechecks package trust, current fingerprint, management/policy revisions, revoke
+epoch and grants. BackgroundModule.Policy authorizes the declared method without
+an online user session. Its request contains only verified identity, method name
+and effect classification with revisions. An absent policy denies execution. This adapter never grants a
+capability or turns a user-scoped resource into background authority. Adapters
+that need interactive sessions may deny that resource; selected-file and
+connection approvals retain their original owner and lifetime requirements.
+
+At most one period runs per plan; different plugins may run concurrently. The
+first run follows one interval, and each subsequent run is scheduled from the
+previous completion. Missed periods coalesce into one invocation. A Host restart
+marks an unfinished claim unknown and schedules a future period with a new
+identity. It never replays the interrupted invocation. A canceled invocation
+before dispatch has a known canceled outcome; cancellation or timeout after
+dispatch is unknown because side effects may already have occurred. A future
+period is new work, not evidence that the prior work completed.
+
+Disable, uninstall, version replacement and revocation fence current claims.
+A stale completion cannot replace a new plan. Missing grants block dispatch
+without changing the user's enabled intent; a later grant allows a new plan.
+Closing the Host cancels and drains work before closing its durable store.
+
+Inventory background_interval reports scheduled, running, stopped or blocked,
+limits, next_run_at and the latest start, completion and outcome. It exposes no
+claim, replay endpoint, cron syntax or plugin-controlled scheduler. Hosts use
+ordinary enable/disable controls and the existing diagnostics API. Unknown
+results should remain visible without offering an automatic retry of old work.
+Schema 1–4 migrate transactionally and idempotently; unknown or drifted schemas
+and inconsistent durable claims fail closed without recovery mutation.
+
 ## Selected File Resources
 
 The optional FilesModule supplies a trusted FileSelectionAdapter. The adapter

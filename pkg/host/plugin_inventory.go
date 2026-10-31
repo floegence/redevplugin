@@ -50,8 +50,9 @@ type PluginSurfaceActionState struct {
 }
 
 type PluginInventoryRecord struct {
-	Plugin      registry.PluginRecord `json:"plugin"`
-	ActionState PluginActionState     `json:"action_state"`
+	Plugin             registry.PluginRecord     `json:"plugin"`
+	ActionState        PluginActionState         `json:"action_state"`
+	BackgroundInterval *BackgroundIntervalStatus `json:"background_interval,omitempty"`
 }
 
 const (
@@ -85,8 +86,16 @@ func (h *Host) ListPluginInventory(ctx context.Context) ([]PluginInventoryRecord
 		return nil, err
 	}
 	result := make([]PluginInventoryRecord, len(records))
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
+	plans, err := h.controlStore.OwnerIntervalPlans(ctx, session.OwnerEnvHash)
+	if err != nil {
+		return nil, err
+	}
 	for index, record := range records {
-		result[index] = PluginInventoryRecord{Plugin: record, ActionState: h.pluginActionState(ctx, record)}
+		result[index] = PluginInventoryRecord{Plugin: record, ActionState: h.pluginActionState(ctx, record), BackgroundInterval: h.intervalStatus(record, plans)}
 	}
 	return result, nil
 }

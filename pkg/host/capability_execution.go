@@ -613,7 +613,24 @@ func (h *Host) validateExecutionBinding(ctx context.Context, binding capability.
 	if err != nil {
 		return capability.ErrExecutionRevoked
 	}
-	if err := h.canRun(ctx, record); err != nil {
+	if plan, ok := ctx.Value(intervalExecutionKey{}).(controlstore.IntervalPlan); ok {
+		if err := h.controlStore.ValidateIntervalClaim(ctx, plan); err != nil {
+			return capability.ErrExecutionRevoked
+		}
+		if !intervalRecordMatches(plan, record) {
+			return capability.ErrExecutionRevoked
+		}
+		if _, err := h.checkRunnable(ctx, record); err != nil {
+			return capability.ErrExecutionRevoked
+		}
+		method, ok := backgroundWorkerMethod(record.Manifest, record.Manifest.Background.WorkerID)
+		if !ok || method.Method != binding.Method {
+			return capability.ErrExecutionRevoked
+		}
+		if err := h.authorizeBackgroundInterval(ctx, record, method); err != nil {
+			return capability.ErrExecutionRevoked
+		}
+	} else if err := h.canRun(ctx, record); err != nil {
 		return capability.ErrExecutionRevoked
 	}
 	authorization, err := h.authorizePlugin(ctx, registry.AuthorizeRequest{

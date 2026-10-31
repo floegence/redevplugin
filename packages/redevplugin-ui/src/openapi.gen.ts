@@ -1651,6 +1651,21 @@ export interface components {
         };
         PluginCatalogRecord: components["schemas"]["PluginRecord"] & {
             action_state: components["schemas"]["PluginActionState"];
+            background_interval?: components["schemas"]["BackgroundIntervalStatus"];
+        };
+        BackgroundIntervalStatus: {
+            /** @enum {string} */
+            state: "scheduled" | "running" | "stopped" | "blocked";
+            interval_ms: number;
+            max_runtime_ms: number;
+            /** Format: date-time */
+            next_run_at?: string;
+            /** Format: date-time */
+            last_started_at?: string;
+            /** Format: date-time */
+            last_finished_at?: string;
+            /** @enum {string} */
+            last_outcome?: "success" | "failed" | "unknown" | "blocked" | "canceled";
         };
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginCatalogRecord"][];
@@ -2156,9 +2171,11 @@ export interface components {
             method_access: components["schemas"]["ExternalPackageProcessMethodAccessSummary"][];
         };
         ExternalPackageBackgroundSummary: {
+            interval_ms?: number;
+            max_runtime_ms?: number;
             method?: string;
             /** @enum {string} */
-            strategy: "runtime_start" | "on_demand";
+            strategy: "runtime_start" | "on_demand" | "interval";
             worker_id: string;
         };
         ExternalPackageNetworkMethodAccessSummary: {
@@ -3606,11 +3623,13 @@ export interface components {
             };
             background?: {
                 /** @enum {unknown} */
-                strategy: "runtime_start" | "on_demand";
+                strategy: "runtime_start" | "on_demand" | "interval";
                 worker_id: string;
                 method?: string;
                 params?: Record<string, never>;
-            };
+                interval_ms?: number;
+                max_runtime_ms?: number;
+            } & unknown;
             settings?: {
                 schema_version: number;
                 fields?: {
@@ -3646,7 +3665,7 @@ export interface components {
                 max_bytes: number;
                 max_runtime_ms: number;
             };
-        } & (unknown & unknown & unknown & unknown);
+        } & (unknown & unknown & unknown & unknown & unknown);
         ManifestV9Locale: string;
         ManifestV9Summary: string;
         ManifestV9Description: string[];
@@ -3715,7 +3734,7 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1")[];
+        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1" | "background.interval.v1")[];
         ManifestV9OptionalFeatures: string[];
         ManifestV9NetworkAccess: {
             connector_id: string;

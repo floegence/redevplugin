@@ -543,3 +543,27 @@ func jsonFieldSet(typeOf reflect.Type) []string {
 	slices.Sort(fields)
 	return fields
 }
+
+func TestPublicInventoryPreservesIntervalObservationWithoutAuthority(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	status := &host.BackgroundIntervalStatus{State: "scheduled", IntervalMS: 60000, MaxRuntimeMS: 10000, NextRunAt: &now, LastOutcome: "unknown"}
+	records, err := publicPluginInventory([]host.PluginInventoryRecord{{Plugin: registry.PluginRecord{PluginInstanceID: "interval", Manifest: manifest.Manifest{}}, BackgroundInterval: status}})
+	if err != nil || len(records) != 1 {
+		t.Fatal(records, err)
+	}
+	raw, err := json.Marshal(records[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := value["background_interval"].(map[string]any)
+	if !ok || got["state"] != "scheduled" || got["last_outcome"] != "unknown" || got["interval_ms"] != float64(60000) {
+		t.Fatalf("projection=%s", raw)
+	}
+	if len(got) != 5 {
+		t.Fatalf("unexpected interval authority fields: %s", raw)
+	}
+}
