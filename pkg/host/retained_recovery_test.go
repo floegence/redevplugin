@@ -38,6 +38,14 @@ func TestRetainedRecoveryPreservesTargetDataAndReconcilesWithoutReplay(t *testin
 	if _, err := h.DisablePlugin(ctx, DisableRequest{PluginInstanceID: target.PluginInstanceID, ExpectedManagementRevision: target.ManagementRevision}); err != nil {
 		t.Fatal(err)
 	}
+	candidates, err := h.ListRetainedData(ctx, ListRetainedDataRequest{TargetPluginInstanceID: target.PluginInstanceID})
+	if err != nil || len(candidates) != 1 || candidates[0].PluginInstanceID != source.PluginInstanceID {
+		t.Fatalf("recovery candidates = %#v, %v", candidates, err)
+	}
+	filtered, err := h.ListRetainedData(ctx, ListRetainedDataRequest{PluginInstanceID: "unrelated_source", TargetPluginInstanceID: target.PluginInstanceID})
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("filtered recovery candidates = %#v, %v", filtered, err)
+	}
 	plan, err := h.InspectRetainedRecovery(ctx, InspectRetainedRecoveryRequest{SourcePluginInstanceID: source.PluginInstanceID, TargetPluginInstanceID: target.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
@@ -107,5 +115,19 @@ func TestRetainedRecoveryPreservesTargetDataAndReconcilesWithoutReplay(t *testin
 	}
 	if string(record.EnableState) != "disabled_by_user" {
 		t.Fatalf("recovery enabled the target: %#v", record)
+	}
+}
+
+func TestRetainedRecoveryDiscoveryAuthorizesTargetBeforeReading(t *testing.T) {
+	h, _, _ := newTestHost(t, true, true)
+	authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
+	h.adapters.Authorization = authorization
+	_, err := h.ListRetainedData(hostTestContext(), ListRetainedDataRequest{TargetPluginInstanceID: " target "})
+	if !errors.Is(err, ErrActionDenied) || len(authorization.requests) != 1 {
+		t.Fatalf("authorization=%#v err=%v", authorization.requests, err)
+	}
+	request := authorization.requests[0]
+	if request.Target.Kind != ResourceRetainedData || !request.Target.Collection || len(request.RelatedTargets) != 1 || request.RelatedTargets[0].ID != "target" || request.RelatedTargets[0].Kind != ResourcePlugin || request.RelatedTargets[0].Scope == nil || request.RelatedTargets[0].Scope.OwnerEnvHash != "env_hash" {
+		t.Fatalf("unexpected discovery authority: %#v", request)
 	}
 }

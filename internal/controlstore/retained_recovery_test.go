@@ -216,3 +216,49 @@ func TestRetainedRecoveryRejectsExpiredSourceWithoutMutation(t *testing.T) {
 		t.Fatal("target changed")
 	}
 }
+
+func TestRetainedRecoveryCandidatesFilterIdentityShapeExpiryAndOwner(t *testing.T) {
+	ctx := pluginDataCatalogContext("env-discovery", "user")
+	store := openPluginDataCatalogStore(t)
+	defer store.Close()
+	target := putPluginDataCatalogRecord(t, store, ctx, "target")
+	now := time.Now().UTC()
+	for index, id := range []string{"first", "second", "publisher", "plugin", "shape", "expired", "active"} {
+		record := putPluginDataCatalogRecord(t, store, ctx, id)
+		if id == "active" {
+			continue
+		}
+		if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{PluginInstanceID: id, ExpectedManagementRevision: record.ManagementRevision, Now: now.Add(time.Duration(index) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Alter individual catalog facts to exercise each discovery predicate.
+	for _, query := range []string{
+		"UPDATE plugin_records SET publisher_id='different' WHERE plugin_instance_id='publisher'",
+		"UPDATE plugin_records SET plugin_id='different' WHERE plugin_instance_id='plugin'",
+		"UPDATE plugin_data_bindings SET shape_hash='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' WHERE plugin_instance_id='shape'",
+		"UPDATE plugin_data_bindings SET expires_at=1 WHERE plugin_instance_id='expired'",
+	} {
+		if _, err := store.db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidates, err := store.ListRetainedRecoveryCandidates(ctx, target.PluginInstanceID, "")
+	if err != nil || len(candidates) != 2 || candidates[0].PluginInstanceID != "second" || candidates[1].PluginInstanceID != "first" {
+		t.Fatalf("candidates=%#v err=%v", candidates, err)
+	}
+	one, err := store.ListRetainedRecoveryCandidates(ctx, target.PluginInstanceID, "first")
+	if err != nil || len(one) != 1 || one[0].PluginInstanceID != "first" {
+		t.Fatalf("exact source=%#v err=%v", one, err)
+	}
+	foreign := pluginDataCatalogContext("other-environment", "user")
+	if rows, err := store.ListRetainedRecoveryCandidates(foreign, target.PluginInstanceID, ""); err != nil || len(rows) != 0 {
+		t.Fatalf("foreign candidates=%#v err=%v", rows, err)
+	}
+	if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{PluginInstanceID: target.PluginInstanceID, ExpectedManagementRevision: target.ManagementRevision, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := store.ListRetainedRecoveryCandidates(ctx, target.PluginInstanceID, ""); err != nil || len(rows) != 0 {
+		t.Fatalf("deleted target candidates=%#v err=%v", rows, err)
+	}
+}

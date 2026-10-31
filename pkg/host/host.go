@@ -672,7 +672,8 @@ type UninstallRequest struct {
 }
 
 type ListRetainedDataRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+	PluginInstanceID       string `json:"plugin_instance_id,omitempty"`
+	TargetPluginInstanceID string `json:"target_plugin_instance_id,omitempty"`
 }
 
 type DeleteRetainedDataRequest struct {
@@ -6133,11 +6134,23 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 
 func (h *Host) ListRetainedData(ctx context.Context, req ListRetainedDataRequest) ([]plugindata.Binding, error) {
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
-	if _, err := h.authorizeManagement(ctx, ManagementActionListRetainedData,
+	req.TargetPluginInstanceID = strings.TrimSpace(req.TargetPluginInstanceID)
+	ctx, _, release, err := h.resourceAction(ctx, ManagementActionListRetainedData,
 		scopedAuthorizationTargetOrCollection(ResourceRetainedData, req.PluginInstanceID, sessionctx.ScopeEnvironment),
-		relatedAuthorizationTargets(scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment))...,
-	); err != nil {
+		relatedAuthorizationTargets(
+			scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment),
+			scopedAuthorizationTarget(ResourcePlugin, req.TargetPluginInstanceID, sessionctx.ScopeEnvironment),
+		)...,
+	)
+	if err != nil {
 		return nil, err
+	}
+	defer release()
+	if req.TargetPluginInstanceID != "" {
+		if _, err := h.getPluginRecord(ctx, req.TargetPluginInstanceID); err != nil {
+			return nil, err
+		}
+		return h.controlStore.ListRetainedRecoveryCandidates(ctx, req.TargetPluginInstanceID, req.PluginInstanceID)
 	}
 	return h.adapters.PluginData.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: req.PluginInstanceID})
 }

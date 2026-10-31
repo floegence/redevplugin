@@ -1587,7 +1587,7 @@ test("platform client covers operation and data lifecycle routes", async () => {
     bundle_ref: exported.bundle_ref,
     expected_management_revision: 7,
   });
-  const retained = await client.listRetainedData({ plugin_instance_id: "plugin_instance_1" });
+  const retained = await client.listRetainedData({ plugin_instance_id: "plugin_instance_1", target_plugin_instance_id: "plugin_instance_2" });
   const deleted = await client.deleteRetainedData({ plugin_instance_id: "plugin_instance_1", expected_binding_revision: 3 });
   const cleanup = await client.cleanupExpiredRetainedData({});
 
@@ -1619,7 +1619,7 @@ test("platform client covers operation and data lifecycle routes", async () => {
     expected_management_revision: 7,
   });
   assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/retained-data/query");
-  assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
+  assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", target_plugin_instance_id: "plugin_instance_2" });
   assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/retained-data/delete");
   assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_binding_revision: 3 });
   assert.equal(fetch.calls[7]?.input, "/_redevplugin/api/plugins/retained-data/cleanup-expired");

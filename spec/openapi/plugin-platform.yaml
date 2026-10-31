@@ -2177,6 +2177,7 @@ components:
         - PLUGIN_UI_PROTOCOL_VIOLATION
         - PLUGIN_SURFACE_QUIESCE_TIMEOUT
         - PLUGIN_CONTRACT_MISMATCH
+        - PLUGIN_RETAINED_RECOVERY_CONFLICT
         - PLUGIN_CSRF_REQUIRED
         - PLUGIN_CSRF_INVALID
         - PLUGIN_FEATURE_NOT_CONFIGURED
@@ -3529,6 +3530,10 @@ components:
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
+        target_plugin_instance_id:
+          type: string
+          minLength: 1
+          description: Return only unexpired retained generations with the installed target's publisher, plugin identity, and data shape. Inspection is still required before recovery.
     ListPermissionsQueryRequest:
       type: object
       additionalProperties: false

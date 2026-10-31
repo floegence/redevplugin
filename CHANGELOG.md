@@ -2,6 +2,8 @@
 
 ## v3.9.0
 
+- Discover compatible retained sources through the existing list API using a target installation, with Host-owned identity, shape, expiry, and owner filtering.
+
 - Add explicit retained-data recovery inspection, exact-plan commit, and read-only outcome reconciliation through the Go Host, HTTP adapter, and TypeScript client.
 - Atomically exchange a retained generation with an existing disabled installation while retaining both data generations, checking owner, shape, fingerprint and revisions, and preserving disabled state.
 - Reject duplicate commits, stale plans and cross-owner requests; reconcile unknown responses after Host restart without replaying the exchange or restoring grants, secrets or prior approvals.

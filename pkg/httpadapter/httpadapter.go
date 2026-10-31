@@ -816,7 +816,8 @@ type listExecutionEventsRequest struct {
 }
 
 type listRetainedDataQueryRequest struct {
-	PluginInstanceID optionalQueryString `json:"plugin_instance_id"`
+	PluginInstanceID       optionalQueryString `json:"plugin_instance_id"`
+	TargetPluginInstanceID optionalQueryString `json:"target_plugin_instance_id"`
 }
 
 type listPermissionsQueryRequest struct {
@@ -2277,7 +2278,8 @@ func (h Handler) handleListRetainedData(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	records, err := h.host.ListRetainedData(r.Context(), host.ListRetainedDataRequest{
-		PluginInstanceID: req.PluginInstanceID.get(),
+		PluginInstanceID:       req.PluginInstanceID.get(),
+		TargetPluginInstanceID: req.TargetPluginInstanceID.get(),
 	})
 	if err != nil {
 		code := errorCodeForDataLifecycleError(err)

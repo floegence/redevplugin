@@ -82,3 +82,38 @@ func (s *Store) CommitRetainedRecovery(ctx context.Context, plan plugindata.Reta
 	}
 	return next, nil
 }
+
+// ListRetainedRecoveryCandidates resolves compatible identities from Host-owned
+// records. It is only discovery; inspection revalidates both physical generations.
+func (s *Store) ListRetainedRecoveryCandidates(ctx context.Context, targetID, sourceID string) ([]plugindata.Binding, error) {
+	if err := s.pluginDataReady(); err != nil {
+		return nil, err
+	}
+	owner, err := pluginDataEnvironmentOwner(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT b.plugin_instance_id,b.generation_id,b.state,b.revision,b.shape_hash,b.retained_at,b.expires_at
+FROM plugin_data_bindings b
+JOIN plugin_records source ON source.owner_env_hash=b.owner_env_hash AND source.plugin_instance_id=b.plugin_instance_id
+JOIN plugin_records target ON target.owner_env_hash=b.owner_env_hash AND target.plugin_instance_id=?
+JOIN plugin_data_bindings active ON active.owner_env_hash=target.owner_env_hash AND active.plugin_instance_id=target.plugin_instance_id
+WHERE b.owner_env_hash=? AND b.state='retained' AND source.deleted_at IS NOT NULL
+AND target.deleted_at IS NULL AND active.state='active' AND b.shape_hash=active.shape_hash
+AND source.publisher_id=target.publisher_id AND source.plugin_id=target.plugin_id
+AND (b.expires_at IS NULL OR b.expires_at>?) AND (?='' OR b.plugin_instance_id=?)
+ORDER BY b.retained_at DESC,b.plugin_instance_id`, targetID, owner, time.Now().UTC().UnixNano(), sourceID, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]plugindata.Binding, 0)
+	for rows.Next() {
+		var binding plugindata.Binding
+		if err := scanControlDataBinding(rows, &binding, nil); err != nil {
+			return nil, err
+		}
+		result = append(result, binding)
+	}
+	return result, rows.Err()
+}

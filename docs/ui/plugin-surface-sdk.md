@@ -447,6 +447,11 @@ Host inspection, inventory and release verification expose normalized author pre
 
 ## Retained data recovery in host management UI
 
+List candidates with PluginPlatformClient.listRetainedData and target_plugin_instance_id.
+The Host filters unexpired retained data by the installed target's verified
+publisher, plugin identity, and data shape; the product must not parse instance
+IDs or probe unrelated generations to discover compatible sources.
+
 Use PluginPlatformClient.inspectRetainedRecovery with explicit source and target
 installation IDs after the target is disabled. Present the returned exact plan
 for confirmation. Pass that plan and its hash once to commitRetainedRecovery.

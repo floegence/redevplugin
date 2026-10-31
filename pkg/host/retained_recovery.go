@@ -51,6 +51,13 @@ func (h *Host) InspectRetainedRecovery(ctx context.Context, req InspectRetainedR
 	if target.EnableState != registry.EnableDisabledByUser {
 		return RetainedRecoveryInspection{}, plugindata.ErrRetainedRecoveryConflict
 	}
+	candidates, err := h.controlStore.ListRetainedRecoveryCandidates(ctx, req.TargetPluginInstanceID, req.SourcePluginInstanceID)
+	if err != nil {
+		return RetainedRecoveryInspection{}, err
+	}
+	if len(candidates) != 1 {
+		return RetainedRecoveryInspection{}, plugindata.ErrRetainedRecoveryConflict
+	}
 	source, found, err := h.controlStore.GetBinding(ctx, req.SourcePluginInstanceID)
 	if err != nil {
 		return RetainedRecoveryInspection{}, err

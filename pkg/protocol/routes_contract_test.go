@@ -991,6 +991,21 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"importData(request: PluginDataImportRequest)", `#mutatePluginAt("POST", "/_redevplugin/api/plugins/data/import"`},
 		},
 		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/recovery/inspect"},
+			Owner:        "PluginPlatformClient.inspectRetainedRecovery",
+			Snippets:     []string{"inspectRetainedRecovery(request: PluginRetainedRecoveryInspectOptions)", `#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/inspect"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/recovery/commit"},
+			Owner:        "PluginPlatformClient.commitRetainedRecovery",
+			Snippets:     []string{"commitRetainedRecovery(request: PluginRetainedRecoveryRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/recovery/status"},
+			Owner:        "PluginPlatformClient.getRetainedRecoveryStatus",
+			Snippets:     []string{"getRetainedRecoveryStatus(request: PluginRetainedRecoveryRequest)", `#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/status"`},
+		},
+		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/query"},
 			Owner:        "PluginPlatformClient.listRetainedData",
 			Snippets:     []string{"listRetainedData(options: PluginRetainedDataListOptions", `#requestQuery("/_redevplugin/api/plugins/retained-data/query"`},
