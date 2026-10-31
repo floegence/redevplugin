@@ -1,0 +1,393 @@
+{
+  "valid": [
+    {
+      "name": "files.read",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "read",
+            "store_id": "notes",
+            "path": "note"
+          }
+        }
+      }
+    },
+    {
+      "name": "files.write",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "output",
+          "kind": "files",
+          "request": {
+            "operation": "write",
+            "store_id": "notes",
+            "path": "note",
+            "data_base64": "YQ=="
+          }
+        }
+      }
+    },
+    {
+      "name": "files.delete",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "output",
+          "kind": "files",
+          "request": {
+            "operation": "delete",
+            "store_id": "notes",
+            "path": "note"
+          }
+        }
+      }
+    },
+    {
+      "name": "files.list",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "list",
+            "store_id": "notes"
+          }
+        }
+      }
+    },
+    {
+      "name": "kv.get",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "kv",
+          "request": {
+            "operation": "get",
+            "store_id": "notes",
+            "key": "note"
+          }
+        }
+      }
+    },
+    {
+      "name": "kv.put",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "output",
+          "kind": "kv",
+          "request": {
+            "operation": "put",
+            "store_id": "notes",
+            "key": "note",
+            "value_base64": "YQ=="
+          }
+        }
+      }
+    },
+    {
+      "name": "kv.delete",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "output",
+          "kind": "kv",
+          "request": {
+            "operation": "delete",
+            "store_id": "notes",
+            "key": "note"
+          }
+        }
+      }
+    },
+    {
+      "name": "kv.list",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "kv",
+          "request": {
+            "operation": "list",
+            "store_id": "notes"
+          }
+        }
+      }
+    },
+    {
+      "name": "sqlite.query",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "sqlite",
+          "request": {
+            "operation": "query",
+            "store_id": "notes",
+            "sql": "SELECT 1"
+          }
+        }
+      }
+    },
+    {
+      "name": "sqlite.exec",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "output",
+          "kind": "sqlite",
+          "request": {
+            "operation": "exec",
+            "store_id": "notes",
+            "sql": "SELECT 1"
+          }
+        }
+      }
+    },
+    {
+      "name": "settings.read",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "settings",
+          "request": {
+            "operation": "read"
+          }
+        }
+      }
+    },
+    {
+      "name": "settings.write",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "output",
+          "kind": "settings",
+          "request": {
+            "operation": "write",
+            "values": {}
+          }
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "input write",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "write",
+            "store_id": "notes",
+            "path": "note",
+            "data_base64": "YQ=="
+          }
+        }
+      }
+    },
+    {
+      "name": "foreign owner",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "read",
+            "store_id": "notes",
+            "path": "note"
+          },
+          "owner_user_hash": "foreign"
+        }
+      }
+    },
+    {
+      "name": "generation override",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "read",
+            "store_id": "notes",
+            "path": "note"
+          },
+          "generation_id": "other"
+        }
+      }
+    },
+    {
+      "name": "unknown argument",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "read",
+            "store_id": "notes",
+            "path": "note",
+            "unexpected": true
+          }
+        }
+      }
+    },
+    {
+      "name": "wrong API",
+      "request": {
+        "plugin_api": 2,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "read",
+            "store_id": "notes",
+            "path": "note"
+          }
+        }
+      }
+    },
+    {
+      "name": "ordinary channel",
+      "request": {
+        "plugin_api": 1,
+        "operation": "storage.files",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "read",
+            "store_id": "notes",
+            "path": "note"
+          }
+        }
+      }
+    },
+    {
+      "name": "files.list max_entries overflow",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "list",
+            "store_id": "notes",
+            "max_entries": 4294967296
+          }
+        }
+      }
+    },
+    {
+      "name": "sqlite.query max_rows overflow",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "sqlite",
+          "request": {
+            "operation": "query",
+            "store_id": "notes",
+            "sql": "SELECT 1",
+            "max_rows": 4294967296
+          }
+        }
+      }
+    },
+    {
+      "name": "sqlite.query timeout_ms overflow",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "sqlite",
+          "request": {
+            "operation": "query",
+            "store_id": "notes",
+            "sql": "SELECT 1",
+            "timeout_ms": 9223372036855
+          }
+        }
+      }
+    },
+    {
+      "name": "files.read max_bytes overflow",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "files",
+          "request": {
+            "operation": "read",
+            "store_id": "notes",
+            "path": "note",
+            "max_bytes": -1
+          }
+        }
+      }
+    },
+    {
+      "name": "missing write data",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "output",
+          "kind": "files",
+          "request": {
+            "operation": "write",
+            "store_id": "notes",
+            "path": "note"
+          }
+        }
+      }
+    },
+    {
+      "name": "null settings read values",
+      "request": {
+        "plugin_api": 1,
+        "operation": "data.upgrade",
+        "arguments": {
+          "dataset": "input",
+          "kind": "settings",
+          "request": {
+            "operation": "read",
+            "values": null
+          }
+        }
+      }
+    }
+  ]
+}

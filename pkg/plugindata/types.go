@@ -207,6 +207,8 @@ type PatchSettingsRequest struct {
 }
 
 type Store interface {
+	RestoreVersion(context.Context, RestoreVersionRequest, func(context.Context, Binding, Binding) error) (Dataset, error)
+	Upgrade(context.Context, UpgradeRequest, func(context.Context, *UpgradeWorkspace) error, func(context.Context, Binding, Binding) error) (Dataset, error)
 	ValidateRetainedRecovery(ctx context.Context, plan RetainedRecoveryPlan, shape Shape) error
 	CommitRetainedRecovery(ctx context.Context, plan RetainedRecoveryPlan, shape Shape) (RetainedRecoveryResult, error)
 	Durable() bool

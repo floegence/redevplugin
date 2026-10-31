@@ -30,6 +30,7 @@ var errRuntimeIOStorageDenied = errors.New("runtime storage access is denied")
 var errRuntimeIOInvalidRequest = errors.New("runtime I/O request is invalid")
 
 type hostRuntimeIORegistration struct {
+	upgrade       *pluginDataUpgradeExecution
 	resource      resourceio.Invocation
 	storage       map[string]hostRuntimeIOStorageAccess
 	process       map[string]struct{}
@@ -288,6 +289,14 @@ func (broker *hostRuntimeIOBroker) Control(ctx context.Context, invocationID str
 	request, err := decodeRuntimeIOControlRequest(raw)
 	if err != nil {
 		return runtimeIOControlFailure("INVALID_ARGUMENT", false), nil
+	}
+	if invocation.upgrade != nil {
+		result, err := broker.dispatchUpgrade(ctx, invocation, request)
+		if err != nil {
+			code, retryable := runtimeIOStorageError(err)
+			return runtimeIOControlFailure(code, retryable), nil
+		}
+		return runtimeIOControlSuccess(result), nil
 	}
 	switch request.Operation {
 	case "storage.files", "storage.kv", "storage.sqlite":
@@ -1009,6 +1018,9 @@ func (broker *hostRuntimeIOBroker) Read(ctx context.Context, invocationID string
 		return 0, 0, err
 	}
 	defer done()
+	if invocation.upgrade != nil {
+		return 0, 0, errRuntimeIOStorageDenied
+	}
 	return broker.service.Read(ctx, invocation.resource, handle, destination)
 }
 
@@ -1018,6 +1030,9 @@ func (broker *hostRuntimeIOBroker) Write(ctx context.Context, invocationID strin
 		return 0, err
 	}
 	defer done()
+	if invocation.upgrade != nil {
+		return 0, errRuntimeIOStorageDenied
+	}
 	return broker.service.Write(ctx, invocation.resource, handle, source, flags)
 }
 
@@ -1027,6 +1042,9 @@ func (broker *hostRuntimeIOBroker) Seek(ctx context.Context, invocationID string
 		return 0, err
 	}
 	defer done()
+	if invocation.upgrade != nil {
+		return 0, errRuntimeIOStorageDenied
+	}
 	return broker.service.Seek(ctx, invocation.resource, handle, offset, whence)
 }
 
@@ -1036,6 +1054,9 @@ func (broker *hostRuntimeIOBroker) Close(ctx context.Context, invocationID strin
 		return err
 	}
 	defer done()
+	if invocation.upgrade != nil {
+		return errRuntimeIOStorageDenied
+	}
 	return broker.service.Close(invocation.resource, handle)
 }
 

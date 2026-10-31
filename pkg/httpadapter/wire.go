@@ -94,6 +94,7 @@ type releaseTrustBindingResponse struct {
 }
 
 type pluginVersionResponse struct {
+	DataGenerationID      string                                   `json:"data_generation_id,omitempty"`
 	Version               string                                   `json:"version"`
 	ActiveFingerprint     string                                   `json:"active_fingerprint"`
 	PackageHash           string                                   `json:"package_hash"`
@@ -293,7 +294,8 @@ func publicPluginVersion(version registry.PluginVersion) (pluginVersionResponse,
 		version.UpdateEligibility, version.SecurityCapabilitySummary,
 	)
 	return pluginVersionResponse{
-		Version: version.Version, ActiveFingerprint: version.ActiveFingerprint, PackageHash: version.PackageHash,
+		DataGenerationID: version.DataGenerationID,
+		Version:          version.Version, ActiveFingerprint: version.ActiveFingerprint, PackageHash: version.PackageHash,
 		ManifestHash: version.ManifestHash, EntriesHash: version.EntriesHash, TrustState: string(version.TrustState),
 		TrustAssessment: publicTrustAssessment(version.TrustAssessment), ReleaseTrustBinding: publicReleaseTrustBinding(version.ReleaseTrustBinding),
 		SignatureAssessment: signature, SourceProvenance: provenance, ExecutionApproval: approval,

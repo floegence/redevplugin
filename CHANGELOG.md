@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.10.0
+
+- Convert plugin settings and private files, KV, and SQLite data through declared isolated WASM upgrade methods, using the existing update API and author SDK.
+- Atomically switch the verified package and active data generation, retain prior generations for exact version restoration, and preserve shared datasets across ordinary same-shape updates and explicit imports.
+- Fence ordinary executions during conversion; reject input writes, network, secrets, processes, selected files, and ordinary resource access. Enforce per-store quotas, bounded conversion time, cancellation, and sticky output limits.
+- Migrate control schemas 1–3 transactionally to schema 4, bind verified historical versions to existing generations, and leave inconsistent or unknown durable state unchanged.
+- Publish canonical conversion requests, shared Go/Rust/TypeScript-facing contracts and fixtures, CLI data-shape digests, and source-package author SDK coverage. Preserve unknown commit outcomes without automatic replay.
+
 ## v3.9.0
 
 - Pin the patched minimatch dependency across tooling to remove globparts amplification exposure.

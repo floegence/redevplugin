@@ -6,6 +6,7 @@ use std::ptr;
 mod broker;
 
 pub mod api;
+pub mod data_upgrade;
 pub mod error;
 pub mod fs;
 pub mod http;

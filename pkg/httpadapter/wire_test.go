@@ -103,6 +103,7 @@ func TestPublicWireMappersPreservePublishedFields(t *testing.T) {
 		ManagementRevision: 3,
 		RevokeEpoch:        4,
 		VersionHistory: []registry.PluginVersion{{
+			DataGenerationID:  "generation_0",
 			Version:           "1.0.0",
 			ActiveFingerprint: "fingerprint_0",
 			ActivatedAt:       now.Add(-time.Hour),
@@ -116,7 +117,7 @@ func TestPublicWireMappersPreservePublishedFields(t *testing.T) {
 		plugin.PolicyRevision != record.PolicyRevision || plugin.ManagementRevision != record.ManagementRevision ||
 		plugin.RevokeEpoch != record.RevokeEpoch || plugin.TrustAssessment.VerifiedSignature == nil ||
 		plugin.TrustAssessment.VerifiedSignature.KeyID != "key_1" || len(plugin.VersionHistory) != 1 ||
-		plugin.VersionHistory[0].ActiveFingerprint != "fingerprint_0" {
+		plugin.VersionHistory[0].ActiveFingerprint != "fingerprint_0" || plugin.VersionHistory[0].DataGenerationID != "generation_0" {
 		t.Fatalf("public plugin mapper lost published fields: %#v", plugin)
 	}
 

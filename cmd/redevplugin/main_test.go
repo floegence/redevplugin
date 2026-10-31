@@ -124,6 +124,22 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
+	shape, err := plugindata.ShapeFromManifest(signedPkg.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantShape, err := plugindata.HashShape(shape)
+	if err != nil || validateResult.DataShapeSHA256 != wantShape {
+		t.Fatalf("package data shape: %q want %q: %v", validateResult.DataShapeSHA256, wantShape, err)
+	}
+	manifestOutput, err := captureCLIOutput(t, "validate", filepath.Join(srcDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifestResult validateSummary
+	if err := json.Unmarshal(manifestOutput, &manifestResult); err != nil || manifestResult.DataShapeSHA256 != wantShape {
+		t.Fatalf("manifest data shape: %s %v", manifestOutput, err)
+	}
 	publicKey := readCLITestPublicKey(t, publicKeyFile)
 	verifier := trust.Ed25519Verifier{
 		Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{

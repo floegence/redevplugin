@@ -20,6 +20,7 @@ const (
 	FeatureNetUDP              FeatureID = "net.udp.v1"
 	FeatureProcessLocal        FeatureID = "process.local.v1"
 	FeatureScopedAuthorization FeatureID = "authorization.scoped.v1"
+	FeatureDataUpgrade         FeatureID = "data.upgrade.v1"
 	FeatureBackgroundMethod    FeatureID = "background.method.v1"
 )
 

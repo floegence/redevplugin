@@ -339,6 +339,11 @@ func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *t
 	historic.ExecutionApproval.PackageSHA256 = historic.PackageHash
 	historic.SecurityCapabilitySummary = registry.SecurityCapabilitySummary{}
 	installed.VersionHistory = []registry.PluginVersion{versionSnapshot(historic, time.Now().UTC())}
+	binding, found, err := h.controlStore.GetBinding(hostTestContext(), installed.PluginInstanceID)
+	if err != nil || !found {
+		t.Fatalf("fixture data binding: %v %v", found, err)
+	}
+	installed.VersionHistory[0].DataGenerationID = binding.GenerationID
 	installed, err = h.putPluginRecord(hostTestContext(), installed, time.Time{})
 	if err != nil {
 		t.Fatal(err)

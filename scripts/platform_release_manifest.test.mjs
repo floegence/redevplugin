@@ -33,6 +33,8 @@ const expectedCanonicalContracts = [
   "contract:plugin/author-test-v1.schema.json",
   "contract:plugin/bridge.schema.json",
   "contract:plugin/connections.schema.json",
+  "contract:plugin/data-upgrade-fixtures.json",
+  "contract:plugin/data-upgrade.schema.json",
   "contract:plugin/error-codes.schema.json",
   "contract:plugin/external-signer-request-v1.schema.json",
   "contract:plugin/external-signer-response-v1.schema.json",

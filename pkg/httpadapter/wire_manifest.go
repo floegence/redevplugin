@@ -278,7 +278,19 @@ type manifestIntentResponse struct {
 	PayloadSchema map[string]any `json:"payload_schema,omitempty"`
 }
 
+type manifestDataUpgradePredecessorResponse struct {
+	Version     string `json:"version"`
+	ShapeSHA256 string `json:"shape_sha256"`
+}
+type manifestDataUpgradeResponse struct {
+	From         []manifestDataUpgradePredecessorResponse `json:"from"`
+	Method       string                                   `json:"method"`
+	MaxBytes     int64                                    `json:"max_bytes"`
+	MaxRuntimeMS int                                      `json:"max_runtime_ms"`
+}
+
 type manifestResponse struct {
+	DataUpgrade        *manifestDataUpgradeResponse        `json:"data_upgrade,omitempty"`
 	SchemaVersion      string                              `json:"schema_version"`
 	Publisher          manifestPublisherResponse           `json:"publisher"`
 	Plugin             manifestPluginResponse              `json:"plugin"`
@@ -312,6 +324,12 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		},
 		Permissions:  append([]manifest.PermissionID(nil), source.Permissions...),
 		Presentation: publicManifestPresentation(source.Presentation),
+	}
+	if source.DataUpgrade != nil {
+		response.DataUpgrade = &manifestDataUpgradeResponse{Method: source.DataUpgrade.Method, MaxBytes: source.DataUpgrade.MaxBytes, MaxRuntimeMS: source.DataUpgrade.MaxRuntimeMS, From: make([]manifestDataUpgradePredecessorResponse, len(source.DataUpgrade.From))}
+		for index, prior := range source.DataUpgrade.From {
+			response.DataUpgrade.From[index] = manifestDataUpgradePredecessorResponse{Version: prior.Version, ShapeSHA256: prior.ShapeSHA256}
+		}
 	}
 	response.Surfaces = make([]manifestSurfaceResponse, len(source.Surfaces))
 	for index, surface := range source.Surfaces {

@@ -15,6 +15,10 @@ func TestRetainedRecoveryPreservesBothGenerations(t *testing.T) {
 	defer store.Close()
 	source := putPluginDataCatalogRecord(t, store, ctx, "source")
 	target := putPluginDataCatalogRecord(t, store, ctx, "target")
+	target, upgradeErr := store.Registry().PutPlugin(ctx, "env-recovery", pluginDataUpgradeRecord(t, target, "2.0.0"), time.Now().UTC())
+	if upgradeErr != nil {
+		t.Fatal(upgradeErr)
+	}
 	if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{PluginInstanceID: source.PluginInstanceID, ExpectedManagementRevision: source.ManagementRevision, Now: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +44,10 @@ func TestRetainedRecoveryPreservesBothGenerations(t *testing.T) {
 	result, err := store.CommitRetainedRecovery(ctx, plan, shape)
 	if err != nil {
 		t.Fatal(err)
+	}
+	restored, err := store.Registry().GetPlugin(ctx, "env-recovery", target.PluginInstanceID)
+	if err != nil || len(restored.VersionHistory) != 1 || restored.VersionHistory[0].DataGenerationID != result.Active.GenerationID {
+		t.Fatalf("restored version retains moved data authority: %v", err)
 	}
 	if result.Active.GenerationID != retained.GenerationID || result.Retained.GenerationID != active.GenerationID {
 		t.Fatalf("recovery lost a generation: %#v", result)

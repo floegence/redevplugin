@@ -1,0 +1,862 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/data-upgrade.schema.json",
+  "title": "ReDevPlugin isolated data conversion control requests",
+  "description": "Available only in the declared upgrade Worker. Input is read-only. Output uses the target shape, per-store quotas and per-scope isolation. Other control and binary I/O operations are denied. Requests never select an owner, instance, generation or filesystem path outside a declared store.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "enum": [
+                "input",
+                "output"
+              ]
+            },
+            "kind": {
+              "const": "files"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id",
+                "path"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "read"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "path": {
+                  "type": "string"
+                },
+                "max_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "const": "output"
+            },
+            "kind": {
+              "const": "files"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id",
+                "path",
+                "data_base64"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "write"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "path": {
+                  "type": "string"
+                },
+                "data_base64": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "const": "output"
+            },
+            "kind": {
+              "const": "files"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id",
+                "path"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "delete"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "path": {
+                  "type": "string"
+                },
+                "recursive": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "enum": [
+                "input",
+                "output"
+              ]
+            },
+            "kind": {
+              "const": "files"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "list"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "path": {
+                  "type": "string"
+                },
+                "max_entries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "enum": [
+                "input",
+                "output"
+              ]
+            },
+            "kind": {
+              "const": "kv"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id",
+                "key"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "get"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "key": {
+                  "type": "string"
+                },
+                "max_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "const": "output"
+            },
+            "kind": {
+              "const": "kv"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id",
+                "key",
+                "value_base64"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "put"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "key": {
+                  "type": "string"
+                },
+                "value_base64": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "const": "output"
+            },
+            "kind": {
+              "const": "kv"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id",
+                "key"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "delete"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "key": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "enum": [
+                "input",
+                "output"
+              ]
+            },
+            "kind": {
+              "const": "kv"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "list"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "max_entries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "enum": [
+                "input",
+                "output"
+              ]
+            },
+            "kind": {
+              "const": "sqlite"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id",
+                "sql"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "query"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "database": {
+                  "type": "string"
+                },
+                "sql": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "null"
+                        ],
+                        "properties": {
+                          "null": {
+                            "const": true
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "int"
+                        ],
+                        "properties": {
+                          "int": {
+                            "type": "integer"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "float"
+                        ],
+                        "properties": {
+                          "float": {
+                            "type": "number"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "text"
+                        ],
+                        "properties": {
+                          "text": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "blob_base64"
+                        ],
+                        "properties": {
+                          "blob_base64": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "max_rows": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                "max_response_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "timeout_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "const": "output"
+            },
+            "kind": {
+              "const": "sqlite"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "store_id",
+                "sql"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "exec"
+                },
+                "store_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "database": {
+                  "type": "string"
+                },
+                "sql": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "null"
+                        ],
+                        "properties": {
+                          "null": {
+                            "const": true
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "int"
+                        ],
+                        "properties": {
+                          "int": {
+                            "type": "integer"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "float"
+                        ],
+                        "properties": {
+                          "float": {
+                            "type": "number"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "text"
+                        ],
+                        "properties": {
+                          "text": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "blob_base64"
+                        ],
+                        "properties": {
+                          "blob_base64": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "timeout_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "enum": [
+                "input",
+                "output"
+              ]
+            },
+            "kind": {
+              "const": "settings"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "read"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ],
+      "properties": {
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "data.upgrade"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataset",
+            "kind",
+            "request"
+          ],
+          "properties": {
+            "dataset": {
+              "const": "output"
+            },
+            "kind": {
+              "const": "settings"
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation",
+                "values"
+              ],
+              "properties": {
+                "operation": {
+                  "const": "write"
+                },
+                "values": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

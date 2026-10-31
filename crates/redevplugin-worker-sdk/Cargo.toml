@@ -7,7 +7,7 @@ description = "Rust SDK for ReDevPlugin WASM workers"
 repository.workspace = true
 rust-version.workspace = true
 readme = "README.md"
-include = ["Cargo.toml", "LICENSE", "README.md", "src/**"]
+include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "testdata/**"]
 keywords = ["plugin", "wasm", "sandbox"]
 categories = ["api-bindings", "wasm"]
 

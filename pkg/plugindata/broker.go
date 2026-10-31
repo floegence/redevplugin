@@ -55,11 +55,6 @@ func (s *FileStore) withNamespaceForUsage(ctx context.Context, pluginInstanceID 
 }
 
 func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID string, exactRequestScope *sessionctx.ResourceScope, storeID string, kind NamespaceKind, write bool, use func(*namespaceAccess) error) error {
-	release, err := s.begin()
-	if err != nil {
-		return err
-	}
-	defer release()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -71,26 +66,44 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 	if err != nil {
 		return err
 	}
-	environment, err := environmentScope(ctx)
-	if err != nil {
-		return err
+	var selected workspace
+	var conversionScope sessionctx.ResourceScope
+	conversion, upgrading := ctx.Value(upgradeContextKey{}).(upgradeNamespaceContext)
+	if upgrading {
+		var release func()
+		selected, conversionScope, release, err = conversion.acquire(s, pluginID, exactRequestScope, write)
+		if err != nil {
+			return err
+		}
+		defer release()
+	} else {
+		release, err := s.begin()
+		if err != nil {
+			return err
+		}
+		defer release()
+		environment, err := environmentScope(ctx)
+		if err != nil {
+			return err
+		}
+		unlock := s.locks.lockRead(scopedLockKey(environment, pluginID))
+		defer unlock()
+		binding, err := s.getBinding(ctx, pluginID)
+		if err != nil {
+			return err
+		}
+		if binding.State != BindingActive {
+			return storage.ErrNamespaceNotFound
+		}
+		selected, _, err = s.workspaceForBinding(environment, binding)
+		if err != nil {
+			return err
+		}
 	}
-	unlock := s.locks.lockRead(scopedLockKey(environment, pluginID))
-	defer unlock()
-	binding, err := s.getBinding(ctx, pluginID)
-	if err != nil {
-		return err
-	}
-	if binding.State != BindingActive {
-		return storage.ErrNamespaceNotFound
-	}
-	workspace, manifest, err := s.workspaceForBinding(environment, binding)
-	if err != nil {
-		return err
-	}
+	binding := selected.binding
 	var namespace Namespace
 	found := false
-	for _, candidate := range workspace.shape.Namespaces {
+	for _, candidate := range selected.shape.Namespaces {
 		if candidate.ID == storeID {
 			namespace = candidate
 			found = true
@@ -103,9 +116,12 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 	if namespace.Kind != kind {
 		return fmt.Errorf("%w: store %q is %s, not %s", storage.ErrInvalidNamespace, storeID, namespace.Kind, kind)
 	}
-	owner, err := resourceScope(ctx, sessionctx.ScopeKind(namespace.Scope))
-	if err != nil {
-		return err
+	owner := conversionScope
+	if !upgrading {
+		owner, err = resourceScope(ctx, sessionctx.ScopeKind(namespace.Scope))
+		if err != nil {
+			return err
+		}
 	}
 	if sessionctx.ScopeKind(namespace.Scope) != owner.Kind {
 		return ErrStorageScopeMismatch
@@ -115,7 +131,7 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 	}
 	generationScopeKey := scopedGenerationCacheKey(owner, binding.GenerationID)
 	initUnlock := s.namespaceLocks.lock(generationScopeKey+"\x00scope", true)
-	if err := s.ensureWorkspaceScopeMetadata(ctx, workspace.root, manifest.Shape, owner); err != nil {
+	if err := s.ensureWorkspaceScopeMetadata(ctx, selected.root, selected.shape, owner); err != nil {
 		initUnlock()
 		return err
 	}
@@ -123,7 +139,7 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 	namespaceKey := scopedNamespaceCacheKey(owner, binding.GenerationID, namespace.ID)
 	namespaceUnlock := s.namespaceLocks.lock(namespaceKey, write)
 	defer namespaceUnlock()
-	absRoot := filepath.Join(workspaceNamespaceRoot(workspace.root, owner), namespace.ID, namespaceDataName)
+	absRoot := filepath.Join(workspaceNamespaceRoot(selected.root, owner), namespace.ID, namespaceDataName)
 	namespaceRoot, err := filepath.Rel(s.root, absRoot)
 	if err != nil || namespaceRoot == "." || strings.HasPrefix(namespaceRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(namespaceRoot) {
 		return fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
@@ -143,13 +159,26 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 		if err := validateNamespaceDatabaseFileLayout(absRoot, namespace.Kind); err != nil {
 			return err
 		}
-		dbKey = namespaceDatabaseCacheKey(generationScopeKey, namespace.ID, namespace.Kind)
-		var releaseDB func()
-		db, root, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, absRoot, info)
-		if err != nil {
-			return err
+		if upgrading && !conversion.output {
+			root, err = s.rootHandle.OpenRoot(namespaceRoot)
+			if err != nil {
+				return err
+			}
+			defer root.Close()
+			db, err = openNamespaceDatabase(ctx, absRoot, true)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+		} else {
+			dbKey = namespaceDatabaseCacheKey(generationScopeKey, namespace.ID, namespace.Kind)
+			var releaseDB func()
+			db, root, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, absRoot, info)
+			if err != nil {
+				return err
+			}
+			defer releaseDB()
 		}
-		defer releaseDB()
 	} else {
 		root, err = s.rootHandle.OpenRoot(namespaceRoot)
 		if err != nil {
@@ -157,20 +186,31 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 		}
 		defer root.Close()
 	}
-	usage, err := s.cachedNamespaceUsage(ctx, namespaceUsageLoadRequest{
-		cacheKey:    usageKey,
-		root:        absRoot,
-		kind:        namespace.Kind,
-		databaseKey: dbKey,
-		database:    db,
-	})
+	var usage namespaceUsage
+	if upgrading && !conversion.output {
+		usage, err = loadNamespaceUsage(ctx, absRoot, namespace.Kind, db)
+	} else {
+		usage, err = s.cachedNamespaceUsage(ctx, namespaceUsageLoadRequest{
+			cacheKey:    usageKey,
+			root:        absRoot,
+			kind:        namespace.Kind,
+			databaseKey: dbKey,
+			database:    db,
+		})
+	}
 	if err != nil {
 		return err
 	}
-	if err := enforceQuota(namespace, usage); err != nil {
-		return err
+	if !upgrading || !conversion.output {
+		if err := enforceQuota(namespace, usage); err != nil {
+			return err
+		}
 	}
-	return use(&namespaceAccess{root: root, absRoot: absRoot, db: db, binding: binding, namespace: namespace, usage: usage, usageKey: usageKey})
+	err = use(&namespaceAccess{root: root, absRoot: absRoot, db: db, binding: binding, namespace: namespace, usage: usage, usageKey: usageKey})
+	if upgrading && conversion.output && write {
+		err = errors.Join(err, conversion.workspace.checkOutputLimit())
+	}
+	return err
 }
 
 func (s *FileStore) cachedNamespaceUsage(ctx context.Context, req namespaceUsageLoadRequest) (namespaceUsage, error) {

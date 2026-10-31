@@ -8,6 +8,7 @@ export type ExternalPackageSecuritySummary = {
   workers: Array<ExternalPackageWorkerSummary>;
   process?: ExternalPackageProcessSummary;
   background?: ExternalPackageBackgroundSummary;
+  data_upgrade?: ExternalPackageDataUpgradeSummary;
   network: Array<ExternalPackageNetworkSummary>;
   storage: Array<ExternalPackageStorageSummary>;
   secret_refs: Array<ExternalPackageSecretRefSummary>;
@@ -95,6 +96,18 @@ export type ExternalPackageBackgroundSummary = {
   method?: string;
   strategy: "runtime_start" | "on_demand";
   worker_id: string;
+};
+
+export type ExternalPackageDataUpgradeSummary = {
+  from: Array<ExternalPackageDataUpgradePredecessor>;
+  method: string;
+  max_bytes: number;
+  max_runtime_ms: number;
+};
+
+export type ExternalPackageDataUpgradePredecessor = {
+  version: string;
+  shape_sha256: string;
 };
 
 export type ExternalPackageNetworkSummary = {
@@ -219,6 +232,9 @@ export const securitySummarySchemas = {
       },
       "background": {
         "ref": "ExternalPackageBackgroundSummary"
+      },
+      "data_upgrade": {
+        "ref": "ExternalPackageDataUpgradeSummary"
       },
       "network": {
         "type": "array",
@@ -637,6 +653,60 @@ export const securitySummarySchemas = {
       "worker_id": {
         "type": "string",
         "minLength": 1
+      }
+    }
+  },
+  "ExternalPackageDataUpgradeSummary": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "from",
+      "method",
+      "max_bytes",
+      "max_runtime_ms"
+    ],
+    "properties": {
+      "from": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 32,
+        "items": {
+          "ref": "ExternalPackageDataUpgradePredecessor"
+        }
+      },
+      "method": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255
+      },
+      "max_bytes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4294967296
+      },
+      "max_runtime_ms": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300000
+      }
+    }
+  },
+  "ExternalPackageDataUpgradePredecessor": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "shape_sha256"
+    ],
+    "properties": {
+      "version": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255
+      },
+      "shape_sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
       }
     }
   },
@@ -1062,6 +1132,9 @@ export const securitySummaryJSONSchema = {
         "background": {
           "$ref": "#/$defs/ExternalPackageBackgroundSummary"
         },
+        "data_upgrade": {
+          "$ref": "#/$defs/ExternalPackageDataUpgradeSummary"
+        },
         "network": {
           "type": "array",
           "items": {
@@ -1479,6 +1552,60 @@ export const securitySummaryJSONSchema = {
         "worker_id": {
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "ExternalPackageDataUpgradeSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "method",
+        "max_bytes",
+        "max_runtime_ms"
+      ],
+      "properties": {
+        "from": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/ExternalPackageDataUpgradePredecessor"
+          }
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        },
+        "max_runtime_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      }
+    },
+    "ExternalPackageDataUpgradePredecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "shape_sha256"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "shape_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     },

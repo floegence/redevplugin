@@ -19,7 +19,7 @@ import (
 
 const (
 	schemaKind    = "redevplugin_control_v3"
-	schemaVersion = 3
+	schemaVersion = 4
 )
 
 var (
@@ -116,6 +116,12 @@ func (s *Store) initialize(ctx context.Context) error {
 			if err := migrateConnections(ctx, tx); err != nil {
 				return err
 			}
+			version = 3
+		}
+		if version == 3 {
+			if err := migratePluginDataHistory(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if err := validateSchema(ctx, tx); err != nil {
 			return err
@@ -141,7 +147,18 @@ func validateExistingControlFile(ctx context.Context, path string) error {
 		return fmt.Errorf("%w: open existing control database: %v", ErrIncompatible, err)
 	}
 	defer db.Close()
-	return validateSchema(ctx, db)
+	if err := validateSchema(ctx, db); err != nil {
+		return err
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, "SELECT version FROM control_schema WHERE id=1").Scan(&version); err != nil {
+		return err
+	}
+	if version < 4 {
+		_, err := legacyVersionDataBindings(ctx, db)
+		return err
+	}
+	return nil
 }
 
 func openSQLiteReadOnly(path string) (*sql.DB, error) {
@@ -188,16 +205,17 @@ type schemaReader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func createSchema(ctx context.Context, q interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}) error {
+func createSchema(ctx context.Context, q dataHistoryMigrator) error {
 	if err := createSchemaOne(ctx, q); err != nil {
 		return err
 	}
 	if err := migrateSelectedResources(ctx, q); err != nil {
 		return err
 	}
-	return migrateConnections(ctx, q)
+	if err := migrateConnections(ctx, q); err != nil {
+		return err
+	}
+	return migratePluginDataHistory(ctx, q)
 }
 func validateSchema(ctx context.Context, db schemaReader) error {
 	var kind string
@@ -258,6 +276,11 @@ func expectedSchemaShapeVersion(ctx context.Context, version int) ([]schemaObjec
 	}
 	if version >= 3 {
 		if err := migrateConnections(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if version >= 4 {
+		if err := migratePluginDataHistory(ctx, db); err != nil {
 			return nil, err
 		}
 	}

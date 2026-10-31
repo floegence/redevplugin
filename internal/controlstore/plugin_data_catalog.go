@@ -36,8 +36,17 @@ func (s *Store) ListAllBindingsForMaintenance(ctx context.Context, cursor string
 		return nil, "", err
 	}
 	limit = normalizePluginDataPageLimit(limit)
-	parts := parsePluginDataCursor(cursor, 2)
-	rows, err := s.db.QueryContext(ctx, `SELECT owner_env_hash,plugin_instance_id,generation_id,state,revision,shape_hash,retained_at,expires_at FROM plugin_data_bindings WHERE (owner_env_hash,plugin_instance_id) > (?,?) ORDER BY owner_env_hash,plugin_instance_id LIMIT ?`, parts[0], parts[1], limit+1)
+	// One instance can retain several generations, so generation participates
+	// in the stable maintenance cursor as well as owner and instance.
+	parts := parsePluginDataCursor(cursor, 3)
+	if cursor != "" && len(strings.Split(cursor, "\x00")) != 3 {
+		return nil, "", plugindata.ErrInvalidArgument
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT * FROM (
+SELECT owner_env_hash,plugin_instance_id,generation_id,state,revision,shape_hash,retained_at,expires_at,'' AS record_json,'' AS binding_json FROM plugin_data_bindings
+UNION ALL
+SELECT owner_env_hash,plugin_instance_id,generation_id,'',0,'',retained_at,NULL,record_json,binding_json FROM plugin_data_history
+) WHERE (owner_env_hash,plugin_instance_id,generation_id) > (?,?,?) ORDER BY owner_env_hash,plugin_instance_id,generation_id LIMIT ?`, parts[0], parts[1], parts[2], limit+1)
 	if err != nil {
 		return nil, "", err
 	}
@@ -49,7 +58,23 @@ func (s *Store) ListAllBindingsForMaintenance(ctx context.Context, cursor string
 	entries := make([]entry, 0, limit+1)
 	for rows.Next() {
 		var item entry
-		if err := scanControlDataBinding(rows, &item.binding, &item.owner); err != nil {
+		var state, recordRaw, bindingRaw string
+		var retainedAt, expiresAt sql.NullInt64
+		if err := rows.Scan(&item.owner, &item.binding.PluginInstanceID, &item.binding.GenerationID, &state, &item.binding.Revision, &item.binding.ShapeHash, &retainedAt, &expiresAt, &recordRaw, &bindingRaw); err != nil {
+			return nil, "", err
+		}
+		if recordRaw != "" {
+			history, err := decodePluginDataHistory(item.owner, item.binding.PluginInstanceID, item.binding.GenerationID, recordRaw, bindingRaw, retainedAt.Int64)
+			if err != nil {
+				return nil, "", err
+			}
+			item.binding = history.Binding
+		} else {
+			item.binding.State = plugindata.BindingState(state)
+			item.binding.RetainedAt = nullableControlTimePtr(retainedAt)
+			item.binding.ExpiresAt = nullableControlTimePtr(expiresAt)
+		}
+		if err := validateControlDataBinding(item.binding); err != nil {
 			return nil, "", err
 		}
 		entries = append(entries, item)
@@ -67,7 +92,7 @@ func (s *Store) ListAllBindingsForMaintenance(ctx context.Context, cursor string
 	}
 	if more {
 		last := entries[len(entries)-1]
-		return result, pluginDataCursor(last.owner, last.binding.PluginInstanceID), nil
+		return result, pluginDataCursor(last.owner, last.binding.PluginInstanceID, last.binding.GenerationID), nil
 	}
 	return result, "", nil
 }
@@ -214,6 +239,7 @@ func (s *Store) SwapImport(ctx context.Context, expectedManagementRevision uint6
 			if err := updateControlDataBinding(ctx, tx, owner, next); err != nil {
 				return err
 			}
+			rebindSharedVersionData(&record, expected.GenerationID, next.GenerationID)
 		}
 		if now.IsZero() {
 			now = time.Now().UTC()
@@ -303,6 +329,9 @@ func (s *Store) DeleteRetained(ctx context.Context, expected plugindata.Binding)
 		if !found || !sameControlDataBinding(actual, expected) || actual.State != plugindata.BindingRetained {
 			return plugindata.ErrBindingConflict
 		}
+		if err := deletePluginDataHistory(ctx, tx, owner, expected.PluginInstanceID); err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE owner_env_hash=? AND plugin_instance_id=?`, owner, expected.PluginInstanceID)
 		return err
 	})
@@ -325,6 +354,9 @@ func (s *Store) CleanupExpired(ctx context.Context, now time.Time, expected []pl
 			}
 		}
 		for _, binding := range expected {
+			if err := deletePluginDataHistory(ctx, tx, owner, binding.PluginInstanceID); err != nil {
+				return err
+			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE owner_env_hash=? AND plugin_instance_id=?`, owner, binding.PluginInstanceID); err != nil {
 				return err
 			}
@@ -368,6 +400,9 @@ func (s *Store) CommitUninstall(ctx context.Context, req plugindata.CommitUninst
 			return err
 		}
 		if req.DeleteData {
+			if err := deletePluginDataHistory(ctx, tx, owner, req.PluginInstanceID); err != nil {
+				return err
+			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE owner_env_hash=? AND plugin_instance_id=?`, owner, req.PluginInstanceID); err != nil {
 				return err
 			}

@@ -15,11 +15,11 @@ export const stages = [
   { id: "prepare", fresh: true, kind: "environment", command: "npm ci && go mod download && cargo fetch --locked && rustup target add wasm32-unknown-unknown && npx playwright install chromium && node scripts/redevplugin_gate.mjs --resources" },
   { id: "audit", fresh: true, command: "REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 ./scripts/check_redevplugin_release_audit.sh" },
   { id: "contracts", command: "npm run check:contracts" },
-  { id: "go", command: "test -z \"$(gofmt -l .)\" && go list ./cmd/... ./examples/... ./pkg/... && go test -p=1 ./cmd/... ./examples/... ./pkg/... ./internal/resourceio && golangci-lint run ./cmd/... ./examples/... ./pkg/..." },
+  { id: "go", command: "test -z \"$(gofmt -l .)\" && go list ./cmd/... ./examples/... ./pkg/... && go test -p=1 ./cmd/... ./examples/... ./pkg/... ./internal/resourceio ./internal/controlstore ./internal/dataupgradecontract && golangci-lint run ./cmd/... ./examples/... ./pkg/..." },
   { id: "web", command: "REDEVPLUGIN_WEB_EVIDENCE_DIR=dist/web-pre-push npm run check:web", outputs: ["packages/redevplugin-contracts/dist", "packages/redevplugin-ui/dist", "dist/web-pre-push"] },
   { id: "canonical-bridge", command: "npm run examples:check:canonical && npm run scaffold:check:canonical && ./scripts/check_redevplugin_ui_bridge.sh" },
   // Rust compilation and its crate-local fixtures do not read npm dependencies.
-  { id: "rust", inputs: [...commonInputs, "Cargo.toml", "Cargo.lock", "crates/", ".cargo/", "VERSION", "deny.toml", "spec/", "testdata/", "LICENSE"], nodeDependencies: false, command: "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace" },
+  { id: "rust", inputs: [...commonInputs, "Cargo.toml", "Cargo.lock", "crates/", "internal/", "examples/workers/", ".cargo/", "VERSION", "deny.toml", "spec/", "testdata/", "LICENSE"], nodeDependencies: false, command: "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace" },
   { id: "rust-source", commitBound: true, command: "npm run rust-source-packages:test" },
   { id: "performance", commitBound: true, ttl: day, command: "npm run performance:release", outputs: ["dist/performance-evidence.json", "dist/performance-evidence.route-authorization-diagnostic.json"] },
   { id: "stress", commitBound: true, ttl: day, command: "mkdir -p dist && ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-pre-push-stress.json", outputs: ["dist/redevplugin-pre-push-stress.json"] },

@@ -33,16 +33,17 @@ import (
 )
 
 type validateSummary struct {
-	OK            bool   `json:"ok"`
-	Kind          string `json:"kind"`
-	PluginID      string `json:"plugin_id"`
-	Version       string `json:"version"`
-	PackageHash   string `json:"package_hash,omitempty"`
-	ManifestHash  string `json:"manifest_hash,omitempty"`
-	EntriesHash   string `json:"entries_hash,omitempty"`
-	Signed        bool   `json:"signed,omitempty"`
-	SignatureKey  string `json:"signature_key,omitempty"`
-	SignatureAlgo string `json:"signature_algorithm,omitempty"`
+	DataShapeSHA256 string `json:"data_shape_sha256,omitempty"`
+	OK              bool   `json:"ok"`
+	Kind            string `json:"kind"`
+	PluginID        string `json:"plugin_id"`
+	Version         string `json:"version"`
+	PackageHash     string `json:"package_hash,omitempty"`
+	ManifestHash    string `json:"manifest_hash,omitempty"`
+	EntriesHash     string `json:"entries_hash,omitempty"`
+	Signed          bool   `json:"signed,omitempty"`
+	SignatureKey    string `json:"signature_key,omitempty"`
+	SignatureAlgo   string `json:"signature_algorithm,omitempty"`
 }
 
 type lifecycleSummary struct {
@@ -417,18 +418,27 @@ func validate(ctx context.Context, filename string) error {
 		if err != nil {
 			return err
 		}
+		shape, err := plugindata.ShapeFromManifest(pkg.Manifest)
+		if err != nil {
+			return err
+		}
+		shapeHash, err := plugindata.HashShape(shape)
+		if err != nil {
+			return err
+		}
 		signed, signatureKey, signatureAlgo := packageSignatureSummary(pkg)
 		return writeJSON(validateSummary{
-			OK:            true,
-			Kind:          "package",
-			PluginID:      pkg.Manifest.PluginID(),
-			Version:       pkg.Manifest.Version(),
-			PackageHash:   pkg.PackageHash,
-			ManifestHash:  pkg.ManifestHash,
-			EntriesHash:   pkg.EntriesHash,
-			Signed:        signed,
-			SignatureKey:  signatureKey,
-			SignatureAlgo: signatureAlgo,
+			DataShapeSHA256: shapeHash,
+			OK:              true,
+			Kind:            "package",
+			PluginID:        pkg.Manifest.PluginID(),
+			Version:         pkg.Manifest.Version(),
+			PackageHash:     pkg.PackageHash,
+			ManifestHash:    pkg.ManifestHash,
+			EntriesHash:     pkg.EntriesHash,
+			Signed:          signed,
+			SignatureKey:    signatureKey,
+			SignatureAlgo:   signatureAlgo,
 		})
 	}
 	raw, err := os.ReadFile(filename)
@@ -439,11 +449,20 @@ func validate(ctx context.Context, filename string) error {
 	if err != nil {
 		return err
 	}
+	shape, err := plugindata.ShapeFromManifest(decoded)
+	if err != nil {
+		return err
+	}
+	shapeHash, err := plugindata.HashShape(shape)
+	if err != nil {
+		return err
+	}
 	return writeJSON(validateSummary{
-		OK:       true,
-		Kind:     "manifest",
-		PluginID: decoded.PluginID(),
-		Version:  decoded.Version(),
+		DataShapeSHA256: shapeHash,
+		OK:              true,
+		Kind:            "manifest",
+		PluginID:        decoded.PluginID(),
+		Version:         decoded.Version(),
 	})
 }
 

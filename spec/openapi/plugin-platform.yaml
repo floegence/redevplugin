@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.9.0
+  version: 3.10.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -3101,9 +3101,29 @@ components:
       properties:
         width: { type: integer, minimum: 1, maximum: 9007199254740991 }
         height: { type: integer, minimum: 1, maximum: 9007199254740991 }
+    ExternalPackageDataUpgradePredecessor:
+      type: object
+      additionalProperties: false
+      required: [version, shape_sha256]
+      properties:
+        version: { type: string, minLength: 1, maxLength: 255 }
+        shape_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+    ExternalPackageDataUpgradeSummary:
+      type: object
+      additionalProperties: false
+      required: [from, method, max_bytes, max_runtime_ms]
+      properties:
+        from:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: { $ref: "#/components/schemas/ExternalPackageDataUpgradePredecessor" }
+        method: { type: string, minLength: 1, maxLength: 255 }
+        max_bytes: { type: integer, minimum: 1, maximum: 4294967296 }
+        max_runtime_ms: { type: integer, minimum: 1, maximum: 300000 }
     ExternalPackageSecuritySummary:
       type: object
-      description: Closed, display-ready projection of every security-relevant declaration in the inspected manifest. Canonical hash payloads omit only summary_sha256, preserve schema property and array order, include present process and background declarations, and use compact Go JSON string escaping. Optional absent properties stay absent.
+      description: Closed, display-ready projection of every security-relevant declaration in the inspected manifest. Canonical hash payloads omit only summary_sha256, preserve schema property and array order, include present process, background, and data-upgrade declarations, and use compact Go JSON string escaping. Optional absent properties stay absent.
       required: [summary_sha256, permissions, methods, capability_contracts, workers, network, storage, secret_refs, core_actions, intents, surfaces]
       additionalProperties: false
       properties:
@@ -3124,6 +3144,8 @@ components:
           $ref: "#/components/schemas/ExternalPackageProcessSummary"
         background:
           $ref: "#/components/schemas/ExternalPackageBackgroundSummary"
+        data_upgrade:
+          $ref: "#/components/schemas/ExternalPackageDataUpgradeSummary"
         network:
           type: array
           items: { $ref: "#/components/schemas/ExternalPackageNetworkSummary" }
@@ -3290,6 +3312,10 @@ components:
       required: [version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment, manifest, presentation, presentation_sha256, package_entries, activated_at]
       additionalProperties: false
       properties:
+        data_generation_id:
+          type: string
+          minLength: 1
+          description: Opaque Host-owned identity of the data generation last used by this historical package. Not caller-supplied authority.
         version: { $ref: "#/components/schemas/StrictSemVer" }
         active_fingerprint: { type: string, minLength: 1 }
         package_hash: { type: string, minLength: 1 }

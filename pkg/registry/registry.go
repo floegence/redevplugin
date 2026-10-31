@@ -116,6 +116,7 @@ type PluginRecord struct {
 }
 
 type PluginVersion struct {
+	DataGenerationID          string                    `json:"data_generation_id,omitempty"`
 	Version                   string                    `json:"version"`
 	ActiveFingerprint         string                    `json:"active_fingerprint"`
 	PackageHash               string                    `json:"package_hash"`

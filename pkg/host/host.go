@@ -3348,8 +3348,18 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	if err := validateSamePluginIdentity(current, next); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
+	upgradeData, err := pluginDataUpgradeRequired(current.Manifest, next.Manifest)
+	if err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if upgradeData && current.EnableState != registry.EnableEnabled {
+		// This explicit update approves the exact target package independently
+		// of the user's disabled state. The temporary candidate is never stored
+		// or activated; the durable transaction retains the current enable state.
+		next, err = registry.PreparePluginPut(current.OwnerEnvHash, next, &current, now)
+		if err != nil {
+			return registry.PluginRecord{}, err
+		}
 	}
 	next.VersionHistory = current.VersionHistory
 	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, now), now)
@@ -3363,20 +3373,54 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 		if err := h.validateEnabledRuntimeState(ctx, next); err != nil {
 			return registry.PluginRecord{}, err
 		}
-		if err := h.prepareEnabledRuntimeState(ctx, next); err != nil {
-			return registry.PluginRecord{}, err
+		if !upgradeData {
+			if err := h.prepareEnabledRuntimeState(ctx, next); err != nil {
+				return registry.PluginRecord{}, err
+			}
 		}
 	}
 	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	stored, err := h.putPluginRecord(ctx, next, now)
+	var stored registry.PluginRecord
+	if upgradeData {
+		stored, err = h.commitPluginDataUpgrade(ctx, current, next, now, false)
+	} else {
+		stored, err = h.putPluginRecord(ctx, next, now)
+	}
 	if err != nil {
-		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
+		if mutation.ForError(err) == mutation.OutcomeNotCommitted {
+			_ = h.adapters.Assets.DeletePackage(context.WithoutCancel(ctx), pkg.PackageHash)
+			if upgradeData {
+				if restoreErr := h.restoreVerifiedRelease(current, verifiedReleaseSnapshot); restoreErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore predecessor release evidence: %w", restoreErr))
+				} else {
+					verifiedReleaseChanged = false
+				}
+				if refreshErr := h.refreshEnabledRuntimeState(context.WithoutCancel(ctx), current); refreshErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore predecessor runtime: %w", refreshErr))
+				}
+				err = &mutation.Error{Outcome: mutation.OutcomeNotCommitted, Err: err}
+			}
+		} else {
+			// Keep the exact package and trust evidence until durable state can
+			// be reconciled; the transaction may already have committed.
+			updateCommitted = true
+		}
 		return registry.PluginRecord{}, err
 	}
 	verifiedReleaseChanged = true
 	h.rememberVerifiedRelease(stored.PluginInstanceID, stored.ReleaseTrustBinding, trustInput.VerifiedRelease)
+	if upgradeData {
+		updateCommitted = true
+		if err := h.revokePluginRuntimeCapabilities(ctx, stored, now); err != nil {
+			return stored, mutation.ForceCommitted(err)
+		}
+		if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
+			return stored, mutation.ForceCommitted(err)
+		}
+		return stored, nil
+	}
 	if err := h.publishEnabledSurfaces(ctx, stored); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
 		return registry.PluginRecord{}, mutation.Unknown(err)
@@ -3881,7 +3925,7 @@ func requireStablePluginDataShape(current manifest.Manifest, next manifest.Manif
 		return err
 	}
 	if currentHash != nextHash {
-		return fmt.Errorf("%w: use a new plugin identity for a different data shape", ErrPluginDataContractChanged)
+		return fmt.Errorf("%w: no verified historical data generation matches the requested package", ErrPluginDataContractChanged)
 	}
 	return nil
 }
@@ -3911,8 +3955,25 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
+	previous, found, err := h.controlStore.GetBinding(ctx, current.PluginInstanceID)
+	if err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if !found || snapshot.DataGenerationID == "" {
+		return registry.PluginRecord{}, plugindata.ErrBindingNotFound
+	}
+	restoreData := snapshot.DataGenerationID != previous.GenerationID
+	var history controlstore.PluginDataHistory
+	if restoreData {
+		history, err = h.controlStore.GetPluginDataHistory(ctx, current.PluginInstanceID, snapshot.DataGenerationID)
+		if err != nil {
+			return registry.PluginRecord{}, err
+		}
+	}
+	if !restoreData {
+		if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
+			return registry.PluginRecord{}, err
+		}
 	}
 	if err := h.preflightPackageFeatures(next.Manifest, packageTrustInput{}); err != nil {
 		return registry.PluginRecord{}, err
@@ -3932,14 +3993,46 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 			return registry.PluginRecord{}, err
 		}
 	}
-	stored, err := h.putPluginRecord(ctx, next, req.Now)
+	var stored registry.PluginRecord
+	if restoreData {
+		_, resumeAdmission, admissionErr := h.executions.beginDataUpgrade(current.PluginInstanceID)
+		if admissionErr != nil {
+			return registry.PluginRecord{}, admissionErr
+		}
+		defer resumeAdmission()
+		if err := h.revokePluginRuntimeCapabilities(ctx, current, req.Now); err != nil {
+			return registry.PluginRecord{}, err
+		}
+		shape, shapeErr := plugindata.ShapeFromManifest(next.Manifest)
+		if shapeErr != nil {
+			return registry.PluginRecord{}, shapeErr
+		}
+		_, err = h.adapters.PluginData.RestoreVersion(ctx, plugindata.RestoreVersionRequest{Expected: previous, Retained: history.Binding, Shape: shape}, func(ctx context.Context, previous, active plugindata.Binding) error {
+			var commitErr error
+			stored, commitErr = h.controlStore.CommitPluginDataRestore(ctx, current, next, previous, active, history.Binding, lifecycleNow(req.Now))
+			return commitErr
+		})
+	} else {
+		stored, err = h.putPluginRecord(ctx, next, req.Now)
+	}
 	if err != nil {
+		if restoreData && mutation.ForError(err) == mutation.OutcomeNotCommitted {
+			if refreshErr := h.refreshEnabledRuntimeState(context.WithoutCancel(ctx), current); refreshErr != nil {
+				err = &mutation.Error{Outcome: mutation.OutcomeNotCommitted, Err: errors.Join(err, fmt.Errorf("restore predecessor runtime: %w", refreshErr))}
+			}
+		}
 		return registry.PluginRecord{}, err
 	}
 	if err := h.revokePluginRuntimeCapabilities(ctx, stored, req.Now); err != nil {
+		if restoreData {
+			return stored, mutation.ForceCommitted(err)
+		}
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
+		if restoreData {
+			return stored, mutation.ForceCommitted(err)
+		}
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	return stored, nil
@@ -4153,14 +4246,25 @@ func prepareVersionSwitchRecord(current registry.PluginRecord, next registry.Plu
 	next.EnabledAt = cloneTimePtr(current.EnabledAt)
 	next.DeletedAt = cloneTimePtr(current.DeletedAt)
 	next.Metadata = mergeStringMap(current.Metadata, next.Metadata)
-	if previous.PackageHash != "" && previous.PackageHash != next.PackageHash {
-		next.VersionHistory = appendVersionSnapshot(next.VersionHistory, previous)
-	}
+	next.VersionHistory = versionSwitchHistory(next.VersionHistory, next.PackageHash, previous)
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	next.UpdatedAt = now
 	return next
+}
+
+func versionSwitchHistory(existing []registry.PluginVersion, activePackage string, previous registry.PluginVersion) []registry.PluginVersion {
+	history := make([]registry.PluginVersion, 0, len(existing)+1)
+	for _, snapshot := range existing {
+		if snapshot.PackageHash != activePackage {
+			history = append(history, snapshot)
+		}
+	}
+	if previous.PackageHash != "" && previous.PackageHash != activePackage {
+		history = appendVersionSnapshot(history, previous)
+	}
+	return history
 }
 
 func versionSnapshot(record registry.PluginRecord, now time.Time) registry.PluginVersion {
@@ -6559,6 +6663,15 @@ func (p runtimeArtifactProvider) ReadArtifact(ctx context.Context, req runtimecl
 }
 
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (response CallMethodResult, responseErr error) {
+	if record.Manifest.IsDataUpgradeMethod(method.Method) {
+		upgrade := dataUpgradeExecution(ctx)
+		if upgrade == nil {
+			return CallMethodResult{}, ErrMethodRequestContract
+		}
+		if err := upgrade.validate(ctx, h, record.ActiveFingerprint, method.Method); err != nil {
+			return CallMethodResult{}, err
+		}
+	}
 	if err := h.validateMethodRequest(method, req.Params); err != nil {
 		return CallMethodResult{}, err
 	}
@@ -6864,7 +6977,15 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return workerMethodDispatch{}, err
 	}
-	runtimeBinding, err := h.bindPreparedWorkerRuntime(ctx, record)
+	var runtimeBinding runtimeclient.RuntimeBinding
+	if upgrade := dataUpgradeExecution(ctx); upgrade != nil {
+		if err := upgrade.validate(ctx, h, record.ActiveFingerprint, method.Method); err != nil {
+			return workerMethodDispatch{}, err
+		}
+		runtimeBinding = upgrade.runtime
+	} else {
+		runtimeBinding, err = h.bindPreparedWorkerRuntime(ctx, record)
+	}
 	if err != nil {
 		return workerMethodDispatch{}, err
 	}
@@ -7107,6 +7228,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
+	runtimeIORegistration.upgrade = dataUpgradeExecution(ctx)
 	if err := h.runtimeIO.register(executionCtx, invocationID, runtimeIORegistration); err != nil {
 		return dispatch, err
 	}

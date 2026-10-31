@@ -2227,7 +2227,17 @@ export interface components {
             width: number;
             height: number;
         };
-        /** @description Closed, display-ready projection of every security-relevant declaration in the inspected manifest. Canonical hash payloads omit only summary_sha256, preserve schema property and array order, include present process and background declarations, and use compact Go JSON string escaping. Optional absent properties stay absent. */
+        ExternalPackageDataUpgradePredecessor: {
+            version: string;
+            shape_sha256: string;
+        };
+        ExternalPackageDataUpgradeSummary: {
+            from: components["schemas"]["ExternalPackageDataUpgradePredecessor"][];
+            method: string;
+            max_bytes: number;
+            max_runtime_ms: number;
+        };
+        /** @description Closed, display-ready projection of every security-relevant declaration in the inspected manifest. Canonical hash payloads omit only summary_sha256, preserve schema property and array order, include present process, background, and data-upgrade declarations, and use compact Go JSON string escaping. Optional absent properties stay absent. */
         ExternalPackageSecuritySummary: {
             summary_sha256: string;
             permissions: components["schemas"]["ExternalPackagePermissionSummary"][];
@@ -2236,6 +2246,7 @@ export interface components {
             workers: components["schemas"]["ExternalPackageWorkerSummary"][];
             process?: components["schemas"]["ExternalPackageProcessSummary"];
             background?: components["schemas"]["ExternalPackageBackgroundSummary"];
+            data_upgrade?: components["schemas"]["ExternalPackageDataUpgradeSummary"];
             network: components["schemas"]["ExternalPackageNetworkSummary"][];
             storage: components["schemas"]["ExternalPackageStorageSummary"][];
             secret_refs: components["schemas"]["ExternalPackageSecretRefSummary"][];
@@ -2325,6 +2336,8 @@ export interface components {
             };
         };
         PluginVersion: {
+            /** @description Opaque Host-owned identity of the data generation last used by this historical package. Not caller-supplied authority. */
+            data_generation_id?: string;
             version: components["schemas"]["StrictSemVer"];
             active_fingerprint: string;
             package_hash: string;
@@ -3624,7 +3637,16 @@ export interface components {
                 optional_features?: components["schemas"]["ManifestV9OptionalFeatures"];
             };
             permissions: ("fs.workspace.read" | "fs.workspace.write" | "fs.home.read" | "fs.home.write" | "fs.environment.read" | "fs.environment.write" | "network.client" | "network.listen" | "process.local" | "fs.selected.read" | "fs.selected.write")[];
-        } & (unknown & unknown & unknown);
+            data_upgrade?: {
+                from: {
+                    version: components["schemas"]["ManifestV9Semver"];
+                    shape_sha256: string;
+                }[];
+                method: string;
+                max_bytes: number;
+                max_runtime_ms: number;
+            };
+        } & (unknown & unknown & unknown & unknown);
         ManifestV9Locale: string;
         ManifestV9Summary: string;
         ManifestV9Description: string[];
@@ -3693,7 +3715,7 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1")[];
+        ManifestV9RequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1")[];
         ManifestV9OptionalFeatures: string[];
         ManifestV9NetworkAccess: {
             connector_id: string;

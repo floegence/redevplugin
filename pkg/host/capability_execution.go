@@ -603,6 +603,12 @@ func (h *Host) pruneTerminalExecutionRecords(ctx context.Context, now time.Time)
 }
 
 func (h *Host) validateExecutionBinding(ctx context.Context, binding capability.ExecutionBinding) error {
+	if upgrade := dataUpgradeExecution(ctx); upgrade != nil {
+		if binding.RouteKind != capability.RouteWorker || binding.PluginInstanceID != upgrade.next.PluginInstanceID || binding.PluginVersion != upgrade.next.Version {
+			return capability.ErrExecutionRevoked
+		}
+		return upgrade.validate(ctx, h, binding.ActiveFingerprint, binding.Method)
+	}
 	record, err := h.getPluginRecord(ctx, binding.PluginInstanceID)
 	if err != nil {
 		return capability.ErrExecutionRevoked
@@ -739,6 +745,7 @@ type executionLeaseRegistry struct {
 	activeByQuotaKey           map[executionQuotaKey]int
 	setupRollbacks             map[string]*executionLease
 	pluginGates                map[string]*executionPluginGate
+	dataUpgrades               map[string]*pluginDataUpgradeAdmission
 	terminalMaintenanceRunning bool
 	terminalMaintenanceNext    time.Time
 	sessionCancelScanned       uint64
@@ -796,6 +803,7 @@ func newExecutionLeaseRegistry() *executionLeaseRegistry {
 		activeByQuotaKey: map[executionQuotaKey]int{},
 		setupRollbacks:   map[string]*executionLease{},
 		pluginGates:      map[string]*executionPluginGate{},
+		dataUpgrades:     map[string]*pluginDataUpgradeAdmission{},
 	}
 }
 
@@ -830,6 +838,15 @@ func (r *executionLeaseRegistry) finishTerminalMaintenance() {
 func (r *executionLeaseRegistry) start(parent context.Context, binding capability.ExecutionBinding, validate func(context.Context) error) (*executionLease, error) {
 	releasePlugin := r.lockPlugin(binding.PluginInstanceID, false)
 	defer releasePlugin()
+	r.mu.Lock()
+	admission := r.dataUpgrades[binding.PluginInstanceID]
+	r.mu.Unlock()
+	if admission != nil {
+		upgrade := dataUpgradeExecution(parent)
+		if upgrade == nil || upgrade.admission != admission {
+			return nil, capability.ErrExecutionRevoked
+		}
+	}
 	if err := validate(parent); err != nil {
 		return nil, err
 	}

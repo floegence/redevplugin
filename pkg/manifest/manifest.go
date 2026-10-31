@@ -15,6 +15,7 @@ import (
 )
 
 type Manifest struct {
+	DataUpgrade        *DataUpgradeSpec     `json:"data_upgrade,omitempty"`
 	SchemaVersion      string               `json:"schema_version"`
 	Publisher          Publisher            `json:"publisher"`
 	Plugin             Plugin               `json:"plugin"`
@@ -707,6 +708,9 @@ func Validate(m Manifest) error {
 			return ValidationError{Field: fmt.Sprintf("methods[%d].broker_access.process", i), Message: "requires a process declaration"}
 		}
 	}
+	if err := validateDataUpgrade(m, methods); err != nil {
+		return err
+	}
 	if err := validatePresentation(m); err != nil {
 		return err
 	}
@@ -1028,6 +1032,7 @@ func DescriptorHashInput(m Manifest) ([]byte, error) {
 	sort.Slice(methods, func(i, j int) bool { return methods[i].Method < methods[j].Method })
 
 	input := struct {
+		DataUpgrade        *DataUpgradeSpec    `json:"data_upgrade,omitempty"`
 		SchemaVersion      string              `json:"schema_version"`
 		PublisherID        string              `json:"publisher_id"`
 		PluginID           string              `json:"plugin_id"`
@@ -1041,6 +1046,7 @@ func DescriptorHashInput(m Manifest) ([]byte, error) {
 		Background         *BackgroundSpec     `json:"background,omitempty"`
 		Settings           *SettingsSpec       `json:"settings,omitempty"`
 	}{
+		DataUpgrade:        m.DataUpgrade,
 		SchemaVersion:      m.SchemaVersion,
 		PublisherID:        m.Publisher.PublisherID,
 		PluginID:           m.Plugin.PluginID,

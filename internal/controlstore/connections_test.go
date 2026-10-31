@@ -42,7 +42,7 @@ func TestConnectionsMigrateSchemaTwoAndPreserveSelectedResources(t *testing.T) {
 			t.Fatalf("data %q %v", value, err)
 		}
 		var version int
-		if err := store.db.QueryRow("SELECT version FROM control_schema WHERE id=1").Scan(&version); err != nil || version != 3 {
+		if err := store.db.QueryRow("SELECT version FROM control_schema WHERE id=1").Scan(&version); err != nil || version != schemaVersion {
 			t.Fatalf("schema %d %v", version, err)
 		}
 		store.Close()

@@ -257,6 +257,9 @@ func (v RegistryView) UpdateExternalPackage(ctx context.Context, ownerEnvHash st
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if err := bindVersionSwitchData(ctx, tx, ownerEnvHash, &record, existing); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	recordJSON, err := encodeRegistryPluginRecord(record)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -453,6 +456,9 @@ func (v RegistryView) PutPlugin(ctx context.Context, ownerEnvHash string, record
 	}
 	record, err = registry.PreparePluginPut(ownerEnvHash, record, &existing, now)
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := bindVersionSwitchData(ctx, tx, ownerEnvHash, &record, existing); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	recordJSON, err := encodeRegistryPluginRecord(record)

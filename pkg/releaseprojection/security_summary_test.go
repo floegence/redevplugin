@@ -122,6 +122,9 @@ func TestSecuritySummaryBindsOptionalExecutionDeclarations(t *testing.T) {
 		{"background", func(s *ExternalPackageSecuritySummary) {
 			s.Background = &ExternalPackageBackgroundSummary{Strategy: "on_demand", WorkerID: "worker"}
 		}},
+		{"data_upgrade", func(s *ExternalPackageSecuritySummary) {
+			s.DataUpgrade = &ExternalPackageDataUpgradeSummary{From: []ExternalPackageDataUpgradePredecessor{{Version: "1.0.0", ShapeSHA256: strings.Repeat("a", 64)}}, Method: "data.convert", MaxBytes: 1048576, MaxRuntimeMS: 1000}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			changed := base

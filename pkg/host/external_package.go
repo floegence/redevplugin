@@ -388,10 +388,10 @@ func (h *Host) inspectStagedExternalPackage(
 		if err := validateSamePluginIdentity(*current, record); err != nil {
 			return ExternalPackageInspection{}, err
 		}
-		if err := requireStablePluginDataShape(current.Manifest, record.Manifest); err != nil {
+		if _, err := pluginDataUpgradeRequired(current.Manifest, record.Manifest); err != nil {
 			return ExternalPackageInspection{}, err
 		}
-		record.VersionHistory = append(append([]registry.PluginVersion(nil), current.VersionHistory...), versionSnapshot(*current, now))
+		record.VersionHistory = versionSwitchHistory(current.VersionHistory, record.PackageHash, versionSnapshot(*current, now))
 		record.EnableState = current.EnableState
 		record.DisabledReason = current.DisabledReason
 		record.EnabledAt = cloneTimePtr(current.EnabledAt)
@@ -566,7 +566,10 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	}
 	if err != nil {
 		auditDetails["status"] = "failed"
-		assetRollbackErr := h.adapters.Assets.DeletePackage(context.WithoutCancel(ctx), record.PackageHash)
+		var assetRollbackErr error
+		if mutation.ForError(err) == mutation.OutcomeNotCommitted {
+			assetRollbackErr = h.adapters.Assets.DeletePackage(context.WithoutCancel(ctx), record.PackageHash)
+		}
 		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, errors.Join(managementMutationError(record, err), assetRollbackErr))
 	}
 	auditDetails["status"] = "committed"
@@ -602,6 +605,27 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 func (h *Host) updateExternalPackageRecord(ctx context.Context, session sessionctx.Context, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
 	if h.controlStore == nil {
 		return registry.PluginRecord{}, ErrControlStoreRequired
+	}
+	current, err := h.getPluginRecord(ctx, req.Record.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	next, err := registry.PrepareExternalPackageInstall(session.OwnerEnvHash, req, &current)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	upgrade, err := pluginDataUpgradeRequired(current.Manifest, next.Manifest)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if upgrade {
+		stored, err := h.commitPluginDataUpgrade(ctx, current, next, req.Now, true)
+		if err != nil && mutation.ForError(err) == mutation.OutcomeNotCommitted {
+			if refreshErr := h.refreshEnabledRuntimeState(context.WithoutCancel(ctx), current); refreshErr != nil {
+				err = &mutation.Error{Outcome: mutation.OutcomeNotCommitted, Err: errors.Join(err, fmt.Errorf("restore predecessor runtime: %w", refreshErr))}
+			}
+		}
+		return stored, err
 	}
 	return h.controlStore.Registry().UpdateExternalPackage(ctx, session.OwnerEnvHash, req)
 }

@@ -59,6 +59,15 @@ The SDK returns structured `WorkerError` values. Broker failures retain their
 stable platform code and user-safe message instead of exposing transport or
 credential details.
 
+## Isolated Data Conversion
+
+`data_upgrade` is available only inside the declared conversion Worker. Reads
+select `Dataset::Input` or `Dataset::Output`; writes always target unpublished
+output. Files, KV and SQLite reuse `storage` request types. Non-secret settings
+have explicit read/write functions. Each user/environment scope runs separately
+before the Host atomically switches package and data. Network, credentials,
+processes and ordinary resources remain unavailable.
+
 ## Explicit Network Connectors
 
 Every HTTP, WebSocket, TCP and UDP open option requires connector_id. It must

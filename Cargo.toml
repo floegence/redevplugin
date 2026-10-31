@@ -6,13 +6,14 @@ members = [
   "internal/scaffoldworker",
   "internal/selectedfileworker",
   "internal/networkworker",
+  "internal/dataupgradeworker",
   "examples/workers/memos",
   "examples/workers/weather",
   "examples/workers/sky-strike",
 ]
 
 [workspace.package]
-version = "3.9.0"
+version = "3.10.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/floegence/redevplugin"

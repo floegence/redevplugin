@@ -145,6 +145,48 @@ func TestExecutionLeaseRegistryMaintainsQuotaAndIdentityIndexes(t *testing.T) {
 	}
 }
 
+func TestExecutionLeaseRegistryDataUpgradeAdmission(t *testing.T) {
+	registry := newExecutionLeaseRegistry()
+	admission, resume, err := registry.beginDataUpgrade("plugin-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resume()
+	binding := executionRegistryTestBinding("invoke-a", "plugin-a", 0)
+	validate := func(context.Context) error { return nil }
+	if _, err := registry.start(context.Background(), binding, validate); !errors.Is(err, capability.ErrExecutionRevoked) {
+		t.Fatalf("ordinary start: %v", err)
+	}
+	for _, token := range []*pluginDataUpgradeAdmission{nil, {pluginInstanceID: "plugin-a"}} {
+		ctx := context.WithValue(context.Background(), pluginDataUpgradeContextKey{}, &pluginDataUpgradeExecution{admission: token})
+		if _, err := registry.start(ctx, binding, validate); !errors.Is(err, capability.ErrExecutionRevoked) {
+			t.Fatalf("forged admission: %v", err)
+		}
+	}
+	ctx := context.WithValue(context.Background(), pluginDataUpgradeContextKey{}, &pluginDataUpgradeExecution{admission: admission})
+	lease, err := registry.start(ctx, binding, validate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.finish()
+	sibling, err := registry.start(context.Background(), executionRegistryTestBinding("invoke-b", "plugin-b", 0), validate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling.finish()
+	resume()
+	lease, err = registry.start(context.Background(), binding, validate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.finish()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if len(registry.dataUpgrades) != 0 {
+		t.Fatal("upgrade admission leaked")
+	}
+}
+
 func TestExecutionLeaseRegistryCancelsExactSessionWithoutScanningUnrelatedLeases(t *testing.T) {
 	registry := newExecutionLeaseRegistry()
 	targetScope := sessionctx.SessionScope{

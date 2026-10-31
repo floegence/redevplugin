@@ -432,6 +432,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redevplugin-data-upgrade-test-worker"
+version = "0.0.0-dev"
+dependencies = [
+ "base64",
+ "redevplugin-worker-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "redevplugin-example-memos-worker"
 version = "0.1.0"
 dependencies = [
@@ -469,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-runtime"
-version = "3.9.0"
+version = "3.10.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -501,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-worker-sdk"
-version = "3.9.0"
+version = "3.10.0"
 dependencies = [
  "base64",
  "serde",

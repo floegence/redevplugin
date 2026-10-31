@@ -65,6 +65,11 @@ func (s *Store) CommitRetainedRecovery(ctx context.Context, plan plugindata.Reta
 		if err := updateExactControlDataBinding(ctx, tx, owner, targetBinding, next.Active); err != nil {
 			return err
 		}
+		rebindSharedVersionData(&target, targetBinding.GenerationID, next.Active.GenerationID)
+		rebindSharedVersionData(&sourceRecord, source.GenerationID, next.Retained.GenerationID)
+		if err := persistControlPluginRecord(ctx, tx, sourceRecord); err != nil {
+			return err
+		}
 		target.ManagementRevision++
 		target.RevokeEpoch++
 		target.UpdatedAt = time.Now().UTC()

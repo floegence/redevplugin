@@ -53,6 +53,7 @@ func MarshalCanonical(current Manifest) ([]byte, error) {
 		return nil, err
 	}
 	document := v9Document{
+		DataUpgrade:        current.DataUpgrade,
 		SchemaVersion:      current.SchemaVersion,
 		Publisher:          current.Publisher,
 		Plugin:             v9Plugin{PluginID: current.Plugin.PluginID, DisplayName: current.Plugin.DisplayName, Version: current.Plugin.Version},
@@ -82,6 +83,7 @@ func MarshalCanonical(current Manifest) ([]byte, error) {
 }
 
 type v9Document struct {
+	DataUpgrade        *DataUpgradeSpec     `json:"data_upgrade,omitempty"`
 	SchemaVersion      string               `json:"schema_version"`
 	Publisher          Publisher            `json:"publisher"`
 	Plugin             v9Plugin             `json:"plugin"`
@@ -122,6 +124,13 @@ type v9Worker struct {
 }
 
 func decodeV9(raw []byte) (Manifest, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return Manifest{}, err
+	}
+	if value, present := fields["data_upgrade"]; present && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return Manifest{}, ValidationError{Field: "data_upgrade", Message: "must be an object when present"}
+	}
 	var document v9Document
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -153,6 +162,7 @@ func decodeV9(raw []byte) (Manifest, error) {
 		return Manifest{}, err
 	}
 	current := Manifest{
+		DataUpgrade:        document.DataUpgrade,
 		SchemaVersion:      SchemaVersionV9,
 		Publisher:          document.Publisher,
 		Plugin:             Plugin{PluginID: document.Plugin.PluginID, DisplayName: document.Plugin.DisplayName, Version: document.Plugin.Version},
@@ -211,7 +221,7 @@ func normalizePublicAPI(api PublicAPIRequirement) (PublicAPIRequirement, error) 
 
 func knownFeature(feature FeatureID) bool {
 	switch feature {
-	case FeatureIOStream, FeatureFSWorkspace, FeatureFSHome, FeatureFSEnvironment, FeatureFSWatch, FeatureFSSelected, FeatureNetHTTP, FeatureNetWebSocket, FeatureNetTCP, FeatureNetUDP, FeatureProcessLocal, FeatureScopedAuthorization, FeatureBackgroundMethod:
+	case FeatureIOStream, FeatureFSWorkspace, FeatureFSHome, FeatureFSEnvironment, FeatureFSWatch, FeatureFSSelected, FeatureNetHTTP, FeatureNetWebSocket, FeatureNetTCP, FeatureNetUDP, FeatureProcessLocal, FeatureScopedAuthorization, FeatureBackgroundMethod, FeatureDataUpgrade:
 		return true
 	default:
 		return false

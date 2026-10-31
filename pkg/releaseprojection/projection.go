@@ -298,12 +298,25 @@ type ExternalPackageSecuritySummary struct {
 	Workers             []ExternalPackageWorkerSummary             `json:"workers"`
 	Process             *ExternalPackageProcessSummary             `json:"process,omitempty"`
 	Background          *ExternalPackageBackgroundSummary          `json:"background,omitempty"`
+	DataUpgrade         *ExternalPackageDataUpgradeSummary         `json:"data_upgrade,omitempty"`
 	Network             []ExternalPackageNetworkSummary            `json:"network"`
 	Storage             []ExternalPackageStorageSummary            `json:"storage"`
 	SecretRefs          []ExternalPackageSecretRefSummary          `json:"secret_refs"`
 	CoreActions         []ExternalPackageCoreActionSummary         `json:"core_actions"`
 	Intents             []ExternalPackageIntentSummary             `json:"intents"`
 	Surfaces            []ExternalPackageSurfaceSummary            `json:"surfaces"`
+}
+
+type ExternalPackageDataUpgradePredecessor struct {
+	Version     string `json:"version"`
+	ShapeSHA256 string `json:"shape_sha256"`
+}
+
+type ExternalPackageDataUpgradeSummary struct {
+	From         []ExternalPackageDataUpgradePredecessor `json:"from"`
+	Method       string                                  `json:"method"`
+	MaxBytes     int64                                   `json:"max_bytes"`
+	MaxRuntimeMS int                                     `json:"max_runtime_ms"`
 }
 
 // buildExternalPackageSecuritySummary is deterministic for semantically equal
@@ -439,6 +452,14 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 	if m.Background != nil {
 		background = &ExternalPackageBackgroundSummary{Strategy: string(m.Background.Strategy), WorkerID: m.Background.WorkerID, Method: m.Background.Method}
 	}
+	var dataUpgrade *ExternalPackageDataUpgradeSummary
+	if spec := m.DataUpgrade; spec != nil {
+		dataUpgrade = &ExternalPackageDataUpgradeSummary{From: []ExternalPackageDataUpgradePredecessor{}, Method: spec.Method, MaxBytes: spec.MaxBytes, MaxRuntimeMS: spec.MaxRuntimeMS}
+		for _, previous := range spec.From {
+			dataUpgrade.From = append(dataUpgrade.From, ExternalPackageDataUpgradePredecessor{Version: previous.Version, ShapeSHA256: previous.ShapeSHA256})
+		}
+		sort.Slice(dataUpgrade.From, func(i, j int) bool { return dataUpgrade.From[i].Version < dataUpgrade.From[j].Version })
+	}
 
 	network, err := externalPackageNetworkSummaries(m.NetworkAccess, networkAccess)
 	if err != nil {
@@ -498,7 +519,7 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 
 	summary := ExternalPackageSecuritySummary{
 		Permissions: permissions, Methods: methods, CapabilityContracts: capabilityContracts, Workers: workers,
-		Process: process, Background: background,
+		Process: process, Background: background, DataUpgrade: dataUpgrade,
 		Network: network, Storage: storage, SecretRefs: secretRefs, CoreActions: coreActions, Intents: intents, Surfaces: surfaces,
 	}
 	hash, err := externalPackageSecuritySummaryHash(summary)

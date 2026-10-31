@@ -13,6 +13,8 @@ const canonicalContractPaths = Object.freeze([
   "plugin/author-test-v1.schema.json",
   "plugin/bridge.schema.json",
   "plugin/connections.schema.json",
+  "plugin/data-upgrade-fixtures.json",
+  "plugin/data-upgrade.schema.json",
   "plugin/error-codes.schema.json",
   "plugin/external-signer-request-v1.schema.json",
   "plugin/external-signer-response-v1.schema.json",

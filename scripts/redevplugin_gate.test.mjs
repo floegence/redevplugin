@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { acquireLock, digest, evidenceKey, execute, executionEnvironment, failureKind, normalizedGoConfiguration, runStage, sourceFingerprint, stages, verifyBaselines } from "./redevplugin_gate.mjs";
 
@@ -62,6 +62,13 @@ test("Rust source closure excludes only unrelated npm inputs and includes new Ru
   mkdirSync(join(f.root, "crates")); writeFileSync(join(f.root, "crates/new.rs"), "new rust");
   f.git("add", "."); f.git("commit", "-qm", "rust");
   assert.notEqual(sourceFingerprint(f.root, rust), before);
+  for (const path of ["internal/dataupgradeworker/src/lib.rs", "examples/workers/sample/src/lib.rs"]) {
+    const previous = sourceFingerprint(f.root, rust);
+    mkdirSync(dirname(join(f.root, path)), { recursive: true });
+    writeFileSync(join(f.root, path), "workspace Rust input");
+    f.git("add", "."); f.git("commit", "-qm", "workspace input");
+    assert.notEqual(sourceFingerprint(f.root, rust), previous);
+  }
 });
 
 test("expired, future dated, damaged and missing evidence causes a rerun", async (t) => {
@@ -145,6 +152,7 @@ test("the fixed stage plan preserves original coverage and moves cheap blockers 
   assert.deepEqual(stages.map(({ id }) => id), ["prepare", "audit", "contracts", "go", "web", "canonical-bridge", "rust", "rust-source", "performance", "stress", "property", "runtime-platform"]);
   assert.ok(stages.find(({ id }) => id === "audit").fresh);
   assert.ok(stages.find(({ id }) => id === "prepare").fresh);
+  for (const path of ["./internal/controlstore", "./internal/dataupgradecontract"]) assert.ok(stages.find(({ id }) => id === "go").command.includes(path));
   const packageJSON = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
   assert.equal(packageJSON.scripts.check, "npm run check:contracts && npm run check:web");
   for (const gate of ["test:contracts", "test:ui", "test:browser-harness:smoke", "property-gates", "canonical-wasm:test"]) assert.ok(packageJSON.scripts["check:web"].includes("npm run " + gate));
