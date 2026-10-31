@@ -47,7 +47,8 @@ func TestIntervalThroughBuiltRustRuntime(t *testing.T) {
 		}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
 			developerMode: true, localGenerated: true, stateRoot: stateRoot, assets: assets,
-			openContext: context.Background(), backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy,
+			authorization: &onlineOnlyIntervalAuthorization{},
+			openContext:   context.Background(), backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy,
 			runtimeManagerFactory: func(deps testRuntimeManagerDependencies) (runtimeclient.Manager, error) {
 				return runtimeclient.NewProcessManager(runtimeclient.ProcessManagerOptions{
 					ShardCount: 1,

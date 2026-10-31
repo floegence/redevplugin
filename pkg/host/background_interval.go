@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
 )
 
 // BackgroundPolicyRequest identifies the installed, declared method. Policy
@@ -100,7 +101,7 @@ func (s *backgroundIntervalScheduler) tick(ctx context.Context, now time.Time) e
 			if runErr != nil {
 				record := registry.PluginRecord{PluginInstanceID: claim.PluginInstanceID, OwnerEnvHash: claim.OwnerEnvHash, ActiveFingerprint: claim.ActiveFingerprint}
 				diagnosticCtx := sessionctx.WithContext(context.WithoutCancel(runCtx), backgroundSessionContext(backgroundOwner(record)))
-				s.host.reportLifecycleDiagnostic(diagnosticCtx, record, "plugin.background.failed", "background interval execution failed", runErr, observability.DiagnosticDetails{Operation: "background_interval_execution"})
+				s.host.reportLifecycleDiagnostic(diagnosticCtx, record, "plugin.background.failed", "plugin background worker stopped unexpectedly", runErr, observability.DiagnosticDetails{Operation: "background_interval_execution"})
 			}
 			// Completion persists even after cancellation. CAS cannot overwrite a
 			// replacement plan; an unavailable store leaves the claim unknown on restart.
@@ -195,6 +196,55 @@ func (h *Host) runBackgroundInterval(ctx context.Context, plan controlstore.Inte
 	return "failed", err
 }
 
+// A durable claim authorizes only its declared environment-scoped resources.
+// It does not create an online user or authorize public management operations.
+func (h *Host) mintIntervalStorageHandleGrant(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req MintStorageHandleGrantRequest) (StorageHandleGrantResult, error) {
+	plan, ok := ctx.Value(intervalExecutionKey{}).(controlstore.IntervalPlan)
+	if !ok || req.PluginInstanceID != record.PluginInstanceID || !intervalRecordMatches(plan, record) {
+		return StorageHandleGrantResult{}, security.ErrPolicyDenied
+	}
+	if err := h.controlStore.ValidateIntervalClaim(ctx, plan); err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	current, err := h.getPluginRecord(ctx, record.PluginInstanceID)
+	if err != nil || !intervalRecordMatches(plan, current) {
+		return StorageHandleGrantResult{}, security.ErrPolicyDenied
+	}
+	declared, ok := backgroundWorkerMethod(current.Manifest, current.Manifest.Background.WorkerID)
+	if !ok || declared.Method != method.Method || declared.BrokerAccess == nil {
+		return StorageHandleGrantResult{}, security.ErrPolicyDenied
+	}
+	allowed := false
+	for _, access := range declared.BrokerAccess.Storage {
+		allowed = allowed || access.StoreID == req.StoreID
+	}
+	if !allowed {
+		return StorageHandleGrantResult{}, security.ErrPolicyDenied
+	}
+	session, err := sessionctx.Require(ctx)
+	if err != nil || session != backgroundSessionContext(backgroundOwner(current)) {
+		return StorageHandleGrantResult{}, security.ErrPolicyDenied
+	}
+	if err := h.authorizeBackgroundInterval(ctx, current, declared); err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	namespace, ok, err := storageNamespaceByStoreID(current, req.StoreID)
+	if err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	if !ok {
+		return StorageHandleGrantResult{}, storage.ErrNamespaceNotFound
+	}
+	if namespace.Scope != string(sessionctx.ScopeEnvironment) {
+		return StorageHandleGrantResult{}, ErrStorageScopeMismatch
+	}
+	scope, err := session.ResourceScope(sessionctx.ScopeEnvironment)
+	if err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	return h.mintStorageHandleGrant(ctx, current, namespace, scope, session, req)
+}
+
 func (s *backgroundIntervalScheduler) reportFailure(ctx context.Context, operation string, err error) {
-	s.host.diagnostic(ctx, observability.DiagnosticEvent{Type: "plugin.background.failed", Severity: observability.DiagnosticSeverityWarning, Message: "background interval maintenance failed", Details: observability.DiagnosticDetails{Operation: operation}, Failure: observability.FailureFromError(observability.FailureAction, observability.FailureComponentLifecycle, observability.FailureOperationLifecycle, err)})
+	s.host.diagnostic(ctx, observability.DiagnosticEvent{Type: "plugin.background.failed", Severity: observability.DiagnosticSeverityWarning, Message: "plugin background worker stopped unexpectedly", Details: observability.DiagnosticDetails{Operation: operation}, Failure: observability.FailureFromError(observability.FailureAction, observability.FailureComponentLifecycle, observability.FailureOperationLifecycle, err)})
 }

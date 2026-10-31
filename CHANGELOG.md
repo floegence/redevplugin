@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.11.1
+
+- Authorize private environment storage for durably claimed intervals without requiring an online-user management session. Preserve exact claim, method, namespace, owner, revision, token, quota and audit checks.
+- Persist interval execution and maintenance failures using the existing closed background diagnostic contract.
+- Cover strict online-only management adapters, invalid claims and owners, direct API denial, real WASM storage, restart and sibling isolation.
+
 ## v3.11.0
 
 - Run declared environment-scoped WASM methods on durable bounded intervals, with one invocation per plan and missed periods coalesced.

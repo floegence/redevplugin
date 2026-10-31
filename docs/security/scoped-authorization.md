@@ -68,6 +68,15 @@ capability or turns a user-scoped resource into background authority. Adapters
 that need interactive sessions may deny that resource; selected-file and
 connection approvals retain their original owner and lifetime requirements.
 
+Claimed intervals mint their declared environment-scoped storage handles through
+the Host's execution admission, independently of online-user management policy.
+The Host rechecks the exact durable claim, method, namespace, owner, fingerprint
+and revisions, then uses the ordinary token, quota, audit and runtime path. A
+synthetic background session alone grants no authority; the public storage-handle
+management API retains its normal session authorization. Background failures use
+the existing closed diagnostic event and operation field so diagnostic sinks can
+persist them without accepting arbitrary messages.
+
 At most one period runs per plan; different plugins may run concurrently. The
 first run follows one interval, and each subsequent run is scheduled from the
 previous completion. Missed periods coalesce into one invocation. A Host restart

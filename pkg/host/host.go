@@ -6038,6 +6038,12 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 		return StorageHandleGrantResult{}, err
 	}
 	defer releaseReservation()
+	return h.mintStorageHandleGrant(ctx, record, namespace, resourceScope, session, req)
+}
+
+// The caller owns admission. Token binding, quotas and audit remain shared by
+// direct management requests and claimed background invocations.
+func (h *Host) mintStorageHandleGrant(ctx context.Context, record registry.PluginRecord, namespace storage.Namespace, resourceScope sessionctx.ResourceScope, session sessionctx.Context, req MintStorageHandleGrantRequest) (result StorageHandleGrantResult, retErr error) {
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" || strings.TrimSpace(req.StoreID) == "" {
 		return StorageHandleGrantResult{}, bridge.ErrMissingTokenAudience
 	}
@@ -7313,14 +7319,21 @@ func (h *Host) mintWorkerStorageHandleGrants(ctx context.Context, record registr
 	}
 	grants := make(map[string]string, len(method.BrokerAccess.Storage))
 	for _, access := range method.BrokerAccess.Storage {
-		result, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
+		request := MintStorageHandleGrantRequest{
 			PluginInstanceID:    record.PluginInstanceID,
 			StoreID:             access.StoreID,
 			RuntimeInstanceID:   binding.RuntimeInstanceID,
 			RuntimeGenerationID: binding.RuntimeGenerationID,
 			RuntimeShardID:      binding.RuntimeShardID,
 			Now:                 now,
-		})
+		}
+		var result StorageHandleGrantResult
+		var err error
+		if _, claimed := ctx.Value(intervalExecutionKey{}).(controlstore.IntervalPlan); claimed {
+			result, err = h.mintIntervalStorageHandleGrant(ctx, record, method, request)
+		} else {
+			result, err = h.MintStorageHandleGrant(ctx, request)
+		}
 		if err != nil {
 			return nil, err
 		}
