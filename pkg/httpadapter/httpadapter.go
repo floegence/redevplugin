@@ -335,11 +335,6 @@ func (d errorDetails) empty() bool {
 	return !d.hasPackageDetails() && !d.hasRevisionDetails() && !d.hasCapabilityDetails() && !d.hasWorkerDetails() && d.SessionScope == nil
 }
 
-func (d errorDetails) MarshalJSON() ([]byte, error) {
-	type detailsAlias errorDetails
-	return json.Marshal(detailsAlias(d))
-}
-
 type Route struct {
 	Method string
 	Path   string
@@ -1150,7 +1145,16 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	var encoded []byte
 	var err error
 	if responseStatusMatchesPayload(status, payload) {
-		encoded, err = json.Marshal(payload)
+		// These closed envelope encoders validate and marshal their fields with
+		// encoding/json. Re-marshaling their bytes adds another parse and copy.
+		switch response := payload.(type) {
+		case successResponse:
+			encoded, err = response.MarshalJSON()
+		case errorResponse:
+			encoded, err = response.MarshalJSON()
+		case mutationErrorResponse:
+			encoded, err = response.MarshalJSON()
+		}
 	} else {
 		err = errors.New("HTTP status does not match platform response envelope")
 	}

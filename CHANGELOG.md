@@ -2,6 +2,8 @@
 
 ## v3.9.0
 
+- Remove redundant HTTP response JSON passes while preserving validated envelope bytes, escaping, headers, and fail-closed encoding errors.
+
 - Discover compatible retained sources through the existing list API using a target installation, with Host-owned identity, shape, expiry, and owner filtering.
 
 - Add explicit retained-data recovery inspection, exact-plan commit, and read-only outcome reconciliation through the Go Host, HTTP adapter, and TypeScript client.
