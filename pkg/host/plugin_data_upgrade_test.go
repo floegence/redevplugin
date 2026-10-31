@@ -377,11 +377,15 @@ func TestPluginDataUpgradeCancellationAndTimeoutRestoreAdmission(t *testing.T) {
 			}
 			pkg := buildDataUpgradePackage(t, old.Manifest, "2.0.0", 2, nil, func(m *manifest.Manifest) {
 				if timeout {
-					m.DataUpgrade.MaxRuntimeMS = 200
+					m.DataUpgrade.MaxRuntimeMS = 1000
 				}
 			})
 			_, err = h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{PluginInstanceID: old.PluginInstanceID, ExpectedManagementRevision: old.ManagementRevision, PackageReader: bytes.NewReader(pkg), PackageSize: int64(len(pkg))})
-			if err == nil || mutation.ForError(err) != mutation.OutcomeNotCommitted || calls != 1 {
+			wantErr := context.Canceled
+			if timeout {
+				wantErr = context.DeadlineExceeded
+			}
+			if !errors.Is(err, wantErr) || mutation.ForError(err) != mutation.OutcomeNotCommitted || calls != 1 {
 				t.Fatalf("failed conversion outcome: calls=%d %v", calls, err)
 			}
 			after, _, err := h.controlStore.GetBinding(hostTestContext(), old.PluginInstanceID)
@@ -398,6 +402,9 @@ func TestPluginDataUpgradeCancellationAndTimeoutRestoreAdmission(t *testing.T) {
 			}
 			lease.finish()
 			manager.convert = nil
+			// Admission recovery uses the normal conversion budget; the short
+			// deadline above only exercises cancellation of a blocked converter.
+			pkg = buildDataUpgradePackage(t, old.Manifest, "2.0.0", 2, nil)
 			if _, err := h.UpdateLocalPackage(hostTestContext(), UpdateLocalPackageRequest{PluginInstanceID: old.PluginInstanceID, ExpectedManagementRevision: old.ManagementRevision, PackageReader: bytes.NewReader(pkg), PackageSize: int64(len(pkg))}); err != nil {
 				t.Fatalf("explicit retry after known failure: %v", err)
 			}
