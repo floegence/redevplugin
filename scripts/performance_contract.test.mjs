@@ -200,6 +200,7 @@ test("performance quality configuration is closed and unique", () => {
 test("performance contract closes the platform acceptance targets", () => {
   const contract = readPerformanceContract(contractPath);
   const scenarios = new Map(contract.scenarios.map((scenario) => [scenario.id, scenario]));
+  assert.equal(scenarios.get("connectivity.http-keepalive").sample_count, 576);
   const targets = {
     "httpadapter.route-authorization-c1": ["p95_relative", "basis_points", "lte", 11000],
     "httpadapter.route-authorization-c100": ["batch_median_relative", "basis_points", "lte", 11000],

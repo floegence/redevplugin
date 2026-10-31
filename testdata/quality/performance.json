@@ -150,7 +150,7 @@
     },
     {
       "id": "connectivity.http-keepalive",
-      "sample_count": 64,
+      "sample_count": 576,
       "metrics": [
         { "name": "p95_relative_to_connect", "unit": "basis_points", "comparator": "lte", "limit": 7000 },
         { "name": "reused_connection_dials", "unit": "count", "comparator": "eq", "limit": 1 }

@@ -15,6 +15,7 @@ import (
 
 func TestPerformanceHTTPKeepAliveRelativeP95(t *testing.T) {
 	const (
+		repetitions       = 9
 		samples           = 64
 		requestsPerSample = 4
 	)
@@ -25,61 +26,70 @@ func TestPerformanceHTTPKeepAliveRelativeP95(t *testing.T) {
 	if _, err := pooled.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err != nil {
 		t.Fatal(err)
 	}
-	pooledDurations := make([]time.Duration, 0, samples)
-	connectDurations := make([]time.Duration, 0, samples)
-	for sample := range samples {
-		connectExecutors := make([]*Executor, requestsPerSample)
-		connectDials := make([]*atomic.Int64, requestsPerSample)
-		for index := range requestsPerSample {
-			connectExecutors[index], connectDials[index] = newHTTPPoolPerformanceExecutor(serverAddress)
-		}
+	pooledP95s := make([]time.Duration, 0, repetitions)
+	connectP95s := make([]time.Duration, 0, repetitions)
+	// Fixed repetitions measure the typical tail without retrying failed thresholds.
+	for repetition := range repetitions {
+		pooledDurations := make([]time.Duration, 0, samples)
+		connectDurations := make([]time.Duration, 0, samples)
+		for sample := range samples {
+			connectExecutors := make([]*Executor, requestsPerSample)
+			connectDials := make([]*atomic.Int64, requestsPerSample)
+			for index := range requestsPerSample {
+				connectExecutors[index], connectDials[index] = newHTTPPoolPerformanceExecutor(serverAddress)
+			}
 
-		measurePooled := func() time.Duration {
-			return measureHTTPPerformanceBatch(t, requestsPerSample, func() error {
-				_, err := pooled.DoHTTP(context.Background(), HTTPRequest{Grant: grant})
-				return err
-			})
-		}
-		measureConnect := func() time.Duration {
-			index := 0
-			return measureHTTPPerformanceBatch(t, requestsPerSample, func() error {
-				_, err := connectExecutors[index].DoHTTP(context.Background(), HTTPRequest{Grant: grant})
-				index++
-				return err
-			})
-		}
-		// Alternate paired batches so scheduler and server load affect both paths evenly.
-		if sample%2 == 0 {
-			pooledDurations = append(pooledDurations, measurePooled())
-			connectDurations = append(connectDurations, measureConnect())
-		} else {
-			connectDurations = append(connectDurations, measureConnect())
-			pooledDurations = append(pooledDurations, measurePooled())
-		}
+			measurePooled := func() time.Duration {
+				return measureHTTPPerformanceBatch(t, requestsPerSample, func() error {
+					_, err := pooled.DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+					return err
+				})
+			}
+			measureConnect := func() time.Duration {
+				index := 0
+				return measureHTTPPerformanceBatch(t, requestsPerSample, func() error {
+					_, err := connectExecutors[index].DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+					index++
+					return err
+				})
+			}
+			// Alternate paired batches so scheduler and server load affect both paths evenly.
+			if (repetition*samples+sample)%2 == 0 {
+				pooledDurations = append(pooledDurations, measurePooled())
+				connectDurations = append(connectDurations, measureConnect())
+			} else {
+				connectDurations = append(connectDurations, measureConnect())
+				pooledDurations = append(pooledDurations, measurePooled())
+			}
 
-		for index, executor := range connectExecutors {
-			closeExecutor(t, executor)
-			if got := connectDials[index].Load(); got != 1 {
-				t.Fatalf("connect baseline sample %d request %d dials = %d, want 1", sample, index, got)
+			for index, executor := range connectExecutors {
+				closeExecutor(t, executor)
+				if got := connectDials[index].Load(); got != 1 {
+					t.Fatalf("connect baseline sample %d request %d dials = %d, want 1", sample, index, got)
+				}
 			}
 		}
+		pooledP95s = append(pooledP95s, performanceevidence.P95(pooledDurations))
+		connectP95s = append(connectP95s, performanceevidence.P95(connectDurations))
 	}
+
 	if got := pooledDials.Load(); got != 1 {
 		t.Fatalf("pooled HTTP dials = %d, want 1", got)
 	}
-	pooledP95 := performanceevidence.P95(pooledDurations)
-	connectP95 := performanceevidence.P95(connectDurations)
+	pooledP95 := performanceevidence.MedianDuration(pooledP95s)
+	connectP95 := performanceevidence.MedianDuration(connectP95s)
 	relative, err := performanceevidence.RelativeBasisPoints(float64(pooledP95), float64(connectP95))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("paired keep-alive p95 repetitions: pooled=%v connect=%v", pooledP95s, connectP95s)
 	if performanceevidence.EnforceThresholds() && relative > 7_000 {
 		t.Fatalf("keep-alive p95 %s versus connect p95 %s = %.2f basis points, want <= 7000", pooledP95, connectP95, relative)
 	}
 	recordConnectivityPerformanceScenario(t, performanceevidence.Scenario{
 		ID:          "connectivity.http-keepalive",
 		Gate:        performanceevidence.Gate(),
-		SampleCount: samples,
+		SampleCount: repetitions * samples,
 		Metrics: []performanceevidence.Metric{
 			{Name: "p95_relative_to_connect", Unit: "basis_points", Observed: relative, Limit: 7_000, Comparator: "lte"},
 			{Name: "reused_connection_dials", Unit: "count", Observed: float64(pooledDials.Load()), Limit: 1, Comparator: "eq"},

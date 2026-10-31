@@ -434,6 +434,13 @@ attempt may retry, at most three attempts are permitted, and the accepted
 attempt must be the final qualified attempt. Performance configuration and
 evidence remain test inputs; they are not public contracts or release artifacts.
 
+The HTTP connection reuse probe uses nine fixed repetitions of 64 paired
+AB/BA batches with four requests per batch. It compares the median of the
+nine pooled P95 values with the median of the nine connect P95 values, using
+the unchanged 70% limit. Every repetition is measured before the assertion;
+there is no retry-until-pass policy. One pooled connection and exactly one
+connection per unpooled request remain mandatory.
+
 `PluginSurfaceHost.open()` applies one aggregate opening deadline across frame
 load, surface preparation, port acknowledgement, initial lease minting, first
 paint, and worker readiness. A deadline failure aborts parent transport,
