@@ -998,7 +998,7 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/recovery/commit"},
 			Owner:        "PluginPlatformClient.commitRetainedRecovery",
-			Snippets:     []string{"commitRetainedRecovery(request: PluginRetainedRecoveryRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit"`},
+			Snippets:     []string{"commitRetainedRecovery(request: PluginRetainedRecoveryRequest)", `#mutatePluginAt("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/recovery/status"},

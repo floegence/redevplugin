@@ -4753,7 +4753,7 @@ var PluginPlatformClient = class {
     return this.#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/inspect", request2, options);
   }
   commitRetainedRecovery(request2, options = {}) {
-    return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit", request2, options);
+    return this.#mutatePluginAt("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit", request2.plan.target.plugin_instance_id, request2, options);
   }
   getRetainedRecoveryStatus(request2, options = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/status", request2, options);

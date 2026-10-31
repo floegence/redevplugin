@@ -2079,3 +2079,40 @@ test("retained recovery uses one mutation followed by explicit read-only reconci
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), inspection);
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), inspection);
 });
+
+test("unknown retained recovery invalidates only its target and never repeats commit", async () => {
+  const scope = createPluginSurfaceScope();
+  let targetDisposed = 0;
+  let siblingDisposed = 0;
+  const unregisterTarget = registerPluginSurface(scope, "target", () => { targetDisposed += 1; }, () => undefined);
+  const unregisterSibling = registerPluginSurface(scope, "sibling", () => { siblingDisposed += 1; }, () => undefined);
+  const unknown: Array<string | undefined> = [];
+  const calls: string[] = [];
+  const query = new FakeFetch();
+  query.push({ ok: true, data: { state: "pending" } });
+  const client = new PluginPlatformClient({
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: (id) => unknown.push(id),
+    fetch: async (input, init) => {
+      calls.push(String(input));
+      if (String(input).endsWith("/commit")) throw new Error("response lost");
+      return query.fetch(input, init);
+    },
+  });
+  const request = {
+    plan: {
+      source: { plugin_instance_id: "source", generation_id: "old", state: "retained" as const, revision: 2, shape_hash: "a".repeat(64), retained_at: "2026-10-30T00:00:00Z" },
+      target: { plugin_instance_id: "target", generation_id: "new", state: "active" as const, revision: 1, shape_hash: "a".repeat(64) },
+      target_management_revision: 2, target_active_fingerprint: "sha256:target", retained_at: "2026-10-30T00:01:00Z",
+    },
+    plan_hash: "b".repeat(64),
+  };
+  await assert.rejects(client.commitRetainedRecovery(request), (error: unknown) => error instanceof PluginTransportError && error.mutationOutcome === "unknown");
+  assert.equal(targetDisposed, 1);
+  assert.equal(siblingDisposed, 0);
+  assert.deepEqual(unknown, ["target"]);
+  assert.equal((await client.getRetainedRecoveryStatus(request)).state, "pending");
+  assert.deepEqual(calls, ["commit", "status"].map(action => "/_redevplugin/api/plugins/retained-data/recovery/" + action));
+  unregisterTarget();
+  unregisterSibling();
+});

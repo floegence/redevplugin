@@ -486,7 +486,7 @@ export class PluginPlatformClient {
     return this.#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/inspect", request, options);
   }
   commitRetainedRecovery(request: PluginRetainedRecoveryRequest, options: PluginRequestOptions = {}): Promise<PluginRetainedRecoveryResult> {
-    return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit", request, options);
+    return this.#mutatePluginAt("POST", "/_redevplugin/api/plugins/retained-data/recovery/commit", request.plan.target.plugin_instance_id, request, options);
   }
   getRetainedRecoveryStatus(request: PluginRetainedRecoveryRequest, options: PluginRequestOptions = {}): Promise<PluginRetainedRecoveryStatus> {
     return this.#requestQuery("/_redevplugin/api/plugins/retained-data/recovery/status", request, options);
