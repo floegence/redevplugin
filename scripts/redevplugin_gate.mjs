@@ -87,6 +87,7 @@ export function failureKind(stage, status, log) {
   if (status.signal) return "interrupted";
   if (stage.kind === "environment") return "environment";
   if (/(?:AssertionError|ERR_ASSERTION|severity vulnerabilit|threshold_failed)/m.test(log)) return "check";
+  if (/^\s*failed to download from `https:\/\/[^`]+`$/m.test(log) && /^\s*\[28\] Timeout was reached/m.test(log)) return "environment";
   if (/(?:error: failed to download|failed to get successful HTTP response|npm error (?:code (?:ECONNRESET|ETIMEDOUT|EAI_AGAIN)|audit endpoint)|network socket disconnected|Could not resolve host|remained unavailable)/i.test(log)) return "environment";
   return "check";
 }

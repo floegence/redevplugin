@@ -116,6 +116,9 @@ test("source mutation during a command and an initially dirty checkout fail clos
 test("failure classification never retries assertions or interprets unknown failures as transport", () => {
   assert.equal(failureKind({}, { code: 1 }, "AssertionError: error: failed to download"), "check");
   assert.equal(failureKind({}, { code: 1 }, "1 moderate severity vulnerability"), "check");
+  const cargoTimeout = "error: failed to get `base64` as a dependency\nCaused by:\n  download of config.json failed\nCaused by:\n  failed to download from `https://index.crates.io/config.json`\nCaused by:\n  [28] Timeout was reached (Connection timed out after 30031 milliseconds)";
+  assert.equal(failureKind({}, { code: 101 }, cargoTimeout), "environment");
+  assert.equal(failureKind({}, { code: 101 }, "AssertionError: " + cargoTimeout), "check");
   assert.equal(failureKind({}, { code: 1 }, "unknown"), "check");
   assert.equal(failureKind({}, { signal: "SIGTERM" }, ""), "interrupted");
 });
