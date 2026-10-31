@@ -3526,15 +3526,14 @@ func TestCapabilityExecutionEnforcesConcurrentAndDurationQuota(t *testing.T) {
 }
 
 func TestCapabilityExecutionRejectsSuccessReturnedAfterDurationQuota(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{
-		result:      capability.Result{Data: map[string]any{"ok": true}},
-		invokeDelay: 40 * time.Millisecond,
-	}
+	capabilityAdapter := &quotaExpiryCapabilityAdapter{recordingCapabilityAdapter: recordingCapabilityAdapter{
+		result: capability.Result{Data: map[string]any{"ok": true}},
+	}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
 	for index := range contract.Methods {
 		if contract.Methods[index].Name == "echo.ping" {
-			contract.Methods[index].Quota.MaxDurationMS = 10
+			contract.Methods[index].Quota.MaxDurationMS = 1000
 		}
 	}
 	verified := verifyFixtureCapabilityContract(t, contract)
@@ -3542,14 +3541,34 @@ func TestCapabilityExecutionRejectsSuccessReturnedAfterDurationQuota(t *testing.
 		t.Fatal(err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(t, rpcFixtureManifestJSON("1.0.0", "RPC"), "RPC", "echo", verified.Pin), "rpc.view")
-	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+	ctx, cancel := context.WithTimeout(hostTestContext(), 5*time.Second)
+	defer cancel()
+	_, err := h.CallPluginMethod(ctx, CallMethodRequest{
 		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
 		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "echo.ping", Params: map[string]any{"message": "hello"},
 	})
+	if capabilityAdapter.calls != 1 {
+		t.Fatalf("adapter calls = %d, want 1 before duration expiry", capabilityAdapter.calls)
+	}
+	if !errors.Is(context.Cause(capabilityAdapter.invokeContext), capability.ErrQuotaExceeded) {
+		t.Fatalf("adapter cancellation = %v, want ErrQuotaExceeded", context.Cause(capabilityAdapter.invokeContext))
+	}
 	if !errors.Is(err, capability.ErrQuotaExceeded) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrQuotaExceeded", err)
 	}
+}
+
+type quotaExpiryCapabilityAdapter struct {
+	recordingCapabilityAdapter
+}
+
+func (a *quotaExpiryCapabilityAdapter) Invoke(ctx context.Context, req capability.Invocation) (capability.Result, error) {
+	result, err := a.recordingCapabilityAdapter.Invoke(ctx, req)
+	// Wait for actual cancellation, then deliberately return a late success.
+	// Admission must finish before the quota expires for this scenario to apply.
+	<-ctx.Done()
+	return result, err
 }
 
 func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) {
