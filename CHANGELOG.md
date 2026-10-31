@@ -2,6 +2,8 @@
 
 ## v3.9.0
 
+- Pin the patched minimatch dependency across tooling to remove globparts amplification exposure.
+
 - Remove redundant HTTP response JSON passes while preserving validated envelope bytes, escaping, headers, and fail-closed encoding errors.
 
 - Discover compatible retained sources through the existing list API using a target installation, with Host-owned identity, shape, expiry, and owner filtering.
