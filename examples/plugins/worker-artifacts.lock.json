@@ -5,23 +5,25 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
   "source_files": {
-    "Cargo.lock": "c2f6acb99db00dd9491b8b0168a9224b469e091da5c9a4aea8cdcc1995bb5a69",
-    "Cargo.toml": "0f19880b976f187a82e55462e766368a75c0abfc0b06d1d0729bceab84cca876",
-    "crates/redevplugin-worker-sdk/Cargo.toml": "4d8339ce666aac26510ba48ceff4edc9d18b4f89f07d9f673fd2ffd3ccff802e",
+    "Cargo.lock": "61d3a6383eea6d1f574fe3e8e41512062a6b9625351ef42951769b30fddbb715",
+    "Cargo.toml": "13671fa8ae38fca732e6095d070060247431a1394e9ab85cd238b494d008c57b",
+    "crates/redevplugin-worker-sdk/Cargo.toml": "2b658c690b4e39b72b12308afd590a04a52b864500ee9fecdb8b8cffdccfd749",
     "crates/redevplugin-worker-sdk/LICENSE": "c2ef56768227918d97d210272f390b19cda62865ff23829278f5c0a7cba5051b",
-    "crates/redevplugin-worker-sdk/README.md": "6a10206300ba35dd509a1f52f028dc9954d9fbbf2c2e4dcede64c5a0a0f80b1d",
+    "crates/redevplugin-worker-sdk/README.md": "7ad88746003e726f196ddde55df7600854e64a2d6e0e26fa1b8fa7d61f959391",
     "crates/redevplugin-worker-sdk/src/api.rs": "56ad7a588d552b7a0653e89486e7e6864a435fe2956e069b725a89306836b669",
     "crates/redevplugin-worker-sdk/src/broker.rs": "bfcaceb2dcbd1b690a4cef1b30a7a6a3c3befdaa2aa8fc3ab499ef21f7ae3271",
+    "crates/redevplugin-worker-sdk/src/data_upgrade.rs": "5b53a2a48a81b95aee2b2fc01c12a2854770a0de66d9e958c458e21d162f57e2",
     "crates/redevplugin-worker-sdk/src/error.rs": "f12720136f26f8ffa279264505ef4e96e47b8cdf0cd440de11be1b9ee38fe317",
     "crates/redevplugin-worker-sdk/src/fs.rs": "106e056cf4395c7b774b4bc4998c7690c709ca26fa3637cd8c44099e7d574959",
     "crates/redevplugin-worker-sdk/src/http.rs": "31de0717a843afd19ed5d791a283716d12a020bd141c346b14a23e60a20cae4f",
-    "crates/redevplugin-worker-sdk/src/lib.rs": "a3ed21bd0fc5e6647d2e08690ea378d786a6403387fb22176010b0eac9fbf5d8",
+    "crates/redevplugin-worker-sdk/src/lib.rs": "c89668a17da8a6b2afb5226ccacc949fdce862a4b208d2024badc540a84a67ea",
     "crates/redevplugin-worker-sdk/src/platform_identity_gen.rs": "f24e4f293b09a05e41e00d6c4d4c8158709090118300e7c1a07cd52b1e9d046d",
     "crates/redevplugin-worker-sdk/src/process.rs": "d11f187505c5c847d2239c73fded5570b3828ceca68a57a48c4b06c10391c26c",
     "crates/redevplugin-worker-sdk/src/resource.rs": "13d187fae401fcdde8f89fc1e25ba99c1989286d80de23512aaa74e0e913bae2",
     "crates/redevplugin-worker-sdk/src/tcp.rs": "52c75a7b76fa5add4e6873127512b03dd047dd55a4bd44ec77066abb4e71c38c",
     "crates/redevplugin-worker-sdk/src/udp.rs": "936bd548400fe85e662c096b11dce68e656a202c684a0e792f969bcc6b624ca7",
     "crates/redevplugin-worker-sdk/src/websocket.rs": "f7e40023bd28fdc858a523a809e797dcd5bd46c8027a0f810e18c4af183a794c",
+    "crates/redevplugin-worker-sdk/testdata/data-upgrade-fixtures.json": "6dc9f600dd49a68fc4ff0c2ce0edfdf0f18f68811560e2ad11aaae3322ddeb48",
     "examples/workers/memos/Cargo.toml": "72534152915a7f3dc691e5413250609c3383542418dee0ca1838a89100d699fa",
     "examples/workers/memos/src/lib.rs": "2c90f4ecd0ee2f93cf380a5fc207e7f18961f6e33b41105b8e9aec7b4f568382",
     "examples/workers/sky-strike/Cargo.toml": "03e64084c4890bc314f4de87572328d6ecc4905d939f163724d662f0279e921b",
@@ -33,8 +35,8 @@
     "scripts/canonical_wasm_builder.mjs": "c7f68cb9d10438bdd547aeb7e48a01765cb9b2256266259568a66864214a65b7"
   },
   "artifacts": {
-    "examples/plugins/memos/workers/memos.wasm": "848d74a053cee3b2f53a298f94b403db0cc41afb7c4a62deb4428b3cfb8f69b5",
-    "examples/plugins/sky-strike/workers/sky-strike.wasm": "ab2969a9d56b10ae8a4c4f00f5a0afcea78a3f8dfd3d3f79ee87b043304ce021",
-    "examples/plugins/weather/workers/weather.wasm": "97b1f78869d40e7e26dad2c419ace4f69c65ccc98546d2166e19002913c50361"
+    "examples/plugins/memos/workers/memos.wasm": "7735669208b9f46f9a66513ea9ede50cef0427705df70566301c46ff6f8d2a2c",
+    "examples/plugins/sky-strike/workers/sky-strike.wasm": "5e2c1bcde2a23fd83d940dae75241e95007c6d3a6c5e0852a9e9b686e1a97f6e",
+    "examples/plugins/weather/workers/weather.wasm": "ed49bb94299a8810b202ce9598e6a7a66d0174497dba78ff4048a6eb46fd4fd4"
   }
 }
