@@ -43,8 +43,8 @@ rewrite them implicitly. Package
 publication also verifies the scaffold before packing source artifacts, and the
 package job installs the pinned WASM target before that check.
 
-The authoritative complete gate, invoked only by the exact-main local pre-push
-hook, is:
+The authoritative complete gate runs on a stable feature candidate and through
+the exact-main local pre-push hook:
 
 ```bash
 ./scripts/check_redevplugin_pre_push.sh
@@ -398,3 +398,52 @@ mutations, and error recovery remain real. Current resource-I/O network security
 and streaming contracts have separate runtime tests; public weather availability
 is not an examples UI gate. Product integration acceptance still consumes real
 published SDK and plugin packages.
+
+
+## Resumable Local Acceptance
+
+The complete gate means complete coverage, not mandatory recomputation of a
+successful stage. The tracked stage plan in `scripts/redevplugin_gate.mjs` is
+the sole orchestration authority; neither a caller nor a receipt may select a
+smaller acceptance set. Development uses focused checks. A stable clean
+candidate runs the complete gate before integration, and the exact-main hook
+runs the same gate after integration.
+
+- Check toolchains, the exact historical performance tag and probe hashes,
+  script syntax, hook behavior, dependency availability, current vulnerability
+  audits, and generated contracts before expensive functional measurements.
+- Every invocation refreshes dependency preparation and vulnerability audits.
+  A failed stage blocks completion and leaves no success receipt. Other
+  completed stages remain usable only after independent input validation.
+  Explicit network failures and interrupted execution are recorded separately
+  from assertion failures; unknown failures remain check failures. Do not retry
+  assertions automatically or turn an execution failure into a passing result.
+- Receipts live in the local Git common directory, outside tracked source.
+  They bind the stage command and input policy, tracked file names/modes/blob
+  identities, test scripts, locks, toolchain versions, host/OS/boot, checkout,
+  configuration and allowlisted execution-environment hashes, installed npm bytes, log
+  digest, declared output digests, and completion time. Raw environment values
+  must not be recorded. Only declared tool/build/network/locale variables enter
+  child commands; SSH session identity and unrelated credentials are excluded.
+  These are local trusted-runner records, not portable
+  release attestations or a security boundary against that runner's owner.
+- The default source closure is the entire tracked tree. Only the Rust
+  compilation stage has a narrower documented closure: crates, Cargo files,
+  Rust configuration, canonical fixtures/contracts, version/license, and all
+  gate scripts and repository rules. Any new cross-language Rust input must be
+  added to that closure before the check can use it. npm locks invalidate
+  cross-language stages but do not invalidate unchanged Rust-only compilation.
+- Deterministic stage receipts expire after seven days. Performance, stress,
+  and property results expire after 24 hours; performance, stress, source
+  packaging and aggregate runtime/platform checks additionally bind the exact
+  commit. Measurements are never relabeled to another commit or host. A
+  feature-to-main fast-forward may reuse exact-commit evidence within that
+  window after the existing hook revalidates clean HEAD, pushed ref and ancestry.
+- Missing, altered, expired, failed or interrupted receipts, logs or declared
+  outputs require re-execution of that stage. Source changes during execution
+  invalidate the stage and block completion. Old free-form logs cannot be
+  imported as receipts. `--fresh` explicitly recomputes all stages.
+- Only the complete runner writes a final receipt after every stage passes or
+  is independently revalidated and the source/environment remain exact. Main
+  identity checks, Quick CI, release-tag admission and public verification
+  remain mandatory and are never replaced by this local evidence.

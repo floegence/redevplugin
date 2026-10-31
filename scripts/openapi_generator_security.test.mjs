@@ -14,7 +14,7 @@ test("the OpenAPI generator uses the scoped Redocly minimatch compatibility load
 test("Redocly matches brace patterns through the audited minimatch release", async () => {
   const redoclyRequire = createRequire(require.resolve("@redocly/openapi-core/package.json"));
   const minimatchPackage = redoclyRequire("minimatch/package.json");
-  assert.equal(minimatchPackage.version, "10.2.5");
+  assert.equal(minimatchPackage.version, "11.0.1");
   assert.equal(typeof redoclyRequire("minimatch"), "function");
 
   let receivedHeaders;

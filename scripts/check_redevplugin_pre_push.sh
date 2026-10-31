@@ -2,23 +2,29 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
-MODE="local"
+ARGS=()
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/check_redevplugin_pre_push.sh [--ci]
+Usage: scripts/check_redevplugin_pre_push.sh [--ci] [--fresh]
 
 Runs every non-GitHub-infrastructure gate required before updating main.
 The --ci mode selects hosted Linux browser dependency installation for manual
 runner reproduction. Ordinary push, pull-request, and tag workflows never
 invoke this complete gate.
+Successful stages may reuse verified input-bound evidence. --fresh recomputes
+every stage. Audits and dependency preparation always run.
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ci)
-      MODE="ci"
+      ARGS+=(--ci)
+      shift
+      ;;
+    --fresh)
+      ARGS+=(--fresh)
       shift
       ;;
     -h|--help)
@@ -63,6 +69,23 @@ if [[ "$(node -p 'process.versions.node')" != "$REQUIRED_NODE_VERSION" ]]; then
   exit 1
 fi
 
+REQUIRED_RUST_VERSION=$(sed -n 's/^channel = "\([0-9.]*\)"/\1/p' rust-toolchain.toml)
+if [[ "$(rustc --version | awk '{print $2}')" != "$REQUIRED_RUST_VERSION" ]]; then
+  echo "Rust $REQUIRED_RUST_VERSION is required" >&2
+  exit 1
+fi
+
+# Check immutable prerequisites before downloads or expensive test work.
+node scripts/redevplugin_gate.mjs --preflight
+for script in scripts/*.sh .githooks/pre-push; do
+  bash -n "$script"
+done
+for script in scripts/*.mjs; do
+  node --check "$script"
+done
+./scripts/test_redevplugin_pre_push_hook.sh
+node --test scripts/node_toolchain_contract.test.mjs scripts/stress_platform_policy.test.mjs scripts/redevplugin_gate.test.mjs
+
 if ! golangci-lint --version 2>/dev/null | grep -Eq 'version v?2\.15\.0([[:space:]]|$)'; then
   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
 fi
@@ -70,61 +93,4 @@ if [[ "$(cargo-deny --version 2>/dev/null || true)" != "cargo-deny 0.19.9" ]]; t
   cargo install cargo-deny@0.19.9 --locked
 fi
 
-echo "==> shell and JavaScript syntax"
-for script in scripts/*.sh; do
-  bash -n "$script"
-done
-for script in scripts/*.mjs; do
-  node --check "$script"
-done
-./scripts/test_redevplugin_pre_push_hook.sh
-node --test scripts/node_toolchain_contract.test.mjs
-node --test scripts/stress_platform_policy.test.mjs
-
-echo "==> npm dependencies"
-npm ci
-if [[ "$MODE" == "ci" ]]; then
-  npx playwright install --with-deps chromium
-else
-  npx playwright install chromium
-fi
-
-echo "==> Rust WASM target"
-rustup target add wasm32-unknown-unknown
-
-echo "==> Go format, package list, tests, and lint"
-test -z "$(gofmt -l .)"
-go list ./cmd/... ./examples/... ./pkg/...
-# Process-supervisor tests and fresh Cargo builds must not compete for startup time.
-go test -p=1 ./cmd/... ./examples/... ./pkg/... ./internal/resourceio
-golangci-lint run ./cmd/... ./examples/... ./pkg/...
-
-echo "==> TypeScript, contract, browser, and property checks"
-REDEVPLUGIN_WEB_EVIDENCE_DIR=dist/web-pre-push npm run check
-npm run examples:check:canonical
-npm run scaffold:check:canonical
-./scripts/check_redevplugin_ui_bridge.sh
-
-echo "==> deterministic performance gate"
-npm run performance:release
-
-echo "==> Rust format, lint, tests, and dependency policy"
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo deny check
-npm run rust-source-packages:test
-
-echo "==> release audit"
-REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 ./scripts/check_redevplugin_release_audit.sh
-
-echo "==> stress and property gates"
-mkdir -p dist
-./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-pre-push-stress.json
-./scripts/check_redevplugin_property_gates.sh --stress
-
-echo "==> runtime and platform contracts"
-./scripts/check_redevplugin_runtime_contract.sh --ci
-./scripts/check_redevplugin_platform.sh --ci
-
-echo "ReDevPlugin pre-push gate passed"
+exec node scripts/redevplugin_gate.mjs "${ARGS[@]}"
