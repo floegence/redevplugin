@@ -173,7 +173,7 @@ func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
 	securitySummary := openAPISchemaBlock(t, source, "ExternalPackageSecuritySummary")
 	for _, snippet := range []string{
 		"additionalProperties: false", "summary_sha256", "permissions", "methods", "capability_contracts",
-		"workers", "network", "storage", "secret_refs", "core_actions", "intents", "surfaces",
+		"workers", "network", "storage", "secret_refs", "core_actions", "intents", "surfaces", "data_upgrade",
 	} {
 		if !strings.Contains(securitySummary, snippet) {
 			t.Fatalf("ExternalPackageSecuritySummary is missing %q", snippet)
@@ -216,6 +216,8 @@ func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) 
 		{schema: "ExternalPackageMethodSummary", properties: []string{"cancel", "confirmation", "dangerous", "effect", "execution", "method", "preflight_only", "required_permissions", "route"}},
 		{schema: "ExternalPackageCapabilityContractSummary", properties: []string{"binding_id", "capability_id", "capability_version", "contract_sha256"}},
 		{schema: "ExternalPackageWorkerSummary", properties: []string{"artifact", "idle_timeout_ms", "memory_limit_bytes", "mode", "scope", "worker_id"}},
+		{schema: "ExternalPackageDataUpgradePredecessor", properties: []string{"shape_sha256", "version"}},
+		{schema: "ExternalPackageDataUpgradeSummary", properties: []string{"from", "max_bytes", "max_runtime_ms", "method"}},
 		{schema: "ExternalPackageNetworkMethodAccessSummary", properties: []string{"http_methods", "method", "operations"}},
 		{schema: "ExternalPackageNetworkSurfaceAccessSummary", properties: []string{"http_methods", "operations", "surface_id"}},
 		{schema: "ExternalPackageNetworkSummary", properties: []string{"auth_declared", "configurable", "connector_id", "destinations", "method_access", "scope", "surface_access", "tls_declared", "transport"}},
@@ -226,7 +228,7 @@ func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) 
 		{schema: "ExternalPackageIntentSummary", properties: []string{"intent_id", "method"}},
 		{schema: "ExternalPackageSurfaceSummary", properties: []string{"default_size", "entry", "icon", "intent", "kind", "label", "surface_id"}},
 		{schema: "ExternalPackageSizeSummary", properties: []string{"height", "width"}},
-		{schema: "ExternalPackageSecuritySummary", properties: []string{"background", "capability_contracts", "core_actions", "intents", "methods", "network", "permissions", "process", "secret_refs", "storage", "summary_sha256", "surfaces", "workers"}},
+		{schema: "ExternalPackageSecuritySummary", properties: []string{"background", "capability_contracts", "core_actions", "data_upgrade", "intents", "methods", "network", "permissions", "process", "secret_refs", "storage", "summary_sha256", "surfaces", "workers"}},
 	}
 	for _, tt := range tests {
 		block := openAPISchemaBlock(t, source, tt.schema)
