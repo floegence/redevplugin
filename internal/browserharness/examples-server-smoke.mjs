@@ -601,11 +601,32 @@ try {
   assert.equal(await protectedEdit.inputValue(), "## Protected timeline edit\n\nThis edit remains active while persistence is unavailable. #smoke", "failed persistence must block filtering and preserve the edit");
   await compactMemos.getByRole("button", { name: "Close explorer" }).click();
   await compact.unroute("**/_redevplugin/api/plugins/rpc");
+  // Saving projects the mutation immediately and reconciles the feed afterward.
+  // Hold that read until the edit is closed, then verify it before leaving the app.
+  let releaseCompactFeed;
+  const compactFeedRelease = new Promise((resolveRead) => { releaseCompactFeed = resolveRead; });
+  const compactFeedRoute = async (route) => {
+    if (route.request().postDataJSON()?.method === "memos.list") await compactFeedRelease;
+    await route.fallback();
+  };
+  await compact.route("**/_redevplugin/api/plugins/rpc", compactFeedRoute);
+  const compactFeedResponse = compact.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/_redevplugin/api/plugins/rpc" &&
+    response.request().postDataJSON()?.method === "memos.list"
+  );
   await compactEditCard.getByRole("button", { name: "Retry" }).click();
   await compactEditCard.getByText("Saved", { exact: true }).waitFor({ timeout: 10_000 });
   await compactEditCard.getByRole("button", { name: "Done" }).click();
   await compactMemos.locator(".memo-card").filter({ hasText: "Protected timeline edit" }).waitFor();
   await compact.screenshot({ path: resolve(evidenceDir, "examples-memos-compact.png"), fullPage: false });
+  releaseCompactFeed();
+  const reconciledCompactFeed = await compactFeedResponse;
+  assert.equal(reconciledCompactFeed.status(), 200);
+  assert.equal(await reconciledCompactFeed.finished(), null);
+  const compactFeedBody = await reconciledCompactFeed.json();
+  assert.equal(compactFeedBody.ok, true);
+  assert.equal(compactFeedBody.data.data.memos.some((memo) => memo.content.includes("Protected timeline edit")), true);
+  await compact.unroute("**/_redevplugin/api/plugins/rpc", compactFeedRoute);
   await compact.locator('#mobile-plugin-list button[data-slug="weather"]').click();
   const compactWeather = await pluginFrame(compact, "Weather");
   await compactWeather.getByRole("heading", { name: "Paris" }).waitFor({ timeout: 20_000 });
