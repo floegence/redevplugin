@@ -71,3 +71,15 @@ func TestParseDirectPackageURLKeepsPortConversionInUint16Range(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDirectPackageURLPreservesIPv6Authority(t *testing.T) {
+	for _, raw := range []string{"https://[2001:db8::1]/plugin", "https://[2001:0db8:0000:0000:0000:0000:0000:0001]/plugin"} {
+		locator, err := ParseDirectPackageURL(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if locator.DisplayURL() != "https://[2001:db8::1]:443/plugin" || locator.Origin().Host != "2001:db8::1" {
+			t.Fatalf("IPv6 locator = %s", locator.DisplayURL())
+		}
+	}
+}

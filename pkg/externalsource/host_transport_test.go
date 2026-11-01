@@ -275,3 +275,25 @@ func TestHostTransportStillVerifiesCertificatesAndArtifactHashes(t *testing.T) {
 		t.Fatalf("changed package hash error = %v", err)
 	}
 }
+
+func TestHostTransportAllowsIPv6PackageOrigins(t *testing.T) {
+	stage, err := NewStageStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Close()
+	fetcher, err := NewFetcher(FetcherOptions{Stage: stage, Transport: githubRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host != "[fd00::1234]:443" {
+			t.Fatalf("IPv6 authority = %s", request.URL.Host)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("package"))}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := fetcher.FetchPackage(context.Background(), FetchRequest{URL: "https://[fd00::1234]/plugin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stage.Remove(result.Artifact) }()
+}

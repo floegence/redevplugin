@@ -3,6 +3,7 @@ package externalsource
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"path"
 	"strconv"
@@ -73,11 +74,16 @@ func parsePackageURL(raw string, allowQuery bool) (PackageURL, error) {
 	if host == "" || strings.Contains(host, "%") || containsControl(host) {
 		return PackageURL{}, externalError(ErrorInvalidURL, operation, "", fmt.Errorf("host is invalid"))
 	}
-	asciiHost, err := idna.Lookup.ToASCII(strings.TrimSuffix(host, "."))
-	if err != nil || asciiHost == "" || len(asciiHost) > 253 {
-		return PackageURL{}, externalError(ErrorInvalidURL, operation, "", fmt.Errorf("host is invalid"))
+	var asciiHost string
+	if address, parseErr := netip.ParseAddr(host); parseErr == nil {
+		asciiHost = address.String()
+	} else {
+		asciiHost, err = idna.Lookup.ToASCII(strings.TrimSuffix(host, "."))
+		if err != nil || asciiHost == "" || len(asciiHost) > 253 {
+			return PackageURL{}, externalError(ErrorInvalidURL, operation, "", fmt.Errorf("host is invalid"))
+		}
+		asciiHost = strings.ToLower(asciiHost)
 	}
-	asciiHost = strings.ToLower(asciiHost)
 	portNumber := uint16(443)
 	if portText := parsed.Port(); portText != "" {
 		parsedPort, parseErr := strconv.ParseUint(portText, 10, 16)
