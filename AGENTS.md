@@ -232,7 +232,7 @@ to depend on the behavior.
 
 External package admission keeps source, signature, execution approval, and
 update eligibility as independent security facts. A host may allow a user to
-inspect and explicitly install a package from any supported public HTTPS package
+inspect and explicitly install a package from any supported HTTPS package
 URL or GitHub repository even when the package is unsigned, the signer is
 unknown, or signature assessment is temporarily unavailable. Those outcomes do
 not grant trust or automatic-update eligibility. After the user confirms the
@@ -901,10 +901,19 @@ Core invariants:
   execution owner, and Host policy remains authoritative;
 - host products may register business capabilities, but they must not bypass the
   ReDevPlugin permission, confirmation, token, lease, audit, or lifecycle chain.
-- external package retrieval accepts only validated public HTTPS sources, checks
-  every DNS result and redirect hop, pins the validated connection target while
-  preserving TLS hostname verification, strips credentials across origins, and
-  enforces bounded identity-encoded downloads before package parsing;
+- package and release-document retrieval uses a trusted host-selected single-hop
+  HTTPS transport for normal DNS, VPN routes, system/explicit proxies, and private
+  sources. Address classes are not evidence that a user-selected network is
+  invalid. Hosts own network policy; plugin execution grants remain separate.
+  An omitted transport retains the documented public-address-pinned server
+  policy, not automatic desktop network detection. ReDevPlugin validates URLs,
+  every redirect, source-declared artifact hosts, origin-scoped credentials,
+  verified TLS, bounded identity-encoded bytes, staging and exact hashes under
+  either policy. Custom transports must not follow redirects or attach ambient
+  cookies or origin credentials. Proxy authentication belongs to the transport;
+- download transport construction is local and must not probe connectivity or
+  block host startup. Network failures affect only the attempted operation and
+  remain distinguishable from integrity or signature failures;
 - external package installation reopens and re-verifies the exact staged artifact,
   binds the explicit approval to the authenticated session and environment owner,
   and never treats an absent or unknown signature as a permission grant or an

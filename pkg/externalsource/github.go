@@ -74,8 +74,20 @@ func NewGitHubReleaseResolver(client GitHubReleaseClient, fetcher *Fetcher) (*Gi
 	return &GitHubReleaseResolver{client: client, fetcher: fetcher}, nil
 }
 
+// CloseIdleConnections releases platform-owned connections. Caller-provided
+// GitHub clients and custom transports retain their own lifecycle.
+func (resolver *GitHubReleaseResolver) CloseIdleConnections() {
+	if resolver == nil {
+		return
+	}
+	resolver.fetcher.CloseIdleConnections()
+	if client, ok := resolver.client.(*GitHubRESTReleaseClient); ok {
+		client.CloseIdleConnections()
+	}
+}
+
 // ResolvePackage selects the unique .redevplugin asset and downloads it
-// through the same public-HTTPS, redirect, DNS, and staging policy as a direct
+// through the same HTTPS, redirect, host network, and staging policy as a direct
 // URL. Signed download query parameters are accepted but never exposed.
 func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, source GitHubRepositorySource) (ResolvedGitHubAsset, error) {
 	if resolver == nil || resolver.client == nil || resolver.fetcher == nil {

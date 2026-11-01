@@ -92,6 +92,11 @@ and marked that exact asset session prepared.
   current source policy and revocation epochs. Invalid, expired, or revoked
   documents fail closed; no local trusted-time, transparency ledger, publisher
   continuity, or activation-lease state participates in admission.
+- Host-selected package download transports supply normal DNS, routing, proxies,
+  VPN connectivity and trust roots through the Go Fetcher and ExternalPackage
+  module. ReDevPlugin retains each redirect, artifact-host, credential, quota,
+  staged-byte and integrity boundary. This adapter neither exposes a plugin
+  network capability nor performs network work during Host construction.
 - `pkg/releasepublisher` creates a recoverable sequence of public external
   signer requests, verifies closed Ed25519 responses, and emits an immutable
   release asset set plus its exact locator-to-asset projection. It never accepts

@@ -7,13 +7,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/testsupport/releasetrustfixture"
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
@@ -499,4 +503,40 @@ func modularTestConfig(t *testing.T) Config {
 			sessionScopes:       adapters.SessionScopes,
 		},
 	}}
+}
+
+func TestExternalPackageModuleUsesHostTransportForPackagesAndGitHub(t *testing.T) {
+	calls := []string{}
+	transport := moduleDownloadTransport(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.URL.Hostname())
+		if request.URL.Hostname() == "api.github.com" {
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("unavailable")), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("package")), Header: make(http.Header)}, nil
+	})
+	var adapters normalizedAdapters
+	stage, err := openExternalPackagePipeline(Config{StateRoot: t.TempDir(), ExternalPackage: &ExternalPackageModule{Transport: transport}}, &adapters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Close()
+	defer closeExternalPackageConnections(adapters)
+	result, err := adapters.ExternalPackageFetcher.FetchPackage(context.Background(), externalsource.FetchRequest{URL: "https://packages.corp/plugin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Remove(result.Artifact)
+	_, err = adapters.ExternalPackageGitHubResolver.ResolvePackage(context.Background(), externalsource.GitHubRepositorySource{RepositoryURL: "https://github.com/example/plugins"})
+	if err == nil {
+		t.Fatal("GitHub server failure was ignored")
+	}
+	if !reflect.DeepEqual(calls, []string{"packages.corp", "api.github.com"}) {
+		t.Fatalf("host transport calls = %v", calls)
+	}
+}
+
+type moduleDownloadTransport func(*http.Request) (*http.Response, error)
+
+func (transport moduleDownloadTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
 }

@@ -25,7 +25,7 @@ func (origin Origin) String() string {
 	return origin.Scheme + "://" + net.JoinHostPort(origin.Host, strconv.Itoa(int(origin.Port)))
 }
 
-// PackageURL is a validated public-HTTPS package locator. DisplayURL never
+// PackageURL is a validated HTTPS package locator. DisplayURL never
 // contains userinfo, query, or fragment data.
 type PackageURL struct {
 	value      *url.URL

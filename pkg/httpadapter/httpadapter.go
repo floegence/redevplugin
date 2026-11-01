@@ -3398,8 +3398,9 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrPackageInvalid
 	case externalsource.ErrorStageInvalid:
 		return security.ErrAdapterFailure
-	case externalsource.ErrorInvalidURL, externalsource.ErrorInvalidSource, externalsource.ErrorTargetBlocked,
-		externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
+	case externalsource.ErrorTargetBlocked, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects:
+		return security.ErrNetworkTargetDenied
+	case externalsource.ErrorInvalidURL, externalsource.ErrorInvalidSource,
 		externalsource.ErrorCredentialDenied,
 		externalsource.ErrorUnsupportedEncoding, externalsource.ErrorGitHubRelease,
 		externalsource.ErrorGitHubAssetMissing, externalsource.ErrorGitHubAssetAmbiguous:

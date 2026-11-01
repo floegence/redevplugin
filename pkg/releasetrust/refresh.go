@@ -84,7 +84,10 @@ func (service *ReleaseTrustService) fetchPolicy(ctx context.Context, key SourceT
 		return releasecontract.SourcePolicyV3{}, err
 	}
 	raw, err := service.fetchReleaseDocument(ctx, request)
-	if err != nil || digestHex(raw) != pointer.DocumentSHA256 {
+	if err != nil {
+		return releasecontract.SourcePolicyV3{}, err
+	}
+	if digestHex(raw) != pointer.DocumentSHA256 {
 		return releasecontract.SourcePolicyV3{}, ErrReleaseTrustVerification
 	}
 	document, err := releasecontract.DecodeSourcePolicy(raw)
@@ -126,7 +129,10 @@ func (service *ReleaseTrustService) fetchRevocation(ctx context.Context, key Sou
 		return releasecontract.RevocationV3{}, err
 	}
 	raw, err := service.fetchReleaseDocument(ctx, request)
-	if err != nil || digestHex(raw) != pointer.DocumentSHA256 {
+	if err != nil {
+		return releasecontract.RevocationV3{}, err
+	}
+	if digestHex(raw) != pointer.DocumentSHA256 {
 		return releasecontract.RevocationV3{}, ErrReleaseTrustVerification
 	}
 	document, err := releasecontract.DecodeRevocation(raw)

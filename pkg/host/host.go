@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -486,16 +487,19 @@ type BackgroundModule struct {
 	Policy BackgroundPolicyAdapter
 }
 
-// ExternalPackageModule configures the host-neutral public HTTPS and GitHub
+// ExternalPackageModule configures the host-neutral HTTPS and GitHub
 // Release admission pipeline. Pending inspections are process-local and expire
 // on Host restart; only installed plugin facts become durable.
 type ExternalPackageModule struct {
 	SignatureAssessor ExternalPackageSignatureAssessor
 	AddressResolver   externalsource.AddressResolver
-	Credentials       externalsource.CredentialProvider
-	SourceID          string
-	TotalTimeout      time.Duration
-	GitHub            externalsource.GitHubRESTReleaseClientOptions
+	// Transport supplies host-selected network routing for package and GitHub
+	// downloads. It never grants plugin execution network authority.
+	Transport    http.RoundTripper
+	Credentials  externalsource.CredentialProvider
+	SourceID     string
+	TotalTimeout time.Duration
+	GitHub       externalsource.GitHubRESTReleaseClientOptions
 
 	// Test-only package-local overrides keep deterministic unit tests off the
 	// network without exposing storage or commit ownership to host products.
@@ -1243,20 +1247,34 @@ func openExternalPackagePipeline(config Config, adapters *normalizedAdapters) (*
 		return nil, fmt.Errorf("open external package stage: %w", err)
 	}
 	fetcher, err := externalsource.NewFetcher(externalsource.FetcherOptions{
-		Stage: stage, Resolver: module.AddressResolver, Credentials: module.Credentials,
+		Stage: stage, Resolver: module.AddressResolver, Credentials: module.Credentials, Transport: module.Transport,
 		SourceID: module.SourceID, TotalTimeout: module.TotalTimeout,
 	})
 	if err != nil {
 		return nil, errors.Join(err, stage.Close())
 	}
-	github, err := externalsource.NewGitHubRESTReleaseResolver(module.GitHub, fetcher)
+	githubOptions := module.GitHub
+	if githubOptions.Transport == nil {
+		githubOptions.Transport = module.Transport
+	}
+	github, err := externalsource.NewGitHubRESTReleaseResolver(githubOptions, fetcher)
 	if err != nil {
+		fetcher.CloseIdleConnections()
 		return nil, errors.Join(err, stage.Close())
 	}
 	adapters.ExternalPackageStageStore = stage
 	adapters.ExternalPackageFetcher = fetcher
 	adapters.ExternalPackageGitHubResolver = github
 	return stage, nil
+}
+
+func closeExternalPackageConnections(adapters normalizedAdapters) {
+	if fetcher, ok := adapters.ExternalPackageFetcher.(*externalsource.Fetcher); ok {
+		fetcher.CloseIdleConnections()
+	}
+	if resolver, ok := adapters.ExternalPackageGitHubResolver.(*externalsource.GitHubReleaseResolver); ok {
+		resolver.CloseIdleConnections()
+	}
 }
 
 func isNilInterfaceValue(value any) bool {
@@ -1455,6 +1473,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	}
 	defer func() {
 		if openedHost == nil && externalStage != nil {
+			closeExternalPackageConnections(adapters)
 			retErr = errors.Join(retErr, externalStage.Close())
 		}
 	}()
@@ -1667,6 +1686,7 @@ func (h *Host) Close() error {
 		externalStageCleanupErr := h.drainExternalPackageInspectionArtifacts()
 		var externalStageCloseErr error
 		if h.externalStage != nil {
+			closeExternalPackageConnections(h.adapters)
 			externalStageCloseErr = h.externalStage.Close()
 		}
 		h.verifiedReleases.clear()

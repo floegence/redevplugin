@@ -97,17 +97,36 @@ closed-world decodes the canonical release, validates the resolver-scoped
 distribution reference, reads the package, compares all hashes, passes the
 package through the host trust verifier, stages the install/update, and only
 then mutates the registry. A resolver may not return trusted parsed release
-fields or turn arbitrary URLs, filesystem paths, localhost/LAN redirects, or
+fields or turn unbound URLs, filesystem paths, undeclared redirect hosts, or
 path traversal into installable artifacts.
 
-The external-source downloader revalidates DNS and every redirect hop for every
-request, pins dialing to the validated public addresses, preserves the original
-TLS hostname, and scopes credentials to one exact origin. Connection reuse does
-not weaken those checks: an idle transport is reusable only for the same scheme,
-hostname, port, and sorted address pin set. A changed origin or DNS result gets a
-new transport. The pool is bounded to 32 entries, closes idle connections after
-30 seconds, and closes evicted idle transports without interrupting active
-requests.
+The external-source downloader accepts a trusted host-owned single-hop HTTPS
+transport through `externalsource.FetcherOptions.Transport` and
+`host.ExternalPackageModule.Transport`. The same module transport is used for
+GitHub API resolution unless the host explicitly provides a separate GitHub
+transport. The host owns normal routing, DNS, system and explicit proxies, VPNs,
+private sources, proxy authentication, and trust roots. A synthetic/private IP
+address alone does not invalidate that host policy. This adapter does not grant
+any network access to plugin JavaScript or WASM.
+
+ReDevPlugin still validates each URL and redirect, signed source host constraints,
+origin-scoped credentials, cancellation, identity encoding, streaming quotas,
+staged bytes, and exact content hashes. TLS hostname and certificate verification
+are required. Custom transports must return each redirect without following it
+and must not attach ambient cookies or origin credentials. Go transports are
+cloned, require TLS 1.2 or later, preserve host proxy/dial settings and trust roots,
+and reject disabled certificate verification. Callers retain custom transport
+ownership; `CloseIdleConnections` releases only platform-owned connections.
+
+A nil transport selects the existing public-address-pinned server policy. That
+policy revalidates every DNS result and redirect hop, preserves the original TLS
+hostname, and keys reuse by scheme, hostname, port, and validated address set.
+Its pool remains bounded to 32 entries with 30-second idle expiry. It is an
+explicit deployment default, not a claim that private DNS or VPN use is unsafe.
+Desktop hosts must register their normal network transport. Construction makes
+no network request. Download, proxy, DNS and trust-document transport failures
+stay operation-scoped and keep their original error cause; they must not become
+signature failures or prevent the host's unrelated functionality from starting.
 
 ## Sandbox UI Boundary
 

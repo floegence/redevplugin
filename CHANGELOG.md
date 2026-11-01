@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.12.0
+
+- Expose a trusted host-owned HTTPS transport for package and release-document downloads, preserving normal VPN, DNS, proxy, private-source and TLS-root policy without changing plugin execution grants.
+- Share the host transport with GitHub resolution while retaining per-hop URL, declared-host, credential, quota, staging and content-integrity validation.
+- Preserve network failure causes through every trust document and classify network policy denials consistently in durable install operations and HTTP responses.
+- Bound and release platform-owned idle connections without mutating or closing caller-owned custom transports; cover proxy-side DNS, private HTTPS, redirects, TLS, cancellation, quotas and Host module wiring.
+- Keep plugin API, runtime wire and durable schema unchanged; publish the additive Go adapter with the coordinated platform artifact set.
+
 ## v3.11.2
 
 - Preserve exact signed pre-Web v9 manifests in installed records and version history when opening released control schemas, including transactional generation binding and idempotent reopen.

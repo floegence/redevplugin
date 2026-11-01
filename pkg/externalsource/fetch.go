@@ -46,7 +46,15 @@ type CredentialProvider interface {
 }
 
 type FetcherOptions struct {
-	Stage        *StageStore
+	Stage *StageStore
+	// Transport is a trusted host-owned, single-hop download transport. It follows
+	// host network policy (including system proxies, VPN routing, DNS and private
+	// sources), not plugin execution grants. Nil uses public-address pinning.
+	// Implementations must verify TLS, honor cancellation, avoid ambient cookies
+	// and return redirects without following them. A *http.Transport is cloned;
+	// other implementations remain caller-owned. CloseIdleConnections releases
+	// only the fetcher's own connections.
+	Transport    http.RoundTripper
 	Resolver     AddressResolver
 	Credentials  CredentialProvider
 	SourceID     string
@@ -71,7 +79,7 @@ type FetchResult struct {
 	Redirects []RedirectHop
 }
 
-// ArtifactFetchRequest binds a remote read to exact public hosts, byte length,
+// ArtifactFetchRequest binds a remote read to exact source hosts, byte length,
 // and content digest. It is intended for signed release documents and package
 // artifacts whose identity was resolved before the download starts.
 type ArtifactFetchRequest struct {
@@ -95,6 +103,7 @@ type hopRoundTrip func(context.Context, PackageURL, []netip.Addr, http.Header) (
 
 type Fetcher struct {
 	stage         *StageStore
+	transport     http.RoundTripper
 	resolver      AddressResolver
 	credentials   CredentialProvider
 	sourceID      string
@@ -119,8 +128,13 @@ func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 	if totalTimeout <= 0 {
 		return nil, invalidSource("new_fetcher", "total timeout must be positive")
 	}
+	transport, err := prepareHostTransport(options.Transport)
+	if err != nil {
+		return nil, err
+	}
 	fetcher := &Fetcher{
 		stage:        options.Stage,
+		transport:    transport,
 		resolver:     options.Resolver,
 		credentials:  options.Credentials,
 		sourceID:     strings.TrimSpace(options.SourceID),
@@ -135,6 +149,22 @@ func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 
 func (fetcher *Fetcher) FetchPackage(ctx context.Context, request FetchRequest) (FetchResult, error) {
 	return fetcher.fetchPackage(ctx, request.URL, request.QuotaKey, false)
+}
+
+// CloseIdleConnections releases connections owned by this fetcher without
+// interrupting active requests or closing a caller-owned custom transport.
+func (fetcher *Fetcher) CloseIdleConnections() {
+	if fetcher == nil {
+		return
+	}
+	if transport, ok := fetcher.transport.(*http.Transport); ok {
+		transport.CloseIdleConnections()
+	}
+	fetcher.transportMu.Lock()
+	defer fetcher.transportMu.Unlock()
+	for _, transport := range fetcher.transports {
+		transport.CloseIdleConnections()
+	}
 }
 
 // FetchArtifact downloads one content-addressed artifact through the same
@@ -208,9 +238,12 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 				return FetchResult{}, externalError(ErrorTargetBlocked, "fetch", current.DisplayURL(), fmt.Errorf("artifact host is not allowed"))
 			}
 		}
-		addresses, err := ResolvePublicAddresses(ctx, fetcher.resolver, current)
-		if err != nil {
-			return FetchResult{}, err
+		var addresses []netip.Addr
+		if fetcher.transport == nil {
+			addresses, err = ResolvePublicAddresses(ctx, fetcher.resolver, current)
+			if err != nil {
+				return FetchResult{}, err
+			}
 		}
 		headers, err := fetcher.credentialHeaders(ctx, current.origin)
 		if err != nil {
@@ -222,6 +255,10 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 		}
 		if response == nil || response.Body == nil {
 			return FetchResult{}, externalError(ErrorTransport, "fetch", current.DisplayURL(), fmt.Errorf("response is missing"))
+		}
+		if response.Request != nil && (response.Request.URL == nil || response.Request.URL.String() != current.requestURL().String()) {
+			_ = response.Body.Close()
+			return FetchResult{}, externalError(ErrorRedirectDenied, "fetch", current.DisplayURL(), fmt.Errorf("host transport followed a redirect"))
 		}
 		if isRedirectStatus(response.StatusCode) {
 			next, redirectErr := redirectTarget(current, response)
@@ -386,7 +423,10 @@ func (fetcher *Fetcher) secureRoundTrip(ctx context.Context, locator PackageURL,
 		return nil, err
 	}
 	request.Header = headers.Clone()
-	transport := fetcher.pinnedTransport(locator, addresses)
+	transport := fetcher.transport
+	if transport == nil {
+		transport = fetcher.pinnedTransport(locator, addresses)
+	}
 	return transport.RoundTrip(request)
 }
 

@@ -3,7 +3,6 @@ package externalsource
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,9 +24,8 @@ const (
 )
 
 // GitHubRESTReleaseClientOptions configures the public GitHub REST client.
-// Transport is injectable for deterministic testing, but every request URL
-// remains fixed to https://api.github.com. Injected *http.Transport values are
-// cloned with proxy use disabled.
+// Transport follows the trusted host network policy; every request URL remains
+// fixed to https://api.github.com. The client never follows redirects.
 type GitHubRESTReleaseClientOptions struct {
 	Token     string
 	UserAgent string
@@ -35,8 +33,8 @@ type GitHubRESTReleaseClientOptions struct {
 }
 
 // GitHubRESTReleaseClient resolves GitHub release and commit identities through
-// the fixed public GitHub REST origin. It never follows redirects or uses an
-// ambient HTTP proxy.
+// the fixed public GitHub REST origin. It preserves host-selected proxy routing
+// and never follows redirects.
 type GitHubRESTReleaseClient struct {
 	http      *http.Client
 	token     string
@@ -67,19 +65,12 @@ func NewGitHubRESTReleaseClient(options GitHubRESTReleaseClientOptions) (*GitHub
 		}
 		transport = base
 	}
-	if base, ok := transport.(*http.Transport); ok {
-		configured := base.Clone()
-		configured.Proxy = nil
-		if configured.TLSClientConfig == nil {
-			configured.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-		} else {
-			configured.TLSClientConfig = configured.TLSClientConfig.Clone()
-			if configured.TLSClientConfig.MinVersion < tls.VersionTLS12 {
-				configured.TLSClientConfig.MinVersion = tls.VersionTLS12
-			}
-		}
-		transport = configured
+	var err error
+	transport, err = prepareHostTransport(transport)
+	if err != nil {
+		return nil, err
 	}
+
 	return &GitHubRESTReleaseClient{
 		http: &http.Client{
 			Transport: transport,
@@ -100,6 +91,15 @@ func NewGitHubRESTReleaseResolver(options GitHubRESTReleaseClientOptions, fetche
 		return nil, err
 	}
 	return NewGitHubReleaseResolver(client, fetcher)
+}
+
+// CloseIdleConnections releases only the client's cloned Go transport.
+func (client *GitHubRESTReleaseClient) CloseIdleConnections() {
+	if client != nil && client.http != nil {
+		if transport, ok := client.http.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
 }
 
 func (client *GitHubRESTReleaseClient) LatestRelease(ctx context.Context, owner, repository string) (GitHubRelease, error) {

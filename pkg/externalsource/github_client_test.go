@@ -266,7 +266,7 @@ func TestGitHubRESTReleaseClientRejectsIdentityDriftAndUnsafeOptions(t *testing.
 	}
 }
 
-func TestGitHubRESTReleaseClientDisablesProxyAndProvidesResolverConstructor(t *testing.T) {
+func TestGitHubRESTReleaseClientPreservesHostProxyAndProvidesResolverConstructor(t *testing.T) {
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	base.Proxy = http.ProxyFromEnvironment
 	base.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS10}
@@ -275,7 +275,7 @@ func TestGitHubRESTReleaseClientDisablesProxyAndProvidesResolverConstructor(t *t
 		t.Fatal(err)
 	}
 	configured, ok := client.http.Transport.(*http.Transport)
-	if !ok || configured == base || configured.Proxy != nil || configured.TLSClientConfig == nil || configured.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+	if !ok || configured == base || configured.Proxy == nil || configured.TLSClientConfig == nil || configured.TLSClientConfig.MinVersion < tls.VersionTLS12 {
 		t.Fatalf("configured transport = %#v", client.http.Transport)
 	}
 	if base.Proxy == nil || base.TLSClientConfig.MinVersion != tls.VersionTLS10 {

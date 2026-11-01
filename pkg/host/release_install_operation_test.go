@@ -697,3 +697,52 @@ func TestReleaseTrustBoundaryPreservesTransportAndDeadlineIdentity(t *testing.T)
 		})
 	}
 }
+
+func TestReleaseInstallFailureClassifiesNetworkPolicyDenials(t *testing.T) {
+	for _, code := range []externalsource.ErrorCode{externalsource.ErrorTargetBlocked, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects} {
+		err := releaseTrustBoundaryError(errors.Join(releasetrust.ErrReleaseTrustVerification, &externalsource.Error{Code: code, Operation: "resolve"}))
+		if got := releaseInstallFailureCode(err); got != string(security.ErrNetworkTargetDenied) {
+			t.Fatalf("code %s mapped to %s; want explicit network policy denial", code, got)
+		}
+		if releaseInstallFailureRetryable(err) {
+			t.Fatalf("policy denial %s must not be automatically retried", code)
+		}
+	}
+}
+
+func TestReleaseTrustPreservesDownloadFailuresAtEveryDocument(t *testing.T) {
+	for _, kind := range []releasetrust.ReleaseDocumentKind{releasetrust.ReleaseDocumentRootDelegation, releasetrust.ReleaseDocumentSourcePolicyPointer, releasetrust.ReleaseDocumentSourcePolicy, releasetrust.ReleaseDocumentRevocationPointer, releasetrust.ReleaseDocumentRevocation} {
+		t.Run(string(kind), func(t *testing.T) {
+			fixture, err := releasetrustfixture.New(buildHostReleasePackage(t), releasetrustfixture.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			networkErr := &externalsource.Error{Code: externalsource.ErrorTransport, Operation: "fetch"}
+			service, err := releasetrust.NewReleaseTrustService(fixture.TrustOptions, releasetrust.ReleaseTrustAdapters{Documents: failingTrustDocument{next: fixture.DocumentTransport, kind: kind, err: networkErr}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			services, err := releasetrust.NewServiceSet(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = services.PrepareRelease(context.Background(), fixture.Identity)
+			if !errors.Is(err, networkErr) || releaseInstallFailureCode(err) != string(security.ErrReleaseNetwork) {
+				t.Fatalf("download failure = %v, code = %s", err, releaseInstallFailureCode(err))
+			}
+		})
+	}
+}
+
+type failingTrustDocument struct {
+	next releasetrust.ReleaseDocumentTransport
+	kind releasetrust.ReleaseDocumentKind
+	err  error
+}
+
+func (transport failingTrustDocument) FetchReleaseDocument(ctx context.Context, request releasetrust.ReleaseDocumentRequest) (releasetrust.ReleaseDocumentResult, error) {
+	if request.Kind() == transport.kind {
+		return releasetrust.ReleaseDocumentResult{}, transport.err
+	}
+	return transport.next.FetchReleaseDocument(ctx, request)
+}

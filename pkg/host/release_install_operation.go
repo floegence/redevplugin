@@ -363,6 +363,8 @@ func releaseInstallFailureCode(err error) string {
 		return releaseInstallFailureInterrupted
 	}
 	switch externalsource.CodeOf(err) {
+	case externalsource.ErrorTargetBlocked, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects:
+		return string(security.ErrNetworkTargetDenied)
 	case externalsource.ErrorDNS, externalsource.ErrorTransport:
 		return string(security.ErrReleaseNetwork)
 	case externalsource.ErrorHTTPStatus:
