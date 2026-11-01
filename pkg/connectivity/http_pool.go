@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,7 +65,7 @@ type httpConnectionPool struct {
 	key       httpPoolKey
 	scope     httpPoolScope
 	client    *http.Client
-	transport *http.Transport
+	transport HTTPTransport
 	active    int
 	lastUsed  uint64
 	draining  bool
@@ -93,14 +94,23 @@ func (e *Executor) resolveHTTPPoolBinding(ctx context.Context, grant ConnectionG
 		connectorID:      grant.ConnectorID,
 		destination:      grant.Destination,
 	}
-	addresses, err := e.resolveAddresses(grantNetworkContext(ctx, grant), "tcp", grantEndpoint(grant))
+	var addresses []netip.Addr
+	var err error
+	proxyMode := httpConnectionProxyMode
+	_, literalError := netip.ParseAddr(grant.Destination.Host)
+	hostRouted := e.hostHTTPTransport != nil && grant.Destination.Scheme == "https" && literalError != nil && len(grant.PrivatePrefixes) == 0
+	if hostRouted {
+		proxyMode = "host"
+	} else {
+		addresses, err = e.resolveAddresses(grantNetworkContext(ctx, grant), "tcp", grantEndpoint(grant))
+	}
 	if err != nil {
 		if errors.Is(err, ErrTargetDenied) {
 			e.retireHTTPPoolScope(scope)
 		}
 		return httpPoolBinding{}, err
 	}
-	if len(addresses) == 0 {
+	if len(addresses) == 0 && !hostRouted {
 		e.retireHTTPPoolScope(scope)
 		return httpPoolBinding{}, fmt.Errorf("%w: destination resolved to no addresses", ErrTargetDenied)
 	}
@@ -133,7 +143,7 @@ func (e *Executor) resolveHTTPPoolBinding(ctx context.Context, grant ConnectionG
 			runtimeGenerationID:     grant.RuntimeGenerationID,
 			targetClassifierVersion: grant.TargetClassifierVersion,
 			tlsMode:                 tlsMode,
-			proxyMode:               httpConnectionProxyMode,
+			proxyMode:               proxyMode,
 			resolvedAddressSet:      strings.Join(addressParts, ","),
 		},
 		addresses: append([]netip.Addr(nil), addresses...),
@@ -167,7 +177,10 @@ func (e *Executor) acquireHTTPPool(binding httpPoolBinding) (*httpConnectionPool
 		pools.retireLocked(candidate)
 	}
 
-	transport := newHTTPPoolTransport(binding, e.dialResolved)
+	transport, err := e.newHTTPTransport(binding, nil)
+	if err != nil {
+		return nil, nil, err
+	}
 	pools.sequence++
 	pool := &httpConnectionPool{
 		key:       binding.key,
@@ -353,10 +366,62 @@ func (e *Executor) acquireHTTPPoolForTLS(binding httpPoolBinding, config *tls.Co
 		}
 		pools.retireLocked(candidate)
 	}
-	transport := newHTTPPoolTransport(binding, e.dialResolved)
-	transport.TLSClientConfig = validated
-	transport.DisableKeepAlives = true
+	transport, err := e.newHTTPTransport(binding, validated)
+	if err != nil {
+		return nil, nil, err
+	}
 	pool := &httpConnectionPool{active: 1, draining: true, transport: transport, client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	pools.draining[pool] = struct{}{}
 	return pool, pools.releaseFuncLocked(pool), nil
+}
+
+// newHTTPTransport preserves the existing grant-keyed pool and retirement path
+// for both host-routed HTTPS and address-pinned connections.
+func (e *Executor) newHTTPTransport(binding httpPoolBinding, config *tls.Config) (HTTPTransport, error) {
+	if binding.key.proxyMode == "host" {
+		transport, err := e.hostHTTPTransport(binding.key.destination, config)
+		if err != nil {
+			return nil, err
+		}
+		if transport == nil {
+			return nil, ErrConnectorDenied
+		}
+		value := reflect.ValueOf(transport)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			if value.IsNil() {
+				return nil, ErrConnectorDenied
+			}
+		}
+		if base, ok := transport.(*http.Transport); ok {
+			cloned := base.Clone()
+			tlsConfig := cloned.TLSClientConfig
+			if config != nil {
+				tlsConfig = config
+			}
+			if tlsConfig == nil {
+				tlsConfig = &tls.Config{}
+			}
+			checked, err := validatedTLSConfig(tlsConfig, binding.key.destination)
+			if err != nil {
+				return nil, err
+			}
+			cloned.TLSClientConfig = checked
+			cloned.MaxIdleConns = maxHTTPIdleConnsPerHost
+			cloned.MaxIdleConnsPerHost = maxHTTPIdleConnsPerHost
+			cloned.MaxConnsPerHost = maxHTTPConnectionsPerHost
+			cloned.IdleConnTimeout = httpConnectionIdleTimeout
+			if config != nil {
+				cloned.DisableKeepAlives = true
+			}
+			return cloned, nil
+		}
+		return transport, nil
+	}
+	transport := newHTTPPoolTransport(binding, e.dialResolved)
+	if config != nil {
+		transport.TLSClientConfig = config
+		transport.DisableKeepAlives = true
+	}
+	return transport, nil
 }

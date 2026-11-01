@@ -555,7 +555,7 @@ func TestExecutorPublicOptionsExposeOnlyGuardedNetworkConfiguration(t *testing.T
 	for i := range gotFields {
 		gotFields[i] = optionsType.Field(i).Name
 	}
-	wantFields := []string{"Dialer", "LookupIPAddr", "UDPRateLimiter", "MaxRequestBytes", "MaxResponseBytes", "DefaultTimeout", "Now"}
+	wantFields := []string{"HostHTTPTransport", "Dialer", "LookupIPAddr", "UDPRateLimiter", "MaxRequestBytes", "MaxResponseBytes", "DefaultTimeout", "Now"}
 	if !reflect.DeepEqual(gotFields, wantFields) {
 		t.Fatalf("ExecutorOptions fields = %#v, want %#v", gotFields, wantFields)
 	}
@@ -565,7 +565,7 @@ func TestExecutorPublicOptionsExposeOnlyGuardedNetworkConfiguration(t *testing.T
 		t.Fatal(err)
 	}
 	defer release()
-	transport := pool.transport
+	transport := pool.transport.(*http.Transport)
 	if transport.Proxy != nil || transport.DialContext == nil || transport.DisableKeepAlives {
 		t.Fatalf("executor transport safety settings are incomplete")
 	}

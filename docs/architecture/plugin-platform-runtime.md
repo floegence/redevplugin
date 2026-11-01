@@ -97,6 +97,9 @@ and marked that exact asset session prepared.
   module. ReDevPlugin retains each redirect, artifact-host, credential, quota,
   staged-byte and integrity boundary. This adapter neither exposes a plugin
   network capability nor performs network work during Host construction.
+  Authorized HTTPS hostname connectors may separately use the host network
+  factory within the existing grant-bound executor pools; it never supplies
+  permission, registry, broker, retry or execution semantics.
 - `pkg/releasepublisher` creates a recoverable sequence of public external
   signer requests, verifies closed Ed25519 responses, and emits an immutable
   release asset set plus its exact locator-to-asset projection. It never accepts

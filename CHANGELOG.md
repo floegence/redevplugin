@@ -7,6 +7,7 @@
 - Share the host transport with GitHub resolution while retaining per-hop URL, declared-host, credential, quota, staging and content-integrity validation.
 - Preserve network failure causes through every trust document and classify network policy denials consistently in durable install operations and HTTP responses.
 - Bound and release platform-owned idle connections without mutating or closing caller-owned custom transports; cover proxy-side DNS, private HTTPS, redirects, TLS, cancellation, quotas and Host module wiring.
+- Apply trusted host routing to already-authorized HTTPS hostname connectors through isolated grant-bound transport factories, retaining method restrictions, quotas, TLS credentials, cancellation, redirect denial and pool retirement. Exact private-prefix bindings and other protocols retain their address policy.
 - Keep plugin API, runtime wire and durable schema unchanged; publish the additive Go adapter with the coordinated platform artifact set.
 
 ## v3.11.2

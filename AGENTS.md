@@ -911,6 +911,13 @@ Core invariants:
   verified TLS, bounded identity-encoded bytes, staging and exact hashes under
   either policy. Custom transports must not follow redirects or attach ambient
   cookies or origin credentials. Proxy authentication belongs to the transport;
+- already-authorized HTTPS hostname requests may use the trusted host's network
+  transport factory. ReDevPlugin still owns grant admission, exact destination
+  and method binding, per-plugin/revision/epoch connection pools, cancellation,
+  TLS credential validation, redirect denial, quotas and retirement. Factories
+  create isolated transports without network IO, must not attach ambient origin
+  credentials, and must not replay writes. Explicit private-prefix connections,
+  literal-address targets and other protocols retain address-bound enforcement;
 - download transport construction is local and must not probe connectivity or
   block host startup. Network failures affect only the attempted operation and
   remain distinguishable from integrity or signature failures;

@@ -658,26 +658,44 @@ type NetworkExecutor interface {
 	UDPRoundTrip(ctx context.Context, req UDPRoundTripRequest) (UDPRoundTripResponse, error)
 }
 
+// HTTPTransport owns one isolated grant-bound connection pool. Implementations
+// must preserve the exact request origin, verify TLS, honor cancellation and
+// return redirects without following them. They must not attach ambient origin
+// credentials or automatically replay writes.
+type HTTPTransport interface {
+	http.RoundTripper
+	CloseIdleConnections()
+}
+
+// HTTPTransportFactory creates a fresh transport without performing network IO.
+// It follows trusted host routing for authorized HTTPS hostname destinations.
+// Literal addresses, private-prefix connections and other protocols retain their
+// existing address-bound policy. TLS credentials are validated before this call;
+// the transport must apply them without sharing sessions across returned pools.
+type HTTPTransportFactory func(Destination, *tls.Config) (HTTPTransport, error)
+
 type ExecutorOptions struct {
-	Dialer           *net.Dialer
-	LookupIPAddr     func(ctx context.Context, host string) ([]net.IPAddr, error)
-	UDPRateLimiter   UDPRateLimiter
-	MaxRequestBytes  int64
-	MaxResponseBytes int64
-	DefaultTimeout   time.Duration
-	Now              func() time.Time
+	HostHTTPTransport HTTPTransportFactory
+	Dialer            *net.Dialer
+	LookupIPAddr      func(ctx context.Context, host string) ([]net.IPAddr, error)
+	UDPRateLimiter    UDPRateLimiter
+	MaxRequestBytes   int64
+	MaxResponseBytes  int64
+	DefaultTimeout    time.Duration
+	Now               func() time.Time
 }
 
 type Executor struct {
-	dialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
-	resolveAddresses func(ctx context.Context, network string, address string) ([]netip.Addr, error)
-	dialResolved     func(ctx context.Context, network string, address string, addresses []netip.Addr) (net.Conn, error)
-	udpRateLimiter   UDPRateLimiter
-	maxRequestBytes  int64
-	maxResponseBytes int64
-	defaultTimeout   time.Duration
-	now              func() time.Time
-	httpPools        httpConnectionPools
+	hostHTTPTransport HTTPTransportFactory
+	dialContext       func(ctx context.Context, network string, address string) (net.Conn, error)
+	resolveAddresses  func(ctx context.Context, network string, address string) ([]netip.Addr, error)
+	dialResolved      func(ctx context.Context, network string, address string, addresses []netip.Addr) (net.Conn, error)
+	udpRateLimiter    UDPRateLimiter
+	maxRequestBytes   int64
+	maxResponseBytes  int64
+	defaultTimeout    time.Duration
+	now               func() time.Time
+	httpPools         httpConnectionPools
 }
 
 type executorNetworkOptions struct {
@@ -915,14 +933,15 @@ func newExecutor(options ExecutorOptions, networkOptions executorNetworkOptions)
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	executor := &Executor{
-		dialContext:      dialContext,
-		resolveAddresses: resolveAddresses,
-		dialResolved:     dialResolved,
-		udpRateLimiter:   udpRateLimiter,
-		maxRequestBytes:  maxRequestBytes,
-		maxResponseBytes: maxResponseBytes,
-		defaultTimeout:   defaultTimeout,
-		now:              now,
+		hostHTTPTransport: options.HostHTTPTransport,
+		dialContext:       dialContext,
+		resolveAddresses:  resolveAddresses,
+		dialResolved:      dialResolved,
+		udpRateLimiter:    udpRateLimiter,
+		maxRequestBytes:   maxRequestBytes,
+		maxResponseBytes:  maxResponseBytes,
+		defaultTimeout:    defaultTimeout,
+		now:               now,
 	}
 	executor.httpPools.init()
 	return executor
@@ -1167,6 +1186,12 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 		releasePool()
 		cancel()
 		return nil, nil, err
+	}
+	if resp.Request != nil && (resp.Request.URL == nil || resp.Request.URL.String() != httpReq.URL.String()) {
+		_ = resp.Body.Close()
+		releasePool()
+		cancel()
+		return nil, nil, ErrConnectorDenied
 	}
 	resp.Body = &httpPoolResponseBody{ReadCloser: resp.Body, release: releasePool}
 	return resp, cancel, nil

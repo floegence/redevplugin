@@ -128,6 +128,28 @@ no network request. Download, proxy, DNS and trust-document transport failures
 stay operation-scoped and keep their original error cause; they must not become
 signature failures or prevent the host's unrelated functionality from starting.
 
+Authorized plugin HTTPS requests use a separate opt-in Go adapter,
+`connectivity.ExecutorOptions.HostHTTPTransport`. It does not authorize a
+request: the normal Host permission and grant chain runs first. Each returned
+transport belongs to one exact platform connection pool, keyed by plugin,
+fingerprint, owner scope, connector, destination, policy/management revision,
+revoke epoch and runtime generation. Changed authority retires the old pool;
+active response lifetimes, cancellation, response quotas and shutdown still use
+the common executor. Method and URL authority remain platform-owned, redirects
+are returned without following them, and adapters must not replay writes or
+attach ambient cookies/origin credentials.
+
+The factory routes HTTPS hostname destinations through trusted host DNS/proxy/VPN
+policy. It never classifies a proxy's destination by guessing from a synthetic
+DNS address. Exact private-prefix connections and literal targets retain their
+existing address-bound checks, as do WebSocket/TCP/UDP and plain HTTP. Custom
+TLS credentials are validated before construction and receive dedicated,
+non-reusable pools. Go transports are cloned with required TLS verification and
+bounded pool settings; native adapters owe the equivalent contract. This is a
+Go host adapter addition, with no plugin permission, IPC, HTTP DTO, manifest or
+durable schema change. Hosts should supply the same network configuration as
+package acquisition while creating independent transports for each grant pool.
+
 ## Sandbox UI Boundary
 
 Untrusted applications execute ordinary HTML and JavaScript on a fresh,
