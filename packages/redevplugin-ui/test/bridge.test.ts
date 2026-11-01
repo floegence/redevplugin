@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  isPluginRecoveryCurrent,
   defaultPluginSurfaceReloadMax,
   defaultPluginSurfaceReloadWindowMs,
   decodePluginReleaseInstallProgressEvent,
@@ -1504,11 +1505,12 @@ test("platform client manages runtime lifecycle routes", async () => {
   } satisfies PluginRuntimeHealth;
   fetch.push({ ok: true, data: runtimeHealth });
   fetch.push({ ok: true, data: runtimeHealth });
+  const recoveryIdentity = { active_fingerprint: "sha256:" + "a".repeat(64), installed_at: "2026-11-01T00:00:00Z", management_revision: 1 };
   fetch.push({ ok: true, data: { revision: 1, complete: false, results: [
-    { plugin_instance_id: "plugin_instance_1", status: "ready" },
-    { plugin_instance_id: "plugin_instance_2", status: "failed", reason: "recovery_timeout", action: "retry" },
+    { ...recoveryIdentity, plugin_instance_id: "plugin_instance_1", status: "ready" },
+    { ...recoveryIdentity, plugin_instance_id: "plugin_instance_2", status: "failed", reason: "recovery_timeout", action: "retry" },
   ] } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_2", status: "ready" } });
+  fetch.push({ ok: true, data: { ...recoveryIdentity, plugin_instance_id: "plugin_instance_2", status: "ready" } });
   fetch.push({ ok: true, data: { stopped: true } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
@@ -1523,7 +1525,7 @@ test("platform client manages runtime lifecycle routes", async () => {
   assert.equal(recovered.revision, 1);
   assert.equal(recovered.complete, false);
   assert.equal(recovered.results[0]?.status, "ready");
-  assert.deepEqual(recovered.results[1], { plugin_instance_id: "plugin_instance_2", status: "failed", reason: "recovery_timeout", action: "retry" });
+  assert.deepEqual(recovered.results[1], { ...recoveryIdentity, plugin_instance_id: "plugin_instance_2", status: "failed", reason: "recovery_timeout", action: "retry" });
   assert.equal(retried.status, "ready");
   assert.equal(stopped.stopped, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/runtime/start");
@@ -2115,4 +2117,20 @@ test("unknown retained recovery invalidates only its target and never repeats co
   assert.deepEqual(calls, ["commit", "status"].map(action => "/_redevplugin/api/plugins/retained-data/recovery/" + action));
   unregisterTarget();
   unregisterSibling();
+});
+
+
+test("recovery observations bind the exact installation and management revision", () => {
+  const identity = { plugin_instance_id: "plugin_instance_1", active_fingerprint: "sha256:" + "a".repeat(64), installed_at: "2026-11-01T00:00:00Z", management_revision: 1 };
+  const observation = { ...identity, status: "failed" as const, reason: "unknown" as const, action: "retry" as const };
+  const current = { ...identity, enable_state: "enabled" as const };
+  assert.equal(isPluginRecoveryCurrent(observation, current), true);
+  for (const change of [
+    { plugin_instance_id: "another_instance" },
+    { active_fingerprint: "sha256:" + "b".repeat(64) },
+    { installed_at: "2026-11-01T00:00:01Z" },
+    { management_revision: 2 },
+    { enable_state: "disabled_by_user" as const },
+    { deleted_at: "2026-11-01T00:00:01Z" },
+  ]) assert.equal(isPluginRecoveryCurrent(observation, { ...current, ...change }), false);
 });

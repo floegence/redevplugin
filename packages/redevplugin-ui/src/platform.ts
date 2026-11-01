@@ -143,6 +143,16 @@ export type PluginRuntimeStopResult = PlatformSchemas["PluginRuntimeStopResult"]
 export type PluginRecoverySnapshot = PlatformSchemas["RecoverySnapshot"];
 export type PluginRecoveryResult = PlatformSchemas["PluginRecoveryResult"];
 
+/** A startup observation applies only to the exact currently enabled record. */
+export function isPluginRecoveryCurrent(result: PluginRecoveryResult, record: Pick<PluginRecord, "plugin_instance_id" | "active_fingerprint" | "installed_at" | "management_revision" | "enable_state" | "deleted_at">): boolean {
+  return record.enable_state === "enabled" && !record.deleted_at
+    && result.plugin_instance_id === record.plugin_instance_id
+    && result.active_fingerprint === record.active_fingerprint
+    && result.installed_at === record.installed_at
+    && result.management_revision === record.management_revision;
+}
+
+
 export type PluginSettingsField = PlatformSchemas["PluginSettingsField"];
 export type PluginSettingsSchema = PlatformSchemas["PluginSettingsSchema"];
 export type PluginSettingsSnapshot = PlatformSchemas["PluginSettingsSnapshot"];

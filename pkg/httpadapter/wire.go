@@ -558,10 +558,13 @@ func publicRuntimeModuleCache(metrics host.RuntimeModuleCacheMetrics) runtimeMod
 }
 
 type pluginRecoveryResultResponse struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	Status           string `json:"status"`
-	Reason           string `json:"reason,omitempty"`
-	Action           string `json:"action,omitempty"`
+	ActiveFingerprint  string    `json:"active_fingerprint"`
+	InstalledAt        time.Time `json:"installed_at"`
+	ManagementRevision uint64    `json:"management_revision"`
+	PluginInstanceID   string    `json:"plugin_instance_id"`
+	Status             string    `json:"status"`
+	Reason             string    `json:"reason,omitempty"`
+	Action             string    `json:"action,omitempty"`
 }
 
 type recoverySnapshotResponse struct {
@@ -572,10 +575,12 @@ type recoverySnapshotResponse struct {
 
 func publicPluginRecoveryResult(result host.PluginRecoveryResult) pluginRecoveryResultResponse {
 	return pluginRecoveryResultResponse{
-		PluginInstanceID: result.PluginInstanceID,
-		Status:           result.Status,
-		Reason:           result.Reason,
-		Action:           result.Action,
+		ActiveFingerprint: result.ActiveFingerprint, InstalledAt: result.InstalledAt,
+		ManagementRevision: result.ManagementRevision,
+		PluginInstanceID:   result.PluginInstanceID,
+		Status:             result.Status,
+		Reason:             result.Reason,
+		Action:             result.Action,
 	}
 }
 

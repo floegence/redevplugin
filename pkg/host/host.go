@@ -5117,6 +5117,7 @@ const (
 )
 
 type refreshEnabledPluginResult struct {
+	record           registry.PluginRecord
 	PluginInstanceID string
 	Status           refreshEnabledPluginStatus
 	Error            *refreshEnabledPluginError
@@ -5249,9 +5250,11 @@ func (h *Host) refreshEnabledPlugins(ctx context.Context) ([]refreshEnabledPlugi
 						refreshFailureDiagnosticDetails(err),
 					)
 					results[index] = failedPluginRefreshResultForError(record.PluginInstanceID, err)
+					results[index].record = record
 					continue
 				}
 				results[index] = refreshedPluginResult(record.PluginInstanceID)
+				results[index].record = record
 				if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.runtime_state.refreshed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
 					auditErrors[index] = err
 				}

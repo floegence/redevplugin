@@ -439,3 +439,21 @@ test("application method control operations reject foreign fields and missing id
   assert.equal(validate({ ...base, operation: "claim", active_invocations: ["id", "id"] }), false);
   assert.equal(validate({ ...base, operation: "complete", invocation_id: "id", failed: true, data: {} }), false);
 });
+
+test("recovery observations require exact installation identity", async () => {
+  const schema = (await readOpenAPI()).components.schemas.PluginRecoveryResult;
+  const validate = new Ajv({ strict: false, formats: { "date-time": true } }).compile(schema);
+  const result = {
+    plugin_instance_id: "plugin_instance_1", active_fingerprint: "sha256:" + "a".repeat(64),
+    installed_at: "2026-11-01T00:00:00Z", management_revision: 1,
+    status: "failed", reason: "unknown", action: "retry",
+  };
+  assert.equal(validate(result), true, JSON.stringify(validate.errors));
+  for (const field of ["plugin_instance_id", "active_fingerprint", "installed_at", "management_revision", "status"]) {
+    const incomplete = { ...result }; delete incomplete[field];
+    assert.equal(validate(incomplete), false, field);
+  }
+  for (const change of [{ active_fingerprint: "unbound" }, { management_revision: 0 }, { authority: true }]) {
+    assert.equal(validate({ ...result, ...change }), false);
+  }
+});

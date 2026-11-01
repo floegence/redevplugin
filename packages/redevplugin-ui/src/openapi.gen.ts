@@ -1901,6 +1901,10 @@ export interface components {
         };
         PluginRecoveryResult: {
             plugin_instance_id: string;
+            active_fingerprint: string;
+            /** Format: date-time */
+            installed_at: string;
+            management_revision: number;
             /** @enum {string} */
             status: "ready" | "failed";
             /** @enum {string} */

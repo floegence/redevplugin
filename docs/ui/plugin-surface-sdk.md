@@ -460,3 +460,21 @@ plan; do not repeat commit or automatically create a new plan. An applied result
 contains both the active recovered generation and the retained previous target
 generation. A conflict requires a fresh user review. Enablement is a separate
 explicit operation and recovery never grants permissions.
+
+
+## Runtime recovery observations
+
+A recovery result describes the installed record examined during startup or an
+explicit retry. It binds plugin_instance_id, active_fingerprint, installed_at,
+and management_revision. The Host filters obsolete cached results against the
+current owner-scoped inventory without running recovery again. Complete means
+no current result in that observation set failed; it does not certify newly
+installed plugins or grant execution authority.
+
+Host UIs use isPluginRecoveryCurrent from the trusted-parent SDK with the latest
+authoritative record before displaying an observation, including late retry
+responses. Uninstall/reinstall can reuse an instance ID and identical package
+bytes; the installation timestamp distinguishes those lifetimes. Identity
+changes discard the observation rather than synthesizing ready or retrying a
+mutation. Current failures remain visible; localized copy and placement belong
+to the host product. Permission and policy authorization remain per-call.

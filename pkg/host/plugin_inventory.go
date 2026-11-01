@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
@@ -66,11 +67,53 @@ type RecoverySnapshot struct {
 	Results  []PluginRecoveryResult `json:"results"`
 }
 
+// PluginRecoveryResult is an observation of one exact installed revision.
+// It never grants readiness or execution authority to a replacement record.
 type PluginRecoveryResult struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	Status           string `json:"status"`
-	Reason           string `json:"reason,omitempty"`
-	Action           string `json:"action,omitempty"`
+	ActiveFingerprint  string    `json:"active_fingerprint"`
+	InstalledAt        time.Time `json:"installed_at"`
+	ManagementRevision uint64    `json:"management_revision"`
+	PluginInstanceID   string    `json:"plugin_instance_id"`
+	Status             string    `json:"status"`
+	Reason             string    `json:"reason,omitempty"`
+	Action             string    `json:"action,omitempty"`
+}
+
+func recoveryResultForRecord(record registry.PluginRecord) PluginRecoveryResult {
+	return PluginRecoveryResult{PluginInstanceID: record.PluginInstanceID,
+		ActiveFingerprint: record.ActiveFingerprint, InstalledAt: record.InstalledAt,
+		ManagementRevision: record.ManagementRevision}
+}
+
+func (result PluginRecoveryResult) matches(record registry.PluginRecord) bool {
+	return record.EnableState == registry.EnableEnabled && record.DeletedAt == nil &&
+		result.PluginInstanceID == record.PluginInstanceID && result.ActiveFingerprint == record.ActiveFingerprint &&
+		result.InstalledAt.Equal(record.InstalledAt) && result.ManagementRevision == record.ManagementRevision
+}
+
+// A cached startup observation never reruns recovery or promotes a replacement
+// installation to ready. Superseded observations simply cease to describe it.
+func (h *Host) currentRecoverySnapshot(ctx context.Context, snapshot RecoverySnapshot) (RecoverySnapshot, error) {
+	records, err := h.listPluginRecords(ctx)
+	if err != nil {
+		return RecoverySnapshot{}, err
+	}
+	byID := make(map[string]registry.PluginRecord, len(records))
+	for _, record := range records {
+		byID[record.PluginInstanceID] = record
+	}
+	current := RecoverySnapshot{Revision: snapshot.Revision, Complete: true, Results: []PluginRecoveryResult{}}
+	for _, result := range snapshot.Results {
+		record, ok := byID[result.PluginInstanceID]
+		if !ok || !result.matches(record) {
+			continue
+		}
+		current.Results = append(current.Results, result)
+		if result.Status != PluginRecoveryReady {
+			current.Complete = false
+		}
+	}
+	return current, nil
 }
 
 func cloneRecoverySnapshot(value RecoverySnapshot) RecoverySnapshot {
@@ -279,7 +322,8 @@ func (h *Host) authorizePermissionRequirements(ctx context.Context, record regis
 }
 
 // RecoverEnabled reconciles enabled plugin runtime state once per Host startup
-// revision. Repeated calls return the same immutable snapshot.
+// revision. Repeated calls project that observation onto the current inventory
+// without repeating recovery for new or changed installations.
 func (h *Host) RecoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	if _, err := h.authorizeManagement(ctx, ManagementActionRecoverEnabledPlugins, authorizationCollectionTarget(ResourceRuntime)); err != nil {
 		return RecoverySnapshot{}, err
@@ -291,7 +335,7 @@ func (h *Host) recoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	h.recoveryMu.Lock()
 	defer h.recoveryMu.Unlock()
 	if h.recoverySnapshot != nil {
-		return cloneRecoverySnapshot(*h.recoverySnapshot), nil
+		return h.currentRecoverySnapshot(ctx, *h.recoverySnapshot)
 	}
 	results, err := h.refreshEnabledPlugins(ctx)
 	if err != nil {
@@ -302,7 +346,7 @@ func (h *Host) recoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	}
 	snapshot := RecoverySnapshot{Revision: h.recoveryRevision, Complete: true, Results: make([]PluginRecoveryResult, len(results))}
 	for index, result := range results {
-		mapped := PluginRecoveryResult{PluginInstanceID: result.PluginInstanceID}
+		mapped := recoveryResultForRecord(result.record)
 		if result.Status == refreshEnabledPluginStatusRefreshed {
 			mapped.Status = PluginRecoveryReady
 		} else {
@@ -317,7 +361,7 @@ func (h *Host) recoverEnabled(ctx context.Context) (RecoverySnapshot, error) {
 	}
 	copy := cloneRecoverySnapshot(snapshot)
 	h.recoverySnapshot = &copy
-	return cloneRecoverySnapshot(*h.recoverySnapshot), nil
+	return h.currentRecoverySnapshot(ctx, *h.recoverySnapshot)
 }
 
 func (h *Host) RetryPluginRecovery(ctx context.Context, pluginInstanceID string) (PluginRecoveryResult, error) {
@@ -335,7 +379,8 @@ func (h *Host) RetryPluginRecovery(ctx context.Context, pluginInstanceID string)
 	if record.EnableState != registry.EnableEnabled {
 		return PluginRecoveryResult{}, ErrPluginRecoveryNotEnabled
 	}
-	result := PluginRecoveryResult{PluginInstanceID: pluginInstanceID, Status: PluginRecoveryReady}
+	result := recoveryResultForRecord(record)
+	result.Status = PluginRecoveryReady
 	if err := h.refreshEnabledRuntimeState(ctx, record); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return PluginRecoveryResult{}, err

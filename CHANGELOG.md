@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.12.1
+
+- Bind runtime recovery observations to the exact active fingerprint, installation timestamp, and management revision; stop returning old startup failures for replaced or removed installations.
+- Expose the same identity in Go, HTTP, generated contracts and the UI SDK, with a shared current-record predicate for host presentation.
+- Keep recovery reads observational: no automatic worker restart, write replay or readiness inference; preserve current failures, trust revocation and independent sibling results.
+- Cover identical-package reinstall, disable, revision changes, explicit retry and HTTP/SDK round trips. Runtime wire, plugin API and durable storage remain unchanged.
+
 ## v3.12.0
 
 - Expose a trusted host-owned HTTPS transport for package and release-document downloads, preserving normal VPN, DNS, proxy, private-source and TLS-root policy without changing plugin execution grants.

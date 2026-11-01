@@ -385,7 +385,7 @@ func TestRecoverEnabledDoesNotCacheCanceledAttempt(t *testing.T) {
 	}
 }
 
-func TestRetryPluginRecoveryRejectsDisabledPluginWithoutCompletingSnapshot(t *testing.T) {
+func TestRetryPluginRecoveryRejectsDisabledPluginWithoutChangingStoredObservation(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	record := installAndEnablePlugin(t, h, buildFixturePackage(t))
 
@@ -407,7 +407,87 @@ func TestRetryPluginRecoveryRejectsDisabledPluginWithoutCompletingSnapshot(t *te
 	if err != nil {
 		t.Fatalf("RecoverEnabled() after rejected retry error = %v", err)
 	}
-	if !reflect.DeepEqual(after, first) {
-		t.Fatalf("rejected retry changed recovery snapshot: got %#v want %#v", after, first)
+	if len(after.Results) != 0 || !after.Complete {
+		t.Fatalf("disabled plugin kept current recovery observation: %#v", after)
+	}
+	if !reflect.DeepEqual(*h.recoverySnapshot, first) {
+		t.Fatal("rejected retry changed stored startup observation")
+	}
+}
+
+// A catalog instance ID can be reused by reinstall; a startup result belongs to
+// the installation it examined, not every future installation with that ID.
+func TestRecoverEnabledDoesNotCarryFailureAcrossReinstall(t *testing.T) {
+	manager := newRecordingRuntimeManager()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: manager})
+	ctx := hostTestContext()
+	packageBytes := buildWorkerFixturePackage(t)
+	record := installAndEnablePlugin(t, h, packageBytes)
+	sibling := installAndEnablePlugin(t, h, buildFixturePackage(t))
+	manager.bindErr = errors.New("temporary runtime binding failure")
+	first, err := h.RecoverEnabled(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Complete || len(first.Results) != 2 {
+		t.Fatalf("failed recovery: %#v", first)
+	}
+	failed := first.Results[0]
+	if failed.PluginInstanceID != record.PluginInstanceID || failed.Status != PluginRecoveryFailed || !failed.matches(record) {
+		t.Fatalf("wrong failure identity: %#v", failed)
+	}
+	manager.bindErr = nil
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: record.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: record.ManagementRevision}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := ImportLocalPackageBytes(ctx, h, record.PluginInstanceID, packageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ActiveFingerprint != record.ActiveFingerprint || replacement.InstalledAt.Equal(record.InstalledAt) {
+		t.Fatal("fixture must reinstall identical bytes with a new installation identity")
+	}
+	snapshot, err := h.RecoverEnabled(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Results) != 1 || !snapshot.Complete || snapshot.Results[0].PluginInstanceID != sibling.PluginInstanceID {
+		t.Fatalf("old recovery attached to reinstallation or affected sibling: %#v", snapshot)
+	}
+	retried, err := h.RetryPluginRecovery(ctx, record.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Status != PluginRecoveryReady || !retried.matches(replacement) {
+		t.Fatalf("retry did not bind current installation: %#v", retried)
+	}
+}
+
+func TestRecoveryIdentityRejectsReplacementAndManagementChanges(t *testing.T) {
+	h, _, _ := newTestHost(t, true, true)
+	record := installAndEnablePlugin(t, h, buildFixturePackage(t))
+	result := recoveryResultForRecord(record)
+	for _, field := range []string{"instance", "fingerprint", "installed", "revision", "disabled", "deleted"} {
+		t.Run(field, func(t *testing.T) {
+			changed := record
+			switch field {
+			case "instance":
+				changed.PluginInstanceID += "_other"
+			case "fingerprint":
+				changed.ActiveFingerprint += "_other"
+			case "installed":
+				changed.InstalledAt = changed.InstalledAt.Add(time.Second)
+			case "revision":
+				changed.ManagementRevision++
+			case "disabled":
+				changed.EnableState = "disabled_by_user"
+			case "deleted":
+				now := time.Now()
+				changed.DeletedAt = &now
+			}
+			if result.matches(changed) {
+				t.Fatal("stale observation matched current record")
+			}
+		})
 	}
 }

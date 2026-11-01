@@ -3880,6 +3880,11 @@ func TestHandlerRecoverEnabledPlugins(t *testing.T) {
 	if refreshed.Revision != 1 || !refreshed.Complete || len(refreshed.Results) != 1 || refreshed.Results[0].PluginInstanceID != enabled.PluginInstanceID || refreshed.Results[0].Status != host.PluginRecoveryReady {
 		t.Fatalf("runtime recovery snapshot mismatch: %#v", refreshed)
 	}
+	result := refreshed.Results[0]
+	if result.ActiveFingerprint != enabled.ActiveFingerprint || !result.InstalledAt.Equal(enabled.InstalledAt) || result.ManagementRevision != enabled.ManagementRevision {
+		t.Fatalf("recovery wire lost installation identity: %#v", result)
+	}
+
 }
 
 func TestHandlerReadsInstalledPluginIconAsImmutableAsset(t *testing.T) {
