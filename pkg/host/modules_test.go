@@ -525,7 +525,7 @@ func TestExternalPackageModuleUsesHostTransportForPackagesAndGitHub(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stage.Remove(result.Artifact)
+	defer func() { _ = stage.Remove(result.Artifact) }()
 	_, err = adapters.ExternalPackageGitHubResolver.ResolvePackage(context.Background(), externalsource.GitHubRepositorySource{RepositoryURL: "https://github.com/example/plugins"})
 	if err == nil {
 		t.Fatal("GitHub server failure was ignored")

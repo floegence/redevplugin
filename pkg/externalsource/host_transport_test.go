@@ -60,14 +60,14 @@ func TestHostTransportPreservesProxyDNSAndTLS(t *testing.T) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect || r.Host != "example.com:443" {
 			t.Errorf("proxy request = %s %s", r.Method, r.Host)
-			http.Error(w, "invalid CONNECT", 400)
+			http.Error(w, "invalid CONNECT", http.StatusBadRequest)
 			return
 		}
 		connects.Add(1)
 		upstream, err := net.Dial("tcp", origin.Listener.Addr().String())
 		if err != nil {
 			t.Error(err)
-			http.Error(w, "dial", 502)
+			http.Error(w, "dial", http.StatusBadGateway)
 			return
 		}
 		downstream, buffer, err := w.(http.Hijacker).Hijack()
@@ -107,7 +107,7 @@ func TestHostTransportPreservesProxyDNSAndTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stage.Remove(result.Artifact)
+	defer func() { _ = stage.Remove(result.Artifact) }()
 	if connects.Load() != 1 || dns.calls.Load() != 0 {
 		t.Fatalf("CONNECTs=%d local DNS=%d", connects.Load(), dns.calls.Load())
 	}
@@ -140,7 +140,7 @@ func TestHostTransportKeepsRedirectAndCredentialOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stage.Remove(result.Artifact)
+	defer func() { _ = stage.Remove(result.Artifact) }()
 	if calls != 2 || len(credentials.origins) != 2 || strings.Contains(result.Final, "temporary") {
 		t.Fatalf("result = %#v calls=%d", result, calls)
 	}
