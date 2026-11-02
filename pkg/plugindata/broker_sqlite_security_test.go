@@ -3,6 +3,9 @@ package plugindata
 import (
 	"context"
 	"errors"
+	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/storage"
+	"path/filepath"
 	"testing"
 )
 
@@ -29,4 +32,29 @@ func TestSQLiteAdmissionBoundsAllNamespaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
+}
+
+func TestSQLiteLimitErrorPreservesMutationOutcome(t *testing.T) {
+	ctx := context.Background()
+	db, err := openSQLiteDatabase(ctx, filepath.Join(t.TempDir(), "test.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	var size int
+	err = db.QueryRowContext(ctx, "SELECT length(format('%.*c',16777216,'x'))").Scan(&size)
+	if err == nil {
+		t.Fatal("expression limit was not enforced")
+	}
+	mapped := sqliteBrokerError(mutation.Unknown(err))
+	if !errors.Is(mapped, storage.ErrSQLiteResultTooLarge) {
+		t.Fatalf("limit error = %v", mapped)
+	}
+	if outcome, explicit := mutation.Explicit(mapped); !explicit || outcome != mutation.OutcomeUnknown {
+		t.Fatalf("lost commit outcome: %q %v", outcome, explicit)
+	}
 }

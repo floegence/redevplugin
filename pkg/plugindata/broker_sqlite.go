@@ -636,7 +636,12 @@ func authorizeSQLiteConnection(conn *sql.Conn, readOnly bool) error {
 	})
 }
 
-func sqliteBrokerError(err error) error {
+func sqliteBrokerError(err error) (result error) {
+	defer func() {
+		if outcome, explicit := mutation.Explicit(err); explicit && result != err {
+			result = &mutation.Error{Outcome: outcome, Err: result}
+		}
+	}()
 	var sqlErr *sqlite.Error
 	if errors.As(err, &sqlErr) {
 		switch sqlErr.Code() & 0xff {
