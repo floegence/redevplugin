@@ -47,4 +47,8 @@ if [[ ! "$main_remote_oid" =~ ^0+$ ]] && ! git merge-base --is-ancestor "$main_r
   exit 1
 fi
 
+# Git exports repository-local variables to hooks. Nested test repositories must
+# discover their own metadata instead of inheriting the caller's worktree.
+unset $(git rev-parse --local-env-vars)
+cd "$ROOT_DIR"
 exec "$ROOT_DIR/scripts/check_redevplugin_pre_push.sh"
