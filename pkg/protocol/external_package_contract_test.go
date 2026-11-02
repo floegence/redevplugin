@@ -228,7 +228,7 @@ func TestExternalPackageSecuritySummarySchemasMatchHostProjection(t *testing.T) 
 		{schema: "ExternalPackageSecretRefSummary", properties: []string{"scope", "secret_ref", "setting_key"}},
 		{schema: "ExternalPackageCoreActionSummary", properties: []string{"action_id", "effect", "method"}},
 		{schema: "ExternalPackageIntentSummary", properties: []string{"intent_id", "method"}},
-		{schema: "ExternalPackageSurfaceSummary", properties: []string{"default_size", "entry", "icon", "intent", "kind", "label", "surface_id"}},
+		{schema: "ExternalPackageSurfaceSummary", properties: []string{"default_size", "entry", "icon", "intent", "kind", "label", "settings", "storage", "surface_id"}},
 		{schema: "ExternalPackageSizeSummary", properties: []string{"height", "width"}},
 		{schema: "ExternalPackageSecuritySummary", properties: []string{"background", "capability_contracts", "core_actions", "data_upgrade", "intents", "methods", "network", "permissions", "process", "secret_refs", "storage", "summary_sha256", "surfaces", "workers"}},
 	}
