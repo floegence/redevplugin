@@ -5420,3 +5420,41 @@ type httpTestWebOrigins struct{}
 func (httpTestWebOrigins) AllocateSurfaceOrigin(_ context.Context, req host.SurfaceOriginRequest) (host.SurfaceOrigin, error) {
 	return host.SurfaceOrigin{Origin: "https://" + req.OriginKey + ".plugins.example", ParentOrigin: "https://host.example"}, nil
 }
+
+func TestHandlerSurfaceExecutionAuthority(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{capabilityID: "example.capability.echo", capabilityAdapter: adapter})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPOperationRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	gateway := openHTTPBridge(t, handler, installed.PluginInstanceID, installed.ManagementRevision, "http.operation.view", "surface_http_execution", "bridge_http_execution")
+	scope := host.SurfaceExecutionScope{PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_http_execution", BridgeChannelID: "bridge_http_execution", GatewayToken: gateway.GatewayToken}
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{"plugin_instance_id": scope.PluginInstanceID, "surface_instance_id": scope.SurfaceInstanceID, "bridge_channel_id": scope.BridgeChannelID, "plugin_gateway_token": scope.GatewayToken, "method": "documents.archive"})
+	base := "/_redevplugin/api/plugins/executions/" + result.ExecutionID
+	postJSON[execution.Execution](t, handler, base+"/query", map[string]any{"surface": scope})
+	postJSON[executionEventListResponse](t, handler, base+"/events/query", map[string]any{"surface": scope, "after_cursor": 0})
+	invalid := scope
+	invalid.PluginInstanceID = "other_plugin"
+	for _, suffix := range []string{"/query", "/events/query", "/cancel"} {
+		body := map[string]any{"surface": invalid}
+		if suffix == "/events/query" {
+			body["after_cursor"] = 0
+		}
+		postJSONError(t, handler, base+suffix, body, http.StatusNotFound)
+	}
+	current := postJSON[execution.Execution](t, handler, base+"/query", map[string]any{})
+	if current.Status != execution.StatusRunning {
+		t.Fatalf("unauthorized cancellation changed execution: %#v", current)
+	}
+	for _, scopeValue := range []any{nil, map[string]any{}, map[string]any{"plugin_instance_id": scope.PluginInstanceID}} {
+		postJSONError(t, handler, base+"/query", map[string]any{"surface": scopeValue}, http.StatusBadRequest)
+	}
+
+	postJSON[execution.Execution](t, handler, base+"/cancel", map[string]any{"surface": scope})
+}

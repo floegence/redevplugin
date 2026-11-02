@@ -1976,7 +1976,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     try {
       await this.#postMutationJSON(
         `/_redevplugin/api/plugins/executions/${encodeURIComponent(message.execution_id)}/cancel`,
-        { reason: message.reason },
+        () => ({ surface: this.#executionScope(), reason: message.reason }),
         controller.signal,
       );
       if (!controller.signal.aborted && !this.#disposed) this.#postResponse(message.id, undefined);
@@ -1994,10 +1994,10 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     try {
       const snapshot = await this.#postJSON<unknown>(
         `/_redevplugin/api/plugins/executions/${encodeURIComponent(message.execution_id)}/query`,
-        {},
+        () => ({ surface: this.#executionScope() }),
         controller.signal,
       );
-      if (!isPluginExecutionSnapshot(snapshot) || snapshot.execution_id !== message.execution_id) {
+      if (!isPluginExecutionSnapshot(snapshot) || snapshot.execution_id !== message.execution_id || snapshot.plugin_instance_id !== this.bootstrap.pluginInstanceId) {
         throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin execution snapshot endpoint returned an invalid response");
       }
       if (!controller.signal.aborted && !this.#disposed) this.#postResponse(message.id, snapshot);
@@ -2015,7 +2015,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     try {
       const result = await this.#postJSON<unknown>(
         `/_redevplugin/api/plugins/executions/${encodeURIComponent(message.execution_id)}/events/query`,
-        { after_cursor: message.after_cursor },
+        () => ({ surface: this.#executionScope(), after_cursor: message.after_cursor }),
         controller.signal,
       );
       if (!isPluginExecutionEventList(result, message.execution_id, message.after_cursor)) {
@@ -2029,6 +2029,16 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     } finally {
       if (this.#pendingRequestControllers.get(message.id) === controller) this.#pendingRequestControllers.delete(message.id);
     }
+  }
+
+  #executionScope(): Record<string, string> {
+    if (!this.#gatewayToken) throw new PluginBridgeError("PLUGIN_EXECUTION_BLOCKED", "Plugin surface gateway is unavailable");
+    return {
+      plugin_instance_id: this.bootstrap.pluginInstanceId,
+      surface_instance_id: this.bootstrap.surfaceInstanceId,
+      bridge_channel_id: this.bridgeChannelId,
+      plugin_gateway_token: this.#gatewayToken,
+    };
   }
 
   #registerPendingRequest(id: string): AbortController {

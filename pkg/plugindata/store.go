@@ -128,19 +128,20 @@ type FileStore struct {
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
 	// Keeps orphan collection from observing a directory before its catalog commit.
-	publicationMu   sync.Mutex
-	closed          bool
-	usageMu         sync.Mutex
-	usage           map[string]namespaceUsage
-	usageFlights    map[string]*namespaceUsageFlight
-	usageClosing    bool
-	usageLoaderWG   sync.WaitGroup
-	namespaceDBMu   sync.Mutex
-	namespaceDB     map[string]*namespaceDBEntry
-	namespaceDBTick uint64
-	namespaceDBWake chan struct{}
-	namespaceLocks  keyedLocks
-	sqliteQueries   sync.Map
+	publicationMu    sync.Mutex
+	closed           bool
+	usageMu          sync.Mutex
+	usage            map[string]namespaceUsage
+	usageFlights     map[string]*namespaceUsageFlight
+	usageClosing     bool
+	usageLoaderWG    sync.WaitGroup
+	namespaceDBMu    sync.Mutex
+	namespaceDB      map[string]*namespaceDBEntry
+	namespaceDBTick  uint64
+	namespaceDBWake  chan struct{}
+	namespaceLocks   keyedLocks
+	sqliteQueries    sync.Map
+	sqliteOperations chan struct{}
 }
 
 func (*FileStore) Durable() bool { return true }
@@ -173,20 +174,21 @@ func Open(ctx context.Context, root string, catalog Catalog) (*FileStore, error)
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	store := &FileStore{
-		root:            resolvedRoot,
-		catalog:         catalog,
-		now:             func() time.Time { return time.Now().UTC() },
-		locks:           keyedLocks{locks: map[string]*keyedLock{}},
-		objectLocks:     keyedLocks{locks: map[string]*keyedLock{}},
-		rootLock:        lock,
-		rootHandle:      rootHandle,
-		lifecycleCtx:    lifecycleCtx,
-		lifecycleCancel: lifecycleCancel,
-		usage:           map[string]namespaceUsage{},
-		usageFlights:    map[string]*namespaceUsageFlight{},
-		namespaceDB:     map[string]*namespaceDBEntry{},
-		namespaceDBWake: make(chan struct{}),
-		namespaceLocks:  keyedLocks{locks: map[string]*keyedLock{}},
+		root:             resolvedRoot,
+		catalog:          catalog,
+		now:              func() time.Time { return time.Now().UTC() },
+		locks:            keyedLocks{locks: map[string]*keyedLock{}},
+		objectLocks:      keyedLocks{locks: map[string]*keyedLock{}},
+		rootLock:         lock,
+		rootHandle:       rootHandle,
+		lifecycleCtx:     lifecycleCtx,
+		lifecycleCancel:  lifecycleCancel,
+		usage:            map[string]namespaceUsage{},
+		usageFlights:     map[string]*namespaceUsageFlight{},
+		namespaceDB:      map[string]*namespaceDBEntry{},
+		namespaceDBWake:  make(chan struct{}),
+		sqliteOperations: make(chan struct{}, maxConcurrentSQLiteOperations),
+		namespaceLocks:   keyedLocks{locks: map[string]*keyedLock{}},
 	}
 	store.ops.rename = os.Rename
 	store.ops.copyDir = store.copyDirectory

@@ -500,3 +500,32 @@ Host products must:
   bypassing ReDevPlugin permission, token, lease, broker, audit, and lifecycle
   chains;
 - keep product-specific capability implementations outside ReDevPlugin core.
+
+## Broker Boundary Enforcement
+
+Execution IDs identify records; they do not grant another plugin authority. The
+trusted parent SDK attaches its current surface gateway to query, event and cancel
+requests after any lease renewal. The Host verifies that gateway's plugin, exact
+session, bridge channel, generation and revisions, and requires the execution's
+plugin to match before returning data or requesting cancellation. Native host
+management retains owner-scoped access. Applications keep the existing execution
+SDK and never receive gateway credentials or supply the trusted scope.
+
+The local process grant does not override method or authenticated session ceilings.
+Start, stdin writes/closure, termination, kill and close require both CanRead and
+CanWrite and a non-read method. Attach, status, output reads and wait require
+CanRead. The same broker applies to preflight and already-installed packages;
+signed manifests and retained data are not rewritten. A read method may retain
+historical process declarations, but mutating operations return PERMISSION_DENIED.
+
+SQLite broker queries and transactions use a pinned physical connection with a
+compiler authorizer, including nested views/triggers and quoted identifiers.
+ATTACH, DETACH, PRAGMA metadata and extension loading are denied. Read queries
+also deny writes and the previously prohibited allocation functions. Runtime
+limits bound each intermediate value/row to 4 MiB, SQL to 64 KiB, expression depth
+to 100, compound terms to 32, VM instructions to 100,000 and bind parameters to 64.
+At most eight broker operations execute concurrently per FileStore across all
+plugin namespaces. Existing response, cell, storage and timeout limits remain.
+These bounds constrain allocations before result serialization; they do not
+claim an operating-system memory sandbox for the entire Go Host. Ordinary SQL
+and Web application packaging require no extra configuration.

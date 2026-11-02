@@ -25,7 +25,7 @@ func TestSessionScopedPublicResourcePathsHoldReservationThroughMutation(t *testi
 		"OpenSurface": false, "PrepareSurface": false, "DisposeSurface": false,
 		"MintBridgeToken": false, "CallPluginMethod": false, "PrepareMethodConfirmation": false,
 		"RejectMethodConfirmation": false,
-		"InvokeIntent":             false, "CancelExecution": false,
+		"InvokeIntent":             false, "cancelExecution": false,
 		"MintConnectionGrant": false, "MintNetworkHandleGrant": false, "MintStorageHandleGrant": false,
 	}
 	for _, entry := range entries {
@@ -69,5 +69,40 @@ func TestSessionScopedPublicResourcePathsHoldReservationThroughMutation(t *testi
 		if !found {
 			t.Errorf("required session-scoped public path %s was not found", function)
 		}
+	}
+}
+
+// Both entry points must share the implementation that holds the session fence.
+func TestExecutionCancelEntrypointsDelegateToReservedImplementation(t *testing.T) {
+	_, currentFile, _, _ := runtime.Caller(0)
+	parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(filepath.Dir(currentFile), "execution_facade.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, declaration := range parsed.Decls {
+		fn, ok := declaration.(*ast.FuncDecl)
+		if !ok || (fn.Name.Name != "CancelExecution" && fn.Name.Name != "CancelSurfaceExecution") {
+			continue
+		}
+		found++
+		if len(fn.Body.List) != 1 {
+			t.Fatalf("%s must delegate without side effects", fn.Name.Name)
+		}
+		statement, ok := fn.Body.List[0].(*ast.ReturnStmt)
+		if !ok || len(statement.Results) != 1 {
+			t.Fatal("expected single delegated result")
+		}
+		call, ok := statement.Results[0].(*ast.CallExpr)
+		if !ok {
+			t.Fatal("expected delegated call")
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "cancelExecution" {
+			t.Fatal("cancellation bypassed reserved implementation")
+		}
+	}
+	if found != 2 {
+		t.Fatalf("found %d cancellation entry points", found)
 	}
 }

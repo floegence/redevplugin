@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
+	"github.com/floegence/redevplugin/v3/pkg/bridge"
 	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
@@ -30,6 +32,15 @@ type ListExecutionsOptions struct {
 // authenticated session owner. Cross-owner identities are indistinguishable
 // from absent records.
 func (h *Host) GetExecution(ctx context.Context, id string) (execution.Execution, error) {
+	return h.getExecution(ctx, id, nil)
+}
+
+// GetSurfaceExecution restricts the authenticated parent transport to its plugin.
+func (h *Host) GetSurfaceExecution(ctx context.Context, id string, scope SurfaceExecutionScope) (execution.Execution, error) {
+	return h.getExecution(ctx, id, &scope)
+}
+
+func (h *Host) getExecution(ctx context.Context, id string, scope *SurfaceExecutionScope) (execution.Execution, error) {
 	id = strings.TrimSpace(id)
 	authorization, err := h.authorizeManagement(ctx, ManagementActionGetExecution, authorizationTarget(ResourceExecution, id))
 	if err != nil {
@@ -43,7 +54,14 @@ func (h *Host) GetExecution(ctx context.Context, id string) (execution.Execution
 	if h.controlStore == nil {
 		return execution.Execution{}, ErrControlStoreRequired
 	}
-	return h.controlStore.Executions().GetOwned(ctx, id, executionOwner(authorization.session))
+	current, err := h.controlStore.Executions().GetOwned(ctx, id, executionOwner(authorization.session))
+	if err != nil {
+		return execution.Execution{}, err
+	}
+	if err := h.authorizeSurfaceExecution(ctx, authorization.session, current, scope); err != nil {
+		return execution.Execution{}, err
+	}
+	return current, nil
 }
 
 // ListExecutions returns one owner-scoped page ordered by the control store's
@@ -86,6 +104,15 @@ func (h *Host) ListExecutionsWithOptions(ctx context.Context, options ListExecut
 // Execution state machine. reason is accepted for the command/audit boundary;
 // it does not create a second durable status field.
 func (h *Host) CancelExecution(ctx context.Context, id, reason string) (execution.Execution, error) {
+	return h.cancelExecution(ctx, id, reason, nil)
+}
+
+// CancelSurfaceExecution verifies surface authority before requesting cancellation.
+func (h *Host) CancelSurfaceExecution(ctx context.Context, id, reason string, scope SurfaceExecutionScope) (execution.Execution, error) {
+	return h.cancelExecution(ctx, id, reason, &scope)
+}
+
+func (h *Host) cancelExecution(ctx context.Context, id, reason string, scope *SurfaceExecutionScope) (execution.Execution, error) {
 	id = strings.TrimSpace(id)
 	authorization, err := h.authorizeManagement(ctx, ManagementActionCancelExecution, authorizationTarget(ResourceExecution, id))
 	if err != nil {
@@ -111,6 +138,9 @@ func (h *Host) CancelExecution(ctx context.Context, id, reason string) (executio
 	if err != nil {
 		return execution.Execution{}, err
 	}
+	if err := h.authorizeSurfaceExecution(ctx, authorization.session, current, scope); err != nil {
+		return execution.Execution{}, err
+	}
 	if current.Status == execution.StatusCancelRequested {
 		return current, nil
 	}
@@ -133,6 +163,15 @@ func (h *Host) CancelExecution(ctx context.Context, id, reason string) (executio
 // EventsAfter returns the unified event envelope for one exact owner-bound
 // execution and cursor.
 func (h *Host) EventsAfter(ctx context.Context, id string, cursor uint64, limit int) ([]execution.Event, error) {
+	return h.eventsAfter(ctx, id, cursor, limit, nil)
+}
+
+// SurfaceEventsAfter applies the same current gateway and plugin ownership checks.
+func (h *Host) SurfaceEventsAfter(ctx context.Context, id string, cursor uint64, limit int, scope SurfaceExecutionScope) ([]execution.Event, error) {
+	return h.eventsAfter(ctx, id, cursor, limit, &scope)
+}
+
+func (h *Host) eventsAfter(ctx context.Context, id string, cursor uint64, limit int, scope *SurfaceExecutionScope) ([]execution.Event, error) {
 	id = strings.TrimSpace(id)
 	authorization, err := h.authorizeManagement(ctx, ManagementActionListExecutionEvents, authorizationTarget(ResourceExecution, id))
 	if err != nil {
@@ -146,6 +185,15 @@ func (h *Host) EventsAfter(ctx context.Context, id string, cursor uint64, limit 
 	if h.controlStore == nil {
 		return nil, ErrControlStoreRequired
 	}
+	if scope != nil {
+		current, err := h.controlStore.Executions().GetOwned(ctx, id, executionOwner(authorization.session))
+		if err != nil {
+			return nil, err
+		}
+		if err := h.authorizeSurfaceExecution(ctx, authorization.session, current, scope); err != nil {
+			return nil, err
+		}
+	}
 	return h.controlStore.Executions().EventsAfterOwned(ctx, id, executionOwner(authorization.session), cursor, limit)
 }
 
@@ -154,4 +202,45 @@ func executionOwner(session sessionctx.Context) controlstore.ExecutionOwner {
 		OwnerSessionHash: session.OwnerSessionHash, OwnerUserHash: session.OwnerUserHash,
 		OwnerEnvHash: session.OwnerEnvHash, SessionChannelIDHash: session.SessionChannelIDHash,
 	}
+}
+
+// SurfaceExecutionScope is supplied by the trusted parent SDK, never the Web
+// application. Credentials stay bound to the current channel and frame generation.
+type SurfaceExecutionScope struct {
+	PluginInstanceID  string `json:"plugin_instance_id"`
+	SurfaceInstanceID string `json:"surface_instance_id"`
+	BridgeChannelID   string `json:"bridge_channel_id"`
+	GatewayToken      string `json:"plugin_gateway_token"`
+}
+
+func (h *Host) authorizeSurfaceExecution(ctx context.Context, session sessionctx.Context, current execution.Execution, scope *SurfaceExecutionScope) error {
+	if scope == nil {
+		return nil
+	}
+	if scope.PluginInstanceID == "" || scope.SurfaceInstanceID == "" || scope.BridgeChannelID == "" || scope.GatewayToken == "" {
+		return bridge.ErrTokenAudience
+	}
+	if current.PluginInstanceID != scope.PluginInstanceID {
+		return controlstore.ErrRecordNotFound
+	}
+	record, err := h.getPluginRecord(ctx, scope.PluginInstanceID)
+	if err != nil {
+		return err
+	}
+	if record.EnableState != registry.EnableEnabled {
+		return controlstore.ErrRecordNotFound
+	}
+	if err := h.canRun(ctx, record); err != nil {
+		return err
+	}
+	now := time.Now()
+	token, err := h.surfaceTokens.ValidateSurfaceGatewayToken(bridge.ValidateSurfaceGatewayTokenRequest{
+		GatewayToken: scope.GatewayToken, PluginInstanceID: record.PluginInstanceID, SurfaceInstanceID: scope.SurfaceInstanceID,
+		OwnerSessionHash: session.OwnerSessionHash, OwnerUserHash: session.OwnerUserHash, OwnerEnvHash: session.OwnerEnvHash, SessionChannelIDHash: session.SessionChannelIDHash,
+		BridgeChannelID: scope.BridgeChannelID, Revision: bridge.RevisionBinding{PolicyRevision: record.PolicyRevision, ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch}, Now: now,
+	})
+	if err != nil {
+		return err
+	}
+	return h.requireSurfaceGeneration(scope.SurfaceInstanceID, token.Audience.RuntimeGenerationID, now)
 }

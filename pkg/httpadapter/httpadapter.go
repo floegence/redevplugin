@@ -665,8 +665,30 @@ type patchSettingsRequest struct {
 	Remove                 []string       `json:"remove,omitempty"`
 }
 
+type optionalSurfaceExecutionScope struct{ value *host.SurfaceExecutionScope }
+
+func (scope *optionalSurfaceExecutionScope) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("surface must not be null")
+	}
+	var value host.SurfaceExecutionScope
+	if err := decodeStrictJSON(raw, &value); err != nil {
+		return err
+	}
+	if value.PluginInstanceID == "" || value.SurfaceInstanceID == "" || value.BridgeChannelID == "" || value.GatewayToken == "" {
+		return errors.New("surface requires the complete current gateway binding")
+	}
+	scope.value = &value
+	return nil
+}
+
+type getExecutionRequest struct {
+	Surface optionalSurfaceExecutionScope `json:"surface,omitempty"`
+}
+
 type cancelExecutionRequest struct {
-	Reason string `json:"reason,omitempty"`
+	Surface optionalSurfaceExecutionScope `json:"surface,omitempty"`
+	Reason  string                        `json:"reason,omitempty"`
 }
 
 type executionListResponse struct {
@@ -806,8 +828,9 @@ type listExecutionsRequest struct {
 }
 
 type listExecutionEventsRequest struct {
-	AfterCursor *uint64              `json:"after_cursor"`
-	Limit       optionalQueryInteger `json:"limit"`
+	Surface     optionalSurfaceExecutionScope `json:"surface,omitempty"`
+	AfterCursor *uint64                       `json:"after_cursor"`
+	Limit       optionalQueryInteger          `json:"limit"`
 }
 
 type listRetainedDataQueryRequest struct {
@@ -2058,7 +2081,7 @@ func (h Handler) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleGetExecution(w http.ResponseWriter, r *http.Request) {
-	var req emptyRequest
+	var req getExecutionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
@@ -2068,7 +2091,13 @@ func (h Handler) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	record, err := h.host.GetExecution(r.Context(), executionID)
+	var record execution.Execution
+	var err error
+	if req.Surface.value != nil {
+		record, err = h.host.GetSurfaceExecution(r.Context(), executionID, *req.Surface.value)
+	} else {
+		record, err = h.host.GetExecution(r.Context(), executionID)
+	}
 	if err != nil {
 		code := errorCodeForExecutionError(err)
 		writeJSON(w, httpStatusForExecutionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "execution.get", code, err), Code: code})
@@ -2088,7 +2117,13 @@ func (h Handler) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.host.CancelExecution(r.Context(), executionID, req.Reason)
+	var record execution.Execution
+	var err error
+	if req.Surface.value != nil {
+		record, err = h.host.CancelSurfaceExecution(r.Context(), executionID, req.Reason, *req.Surface.value)
+	} else {
+		record, err = h.host.CancelExecution(r.Context(), executionID, req.Reason)
+	}
 	if err != nil {
 		code := errorCodeForExecutionError(err)
 		writeMutationError(w, httpStatusForExecutionError(err), code, h.publicFailureMessage(r.Context(), "execution.cancel", code, err), errorDetails{}, mutation.ForError(err))
@@ -2117,7 +2152,12 @@ func (h Handler) handleListExecutionEvents(w http.ResponseWriter, r *http.Reques
 		writeInvalidRequestError(w, err)
 		return
 	}
-	events, err := h.host.EventsAfter(r.Context(), executionID, *req.AfterCursor, limit)
+	var events []execution.Event
+	if req.Surface.value != nil {
+		events, err = h.host.SurfaceEventsAfter(r.Context(), executionID, *req.AfterCursor, limit, *req.Surface.value)
+	} else {
+		events, err = h.host.EventsAfter(r.Context(), executionID, *req.AfterCursor, limit)
+	}
 	if err != nil {
 		code := errorCodeForExecutionError(err)
 		writeJSON(w, httpStatusForExecutionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "execution.events", code, err), Code: code})
@@ -3592,6 +3632,8 @@ func httpStatusForManagementError(err error) int {
 
 func errorCodeForExecutionError(err error) security.ErrorCode {
 	switch {
+	case isGatewayTokenValidationError(err):
+		return errorCodeForGatewayTokenError(err)
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
@@ -3611,6 +3653,8 @@ func errorCodeForExecutionError(err error) security.ErrorCode {
 
 func httpStatusForExecutionError(err error) int {
 	switch {
+	case isGatewayTokenValidationError(err):
+		return http.StatusForbidden
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, execution.ErrNotCancelable), errors.Is(err, execution.ErrInvalidTransition):

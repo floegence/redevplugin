@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.12.2
+
+- Bind parent-SDK execution queries, events and cancellation to the current surface gateway and exact plugin/session owner; preserve host management APIs and application SDK signatures.
+- Enforce authenticated read/write ceilings and read-only method effects before local process dispatch, including confirmation preflight. Preserve signed installed package identity and ordinary Web packaging.
+- Pin SQLite broker operations to a restricted physical connection, authorize compiled SQL including quoted names and stored views, and limit intermediate values, statement complexity and total concurrent operations. Block database-path metadata access without changing ordinary SQL call shapes.
+- Cover cross-plugin cancellation, invalid and revoked gateways, quoted SQL functions, bounded expression allocation, metadata views, and read-only process calls. Plugin API, runtime wire and durable schemas remain unchanged.
+
 ## v3.12.1
 
 - Bind runtime recovery observations to the exact active fingerprint, installation timestamp, and management revision; stop returning old startup failures for replaced or removed installations.

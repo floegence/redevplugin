@@ -7283,6 +7283,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
+	runtimeIORegistration.readOnly = method.Effect == manifest.MethodEffectRead
 	runtimeIORegistration.upgrade = dataUpgradeExecution(ctx)
 	if err := h.runtimeIO.register(executionCtx, invocationID, runtimeIORegistration); err != nil {
 		return dispatch, err

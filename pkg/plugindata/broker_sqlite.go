@@ -14,7 +14,8 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/storage"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -25,6 +26,8 @@ const (
 	maxSQLiteColumns              = 128
 	maxSQLiteCellBytes            = 1024 * 1024
 	maxConcurrentSQLiteQueries    = 8
+	maxConcurrentSQLiteOperations = 8
+	maxSQLiteExpressionBytes      = 4 * 1024 * 1024
 	defaultSQLiteMaxRows          = 100
 	maxSQLiteMaxRows              = 1000
 	defaultSQLiteMaxResponseBytes = 1024 * 1024
@@ -48,6 +51,11 @@ func (s *FileStore) ExecSQLite(ctx context.Context, req storage.SQLiteExecReques
 	}
 	ctx, cancel := sqliteContext(ctx, req.Timeout)
 	defer cancel()
+	releaseOperation, err := s.acquireSQLiteOperation(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer releaseOperation()
 	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceSQLite, true, func(a *namespaceAccess) error {
 		if err := rejectRootSymlinkPath(a.root, filepath.Dir(database)); err != nil {
 			return err
@@ -89,6 +97,9 @@ func (s *FileStore) ExecSQLite(ctx context.Context, req storage.SQLiteExecReques
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
+		if err := authorizeSQLiteConnection(db.Conn, false); err != nil {
+			return err
+		}
 		execResult, err := tx.ExecContext(ctx, sqlText, args...)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "full") {
@@ -123,7 +134,7 @@ func (s *FileStore) ExecSQLite(ctx context.Context, req storage.SQLiteExecReques
 		result = storage.SQLiteExecResult{Database: database, RowsAffected: rowsAffected, LastInsertID: lastInsertID, Usage: a.resultUsage()}
 		return nil
 	})
-	return result, err
+	return result, sqliteBrokerError(err)
 }
 
 func (s *FileStore) QuerySQLite(ctx context.Context, req storage.SQLiteQueryRequest) (result storage.SQLiteQueryResult, resultErr error) {
@@ -155,6 +166,11 @@ func (s *FileStore) QuerySQLite(ctx context.Context, req storage.SQLiteQueryRequ
 	}
 	ctx, cancel := sqliteContext(ctx, req.Timeout)
 	defer cancel()
+	releaseOperation, err := s.acquireSQLiteOperation(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer releaseOperation()
 	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceSQLite, false, func(a *namespaceAccess) error {
 		releaseQuery, err := s.acquireSQLiteQuery(ctx, a.usageKey)
 		if err != nil {
@@ -172,6 +188,9 @@ func (s *FileStore) QuerySQLite(ctx context.Context, req storage.SQLiteQueryRequ
 			return err
 		}
 		defer db.Close()
+		if err := authorizeSQLiteConnection(db.Conn, true); err != nil {
+			return err
+		}
 		rows, err := db.QueryContext(ctx, sqlText, args...)
 		if err != nil {
 			return err
@@ -221,7 +240,7 @@ func (s *FileStore) QuerySQLite(ctx context.Context, req storage.SQLiteQueryRequ
 		result = storage.SQLiteQueryResult{Database: database, Columns: columns, Rows: values, Usage: a.resultUsage()}
 		return nil
 	})
-	return result, err
+	return result, sqliteBrokerError(err)
 }
 
 func (s *FileStore) acquireSQLiteQuery(ctx context.Context, key string) (func(), error) {
@@ -484,7 +503,21 @@ func cloneSQLiteBlob(value []byte) []byte {
 	return clone
 }
 
-func openSQLiteDatabase(ctx context.Context, path string, readOnly bool) (*sql.DB, error) {
+// Keep the configured connection pinned: pool replacement must not drop limits.
+type sqliteDatabase struct {
+	*sql.Conn
+	db *sql.DB
+}
+
+func (db *sqliteDatabase) Close() error {
+	err := db.Conn.Close()
+	if errors.Is(err, sql.ErrConnDone) {
+		err = nil
+	}
+	return errors.Join(err, db.db.Close())
+}
+
+func openSQLiteDatabase(ctx context.Context, path string, readOnly bool) (*sqliteDatabase, error) {
 	mode := "rwc"
 	if readOnly {
 		mode = "ro"
@@ -505,7 +538,28 @@ func openSQLiteDatabase(ctx context.Context, path string, readOnly bool) (*sql.D
 			return nil, err
 		}
 	}
-	return db, nil
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	for _, limit := range []struct{ id, value int }{
+		{sqlite3.SQLITE_LIMIT_LENGTH, maxSQLiteExpressionBytes},
+		{sqlite3.SQLITE_LIMIT_SQL_LENGTH, maxSQLiteSQLBytes},
+		{sqlite3.SQLITE_LIMIT_EXPR_DEPTH, 100},
+		{sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, 32},
+		{sqlite3.SQLITE_LIMIT_VDBE_OP, 100000},
+		{sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, maxSQLiteArgs},
+		{sqlite3.SQLITE_LIMIT_ATTACHED, 0},
+		{sqlite3.SQLITE_LIMIT_WORKER_THREADS, 0},
+	} {
+		if _, err := sqlite.Limit(conn, limit.id, limit.value); err != nil {
+			conn.Close()
+			db.Close()
+			return nil, err
+		}
+	}
+	return &sqliteDatabase{Conn: conn, db: db}, nil
 }
 
 func sqliteFileUsage(path string) (namespaceUsage, error) {
@@ -535,4 +589,62 @@ func sqliteContext(parent context.Context, requested time.Duration) (context.Con
 		requested = maxSQLiteTimeout
 	}
 	return context.WithTimeout(parent, requested)
+}
+
+func (s *FileStore) acquireSQLiteOperation(ctx context.Context) (func(), error) {
+	select {
+	case s.sqliteOperations <- struct{}{}:
+		return func() { <-s.sqliteOperations }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func authorizeSQLiteConnection(conn *sql.Conn, readOnly bool) error {
+	return conn.Raw(func(raw any) error {
+		authorizer, ok := raw.(sqlite.AuthorizerRegisterer)
+		if !ok {
+			return storage.ErrInvalidSQLite
+		}
+		return authorizer.RegisterAuthorizer(func(action sqlite.AuthorizerActionCode, arg1, arg2, database, source string) sqlite.AuthorizerReturnCode {
+			switch action {
+			case sqlite.AuthAttach, sqlite.AuthDetach, sqlite.AuthPragma:
+				return sqlite.AuthorizerDeny
+			case sqlite.AuthRead:
+				if strings.HasPrefix(strings.ToLower(arg1), "pragma_") {
+					return sqlite.AuthorizerDeny
+				}
+			case sqlite.AuthFunction:
+				name := strings.ToLower(arg2)
+				if name == "load_extension" || strings.HasPrefix(name, "pragma_") {
+					return sqlite.AuthorizerDeny
+				}
+				if readOnly && (name == "randomblob" || name == "zeroblob" || name == "printf") {
+					return sqlite.AuthorizerDeny
+				}
+			}
+			if readOnly {
+				switch action {
+				case sqlite.AuthRead, sqlite.AuthSelect, sqlite.AuthFunction, sqlite.AuthRecursive:
+					return sqlite.AuthorizerOK
+				default:
+					return sqlite.AuthorizerDeny
+				}
+			}
+			return sqlite.AuthorizerOK
+		})
+	})
+}
+
+func sqliteBrokerError(err error) error {
+	var sqlErr *sqlite.Error
+	if errors.As(err, &sqlErr) {
+		switch sqlErr.Code() & 0xff {
+		case sqlite3.SQLITE_TOOBIG, sqlite3.SQLITE_NOMEM:
+			return storage.ErrSQLiteResultTooLarge
+		case sqlite3.SQLITE_AUTH:
+			return storage.ErrInvalidSQLite
+		}
+	}
+	return err
 }

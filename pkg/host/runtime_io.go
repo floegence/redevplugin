@@ -30,6 +30,7 @@ var errRuntimeIOStorageDenied = errors.New("runtime storage access is denied")
 var errRuntimeIOInvalidRequest = errors.New("runtime I/O request is invalid")
 
 type hostRuntimeIORegistration struct {
+	readOnly      bool
 	upgrade       *pluginDataUpgradeExecution
 	resource      resourceio.Invocation
 	storage       map[string]hostRuntimeIOStorageAccess
@@ -399,6 +400,17 @@ func (broker *hostRuntimeIOBroker) dispatchProcess(ctx context.Context, invocati
 		return nil, errRuntimeIOStorageDenied
 	}
 	operation := strings.TrimPrefix(request.Operation, "process.")
+	// Process grants cannot widen authenticated filesystem ceilings or method effects.
+	switch operation {
+	case "attach", "status", "read_stdout", "read_stderr", "wait":
+		if !invocation.resource.CanRead {
+			return nil, errRuntimeIOStorageDenied
+		}
+	default:
+		if invocation.readOnly || !invocation.resource.CanRead || !invocation.resource.CanWrite {
+			return nil, errRuntimeIOStorageDenied
+		}
+	}
 	defer func() {
 		if dispatchErr != nil {
 			broker.appendProcessDiagnostic(ctx, invocation, "plugin.process.operation_failed", "plugin process operation failed", operation, "", runtimeIOProcessErrorCode(dispatchErr), dispatchErr)

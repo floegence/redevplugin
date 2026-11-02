@@ -334,6 +334,7 @@ func TestHostRuntimeIOBrokerProcessUsesOpaqueOwnerAndBinaryStreams(t *testing.T)
 	}
 	t.Cleanup(func() { _ = broker.closeAll() })
 	invocation := runtimeIOTestInvocation("invocation-process", "session-process", "channel-process")
+	invocation.CanWrite = true
 	registration, err := newHostRuntimeIORegistration(invocation, workerBrokerAccess{Process: []workerProcessBrokerAccess{{Operations: []string{"start", "read_stdout", "close_stdin", "wait", "close"}}}}, map[string]string{string(manifest.PermissionProcessLocal): "grant-process"})
 	if err != nil {
 		t.Fatal(err)

@@ -2611,7 +2611,18 @@ export interface components {
             /** Format: date-time */
             expires_at: string;
         };
+        /** @description Trusted parent supplied current surface gateway. The application never receives or chooses these credentials. Execution ownership must match this plugin and the authenticated session before reads or cancellation. */
+        SurfaceExecutionScope: {
+            plugin_instance_id: string;
+            surface_instance_id: string;
+            bridge_channel_id: string;
+            plugin_gateway_token: string;
+        };
+        GetExecutionRequest: {
+            surface?: components["schemas"]["SurfaceExecutionScope"];
+        };
         ListExecutionEventsRequest: {
+            surface?: components["schemas"]["SurfaceExecutionScope"];
             after_cursor: number;
             limit?: number;
         };
@@ -2721,6 +2732,7 @@ export interface components {
             };
         };
         CancelExecutionRequest: {
+            surface?: components["schemas"]["SurfaceExecutionScope"];
             reason?: string;
         };
         CapabilityContractPin: components["schemas"]["HostCapabilityPinV1"];
@@ -3542,6 +3554,7 @@ export interface components {
                         operations: ("read" | "write" | "delete" | "list" | "get" | "put" | "query" | "exec")[];
                     }[];
                     network?: components["schemas"]["StoredManifestNetworkAccess"][];
+                    /** @description Host process grants never widen authenticated read/write ceilings. Mutating operations require a non-read method and a readable, writable session; output and status operations require read access. The Host enforces this without rewriting signed manifests. */
                     process?: {
                         operations: ("start" | "attach" | "status" | "write_stdin" | "close_stdin" | "read_stdout" | "read_stderr" | "wait" | "terminate" | "kill" | "close")[];
                     }[];
@@ -4260,6 +4273,11 @@ export interface components {
         TrustedParentBridgeTokenRequest: {
             content: {
                 "application/json": components["schemas"]["TrustedParentBridgeTokenRequest"];
+            };
+        };
+        GetExecutionRequest: {
+            content: {
+                "application/json": components["schemas"]["GetExecutionRequest"];
             };
         };
         ListExecutionEventsRequest: {
@@ -5081,7 +5099,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: components["requestBodies"]["EmptyQueryRequest"];
+        requestBody: components["requestBodies"]["GetExecutionRequest"];
         responses: {
             200: components["responses"]["ExecutionResponse"];
             default: components["responses"]["PlatformErrorResponse"];

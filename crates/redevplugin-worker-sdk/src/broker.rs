@@ -452,6 +452,8 @@ pub mod storage {
             )
         }
 
+        /// The Host bounds intermediate SQL values and authorizes compiled SQL.
+        /// Metadata access cannot expose host paths, including through stored views.
         pub fn query(request: QueryRequest) -> Result<QueryResponse, WorkerError> {
             call_broker(
                 "storage.sqlite",

@@ -101,6 +101,8 @@ struct ClientKeyRequest<'a> {
     client_key: &'a str,
 }
 
+/// The Host requires a non-read method and authenticated read/write authority.
+/// Declared process permission alone never widens those ceilings.
 pub fn start(request: &StartRequest) -> Result<Status, WorkerError> {
     call("process.start", request)
 }

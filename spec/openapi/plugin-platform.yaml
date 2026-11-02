@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.12.1
+  version: 3.12.2
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -513,7 +513,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ExecutionID"
       requestBody:
-        $ref: "#/components/requestBodies/EmptyQueryRequest"
+        $ref: "#/components/requestBodies/GetExecutionRequest"
       responses:
         "200": { $ref: "#/components/responses/ExecutionResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
@@ -1269,6 +1269,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/TrustedParentBridgeTokenRequest"
+    GetExecutionRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GetExecutionRequest"
     ListExecutionEventsRequest:
       required: true
       content:
@@ -3717,11 +3723,27 @@ components:
         asset_session_id: { type: string, minLength: 1 }
         issued_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
+    SurfaceExecutionScope:
+      type: object
+      additionalProperties: false
+      description: Trusted parent supplied current surface gateway. The application never receives or chooses these credentials. Execution ownership must match this plugin and the authenticated session before reads or cancellation.
+      required: [plugin_instance_id, surface_instance_id, bridge_channel_id, plugin_gateway_token]
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string, minLength: 1 }
+        bridge_channel_id: { type: string, minLength: 1 }
+        plugin_gateway_token: { type: string, minLength: 1 }
+    GetExecutionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        surface: { $ref: "#/components/schemas/SurfaceExecutionScope" }
     ListExecutionEventsRequest:
       type: object
       additionalProperties: false
       required: [after_cursor]
       properties:
+        surface: { $ref: "#/components/schemas/SurfaceExecutionScope" }
         after_cursor: { type: integer, minimum: 0, maximum: 9007199254740991 }
         limit: { type: integer, minimum: 1, maximum: 1000 }
     RejectSurfaceConfirmationRequest:
@@ -3887,6 +3909,7 @@ components:
       type: object
       additionalProperties: false
       properties:
+        surface: { $ref: "#/components/schemas/SurfaceExecutionScope" }
         reason: { type: string }
     CapabilityContractPin:
       $ref: "../plugin/host-capability-pin-v1.schema.json"

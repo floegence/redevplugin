@@ -478,3 +478,12 @@ bytes; the installation timestamp distinguishes those lifetimes. Identity
 changes discard the observation rather than synthesizing ready or retrying a
 mutation. Current failures remain visible; localized copy and placement belong
 to the host product. Permission and policy authorization remain per-call.
+
+### Execution authority
+
+Applications continue using the ordinary execution query, events and cancel SDK.
+The trusted parent automatically binds every request to its current surface
+credential after renewal. An ID from another plugin cannot be queried or canceled,
+even within the same host session. Hosts must upgrade the coordinated platform
+release; no application-authored gateway fields, extra manifest settings or
+custom execution dispatcher are needed.

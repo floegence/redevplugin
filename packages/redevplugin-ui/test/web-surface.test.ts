@@ -1910,18 +1910,42 @@ test("trusted parent routes current execution cancellation, snapshot, and events
   channel.port2.postMessage({ type: "redevplugin.bridge.execution.events", id: "execution_3", execution_id: execution.execution_id, after_cursor: 0 });
   await waitFor(() => channel.port1.sent.some((value) => (value as { id?: string }).id === "execution_3"));
 
+  const surface = {
+    plugin_instance_id: hostBootstrap.pluginInstanceId,
+    surface_instance_id: hostBootstrap.surfaceInstanceId,
+    bridge_channel_id: "bridge_12345678",
+    plugin_gateway_token: gatewayLease().plugin_gateway_token,
+  };
   assert.deepEqual(fetch.calls.slice(2).map((call) => ({
     input: call.input,
     body: JSON.parse(call.init.body ?? "{}"),
   })), [
-    { input: "/_redevplugin/api/plugins/executions/execution_12345678/cancel", body: { reason: "user canceled" } },
-    { input: "/_redevplugin/api/plugins/executions/execution_12345678/query", body: {} },
-    { input: "/_redevplugin/api/plugins/executions/execution_12345678/events/query", body: { after_cursor: 0 } },
+    { input: "/_redevplugin/api/plugins/executions/execution_12345678/cancel", body: { surface, reason: "user canceled" } },
+    { input: "/_redevplugin/api/plugins/executions/execution_12345678/query", body: { surface } },
+    { input: "/_redevplugin/api/plugins/executions/execution_12345678/events/query", body: { surface, after_cursor: 0 } },
   ]);
   const eventsResponse = channel.port1.sent.find((value) => (value as { id?: string }).id === "execution_3") as { ok: boolean; data: { cursor: number } };
   assert.equal(eventsResponse.ok, true);
   assert.equal(eventsResponse.data.cursor, 1);
   host.dispose();
+});
+
+test("execution queries reject snapshots from another plugin", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, bridgeChannelId: "bridge_12345678", testMessageChannel: channel, hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }) });
+  const opening = host.open(); frame.load();
+  await waitFor(() => frame.transferred.length === 1);
+  channel.port2.applicationReady(); await opening;
+  fetch.push({ execution_id: "execution_12345678", plugin_instance_id: "foreign_plugin", kind: "subscription", cursor: 0, status: "running", cancelable: true, created_at: "2026-08-13T00:00:00Z", updated_at: "2026-08-13T00:00:00Z" });
+  channel.port2.postMessage({ type: "redevplugin.bridge.execution.query", id: "execution_4", execution_id: "execution_12345678" });
+  await waitFor(() => channel.port1.sent.some(value => (value as { id?: string }).id === "execution_4"));
+  const response = channel.port1.sent.find(value => (value as { id?: string }).id === "execution_4") as { ok: boolean };
+  assert.equal(response.ok, false);
+  await host.dispose();
 });
 
 test("execution event reader rejects unknown event kinds", async () => {

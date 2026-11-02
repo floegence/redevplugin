@@ -1107,3 +1107,47 @@ func TestRetainedRecoveryMemoryCatalogAndReopenPreserveBytes(t *testing.T) {
 		t.Fatalf("stale delete=%v", err)
 	}
 }
+
+func TestSQLiteRejectsQuotedFunctionsAndMetadata(t *testing.T) {
+	ctx := pluginDataTestContext()
+	catalog := registry.NewMemoryStore()
+	store, err := plugindata.Open(ctx, resolvedTempDir(t), catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now()
+	record := putPlugin(t, catalog, "plugini_sqlite_security", now)
+	if _, err := installFileStore(t, store, catalog, ctx, record, testShape(), now); err != nil {
+		t.Fatal(err)
+	}
+	scope := pluginDataResourceScope(t, ctx, sessionctx.ScopeUser)
+	exec := func(sql string) error {
+		_, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: scope, StoreID: "db", SQL: sql})
+		return err
+	}
+	if err := exec("CREATE TABLE probe (body TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{`SELECT length("randomblob"(16777216))`, "SELECT length(format('%.*c',16777216,'x'))", `SELECT file FROM pragma_database_list`, `SELECT file FROM "pragma_database_list"`} {
+		t.Run(query, func(t *testing.T) {
+			_, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: scope, StoreID: "db", SQL: query, MaxResponseBytes: 1024})
+			if err == nil {
+				t.Fatal("unsafe query was accepted")
+			}
+		})
+	}
+	if err := exec(`CREATE VIEW leak AS SELECT file FROM "pragma_database_list"`); err == nil {
+		_, err = store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: scope, StoreID: "db", SQL: "SELECT * FROM leak"})
+		if err == nil {
+			t.Fatal("view bypassed metadata authorization")
+		}
+	}
+	if err := exec("INSERT INTO probe VALUES (format('%.*c',16777216,'x'))"); !errors.Is(err, storage.ErrSQLiteResultTooLarge) {
+		t.Fatalf("large write expression error = %v", err)
+	}
+	result, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: scope, StoreID: "db", SQL: "SELECT format('%s-%d','normal',7)"})
+	if err != nil || len(result.Rows) != 1 || result.Rows[0][0].Text == nil || *result.Rows[0][0].Text != "normal-7" {
+		t.Fatalf("ordinary SQL failed: %#v %v", result, err)
+	}
+}
