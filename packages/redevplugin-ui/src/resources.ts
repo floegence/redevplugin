@@ -240,4 +240,3 @@ export function pluginSettings<T extends Record<string, PluginJSONValue>>(scope:
     },
   });
 }
-
