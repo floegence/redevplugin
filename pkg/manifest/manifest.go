@@ -225,9 +225,11 @@ type WidgetSizeSpec struct {
 // SurfaceWebSpec maps the application's origin root to one package directory.
 // SPA fallback applies only to document navigations, never module or API reads.
 type SurfaceWebSpec struct {
-	Network []NetworkBrokerAccessSpec `json:"network,omitempty"`
-	Root    string                    `json:"root"`
-	SPA     bool                      `json:"spa"`
+	Storage  []StorageBrokerAccessSpec `json:"storage,omitempty"`
+	Settings []string                  `json:"settings,omitempty"`
+	Network  []NetworkBrokerAccessSpec `json:"network,omitempty"`
+	Root     string                    `json:"root"`
+	SPA      bool                      `json:"spa"`
 }
 
 type WorkerMode string
@@ -697,12 +699,30 @@ func validate(m Manifest, retainedPreWeb bool) error {
 	}
 	for i, surface := range m.Surfaces {
 		field := fmt.Sprintf("surfaces[%d].web", i)
+		if len(surface.Web.Storage) > 0 || len(surface.Web.Settings) > 0 {
+			if !featureDeclared(m.API.RequiredFeatures, FeatureSurfaceResources) {
+				return ValidationError{Field: field, Message: "requires surface.resources.v1"}
+			}
+		}
+		if err := validateStorageBrokerAccess(field, surface.Web.Storage, storeKinds, false); err != nil {
+			return err
+		}
+		settingsSeen := map[string]bool{}
+		for _, operation := range surface.Web.Settings {
+			if m.Settings == nil || (operation != "get" && operation != "patch") || settingsSeen[operation] {
+				return ValidationError{Field: field + ".settings", Message: "requires unique get/patch operations and declared settings"}
+			}
+			settingsSeen[operation] = true
+		}
 		if len(surface.Web.Network) > 0 && !permissionDeclared(m.Permissions, PermissionNetworkClient) {
 			return ValidationError{Field: field + ".network", Message: "requires network.client"}
 		}
 		for _, access := range surface.Web.Network {
-			if access.Transport != "http" {
-				return ValidationError{Field: field + ".network", Message: "Web applications support HTTP connections"}
+			if access.Transport != "http" && access.Transport != "websocket" {
+				return ValidationError{Field: field + ".network", Message: "Web applications support HTTP and WebSocket connections"}
+			}
+			if access.Transport == "websocket" && !featureDeclared(m.API.RequiredFeatures, FeatureSurfaceResources) {
+				return ValidationError{Field: field + ".network", Message: "WebSocket surfaces require surface.resources.v1"}
 			}
 		}
 		if err := validateNetworkBrokerAccess(field, surface.Web.Network, connectorTransports, false); err != nil {
@@ -833,8 +853,15 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 			seenProcessOperations[operation] = struct{}{}
 		}
 	}
+	if err := validateStorageBrokerAccess(field, access.Storage, stores, method.Effect == MethodEffectRead); err != nil {
+		return err
+	}
+	return validateNetworkBrokerAccess(field, access.Network, connectors, method.Effect == MethodEffectRead)
+}
+
+func validateStorageBrokerAccess(field string, access []StorageBrokerAccessSpec, stores map[string]string, readOnly bool) error {
 	seenStores := map[string]struct{}{}
-	for i, item := range access.Storage {
+	for i, item := range access {
 		itemField := fmt.Sprintf("%s.storage[%d]", field, i)
 		kind, ok := stores[item.StoreID]
 		if !ok || strings.TrimSpace(item.StoreID) == "" {
@@ -853,7 +880,7 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 			if !validStorageOperation(kind, operation) {
 				return ValidationError{Field: operationField, Message: "is not valid for the declared store kind"}
 			}
-			if method.Effect == MethodEffectRead && !readOnlyStorageOperation(operation) {
+			if readOnly && !readOnlyStorageOperation(operation) {
 				return ValidationError{Field: operationField, Message: "must be read-only for a read effect method"}
 			}
 			if _, duplicate := seenOperations[operation]; duplicate {
@@ -862,7 +889,7 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 			seenOperations[operation] = struct{}{}
 		}
 	}
-	return validateNetworkBrokerAccess(field, access.Network, connectors, method.Effect == MethodEffectRead)
+	return nil
 }
 
 func validateNetworkBrokerAccess(field string, access []NetworkBrokerAccessSpec, connectors map[string]string, readOnly bool) error {

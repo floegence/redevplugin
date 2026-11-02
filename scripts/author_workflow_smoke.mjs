@@ -19,7 +19,7 @@ let exited;
 let page;
 try {
 const project = join(directory, "source");
-const initialized = spawnSync(cli, ["init", "dev.example.author", "Author Preview", project], { encoding: "utf8" });
+const initialized = spawnSync(cli, ["init", "dev.example.author", "Author Preview", project, "--template", "worker"], { encoding: "utf8" });
 assert.equal(initialized.status, 0, initialized.stderr);
 await copyFile(join(project, "dist/ui/assets/app.js"), join(project, "ui/source.js"));
 await writeFile(join(project, "scripts/smoke-build.mjs"), 'import {copyFile,readFile} from "node:fs/promises";\nawait copyFile("ui/source.js","dist/ui/assets/app.js");\n');
@@ -56,6 +56,9 @@ try{
  });
  assert.equal(application.status, 200, JSON.stringify(application.body));
  assert.equal(application.body.data.data.message, "Browser worker acceptance");
+ await page.getByText("Test a read action",{exact:true}).click();
+ await page.getByRole("button",{name:"Run action",exact:true}).click();
+ await page.locator("#action-result").filter({hasText:"Browser worker acceptance"}).waitFor();
  await page.locator("#confirmation").evaluate(dialog=>dialog.showModal());
  await page.getByRole("button",{name:"Cancel",exact:true}).waitFor();
  assert.equal(await page.getByRole("button",{name:"Cancel",exact:true}).evaluate(button=>button===document.activeElement),true);

@@ -473,6 +473,17 @@ kind or silently importing an older lineage.
   machine contracts and fixtures when observable, release notes, and the exact
   `PlatformReleaseManifest` artifact set together before a host consumes it.
 
+## Author Resource Boundary
+
+Manifest-derived bindings never infer permissions. Pure Web Surfaces may access
+explicitly declared private resources without a forwarding Worker. Resource
+ceilings, binary streams, bounded snapshots and controlled sockets remain
+platform-owned, session/Surface-bound and revocable. Hosts present verified
+declarations and register adapters; they never implement alternate resource
+endpoints or author runtimes. Private files namespace schema 2 automatically
+upgrades recognized schema 1 and preserves retained snapshots read-only. This
+layout is separate from control and application-authored schema versions.
+
 ## Git Workflow (Worktree, Required)
 
 This section is the authoritative ReDevPlugin copy of the Git workflow. It

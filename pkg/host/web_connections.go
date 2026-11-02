@@ -54,7 +54,7 @@ func (h *Host) webNetworkInvocation(ctx context.Context, req WebConnectionReques
 		return resourceio.Invocation{}, manifest.NetworkConnectorSpec{}, ctx, nil, err
 	}
 	connector, err := connectorByID(record.Manifest, req.ConnectorID)
-	if err != nil || connector.Transport != "http" {
+	if err != nil || (connector.Transport != "http" && connector.Transport != "websocket") {
 		return resourceio.Invocation{}, connector, ctx, nil, connectivity.ErrConnectorDenied
 	}
 	var declared *manifest.NetworkBrokerAccessSpec
@@ -114,6 +114,9 @@ func (h *Host) GetWebConnection(ctx context.Context, req WebConnectionRequest) (
 		return WebConnection{}, err
 	}
 	defer cancel()
+	if connector.Transport != "http" {
+		return WebConnection{}, connectivity.ErrConnectorDenied
+	}
 	// Selection does not issue a bearer credential. Requests recheck every method.
 	methods := inv.Network[0].HTTPMethods
 	var id string
@@ -139,6 +142,11 @@ func (h *Host) OpenWebConnectionHTTP(ctx context.Context, req WebConnectionHTTPR
 	if err != nil {
 		done()
 		return nil, err
+	}
+	if connector.Transport != "http" {
+		cancel()
+		done()
+		return nil, connectivity.ErrConnectorDenied
 	}
 	var once sync.Once
 	cleanup := func() { once.Do(func() { cancel(); done() }) }

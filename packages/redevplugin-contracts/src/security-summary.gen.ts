@@ -176,11 +176,18 @@ export type ExternalPackageSurfaceSummary = {
   entry: string;
   icon?: string;
   default_size?: ExternalPackageSizeSummary;
+  storage?: Array<ExternalPackageSurfaceStorageSummary>;
+  settings?: Array<"get" | "patch">;
 };
 
 export type ExternalPackageSizeSummary = {
   width: number;
   height: number;
+};
+
+export type ExternalPackageSurfaceStorageSummary = {
+  store_id: string;
+  operations: Array<"read" | "write" | "get" | "put" | "delete" | "list" | "query" | "exec">;
 };
 
 export const securitySummarySchemas = {
@@ -1065,6 +1072,23 @@ export const securitySummarySchemas = {
       },
       "default_size": {
         "ref": "ExternalPackageSizeSummary"
+      },
+      "storage": {
+        "type": "array",
+        "items": {
+          "ref": "ExternalPackageSurfaceStorageSummary"
+        }
+      },
+      "settings": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "enum": [
+            "get",
+            "patch"
+          ]
+        }
       }
     }
   },
@@ -1085,6 +1109,37 @@ export const securitySummarySchemas = {
         "type": "integer",
         "minimum": 1,
         "maximum": 9007199254740991
+      }
+    }
+  },
+  "ExternalPackageSurfaceStorageSummary": {
+    "type": "object",
+    "required": [
+      "store_id",
+      "operations"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "store_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "operations": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write",
+            "get",
+            "put",
+            "delete",
+            "list",
+            "query",
+            "exec"
+          ]
+        }
       }
     }
   }
@@ -1975,6 +2030,23 @@ export const securitySummaryJSONSchema = {
         },
         "default_size": {
           "$ref": "#/$defs/ExternalPackageSizeSummary"
+        },
+        "storage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalPackageSurfaceStorageSummary"
+          }
+        },
+        "settings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "get",
+              "patch"
+            ]
+          }
         }
       }
     },
@@ -1995,6 +2067,37 @@ export const securitySummaryJSONSchema = {
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        }
+      }
+    },
+    "ExternalPackageSurfaceStorageSummary": {
+      "type": "object",
+      "required": [
+        "store_id",
+        "operations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "get",
+              "put",
+              "delete",
+              "list",
+              "query",
+              "exec"
+            ]
+          }
         }
       }
     }

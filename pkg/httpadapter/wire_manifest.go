@@ -125,9 +125,11 @@ type manifestWidgetSizeResponse struct {
 }
 
 type manifestSurfaceWebResponse struct {
-	Network []manifestNetworkAccessResponse `json:"network,omitempty"`
-	Root    string                          `json:"root"`
-	SPA     bool                            `json:"spa"`
+	Storage  []manifestStorageAccessResponse `json:"storage,omitempty"`
+	Settings []string                        `json:"settings,omitempty"`
+	Network  []manifestNetworkAccessResponse `json:"network,omitempty"`
+	Root     string                          `json:"root"`
+	SPA      bool                            `json:"spa"`
 }
 
 type manifestSurfaceResponse struct {
@@ -340,7 +342,10 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 			Label: surface.Label, Entry: surface.Entry, Icon: surface.Icon,
 		}
 		if surface.Web.Root != "" {
-			mapped.Web = &manifestSurfaceWebResponse{Root: surface.Web.Root, SPA: surface.Web.SPA, Network: publicNetworkAccess(surface.Web.Network)}
+			mapped.Web = &manifestSurfaceWebResponse{Root: surface.Web.Root, SPA: surface.Web.SPA, Network: publicNetworkAccess(surface.Web.Network), Settings: append([]string(nil), surface.Web.Settings...)}
+			for _, access := range surface.Web.Storage {
+				mapped.Web.Storage = append(mapped.Web.Storage, manifestStorageAccessResponse{StoreID: access.StoreID, Operations: append([]string(nil), access.Operations...)})
+			}
 		}
 		if surface.DefaultSize != nil {
 			mapped.DefaultSize = &manifestWidgetSizeResponse{Width: surface.DefaultSize.Width, Height: surface.DefaultSize.Height}

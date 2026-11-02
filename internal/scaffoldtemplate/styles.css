@@ -7,8 +7,9 @@ h1 { font-size: 24px; letter-spacing: -.03em; }
 .eyebrow { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-foreground); }
 .intro, .response > span { color: var(--muted-foreground); }
 .echo-form { display: grid; gap: 10px; }
-input, button { font: inherit; min-height: 40px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
-input { background: var(--background); color: var(--foreground); }
+input, button, textarea { font: inherit; min-height: 40px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
+input, textarea { background: var(--background); color: var(--foreground); }
+textarea { width:100%; resize:vertical; min-height:160px; line-height:1.6; }
 button { background: var(--primary); color: var(--primary-foreground); cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }

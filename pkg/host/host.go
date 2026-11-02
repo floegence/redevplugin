@@ -7284,6 +7284,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		return dispatch, err
 	}
 	runtimeIORegistration.readOnly = method.Effect == manifest.MethodEffectRead
+	runtimeIORegistration.storageTransactions = containsManifestFeature(record.Manifest.API.RequiredFeatures, manifest.FeatureStorageTransactions)
 	runtimeIORegistration.upgrade = dataUpgradeExecution(ctx)
 	if err := h.runtimeIO.register(executionCtx, invocationID, runtimeIORegistration); err != nil {
 		return dispatch, err

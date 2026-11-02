@@ -3776,6 +3776,7 @@ var opening = false;
 var stopped = false;
 var buildError = "";
 var surfaceError = "";
+var activeSurface = "";
 var authenticatedFetch = (input, init) => fetch(input, { ...init, headers: { ...init.headers, "X-ReDevPlugin-CSRF": csrf } });
 var client = new PluginPlatformClient({ fetch: authenticatedFetch, surfaceScope: scope, surfaceTransport: createReDevPluginSurfaceTransport({ fetch: authenticatedFetch }) });
 reload.onclick = () => {
@@ -3812,7 +3813,7 @@ async function poll() {
     if (!response.ok) throw new Error("Developer session expired. Open the current CLI preview URL.");
     const state = await response.json();
     csrf = state.csrf;
-    status.textContent = state.restart_required ? "Preview paused. Restart the command to reconcile package state." : state.building ? "Building\u2026 Your current preview remains available." : state.error ? "Build failed. Showing the last valid preview." : "Ready \xB7 real runtime";
+    status.textContent = state.restart_required ? "Preview paused. Restart the command to reconcile package state." : state.building ? "Building\u2026 Your current preview remains available." : state.error ? "Build failed. Showing the last valid preview." : state.mode === "web" ? "Ready \xB7 Web application" : "Ready \xB7 real runtime";
     output.textContent = state.output;
     buildError = state.error;
     renderError();
@@ -3851,13 +3852,14 @@ async function refreshCatalog(open) {
     surfaces.append(option);
   }
   if (Array.from(surfaces.options).some((option) => option.value === selected)) surfaces.value = selected;
+  renderInspector(record);
   await renderPermissions(record);
   if (open) await openSelected();
 }
 async function renderPermissions(current) {
   const [requirements, grants] = await Promise.all([client.getPermissionRequirements({ plugin_instance_id: current.plugin_instance_id }), client.listPermissions({ plugin_instance_id: current.plugin_instance_id, active_only: true })]);
   permissions.replaceChildren();
-  for (const permission of requirements.required_permissions) {
+  for (const permission of /* @__PURE__ */ new Set([...current.manifest.permissions ?? [], ...requirements.required_permissions])) {
     const granted = grants.permissions.some((grant) => grant.permission_id === permission && grant.effect === "grant");
     const button = document.createElement("button");
     button.type = "button";
@@ -3886,13 +3888,17 @@ async function openSelected() {
     showError("This surface requires attention: " + available.blocked_reason);
     return;
   }
+  activeSurface = "";
+  delete element("stage").dataset.surfaceInstance;
   opening = true;
   reload.disabled = true;
   surfaces.disabled = true;
   surfaceError = "";
   renderError();
   try {
-    await client.openSurfaceInSlot(slot, { plugin_instance_id: record.plugin_instance_id, surface_id: surfaces.value, expected_management_revision: record.management_revision }, { confirm: confirmAction, onError: showError });
+    const opened = await client.openSurfaceInSlot(slot, { plugin_instance_id: record.plugin_instance_id, surface_id: surfaces.value, expected_management_revision: record.management_revision }, { confirm: confirmAction, onError: showError });
+    activeSurface = opened.surfaceInstanceId;
+    element("stage").dataset.surfaceInstance = activeSurface;
   } finally {
     opening = false;
     reload.disabled = false;
@@ -3919,3 +3925,53 @@ function confirmAction(intent) {
     dialog.showModal();
   });
 }
+function renderInspector(current) {
+  const manifest = current.manifest;
+  element("contract").textContent = JSON.stringify({ surfaces: manifest.surfaces, storage: manifest.storage, network: manifest.network_access, workers: manifest.workers }, null, 2);
+  const actions = element("actions");
+  actions.replaceChildren();
+  for (const intent of manifest.intents ?? []) {
+    const method = manifest.methods?.find((item) => item.method === intent.method);
+    if (method?.effect !== "read") continue;
+    const option = document.createElement("option");
+    option.value = intent.intent_id;
+    option.textContent = intent.intent_id;
+    actions.append(option);
+  }
+  const button = element("action-run");
+  button.disabled = !actions.options.length;
+  button.onclick = () => {
+    void (async () => {
+      button.disabled = true;
+      try {
+        const params = JSON.parse(element("action-params").value);
+        if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("Parameters must be a JSON object");
+        const intent = current.manifest.intents?.find((item) => item.intent_id === actions.value);
+        const method = current.manifest.methods?.find((item) => item.method === intent?.method);
+        if (method?.route.kind === "surface" && !activeSurface) throw new Error("Open the target Surface before invoking its action");
+        const result = await client.invokeIntent({ plugin_instance_id: current.plugin_instance_id, intent_id: actions.value, ...method?.route.kind === "surface" ? { surface_instance_id: activeSurface } : {}, params });
+        element("action-result").textContent = JSON.stringify(result, null, 2);
+      } catch (error2) {
+        element("action-result").textContent = error2 instanceof Error ? error2.message : String(error2);
+      } finally {
+        button.disabled = !actions.options.length;
+      }
+    })();
+  };
+}
+var observations = element("observations-refresh");
+observations.onclick = () => {
+  void (async () => {
+    if (!record) return;
+    observations.disabled = true;
+    try {
+      const query = { plugin_instance_id: record.plugin_instance_id, limit: 25 };
+      const [tasks, diagnostics] = await Promise.all([client.listExecutions(query), client.listDiagnosticEvents(query)]);
+      element("observations-result").textContent = JSON.stringify({ tasks, diagnostics }, null, 2);
+    } catch (error2) {
+      element("observations-result").textContent = error2 instanceof Error ? error2.message : String(error2);
+    } finally {
+      observations.disabled = false;
+    }
+  })();
+};

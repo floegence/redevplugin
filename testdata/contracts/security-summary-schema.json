@@ -880,6 +880,23 @@
       },
       "default_size": {
         "ref": "ExternalPackageSizeSummary"
+      },
+      "storage": {
+        "type": "array",
+        "items": {
+          "ref": "ExternalPackageSurfaceStorageSummary"
+        }
+      },
+      "settings": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "enum": [
+            "get",
+            "patch"
+          ]
+        }
       }
     }
   },
@@ -900,6 +917,37 @@
         "type": "integer",
         "minimum": 1,
         "maximum": 9007199254740991
+      }
+    }
+  },
+  "ExternalPackageSurfaceStorageSummary": {
+    "type": "object",
+    "required": [
+      "store_id",
+      "operations"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "store_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "operations": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write",
+            "get",
+            "put",
+            "delete",
+            "list",
+            "query",
+            "exec"
+          ]
+        }
       }
     }
   }

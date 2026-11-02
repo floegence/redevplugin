@@ -1,0 +1,68 @@
+{
+  "valid": [
+    {
+      "resource": "storage.kv",
+      "arguments": {
+        "operation": "put",
+        "store_id": "notes",
+        "key": "draft",
+        "value_base64": "YQ==",
+        "expected_etag": ""
+      }
+    },
+    {
+      "resource": "storage.sqlite",
+      "arguments": {
+        "operation": "exec",
+        "store_id": "db",
+        "statements": [
+          {
+            "sql": "INSERT INTO notes VALUES(?)",
+            "args": [
+              {
+                "text": "hello"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "resource": "describe",
+      "arguments": {}
+    }
+  ],
+  "invalid": [
+    {
+      "resource": "storage.kv",
+      "arguments": {
+        "operation": "get",
+        "store_id": "notes",
+        "key": "draft",
+        "plugin_instance_id": "other"
+      }
+    },
+    {
+      "resource": "storage.kv",
+      "arguments": {
+        "operation": "get",
+        "store_id": "notes",
+        "key": "draft",
+        "max_bytes": 65537
+      }
+    },
+    {
+      "resource": "storage.sqlite",
+      "arguments": {
+        "operation": "exec",
+        "store_id": "db",
+        "sql": "SELECT 1",
+        "statements": [
+          {
+            "sql": "SELECT 2"
+          }
+        ]
+      }
+    }
+  ]
+}

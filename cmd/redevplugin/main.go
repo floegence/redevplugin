@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/floegence/redevplugin/v3/pkg/authorapi"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -78,6 +79,8 @@ type scaffoldSummary struct {
 }
 
 type scaffoldManifestV9 struct {
+	NetworkAccess *manifest.NetworkAccessSpec   `json:"network_access,omitempty"`
+	Storage       *manifest.StorageSpec         `json:"storage,omitempty"`
 	SchemaVersion string                        `json:"schema_version"`
 	Publisher     manifest.Publisher            `json:"publisher"`
 	Plugin        scaffoldPluginV9              `json:"plugin"`
@@ -214,6 +217,16 @@ func run(ctx context.Context, args []string) error {
 		return usage()
 	}
 	switch args[0] {
+	case "check", "doctor":
+		if len(args) != 2 {
+			return usage()
+		}
+		return runAuthorCheck(ctx, args[1], args[0] == "doctor")
+	case "generate":
+		if len(args) != 3 && (len(args) != 4 || args[3] != "--check") {
+			return usage()
+		}
+		return generateAuthorAPI(args[1], args[2], len(args) == 4)
 	case "validate":
 		if len(args) != 2 {
 			return usage()
@@ -229,10 +242,21 @@ func run(ctx context.Context, args []string) error {
 	case "test":
 		return runAuthorTest(ctx, args[1:])
 	case "init", "scaffold":
-		if len(args) != 4 {
+		if len(args) != 4 && (len(args) != 6 || args[4] != "--template") {
 			return usage()
 		}
-		return scaffoldPlugin(args[1], args[2], args[3])
+		template := "web"
+		if args[0] == "scaffold" {
+			template = "worker"
+		}
+		if len(args) == 6 {
+			template = args[5]
+		}
+		summary, err := createPluginTemplate(args[1], args[2], args[3], template)
+		if err != nil {
+			return err
+		}
+		return writeJSON(summary)
 	case "keygen":
 		if len(args) != 4 {
 			return usage()
@@ -495,15 +519,14 @@ func buildPackage(ctx context.Context, srcDir string, outFile string) error {
 	})
 }
 
-func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
-	summary, err := createPluginScaffold(pluginID, displayName, outDir)
-	if err != nil {
-		return err
-	}
-	return writeJSON(summary)
+func createPluginScaffold(pluginID string, displayName string, outDir string) (scaffoldSummary, error) {
+	return createPluginTemplate(pluginID, displayName, outDir, "worker")
 }
 
-func createPluginScaffold(pluginID string, displayName string, outDir string) (scaffoldSummary, error) {
+func createPluginTemplate(pluginID string, displayName string, outDir string, template string) (scaffoldSummary, error) {
+	if template != "web" && template != "data" && template != "worker" && template != "monitor" && template != "files" {
+		return scaffoldSummary{}, fmt.Errorf("unknown template %q; choose web, data, worker, monitor or files", template)
+	}
 	pluginID = strings.TrimSpace(pluginID)
 	displayName = strings.TrimSpace(displayName)
 	outDir = strings.TrimSpace(outDir)
@@ -552,7 +575,31 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		ResponseSchema: closedRequiredMethodObjectSchema(map[string]any{"message": map[string]any{"type": "string"}}, []string{"message"}),
 	})
 	manifestDoc.Intents = []manifest.IntentSpec{{IntentID: "application.read", Method: "application.read"}}
+	if template != "worker" {
+		manifestDoc.Workers = []scaffoldWorkerV9{}
+		manifestDoc.Methods = manifestDoc.Methods[1:]
+		manifestDoc.API.OptionalFeatures = nil
+	}
 
+	if template == "data" {
+		manifestDoc.API.RequiredFeatures = []manifest.FeatureID{manifest.FeatureSurfaceResources}
+		manifestDoc.Storage = &manifest.StorageSpec{Stores: []manifest.StoreSpec{{StoreID: "documents", Kind: "kv", Scope: "user", QuotaBytes: 8 << 20, SchemaVersion: 1}}}
+		manifestDoc.Surfaces[0].Web.Storage = []manifest.StorageBrokerAccessSpec{{StoreID: "documents", Operations: []string{"get", "put", "list"}}}
+		manifestDoc.Methods[0].ResponseSchema = closedRequiredMethodObjectSchema(map[string]any{"message": map[string]any{"type": "string"}, "revision": map[string]any{"type": "integer", "minimum": 0}}, []string{"message", "revision"})
+		manifestDoc.Methods = append(manifestDoc.Methods, scaffoldMethodV9{Method: "document.replace", Effect: manifest.MethodEffectWrite, Execution: manifest.MethodExecutionSync, Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteSurface, SurfaceID: pluginID + ".view"}, RequestSchema: closedRequiredMethodObjectSchema(map[string]any{"message": map[string]any{"type": "string", "maxLength": 24000}, "expected_revision": map[string]any{"type": "integer", "minimum": 0}}, []string{"message", "expected_revision"}), ResponseSchema: closedRequiredMethodObjectSchema(map[string]any{"applied": map[string]any{"type": "boolean"}, "revision": map[string]any{"type": "integer", "minimum": 0}}, []string{"applied", "revision"})})
+		manifestDoc.Intents = append(manifestDoc.Intents, manifest.IntentSpec{IntentID: "document.replace", Method: "document.replace"})
+	}
+	if template == "monitor" {
+		manifestDoc.API.RequiredFeatures = []manifest.FeatureID{manifest.FeatureSurfaceResources, manifest.FeatureNetWebSocket}
+		manifestDoc.Permissions = []manifest.PermissionID{manifest.PermissionNetworkClient}
+		manifestDoc.NetworkAccess = &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{{ConnectorID: "events", Transport: "websocket", Scope: "user", Configurable: true}}}
+		manifestDoc.Surfaces[0].Web.Network = []manifest.NetworkBrokerAccessSpec{{ConnectorID: "events", Transport: "websocket", Operations: []string{"websocket"}}}
+	}
+	if template == "files" {
+		manifestDoc.API.RequiredFeatures = []manifest.FeatureID{manifest.FeatureSurfaceResources}
+		manifestDoc.Storage = &manifest.StorageSpec{Stores: []manifest.StoreSpec{{StoreID: "imports", Kind: "files", Scope: "user", QuotaBytes: 128 << 20, SchemaVersion: 1}}}
+		manifestDoc.Surfaces[0].Web.Storage = []manifest.StorageBrokerAccessSpec{{StoreID: "imports", Operations: []string{"read", "write", "list", "delete"}}}
+	}
 	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
 	if err != nil {
 		return scaffoldSummary{}, err
@@ -576,6 +623,31 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		"dist/ui/assets/app.js":     scaffoldSource(scaffoldAppJS, displayName),
 		"dist/ui/assets/styles.css": append([]byte(nil), scaffoldAppCSS...),
 		"dist/workers/backend.wasm": append([]byte(nil), scaffoldWorkerWASM...),
+	}
+	if _, err := manifest.Decode(bytes.NewReader(manifestBytes)); err != nil {
+		return scaffoldSummary{}, err
+	}
+	if template != "worker" {
+		configureWebTemplate(files, displayName, platformVersion)
+	}
+	if template == "data" {
+		configureDataTemplate(files, displayName)
+	}
+	if template == "monitor" || template == "files" {
+		configureResourceTemplate(files, displayName, template)
+	}
+	bindings, err := authorapi.Generate(manifestBytes)
+	if err != nil {
+		return scaffoldSummary{}, err
+	}
+	for name, data := range bindings {
+		files["generated/"+name] = data
+	}
+	if template != "worker" {
+		source := string(files["ui/src/app.ts"])
+		source = `import { registerAction } from "../../generated/actions.js";
+` + strings.ReplaceAll(strings.ReplaceAll(source, `bridge.registerMethod("application.read",`, `registerAction(bridge, "application.read",`), `bridge.registerMethod("document.replace",`, `registerAction(bridge, "document.replace",`)
+		files["ui/src/app.ts"] = []byte(source)
 	}
 	if _, err := os.Stat(outDir); err == nil {
 		entries, err := os.ReadDir(outDir)
@@ -680,7 +752,7 @@ func scaffoldTSConfig() string {
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM", "WebWorker"]
   },
-  "include": ["ui/src/**/*.ts"]
+  "include": ["ui/src/**/*.ts", "generated/**/*.ts"]
 }
 `
 }
@@ -952,7 +1024,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin init <plugin-id> <display-name> <out-dir> | redevplugin dev <source-dir> --runtime <path> --runtime-sha256 <digest> | redevplugin test <source-dir> [--runtime <path> --runtime-sha256 <digest> --surface <id> --method <name> --params <json>] | redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> [capability-contract.json ...] | redevplugin release verify <out-dir> [capability-contract.json ...] | redevplugin release extract-presentation-icon <out-dir> <out-file> [capability-contract.json ...] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
+	return fmt.Errorf("usage: redevplugin check <source-dir> | redevplugin doctor <source-dir> | redevplugin init <plugin-id> <display-name> <out-dir> [--template web|data|worker|monitor|files] | redevplugin generate <manifest.json> <output-dir> [--check] | redevplugin dev <source-dir> [--runtime <path> --runtime-sha256 <digest>] | redevplugin test <source-dir> [--runtime <path> --runtime-sha256 <digest> --surface <id> --method <name> --params <json>] | redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> [capability-contract.json ...] | redevplugin release verify <out-dir> [capability-contract.json ...] | redevplugin release extract-presentation-icon <out-dir> <out-file> [capability-contract.json ...] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {

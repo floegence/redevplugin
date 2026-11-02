@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/author-bindings.schema.json",
+  "title": "Canonical author binding source map",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_sha256",
+    "actions"
+  ],
+  "properties": {
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "method",
+          "pointer",
+          "symbol"
+        ],
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "pointer": {
+            "type": "string",
+            "pattern": "^/methods/[0-9]+$"
+          },
+          "symbol": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "description": "Generated from one validated manifest; outputs are manifest.json, actions.ts, actions.rs and source-map.json. Host validates full method schemas; static DTOs conservatively use JSON values for unsupported Rust unions/references. No permissions are inferred and no author code executes during generation."
+}

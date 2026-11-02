@@ -18,10 +18,11 @@ import (
 const (
 	namespaceDatabaseName          = "namespace.sqlite"
 	namespaceDatabaseVersion       = 1
+	filesNamespaceDatabaseVersion  = 2
 	namespaceDatabaseApplicationID = 0x52445044
 )
 
-const filesNamespaceSchema = `
+const legacyFilesNamespaceSchema = `
 CREATE TABLE namespace_usage (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     usage_bytes INTEGER NOT NULL CHECK (usage_bytes >= 0),
@@ -41,6 +42,18 @@ CREATE TABLE file_entries (
     )
 ) WITHOUT ROWID;
 CREATE INDEX file_entries_parent_path ON file_entries(parent, path);`
+
+// Version 2 retains inline values and adds bounded chunks for streamed files.
+// Historical snapshots remain readable without upgrading their signed bytes.
+var filesNamespaceSchema = strings.Replace(legacyFilesNamespaceSchema,
+	"(entry_type = 0 AND content IS NOT NULL AND size_bytes = length(content))",
+	"(entry_type = 0 AND (content IS NULL OR size_bytes = length(content)))", 1) + `
+CREATE TABLE file_chunks (
+    path TEXT NOT NULL REFERENCES file_entries(path) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    content BLOB NOT NULL CHECK (length(content) BETWEEN 1 AND 65536),
+    PRIMARY KEY (path, ordinal)
+) WITHOUT ROWID;`
 
 const kvNamespaceSchema = `
 CREATE TABLE namespace_usage (
@@ -73,7 +86,11 @@ func initializeNamespaceDatabase(ctx context.Context, root string, kind Namespac
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA application_id = %d`, namespaceDatabaseApplicationID)); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, namespaceDatabaseVersion)); err != nil {
+	version := namespaceDatabaseVersion
+	if kind == NamespaceFiles {
+		version = filesNamespaceDatabaseVersion
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, version)); err != nil {
 		return err
 	}
 	schema := filesNamespaceSchema
@@ -130,7 +147,7 @@ func openNamespaceDatabase(ctx context.Context, root string, readOnly bool) (*sq
 			db.Close()
 			return nil, contextOr(ctx, storage.ErrInvalidNamespace)
 		}
-		if version != namespaceDatabaseVersion {
+		if version != namespaceDatabaseVersion && version != filesNamespaceDatabaseVersion {
 			db.Close()
 			return nil, storage.ErrInvalidNamespace
 		}
@@ -261,6 +278,12 @@ func (s *FileStore) acquireNamespaceDatabase(ctx context.Context, key, rootPath 
 			return nil, nil, func() {}, storage.ErrInvalidNamespace
 		}
 		db, err := openNamespaceDatabase(ctx, rootPath, false)
+		if err == nil {
+			err = migrateFilesNamespace(ctx, db)
+			if err != nil {
+				_ = db.Close()
+			}
+		}
 		s.namespaceDBMu.Lock()
 		if err != nil {
 			_ = root.Close()
@@ -367,7 +390,7 @@ func validateNamespaceDatabase(ctx context.Context, root string, kind NamespaceK
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: invalid namespace database version", ErrDatasetCorrupt))
 	}
-	if version != namespaceDatabaseVersion {
+	if version != namespaceDatabaseVersion && (kind != NamespaceFiles || version != filesNamespaceDatabaseVersion) {
 		return namespaceUsage{}, fmt.Errorf("%w: invalid namespace database version", ErrDatasetCorrupt)
 	}
 	var integrity string
@@ -417,6 +440,17 @@ func validateNamespaceDatabaseObjects(ctx context.Context, db *sql.DB, kind Name
 	expected := []string{"index:file_entries_parent_path", "table:file_entries", "table:namespace_usage"}
 	if kind == NamespaceKV {
 		expected = []string{"table:kv_entries", "table:namespace_usage"}
+	} else {
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		var version int
+		if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == filesNamespaceDatabaseVersion {
+			expected = []string{"index:file_entries_parent_path", "table:file_chunks", "table:file_entries", "table:namespace_usage"}
+		}
 	}
 	if strings.Join(objects, "\x00") != strings.Join(expected, "\x00") {
 		return fmt.Errorf("%w: namespace database schema objects do not match %s model", ErrDatasetCorrupt, kind)
@@ -425,6 +459,29 @@ func validateNamespaceDatabaseObjects(ctx context.Context, db *sql.DB, kind Name
 }
 
 func validateFilesNamespaceDatabase(ctx context.Context, db *sql.DB) (namespaceUsage, error) {
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return namespaceUsage{}, err
+	}
+	if version == filesNamespaceDatabaseVersion {
+		var invalid int
+		err := db.QueryRowContext(ctx, `SELECT count(*) FROM file_entries e LEFT JOIN
+ (SELECT path,sum(length(content)) AS size,count(*) AS n,min(ordinal) AS first,max(ordinal) AS last FROM file_chunks GROUP BY path) c ON c.path=e.path
+ WHERE (e.entry_type=1 AND c.n IS NOT NULL) OR (e.content IS NOT NULL AND c.n IS NOT NULL)
+ OR (e.entry_type=0 AND e.content IS NULL AND (e.size_bytes != coalesce(c.size,0) OR (c.n IS NOT NULL AND (c.first!=0 OR c.last!=c.n-1))))`).Scan(&invalid)
+		if err != nil {
+			return namespaceUsage{}, err
+		}
+		if invalid != 0 {
+			return namespaceUsage{}, ErrDatasetCorrupt
+		}
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM file_chunks c LEFT JOIN file_entries e ON e.path=c.path WHERE e.path IS NULL`).Scan(&invalid); err != nil {
+			return namespaceUsage{}, err
+		}
+		if invalid != 0 {
+			return namespaceUsage{}, ErrDatasetCorrupt
+		}
+	}
 	rows, err := db.QueryContext(ctx, `SELECT path, parent, entry_type, size_bytes, updated_at_ns FROM file_entries ORDER BY path`)
 	if err != nil {
 		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: read files namespace database", ErrDatasetCorrupt))

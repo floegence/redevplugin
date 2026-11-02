@@ -12,7 +12,7 @@ capabilities.
 
 ## Current Platform Snapshot
 
-- Platform version source: `VERSION` (`3.1.0`)
+- Platform version source: `VERSION`
 - Go module: `github.com/floegence/redevplugin/v3`
 - TypeScript packages: the opt-in raw contract body package
   `@floegence/redevplugin-contracts` and the sandbox/runtime SDK
@@ -44,6 +44,16 @@ capabilities.
   canonical SHA-256 APIs, generated from OpenAPI and verified against Go byte
   fixtures. Hosts and markets consume this complete evidence contract instead
   of maintaining summary field lists or hash payloads independently.
+
+## Author Programming Model
+
+Start with redevplugin init: a Web application needs no Worker or runtime.
+Choose --template data, files, monitor or worker as needed. Generate typed action
+bindings from the canonical manifest; use check/doctor and the real preview for
+contract, action, task and diagnostic feedback. Surfaces access private KV,
+SQLite, settings, binary streams and controlled WebSockets through Host brokers.
+See [workflow](docs/authoring/local-workflow.md) and
+[resource semantics](docs/authoring/resources.md) for limits and examples.
 
 ## Localized Plugin Presentation
 

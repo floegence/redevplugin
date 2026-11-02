@@ -53,6 +53,30 @@ const css = await build({ entryPoints: [resolve(root, "internal/scaffoldtemplate
 await verifyOrWrite("cmd/redevplugin/scaffold_assets/styles.css", Buffer.from(css.outputFiles[0].text));
 await verifyOrWrite("cmd/redevplugin/scaffold_assets/styles-source.css", await readFile(resolve(root, "internal/scaffoldtemplate/styles.css")));
 
+const web = await build({
+  entryPoints: [resolve(root, "internal/scaffoldtemplate/web-app.ts")],
+  alias: { "@floegence/redevplugin-ui/plugin": resolve(root, "packages/redevplugin-ui/src/plugin.ts") },
+  bundle: true, format: "esm", platform: "browser", target: "es2022",
+  legalComments: "none", sourcemap: false, write: false, logLevel: "silent",
+});
+await verifyOrWrite("cmd/redevplugin/scaffold_assets/web-app.js", Buffer.from(web.outputFiles[0].text));
+await verifyOrWrite("cmd/redevplugin/scaffold_assets/web-app.ts", await readFile(resolve(root, "internal/scaffoldtemplate/web-app.ts")));
+
+const data = await build({
+  entryPoints: [resolve(root, "internal/scaffoldtemplate/data-app.ts")],
+  alias: { "@floegence/redevplugin-ui/plugin": resolve(root, "packages/redevplugin-ui/src/plugin.ts") },
+  bundle: true, format: "esm", platform: "browser", target: "es2022",
+  legalComments: "none", sourcemap: false, write: false, logLevel: "silent",
+});
+await verifyOrWrite("cmd/redevplugin/scaffold_assets/data-app.js", Buffer.from(data.outputFiles[0].text));
+await verifyOrWrite("cmd/redevplugin/scaffold_assets/data-app.ts", await readFile(resolve(root, "internal/scaffoldtemplate/data-app.ts")));
+
+for (const template of ["monitor", "files"]) {
+ const bundle = await build({ entryPoints:[resolve(root,"internal/scaffoldtemplate/"+template+"-app.ts")], alias:{"@floegence/redevplugin-ui/plugin":resolve(root,"packages/redevplugin-ui/src/plugin.ts")},bundle:true,format:"esm",platform:"browser",target:"es2022",legalComments:"none",sourcemap:false,write:false,logLevel:"silent" });
+ await verifyOrWrite("cmd/redevplugin/scaffold_assets/"+template+"-app.js",Buffer.from(bundle.outputFiles[0].text));
+ await verifyOrWrite("cmd/redevplugin/scaffold_assets/"+template+"-app.ts",await readFile(resolve(root,"internal/scaffoldtemplate/"+template+"-app.ts")));
+}
+
 const rustVersion = await readPinnedRustVersion(root);
 const sourceSnapshotOptions = {
   root,

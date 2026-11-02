@@ -1,11 +1,24 @@
 # Local author workflow
 
 Create a project with `redevplugin init <plugin-id> <display-name> <directory>`.
-The generated source uses exact published npm and Cargo SDK versions. Install
-its source dependencies before building. The generated rust-toolchain.toml pins
-Rust 1.88.0 and wasm32-unknown-unknown; rustup installs that toolchain and target
-on the first Cargo invocation. The generated package keeps audited dependency
-overrides alongside the exact SDK dependencies.
+The default is a pure Web Surface. Choose `--template data` for a multi-window
+editor, `files` for streaming imports, `monitor` for a controlled WebSocket
+dashboard, or `worker` for a WASM job. The older scaffold command retains its
+Worker starter. Only Workers need the pinned Rust 1.88.0 toolchain.
+Templates use exact published SDK dependencies; install them before building.
+
+The manifest is the single author contract. Run
+`redevplugin generate manifest.json generated` after changing public actions.
+It generates canonical metadata, typed TypeScript clients/Surface registration,
+Rust DTOs/dispatch, and JSON-pointer source mappings. Use --check to detect drift
+without writing. Host validation remains authoritative; complex Rust schemas
+use lossless serde_json::Value and unsupported TS references use PluginJSONValue.
+
+`redevplugin doctor .` checks project/manifest validity, tools and existing
+bindings without running author commands. Generation is optional; an existing
+generated directory must match. `redevplugin check .` also runs the selected
+build/tests, compares source and packaged manifests, and validates the package.
+Both commands emit structured diagnostics with codes and source paths.
 
 `redevplugin.project.json` is a closed local-source configuration. Its canonical
 schema is `spec/plugin/author-project-v1.schema.json`. The public Go
@@ -16,7 +29,8 @@ commands, and excessive input budgets fail explicitly. Changes to the project
 configuration require restarting the command. Downloaded packages never invoke
 this workflow or execute these commands.
 
-Run `redevplugin dev . --runtime <executable> --runtime-sha256 <expected-digest>`.
+Run `redevplugin dev .` for Web/data/files applications. Worker applications
+require `--runtime <executable> --runtime-sha256 <expected-digest>`.
 The executable identity must come from independently verified build evidence for
 the current platform and target. The supervisor verifies that identity before
 launch; the command does not establish trust by hashing arbitrary executables.
@@ -110,3 +124,18 @@ The CLI dev/test commands reuse this harness. CLI retains source builds,
 watching, listener ownership, preview UI, and verified runtime admission; the
 shared package owns their test-session and HTTP assembly. The defaults remain
 deny-by-default when the package is imported independently.
+
+## Inspecting a running application
+
+The preview shows the verified contract, tests declared read intents, and lists
+existing executions and diagnostics on explicit refresh. Observation never
+starts or retries a job. Permission controls remain explicit. The standard
+preview does not configure external connections for the monitor template;
+bind them through the existing host connectivity adapters.
+
+Reloading a Surface preserves data. Stopping and restarting dev explicitly
+resets its temporary data and grants. Build failures keep the last valid
+preview. No production data or unowned directory is reset.
+
+See [author resources](resources.md) for ceilings, streams, cancellation,
+conflict handling, and the reference applications' guarantees.

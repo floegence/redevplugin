@@ -278,13 +278,20 @@ type ExternalPackageIntentSummary struct {
 }
 
 type ExternalPackageSurfaceSummary struct {
-	SurfaceID   string                      `json:"surface_id"`
-	Kind        string                      `json:"kind"`
-	Intent      string                      `json:"intent"`
-	Label       string                      `json:"label"`
-	Entry       string                      `json:"entry"`
-	Icon        string                      `json:"icon,omitempty"`
-	DefaultSize *ExternalPackageSizeSummary `json:"default_size,omitempty"`
+	SurfaceID   string                                 `json:"surface_id"`
+	Kind        string                                 `json:"kind"`
+	Intent      string                                 `json:"intent"`
+	Label       string                                 `json:"label"`
+	Entry       string                                 `json:"entry"`
+	Icon        string                                 `json:"icon,omitempty"`
+	DefaultSize *ExternalPackageSizeSummary            `json:"default_size,omitempty"`
+	Storage     []ExternalPackageSurfaceStorageSummary `json:"storage,omitempty"`
+	Settings    []string                               `json:"settings,omitempty"`
+}
+
+type ExternalPackageSurfaceStorageSummary struct {
+	StoreID    string   `json:"store_id"`
+	Operations []string `json:"operations"`
 }
 
 type ExternalPackageSizeSummary struct {
@@ -515,6 +522,11 @@ func buildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 		if surface.DefaultSize != nil {
 			item.DefaultSize = &ExternalPackageSizeSummary{Width: surface.DefaultSize.Width, Height: surface.DefaultSize.Height}
 		}
+		for _, access := range surface.Web.Storage {
+			item.Storage = append(item.Storage, ExternalPackageSurfaceStorageSummary{StoreID: access.StoreID, Operations: canonicalExternalPackageStrings(access.Operations)})
+		}
+		sort.Slice(item.Storage, func(i, j int) bool { return item.Storage[i].StoreID < item.Storage[j].StoreID })
+		item.Settings = canonicalExternalPackageStrings(surface.Web.Settings)
 		surfaces = append(surfaces, item)
 	}
 	sort.Slice(surfaces, func(i, j int) bool { return surfaces[i].SurfaceID < surfaces[j].SurfaceID })

@@ -947,7 +947,7 @@ func TestSanitizeFilesystemPathRejectsTraversalAndRelativeInput(t *testing.T) {
 	}
 }
 
-func newInternalStore(t *testing.T) (*FileStore, *internalCatalog, Shape) {
+func newInternalStore(t testing.TB) (*FileStore, *internalCatalog, Shape) {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

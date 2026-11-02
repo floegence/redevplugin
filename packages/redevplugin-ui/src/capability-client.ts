@@ -53,7 +53,7 @@ export type PluginExecutionTerminalStatus = {
   }
 }[Extract<PluginExecutionSnapshot["status"], "completed" | "failed" | "canceled" | "orphaned">];
 
-type PluginExecutionObservation = {
+export type PluginExecutionObservation = {
   snapshot(options?: PluginBridgeRequestOptions): Promise<PluginExecutionSnapshot>;
   wait(options?: PluginExecutionWaitOptions): Promise<PluginExecutionTerminalStatus>;
 };
@@ -229,6 +229,14 @@ function executionObservation(bridge: PluginBridgeClient, executionID: string): 
     }
   };
   return { snapshot, wait };
+}
+
+/** Reattach to an authorized execution without invoking its action again. */
+export function observePluginExecution(bridge: PluginBridgeClient, executionID: string): PluginExecutionObservation {
+  if (typeof executionID !== "string" || executionID.length === 0 || executionID.length > 256) {
+    throw new TypeError("A valid execution ID is required");
+  }
+  return Object.freeze(executionObservation(bridge, executionID));
 }
 
 async function operationSnapshotUntilDeadline(

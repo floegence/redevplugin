@@ -41,13 +41,41 @@ func (s *FileStore) ExecSQLite(ctx context.Context, req storage.SQLiteExecReques
 	if err != nil {
 		return result, err
 	}
-	sqlText, err := normalizeSQLiteSQL(req.SQL, false)
-	if err != nil {
-		return result, err
+	statements := req.Statements
+	if len(statements) == 0 {
+		statements = []storage.SQLiteStatement{{SQL: req.SQL, Args: req.Args}}
+	} else if req.SQL != "" || len(req.Args) != 0 {
+		return result, storage.ErrInvalidSQLite
 	}
-	args, err := sqliteArgs(req.Args)
-	if err != nil {
-		return result, err
+	if len(statements) > 64 {
+		return result, storage.ErrInvalidSQLite
+	}
+	sqlTexts := make([]string, len(statements))
+	arguments := make([][]any, len(statements))
+	total := 0
+	argumentBytes := 0
+	for i, statement := range statements {
+		for _, arg := range statement.Args {
+			argumentBytes += len(arg.Blob)
+			if arg.Text != nil {
+				argumentBytes += len(*arg.Text)
+			}
+			if argumentBytes > maxSQLiteArgumentBytes {
+				return result, storage.ErrInvalidSQLite
+			}
+		}
+		sqlTexts[i], err = normalizeSQLiteSQL(statement.SQL, false)
+		if err != nil {
+			return result, err
+		}
+		arguments[i], err = sqliteArgs(statement.Args)
+		if err != nil {
+			return result, err
+		}
+		total += len(statement.SQL)
+		if total > maxSQLiteSQLBytes {
+			return result, storage.ErrInvalidSQLite
+		}
 	}
 	ctx, cancel := sqliteContext(ctx, req.Timeout)
 	defer cancel()
@@ -100,15 +128,19 @@ func (s *FileStore) ExecSQLite(ctx context.Context, req storage.SQLiteExecReques
 		if err := authorizeSQLiteConnection(db.Conn, false); err != nil {
 			return err
 		}
-		execResult, err := tx.ExecContext(ctx, sqlText, args...)
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "full") {
-				return storage.ErrQuotaExceeded
+		var rowsAffected, lastInsertID int64
+		for i, sqlText := range sqlTexts {
+			execResult, err := tx.ExecContext(ctx, sqlText, arguments[i]...)
+			if err != nil {
+				if strings.Contains(strings.ToLower(err.Error()), "full") {
+					return storage.ErrQuotaExceeded
+				}
+				return err
 			}
-			return err
+			affected, _ := execResult.RowsAffected()
+			rowsAffected += affected
+			lastInsertID, _ = execResult.LastInsertId()
 		}
-		rowsAffected, _ := execResult.RowsAffected()
-		lastInsertID, _ := execResult.LastInsertId()
 		if err := tx.Commit(); err != nil {
 			s.invalidateNamespaceUsage(a.usageKey)
 			return mutation.Unknown(err)

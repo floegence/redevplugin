@@ -142,6 +142,8 @@ type FileStore struct {
 	namespaceLocks   keyedLocks
 	sqliteQueries    sync.Map
 	sqliteOperations chan struct{}
+	streamMu         sync.Mutex
+	streamBytes      map[string]int64
 }
 
 func (*FileStore) Durable() bool { return true }

@@ -124,6 +124,11 @@ func TestWebSurfaceRejectsUnsafeOrigins(t *testing.T) {
 }
 
 func openTestWebSurface(t *testing.T, h *Host, pluginID, surfaceID string, contexts ...context.Context) (WebSurfaceRequest, bridge.SurfaceBootstrap) {
+	req, bootstrap, _ := openTestWebSurfaceGateway(t, h, pluginID, surfaceID, contexts...)
+	return req, bootstrap
+}
+
+func openTestWebSurfaceGateway(t *testing.T, h *Host, pluginID, surfaceID string, contexts ...context.Context) (WebSurfaceRequest, bridge.SurfaceBootstrap, string) {
 	t.Helper()
 	ctx := hostTestContext()
 	if len(contexts) > 0 {
@@ -150,11 +155,11 @@ func openTestWebSurface(t *testing.T, h *Host, pluginID, surfaceID string, conte
 	req.Token = session.ResourceToken
 	handshake := bridge.Handshake{PluginID: b.PluginID, SurfaceID: b.SurfaceID, SurfaceInstanceID: b.SurfaceInstanceID, ActiveFingerprint: b.ActiveFingerprint, BridgeNonce: b.BridgeNonce, AssetSessionNonce: b.AssetSessionNonce, ManagementRevision: b.ManagementRevision, RevokeEpoch: b.RevokeEpoch}
 	channel := "bridge_" + surfaceID
-	_, err = h.MintBridgeToken(ctx, MintBridgeTokenRequest{Handshake: handshake, BridgeChannelID: channel, HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, channel), Now: now})
+	token, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{Handshake: handshake, BridgeChannelID: channel, HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, channel), Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return req, b
+	return req, b, token.GatewayToken
 }
 
 func TestWebSurfaceRechecksRevocationAfterAssetRead(t *testing.T) {

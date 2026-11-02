@@ -290,11 +290,20 @@ func (b *hostRuntimeIOBroker) OpenUDP(ctx context.Context, inv resourceio.Invoca
 	return &networkLeaseDatagram{DatagramConnection: conn, release: func() { lease.release(); finish(false) }}, nil
 }
 func (b *hostRuntimeIOBroker) OpenWebSocket(ctx context.Context, inv resourceio.Invocation, connector string, options resourceio.WebSocketOpen) (resourceio.WebSocketStream, http.Header, func() error, error) {
+	return b.openWebSocket(ctx, inv, connector, options, "")
+}
+
+func (b *hostRuntimeIOBroker) openWebSocket(ctx context.Context, inv resourceio.Invocation, connector string, options resourceio.WebSocketOpen, expectedConnectionID string) (resourceio.WebSocketStream, http.Header, func() error, error) {
 	opened, finish := networkOpenContext(ctx, inv)
 	grant, lease, err := b.socketGrant(opened, inv, connector, connectivity.TransportWebSocket, options.URL, "net.websocket.open")
 	if err != nil {
 		finish(false)
 		return nil, nil, nil, err
+	}
+	if expectedConnectionID != "" && (lease.binding == nil || lease.binding.ConnectionID != expectedConnectionID) {
+		lease.release()
+		finish(false)
+		return nil, nil, nil, ErrConnectionUnavailable
 	}
 	headers := make(http.Header)
 	for _, h := range options.Headers {

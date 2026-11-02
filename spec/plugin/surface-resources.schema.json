@@ -1,0 +1,1651 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/surface-resources.schema.json",
+  "title": "Authenticated Surface resources",
+  "description": "Private resources derive identity and owner scope from the exact live source-bound Surface session. Declarations are ceilings, not grants. Writes never replay automatically. KV ETags identify content, permit ABA, and are not monotonic revisions. Watches coalesce snapshots and have no durable change log.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "describe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "describe"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "kv_get": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.kv"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "get"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "key"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "kv_put": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.kv"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "put"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "value_base64": {
+              "type": "string",
+              "maxLength": 87384,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            "expected_etag": {
+              "type": "string",
+              "pattern": "^(?:[a-f0-9]{64})?$"
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "key",
+            "value_base64"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "kv_delete": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.kv"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "delete"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "expected_etag": {
+              "type": "string",
+              "pattern": "^(?:[a-f0-9]{64})?$"
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "key"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "kv_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.kv"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "list"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "prefix": {
+              "type": "string"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "max_entries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "required": [
+            "operation",
+            "store_id"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "files_read": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.files"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "read"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "path"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "files_write": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.files"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "write"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "data_base64": {
+              "type": "string",
+              "maxLength": 87384,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "path",
+            "data_base64"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "files_delete": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.files"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "delete"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "recursive": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "path"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "files_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.files"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "list"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "path": {
+              "type": "string"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "max_entries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "required": [
+            "operation",
+            "store_id"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "kv_batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.kv"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "batch"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "mutations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "value_base64": {
+                    "type": "string",
+                    "maxLength": 87384,
+                    "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+                  },
+                  "delete": {
+                    "const": true
+                  },
+                  "expected_etag": {
+                    "type": "string",
+                    "pattern": "^(?:[a-f0-9]{64})?$"
+                  }
+                },
+                "required": [
+                  "key"
+                ],
+                "oneOf": [
+                  {
+                    "required": [
+                      "value_base64"
+                    ],
+                    "not": {
+                      "required": [
+                        "delete"
+                      ]
+                    }
+                  },
+                  {
+                    "required": [
+                      "delete"
+                    ],
+                    "not": {
+                      "required": [
+                        "value_base64"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "mutations"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "sqlite_value": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "null": {
+              "const": true
+            }
+          },
+          "required": [
+            "null"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "int": {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807
+            }
+          },
+          "required": [
+            "int"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "float": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "float"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "blob_base64": {
+              "type": "string",
+              "maxLength": 87384,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          },
+          "required": [
+            "blob_base64"
+          ]
+        }
+      ]
+    },
+    "sqlite_statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sql": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sqlite_value"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "sql"
+      ]
+    },
+    "sqlite_query": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.sqlite"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "query"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "database": {
+              "type": "string"
+            },
+            "sql": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sqlite_value"
+              },
+              "maxItems": 64
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            },
+            "max_rows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "sql"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "sqlite_exec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.sqlite"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "exec"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "database": {
+              "type": "string"
+            },
+            "sql": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sqlite_value"
+              },
+              "maxItems": 64
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            },
+            "statements": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/sqlite_statement"
+              }
+            }
+          },
+          "required": [
+            "operation",
+            "store_id"
+          ],
+          "oneOf": [
+            {
+              "required": [
+                "sql"
+              ],
+              "not": {
+                "required": [
+                  "statements"
+                ]
+              }
+            },
+            {
+              "required": [
+                "statements"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "args"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "settings_get": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "settings"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "get"
+            },
+            "scope": {
+              "enum": [
+                "user",
+                "environment"
+              ]
+            }
+          },
+          "required": [
+            "operation",
+            "scope"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "settings_patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "settings"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "patch"
+            },
+            "scope": {
+              "enum": [
+                "user",
+                "environment"
+              ]
+            },
+            "expected_values_revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "set": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "remove": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "operation",
+            "scope",
+            "expected_values_revision"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "kv_watch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "storage.kv"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "watch"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "cursor": {
+              "type": "string",
+              "pattern": "^(?:[a-f0-9]{64})?$"
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "key"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "settings_watch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "const": "settings"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "watch"
+            },
+            "scope": {
+              "enum": [
+                "user",
+                "environment"
+              ]
+            },
+            "cursor": {
+              "type": "string",
+              "pattern": "^[0-9]{1,20}$"
+            }
+          },
+          "required": [
+            "operation",
+            "scope"
+          ]
+        }
+      },
+      "required": [
+        "resource",
+        "arguments"
+      ]
+    },
+    "request": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/describe"
+        },
+        {
+          "$ref": "#/$defs/kv_get"
+        },
+        {
+          "$ref": "#/$defs/kv_put"
+        },
+        {
+          "$ref": "#/$defs/kv_delete"
+        },
+        {
+          "$ref": "#/$defs/kv_list"
+        },
+        {
+          "$ref": "#/$defs/files_read"
+        },
+        {
+          "$ref": "#/$defs/files_write"
+        },
+        {
+          "$ref": "#/$defs/files_delete"
+        },
+        {
+          "$ref": "#/$defs/files_list"
+        },
+        {
+          "$ref": "#/$defs/kv_batch"
+        },
+        {
+          "$ref": "#/$defs/sqlite_query"
+        },
+        {
+          "$ref": "#/$defs/sqlite_exec"
+        },
+        {
+          "$ref": "#/$defs/settings_get"
+        },
+        {
+          "$ref": "#/$defs/settings_patch"
+        },
+        {
+          "$ref": "#/$defs/kv_watch"
+        },
+        {
+          "$ref": "#/$defs/settings_watch"
+        }
+      ]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "mutation_outcome": {
+              "enum": [
+                "not_committed",
+                "committed",
+                "unknown"
+              ]
+            }
+          },
+          "required": [
+            "code",
+            "retryable",
+            "mutation_outcome"
+          ]
+        }
+      },
+      "required": [
+        "ok",
+        "error"
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "usage_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "usage_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "quota_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "quota_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "plugin_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "store_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "usage_bytes",
+        "usage_files",
+        "quota_bytes",
+        "quota_files",
+        "plugin_instance_id",
+        "store_id"
+      ]
+    },
+    "transfer_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "ok",
+        "count"
+      ]
+    },
+    "watch_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "changed": {
+          "type": "boolean"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "found": {
+          "type": "boolean"
+        },
+        "snapshot": {}
+      },
+      "required": [
+        "changed",
+        "cursor"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "changed": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "found",
+              "snapshot"
+            ]
+          }
+        }
+      ]
+    },
+    "kv_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "key": {
+          "type": "string"
+        },
+        "value_base64": {
+          "type": "string",
+          "maxLength": 87384
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "etag": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "ok",
+        "key",
+        "value_base64",
+        "size_bytes",
+        "usage",
+        "etag"
+      ]
+    },
+    "kv_put_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "key": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "etag": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "ok",
+        "key",
+        "size_bytes",
+        "usage",
+        "etag"
+      ]
+    },
+    "kv_delete_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "key"
+      ]
+    },
+    "kv_batch_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "etags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "etags",
+        "usage"
+      ]
+    },
+    "kv_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "size_bytes",
+        "updated_at"
+      ]
+    },
+    "file_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "dir": {
+          "type": "boolean"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "dir",
+        "updated_at"
+      ]
+    },
+    "kv_page": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/kv_entry"
+          }
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "next_cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "prefix",
+        "entries",
+        "usage",
+        "next_cursor"
+      ]
+    },
+    "file_page": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "path": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/file_entry"
+          }
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "next_cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "path",
+        "entries",
+        "usage",
+        "next_cursor"
+      ]
+    },
+    "file_read_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "path": {
+          "type": "string"
+        },
+        "data_base64": {
+          "type": "string",
+          "maxLength": 87384
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "ok",
+        "path",
+        "data_base64",
+        "size_bytes",
+        "usage"
+      ]
+    },
+    "file_write_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "path": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "ok",
+        "path",
+        "size_bytes",
+        "usage"
+      ]
+    },
+    "file_delete_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "path"
+      ]
+    },
+    "sqlite_query_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/sqlite_value"
+            }
+          }
+        },
+        "database": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "ok",
+        "columns",
+        "rows",
+        "database",
+        "usage"
+      ]
+    },
+    "sqlite_exec_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "rows_affected": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "last_insert_id": {
+          "type": "integer"
+        },
+        "database": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "ok",
+        "rows_affected",
+        "last_insert_id",
+        "database",
+        "usage"
+      ]
+    },
+    "settings_result": {
+      "$ref": "../openapi/plugin-platform.yaml#/components/schemas/PluginSettingsSnapshot"
+    },
+    "describe_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "can_read": {
+          "type": "boolean"
+        },
+        "can_write": {
+          "type": "boolean"
+        },
+        "storage": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "store_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "kv",
+                  "files",
+                  "sqlite"
+                ]
+              },
+              "scope": {
+                "enum": [
+                  "user",
+                  "environment"
+                ]
+              },
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "store_id",
+              "kind",
+              "scope",
+              "operations"
+            ]
+          }
+        },
+        "settings": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "control_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "value_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "page_entries": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "transaction_statements": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "operation_timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "watch_timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "stream_timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "concurrency_per_surface": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "concurrency_per_host": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "websocket_message_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "control_bytes",
+            "value_bytes",
+            "page_entries",
+            "transaction_statements",
+            "operation_timeout_ms",
+            "watch_timeout_ms",
+            "stream_timeout_ms",
+            "concurrency_per_surface",
+            "concurrency_per_host",
+            "websocket_message_bytes"
+          ]
+        }
+      },
+      "required": [
+        "can_read",
+        "can_write",
+        "storage",
+        "settings",
+        "limits"
+      ]
+    }
+  },
+  "x-redevplugin-transport": {
+    "resource": {
+      "method": "POST",
+      "path": "/_redevplugin_web/resource",
+      "request": {
+        "$ref": "#/$defs/request"
+      },
+      "max_body_bytes": 102400,
+      "max_arguments_bytes": 98304,
+      "operation_timeout_ms": 5000,
+      "watch_timeout_ms": 25000,
+      "watch_poll_ms": 1000,
+      "responses": {
+        "describe": {
+          "$ref": "#/$defs/describe_result"
+        },
+        "kv.get": {
+          "$ref": "#/$defs/kv_snapshot"
+        },
+        "kv.put": {
+          "$ref": "#/$defs/kv_put_result"
+        },
+        "kv.delete": {
+          "$ref": "#/$defs/kv_delete_result"
+        },
+        "kv.batch": {
+          "$ref": "#/$defs/kv_batch_result"
+        },
+        "kv.list": {
+          "$ref": "#/$defs/kv_page"
+        },
+        "files.read": {
+          "$ref": "#/$defs/file_read_result"
+        },
+        "files.write": {
+          "$ref": "#/$defs/file_write_result"
+        },
+        "files.delete": {
+          "$ref": "#/$defs/file_delete_result"
+        },
+        "files.list": {
+          "$ref": "#/$defs/file_page"
+        },
+        "sqlite.query": {
+          "$ref": "#/$defs/sqlite_query_result"
+        },
+        "sqlite.exec": {
+          "$ref": "#/$defs/sqlite_exec_result"
+        },
+        "settings.get": {
+          "$ref": "#/$defs/settings_result"
+        },
+        "settings.patch": {
+          "$ref": "#/$defs/settings_result"
+        },
+        "watch": {
+          "$ref": "#/$defs/watch_result"
+        }
+      }
+    },
+    "private_file": {
+      "method": "POST",
+      "path": "/_redevplugin_web/private-file-transfer",
+      "query": [
+        "store_id",
+        "path",
+        "direction"
+      ],
+      "directions": [
+        "read",
+        "write"
+      ],
+      "binary": true,
+      "chunk_bytes": 65536,
+      "timeout_ms": 300000,
+      "atomic_write": true,
+      "staging": "Temporary bytes across concurrent streams are bounded to twice the namespace quota per exact owner; cleaned after completion or startup recovery. Read snapshots incur disk staging, not zero-copy."
+    },
+    "selected_file": {
+      "method": "POST",
+      "path": "/_redevplugin_web/file-transfer",
+      "query": [
+        "handle",
+        "direction"
+      ],
+      "binary": true,
+      "chunk_bytes": 65536,
+      "timeout_ms": 300000,
+      "atomic_write": false,
+      "failure": "Any error after writing bytes has unknown mutation outcome."
+    },
+    "websocket": {
+      "discovery": "/_redevplugin_web/websocket",
+      "connect": "/_redevplugin_web/websocket/connect",
+      "query": [
+        "connector_id",
+        "destination_index",
+        "connection_id",
+        "path"
+      ],
+      "max_message_bytes": 1048576,
+      "client_queue_messages": 32,
+      "client_queue_bytes": 1048576,
+      "automatic_reconnect": false
+    },
+    "authorization": "Exact dedicated Origin, source-bound completed handshake, opaque session cookie, current owner/fingerprint/revision/revoke epoch, Surface resource ceilings, session read/write and Host policy. Fetch Metadata empty/same-origin with cors or same-origin; WebSocket upgrade requires exact Origin and websocket mode.",
+    "concurrency_per_surface": 16,
+    "revoke": "Abort watches and streams on Surface closure. Commit fence excludes revocation; retained host layout has no authority.",
+    "concurrency_per_host": 256
+  }
+}

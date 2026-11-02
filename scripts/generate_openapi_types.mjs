@@ -83,6 +83,12 @@ async function bundleExternalSchemas(document) {
     if (!value || typeof value !== "object") return value;
     if (typeof value.$ref === "string") {
       const reference = value.$ref;
+      const [documentPath, documentFragment = ""] = reference.split("#", 2);
+      if (documentPath && resolve(baseDir, documentPath) === source && documentFragment.startsWith("/components/schemas/")) {
+        const name = documentFragment.slice("/components/schemas/".length);
+        if (!Object.hasOwn(document.components.schemas, name)) throw new Error("unknown canonical schema reference: " + reference);
+        return { $ref: "#" + documentFragment };
+      }
       if (reference.startsWith("#/$defs/")) {
         return { $ref: `#/components/schemas/${namespace}${pascalCase(reference.slice("#/$defs/".length))}` };
       }

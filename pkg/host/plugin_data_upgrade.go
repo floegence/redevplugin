@@ -283,9 +283,9 @@ func (broker *hostRuntimeIOBroker) dispatchUpgrade(ctx context.Context, invocati
 	}
 	switch args.Kind {
 	case "files":
-		return broker.dispatchStorageFiles(ctx, u.next.PluginInstanceID, u.scope, selector.Operation, args.Request)
+		return broker.dispatchStorageFiles(ctx, u.next.PluginInstanceID, u.scope, selector.Operation, args.Request, false)
 	case "kv":
-		return broker.dispatchStorageKV(ctx, u.next.PluginInstanceID, u.scope, selector.Operation, args.Request)
+		return broker.dispatchStorageKV(ctx, u.next.PluginInstanceID, u.scope, selector.Operation, args.Request, false)
 	case "sqlite":
 		return broker.dispatchStorageSQLite(ctx, u.next.PluginInstanceID, u.scope, selector.Operation, args.Request)
 	default:

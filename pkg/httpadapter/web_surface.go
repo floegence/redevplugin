@@ -103,6 +103,18 @@ func serveWebSurface(platform *host.Host, resolve WebSurfaceOrigin, w http.Respo
 		return
 	}
 	w.Header().Set("Content-Security-Policy", webSurfaceCSP+"; frame-ancestors "+session.ParentOrigin)
+	if internal && (route == "websocket" || route == "websocket/connect") {
+		serveWebSocket(platform, w, r, request, route)
+		return
+	}
+	if internal && route == "resource" {
+		serveWebResource(platform, w, r, request)
+		return
+	}
+	if internal && (route == "file-transfer" || route == "private-file-transfer") {
+		serveWebFileTransfer(platform, w, r, request, route == "private-file-transfer")
+		return
+	}
 	if networkRoute {
 		serveWebConnection(platform, w, r, request, route)
 		return

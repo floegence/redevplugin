@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.13.0
+
+- Default to pure Web authoring; add data, monitor and files templates, manifest-derived TS/Rust bindings, check/doctor diagnostics and execution/diagnostic inspection.
+- Add signed Surface private KV, settings and SQLite access, conditional writes, atomic batches, bounded transactions and snapshot watches without forwarding Workers.
+- Add scoped binary private/selected-file streams and controlled WebSockets with bounded queues, cancellation, exact Surface authority and explicit unknown write outcomes.
+- Migrate private files namespace schema 1 to chunked schema 2 transactionally; preserve data, retained snapshots, crash recovery and idempotent reopen. Control and KV schemas stay unchanged.
+- Project resource ceilings into verified summaries and generated contracts; expose Worker storage extensions under an explicit feature. Plugin API and runtime wire stay unchanged.
+- Cover multi-window conflicts, revision-checked edits/undo, binary transfers, authenticated browser sockets, revocation, resource limits and migration interruption.
+
 ## v3.12.2
 
 - Bind parent-SDK execution queries, events and cancellation to the current surface gateway and exact plugin/session owner; preserve host management APIs and application SDK signatures.

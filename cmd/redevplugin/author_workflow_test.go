@@ -95,12 +95,27 @@ func TestAuthorBrowserWorkflow(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, "node", "scripts/author_workflow_smoke.mjs", cli, runtimePath)
 	command.Dir = repo
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("author browser acceptance: %v\n%s", err, output)
+	}
+	compileCommand := exec.CommandContext(ctx, "node", "scripts/author_bindings_compile.mjs", cli)
+	compileCommand.Dir = repo
+	if output, err := compileCommand.CombinedOutput(); err != nil {
+		t.Fatalf("generated author bindings: %v\n%s", err, output)
+	}
+	fileCommand := exec.CommandContext(ctx, "node", "scripts/author_files_smoke.mjs", cli)
+	fileCommand.Dir = repo
+	if output, err := fileCommand.CombinedOutput(); err != nil {
+		t.Fatalf("file browser acceptance: %v\n%s", err, output)
+	}
+	dataCommand := exec.CommandContext(ctx, "node", "scripts/author_data_smoke.mjs", cli)
+	dataCommand.Dir = repo
+	if output, err := dataCommand.CombinedOutput(); err != nil {
+		t.Fatalf("data browser acceptance: %v\n%s", err, output)
 	}
 }
 

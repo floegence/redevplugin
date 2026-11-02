@@ -318,7 +318,7 @@ func TestExternalPackageSecuritySummaryJSONFieldsMatchOpenAPI(t *testing.T) {
 		{value: ExternalPackageSecretRefSummary{}, want: []string{"scope", "secret_ref", "setting_key"}},
 		{value: ExternalPackageCoreActionSummary{}, want: []string{"action_id", "effect", "method"}},
 		{value: ExternalPackageIntentSummary{}, want: []string{"intent_id", "method"}},
-		{value: ExternalPackageSurfaceSummary{}, want: []string{"default_size", "entry", "icon", "intent", "kind", "label", "surface_id"}},
+		{value: ExternalPackageSurfaceSummary{}, want: []string{"default_size", "entry", "icon", "intent", "kind", "label", "settings", "storage", "surface_id"}},
 		{value: ExternalPackageSizeSummary{}, want: []string{"height", "width"}},
 		{value: ExternalPackageSecuritySummary{}, want: []string{"background", "capability_contracts", "core_actions", "data_upgrade", "intents", "methods", "network", "permissions", "process", "secret_refs", "storage", "summary_sha256", "surfaces", "workers"}},
 	}

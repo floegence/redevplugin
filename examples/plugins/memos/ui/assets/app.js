@@ -1478,6 +1478,48 @@ var PluginFileHandle = class {
   #active() {
     if (this.#closed) throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "File handle is closed");
   }
+  /** Stream from the current position without Base64 or per-chunk bridge calls.
+   * Requires surface.resources.v1. The caller owns close and cancellation. */
+  async readable(options = {}) {
+    this.#active();
+    options.signal?.throwIfAborted();
+    const endpoint = new URL("/_redevplugin_web/file-transfer", globalThis.location.origin);
+    endpoint.searchParams.set("handle", this.id);
+    endpoint.searchParams.set("direction", "read");
+    const response = await fetch(endpoint, { method: "POST", credentials: "same-origin", redirect: "error", cache: "no-store", signal: options.signal });
+    if (!response.ok || !response.body) throw new PluginBridgeError("PLUGIN_FILE_OPERATION_FAILED", "File stream unavailable");
+    return response.body;
+  }
+  /** Upload bytes with network backpressure. A failure can leave partial data. */
+  async writeFrom(source, options = {}) {
+    this.#active();
+    options.signal?.throwIfAborted();
+    const endpoint = new URL("/_redevplugin_web/file-transfer", globalThis.location.origin);
+    endpoint.searchParams.set("handle", this.id);
+    endpoint.searchParams.set("direction", "write");
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        body: source,
+        credentials: "same-origin",
+        redirect: "error",
+        cache: "no-store",
+        signal: options.signal,
+        ...source instanceof ReadableStream ? { duplex: "half" } : {}
+      });
+      const value = await response.json();
+      if (isRecord(value) && value.ok === false && isRecord(value.error) && typeof value.error.code === "string" && ["not_committed", "committed", "unknown"].includes(String(value.error.mutation_outcome))) {
+        const failure = new PluginBridgeError(value.error.code, "File transfer failed", void 0, void 0, value.error.mutation_outcome);
+        if (value.error.mutation_outcome === "not_committed") throw failure;
+        throw new PluginFileWriteError(Number.isSafeInteger(value.count) && Number(value.count) >= 0 ? Number(value.count) : 0, failure);
+      }
+      if (!isRecord(value) || value.ok !== true || !Number.isSafeInteger(value.count) || Number(value.count) < 0 || !response.ok) throw new Error("File upload did not complete");
+      return Number(value.count);
+    } catch (error) {
+      if (error instanceof PluginFileWriteError || error instanceof PluginBridgeError && pluginMutationOutcome(error) === "not_committed") throw error;
+      throw new PluginFileWriteError(0, error);
+    }
+  }
   async read(length = chunkBytes, options) {
     this.#active();
     if (!Number.isSafeInteger(length) || length < 1 || length > chunkBytes) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Read length must be between 1 and 65536");

@@ -451,3 +451,37 @@ func runtimeIOTestInvocation(invocationID, ownerSessionHash, channelHash string)
 		CanRead:     true,
 	}
 }
+
+func TestWorkerStorageExtensionsRequireDeclaredFeature(t *testing.T) {
+	data := &recordingStorageBroker{}
+	broker, err := newHostRuntimeIOBroker(normalizedAdapters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.storageKV = data
+	t.Cleanup(func() { _ = broker.closeAll() })
+	invocation := runtimeIOTestInvocation("feature-storage", "feature-session", "feature-channel")
+	invocation.CanWrite = true
+	registration, err := newHostRuntimeIORegistration(invocation, workerBrokerAccess{Storage: []workerStorageBrokerAccess{{StoreID: "settings", Kind: "kv", Scope: "user", Operations: []string{"put"}}}}, map[string]string{"settings": "grant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := runtimeIOControlRequest{Operation: "storage.kv", Arguments: json.RawMessage(`{"operation":"put","store_id":"settings","key":"theme","value_base64":"ZGFyaw==","include_etag":true,"expected_etag":""}`)}
+	if _, err = broker.dispatchStorage(context.Background(), registration, request); !errors.Is(err, errRuntimeIOStorageDenied) {
+		t.Fatalf("feature denial: %v", err)
+	}
+	if data.calls != 0 {
+		t.Fatal("undeclared feature reached storage")
+	}
+	registration.storageTransactions = true
+	value, err := broker.dispatchStorage(context.Background(), registration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := value.(map[string]any)["etag"]; !ok {
+		t.Fatal("declared feature omitted etag")
+	}
+	if data.kvPut.ExpectedETag == nil || *data.kvPut.ExpectedETag != "" {
+		t.Fatal("condition lost")
+	}
+}

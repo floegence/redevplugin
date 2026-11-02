@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	processruntime "github.com/floegence/redevplugin/v3/pkg/process"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/storage"
@@ -30,12 +31,14 @@ var errRuntimeIOStorageDenied = errors.New("runtime storage access is denied")
 var errRuntimeIOInvalidRequest = errors.New("runtime I/O request is invalid")
 
 type hostRuntimeIORegistration struct {
-	readOnly      bool
-	upgrade       *pluginDataUpgradeExecution
-	resource      resourceio.Invocation
-	storage       map[string]hostRuntimeIOStorageAccess
-	process       map[string]struct{}
-	processLimits *processruntime.ResourceLimits
+	storageTransactions bool
+	surfaceResource     bool
+	readOnly            bool
+	upgrade             *pluginDataUpgradeExecution
+	resource            resourceio.Invocation
+	storage             map[string]hostRuntimeIOStorageAccess
+	process             map[string]struct{}
+	processLimits       *processruntime.ResourceLimits
 }
 
 type hostRuntimeIOStorageAccess struct {
@@ -388,6 +391,8 @@ func runtimeIOStorageError(err error) (string, bool) {
 		return "INVALID_ARGUMENT", false
 	case errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, storage.ErrFileNotFound), errors.Is(err, storage.ErrKVKeyNotFound):
 		return "NOT_FOUND", false
+	case errors.Is(err, storage.ErrRevisionConflict), errors.Is(err, plugindata.ErrRevisionConflict):
+		return "CONFLICT", false
 	case errors.Is(err, storage.ErrQuotaExceeded), errors.Is(err, storage.ErrFileTooLarge), errors.Is(err, storage.ErrKVValueTooLarge), errors.Is(err, storage.ErrSQLiteResultTooLarge):
 		return "RESOURCE_LIMIT", false
 	default:
@@ -606,6 +611,17 @@ func applyProcessLimits(request *processruntime.StartRequest, declared *processr
 }
 
 func (broker *hostRuntimeIOBroker) dispatchStorage(ctx context.Context, invocation hostRuntimeIORegistration, request runtimeIOControlRequest) (any, error) {
+	if !invocation.surfaceResource && !invocation.storageTransactions {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(request.Arguments, &fields); err != nil {
+			return nil, errRuntimeIOInvalidRequest
+		}
+		for _, name := range []string{"include_etag", "expected_etag", "include_cursor", "cursor", "statements"} {
+			if _, ok := fields[name]; ok {
+				return nil, errRuntimeIOStorageDenied
+			}
+		}
+	}
 	var selector struct {
 		Operation string `json:"operation"`
 		StoreID   string `json:"store_id"`
@@ -630,9 +646,9 @@ func (broker *hostRuntimeIOBroker) dispatchStorage(ctx context.Context, invocati
 	}
 	switch kind {
 	case "files":
-		return broker.dispatchStorageFiles(ctx, invocation.resource.Owner.PluginInstanceID, access.scope, selector.Operation, request.Arguments)
+		return broker.dispatchStorageFiles(ctx, invocation.resource.Owner.PluginInstanceID, access.scope, selector.Operation, request.Arguments, invocation.surfaceResource)
 	case "kv":
-		return broker.dispatchStorageKV(ctx, invocation.resource.Owner.PluginInstanceID, access.scope, selector.Operation, request.Arguments)
+		return broker.dispatchStorageKV(ctx, invocation.resource.Owner.PluginInstanceID, access.scope, selector.Operation, request.Arguments, invocation.surfaceResource)
 	case "sqlite":
 		return broker.dispatchStorageSQLite(ctx, invocation.resource.Owner.PluginInstanceID, access.scope, selector.Operation, request.Arguments)
 	default:
@@ -653,7 +669,7 @@ func runtimeStorageOperationWrites(kind, operation string) bool {
 	}
 }
 
-func (broker *hostRuntimeIOBroker) dispatchStorageFiles(ctx context.Context, pluginInstanceID string, scope sessionctx.ResourceScope, operation string, raw []byte) (any, error) {
+func (broker *hostRuntimeIOBroker) dispatchStorageFiles(ctx context.Context, pluginInstanceID string, scope sessionctx.ResourceScope, operation string, raw []byte, surfaceResource bool) (any, error) {
 	if broker.storageFiles == nil {
 		return nil, errRuntimeIOStorageDenied
 	}
@@ -691,6 +707,9 @@ func (broker *hostRuntimeIOBroker) dispatchStorageFiles(ctx context.Context, plu
 		if err != nil {
 			return nil, storage.ErrInvalidFilePath
 		}
+		if surfaceResource && len(data) > 64<<10 {
+			return nil, storage.ErrFileTooLarge
+		}
 		result, err := broker.storageFiles.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Path: args.Path, Data: data})
 		if err != nil {
 			return nil, err
@@ -712,35 +731,42 @@ func (broker *hostRuntimeIOBroker) dispatchStorageFiles(ctx context.Context, plu
 		return map[string]any{"ok": true, "path": args.Path}, nil
 	case "list":
 		var args struct {
-			Operation  string  `json:"operation"`
-			StoreID    string  `json:"store_id"`
-			Path       string  `json:"path"`
-			MaxEntries *uint32 `json:"max_entries"`
+			Operation     string  `json:"operation"`
+			StoreID       string  `json:"store_id"`
+			Path          string  `json:"path"`
+			MaxEntries    *uint32 `json:"max_entries"`
+			Cursor        string  `json:"cursor,omitempty"`
+			IncludeCursor bool    `json:"include_cursor,omitempty"`
 		}
 		if err := decodeRuntimeIOJSON(raw, &args); err != nil {
 			return nil, err
 		}
-		result, err := broker.storageFiles.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Path: args.Path, MaxEntries: runtimeUint32ToInt(args.MaxEntries)})
+		result, err := broker.storageFiles.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Path: args.Path, MaxEntries: runtimeUint32ToInt(args.MaxEntries), Cursor: args.Cursor})
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"ok": true, "path": result.Path, "entries": result.Entries, "usage": result.Usage}, nil
+		response := map[string]any{"ok": true, "path": result.Path, "entries": result.Entries, "usage": result.Usage}
+		if surfaceResource || args.IncludeCursor {
+			response["next_cursor"] = result.NextCursor
+		}
+		return response, nil
 	default:
 		return nil, errRuntimeIOStorageDenied
 	}
 }
 
-func (broker *hostRuntimeIOBroker) dispatchStorageKV(ctx context.Context, pluginInstanceID string, scope sessionctx.ResourceScope, operation string, raw []byte) (any, error) {
+func (broker *hostRuntimeIOBroker) dispatchStorageKV(ctx context.Context, pluginInstanceID string, scope sessionctx.ResourceScope, operation string, raw []byte, surfaceResource bool) (any, error) {
 	if broker.storageKV == nil {
 		return nil, errRuntimeIOStorageDenied
 	}
 	switch operation {
 	case "get":
 		var args struct {
-			Operation string  `json:"operation"`
-			StoreID   string  `json:"store_id"`
-			Key       string  `json:"key"`
-			MaxBytes  *uint64 `json:"max_bytes"`
+			IncludeETag bool    `json:"include_etag,omitempty"`
+			Operation   string  `json:"operation"`
+			StoreID     string  `json:"store_id"`
+			Key         string  `json:"key"`
+			MaxBytes    *uint64 `json:"max_bytes"`
 		}
 		if err := decodeRuntimeIOJSON(raw, &args); err != nil {
 			return nil, err
@@ -753,13 +779,19 @@ func (broker *hostRuntimeIOBroker) dispatchStorageKV(ctx context.Context, plugin
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"ok": true, "key": result.Key, "value_base64": base64.StdEncoding.EncodeToString(result.Value), "size_bytes": result.SizeBytes, "usage": result.Usage}, nil
+		response := map[string]any{"ok": true, "key": result.Key, "value_base64": base64.StdEncoding.EncodeToString(result.Value), "size_bytes": result.SizeBytes, "usage": result.Usage}
+		if surfaceResource || args.IncludeETag {
+			response["etag"] = result.ETag
+		}
+		return response, nil
 	case "put":
 		var args struct {
-			Operation   string `json:"operation"`
-			StoreID     string `json:"store_id"`
-			Key         string `json:"key"`
-			ValueBase64 string `json:"value_base64"`
+			IncludeETag  bool    `json:"include_etag,omitempty"`
+			ExpectedETag *string `json:"expected_etag,omitempty"`
+			Operation    string  `json:"operation"`
+			StoreID      string  `json:"store_id"`
+			Key          string  `json:"key"`
+			ValueBase64  string  `json:"value_base64"`
 		}
 		if err := decodeRuntimeIOJSON(raw, &args); err != nil {
 			return nil, err
@@ -768,39 +800,53 @@ func (broker *hostRuntimeIOBroker) dispatchStorageKV(ctx context.Context, plugin
 		if err != nil {
 			return nil, storage.ErrInvalidKVKey
 		}
-		result, err := broker.storageKV.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Key: args.Key, Value: value})
+		if surfaceResource && len(value) > 64<<10 {
+			return nil, storage.ErrKVValueTooLarge
+		}
+		result, err := broker.storageKV.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Key: args.Key, Value: value, ExpectedETag: args.ExpectedETag})
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"ok": true, "key": result.Key, "size_bytes": result.SizeBytes, "usage": result.Usage}, nil
+		response := map[string]any{"ok": true, "key": result.Key, "size_bytes": result.SizeBytes, "usage": result.Usage}
+		if surfaceResource || args.IncludeETag {
+			response["etag"] = result.ETag
+		}
+		return response, nil
 	case "delete":
 		var args struct {
-			Operation string `json:"operation"`
-			StoreID   string `json:"store_id"`
-			Key       string `json:"key"`
+			ExpectedETag *string `json:"expected_etag,omitempty"`
+			Operation    string  `json:"operation"`
+			StoreID      string  `json:"store_id"`
+			Key          string  `json:"key"`
 		}
 		if err := decodeRuntimeIOJSON(raw, &args); err != nil {
 			return nil, err
 		}
-		if err := broker.storageKV.DeleteKV(ctx, storage.KVDeleteRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Key: args.Key}); err != nil {
+		if err := broker.storageKV.DeleteKV(ctx, storage.KVDeleteRequest{ExpectedETag: args.ExpectedETag, PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Key: args.Key}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true, "key": args.Key}, nil
 	case "list":
 		var args struct {
-			Operation  string  `json:"operation"`
-			StoreID    string  `json:"store_id"`
-			Prefix     string  `json:"prefix"`
-			MaxEntries *uint32 `json:"max_entries"`
+			Operation     string  `json:"operation"`
+			StoreID       string  `json:"store_id"`
+			Prefix        string  `json:"prefix"`
+			MaxEntries    *uint32 `json:"max_entries"`
+			Cursor        string  `json:"cursor,omitempty"`
+			IncludeCursor bool    `json:"include_cursor,omitempty"`
 		}
 		if err := decodeRuntimeIOJSON(raw, &args); err != nil {
 			return nil, err
 		}
-		result, err := broker.storageKV.ListKV(ctx, storage.KVListRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Prefix: args.Prefix, MaxEntries: runtimeUint32ToInt(args.MaxEntries)})
+		result, err := broker.storageKV.ListKV(ctx, storage.KVListRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Prefix: args.Prefix, MaxEntries: runtimeUint32ToInt(args.MaxEntries), Cursor: args.Cursor})
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"ok": true, "prefix": result.Prefix, "entries": result.Entries, "usage": result.Usage}, nil
+		response := map[string]any{"ok": true, "prefix": result.Prefix, "entries": result.Entries, "usage": result.Usage}
+		if surfaceResource || args.IncludeCursor {
+			response["next_cursor"] = result.NextCursor
+		}
+		return response, nil
 	default:
 		return nil, errRuntimeIOStorageDenied
 	}
@@ -871,6 +917,10 @@ func (broker *hostRuntimeIOBroker) dispatchStorageSQLite(ctx context.Context, pl
 		return nil, errRuntimeIOStorageDenied
 	}
 	type sqliteArguments struct {
+		Statements []struct {
+			SQL  string                 `json:"sql"`
+			Args []runtimeIOSQLiteValue `json:"args"`
+		} `json:"statements,omitempty"`
 		Operation        string                 `json:"operation"`
 		StoreID          string                 `json:"store_id"`
 		Database         string                 `json:"database"`
@@ -894,15 +944,26 @@ func (broker *hostRuntimeIOBroker) dispatchStorageSQLite(ctx context.Context, pl
 	}
 	switch operation {
 	case "exec":
+		statements := make([]storage.SQLiteStatement, len(args.Statements))
+		for i, item := range args.Statements {
+			values, err := runtimeIOSQLiteValues(item.Args)
+			if err != nil {
+				return nil, err
+			}
+			statements[i] = storage.SQLiteStatement{SQL: item.SQL, Args: values}
+		}
 		if args.MaxRows != nil || args.MaxResponseBytes != nil {
 			return nil, storage.ErrInvalidSQLite
 		}
-		result, err := broker.storageSQLite.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Database: args.Database, SQL: args.SQL, Args: values, Timeout: timeout})
+		result, err := broker.storageSQLite.ExecSQLite(ctx, storage.SQLiteExecRequest{Statements: statements, PluginInstanceID: pluginInstanceID, ResourceScope: scope, StoreID: args.StoreID, Database: args.Database, SQL: args.SQL, Args: values, Timeout: timeout})
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true, "database": result.Database, "rows_affected": result.RowsAffected, "last_insert_id": result.LastInsertID, "usage": result.Usage}, nil
 	case "query":
+		if len(args.Statements) > 0 {
+			return nil, storage.ErrInvalidSQLite
+		}
 		maxResponseBytes, err := runtimeUint64ToInt64(args.MaxResponseBytes)
 		if err != nil {
 			return nil, err

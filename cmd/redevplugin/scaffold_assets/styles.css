@@ -2966,16 +2966,24 @@ h1 {
   gap: 10px;
 }
 input,
-button {
+button,
+textarea {
   font: inherit;
   min-height: 40px;
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
 }
-input {
+input,
+textarea {
   background: var(--background);
   color: var(--foreground);
+}
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 160px;
+  line-height: 1.6;
 }
 button {
   background: var(--primary);

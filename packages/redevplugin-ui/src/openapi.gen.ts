@@ -1132,6 +1132,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        SurfaceResourceRequest: components["schemas"]["SurfaceResourcesRequest"];
+        SurfaceResourceError: components["schemas"]["SurfaceResourcesError"];
+        SurfaceResourceTransferResult: components["schemas"]["SurfaceResourcesTransferResult"];
+        AuthorBindingSourceMap: components["schemas"]["AuthorBindings"];
         SurfaceMethodsSuccessResponse: {
             /** @constant */
             ok: true;
@@ -2243,6 +2247,12 @@ export interface components {
             entry: string;
             icon?: string;
             default_size?: components["schemas"]["ExternalPackageSizeSummary"];
+            storage?: components["schemas"]["ExternalPackageSurfaceStorageSummary"][];
+            settings?: ("get" | "patch")[];
+        };
+        ExternalPackageSurfaceStorageSummary: {
+            store_id: string;
+            operations: ("read" | "write" | "get" | "put" | "delete" | "list" | "query" | "exec")[];
         };
         ExternalPackageSizeSummary: {
             width: number;
@@ -3390,6 +3400,368 @@ export interface components {
             entries: components["schemas"]["FileResourcesDirectoryEntry"][];
             eof: boolean;
         };
+        /** @description Private resources derive identity and owner scope from the exact live source-bound Surface session. Declarations are ceilings, not grants. Writes never replay automatically. KV ETags identify content, permit ABA, and are not monotonic revisions. Watches coalesce snapshots and have no durable change log. */
+        SurfaceResources: components["schemas"]["SurfaceResourcesRequest"] | components["schemas"]["SurfaceResourcesError"];
+        SurfaceResourcesDescribe: {
+            /** @constant */
+            resource: "describe";
+            arguments: Record<string, never>;
+        };
+        SurfaceResourcesKvGet: {
+            /** @constant */
+            resource: "storage.kv";
+            arguments: {
+                /** @constant */
+                operation: "get";
+                store_id: string;
+                key: string;
+                max_bytes?: number;
+            };
+        };
+        SurfaceResourcesKvPut: {
+            /** @constant */
+            resource: "storage.kv";
+            arguments: {
+                /** @constant */
+                operation: "put";
+                store_id: string;
+                key: string;
+                value_base64: string;
+                expected_etag?: string;
+            };
+        };
+        SurfaceResourcesKvDelete: {
+            /** @constant */
+            resource: "storage.kv";
+            arguments: {
+                /** @constant */
+                operation: "delete";
+                store_id: string;
+                key: string;
+                expected_etag?: string;
+            };
+        };
+        SurfaceResourcesKvList: {
+            /** @constant */
+            resource: "storage.kv";
+            arguments: {
+                /** @constant */
+                operation: "list";
+                store_id: string;
+                prefix?: string;
+                cursor?: string;
+                max_entries?: number;
+            };
+        };
+        SurfaceResourcesFilesRead: {
+            /** @constant */
+            resource: "storage.files";
+            arguments: {
+                /** @constant */
+                operation: "read";
+                store_id: string;
+                path: string;
+                max_bytes?: number;
+            };
+        };
+        SurfaceResourcesFilesWrite: {
+            /** @constant */
+            resource: "storage.files";
+            arguments: {
+                /** @constant */
+                operation: "write";
+                store_id: string;
+                path: string;
+                data_base64: string;
+            };
+        };
+        SurfaceResourcesFilesDelete: {
+            /** @constant */
+            resource: "storage.files";
+            arguments: {
+                /** @constant */
+                operation: "delete";
+                store_id: string;
+                path: string;
+                recursive?: boolean;
+            };
+        };
+        SurfaceResourcesFilesList: {
+            /** @constant */
+            resource: "storage.files";
+            arguments: {
+                /** @constant */
+                operation: "list";
+                store_id: string;
+                path?: string;
+                cursor?: string;
+                max_entries?: number;
+            };
+        };
+        SurfaceResourcesKvBatch: {
+            /** @constant */
+            resource: "storage.kv";
+            arguments: {
+                /** @constant */
+                operation: "batch";
+                store_id: string;
+                mutations: ({
+                    key: string;
+                    value_base64?: string;
+                    /** @constant */
+                    delete?: true;
+                    expected_etag?: string;
+                } & (unknown | unknown))[];
+            };
+        };
+        SurfaceResourcesSqliteValue: {
+            /** @constant */
+            null: true;
+        } | {
+            int: number;
+        } | {
+            float: number;
+        } | {
+            text: string;
+        } | {
+            blob_base64: string;
+        };
+        SurfaceResourcesSqliteStatement: {
+            sql: string;
+            args?: components["schemas"]["SurfaceResourcesSqliteValue"][];
+        };
+        SurfaceResourcesSqliteQuery: {
+            /** @constant */
+            resource: "storage.sqlite";
+            arguments: {
+                /** @constant */
+                operation: "query";
+                store_id: string;
+                database?: string;
+                sql: string;
+                args?: components["schemas"]["SurfaceResourcesSqliteValue"][];
+                timeout_ms?: number;
+                max_rows?: number;
+                max_response_bytes?: number;
+            };
+        };
+        SurfaceResourcesSqliteExec: {
+            /** @constant */
+            resource: "storage.sqlite";
+            arguments: {
+                /** @constant */
+                operation: "exec";
+                store_id: string;
+                database?: string;
+                sql?: string;
+                args?: components["schemas"]["SurfaceResourcesSqliteValue"][];
+                timeout_ms?: number;
+                statements?: components["schemas"]["SurfaceResourcesSqliteStatement"][];
+            } & (unknown | unknown);
+        };
+        SurfaceResourcesSettingsGet: {
+            /** @constant */
+            resource: "settings";
+            arguments: {
+                /** @constant */
+                operation: "get";
+                /** @enum {unknown} */
+                scope: "user" | "environment";
+            };
+        };
+        SurfaceResourcesSettingsPatch: {
+            /** @constant */
+            resource: "settings";
+            arguments: {
+                /** @constant */
+                operation: "patch";
+                /** @enum {unknown} */
+                scope: "user" | "environment";
+                expected_values_revision: number;
+                set?: {
+                    [key: string]: unknown;
+                };
+                remove?: string[];
+            };
+        };
+        SurfaceResourcesKvWatch: {
+            /** @constant */
+            resource: "storage.kv";
+            arguments: {
+                /** @constant */
+                operation: "watch";
+                store_id: string;
+                key: string;
+                cursor?: string;
+            };
+        };
+        SurfaceResourcesSettingsWatch: {
+            /** @constant */
+            resource: "settings";
+            arguments: {
+                /** @constant */
+                operation: "watch";
+                /** @enum {unknown} */
+                scope: "user" | "environment";
+                cursor?: string;
+            };
+        };
+        SurfaceResourcesRequest: components["schemas"]["SurfaceResourcesDescribe"] | components["schemas"]["SurfaceResourcesKvGet"] | components["schemas"]["SurfaceResourcesKvPut"] | components["schemas"]["SurfaceResourcesKvDelete"] | components["schemas"]["SurfaceResourcesKvList"] | components["schemas"]["SurfaceResourcesFilesRead"] | components["schemas"]["SurfaceResourcesFilesWrite"] | components["schemas"]["SurfaceResourcesFilesDelete"] | components["schemas"]["SurfaceResourcesFilesList"] | components["schemas"]["SurfaceResourcesKvBatch"] | components["schemas"]["SurfaceResourcesSqliteQuery"] | components["schemas"]["SurfaceResourcesSqliteExec"] | components["schemas"]["SurfaceResourcesSettingsGet"] | components["schemas"]["SurfaceResourcesSettingsPatch"] | components["schemas"]["SurfaceResourcesKvWatch"] | components["schemas"]["SurfaceResourcesSettingsWatch"];
+        SurfaceResourcesError: {
+            /** @constant */
+            ok: false;
+            error: {
+                code: string;
+                retryable: boolean;
+                /** @enum {unknown} */
+                mutation_outcome: "not_committed" | "committed" | "unknown";
+            };
+        };
+        SurfaceResourcesUsage: {
+            usage_bytes: number;
+            usage_files: number;
+            quota_bytes: number;
+            quota_files: number;
+            plugin_instance_id: string;
+            store_id: string;
+        };
+        SurfaceResourcesTransferResult: {
+            /** @constant */
+            ok: true;
+            count: number;
+        };
+        SurfaceResourcesWatchResult: {
+            changed: boolean;
+            cursor: string;
+            found?: boolean;
+            snapshot?: unknown;
+        } & unknown;
+        SurfaceResourcesKvSnapshot: {
+            /** @constant */
+            ok: true;
+            key: string;
+            value_base64: string;
+            size_bytes: number;
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+            etag: string;
+        };
+        SurfaceResourcesKvPutResult: {
+            /** @constant */
+            ok: true;
+            key: string;
+            size_bytes: number;
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+            etag: string;
+        };
+        SurfaceResourcesKvDeleteResult: {
+            /** @constant */
+            ok: true;
+            key: string;
+        };
+        SurfaceResourcesKvBatchResult: {
+            etags: {
+                [key: string]: string;
+            };
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+        };
+        SurfaceResourcesKvEntry: {
+            key: string;
+            size_bytes: number;
+            updated_at: string;
+        };
+        SurfaceResourcesFileEntry: {
+            path: string;
+            dir: boolean;
+            size_bytes?: number;
+            updated_at: string;
+        };
+        SurfaceResourcesKvPage: {
+            /** @constant */
+            ok: true;
+            prefix: string;
+            entries: components["schemas"]["SurfaceResourcesKvEntry"][];
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+            next_cursor: string;
+        };
+        SurfaceResourcesFilePage: {
+            /** @constant */
+            ok: true;
+            path: string;
+            entries: components["schemas"]["SurfaceResourcesFileEntry"][];
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+            next_cursor: string;
+        };
+        SurfaceResourcesFileReadResult: {
+            /** @constant */
+            ok: true;
+            path: string;
+            data_base64: string;
+            size_bytes: number;
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+        };
+        SurfaceResourcesFileWriteResult: {
+            /** @constant */
+            ok: true;
+            path: string;
+            size_bytes: number;
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+        };
+        SurfaceResourcesFileDeleteResult: {
+            /** @constant */
+            ok: true;
+            path: string;
+        };
+        SurfaceResourcesSqliteQueryResult: {
+            /** @constant */
+            ok: true;
+            columns: string[];
+            rows: components["schemas"]["SurfaceResourcesSqliteValue"][][];
+            database: string;
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+        };
+        SurfaceResourcesSqliteExecResult: {
+            /** @constant */
+            ok: true;
+            rows_affected: number;
+            last_insert_id: number;
+            database: string;
+            usage: components["schemas"]["SurfaceResourcesUsage"];
+        };
+        SurfaceResourcesSettingsResult: components["schemas"]["PluginSettingsSnapshot"];
+        SurfaceResourcesDescribeResult: {
+            can_read: boolean;
+            can_write: boolean;
+            storage: {
+                store_id: string;
+                /** @enum {unknown} */
+                kind: "kv" | "files" | "sqlite";
+                /** @enum {unknown} */
+                scope: "user" | "environment";
+                operations: string[];
+            }[];
+            settings: string[] | null;
+            limits: {
+                control_bytes: number;
+                value_bytes: number;
+                page_entries: number;
+                transaction_statements: number;
+                operation_timeout_ms: number;
+                watch_timeout_ms: number;
+                stream_timeout_ms: number;
+                concurrency_per_surface: number;
+                concurrency_per_host: number;
+                websocket_message_bytes: number;
+            };
+        };
+        /** @description Generated from one validated manifest; outputs are manifest.json, actions.ts, actions.rs and source-map.json. Host validates full method schemas; static DTOs conservatively use JSON values for unsupported Rust unions/references. No permissions are inferred and no author code executes during generation. */
+        AuthorBindings: {
+            manifest_sha256: string;
+            actions: {
+                method: string;
+                pointer: string;
+                symbol: string;
+            }[];
+        };
         ErrorCodes: Record<string, never>;
         /** @enum {string} */
         ErrorCodesPlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_RETAINED_DATA_INCOMPATIBLE" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_EXECUTION_BLOCKED" | "PLUGIN_EXECUTION_NOT_FOUND" | "PLUGIN_EXECUTION_NOT_CANCELABLE" | "PLUGIN_SURFACE_METHOD_UNAVAILABLE" | "PLUGIN_SURFACE_METHOD_CONFLICT" | "PLUGIN_SURFACE_METHOD_AMBIGUOUS" | "PLUGIN_SURFACE_METHOD_FAILED" | "PLUGIN_CONNECTION_UNAVAILABLE" | "PLUGIN_CONNECTION_CONFLICT" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_FILE_OPERATION_FAILED" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_RETAINED_RECOVERY_CONFLICT" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
@@ -3531,9 +3903,14 @@ export interface components {
                     root: string;
                     spa: boolean;
                     network?: (components["schemas"]["StoredManifestNetworkAccess"] & {
-                        /** @constant */
-                        transport?: "http";
+                        /** @enum {unknown} */
+                        transport?: "http" | "websocket";
                     })[];
+                    storage?: {
+                        store_id: string;
+                        operations: ("read" | "write" | "delete" | "list" | "get" | "put" | "query" | "exec")[];
+                    }[];
+                    settings?: ("get" | "patch")[];
                 };
             }[] & (unknown | unknown);
             capability_bindings?: {
@@ -3683,7 +4060,7 @@ export interface components {
                 max_bytes: number;
                 max_runtime_ms: number;
             };
-        } & (unknown & unknown & unknown & unknown & unknown);
+        } & (unknown & unknown & unknown & unknown & unknown & unknown & unknown);
         StoredManifestLocale: string;
         StoredManifestSummary: string;
         StoredManifestDescription: string[];
@@ -3752,7 +4129,7 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        StoredManifestRequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1" | "background.interval.v1")[];
+        StoredManifestRequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1" | "background.interval.v1" | "surface.resources.v1" | "storage.transactions.v1")[];
         StoredManifestOptionalFeatures: string[];
         StoredManifestNetworkAccess: {
             connector_id: string;

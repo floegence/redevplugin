@@ -63,12 +63,14 @@ type webSurfaceBinding struct {
 	methodReceiver   *surfaceMethodReceiver
 	expiresAt        time.Time
 	pluginInstanceID string
+	resourceWatches  int
 }
 type webSurfaceBindings struct {
-	fileMu   sync.RWMutex
-	leaseMu  sync.RWMutex
-	mu       sync.Mutex
-	byOrigin map[string]*webSurfaceBinding
+	activeResources int
+	fileMu          sync.RWMutex
+	leaseMu         sync.RWMutex
+	mu              sync.Mutex
+	byOrigin        map[string]*webSurfaceBinding
 }
 
 func newWebSurfaceBindings() *webSurfaceBindings {

@@ -18,6 +18,7 @@ export const stages = [
   { id: "go", command: "test -z \"$(gofmt -l .)\" && go list ./cmd/... ./examples/... ./pkg/... && go test -p=1 ./cmd/... ./examples/... ./pkg/... ./internal/resourceio ./internal/controlstore ./internal/dataupgradecontract && golangci-lint run ./cmd/... ./examples/... ./pkg/..." },
   { id: "web", command: "REDEVPLUGIN_WEB_EVIDENCE_DIR=dist/web-pre-push npm run check:web", outputs: ["packages/redevplugin-contracts/dist", "packages/redevplugin-ui/dist", "dist/web-pre-push"] },
   { id: "canonical-bridge", command: "npm run examples:check:canonical && npm run scaffold:check:canonical && ./scripts/check_redevplugin_ui_bridge.sh" },
+  { id: "author-browser", command: "REDEVPLUGIN_RUN_BROWSER_SMOKE=1 go test ./cmd/redevplugin -run '^TestAuthor(BrowserWorkflow|MonitorBrowser)$' -count=1 -timeout=10m" },
   // Rust compilation and its crate-local fixtures do not read npm dependencies.
   { id: "rust", inputs: [...commonInputs, "Cargo.toml", "Cargo.lock", "crates/", "internal/", "examples/workers/", ".cargo/", "VERSION", "deny.toml", "spec/", "testdata/", "LICENSE"], nodeDependencies: false, command: "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace" },
   { id: "rust-source", commitBound: true, command: "npm run rust-source-packages:test" },

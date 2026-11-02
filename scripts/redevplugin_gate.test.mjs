@@ -149,7 +149,7 @@ test("missing and mismatched baseline tags fail before heavy stages", (t) => {
 });
 
 test("the fixed stage plan preserves original coverage and moves cheap blockers first", () => {
-  assert.deepEqual(stages.map(({ id }) => id), ["prepare", "audit", "contracts", "go", "web", "canonical-bridge", "rust", "rust-source", "performance", "stress", "property", "runtime-platform"]);
+  assert.deepEqual(stages.map(({ id }) => id), ["prepare", "audit", "contracts", "go", "web", "canonical-bridge", "author-browser", "rust", "rust-source", "performance", "stress", "property", "runtime-platform"]);
   assert.ok(stages.find(({ id }) => id === "audit").fresh);
   assert.ok(stages.find(({ id }) => id === "prepare").fresh);
   for (const path of ["./internal/controlstore", "./internal/dataupgradecontract"]) assert.ok(stages.find(({ id }) => id === "go").command.includes(path));

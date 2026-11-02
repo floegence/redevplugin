@@ -286,6 +286,99 @@ pub mod storage {
         }
     }
 
+    /// Requires the manifest feature storage.transactions.v1.
+    /// Explicit richer requests preserve the existing strict response shapes.
+    /// ETags identify content and permit ABA; they are not monotonic revisions.
+    pub mod conditional {
+        use super::*;
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct KVSnapshot {
+            pub ok: bool,
+            pub key: String,
+            pub value_base64: String,
+            pub size_bytes: i64,
+            pub usage: Usage,
+            pub etag: String,
+        }
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct KVPutResult {
+            pub ok: bool,
+            pub key: String,
+            pub size_bytes: i64,
+            pub usage: Usage,
+            pub etag: String,
+        }
+        pub fn get(store_id: &str, key: &str, max_bytes: u64) -> Result<KVSnapshot, WorkerError> {
+            call_broker(
+                "storage.kv",
+                &serde_json::json!({"operation":"get","store_id":store_id,"key":key,"max_bytes":max_bytes,"include_etag":true}),
+            )
+        }
+        pub fn put(
+            store_id: &str,
+            key: &str,
+            value_base64: &str,
+            expected_etag: &str,
+        ) -> Result<KVPutResult, WorkerError> {
+            call_broker(
+                "storage.kv",
+                &serde_json::json!({"operation":"put","store_id":store_id,"key":key,"value_base64":value_base64,"expected_etag":expected_etag,"include_etag":true}),
+            )
+        }
+        pub fn delete(
+            store_id: &str,
+            key: &str,
+            expected_etag: &str,
+        ) -> Result<kv::DeleteResponse, WorkerError> {
+            call_broker(
+                "storage.kv",
+                &serde_json::json!({"operation":"delete","store_id":store_id,"key":key,"expected_etag":expected_etag}),
+            )
+        }
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct KVPage {
+            pub ok: bool,
+            pub prefix: String,
+            pub entries: Vec<kv::Entry>,
+            pub usage: Usage,
+            pub next_cursor: String,
+        }
+        pub fn list(
+            store_id: &str,
+            prefix: &str,
+            cursor: &str,
+            max_entries: u32,
+        ) -> Result<KVPage, WorkerError> {
+            call_broker(
+                "storage.kv",
+                &serde_json::json!({"operation":"list","store_id":store_id,"prefix":prefix,"cursor":cursor,"max_entries":max_entries,"include_cursor":true}),
+            )
+        }
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct FilePage {
+            pub ok: bool,
+            pub path: String,
+            pub entries: Vec<files::Entry>,
+            pub usage: Usage,
+            pub next_cursor: String,
+        }
+        pub fn list_files(
+            store_id: &str,
+            path: &str,
+            cursor: &str,
+            max_entries: u32,
+        ) -> Result<FilePage, WorkerError> {
+            call_broker(
+                "storage.files",
+                &serde_json::json!({"operation":"list","store_id":store_id,"path":path,"cursor":cursor,"max_entries":max_entries,"include_cursor":true}),
+            )
+        }
+    }
+
     pub mod sqlite {
         use super::*;
 
@@ -389,6 +482,32 @@ pub mod storage {
                 }
                 Ok(Self::BlobBase64(wire.blob_base64.unwrap_or_default()))
             }
+        }
+
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Statement {
+            pub sql: String,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub args: Vec<Value>,
+        }
+        /// One bounded database transaction; no cross-request lock or replay.
+        /// Requires the manifest feature storage.transactions.v1.
+        pub fn transaction(
+            store_id: &str,
+            database: &str,
+            statements: &[Statement],
+            timeout_ms: u64,
+        ) -> Result<ExecResponse, WorkerError> {
+            if statements.is_empty() || statements.len() > 64 {
+                return Err(WorkerError::invalid_request(
+                    "transaction requires 1 to 64 statements",
+                ));
+            }
+            call_broker(
+                "storage.sqlite",
+                &serde_json::json!({"operation":"exec","store_id":store_id,"database":database,"statements":statements,"timeout_ms":timeout_ms}),
+            )
         }
 
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

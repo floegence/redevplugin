@@ -17,6 +17,7 @@ export {
   callCapabilityStream,
   callCapabilitySync,
   isCapabilityBusinessError,
+  observePluginExecution,
 } from "./capability-client.js";
 
 export type {
@@ -48,9 +49,18 @@ export type {
   PluginCapabilityStreamEvent,
   PluginCapabilityStreamReadResult,
   PluginExecution,
+  PluginExecutionObservation,
   PluginExecutionTerminalStatus,
   PluginExecutionWaitOptions,
   PluginStream,
 } from "./capability-client.js";
 export { openPluginConnection } from "./connections.js";
+export { pluginKV, pluginFiles, pluginDatabase, pluginSettings, PluginResourceError } from "./resources.js";
+export type { PluginResourceOptions, PluginResourceOutcome, PluginStorageUsage, PluginResourcePage, PluginKVEntry, PluginPrivateFileEntry, PluginSettingsSnapshot, PluginSQLiteValue } from "./resources.js";
 export type { PluginWebConnection, PluginConnectionOptions } from "./connections.js";
+export { callPluginActionSync, callPluginActionOperation, callPluginActionStream, observePluginActionEvents } from "./actions.js";
+export type { PluginActionContract, PluginActionStream } from "./actions.js";
+export { describePluginResources } from "./resources.js";
+export type { PluginResourceDescription } from "./resources.js";
+export { openPluginWebSocket } from "./websocket.js";
+export type { PluginSocket, PluginSocketMessage } from "./websocket.js";

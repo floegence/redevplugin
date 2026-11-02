@@ -1,0 +1,457 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/storage-control.schema.json",
+  "title": "ReDevPlugin Worker storage transactions and paged observations",
+  "description": "Requires storage.transactions.v1. Requests use the existing control ABI, exact method storage ceilings, owner, lease and cancellation. Content ETags permit ABA. Transactions are one bounded database batch; no asynchronous cross-resource transaction. Existing basic Worker operations keep their published response shape. These schemas describe the additive transaction and cursor API.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/kv_get"
+    },
+    {
+      "$ref": "#/$defs/kv_put"
+    },
+    {
+      "$ref": "#/$defs/kv_delete"
+    },
+    {
+      "$ref": "#/$defs/kv_list"
+    },
+    {
+      "$ref": "#/$defs/files_list"
+    },
+    {
+      "$ref": "#/$defs/sqlite_exec"
+    }
+  ],
+  "$defs": {
+    "kv_get": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "get"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            },
+            "include_etag": {
+              "const": true
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "key"
+          ]
+        },
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "storage.kv"
+        }
+      },
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ]
+    },
+    "kv_put": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "put"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "value_base64": {
+              "type": "string",
+              "maxLength": 87384,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            "expected_etag": {
+              "type": "string",
+              "pattern": "^(?:[a-f0-9]{64})?$"
+            },
+            "include_etag": {
+              "const": true
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "key",
+            "value_base64"
+          ]
+        },
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "storage.kv"
+        }
+      },
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ]
+    },
+    "kv_delete": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "delete"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "expected_etag": {
+              "type": "string",
+              "pattern": "^(?:[a-f0-9]{64})?$"
+            }
+          },
+          "required": [
+            "operation",
+            "store_id",
+            "key"
+          ]
+        },
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "storage.kv"
+        }
+      },
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ]
+    },
+    "kv_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "list"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "prefix": {
+              "type": "string"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "max_entries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "include_cursor": {
+              "const": true
+            }
+          },
+          "required": [
+            "operation",
+            "store_id"
+          ]
+        },
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "storage.kv"
+        }
+      },
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ]
+    },
+    "files_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "list"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "path": {
+              "type": "string"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "max_entries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "include_cursor": {
+              "const": true
+            }
+          },
+          "required": [
+            "operation",
+            "store_id"
+          ]
+        },
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "storage.files"
+        }
+      },
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ]
+    },
+    "sqlite_exec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "exec"
+            },
+            "store_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "database": {
+              "type": "string"
+            },
+            "sql": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sqlite_value"
+              },
+              "maxItems": 64
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            },
+            "statements": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/sqlite_statement"
+              }
+            }
+          },
+          "required": [
+            "operation",
+            "store_id"
+          ],
+          "oneOf": [
+            {
+              "required": [
+                "sql"
+              ],
+              "not": {
+                "required": [
+                  "statements"
+                ]
+              }
+            },
+            {
+              "required": [
+                "statements"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "args"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "plugin_api": {
+          "const": 1
+        },
+        "operation": {
+          "const": "storage.sqlite"
+        }
+      },
+      "required": [
+        "plugin_api",
+        "operation",
+        "arguments"
+      ]
+    },
+    "sqlite_statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sql": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sqlite_value"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "sql"
+      ]
+    },
+    "sqlite_value": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "null": {
+              "const": true
+            }
+          },
+          "required": [
+            "null"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "int": {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807
+            }
+          },
+          "required": [
+            "int"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "float": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "float"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "blob_base64": {
+              "type": "string",
+              "maxLength": 87384,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          },
+          "required": [
+            "blob_base64"
+          ]
+        }
+      ]
+    }
+  }
+}

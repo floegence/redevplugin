@@ -194,10 +194,59 @@
                     {
                       "properties": {
                         "transport": {
-                          "const": "http"
+                          "enum": [
+                            "http",
+                            "websocket"
+                          ]
                         }
                       }
                     }
+                  ]
+                }
+              },
+              "storage": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "store_id",
+                    "operations"
+                  ],
+                  "properties": {
+                    "store_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "operations": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "enum": [
+                          "read",
+                          "write",
+                          "delete",
+                          "list",
+                          "get",
+                          "put",
+                          "query",
+                          "exec"
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              "settings": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "get",
+                    "patch"
                   ]
                 }
               }
@@ -1870,7 +1919,9 @@
           "background.method.v1",
           "fs.selected.v1",
           "data.upgrade.v1",
-          "background.interval.v1"
+          "background.interval.v1",
+          "surface.resources.v1",
+          "storage.transactions.v1"
         ]
       }
     },
@@ -2111,6 +2162,111 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "surfaces": {
+            "contains": {
+              "properties": {
+                "web": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "storage"
+                      ],
+                      "properties": {
+                        "storage": {
+                          "minItems": 1
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "settings"
+                      ],
+                      "properties": {
+                        "settings": {
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "web"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "api": {
+            "properties": {
+              "required_features": {
+                "contains": {
+                  "const": "surface.resources.v1"
+                }
+              }
+            },
+            "required": [
+              "required_features"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "surfaces": {
+            "contains": {
+              "properties": {
+                "web": {
+                  "properties": {
+                    "network": {
+                      "contains": {
+                        "properties": {
+                          "transport": {
+                            "const": "websocket"
+                          }
+                        },
+                        "required": [
+                          "transport"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "network"
+                  ]
+                }
+              },
+              "required": [
+                "web"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "api": {
+            "properties": {
+              "required_features": {
+                "contains": {
+                  "const": "surface.resources.v1"
+                }
+              }
+            },
+            "required": [
+              "required_features"
+            ]
           }
         }
       }

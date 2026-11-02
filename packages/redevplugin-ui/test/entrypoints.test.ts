@@ -100,7 +100,7 @@ function assertTrustedSurfaceOrchestration(client: PluginPlatformClient, slot: P
 void assertTrustedSurfaceOrchestration;
 
 test("Web application entrypoint exposes only bridge and generated capability client primitives", () => {
-  assert.deepEqual(Object.keys(pluginEntrypoint), [
+  assert.deepEqual(Object.keys(pluginEntrypoint).sort(), [
     "PluginBridgeClient",
     "PluginBridgeError",
     "PluginFileHandle",
@@ -112,8 +112,9 @@ test("Web application entrypoint exposes only bridge and generated capability cl
     "createPluginProcessClient",
     "isCapabilityBusinessError",
     "openPluginConnection",
+ "PluginResourceError", "callPluginActionOperation", "callPluginActionStream", "callPluginActionSync", "describePluginResources", "observePluginActionEvents", "observePluginExecution", "openPluginWebSocket", "pluginDatabase", "pluginFiles", "pluginKV", "pluginSettings",
     "pluginAPIMajor",
-  ]);
+  ].sort());
   assert.equal(pluginEntrypoint.pluginAPIMajor, 1);
   for (const forbidden of [
     "PluginPlatformClient",

@@ -1,8 +1,11 @@
 package plugindata
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -387,30 +390,12 @@ VALUES (?, ?, ?, NULL, 0, ?)`, path, namespaceParent(path), fileEntryTypeDirecto
 }
 
 func (s *FileStore) ReadFile(ctx context.Context, req storage.FileReadRequest) (result storage.FileReadResult, resultErr error) {
-	path, err := canonicalNamespacePath(req.Path, false)
-	if err != nil {
-		return result, err
+	var buffer bytes.Buffer
+	result, resultErr = s.readFileTo(ctx, req, &buffer)
+	if resultErr == nil {
+		result.Data = buffer.Bytes()
 	}
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceFiles, false, func(a *namespaceAccess) error {
-		db := a.db
-		var entryType int
-		var data []byte
-		var size int64
-		if err := db.QueryRowContext(ctx, `SELECT entry_type, content, size_bytes FROM file_entries WHERE path = ?`, path).Scan(&entryType, &data, &size); errors.Is(err, sql.ErrNoRows) {
-			return storage.ErrFileNotFound
-		} else if err != nil {
-			return err
-		}
-		if entryType != fileEntryTypeFile {
-			return storage.ErrInvalidFilePath
-		}
-		if req.MaxBytes > 0 && size > req.MaxBytes {
-			return storage.ErrFileTooLarge
-		}
-		result = storage.FileReadResult{Path: path, Data: append([]byte(nil), data...), SizeBytes: size, Usage: a.resultUsage()}
-		return nil
-	})
-	return result, err
+	return result, resultErr
 }
 
 func (s *FileStore) WriteFile(ctx context.Context, req storage.FileWriteRequest) (result storage.FileWriteResult, resultErr error) {
@@ -450,6 +435,9 @@ func (s *FileStore) WriteFile(ctx context.Context, req storage.FileWriteRequest)
 			projected.files++
 		}
 		if err := enforceQuota(a.namespace, projected); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM file_chunks WHERE path=?", path); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -607,7 +595,7 @@ func (s *FileStore) GetKV(ctx context.Context, req storage.KVGetRequest) (result
 		db := a.db
 		var value []byte
 		var size int64
-		if err := db.QueryRowContext(ctx, `SELECT value, size_bytes FROM kv_entries WHERE key = ?`, key).Scan(&value, &size); errors.Is(err, sql.ErrNoRows) {
+		if err := db.QueryRowContext(ctx, `SELECT size_bytes FROM kv_entries WHERE key = ?`, key).Scan(&size); errors.Is(err, sql.ErrNoRows) {
 			return storage.ErrKVKeyNotFound
 		} else if err != nil {
 			return err
@@ -615,7 +603,10 @@ func (s *FileStore) GetKV(ctx context.Context, req storage.KVGetRequest) (result
 		if req.MaxBytes > 0 && size > req.MaxBytes {
 			return storage.ErrKVValueTooLarge
 		}
-		result = storage.KVGetResult{Key: key, Value: append([]byte(nil), value...), SizeBytes: size, Usage: a.resultUsage()}
+		if err := db.QueryRowContext(ctx, `SELECT value FROM kv_entries WHERE key = ?`, key).Scan(&value); err != nil {
+			return err
+		}
+		result = storage.KVGetResult{ETag: kvETag(value), Key: key, Value: append([]byte(nil), value...), SizeBytes: size, Usage: a.resultUsage()}
 		return nil
 	})
 	return result, err
@@ -638,11 +629,21 @@ func (s *FileStore) PutKV(ctx context.Context, req storage.KVPutRequest) (result
 			return err
 		}
 		oldSize := int64(0)
+		var oldValue []byte
 		exists := true
-		if err := tx.QueryRowContext(ctx, `SELECT size_bytes FROM kv_entries WHERE key = ?`, key).Scan(&oldSize); errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx, `SELECT size_bytes, value FROM kv_entries WHERE key = ?`, key).Scan(&oldSize, &oldValue); errors.Is(err, sql.ErrNoRows) {
 			exists = false
 		} else if err != nil {
 			return err
+		}
+		if req.ExpectedETag != nil {
+			actual := ""
+			if exists {
+				actual = kvETag(oldValue)
+			}
+			if *req.ExpectedETag != actual {
+				return storage.ErrRevisionConflict
+			}
 		}
 		projected := namespaceUsage{bytes: currentUsage.bytes - oldSize + int64(len(req.Value)), files: currentUsage.files}
 		if !exists {
@@ -669,7 +670,7 @@ ON CONFLICT(key) DO UPDATE SET
 		}
 		a.usage = projected
 		s.setNamespaceUsage(a.usageKey, projected)
-		result = storage.KVPutResult{Key: key, SizeBytes: int64(len(req.Value)), Usage: a.resultUsage()}
+		result = storage.KVPutResult{ETag: kvETag(req.Value), Key: key, SizeBytes: int64(len(req.Value)), Usage: a.resultUsage()}
 		return nil
 	})
 	return result, err
@@ -692,10 +693,17 @@ func (s *FileStore) DeleteKV(ctx context.Context, req storage.KVDeleteRequest) e
 			return err
 		}
 		var size int64
-		if err := tx.QueryRowContext(ctx, `SELECT size_bytes FROM kv_entries WHERE key = ?`, key).Scan(&size); errors.Is(err, sql.ErrNoRows) {
+		var value []byte
+		if err := tx.QueryRowContext(ctx, `SELECT size_bytes,value FROM kv_entries WHERE key = ?`, key).Scan(&size, &value); errors.Is(err, sql.ErrNoRows) {
+			if req.ExpectedETag != nil && *req.ExpectedETag != "" {
+				return storage.ErrRevisionConflict
+			}
 			return nil
 		} else if err != nil {
 			return err
+		}
+		if req.ExpectedETag != nil && *req.ExpectedETag != kvETag(value) {
+			return storage.ErrRevisionConflict
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM kv_entries WHERE key = ?`, key); err != nil {
 			return err
@@ -986,3 +994,6 @@ func max64(left, right int64) int64 {
 	}
 	return right
 }
+
+// kvETag identifies exact value bytes, not an operation sequence or timestamp.
+func kvETag(value []byte) string { sum := sha256.Sum256(value); return hex.EncodeToString(sum[:]) }

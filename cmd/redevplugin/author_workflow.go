@@ -117,6 +117,9 @@ func (s *authorBuilds) build(ctx context.Context, p *authorproject.Project, h *h
 		var pkgPackageErr error
 		pkg, packageBytes, pkgPackageErr := p.Package(ctx)
 		raw, err = packageBytes, pkgPackageErr
+		if err == nil && s.snapshot().Mode == "web" && len(pkg.Manifest.Workers) != 0 {
+			err = errors.New("this project declares Workers; restart dev with --runtime and --runtime-sha256 for a verified runtime")
+		}
 		pkgHash = pkg.PackageHash
 		if err == nil && current.PluginInstanceID != "" {
 			records, listErr := h.ListPlugins(ctx)
@@ -234,9 +237,14 @@ func runAuthorDev(ctx context.Context, args []string) error {
 	defer listener.Close()
 	_, webPort, _ := net.SplitHostPort(listener.Addr().String())
 	origin := "http://localhost:" + webPort
-	runtimeModule, err := authorRuntime(ctx, stateRoot, options.runtime, options.sha)
-	if err != nil {
-		return err
+	var runtimeModule *host.RuntimeModule
+	mode := "web"
+	if options.runtime != "" || options.sha != "" {
+		runtimeModule, err = authorRuntime(ctx, stateRoot, options.runtime, options.sha)
+		if err != nil {
+			return err
+		}
+		mode = "real-runtime"
 	}
 	harness, err := testhost.Open(ctx, authorHostOptions(stateRoot, origin, runtimeModule))
 	if err != nil {
@@ -245,16 +253,18 @@ func runAuthorDev(ctx context.Context, args []string) error {
 	defer harness.Close()
 	ctx = harness.Context(ctx)
 	pluginHost := harness.Host()
-	target, err := runtimetarget.Current()
-	if err != nil {
-		return err
-	}
-	if _, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{Target: target}); err != nil {
-		return err
+	if runtimeModule != nil {
+		target, err := runtimetarget.Current()
+		if err != nil {
+			return err
+		}
+		if _, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{Target: target}); err != nil {
+			return err
+		}
 	}
 	token, csrf := harness.BrowserToken(), harness.CSRFToken()
 	guard := harness.Guard()
-	state := &authorBuilds{state: authorBuildState{CSRF: csrf, Mode: "real-runtime"}}
+	state := &authorBuilds{state: authorBuildState{CSRF: csrf, Mode: mode}}
 	mux := http.NewServeMux()
 	mux.Handle("/dev/session", harness.SessionHandler())
 	mux.HandleFunc("/dev/status", func(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +312,7 @@ func runAuthorDev(ctx context.Context, args []string) error {
 		defer close(watchDone)
 		watchAuthorProject(watchCtx, project, func() { state.build(watchCtx, project, pluginHost) }, func(err error) { state.mu.Lock(); state.state.Error = err.Error(); state.mu.Unlock() })
 	}()
-	fmt.Fprintf(os.Stdout, "ReDevPlugin DEV (real runtime)\nSource: %s\nBuild: %q\nPreview: %s/#%s\nState is isolated and removed on exit. Permissions require explicit approval in the preview.\n", project.Root, project.Config.Build, origin, token)
+	fmt.Fprintf(os.Stdout, "ReDevPlugin DEV (%s)\nSource: %s\nBuild: %q\nPreview: %s/#%s\nState is isolated and removed on exit. Permissions require explicit approval in the preview.\n", mode, project.Root, project.Config.Build, origin, token)
 	select {
 	case <-ctx.Done():
 		err = nil
@@ -458,6 +468,7 @@ func authorHostOptions(root, origin string, runtime *host.RuntimeModule) testhos
 			host.ManagementActionPatchPluginSettings, host.ManagementActionListIntents,
 			host.ManagementActionInvokeIntent, host.ManagementActionGetExecution,
 			host.ManagementActionListExecutionEvents, host.ManagementActionCancelExecution,
+			host.ManagementActionListExecutions, host.ManagementActionListDiagnosticEvents,
 		},
 	}
 }

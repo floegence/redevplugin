@@ -18,6 +18,6 @@
     ]
   },
   "include": [
-    "app.ts"
+    "app.ts", "web-app.ts", "data-app.ts"
   ]
 }

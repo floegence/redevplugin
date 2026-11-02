@@ -4,35 +4,73 @@
   "title": "ReDevPlugin WASM worker executable contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["memory", "table", "exports", "imports"],
+  "required": [
+    "memory",
+    "table",
+    "exports",
+    "imports"
+  ],
   "properties": {
     "memory": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["count", "export", "memory64", "shared", "page_size_bytes"],
+      "required": [
+        "count",
+        "export",
+        "memory64",
+        "shared",
+        "page_size_bytes"
+      ],
       "properties": {
-        "count": { "const": 1 },
-        "export": { "const": "memory" },
-        "memory64": { "const": false },
-        "shared": { "const": false },
-        "page_size_bytes": { "const": 65536 }
+        "count": {
+          "const": 1
+        },
+        "export": {
+          "const": "memory"
+        },
+        "memory64": {
+          "const": false
+        },
+        "shared": {
+          "const": false
+        },
+        "page_size_bytes": {
+          "const": 65536
+        }
       }
     },
     "table": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_count", "max_elements", "table64", "shared"],
+      "required": [
+        "max_count",
+        "max_elements",
+        "table64",
+        "shared"
+      ],
       "properties": {
-        "max_count": { "const": 1 },
-        "max_elements": { "const": 65536 },
-        "table64": { "const": false },
-        "shared": { "const": false }
+        "max_count": {
+          "const": 1
+        },
+        "max_elements": {
+          "const": 65536
+        },
+        "table64": {
+          "const": false
+        },
+        "shared": {
+          "const": false
+        }
       }
     },
     "exports": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["alloc", "dealloc", "invoke"],
+      "required": [
+        "alloc",
+        "dealloc",
+        "invoke"
+      ],
       "properties": {
         "alloc": {
           "$ref": "#/$defs/alloc_function"
@@ -50,12 +88,24 @@
       "uniqueItems": true,
       "items": {
         "oneOf": [
-          { "$ref": "#/$defs/control_import" },
-          { "$ref": "#/$defs/read_import" },
-          { "$ref": "#/$defs/write_import" },
-          { "$ref": "#/$defs/seek_import" },
-          { "$ref": "#/$defs/close_import" },
-          { "$ref": "#/$defs/last_error_import" }
+          {
+            "$ref": "#/$defs/control_import"
+          },
+          {
+            "$ref": "#/$defs/read_import"
+          },
+          {
+            "$ref": "#/$defs/write_import"
+          },
+          {
+            "$ref": "#/$defs/seek_import"
+          },
+          {
+            "$ref": "#/$defs/close_import"
+          },
+          {
+            "$ref": "#/$defs/last_error_import"
+          }
         ]
       }
     }
@@ -64,99 +114,255 @@
     "alloc_function": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "params", "results"],
+      "required": [
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "name": { "const": "redevplugin_worker_alloc" },
-        "params": { "const": ["i32"] },
-        "results": { "const": ["i32"] }
+        "name": {
+          "const": "redevplugin_worker_alloc"
+        },
+        "params": {
+          "const": [
+            "i32"
+          ]
+        },
+        "results": {
+          "const": [
+            "i32"
+          ]
+        }
       }
     },
     "dealloc_function": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "params", "results"],
+      "required": [
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "name": { "const": "redevplugin_worker_dealloc" },
-        "params": { "const": ["i32", "i32"] },
-        "results": { "const": [] }
+        "name": {
+          "const": "redevplugin_worker_dealloc"
+        },
+        "params": {
+          "const": [
+            "i32",
+            "i32"
+          ]
+        },
+        "results": {
+          "const": []
+        }
       }
     },
     "invoke_function": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "params", "results"],
+      "required": [
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "name": { "const": "redevplugin_worker_invoke" },
-        "params": { "const": ["i32", "i32"] },
-        "results": { "const": ["i64"] }
+        "name": {
+          "const": "redevplugin_worker_invoke"
+        },
+        "params": {
+          "const": [
+            "i32",
+            "i32"
+          ]
+        },
+        "results": {
+          "const": [
+            "i64"
+          ]
+        }
       }
     },
     "control_import": {
-      "description": "Data conversion controls follow data-upgrade.schema.json and are admitted only inside the declared isolated upgrade Worker. Client network open operations follow network-control.schema.json. Connector identity is mandatory and binds method access; no default connector or direct network fallback exists. HTTP, WebSocket, TCP and UDP resources use the shared connectivity executor and the invocation cancellation lifetime.",
+      "description": "Data conversion controls follow data-upgrade.schema.json and are admitted only inside the declared isolated upgrade Worker. Client network open operations follow network-control.schema.json. Connector identity is mandatory and binds method access; no default connector or direct network fallback exists. HTTP, WebSocket, TCP and UDP resources use the shared connectivity executor and the invocation cancellation lifetime. Additive storage CAS, paginated observations and transactional batches follow storage-control.schema.json and require storage.transactions.v1.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "name", "params", "results"],
+      "required": [
+        "module",
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "module": { "const": "redevplugin.io" },
-        "name": { "const": "rdp_call_v1" },
-        "params": { "const": ["i32", "i32", "i32", "i32"] },
-        "results": { "const": ["i32"] }
+        "module": {
+          "const": "redevplugin.io"
+        },
+        "name": {
+          "const": "rdp_call_v1"
+        },
+        "params": {
+          "const": [
+            "i32",
+            "i32",
+            "i32",
+            "i32"
+          ]
+        },
+        "results": {
+          "const": [
+            "i32"
+          ]
+        }
       }
     },
     "read_import": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "name", "params", "results"],
+      "required": [
+        "module",
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "module": { "const": "redevplugin.io" },
-        "name": { "const": "rdp_read_v1" },
-        "params": { "const": ["i64", "i32", "i32", "i32"] },
-        "results": { "const": ["i32"] }
+        "module": {
+          "const": "redevplugin.io"
+        },
+        "name": {
+          "const": "rdp_read_v1"
+        },
+        "params": {
+          "const": [
+            "i64",
+            "i32",
+            "i32",
+            "i32"
+          ]
+        },
+        "results": {
+          "const": [
+            "i32"
+          ]
+        }
       }
     },
     "write_import": {
       "description": "A successful call acknowledges the full chunk. After dispatch, failures may have partial side effects: rdp_last_error_v1 reports details.mutation_outcome=unknown and retryable=false. Do not replay without inspecting the resource. Rust File::write_all additionally reports details.acknowledged_bytes for earlier completed chunks.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "name", "params", "results"],
+      "required": [
+        "module",
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "module": { "const": "redevplugin.io" },
-        "name": { "const": "rdp_write_v1" },
-        "params": { "const": ["i64", "i32", "i32", "i32"] },
-        "results": { "const": ["i32"] }
+        "module": {
+          "const": "redevplugin.io"
+        },
+        "name": {
+          "const": "rdp_write_v1"
+        },
+        "params": {
+          "const": [
+            "i64",
+            "i32",
+            "i32",
+            "i32"
+          ]
+        },
+        "results": {
+          "const": [
+            "i32"
+          ]
+        }
       }
     },
     "seek_import": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "name", "params", "results"],
+      "required": [
+        "module",
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "module": { "const": "redevplugin.io" },
-        "name": { "const": "rdp_seek_v1" },
-        "params": { "const": ["i64", "i64", "i32"] },
-        "results": { "const": ["i64"] }
+        "module": {
+          "const": "redevplugin.io"
+        },
+        "name": {
+          "const": "rdp_seek_v1"
+        },
+        "params": {
+          "const": [
+            "i64",
+            "i64",
+            "i32"
+          ]
+        },
+        "results": {
+          "const": [
+            "i64"
+          ]
+        }
       }
     },
     "close_import": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "name", "params", "results"],
+      "required": [
+        "module",
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "module": { "const": "redevplugin.io" },
-        "name": { "const": "rdp_close_v1" },
-        "params": { "const": ["i64"] },
-        "results": { "const": ["i32"] }
+        "module": {
+          "const": "redevplugin.io"
+        },
+        "name": {
+          "const": "rdp_close_v1"
+        },
+        "params": {
+          "const": [
+            "i64"
+          ]
+        },
+        "results": {
+          "const": [
+            "i32"
+          ]
+        }
       }
     },
     "last_error_import": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "name", "params", "results"],
+      "required": [
+        "module",
+        "name",
+        "params",
+        "results"
+      ],
       "properties": {
-        "module": { "const": "redevplugin.io" },
-        "name": { "const": "rdp_last_error_v1" },
-        "params": { "const": ["i32", "i32"] },
-        "results": { "const": ["i32"] }
+        "module": {
+          "const": "redevplugin.io"
+        },
+        "name": {
+          "const": "rdp_last_error_v1"
+        },
+        "params": {
+          "const": [
+            "i32",
+            "i32"
+          ]
+        },
+        "results": {
+          "const": [
+            "i32"
+          ]
+        }
       }
     }
   }

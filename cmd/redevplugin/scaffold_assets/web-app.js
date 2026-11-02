@@ -1,0 +1,1199 @@
+// packages/redevplugin-ui/src/error-codes.gen.ts
+var pluginBridgeErrorCodes = [
+  "PLUGIN_INVALID_REQUEST",
+  "PLUGIN_MANIFEST_INVALID",
+  "PLUGIN_PACKAGE_INVALID",
+  "PLUGIN_PACKAGE_TOO_LARGE",
+  "PLUGIN_PACKAGE_PATH_FORBIDDEN",
+  "PLUGIN_SIGNATURE_INVALID",
+  "PLUGIN_TRUST_STATE_DENIED",
+  "PLUGIN_TRUST_VERIFICATION_REQUIRED",
+  "PLUGIN_TRUST_VERIFICATION_INVALID",
+  "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
+  "PLUGIN_RELEASE_REF_POLICY_DENIED",
+  "PLUGIN_RELEASE_NETWORK",
+  "PLUGIN_RELEASE_TIMEOUT",
+  "PLUGIN_RELEASE_ASSET_MISSING",
+  "PLUGIN_RELEASE_ASSET_INTEGRITY",
+  "PLUGIN_INSTALL_INTERRUPTED",
+  "PLUGIN_INSTALL_STATE_CONFLICT",
+  "PLUGIN_RETAINED_DATA_INCOMPATIBLE",
+  "PLUGIN_INTERNAL_FAILURE",
+  "PLUGIN_DISABLED",
+  "PLUGIN_PERMISSION_DENIED",
+  "PLUGIN_ORIGIN_DENIED",
+  "PLUGIN_ACTION_DENIED",
+  "PLUGIN_OWNER_SCOPE_MISMATCH",
+  "PLUGIN_SECRET_SCOPE_MISMATCH",
+  "PLUGIN_STORAGE_SCOPE_MISMATCH",
+  "PLUGIN_ADAPTER_FAILURE",
+  "PLUGIN_SESSION_REVOKED",
+  "PLUGIN_SESSION_TEARDOWN_INCOMPLETE",
+  "PLUGIN_SESSION_FENCE_CAPACITY",
+  "PLUGIN_CONFIRMATION_REQUIRED",
+  "PLUGIN_CONFIRMATION_INVALID",
+  "PLUGIN_TOKEN_EXPIRED",
+  "PLUGIN_TOKEN_REPLAY",
+  "PLUGIN_GATEWAY_TOKEN_INVALID",
+  "PLUGIN_GATEWAY_TOKEN_REPLAYED",
+  "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH",
+  "PLUGIN_ASSET_TICKET_INVALID",
+  "PLUGIN_ASSET_SESSION_INVALID",
+  "PLUGIN_STREAM_TICKET_INVALID",
+  "PLUGIN_STREAM_DELIVERY_INVALID",
+  "PLUGIN_STREAM_CANCELLED",
+  "PLUGIN_LEASE_INVALID",
+  "PLUGIN_LEASE_REPLAYED",
+  "PLUGIN_GRANT_INVALID",
+  "PLUGIN_STORAGE_QUOTA_EXCEEDED",
+  "PLUGIN_EXECUTION_BLOCKED",
+  "PLUGIN_EXECUTION_NOT_FOUND",
+  "PLUGIN_EXECUTION_NOT_CANCELABLE",
+  "PLUGIN_SURFACE_METHOD_UNAVAILABLE",
+  "PLUGIN_SURFACE_METHOD_CONFLICT",
+  "PLUGIN_SURFACE_METHOD_AMBIGUOUS",
+  "PLUGIN_SURFACE_METHOD_FAILED",
+  "PLUGIN_CONNECTION_UNAVAILABLE",
+  "PLUGIN_CONNECTION_CONFLICT",
+  "PLUGIN_NETWORK_TARGET_DENIED",
+  "PLUGIN_NETWORK_RATE_LIMITED",
+  "PLUGIN_RUNTIME_UNAVAILABLE",
+  "PLUGIN_RUNTIME_VERSION_MISMATCH",
+  "PLUGIN_RUNTIME_CONTRACT_MISMATCH",
+  "PLUGIN_UI_PROTOCOL_VIOLATION",
+  "PLUGIN_SURFACE_QUIESCE_TIMEOUT",
+  "PLUGIN_JSON_LIMIT_EXCEEDED",
+  "PLUGIN_CAPABILITY_ERROR",
+  "PLUGIN_WORKER_ERROR",
+  "PLUGIN_FILE_OPERATION_FAILED",
+  "PLUGIN_CONTRACT_MISMATCH",
+  "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
+  "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
+  "PLUGIN_RETAINED_RECOVERY_CONFLICT",
+  "PLUGIN_BINDING_REVISION_MISMATCH",
+  "PLUGIN_VALUES_REVISION_MISMATCH",
+  "PLUGIN_CSRF_REQUIRED",
+  "PLUGIN_CSRF_INVALID",
+  "PLUGIN_FEATURE_NOT_CONFIGURED",
+  "PLUGIN_CONFIRMATION_REJECTED",
+  "PLUGIN_BRIDGE_CANCELLED",
+  "PLUGIN_BRIDGE_TIMEOUT",
+  "PLUGIN_BRIDGE_DISPOSED",
+  "PLUGIN_BRIDGE_HANDSHAKE_FAILED",
+  "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"
+];
+
+// packages/redevplugin-ui/src/errors.ts
+var PluginPlatformRequestError = class extends Error {
+  errorCode;
+  details;
+  mutationOutcome;
+  constructor(errorCode, message, details = {}, mutationOutcome2) {
+    super(message);
+    this.name = "PluginPlatformRequestError";
+    this.errorCode = errorCode;
+    this.details = details;
+    this.mutationOutcome = mutationOutcome2;
+  }
+};
+var PluginTransportError = class extends Error {
+  mutationOutcome;
+  httpStatus;
+  cause;
+  constructor(message, cause, mutationOutcome2, httpStatus) {
+    super(message, { cause });
+    this.name = "PluginTransportError";
+    this.cause = cause;
+    this.mutationOutcome = mutationOutcome2;
+    this.httpStatus = httpStatus;
+  }
+};
+var PluginBridgeError = class extends Error {
+  errorCode;
+  data;
+  details;
+  mutationOutcome;
+  constructor(errorCode, message, data, details, mutationOutcome2) {
+    super(message);
+    this.name = "PluginBridgeError";
+    this.errorCode = errorCode;
+    this.data = data;
+    this.details = details ?? data;
+    this.mutationOutcome = mutationOutcome2;
+  }
+};
+function pluginMutationOutcome(error) {
+  if (error instanceof PluginPlatformRequestError || error instanceof PluginTransportError || error instanceof PluginBridgeError) {
+    return error.mutationOutcome;
+  }
+  return void 0;
+}
+
+// packages/redevplugin-ui/src/http.ts
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function hasExactKeys(value, keys) {
+  if (!isRecord(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+function hasAllowedKeys(value, keys) {
+  return isRecord(value) && Object.keys(value).every((key) => keys.includes(key));
+}
+
+// packages/redevplugin-ui/src/files.ts
+var chunkBytes = 65536;
+function invalid(message) {
+  throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", message);
+}
+function handle(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,18}$/.test(value) || BigInt(value) > 9223372036854775807n) return invalid("File handle is invalid");
+  return value;
+}
+function uri(value) {
+  if (!validURI(value)) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Selected file URI is invalid");
+  return value;
+}
+function isPluginFileResource(value) {
+  return hasExactKeys(value, ["resource_id", "uri", "name", "kind", "recursive", "writable", "revision", "expires_at", "status"]) && typeof value.resource_id === "string" && /^selected-[0-9a-f]{64}$/.test(value.resource_id) && value.uri === `redevfs://${value.resource_id}/` && typeof value.name === "string" && value.name.length > 0 && [...value.name].length <= 255 && (value.kind === "file" || value.kind === "directory") && typeof value.recursive === "boolean" && (value.kind !== "file" || !value.recursive) && typeof value.writable === "boolean" && Number.isSafeInteger(value.revision) && Number(value.revision) >= 1 && typeof value.expires_at === "string" && Number.isFinite(Date.parse(value.expires_at)) && ["active", "revoked", "expired", "unavailable"].includes(String(value.status));
+}
+var PluginFilesClient = class {
+  constructor(call) {
+    this.call = call;
+  }
+  call;
+  async select(selection, options) {
+    const result = await this.call({ operation: "select", arguments: selection }, options);
+    if (hasExactKeys(result, ["canceled"]) && result.canceled === true) return null;
+    if (!hasExactKeys(result, ["resource"]) || !isPluginFileResource(result.resource)) return invalid("File selection response is invalid");
+    return result.resource;
+  }
+  async open(resourceURI, flags = { read: true }, options) {
+    const result = await this.call({ operation: "fs.open", arguments: { uri: uri(resourceURI), options: flags } }, options);
+    return new PluginFileHandle(this.call, handle(result.handle));
+  }
+  async stat(resourceURI, options) {
+    const result = await this.call({ operation: "fs.stat", arguments: { uri: uri(resourceURI) } }, options);
+    const value = result.value;
+    if (!hasExactKeys(result, ["value"]) || !isRecord(value) || !hasAllowedKeys(value, ["uri", "kind", "size", "mode", "modified_unix_ms", "created_unix_ms"]) || !sameFileURI(value.uri, resourceURI) || !["file", "directory"].includes(String(value.kind)) || typeof value.size !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(value.size) || BigInt(value.size) > 9223372036854775807n || !boundedInteger(value.mode, 0, 4294967295) || !Number.isSafeInteger(value.modified_unix_ms) || value.created_unix_ms !== void 0 && !Number.isSafeInteger(value.created_unix_ms)) return invalid("File stat response is invalid");
+    return { ...value, size: BigInt(value.size) };
+  }
+  async *entries(resourceURI, options) {
+    const opened = await this.call({ operation: "fs.read_dir.open", arguments: { uri: uri(resourceURI) } }, options);
+    const id = handle(opened.handle);
+    let finished = false;
+    let failed = false;
+    try {
+      for (; ; ) {
+        const result = await this.call({ operation: "read_dir.next", arguments: { handle: id, limit: 128 } }, options);
+        const value = result.value;
+        if (!hasExactKeys(value, ["entries", "eof"]) || !Array.isArray(value.entries) || value.entries.length > 128 || typeof value.eof !== "boolean") return invalid("Directory page is invalid");
+        for (const entry of value.entries) {
+          if (!hasExactKeys(entry, ["name", "uri", "kind"]) || typeof entry.name !== "string" || typeof entry.uri !== "string" || !["file", "directory", "symlink", "other"].includes(String(entry.kind))) return invalid("Directory entry is invalid");
+          yield entry;
+        }
+        if (value.eof) {
+          finished = true;
+          return;
+        }
+        if (value.entries.length === 0) return invalid("Directory made no progress");
+      }
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      if (!finished) {
+        try {
+          await this.call({ operation: "close", arguments: { handle: id } });
+        } catch (error) {
+          if (!failed) throw error;
+        }
+      }
+    }
+  }
+  async mkdir(resourceURI, recursive = false, options) {
+    await this.call({ operation: "fs.mkdir", arguments: { uri: uri(resourceURI), recursive } }, options);
+  }
+  async remove(resourceURI, recursive = false, options) {
+    await this.call({ operation: "fs.remove", arguments: { uri: uri(resourceURI), recursive } }, options);
+  }
+  async rename(from, to, overwrite = false, options) {
+    await this.call({ operation: "fs.rename", arguments: { from: uri(from), to: uri(to), overwrite } }, options);
+  }
+  async copy(from, to, overwrite = false, options) {
+    await this.call({ operation: "fs.copy", arguments: { from: uri(from), to: uri(to), overwrite } }, options);
+  }
+};
+var PluginFileHandle = class {
+  constructor(call, id) {
+    this.call = call;
+    this.id = id;
+  }
+  call;
+  id;
+  #closed = false;
+  #active() {
+    if (this.#closed) throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "File handle is closed");
+  }
+  /** Stream from the current position without Base64 or per-chunk bridge calls.
+   * Requires surface.resources.v1. The caller owns close and cancellation. */
+  async readable(options = {}) {
+    this.#active();
+    options.signal?.throwIfAborted();
+    const endpoint = new URL("/_redevplugin_web/file-transfer", globalThis.location.origin);
+    endpoint.searchParams.set("handle", this.id);
+    endpoint.searchParams.set("direction", "read");
+    const response2 = await fetch(endpoint, { method: "POST", credentials: "same-origin", redirect: "error", cache: "no-store", signal: options.signal });
+    if (!response2.ok || !response2.body) throw new PluginBridgeError("PLUGIN_FILE_OPERATION_FAILED", "File stream unavailable");
+    return response2.body;
+  }
+  /** Upload bytes with network backpressure. A failure can leave partial data. */
+  async writeFrom(source, options = {}) {
+    this.#active();
+    options.signal?.throwIfAborted();
+    const endpoint = new URL("/_redevplugin_web/file-transfer", globalThis.location.origin);
+    endpoint.searchParams.set("handle", this.id);
+    endpoint.searchParams.set("direction", "write");
+    try {
+      const response2 = await fetch(endpoint, {
+        method: "POST",
+        body: source,
+        credentials: "same-origin",
+        redirect: "error",
+        cache: "no-store",
+        signal: options.signal,
+        ...source instanceof ReadableStream ? { duplex: "half" } : {}
+      });
+      const value = await response2.json();
+      if (isRecord(value) && value.ok === false && isRecord(value.error) && typeof value.error.code === "string" && ["not_committed", "committed", "unknown"].includes(String(value.error.mutation_outcome))) {
+        const failure = new PluginBridgeError(value.error.code, "File transfer failed", void 0, void 0, value.error.mutation_outcome);
+        if (value.error.mutation_outcome === "not_committed") throw failure;
+        throw new PluginFileWriteError(Number.isSafeInteger(value.count) && Number(value.count) >= 0 ? Number(value.count) : 0, failure);
+      }
+      if (!isRecord(value) || value.ok !== true || !Number.isSafeInteger(value.count) || Number(value.count) < 0 || !response2.ok) throw new Error("File upload did not complete");
+      return Number(value.count);
+    } catch (error) {
+      if (error instanceof PluginFileWriteError || error instanceof PluginBridgeError && pluginMutationOutcome(error) === "not_committed") throw error;
+      throw new PluginFileWriteError(0, error);
+    }
+  }
+  async read(length = chunkBytes, options) {
+    this.#active();
+    if (!Number.isSafeInteger(length) || length < 1 || length > chunkBytes) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Read length must be between 1 and 65536");
+    const result = await this.call({ operation: "read", arguments: { handle: this.id, length } }, options);
+    if (!hasExactKeys(result, ["data", "count", "eof"]) || typeof result.data !== "string" || typeof result.eof !== "boolean" || !Number.isSafeInteger(result.count)) return invalid("File read response is invalid");
+    let decoded;
+    try {
+      decoded = atob(result.data);
+    } catch {
+      return invalid("File data is invalid");
+    }
+    if (decoded.length !== result.count || decoded.length > length || btoa(decoded) !== result.data) return invalid("File read length is invalid");
+    return { bytes: Uint8Array.from(decoded, (c) => c.charCodeAt(0)), eof: result.eof };
+  }
+  async write(bytes, options) {
+    this.#active();
+    let written = 0;
+    for (let offset = 0; offset < bytes.byteLength; offset += chunkBytes) {
+      const part = bytes.subarray(offset, offset + chunkBytes);
+      let binary = "";
+      for (const byte of part) binary += String.fromCharCode(byte);
+      try {
+        const result = await this.call({ operation: "write", arguments: { handle: this.id, data: btoa(binary) } }, options);
+        if (!hasExactKeys(result, ["count"]) || result.count !== part.length) {
+          throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "File write length is invalid", void 0, void 0, "unknown");
+        }
+        written += result.count;
+      } catch (error) {
+        if (written > 0 || pluginMutationOutcome(error) !== "not_committed") throw new PluginFileWriteError(written, error);
+        throw error;
+      }
+    }
+    return written;
+  }
+  async seek(offset, whence = 0, options) {
+    this.#active();
+    const result = await this.call({ operation: "seek", arguments: { handle: this.id, offset: offset.toString(), whence } }, options);
+    if (!hasExactKeys(result, ["offset"]) || typeof result.offset !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(result.offset) || BigInt(result.offset) > 9223372036854775807n) return invalid("File offset is invalid");
+    return BigInt(result.offset);
+  }
+  async sync(options) {
+    this.#active();
+    await this.call({ operation: "sync", arguments: { handle: this.id } }, options);
+  }
+  async close() {
+    if (this.#closed) return;
+    await this.call({ operation: "close", arguments: { handle: this.id } });
+    this.#closed = true;
+  }
+};
+var PluginFileWriteError = class extends PluginBridgeError {
+  constructor(bytesWritten, cause) {
+    super(cause instanceof PluginBridgeError ? cause.errorCode : "PLUGIN_FILE_OPERATION_FAILED", "File write did not finish; inspect the file before retrying", void 0, cause instanceof PluginBridgeError ? cause.details : void 0, "unknown");
+    this.bytesWritten = bytesWritten;
+    this.name = "PluginFileWriteError";
+    this.cause = cause;
+  }
+  bytesWritten;
+  cause;
+};
+function validURI(value) {
+  if (typeof value !== "string" || value.length > 4096 || !/^redevfs:\/\/selected-[0-9a-f]{64}\//.test(value)) return false;
+  const path = value.slice(value.indexOf("/", 10) + 1);
+  if (path === "") return true;
+  try {
+    return path.split("/").every((part) => {
+      if (/[?#]/.test(part)) return false;
+      const decoded = decodeURIComponent(part);
+      return decoded !== "" && decoded !== "." && decoded !== ".." && !/[\\/\u0000]/.test(decoded);
+    });
+  } catch {
+    return false;
+  }
+}
+function sameFileURI(actual, expected) {
+  if (!validURI(actual) || !validURI(expected)) return false;
+  const normalized = (value) => value.split("/").map((part) => decodeURIComponent(part).normalize("NFC")).join("/");
+  return normalized(actual) === normalized(expected);
+}
+function boundedInteger(value, min, max) {
+  return Number.isSafeInteger(value) && Number(value) >= min && Number(value) <= max;
+}
+function decimal(value, signed = false) {
+  return typeof value === "string" && (signed ? /^(0|-?[1-9][0-9]{0,18})$/ : /^[1-9][0-9]{0,18}$/).test(value) && BigInt(value) <= 9223372036854775807n && BigInt(value) >= (signed ? -9223372036854775808n : 1n);
+}
+function base64(value) {
+  if (typeof value !== "string" || value.length > 87384) return false;
+  try {
+    const raw = atob(value);
+    return raw.length <= chunkBytes && btoa(raw) === value;
+  } catch {
+    return false;
+  }
+}
+function validFileIORequest(value) {
+  if (!hasExactKeys(value, ["operation", "arguments"]) || !isRecord(value.arguments)) return false;
+  const a = value.arguments;
+  const keys = (required, optional = []) => required.every((key) => Object.hasOwn(a, key)) && hasAllowedKeys(a, [...required, ...optional]);
+  const flags = (...names) => names.every((name) => a[name] === void 0 || typeof a[name] === "boolean");
+  switch (value.operation) {
+    case "select":
+      return keys(["kind"], ["recursive", "writable"]) && ["file", "directory"].includes(String(a.kind)) && flags("recursive", "writable") && (a.kind !== "file" || !a.recursive);
+    case "fs.open": {
+      if (!keys(["uri", "options"]) || !validURI(a.uri) || !isRecord(a.options) || !hasAllowedKeys(a.options, ["read", "write", "create", "create_new", "truncate", "append", "mode"])) return false;
+      const o = a.options;
+      return ["read", "write", "create", "create_new", "truncate", "append"].every((key) => o[key] === void 0 || typeof o[key] === "boolean") && (o.mode === void 0 || boundedInteger(o.mode, 0, 511));
+    }
+    case "fs.stat":
+      return keys(["uri"], ["follow_symlinks"]) && validURI(a.uri) && flags("follow_symlinks");
+    case "fs.read_dir.open":
+      return keys(["uri"]) && validURI(a.uri);
+    case "fs.mkdir":
+      return keys(["uri"], ["recursive", "mode"]) && validURI(a.uri) && flags("recursive") && (a.mode === void 0 || boundedInteger(a.mode, 0, 511));
+    case "fs.remove":
+      return keys(["uri"], ["recursive"]) && validURI(a.uri) && flags("recursive");
+    case "fs.rename":
+    case "fs.copy":
+      return keys(["from", "to"], ["overwrite"]) && validURI(a.from) && validURI(a.to) && flags("overwrite");
+    case "fs.set_times":
+      return keys(["uri", "accessed_unix_ms", "modified_unix_ms"]) && validURI(a.uri) && Number.isSafeInteger(a.accessed_unix_ms) && Number.isSafeInteger(a.modified_unix_ms);
+    case "read":
+      return keys(["handle", "length"]) && decimal(a.handle) && boundedInteger(a.length, 1, chunkBytes);
+    case "write":
+      return keys(["handle", "data"]) && decimal(a.handle) && base64(a.data);
+    case "seek":
+      return keys(["handle", "offset"], ["whence"]) && decimal(a.handle) && decimal(a.offset, true) && (a.whence === void 0 || boundedInteger(a.whence, 0, 2));
+    case "close":
+    case "sync":
+      return keys(["handle"]) && decimal(a.handle);
+    case "read_dir.next":
+      return keys(["handle", "limit"]) && decimal(a.handle) && boundedInteger(a.limit, 1, 256);
+    default:
+      return false;
+  }
+}
+
+// packages/redevplugin-ui/src/bridge-capability.ts
+var pluginBridgeCapabilityEffect = /* @__PURE__ */ Symbol("redevplugin.capability.effect");
+
+// packages/redevplugin-ui/src/surface-scope.ts
+var scopes = /* @__PURE__ */ new WeakMap();
+var PluginSurfaceScope = class _PluginSurfaceScope {
+  constructor() {
+    scopes.set(this, { invalidated: false, registrations: /* @__PURE__ */ new Map() });
+  }
+  static create() {
+    return new _PluginSurfaceScope();
+  }
+};
+function createPluginSurfaceScope() {
+  return PluginSurfaceScope.create();
+}
+var defaultPluginSurfaceScope = createPluginSurfaceScope();
+
+// packages/redevplugin-ui/src/surface.ts
+var pluginSurfaceContextSchemaVersion = "redevplugin.surface_context.v1";
+var pluginSurfaceFileExportMaxBytes = 16 * 1024 * 1024;
+var pluginSurfaceFileExportMediaTypes = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/svg+xml",
+  "text/plain"
+];
+var nativeBridgeClock = {
+  schedule(callback, delayMs) {
+    const timer = setTimeout(callback, delayMs);
+    return () => clearTimeout(timer);
+  }
+};
+var webPluginBridgeGlobalKey = "__redevpluginWebBridge";
+var maxPendingPluginBridgeRequests = 256;
+var maxPluginBridgeMessageBytes = 1024 * 1024;
+var maxPluginJSONStructuralNodes = 32 * 1024;
+var maxSurfaceQuiesceMs = 1500;
+var pluginBridgeErrorCodeSet = new Set(pluginBridgeErrorCodes);
+var hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
+var lowercaseSHA256Pattern = new RegExp("^[0-9a-f]{64}$");
+var businessErrorCodePattern = new RegExp("^[A-Z][A-Z0-9_]*$");
+var PluginBridgeClient = class {
+  files = new PluginFilesClient((request, options) => this.#fileIO(request, options));
+  surfaceHandle;
+  timeoutMs;
+  #methodHandlers = /* @__PURE__ */ new Map();
+  #methodInvocations = /* @__PURE__ */ new Map();
+  #nextID = 1;
+  #clock;
+  #port;
+  #pending = /* @__PURE__ */ new Map();
+  #lifecycleHandlers = /* @__PURE__ */ new Set();
+  #beforeCloseHandlers = /* @__PURE__ */ new Set();
+  #beforeClosePending = false;
+  #contextHandlers = /* @__PURE__ */ new Set();
+  #context;
+  #ready = false;
+  #readyPromise;
+  #resolveReady;
+  #rejectReady;
+  #lifecycleState = "active";
+  #handlingLifecycle = false;
+  #onMessage = (event) => {
+    void this.#handleMessage(event);
+  };
+  constructor(options = {}) {
+    const claimed = options.port ? { port: options.port, surfaceHandle: normalizeSurfaceHandle(options.surfaceHandle) } : claimWebPluginBridge();
+    this.surfaceHandle = claimed.surfaceHandle;
+    this.timeoutMs = normalizeTimeout(options.timeoutMs);
+    this.#clock = options.clock ?? nativeBridgeClock;
+    this.#port = claimed.port;
+    this.#readyPromise = new Promise((resolve, reject) => {
+      this.#resolveReady = resolve;
+      this.#rejectReady = reject;
+    });
+    void this.#readyPromise.catch(() => void 0);
+    this.#port.addEventListener("message", this.#onMessage);
+    this.#port.start();
+    this.#port.postMessage({ type: "redevplugin.bridge.client_ready" });
+  }
+  ready() {
+    this.#assertActive();
+    return this.#ready ? Promise.resolve() : this.#readyPromise;
+  }
+  call(method, params, options = {}) {
+    const effect = options[pluginBridgeCapabilityEffect];
+    return this.#call(method, params, options, effect === void 0 || effect !== "read");
+  }
+  /** Register a declared application method after the authenticated bridge is ready. */
+  async registerMethod(name, handler) {
+    this.#assertActive();
+    if (!validMethod(name) || typeof handler !== "function" || this.#methodHandlers.has(name) || this.#methodHandlers.size >= 128) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Application method registration is invalid or duplicated");
+    }
+    this.#methodHandlers.set(name, handler);
+    try {
+      await this.ready();
+      await this.#publishMethods();
+    } catch (error) {
+      if (this.#methodHandlers.get(name) === handler) this.#methodHandlers.delete(name);
+      throw error;
+    }
+    return async () => {
+      if (this.#methodHandlers.get(name) !== handler) return;
+      this.#methodHandlers.delete(name);
+      if (this.#lifecycleState === "active") await this.#publishMethods();
+    };
+  }
+  #publishMethods() {
+    const id = this.#requestID("rpc");
+    return this.#request(id, { type: "redevplugin.bridge.methods", id, methods: Array.from(this.#methodHandlers.keys()).sort() }, { mutation: true });
+  }
+  async #invokeRegisteredMethod(invocation) {
+    if (this.#methodInvocations.has(invocation.invocation_id) || this.#methodInvocations.size >= 32) return;
+    const handler = this.#methodHandlers.get(invocation.method);
+    const controller = new AbortController();
+    this.#methodInvocations.set(invocation.invocation_id, controller);
+    const timeout = setTimeout(() => controller.abort(), Math.max(0, Math.min(3e4, Date.parse(invocation.deadline) - Date.now())));
+    try {
+      controller.signal.throwIfAborted();
+      if (!handler) throw new Error("Application method is not registered");
+      const value = await handler(normalizePluginJSONObject(invocation.params), Object.freeze({ signal: controller.signal }));
+      const data = normalizePluginJSONValue(value === void 0 ? null : value);
+      if (!messageWithinLimit(data)) throw new Error("Application result exceeds the message limit");
+      if (!controller.signal.aborted && this.#lifecycleState === "active") this.#port.postMessage({ type: "redevplugin.bridge.method_result", invocation_id: invocation.invocation_id, data, failed: false });
+    } catch {
+      if (!controller.signal.aborted && this.#lifecycleState === "active") this.#port.postMessage({ type: "redevplugin.bridge.method_result", invocation_id: invocation.invocation_id, data: null, failed: true });
+    } finally {
+      clearTimeout(timeout);
+      this.#methodInvocations.delete(invocation.invocation_id);
+    }
+  }
+  #fileIO(request, options = {}) {
+    this.#assertActive();
+    if (!validFileIORequest(request)) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "File operation is invalid");
+    const id = this.#requestID("file");
+    return this.#request(id, { type: "redevplugin.bridge.file_io", id, request }, { mutation: true, signal: options.signal });
+  }
+  #call(method, params, options, mutation) {
+    this.#assertActive();
+    if (!validMethod(method)) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin bridge method and params are invalid");
+    }
+    let normalizedParams;
+    try {
+      normalizedParams = params === void 0 ? void 0 : normalizePluginJSONObject(params);
+    } catch {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin bridge params must be canonical JSON");
+    }
+    const id = this.#requestID("rpc");
+    const request = normalizedParams === void 0 ? { id, method } : { id, method, params: normalizedParams };
+    return this.#request(id, {
+      type: "redevplugin.bridge.call",
+      request
+    }, { mutation, signal: options.signal });
+  }
+  executionEvents(executionID, afterCursor, options = {}) {
+    this.#assertActive();
+    if (!validOpaqueHandle(executionID, "execution") || !Number.isSafeInteger(afterCursor) || afterCursor < 0) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin execution event cursor is invalid");
+    }
+    const id = this.#requestID("execution");
+    return this.#request(id, {
+      type: "redevplugin.bridge.execution.events",
+      id,
+      execution_id: executionID,
+      after_cursor: afterCursor
+    }, { signal: options.signal });
+  }
+  cancelExecution(executionID, reason, options = {}) {
+    this.#assertActive();
+    if (!validOpaqueHandle(executionID, "execution") || reason !== void 0 && (typeof reason !== "string" || reason.length > 256)) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin execution cancellation is invalid");
+    }
+    const id = this.#requestID("execution");
+    return this.#request(id, removeUndefined({
+      type: "redevplugin.bridge.execution.cancel",
+      id,
+      execution_id: executionID,
+      reason
+    }), { mutation: true, signal: options.signal });
+  }
+  executionSnapshot(executionID, options = {}) {
+    this.#assertActive();
+    if (!validOpaqueHandle(executionID, "execution")) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin execution handle is invalid");
+    }
+    const id = this.#requestID("execution");
+    return this.#request(id, {
+      type: "redevplugin.bridge.execution.query",
+      id,
+      execution_id: executionID
+    }, { signal: options.signal }).then((snapshot) => {
+      if (!isPluginExecutionSnapshot(snapshot) || snapshot.execution_id !== executionID) {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin execution snapshot is invalid");
+      }
+      return snapshot;
+    });
+  }
+  context() {
+    this.#assertActive();
+    return this.#context;
+  }
+  onContext(handler) {
+    this.#assertActive();
+    if (typeof handler !== "function") {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context subscription is invalid");
+    }
+    this.#contextHandlers.add(handler);
+    if (this.#context) {
+      try {
+        handler(this.#context);
+      } catch {
+      }
+    }
+    return () => this.#contextHandlers.delete(handler);
+  }
+  exportFile(request, options = {}) {
+    this.#assertActive();
+    if (!validFileExportName(request?.fileName) || !validFileExportMediaType(request?.mediaType) || !(request?.bytes instanceof Uint8Array) || request.bytes.byteLength === 0 || request.bytes.byteLength > pluginSurfaceFileExportMaxBytes) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin file export request is invalid");
+    }
+    const id = this.#requestID("file");
+    const content = Uint8Array.from(request.bytes).buffer;
+    return this.#dispatchRequest(id, {
+      type: "redevplugin.ui.file.export",
+      id,
+      file_name: request.fileName,
+      media_type: request.mediaType,
+      content
+    }, { mutation: true, signal: options.signal }, [content]);
+  }
+  /** Return false when saving failed or the application still has unsaved work. */
+  onBeforeClose(handler) {
+    this.#assertActive();
+    if (typeof handler !== "function" || this.#beforeCloseHandlers.size >= 32) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Application close handler is invalid or exceeds the limit");
+    }
+    this.#beforeCloseHandlers.add(handler);
+    return () => this.#beforeCloseHandlers.delete(handler);
+  }
+  onLifecycle(handler) {
+    this.#assertActive();
+    this.#lifecycleHandlers.add(handler);
+    return () => {
+      this.#lifecycleHandlers.delete(handler);
+    };
+  }
+  dispose() {
+    if (this.#lifecycleState === "disposed") return;
+    this.#lifecycleState = "disposed";
+    for (const controller of this.#methodInvocations.values()) controller.abort();
+    this.#methodInvocations.clear();
+    this.#methodHandlers.clear();
+    const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
+    if (!this.#ready) this.#rejectReady(disposedError);
+    this.#port.removeEventListener("message", this.#onMessage);
+    for (const [id, pending] of this.#pending) {
+      pending.cancelTimer();
+      pending.abortCleanup?.();
+      pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} was disposed`));
+    }
+    this.#pending.clear();
+    this.#lifecycleHandlers.clear();
+    this.#contextHandlers.clear();
+    this.#beforeCloseHandlers.clear();
+    this.#context = void 0;
+    this.#port.close();
+  }
+  #request(id, message, options = {}) {
+    let normalizedMessage;
+    try {
+      normalizedMessage = normalizePluginJSONObject(message);
+    } catch {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin bridge request must be canonical JSON");
+    }
+    if (new TextEncoder().encode(JSON.stringify(normalizedMessage)).byteLength > maxPluginBridgeMessageBytes) {
+      throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge request exceeds the message size limit");
+    }
+    return this.#dispatchRequest(id, normalizedMessage, options);
+  }
+  #dispatchRequest(id, message, options, transfer) {
+    if (this.#pending.size >= maxPendingPluginBridgeRequests) {
+      throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge has too many pending requests");
+    }
+    if (options.signal?.aborted) return Promise.reject(requestCancelledError(options, false));
+    let posted = false;
+    const result = new Promise((resolve, reject) => {
+      const cancelTimer = this.#clock.schedule(() => {
+        const pending = this.#takePending(id);
+        if (!pending) return;
+        try {
+          this.#port.postMessage({ type: "redevplugin.bridge.cancel", id });
+        } catch {
+        }
+        pending.reject(new PluginBridgeError(
+          "PLUGIN_BRIDGE_TIMEOUT",
+          `Plugin bridge request ${id} timed out`,
+          void 0,
+          void 0,
+          mutationOutcome(options, posted)
+        ));
+      }, this.timeoutMs);
+      const onAbort = () => {
+        const pending = this.#takePending(id);
+        if (!pending) return;
+        if (posted) {
+          try {
+            this.#port.postMessage({ type: "redevplugin.bridge.cancel", id });
+          } catch {
+          }
+        }
+        pending.reject(requestCancelledError(options, posted));
+      };
+      this.#pending.set(id, {
+        resolve: (value) => resolve(value),
+        reject,
+        cancelTimer,
+        abortCleanup: options.signal ? () => options.signal?.removeEventListener("abort", onAbort) : void 0,
+        kind: options.kind ?? "json",
+        identifier: options.identifier
+      });
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      if (options.signal?.aborted) onAbort();
+    });
+    if (!this.#pending.has(id)) return result;
+    try {
+      this.#port.postMessage(message, transfer);
+      posted = true;
+    } catch {
+      const pending = this.#takePending(id);
+      if (pending) {
+        pending.reject(new PluginBridgeError(
+          "PLUGIN_BRIDGE_DISPOSED",
+          `Plugin bridge request ${id} could not be posted`,
+          void 0,
+          void 0,
+          options.mutation ? "not_committed" : void 0
+        ));
+      }
+    }
+    return result;
+  }
+  #takePending(id) {
+    const pending = this.#pending.get(id);
+    if (!pending) return void 0;
+    this.#pending.delete(id);
+    pending.cancelTimer();
+    pending.abortCleanup?.();
+    return pending;
+  }
+  async #handleMessage(event) {
+    if (this.#lifecycleState === "disposed") return;
+    const data = event.data;
+    if (!messageWithinLimit(data)) return;
+    if (hasExactKeys(data, ["type", "invocation"]) && data.type === "redevplugin.bridge.method_invoke" && isSurfaceMethodDelivery(data.invocation)) {
+      void this.#invokeRegisteredMethod(data.invocation);
+      return;
+    }
+    if (hasExactKeys(data, ["type", "invocation_id"]) && data.type === "redevplugin.bridge.method_cancel" && typeof data.invocation_id === "string") {
+      this.#methodInvocations.get(data.invocation_id)?.abort();
+      return;
+    }
+    if (isBridgeResponseCandidate(data)) {
+      const pending = this.#takePending(data.id);
+      if (!pending) return;
+      if (!isBridgeResponse(data)) {
+        pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin bridge response ${data.id} is invalid`));
+        return;
+      }
+      if (data.ok && pending.kind !== "json") {
+        pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin transfer response ${data.id} is invalid`));
+      } else if (data.ok) pending.resolve(data.data);
+      else pending.reject(new PluginBridgeError(data.error_code, data.error, void 0, data.error_details, data.mutation_outcome));
+      return;
+    }
+    if (hasExactKeys(data, ["type", "close_id"]) && data.type === "redevplugin.bridge.close_request" && validOpaqueHandle(data.close_id, "close")) {
+      if (this.#beforeClosePending) return;
+      this.#beforeClosePending = true;
+      const results = await Promise.allSettled(Array.from(this.#beforeCloseHandlers, (handler) => withTimeout(Promise.resolve().then(handler), Math.min(this.timeoutMs, maxSurfaceQuiesceMs), "Application close handler timed out")));
+      this.#beforeClosePending = false;
+      if (this.#lifecycleState === "active") this.#port.postMessage({
+        type: "redevplugin.bridge.close_response",
+        close_id: data.close_id,
+        allow: results.every((result) => result.status === "fulfilled" && result.value === true)
+      });
+      return;
+    }
+    if (isPluginBridgeContextMessage(data)) {
+      const context = normalizePluginSurfaceContext(data.context);
+      if (this.#context && context.revision <= this.#context.revision) return;
+      this.#context = context;
+      for (const handler of this.#contextHandlers) {
+        try {
+          handler(context);
+        } catch {
+        }
+      }
+      return;
+    }
+    if (isLifecycleMessage(data)) {
+      if (data.event.type === "ready" && !this.#ready) {
+        this.#ready = true;
+        this.#resolveReady();
+      }
+      if (data.quiesce_id) this.#lifecycleState = "quiescing";
+      this.#handlingLifecycle = true;
+      await Promise.allSettled(Array.from(this.#lifecycleHandlers, async (handler) => {
+        try {
+          await handler(data.event);
+        } catch {
+        }
+      }));
+      this.#handlingLifecycle = false;
+      if (data.quiesce_id) {
+        this.#port.postMessage({
+          type: "redevplugin.bridge.lifecycle_ack",
+          quiesce_id: data.quiesce_id
+        });
+        this.#lifecycleState = "quiesced";
+      }
+      if (data.event.type === "dispose" && !data.quiesce_id) this.dispose();
+      return;
+    }
+  }
+  #requestID(prefix) {
+    return `${prefix}_${this.#nextID++}`;
+  }
+  #assertActive() {
+    if (!this.#acceptsPluginWork()) {
+      throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
+    }
+  }
+  #acceptsPluginWork() {
+    return this.#lifecycleState === "active" || this.#lifecycleState === "quiescing" && this.#handlingLifecycle;
+  }
+};
+function claimWebPluginBridge() {
+  const value = globalThis[webPluginBridgeGlobalKey];
+  if (!isRecord(value) || typeof value.claim !== "function") {
+    throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge is unavailable");
+  }
+  const claimed = value.claim();
+  if (!claimed || !isMessagePortLike(claimed.port) || !validOpaqueHandle(claimed.surfaceHandle, "surface")) {
+    throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge was already claimed");
+  }
+  return claimed;
+}
+function normalizeSurfaceHandle(value) {
+  if (!validOpaqueHandle(value, "surface")) {
+    throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "A valid surface handle is required with an explicit bridge port");
+  }
+  return value;
+}
+var deniedPluginPermissionsPolicy = [
+  "accelerometer 'none'",
+  "autoplay 'none'",
+  "bluetooth 'none'",
+  "camera 'none'",
+  "clipboard-read 'none'",
+  "clipboard-write 'none'",
+  "display-capture 'none'",
+  "encrypted-media 'none'",
+  "fullscreen 'none'",
+  "gamepad 'none'",
+  "geolocation 'none'",
+  "gyroscope 'none'",
+  "hid 'none'",
+  "magnetometer 'none'",
+  "microphone 'none'",
+  "midi 'none'",
+  "payment 'none'",
+  "picture-in-picture 'none'",
+  "publickey-credentials-get 'none'",
+  "screen-wake-lock 'none'",
+  "serial 'none'",
+  "usb 'none'",
+  "xr-spatial-tracking 'none'"
+].join("; ");
+function isPluginBridgeContextMessage(value) {
+  return hasExactKeys(value, ["type", "context"]) && value.type === "redevplugin.bridge.context" && isPluginSurfaceContext(value.context);
+}
+function isPluginSurfaceContext(value) {
+  if (!isRecord(value) || !hasExactKeys(value, ["schema_version", "revision", "appearance", "locale"]) || value.schema_version !== pluginSurfaceContextSchemaVersion || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) return false;
+  const appearance = value.appearance;
+  const locale = value.locale;
+  if (!isRecord(appearance) || !hasExactKeys(appearance, ["color_scheme", "colors"]) || appearance.color_scheme !== "light" && appearance.color_scheme !== "dark" || !isRecord(appearance.colors)) return false;
+  const colors = appearance.colors;
+  if (!hasExactKeys(colors, surfaceContextColorKeys) || surfaceContextColorKeys.some((key) => !validSurfaceContextColor(colors[key])) || !isRecord(locale) || !hasExactKeys(locale, ["language_tag", "direction"]) || typeof locale.language_tag !== "string" || locale.language_tag.length < 2 || locale.language_tag.length > 64 || locale.direction !== "ltr" && locale.direction !== "rtl") return false;
+  try {
+    return typeof Intl === "undefined" || Intl.getCanonicalLocales(locale.language_tag).length === 1;
+  } catch {
+    return false;
+  }
+}
+var surfaceContextColorKeys = ["canvas", "surface", "surface_elevated", "text", "text_muted", "border", "accent", "accent_text", "success", "warning", "danger", "focus"];
+var surfaceContextColorPattern = new RegExp("^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$");
+var operationProgressPhasePattern = new RegExp("^[A-Za-z0-9._:-]{1,128}$");
+var operationProgressUnitPattern = new RegExp("^[A-Za-z0-9._:-]{1,64}$");
+function validSurfaceContextColor(value) {
+  return typeof value === "string" && surfaceContextColorPattern.test(value);
+}
+function normalizePluginSurfaceContext(value) {
+  if (!isPluginSurfaceContext(value)) {
+    throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context is invalid");
+  }
+  const languageTag = Intl.getCanonicalLocales(value.locale.language_tag)[0];
+  const colors = Object.fromEntries(surfaceContextColorKeys.map((key) => [key, String(value.appearance.colors[key]).toLowerCase()]));
+  return Object.freeze({
+    schema_version: pluginSurfaceContextSchemaVersion,
+    revision: Number(value.revision),
+    appearance: Object.freeze({ color_scheme: value.appearance.color_scheme, colors: Object.freeze(colors) }),
+    locale: Object.freeze({ language_tag: languageTag, direction: value.locale.direction })
+  });
+}
+function isPluginExecutionSnapshot(value) {
+  if (!isRecord(value) || !validOpaqueHandle(value.execution_id, "execution") || typeof value.plugin_instance_id !== "string" || value.kind !== "operation" && value.kind !== "subscription" || typeof value.cancelable !== "boolean" || !Number.isSafeInteger(value.cursor) || Number(value.cursor) < 0 || !validDateTime(value.created_at) || !validDateTime(value.updated_at)) return false;
+  const common = ["execution_id", "plugin_instance_id", "kind", "status", "cursor", "cancelable", "created_at", "updated_at"];
+  const withProgress = (keys) => hasAllowedKeys(value, [...keys, "progress"]) && (value.progress === void 0 || validOperationProgress(value.progress));
+  if (value.status === "running" || value.status === "cancel_requested") return withProgress(common);
+  if (["completed", "canceled", "orphaned"].includes(String(value.status))) {
+    return withProgress([...common, "terminal_at"]) && validDateTime(value.terminal_at);
+  }
+  return value.status === "failed" && withProgress([...common, "terminal_at", "failure_code"]) && validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
+}
+function validOperationProgress(value) {
+  if (!isRecord(value) || !hasAllowedKeys(value, ["revision", "phase", "completed_units", "total_units", "unit"]) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.phase !== "string" || !operationProgressPhasePattern.test(value.phase) || value.unit !== void 0 && (typeof value.unit !== "string" || !operationProgressUnitPattern.test(value.unit)) || value.completed_units !== void 0 && (!Number.isSafeInteger(value.completed_units) || Number(value.completed_units) < 0) || value.total_units !== void 0 && (!Number.isSafeInteger(value.total_units) || Number(value.total_units) < 0) || value.completed_units === void 0 !== (value.total_units === void 0)) return false;
+  return value.completed_units === void 0 || Number(value.completed_units) <= Number(value.total_units);
+}
+function validDateTime(value) {
+  return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
+}
+function isBridgeResponseCandidate(value) {
+  return isRecord(value) && value.type === "redevplugin.bridge.response" && typeof value.id === "string";
+}
+function isBridgeResponse(value) {
+  if (!isBridgeResponseCandidate(value) || !validBridgeRequestID(value.id)) return false;
+  if (value.ok === true) return true;
+  if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) || typeof value.error !== "string" || value.error.length > 4096 || value.mutation_outcome !== void 0 && value.mutation_outcome !== "committed" && value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown") {
+    return false;
+  }
+  if (value.error_code === "PLUGIN_CAPABILITY_ERROR") return isCapabilityBusinessErrorDetails(value.error_details);
+  if (value.error_code === "PLUGIN_WORKER_ERROR") return isWorkerErrorDetails(value.error_details);
+  if (value.error_code === "PLUGIN_FILE_OPERATION_FAILED") return hasExactKeys(value.error_details, ["file_error_code", "file_retryable"]) && typeof value.error_details.file_retryable === "boolean" && ["INVALID_ARGUMENT", "PERMISSION_DENIED", "NOT_FOUND", "NOT_EMPTY", "ALREADY_EXISTS", "RESOURCE_CLOSED", "RESOURCE_LIMIT", "CROSS_DEVICE", "MOUNT_UNAVAILABLE", "RUNTIME_UNAVAILABLE", "CANCELED", "TIMEOUT", "IO_ERROR"].includes(String(value.error_details.file_error_code));
+  if (value.error_details === void 0) return true;
+  try {
+    return Object.keys(normalizePluginJSONObject(value.error_details)).length <= 8;
+  } catch {
+    return false;
+  }
+}
+function isWorkerErrorDetails(value) {
+  return hasExactKeys(value, ["worker_error_code", "worker_error_message", "worker_error_origin"]) && typeof value.worker_error_code === "string" && businessErrorCodePattern.test(value.worker_error_code) && typeof value.worker_error_message === "string" && value.worker_error_message.length > 0 && value.worker_error_message.length <= 4096 && (value.worker_error_origin === "runtime" || value.worker_error_origin === "hostcall" || value.worker_error_origin === "plugin");
+}
+function isCapabilityBusinessErrorDetails(value) {
+  if (!hasAllowedKeys(value, [
+    "capability_id",
+    "capability_version",
+    "detail_schema_sha256",
+    "business_error_code",
+    "business_error_details"
+  ])) return false;
+  if (typeof value.capability_id !== "string" || !hostCapabilityIDPattern.test(value.capability_id) || typeof value.capability_version !== "string" || !isCanonicalSemver(value.capability_version) || typeof value.detail_schema_sha256 !== "string" || !lowercaseSHA256Pattern.test(value.detail_schema_sha256) || typeof value.business_error_code !== "string" || !businessErrorCodePattern.test(value.business_error_code)) {
+    return false;
+  }
+  if (value.business_error_details === void 0) return true;
+  try {
+    normalizePluginJSONObject(value.business_error_details);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function isCanonicalSemver(value) {
+  if (value.length < 5 || value.length > 255) return false;
+  const plus = value.indexOf("+");
+  if (plus !== value.lastIndexOf("+") || plus === value.length - 1) return false;
+  const withoutBuild = plus < 0 ? value : value.slice(0, plus);
+  if (plus >= 0 && !validSemverIdentifiers(value.slice(plus + 1), false)) return false;
+  const dash = withoutBuild.indexOf("-");
+  if (dash === withoutBuild.length - 1) return false;
+  const core = dash < 0 ? withoutBuild : withoutBuild.slice(0, dash);
+  if (dash >= 0 && !validSemverIdentifiers(withoutBuild.slice(dash + 1), true)) return false;
+  const coreIdentifiers = core.split(".");
+  return coreIdentifiers.length === 3 && coreIdentifiers.every(validSemverNumericIdentifier);
+}
+function validSemverIdentifiers(value, rejectNumericLeadingZero) {
+  const identifiers = value.split(".");
+  return identifiers.every((identifier) => {
+    if (identifier.length === 0) return false;
+    let numeric = true;
+    for (let index = 0; index < identifier.length; index += 1) {
+      const code = identifier.charCodeAt(index);
+      const digit = code >= 48 && code <= 57;
+      const upper = code >= 65 && code <= 90;
+      const lower = code >= 97 && code <= 122;
+      if (!digit && !upper && !lower && code !== 45) return false;
+      numeric = numeric && digit;
+    }
+    return !rejectNumericLeadingZero || !numeric || identifier.length === 1 || identifier[0] !== "0";
+  });
+}
+function validSemverNumericIdentifier(value) {
+  if (value.length === 0 || value.length > 1 && value[0] === "0") return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
+}
+function isLifecycleMessage(value) {
+  return hasAllowedKeys(value, ["type", "event", "quiesce_id"]) && value.type === "redevplugin.bridge.lifecycle" && hasExactKeys(value.event, ["type"]) && (value.event.type === "ready" || value.event.type === "visible" || value.event.type === "hidden" || value.event.type === "dispose") && (value.quiesce_id === void 0 || value.event.type === "dispose" && validOpaqueHandle(value.quiesce_id, "quiesce"));
+}
+function isMessagePortLike(value) {
+  return isRecord(value) && typeof value.postMessage === "function" && typeof value.addEventListener === "function" && typeof value.removeEventListener === "function" && typeof value.start === "function" && typeof value.close === "function";
+}
+var pluginMethodPattern = new RegExp("^[-A-Za-z0-9._:]{1,256}$");
+var pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
+var pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
+var opaqueHandlePattern = new RegExp("^[-A-Za-z0-9_]{8,160}$");
+var bridgeRequestIDPattern = /^(rpc|execution|file)_([1-9][0-9]{0,15})$/;
+function validBridgeRequestID(value, expectedKind) {
+  if (typeof value !== "string") return false;
+  const match = bridgeRequestIDPattern.exec(value);
+  if (!match || expectedKind && match[1] !== expectedKind) return false;
+  return Number.isSafeInteger(Number(match[2]));
+}
+function validMethod(value) {
+  return typeof value === "string" && pluginMethodPattern.test(value);
+}
+function validFileExportName(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 128 || value.trim() !== value || value === "." || value === ".." || new TextEncoder().encode(value).byteLength > 255) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 32 || code === 47 || code === 92 || code === 127) return false;
+  }
+  return true;
+}
+function validFileExportMediaType(value) {
+  return pluginSurfaceFileExportMediaTypes.includes(value);
+}
+function validOpaqueHandle(value, prefix) {
+  return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern.test(value);
+}
+function streamReadAbortedError() {
+  return new PluginBridgeError("PLUGIN_STREAM_CANCELLED", "Plugin stream read was aborted");
+}
+function mutationOutcome(options, posted) {
+  if (!options.mutation) return void 0;
+  return posted ? "unknown" : "not_committed";
+}
+function requestCancelledError(options, posted) {
+  if (options.cancellationKind === "stream") return streamReadAbortedError();
+  return new PluginBridgeError(
+    "PLUGIN_BRIDGE_CANCELLED",
+    "Plugin bridge request was cancelled",
+    void 0,
+    void 0,
+    mutationOutcome(options, posted)
+  );
+}
+function messageWithinLimit(value) {
+  try {
+    const normalized = normalizePluginJSONValue(value);
+    return new TextEncoder().encode(JSON.stringify(normalized)).byteLength <= maxPluginBridgeMessageBytes;
+  } catch {
+    return false;
+  }
+}
+function normalizePluginJSONObject(value) {
+  const normalized = normalizePluginJSONValue(value);
+  if (normalized === null || Array.isArray(normalized) || typeof normalized !== "object") {
+    throw new TypeError("value must be a JSON object");
+  }
+  return normalized;
+}
+function normalizePluginJSONValue(value, depth = 0, state = { nodes: 0, seen: /* @__PURE__ */ new Set() }) {
+  state.nodes += 1;
+  if (state.nodes > maxPluginJSONStructuralNodes || depth > 64) throw new TypeError("JSON value exceeds structural limits");
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("JSON numbers must be finite");
+    return value;
+  }
+  if (typeof value !== "object" || state.seen.has(value)) throw new TypeError("value is not canonical JSON");
+  state.seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => normalizePluginJSONValue(item, depth + 1, state));
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError("JSON objects must be plain records");
+    const result = {};
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") throw new TypeError("JSON object keys must be strings");
+      if (prototypeSensitivePropertyNames.has(key)) throw new TypeError("JSON object keys must not alter object prototypes");
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !("value" in descriptor)) throw new TypeError("JSON object fields must be enumerable data properties");
+      result[key] = normalizePluginJSONValue(descriptor.value, depth + 1, state);
+    }
+    return result;
+  } finally {
+    state.seen.delete(value);
+  }
+}
+var prototypeSensitivePropertyNames = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
+function normalizeTimeout(timeoutMs) {
+  if (timeoutMs == null) return 3e4;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("timeoutMs must be a positive finite number");
+  return timeoutMs;
+}
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", message)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+function removeUndefined(value) {
+  for (const key of Object.keys(value)) if (value[key] === void 0) delete value[key];
+  return value;
+}
+function isSurfaceMethodDelivery(value) {
+  return hasExactKeys(value, ["invocation_id", "method", "params", "deadline"]) && typeof value.invocation_id === "string" && value.invocation_id.startsWith("invoke_") && value.invocation_id.length <= 128 && typeof value.method === "string" && validMethod(value.method) && (value.params !== null && typeof value.params === "object" && !Array.isArray(value.params)) && typeof value.deadline === "string" && Number.isFinite(Date.parse(value.deadline));
+}
+
+// internal/scaffoldtemplate/web-app.ts
+var bridge = new PluginBridgeClient();
+bridge.onContext((context) => {
+  const root2 = document.documentElement;
+  root2.classList.toggle("dark", context.appearance.color_scheme === "dark");
+  root2.classList.toggle("light", context.appearance.color_scheme === "light");
+  root2.style.colorScheme = context.appearance.color_scheme;
+  root2.lang = context.locale.language_tag;
+  root2.dir = context.locale.direction;
+});
+var root = document.createElement("main");
+root.className = "plugin-surface";
+root.dataset.floeSurface = "raised";
+root.innerHTML = `<p class="eyebrow">Your application</p><h1></h1>
+<p class="intro">Build your application with ordinary Web code.</p>
+<form class="echo-form"><label for="message">Message</label>
+<input data-floe-surface="inset" id="message" name="message" maxlength="4096" autocomplete="off" value="Hello from your application">
+<button data-floe-surface="raised" type="submit">Preview</button></form>
+<p class="status" role="status">Connecting...</p>
+<section class="response" aria-label="Preview"><span>Preview</span><strong>Your message will appear here.</strong></section>`;
+root.querySelector("h1").textContent = "__REDEVPLUGIN_DISPLAY_NAME__";
+document.body.replaceChildren(root);
+var input = root.querySelector("input");
+var status = root.querySelector(".status");
+var response = root.querySelector(".response strong");
+var disposed = false;
+root.querySelector("form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!disposed) response.textContent = input.value;
+});
+bridge.onLifecycle((event) => {
+  if (event.type === "dispose") {
+    disposed = true;
+    root.querySelector("button").disabled = true;
+  }
+});
+void bridge.registerMethod("application.read", (_params, { signal }) => {
+  signal.throwIfAborted();
+  return { message: input.value };
+}).then(() => {
+  if (!disposed) status.textContent = "Ready";
+}).catch((error) => {
+  if (disposed) return;
+  status.classList.add("error");
+  status.textContent = error instanceof Error ? error.message : "Application connection unavailable";
+});
