@@ -151,4 +151,3 @@ function assertOrigin(value, label, allowPath = false) {
     throw new Error(`${label} must be an uncredentialed origin`);
   }
 }
-
