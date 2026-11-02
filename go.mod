@@ -4,8 +4,8 @@ go 1.27.3
 
 require (
 	github.com/coder/websocket v1.8.15
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
-	github.com/tdewolff/parse/v2 v2.8.20
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/image v0.47.0
 	golang.org/x/mod v0.42.0

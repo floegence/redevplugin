@@ -62,6 +62,8 @@ func TestAuthorCLIInvokesRealRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.Config.Typecheck = nil
+	p.Config.Prepare = nil
 	p.Config.Build = []string{"node", "-e", "process.exit(0)"}
 	p.Config.Test = []string{"node", "-e", "process.exit(0)"}
 	config, _ := json.Marshal(p.Config)
@@ -95,12 +97,17 @@ func TestAuthorBrowserWorkflow(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, "node", "scripts/author_workflow_smoke.mjs", cli, runtimePath)
 	command.Dir = repo
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("author browser acceptance: %v\n%s", err, output)
+	}
+	consumer := exec.CommandContext(ctx, "node", "scripts/author_consumer_smoke.mjs", cli)
+	consumer.Dir = repo
+	if output, err := consumer.CombinedOutput(); err != nil {
+		t.Fatalf("external author consumer: %v\n%s", err, output)
 	}
 	compileCommand := exec.CommandContext(ctx, "node", "scripts/author_bindings_compile.mjs", cli)
 	compileCommand.Dir = repo

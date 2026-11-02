@@ -1,16 +1,33 @@
-import { PluginPlatformClient, PluginSurfaceSlot, createPluginSurfaceScope, createReDevPluginSurfaceTransport, getPluginSurfaceActionState, type FetchLike, type PluginCatalogRecord, type PluginConfirmationIntent } from "../../packages/redevplugin-ui/src/trusted-parent.js";
+import { PluginPlatformClient, PluginSurfaceSlot, createPluginSurfaceScope, createReDevPluginSurfaceTransport, getPluginSurfaceActionState, type FetchLike, type PluginCatalogRecord, type PluginIntentInvokeRequest, type PluginConfirmationIntent } from "../../packages/redevplugin-ui/src/trusted-parent.js";
 
 function element<T extends HTMLElement>(id: string): T { const value = document.getElementById(id); if (!value) throw new Error("Missing preview element: " + id); return value as T; }
 const status = element("status"), error = element("error"), output = element("output"), permissions = element("permissions");
 const surfaces = element<HTMLSelectElement>("surfaces"), reload = element<HTMLButtonElement>("reload");
+const apply = element<HTMLButtonElement>("apply");
+let applying = false, candidateSource = "";
 const scope = createPluginSurfaceScope();
 const slot = PluginSurfaceSlot.create({ stage: element("stage") });
 let csrf = "", generation = 0, record: PluginCatalogRecord | undefined, opening = false, stopped = false;
 let buildError = "", surfaceError = "", activeSurface = "";
 const authenticatedFetch: FetchLike = (input, init) => fetch(input, { ...init, headers: { ...init.headers, "X-ReDevPlugin-CSRF": csrf } });
 const client = new PluginPlatformClient({ fetch: authenticatedFetch, surfaceScope: scope, surfaceTransport: createReDevPluginSurfaceTransport({ fetch: authenticatedFetch }) });
-type State = { restart_required: boolean; generation: number; building: boolean; error: string; output: string; plugin_instance_id: string; csrf: string; mode: string };
+type State = { candidate?: boolean; manual?: boolean; persistent?: boolean; source_hash?: string; package_hash?: string; stages?: {name: string; status: string; duration_ms: number}[]; restart_required: boolean; generation: number; building: boolean; error: string; output: string; plugin_instance_id: string; csrf: string; mode: string };
 
+apply.onclick = () => { void (async () => {
+  const reviewedSource = candidateSource;
+  if (applying || !await confirmReview("Apply candidate update", {effect: "Open a fresh application frame. Save any unsaved drafts first."})) return;
+  applying = true; apply.disabled = true;
+  try { const response = await fetch("/dev/apply", {method: "POST", headers: {"X-ReDevPlugin-CSRF": csrf, "Content-Type": "application/json"}, body: JSON.stringify({source_hash:reviewedSource})}); if (!response.ok) throw new Error(await response.text()); } finally { applying = false; }
+})().catch(showError); };
+const reset = element<HTMLButtonElement>("reset");
+reset.onclick = () => { void (async () => {
+  if (reset.disabled) return;
+  const reviewedGeneration = generation;
+  if (!await confirmReview("Reset development data", {effect: "Uninstall the current preview, delete its development data and grants, then install a fresh instance."})) return;
+  reset.disabled = true;
+  const response = await fetch("/dev/reset",{method:"POST",headers:{"X-ReDevPlugin-CSRF":csrf,"Content-Type":"application/json"},body:JSON.stringify({generation:reviewedGeneration})});
+  if (!response.ok) throw new Error(await response.text());
+})().catch(showError).finally(() => { reset.disabled = false; }); };
 reload.onclick = () => { void refreshCatalog(true).catch(showError); };
 surfaces.onchange = () => { void openSelected().catch(showError); };
 addEventListener("beforeunload", () => { stopped = true; void slot.dispose(); });
@@ -28,7 +45,12 @@ async function poll(): Promise<void> {
   try {
     const response = await fetch("/dev/status"); if (!response.ok) throw new Error("Developer session expired. Open the current CLI preview URL.");
     const state = await response.json() as State; csrf = state.csrf;
-    status.textContent = state.restart_required ? "Preview paused. Restart the command to reconcile package state." : state.building ? "Building… Your current preview remains available." : state.error ? "Build failed. Showing the last valid preview." : state.mode === "web" ? "Ready · Web application" : "Ready · real runtime";
+    status.textContent = state.restart_required ? "Preview paused. Restart the command to reconcile package state." : state.building ? "Building… Your current preview remains available." : state.error ? "Build failed. Showing the last valid preview." : state.candidate ? "Update ready. Save drafts, then apply when ready." : state.mode === "web" ? "Ready · Web application" : "Ready · real runtime";
+    candidateSource = state.source_hash ?? "";
+    apply.hidden = !state.candidate; apply.disabled = applying || state.building || state.restart_required;
+    element("data-mode").textContent = state.persistent ? "Persistent environment · application data survives a command restart. Sessions and surface authority are renewed each time." : "Temporary environment · stopping this command removes its data. Use --state with a dedicated directory to keep data between sessions.";
+    element("build-identity").textContent = (state.manual ? "Manual updates" : "Automatic updates") + (state.package_hash ? " · package " + state.package_hash.slice(0, 12) : "");
+    element("build-stages").replaceChildren(...(state.stages ?? []).map(stage => { const item = document.createElement("li"); item.textContent = stage.name + " · " + stage.status + " · " + stage.duration_ms + " ms"; return item; }));
     output.textContent = state.output; buildError = state.error; renderError();
     if (state.restart_required) { await slot.close(); reload.disabled = true; surfaces.disabled = true; return; }
     if (state.generation > generation) { await refreshCatalog(true); generation = state.generation; }
@@ -41,7 +63,7 @@ async function refreshCatalog(open: boolean): Promise<void> {
   for (const surface of record.manifest.surfaces ?? []) { if (surface.kind !== "view") continue; const option = document.createElement("option"); option.value = surface.surface_id; const availability = getPluginSurfaceActionState(record, surface.surface_id); option.textContent = surface.label + (availability.can_open ? "" : " · " + availability.blocked_reason); surfaces.append(option); }
   if (Array.from(surfaces.options).some(option => option.value === selected)) surfaces.value = selected;
   renderInspector(record);
-  await renderPermissions(record); if (open) await openSelected();
+  await renderPermissions(record); await renderConnections(record); if (open) await openSelected();
 }
 async function renderPermissions(current: PluginCatalogRecord): Promise<void> {
   const [requirements, grants] = await Promise.all([client.getPermissionRequirements({ plugin_instance_id: current.plugin_instance_id }), client.listPermissions({ plugin_instance_id: current.plugin_instance_id, active_only: true })]);
@@ -70,6 +92,9 @@ async function openSelected(): Promise<void> {
   } finally { opening = false; reload.disabled = false; surfaces.disabled = false; }
 }
 
+function confirmReview(method: string, plan: unknown, signal = new AbortController().signal): Promise<boolean> {
+  return confirmAction({method, plan, signal} as PluginConfirmationIntent);
+}
 function confirmAction(intent: PluginConfirmationIntent): Promise<boolean> {
   const dialog = element<HTMLDialogElement>("confirmation");
   if (intent.signal.aborted || dialog.open) return Promise.resolve(false);
@@ -95,9 +120,28 @@ function renderInspector(current: PluginCatalogRecord): void {
   const actions = element<HTMLSelectElement>("actions"); actions.replaceChildren();
   for (const intent of manifest.intents ?? []) {
     const method = manifest.methods?.find(item => item.method === intent.method);
-    if (method?.effect !== "read") continue;
-    const option = document.createElement("option"); option.value = intent.intent_id; option.textContent = intent.intent_id; actions.append(option);
+    if (!method || (method.effect !== "read" && method.route.kind !== "surface")) continue;
+    const option = document.createElement("option"); option.value = intent.intent_id; option.textContent = intent.intent_id + " · " + method.effect; actions.append(option);
   }
+  const fields = element("action-fields"), json = element<HTMLTextAreaElement>("action-params");
+  const renderFields = (): void => {
+    fields.replaceChildren();
+    const intent = manifest.intents?.find(item => item.intent_id === actions.value);
+    const schema = intent?.payload_schema as {properties?: Record<string, {type?: string; default?: unknown; description?: string}>} | undefined;
+    const values: Record<string, unknown> = {};
+    for (const [key, property] of Object.entries(schema?.properties ?? {})) {
+      if (!["string", "number", "integer", "boolean"].includes(property.type ?? "")) continue;
+      const label = document.createElement("label"); label.textContent = key;
+      const input = document.createElement("input"); input.type = property.type === "boolean" ? "checkbox" : property.type === "string" ? "text" : "number";
+      if (property.type === "integer") input.step = "1";
+      if (property.default !== undefined) { input.value = String(property.default); input.checked = property.default === true; values[key] = property.default; }
+      input.title = property.description ?? key;
+      input.oninput = () => { values[key] = input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value; json.value = JSON.stringify(values, null, 2); };
+      label.append(input); fields.append(label);
+    }
+    json.value = JSON.stringify(values, null, 2);
+  };
+  actions.onchange = renderFields; renderFields();
   const button = element<HTMLButtonElement>("action-run"); button.disabled = !actions.options.length;
   button.onclick = () => { void (async () => {
     button.disabled = true;
@@ -107,7 +151,13 @@ function renderInspector(current: PluginCatalogRecord): void {
       const intent = current.manifest.intents?.find(item => item.intent_id === actions.value);
       const method = current.manifest.methods?.find(item => item.method === intent?.method);
       if (method?.route.kind === "surface" && !activeSurface) throw new Error("Open the target Surface before invoking its action");
-      const result = await client.invokeIntent({ plugin_instance_id: current.plugin_instance_id, intent_id: actions.value, ...(method?.route.kind === "surface" ? { surface_instance_id: activeSurface } : {}), params: params as Record<string, never> });
+      const request: PluginIntentInvokeRequest = { plugin_instance_id: current.plugin_instance_id, intent_id: actions.value, ...(method?.route.kind === "surface" ? { surface_instance_id: activeSurface } : {}), params: params as Record<string, never> };
+      if (method?.effect !== "read" && method?.confirmation?.mode !== "none") {
+        const prepared = await client.prepareIntentConfirmation(request);
+        if (!await confirmReview(method?.method ?? actions.value, prepared.plan)) return;
+        request.confirmation_id = prepared.confirmation_id;
+      }
+      const result = await client.invokeIntent(request);
       element("action-result").textContent = JSON.stringify(result, null, 2);
     } catch (error) { element("action-result").textContent = error instanceof Error ? error.message : String(error); }
     finally { button.disabled = !actions.options.length; }
@@ -121,7 +171,57 @@ observations.onclick = () => { void (async () => {
   try {
     const query = { plugin_instance_id: record.plugin_instance_id, limit: 25 };
     const [tasks, diagnostics] = await Promise.all([client.listExecutions(query), client.listDiagnosticEvents(query)]);
-    element("observations-result").textContent = JSON.stringify({ tasks, diagnostics }, null, 2);
+    element("observations-result").textContent = JSON.stringify({tasks, diagnostics}, null, 2);
+    const list = element("execution-list"); list.replaceChildren();
+    for (const task of tasks.executions) {
+      const row = document.createElement("div"); row.className = "resource-card";
+      const description = document.createElement("p"); description.textContent = task.execution_id + " · " + task.status;
+      const inspect = document.createElement("button"); inspect.textContent = "Inspect events";
+      inspect.onclick = () => { void client.listExecutionEvents(task.execution_id, {after_cursor: 0, limit: 100}).then(events => { element("observations-result").textContent = JSON.stringify(events, null, 2); }).catch(showError); };
+      row.append(description, inspect);
+      if (task.cancelable && task.status === "running") {
+        const cancel = document.createElement("button"); cancel.textContent = "Cancel task";
+        cancel.onclick = () => { void (async () => { if (!await confirmReview("Cancel task", {execution_id: task.execution_id})) return; cancel.disabled = true; try { const result = await client.cancelExecution(task.execution_id, "developer-preview"); description.textContent = task.execution_id + " · " + result.status; } finally { observations.click(); } })().catch(showError); }; row.append(cancel);
+      }
+      list.append(row);
+    }
   } catch (error) { element("observations-result").textContent = error instanceof Error ? error.message : String(error); }
   finally { observations.disabled = false; }
 })(); };
+
+async function renderConnections(current: PluginCatalogRecord): Promise<void> {
+  const container = element("connections"); container.replaceChildren();
+  element("resource-contract").textContent = JSON.stringify({storage: current.manifest.storage, surfaces: current.manifest.surfaces.map(surface => ({surface_id: surface.surface_id, resources: surface.web}))}, null, 2);
+  if (!current.manifest.network_access?.connectors?.length) return;
+  const inventory = await client.listConnections({plugin_instance_id: current.plugin_instance_id});
+  for (const declaration of current.manifest.network_access.connectors) {
+    const connection = inventory.connections.find(item => item.connector_id === declaration.connector_id);
+    const card = document.createElement("div"); card.className = "resource-card";
+    const title = document.createElement("p"); title.textContent = declaration.connector_id + " · " + (connection?.status ?? "unconfigured"); card.append(title);
+    if (declaration.configurable) {
+      const label = document.createElement("label"); label.textContent = "Destination for " + declaration.connector_id;
+      const input = document.createElement("input"); input.type = "url"; input.placeholder = declaration.transport === "websocket" ? "wss://events.example.com" : "https://api.example.com"; input.value = connection?.destination ?? ""; label.append(input); card.append(label);
+      const privateLabel = document.createElement("label"); privateLabel.textContent = "Allow loopback destination on this computer";
+      const privateInput = document.createElement("input"); privateInput.type = "checkbox"; privateInput.checked = Boolean(connection?.private_prefixes?.length); privateLabel.append(privateInput); card.append(privateLabel);
+      const button = document.createElement("button"); button.textContent = "Review connection";
+      button.onclick = () => { void (async () => {
+        button.disabled = true;
+        try {
+          const methods = current.manifest.surfaces.flatMap(surface => surface.web?.network ?? []).filter(item => item.connector_id === declaration.connector_id).flatMap(item => item.http_methods ?? []);
+          const privatePrefixes = privateInput.checked ? ["127.0.0.0/8", "::1/128"] : undefined;
+          const result = await client.reviewConnection({private_prefixes: privatePrefixes,plugin_instance_id: current.plugin_instance_id, connector_id: declaration.connector_id, destination: input.value.trim(), expected_revision: connection?.revision ?? 0, ...(declaration.transport === "http" ? {http_methods: [...new Set(methods)]} : {})});
+          const reference = {plugin_instance_id: current.plugin_instance_id, review_id: result.review.review_id};
+          if (await confirmReview("Approve connection", result.review)) await client.approveConnection(reference);
+          else await client.cancelConnectionReview(reference);
+          await renderConnections(current);
+        } catch (error) { showError(error); await renderConnections(current); }
+        finally { button.disabled = false; }
+      })().catch(showError); }; card.append(button);
+    }
+    if (connection?.status === "active") {
+      const revoke = document.createElement("button"); revoke.textContent = "Revoke connection";
+      revoke.onclick = () => { void (async () => { if (!await confirmReview("Revoke connection", {connector_id: declaration.connector_id, destination: connection.destination})) return; revoke.disabled = true; try { await client.revokeConnection({plugin_instance_id: current.plugin_instance_id, connector_id: declaration.connector_id, expected_revision: connection.revision}); } finally { await renderConnections(current); } })().catch(showError); }; card.append(revoke);
+    }
+    container.append(card);
+  }
+}

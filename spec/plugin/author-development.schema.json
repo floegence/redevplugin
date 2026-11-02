@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "redevplugin.author-development.v1",
+  "title": "Local author environment and verified runtime evidence",
+  "description": "Local development metadata only. Runtime evidence records a trusted preparation invocation; a file alone never grants production admission.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/state"
+    },
+    {
+      "$ref": "#/$defs/runtime_evidence"
+    }
+  ],
+  "$defs": {
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "redevplugin.author-state.v1"
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1
+        },
+        "environment": {
+          "type": "string",
+          "minLength": 1
+        },
+        "session": {
+          "type": "string",
+          "minLength": 1
+        },
+        "channel": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schema",
+        "project",
+        "user",
+        "environment",
+        "session",
+        "channel"
+      ]
+    },
+    "runtime_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "redevplugin.author-runtime.v1"
+        },
+        "platform_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "enum": [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu"
+          ]
+        },
+        "toolchain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cargo_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rustc_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "crates": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "enum": [
+                  "redevplugin-runtime",
+                  "redevplugin-worker-sdk"
+                ]
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1
+              },
+              "registry_checksum_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "source_commit": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{40}$"
+              }
+            },
+            "required": [
+              "name",
+              "version",
+              "registry_checksum_sha256",
+              "source_commit"
+            ]
+          }
+        },
+        "binary": {
+          "const": "redevplugin-runtime"
+        },
+        "binary_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "schema_version",
+        "platform_version",
+        "target",
+        "toolchain",
+        "cargo_version",
+        "rustc_version",
+        "source_commit",
+        "manifest_sha256",
+        "crates",
+        "binary",
+        "binary_sha256"
+      ]
+    }
+  }
+}

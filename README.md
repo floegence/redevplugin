@@ -47,13 +47,25 @@ capabilities.
 
 ## Author Programming Model
 
-Start with redevplugin init: a Web application needs no Worker or runtime.
-Choose --template data, files, monitor or worker as needed. Generate typed action
-bindings from the canonical manifest; use check/doctor and the real preview for
-contract, action, task and diagnostic feedback. Surfaces access private KV,
-SQLite, settings, binary streams and controlled WebSockets through Host brokers.
-See [workflow](docs/authoring/local-workflow.md) and
-[resource semantics](docs/authoring/resources.md) for limits and examples.
+Start with a pure Web application; no Worker or runtime is required:
+
+```bash
+go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.14.0
+redevplugin init dev.example.notes "Notes" notes
+cd notes
+npm install
+redevplugin doctor .
+redevplugin check .
+redevplugin dev . --state ../notes-development --manual
+```
+
+Choose `--template data` for persistent documents, `files` for streaming imports,
+`monitor` for a configurable socket dashboard, or `worker` for WASM computation.
+Save drafts before choosing **Apply update**. The preview provides explicit
+permissions, connection review, action forms, task inspection, and data reset.
+See the [complete author workflow](docs/authoring/local-workflow.md),
+[resource semantics](docs/authoring/resources.md), and
+[data upgrades](docs/authoring/data-upgrades.md).
 
 ## Localized Plugin Presentation
 
@@ -129,10 +141,10 @@ an English fallback or mix locales within one resolved presentation.
   The mountable HTTP adapter exposes the same behavior at
   `POST /_redevplugin/api/plugins/runtime/recover-enabled`, so hosts can keep
   route mounting thin instead of reimplementing the refresh loop.
-- Updates and downgrades require the target package to keep the exact current
-  PluginData shape. A package that changes settings or storage schema must use a
-  new plugin identity before release; the platform has no conversion or
-  compatibility path.
+- Updates preserve compatible PluginData shapes and support declared isolated
+  WASM data conversions when the shape changes. Downgrades restore exact retained
+  package-bound generations. See [data upgrades](docs/authoring/data-upgrades.md)
+  for conversion, rollback, quota, and unknown-outcome rules.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset

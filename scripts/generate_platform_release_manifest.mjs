@@ -10,6 +10,7 @@ const canonicalContractPaths = Object.freeze([
   "openapi/plugin-platform.yaml",
   "platform-release-manifest.schema.json",
   "plugin/author-bindings.schema.json",
+  "plugin/author-development.schema.json",
   "plugin/author-project-v1.schema.json",
   "plugin/author-test-v1.schema.json",
   "plugin/bridge.schema.json",

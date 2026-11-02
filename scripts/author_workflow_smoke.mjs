@@ -56,7 +56,7 @@ try{
  });
  assert.equal(application.status, 200, JSON.stringify(application.body));
  assert.equal(application.body.data.data.message, "Browser worker acceptance");
- await page.getByText("Test a read action",{exact:true}).click();
+ await page.getByText("Test an action",{exact:true}).click();
  await page.getByRole("button",{name:"Run action",exact:true}).click();
  await page.locator("#action-result").filter({hasText:"Browser worker acceptance"}).waitFor();
  await page.locator("#confirmation").evaluate(dialog=>dialog.showModal());

@@ -34,14 +34,16 @@ func configureWebTemplate(files map[string][]byte, displayName, platformVersion 
 	if err := json.Unmarshal(files["package.json"], &pkg); err != nil {
 		panic(err)
 	}
-	pkg["scripts"].(map[string]any)["test"] = "npm run typecheck"
+	pkg["scripts"].(map[string]any)["test"] = "node --test tests/*.test.mjs"
 	files["package.json"], _ = json.MarshalIndent(pkg, "", "  ")
 	files["redevplugin.project.json"] = []byte(`{
   "schema_version": "redevplugin.project.v1",
   "output": "dist",
   "build": ["npm", "run", "build"],
   "test": ["npm", "test"],
-  "watch": ["manifest.json", "ui", "scripts", "package.json"]
+  "watch": ["manifest.json", "ui", "scripts", "tests", "package.json"],
+  "typecheck": ["npm", "run", "typecheck"],
+  "bindings": "generated"
 }
 `)
 	files["scripts/build.mjs"] = []byte(`import { copyFile, mkdir } from "node:fs/promises";
@@ -61,7 +63,8 @@ A regular Web application with one explicit Surface action. No Rust toolchain or
 Worker is needed to build or package it. Dependencies use ReDevPlugin %s.
 
     npm install
-    npm run check
+    redevplugin doctor .
+    redevplugin check .
     redevplugin test .
     redevplugin package dist app.redevplugin
 
@@ -70,7 +73,7 @@ and state stay ordinary application code. Declare cross-boundary actions in
 manifest.json. The application.read action reads the current input from the
 exact open Surface; it does not run when that Surface is closed.
 
-    redevplugin dev .
+    redevplugin dev . --state ../development-state --manual
 
 The preview uses a real isolated Host and authenticated sandbox. Add an explicit
 verified runtime when adding a Worker. Build and test commands only run against
@@ -98,7 +101,7 @@ func configureResourceTemplate(files map[string][]byte, displayName, template st
 	files["ui/src/app.ts"] = scaffoldSource(source, displayName)
 	files["dist/ui/assets/app.js"] = scaffoldSource(bundle, displayName)
 	if template == "monitor" {
-		files["README.md"] = append(files["README.md"], []byte("\nConfigure the events WebSocket connection in your host and grant network.client.\nEach incoming text or binary message is one complete application snapshot.\nReconnect explicitly after closure or overflow; no commands are replayed.\nThe standard CLI preview has no network policy adapter and shows this requirement.\n")...)
+		files["README.md"] = append(files["README.md"], []byte("\nConfigure the events WebSocket connection in your host and grant network.client.\nEach incoming text or binary message is one complete application snapshot.\nReconnect explicitly after closure or overflow; no commands are replayed.\nUse Resources and connections in the CLI preview to review and approve the destination.\n")...)
 	}
 	if template == "files" {
 		files["README.md"] = append(files["README.md"], []byte("\nSelect browser files for a sequential, cancellable private import. Each completed\nfile commits atomically; prior completed files remain after cancellation. The UI\nkeeps explicit per-file outcomes and verifies imported byte counts with bounded reads.\nThese page-owned tasks stop when the page closes. Use a declared Worker operation\nand the generated action client for jobs that must outlive the page.\n")...)

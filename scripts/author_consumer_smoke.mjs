@@ -1,0 +1,76 @@
+import assert from "node:assert/strict";
+import {mkdtemp,readFile,writeFile,rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join,resolve} from "node:path";
+import {spawn,spawnSync} from "node:child_process";
+import {buildRustSourcePackages} from "./rust_source_packages.mjs";
+import {chromium} from "playwright";
+const repo=resolve(import.meta.dirname,".."),cli=resolve(process.argv[2]??"dist/author-cli");
+const root=await mkdtemp(join(tmpdir(),"redevplugin-author-consumer-"));
+const version=(await readFile(join(repo,"VERSION"),"utf8")).trim();
+const run=(cmd,args,cwd=repo)=>{const result=spawnSync(cmd,args,{cwd,encoding:"utf8",timeout:180000,env:{...process.env,CARGO_TARGET_DIR:join(repo,"target/author-consumer"),...cargoEnvironment}});assert.equal(result.status,0,result.stdout+result.stderr);return result.stdout};
+let child,browser,logs="",exit,candidateCrates;
+const cargoEnvironment = {};
+const stop=async()=>{if(child&&child.exitCode===null){child.kill("SIGINT");const result=await Promise.race([exit,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("dev did not stop")),10000);timer.unref()})]);assert.equal(result,0,logs)}};
+const start=async(project,state)=>{logs="";child=spawn(cli,["dev",project,"--state",state,"--manual"],{stdio:["ignore","pipe","pipe"]});child.stdout.on("data",data=>logs+=data);child.stderr.on("data",data=>logs+=data);exit=new Promise(done=>child.once("exit",done));let url;for(let i=0;i<200;i++){url=logs.match(/Preview: (http:\/\/localhost:\d+\/#[a-f0-9]+)/u)?.[1];if(url)return url;if(child.exitCode!==null)throw new Error(logs);await new Promise(done=>setTimeout(done,100))}throw new Error("No preview URL: "+logs)};
+try{
+ const tarballs=["contracts","ui"].map(name=>run(process.execPath,["scripts/build_redevplugin_"+name+"_package.mjs",version,root]).trim());
+ const evidence=[];
+ candidateCrates = await buildRustSourcePackages();
+ Object.assign(cargoEnvironment,{CARGO_HOME:candidateCrates.cargoHome,CARGO_NET_OFFLINE:"true"});
+ for(const template of ["web","data","files","monitor","worker"]){
+  const project=join(root,template),begin=performance.now();
+  run(cli,["init","dev.example."+template,"Consumer "+template,project,"--template",template]);
+  // Consume actual package archives through npm; never add source aliases.
+  run("npm",["install","--no-save","--no-audit","--no-fund",...tarballs],project);
+  run(cli,["doctor",project]);
+  const report=JSON.parse(run(cli,["test",project]));
+  assert.equal(report.ok,true);assert.equal(report.stages.find(stage=>stage.name==="typecheck").status,"passed");
+  assert.ok(report.commands.some(command=>command.arguments.join(" ")==="npm test"));
+  evidence.push({template,install_build_test_ms:Math.round(performance.now()-begin),stages:report.stages});
+ }
+ const project=join(root,"data"),state=join(root,"state"),url=await start(project,state);
+ browser=await chromium.launch({headless:true});let page=await browser.newPage();await page.goto(url);
+ let frame=page.frameLocator("#stage > iframe");await frame.getByText("Ready",{exact:true}).waitFor({timeout:30000});
+ await frame.getByLabel("Document",{exact:true}).fill("persisted across restart");
+ await frame.getByRole("button",{name:"Save",exact:true}).click();await frame.getByText("Saved",{exact:true}).waitFor();
+ await frame.getByLabel("Document",{exact:true}).fill("unsaved draft survives candidate");
+ const oldFrame=await page.locator("#stage > iframe").elementHandle();
+ const sourcePath=join(project,"ui/src/app.ts"),source=await readFile(sourcePath,"utf8"),editAt=performance.now();
+ await writeFile(sourcePath,source.replaceAll("Consumer data","Updated consumer"));
+ await page.getByRole("button",{name:"Apply update",exact:true}).waitFor({timeout:30000});
+ evidence.push({candidate_ready_ms:Math.round(performance.now()-editAt)});
+ assert.equal(await oldFrame.evaluate(frame=>frame.isConnected),true);
+ assert.equal(await frame.getByLabel("Document",{exact:true}).inputValue(),"unsaved draft survives candidate");
+ await page.getByRole("button",{name:"Apply update",exact:true}).click();
+ await page.getByRole("button",{name:"Cancel",exact:true}).click();
+ assert.equal(await frame.getByLabel("Document",{exact:true}).inputValue(),"unsaved draft survives candidate");
+ await page.getByRole("button",{name:"Apply update",exact:true}).click();await page.getByRole("button",{name:"Approve action",exact:true}).click();
+ await frame.getByRole("heading",{name:"Updated consumer"}).waitFor({timeout:30000});await frame.getByText("Ready",{exact:true}).waitFor();
+ assert.equal(await frame.getByLabel("Document",{exact:true}).inputValue(),"persisted across restart");
+ assert.equal(await oldFrame.evaluate(frame=>frame.isConnected),false);
+ const stableFrame=await page.locator("#stage > iframe").elementHandle();
+ await writeFile(sourcePath,source+'\nconst rejectedType: number = "invalid";\n');
+ await page.getByText("Build failed. Showing the last valid preview.",{exact:true}).waitFor({timeout:30000});
+ assert.equal(await stableFrame.evaluate(frame=>frame.isConnected),true);
+ await writeFile(sourcePath,source.replaceAll("Consumer data","Updated consumer"));
+ await page.close();await stop();
+ const nextURL=await start(project,state);page=await browser.newPage();await page.goto(nextURL);
+ frame=page.frameLocator("#stage > iframe");await frame.getByText("Ready",{exact:true}).waitFor({timeout:30000});
+ assert.equal(await frame.getByLabel("Document",{exact:true}).inputValue(),"persisted across restart");
+ await page.waitForFunction(async()=>!(await(await fetch("/dev/status")).json()).building);
+ await page.getByText("Development data",{exact:true}).click();
+ const beforeReset=await page.locator("#stage > iframe").elementHandle();
+ await page.getByRole("button",{name:"Reset development data",exact:true}).click();
+ await page.getByRole("button",{name:"Approve action",exact:true}).click();
+ await page.waitForFunction(async()=>{const state=await(await fetch("/dev/status")).json();return !state.building && state.generation>1});
+ await page.waitForFunction(frame=>!frame.isConnected,beforeReset);
+ await frame.getByText("Ready",{exact:true}).waitFor({timeout:30000});
+ assert.equal(await frame.getByLabel("Document",{exact:true}).inputValue(),"");
+ const current=await page.evaluate(async()=>await(await fetch("/dev/status")).json());
+ assert.equal((await fetch(new URL(nextURL).origin+"/dev/status")).status,403);
+ assert.equal(current.persistent,true);
+ await page.screenshot({path:join(repo,"dist/author-consumer-preview.png"),fullPage:true});
+ console.log(JSON.stringify({schema_version:"redevplugin.author-consumer-evidence.v1",platform_version:version,evidence,acceptance:["five original template builds and tests","packed npm consumer","manual draft preservation","cancel application","fresh authority after apply","typecheck failure retention","data after process restart"]},null,2));
+} catch(error){throw new Error(String(error)+"\n"+logs,{cause:error})}
+finally{if(browser)await browser.close();try{await stop()}finally{if(child&&child.exitCode===null)child.kill("SIGKILL");candidateCrates?.cleanup();await rm(root,{recursive:true,force:true})}}

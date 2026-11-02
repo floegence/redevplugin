@@ -29,10 +29,8 @@ if (!rustToolchainMatch) throw new Error("rust-toolchain.toml must pin an exact 
 export const rustToolchain = rustToolchainMatch[1];
 const OFFICIAL_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index";
 
-export const rustSourcePackages = Object.freeze([
-  Object.freeze({ name: "redevplugin-runtime", role: "runtime" }),
-  Object.freeze({ name: "redevplugin-worker-sdk", role: "worker_sdk" }),
-]);
+export { rustSourcePackages } from "./rust_source_coordinates.mjs";
+import { rustSourcePackages } from "./rust_source_coordinates.mjs";
 
 const MAX_INDEX_BYTES = 8 * 1024 * 1024;
 const MAX_PACKAGE_BYTES = 16 * 1024 * 1024;

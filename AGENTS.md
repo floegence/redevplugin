@@ -484,6 +484,17 @@ endpoints or author runtimes. Private files namespace schema 2 automatically
 upgrades recognized schema 1 and preserves retained snapshots read-only. This
 layout is separate from control and application-authored schema versions.
 
+## Local Author Workflow Ownership
+
+ReDevPlugin owns the source-project pipeline, generated bindings, readiness
+checks, persistent developer environments, candidate application, connection
+review tooling, and verified published-source runtime preparation. Hosts and
+Flower orchestration invoke these released tools rather than rebuilding them.
+Developer state is explicitly selected and project-bound; stable data ownership
+never preserves prior session or Surface authority. Preview writes use the normal
+Host lifecycle, permission, confirmation and Execution APIs. Local runtime build
+evidence does not replace a product's binary signing or release provenance.
+
 ## Git Workflow (Worktree, Required)
 
 This section is the authoritative ReDevPlugin copy of the Git workflow. It

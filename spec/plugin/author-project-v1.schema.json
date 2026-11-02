@@ -43,6 +43,21 @@
           "pattern": "(^|/)\\.{1,2}(/|$)"
         }
       }
+    },
+    "typecheck": {
+      "$ref": "#/$defs/argv"
+    },
+    "bindings": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Explicit tool-managed generated directory, separate from output and watched inputs.",
+      "pattern": "^[^/\\\\\u0000]+(/[^/\\\\\u0000]+)*$",
+      "not": {
+        "pattern": "(^|/)\\.{1,2}(/|$)"
+      }
+    },
+    "prepare": {
+      "$ref": "#/$defs/argv"
     }
   },
   "$defs": {

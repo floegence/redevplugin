@@ -22,25 +22,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/testhost"
 )
 
-// This test adapter maps the declared fixture endpoint to a task-owned server.
-// Production target admission, Surface authentication and relay remain real.
-type monitorFixtureExecutor struct {
-	connectivity.NetworkExecutor
-	endpoint string
-}
-
-func (e monitorFixtureExecutor) OpenWebSocket(ctx context.Context, request connectivity.WebSocketOpenRequest) (connectivity.WebSocketConnection, error) {
-	destination, err := connectivity.ParseDestination(connectivity.TransportWebSocket, e.endpoint)
-	if err != nil {
-		return connectivity.WebSocketConnection{}, err
-	}
-	request.URL = e.endpoint + "/"
-	request.Grant.Destination = destination
-	request.Grant.PrivatePrefixes = []string{"127.0.0.1/32"}
-	request.Grant.ConnectionID = "fixture-local"
-	request.Grant.ConnectionRevision = 1
-	return e.NetworkExecutor.OpenWebSocket(ctx, request)
-}
 func TestAuthorMonitorBrowser(t *testing.T) {
 	if os.Getenv("REDEVPLUGIN_RUN_BROWSER_SMOKE") != "1" {
 		t.Skip("explicit browser acceptance")
@@ -71,7 +52,7 @@ func TestAuthorMonitorBrowser(t *testing.T) {
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 	origin := "http://localhost:" + port
 	options := authorHostOptions(t.TempDir(), origin, nil)
-	options.Connectivity.NetworkExecutor = monitorFixtureExecutor{NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{DefaultTimeout: time.Minute}), endpoint: "ws" + strings.TrimPrefix(remote.URL, "http")}
+	options.Connectivity.NetworkExecutor = connectivity.NewExecutor(connectivity.ExecutorOptions{DefaultTimeout: time.Minute})
 	harness, err := testhost.Open(ctx, options)
 	if err != nil {
 		t.Fatal(err)
@@ -91,8 +72,8 @@ func TestAuthorMonitorBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	connector := manifest["network_access"].(map[string]any)["connectors"].([]any)[0].(map[string]any)
-	connector["configurable"] = false
-	connector["destinations"] = []string{"ws://events.example.com"}
+	connector["configurable"] = true
+	connector["destinations"] = []string{}
 	raw, _ = json.Marshal(manifest)
 	if err = os.WriteFile(path, raw, 0600); err != nil {
 		t.Fatal(err)
@@ -136,7 +117,7 @@ func TestAuthorMonitorBrowser(t *testing.T) {
 	server := &http.Server{Handler: harness.Handler(mux), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
-	command := exec.CommandContext(ctx, "node", "scripts/author_monitor_smoke.mjs", origin+"/#"+url.QueryEscape(harness.BrowserToken()))
+	command := exec.CommandContext(ctx, "node", "scripts/author_monitor_smoke.mjs", origin+"/#"+url.QueryEscape(harness.BrowserToken()), "ws"+strings.TrimPrefix(remote.URL, "http"))
 	command.Dir = cliRepoRoot(t)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("monitor browser: %v\n%s", err, output)

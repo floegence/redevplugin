@@ -25,7 +25,7 @@
     },
     "commands": {
       "type": "array",
-      "maxItems": 2,
+      "maxItems": 4,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -63,6 +63,35 @@
     "error": {
       "type": "string",
       "minLength": 1
+    },
+    "stages": {
+      "type": "array",
+      "maxItems": 11,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "status",
+          "duration_ms"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "not_run"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
     }
   },
   "allOf": [

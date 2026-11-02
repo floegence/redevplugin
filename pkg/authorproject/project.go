@@ -36,6 +36,9 @@ type Config struct {
 	Build         []string `json:"build"`
 	Test          []string `json:"test"`
 	Watch         []string `json:"watch"`
+	Prepare       []string `json:"prepare,omitempty"`
+	Typecheck     []string `json:"typecheck,omitempty"`
+	Bindings      string   `json:"bindings,omitempty"`
 }
 
 type Project struct {
@@ -101,7 +104,7 @@ func Load(root string) (*Project, error) {
 			return nil, errors.New("duplicate project field")
 		}
 		switch name {
-		case "schema_version", "output", "build", "test", "watch":
+		case "schema_version", "output", "build", "test", "watch", "typecheck", "bindings", "prepare":
 		default:
 			return nil, fmt.Errorf("unknown project field: %s", name)
 		}
@@ -109,6 +112,9 @@ func Load(root string) (*Project, error) {
 		var value json.RawMessage
 		if err := tokens.Decode(&value); err != nil {
 			return nil, err
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return nil, errors.New("project fields must not be null")
 		}
 	}
 	var config Config
@@ -126,7 +132,17 @@ func Load(root string) (*Project, error) {
 	if !localPath(config.Output) || config.Output == "." {
 		return nil, errors.New("output must be a project-relative directory")
 	}
-	for _, command := range [][]string{config.Build, config.Test} {
+	commands := [][]string{config.Build, config.Test}
+	if config.Prepare != nil {
+		commands = append(commands, config.Prepare)
+	}
+	if config.Typecheck != nil {
+		commands = append(commands, config.Typecheck)
+	}
+	if config.Bindings != "" && (!localPath(config.Bindings) || config.Bindings == "." || containsPath(config.Bindings, config.Output) || containsPath(config.Output, config.Bindings)) {
+		return nil, errors.New("bindings must be a separate project-relative directory")
+	}
+	for _, command := range commands {
 		if len(command) == 0 || len(command) > 64 || strings.TrimSpace(command[0]) == "" {
 			return nil, errors.New("build and test must be nonempty argv arrays")
 		}
@@ -141,7 +157,7 @@ func Load(root string) (*Project, error) {
 	}
 	watchSeen := map[string]bool{}
 	for _, input := range config.Watch {
-		if !localPath(input) || input == "." || watchSeen[input] || containsPath(input, config.Output) || containsPath(config.Output, input) {
+		if !localPath(input) || input == "." || watchSeen[input] || containsPath(input, config.Output) || containsPath(config.Output, input) || (config.Bindings != "" && (containsPath(input, config.Bindings) || containsPath(config.Bindings, input))) {
 			return nil, errors.New("watch inputs must be unique, relative, and separate from output")
 		}
 		watchSeen[input] = true
@@ -186,7 +202,7 @@ func (p *Project) Snapshot(ctx context.Context) (string, error) {
 	if sha256.Sum256(raw) != p.configHash {
 		return "", errors.New("project configuration changed; restart the developer preview to apply it")
 	}
-	inputs := append([]string{ConfigFile}, p.Config.Watch...)
+	inputs := append([]string{ConfigFile, "manifest.json"}, p.Config.Watch...)
 	sort.Strings(inputs)
 	h := sha256.New()
 	var total int64

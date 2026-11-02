@@ -4,6 +4,12 @@ const browser=await chromium.launch({headless:true});
 try{
  const page=await browser.newPage();const errors=[];page.on("console",message=>{if(message.type()==="error")errors.push(message.text())});
  await page.goto(process.argv[2]);const frame=page.frameLocator("#stage > iframe");
+ await page.locator("#resources > summary").click();
+ await page.getByLabel("Destination for events").fill(process.argv[3]);
+ await page.getByLabel("Allow loopback destination on this computer").check();
+ await page.getByRole("button",{name:"Review connection",exact:true}).click();
+ await page.getByRole("button",{name:"Approve action",exact:true}).click();
+ await page.getByText("events · active",{exact:true}).waitFor();
  await frame.getByRole("button",{name:"Connect",exact:true}).click();
  try{await frame.getByText("Live · snapshot 1",{exact:true}).waitFor({timeout:10000})}catch(error){throw new Error(String(error)+"\n"+errors.join("\n")+"\n"+await frame.locator("body").textContent())}
  assert.equal(await frame.getByLabel("Current snapshot").textContent(),"fixture snapshot");

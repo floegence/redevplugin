@@ -21,6 +21,13 @@ func TestCanonicalProjectSchemaMatchesConfiguration(t *testing.T) {
 		valid  bool
 	}{
 		{"valid", func(map[string]any) {}, true},
+		{"stages", func(v map[string]any) {
+			v["prepare"] = []string{"node", "prepare.mjs"}
+			v["typecheck"] = []string{"node", "check.mjs"}
+			v["bindings"] = "generated"
+		}, true},
+		{"null stage", func(v map[string]any) { v["typecheck"] = nil }, false},
+		{"empty stage", func(v map[string]any) { v["prepare"] = []string{} }, false},
 		{"unknown", func(v map[string]any) { v["unexpected"] = true }, false},
 		{"case alias", func(v map[string]any) { v["Build"] = v["build"]; delete(v, "build") }, false},
 		{"traversal", func(v map[string]any) { v["output"] = "../outside" }, false},

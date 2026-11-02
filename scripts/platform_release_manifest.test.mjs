@@ -30,6 +30,7 @@ const expectedCanonicalContracts = [
   "contract:openapi/plugin-platform.yaml",
   "contract:platform-release-manifest.schema.json",
   "contract:plugin/author-bindings.schema.json",
+  "contract:plugin/author-development.schema.json",
   "contract:plugin/author-project-v1.schema.json",
   "contract:plugin/author-test-v1.schema.json",
   "contract:plugin/bridge.schema.json",

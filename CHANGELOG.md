@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.14.0
+
+- Unify author preparation, generated bindings, type checks, builds, business tests, package validation, and source-consistency evidence; retain compatibility with existing project configurations.
+- Report missing or mismatched dependencies and Node/Rust targets before building; give Web templates independent business tests and honor custom Cargo target directories.
+- Add explicitly selected persistent development environments with exclusive locking, fresh sessions, recoverable metadata, controlled data reset, and manual candidate application that protects unsaved drafts.
+- Replace repeated source hashing with debounced filesystem events and bounded reconciliation; preserve single-flight builds and last-valid previews.
+- Add real connection review/approval/revocation, loopback-only development policy, schema-based action inputs, confirmed Surface actions, execution inspection/cancellation, and build-stage feedback.
+- Prepare development runtimes from attested platform manifests and checksum-verified published Rust crates using the fixed toolchain; cache only identity-bound build inputs and emit auditable evidence.
+- Exercise five original templates with packed package dependencies, authenticated browser workflows, draft retention, source failures, explicit reset, and process-restart persistence. Plugin API, runtime wire, and production control schema remain unchanged.
+
 ## v3.13.0
 
 - Default to pure Web authoring; add data, monitor and files templates, manifest-derived TS/Rust bindings, check/doctor diagnostics and execution/diagnostic inspection.
