@@ -93,4 +93,7 @@ if [[ "$(cargo-deny --version 2>/dev/null || true)" != "cargo-deny 0.19.9" ]]; t
   cargo install cargo-deny@0.19.9 --locked
 fi
 
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+  exec node scripts/redevplugin_gate.mjs
+fi
 exec node scripts/redevplugin_gate.mjs "${ARGS[@]}"
