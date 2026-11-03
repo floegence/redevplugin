@@ -11,7 +11,9 @@
   },
   "api": {
     "major": 1,
-    "required_features": [],
+    "required_features": [
+      "storage.transactions.v1"
+    ],
     "optional_features": []
   },
   "permissions": [],
@@ -26,7 +28,11 @@
       "kind": "view",
       "intent": "primary",
       "label": "Memos",
-      "entry": "ui/index.html", "web": {"root": "ui", "spa": false},
+      "entry": "ui/index.html",
+      "web": {
+        "root": "ui",
+        "spa": false
+      },
       "default_size": {
         "width": 1040,
         "height": 720

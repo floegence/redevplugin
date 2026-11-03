@@ -617,7 +617,7 @@ func createPluginTemplate(pluginID string, displayName string, outDir string, te
 		"ui/index.html":             []byte(scaffoldIndexHTML(pluginID, displayName)),
 		"ui/styles.css":             []byte(scaffoldStylesCSS()),
 		"ui/src/app.ts":             scaffoldSource(scaffoldAppTS, displayName),
-		"rust-toolchain.toml":       []byte("[toolchain]\nchannel = \"1.88.0\"\ntargets = [\"wasm32-unknown-unknown\"]\nprofile = \"minimal\"\n"),
+		"rust-toolchain.toml":       []byte("[toolchain]\nchannel = \"1.98.0\"\ntargets = [\"wasm32-unknown-unknown\"]\nprofile = \"minimal\"\n"),
 		"worker/Cargo.toml":         []byte(scaffoldCargoTOML(platformVersion)),
 		"worker/src/lib.rs":         append([]byte(nil), scaffoldWorkerRust...),
 		"dist/manifest.json":        append([]byte(nil), manifestBytes...),

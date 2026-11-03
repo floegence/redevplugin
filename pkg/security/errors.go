@@ -69,6 +69,9 @@ const (
 	ErrJSONLimitExceeded             ErrorCode = "PLUGIN_JSON_LIMIT_EXCEEDED"
 	ErrCapabilityError               ErrorCode = "PLUGIN_CAPABILITY_ERROR"
 	ErrWorkerError                   ErrorCode = "PLUGIN_WORKER_ERROR"
+	ErrWorkerBudgetExceeded          ErrorCode = "PLUGIN_WORKER_BUDGET_EXCEEDED"
+	ErrWorkerMemoryLimit             ErrorCode = "PLUGIN_WORKER_MEMORY_LIMIT"
+	ErrWorkerTimeout                 ErrorCode = "PLUGIN_WORKER_TIMEOUT"
 	ErrFileOperationFailed           ErrorCode = "PLUGIN_FILE_OPERATION_FAILED"
 	ErrContractMismatch              ErrorCode = "PLUGIN_CONTRACT_MISMATCH"
 	ErrManagementRevisionMismatch    ErrorCode = "PLUGIN_MANAGEMENT_REVISION_MISMATCH"
@@ -155,6 +158,9 @@ var platformErrorCodes = []ErrorCode{
 	ErrJSONLimitExceeded,
 	ErrCapabilityError,
 	ErrWorkerError,
+	ErrWorkerBudgetExceeded,
+	ErrWorkerMemoryLimit,
+	ErrWorkerTimeout,
 	ErrFileOperationFailed,
 	ErrContractMismatch,
 	ErrManagementRevisionMismatch,

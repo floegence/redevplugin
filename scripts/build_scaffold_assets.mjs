@@ -20,6 +20,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { checkOnly, forceCanonical } = parseCanonicalWasmGeneratorArgs(process.argv.slice(2));
 const workerArtifactLockPath = "cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json";
 const workerOutputPath = "cmd/redevplugin/scaffold_assets/backend.wasm";
+const workloadFixturePath = "crates/redevplugin-runtime/testdata/workload-backend.wasm";
 const runtimeFixturePath = "crates/redevplugin-runtime/testdata/scaffold-backend.wasm";
 const result = await build({
   entryPoints: [resolve(root, "internal/scaffoldtemplate/app.ts")],
@@ -81,7 +82,7 @@ const rustVersion = await readPinnedRustVersion(root);
 const sourceSnapshotOptions = {
   root,
   rustVersion,
-  packageNames: ["redevplugin-scaffold-worker"],
+  packageNames: ["redevplugin-scaffold-worker", "redevplugin-runtime-workload-worker"],
   additionalPaths: [
     "Cargo.toml",
     "Cargo.lock",
@@ -97,18 +98,19 @@ if (!checkOnly || forceCanonical || isCanonicalBuildHost()) {
   const builtArtifacts = await buildCanonicalWasmArtifacts({
     root,
     rustVersion,
-    targets: [{ packageName: "redevplugin-scaffold-worker", artifact }],
+    targets: [{ packageName: "redevplugin-scaffold-worker", artifact }, { packageName: "redevplugin-runtime-workload-worker", artifact: "redevplugin_runtime_workload_worker.wasm" }],
     forceDocker: forceCanonical,
   });
   const content = builtArtifacts.get(artifact);
   await verifyOrWrite(workerOutputPath, content);
   await verifyOrWrite(runtimeFixturePath, content);
+  await verifyOrWrite(workloadFixturePath, builtArtifacts.get("redevplugin_runtime_workload_worker.wasm"));
 }
 
 const sourceSnapshotAfter = await snapshotCanonicalCargoSources(sourceSnapshotOptions);
 assertSourceSnapshotUnchanged(sourceSnapshotBefore, sourceSnapshotAfter);
 assertCurrentWorkerImports(await readFile(resolve(root, workerOutputPath)), workerOutputPath);
-const artifactHashes = await hashPaths(root, [workerOutputPath]);
+const artifactHashes = await hashPaths(root, [workerOutputPath, workloadFixturePath]);
 const workerArtifactLock = Buffer.from(`${JSON.stringify({
   schema_version: "redevplugin.scaffold_worker_artifacts.v1",
   rust_version: rustVersion,

@@ -8,8 +8,8 @@ VERSION=""
 SOURCE_COMMIT=""
 GENERATED_AT=""
 PINNED_GO_LINUX_IMAGE="docker.io/library/golang@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5"
-PINNED_RUST_LINUX_AMD64_IMAGE="docker.io/library/rust@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0"
-PINNED_RUST_LINUX_ARM64_IMAGE="docker.io/library/rust@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0"
+PINNED_RUST_LINUX_AMD64_IMAGE="docker.io/library/rust@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f"
+PINNED_RUST_LINUX_ARM64_IMAGE="docker.io/library/rust@sha256:56bfc6a715db852bdafd5e4bdf68ef7abceb791e77c47e5d87c7e861702a9ca6"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -106,12 +106,12 @@ run_runtime_performance_tests() {
     arm64|aarch64)
       platform="linux/arm64"
       rust_image="$PINNED_RUST_LINUX_ARM64_IMAGE"
-      rust_toolchain="1.88.0-aarch64-unknown-linux-gnu"
+      rust_toolchain="1.98.0-aarch64-unknown-linux-gnu"
       ;;
     x86_64|amd64)
       platform="linux/amd64"
       rust_image="$PINNED_RUST_LINUX_AMD64_IMAGE"
-      rust_toolchain="1.88.0-x86_64-unknown-linux-gnu"
+      rust_toolchain="1.98.0-x86_64-unknown-linux-gnu"
       ;;
     *)
       echo "unsupported host architecture for Linux runtime performance evidence: $host_arch" >&2
@@ -157,6 +157,8 @@ elif [[ ! -x "$RUNTIME_PATH" ]]; then
   fi
 fi
 run_runtime_performance_tests "$RUNTIME_PATH"
+GOWORK=off REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  go test ./pkg/host -run '^TestPerformanceSurface' -count=1
 REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   cargo test --release -p redevplugin-runtime ipc_writer_burst_performance_evidence -- --nocapture
 REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \

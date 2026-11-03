@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.15.0
+
+- Reuse bounded, exact-canonical manifest parses while reading current authorization state on every request; project record-only queries without loading unused grants and policy.
+- Replace the Worker interpreter with Wasmtime 50.0.1, retaining validated module caching, prewarm, single-flight compilation and fresh per-invocation memory.
+- Bound computation with engine-specific fuel derived from remaining signed lease time, a hard fuel ceiling, memory/table limits and independently checked deadlines; interrupt CPU execution on cancellation and revalidate revocation authority.
+- Distinguish computation-budget, memory-limit and deadline failures across runtime, Go, HTTP and TypeScript contracts; preserve unknown mutation outcomes.
+- Pin platform builds and generated Worker projects to Rust 1.98.0, and include a reproducible JSON/CPU workload matrix in canonical acceptance fixtures.
+- Initialize the Memos schema in one existing atomic transaction and document bounded batches, pages and streams for authors.
+- Correct performance fixtures to use public Host-owned state and exclude client admission queues from invocation timing. Plugin API, internal wire and durable schema versions remain unchanged.
+
 ## v3.14.0
 
 - Unify author preparation, generated bindings, type checks, builds, business tests, package validation, and source-consistency evidence; retain compatibility with existing project configurations.

@@ -382,8 +382,9 @@ func newPerformanceRuntimeHost(
 ) (*Host, *runtimeclient.ProcessSupervisor, *performanceCountingAssetStore, *performanceBlockingIOBroker) {
 	t.Helper()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
+		productionStateOwners: true,
+		developerMode:         true,
+		localGenerated:        true,
 	})
 	blocker := newPerformanceBlockingIOBroker()
 	observabilityStore := observability.NewMemoryStore()
@@ -516,8 +517,8 @@ func callWorkerConcurrentlyBounded(h *Host, pluginInstanceID string, gatewayToke
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			started := time.Now()
 			admission <- struct{}{}
+			started := time.Now()
 			defer func() { <-admission }()
 			_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
 				PluginInstanceID:  pluginInstanceID,

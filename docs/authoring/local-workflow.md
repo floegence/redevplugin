@@ -4,7 +4,7 @@ Create a project with `redevplugin init <plugin-id> <display-name> <directory>`.
 The default is a pure Web Surface. Choose `--template data` for a multi-window
 editor, `files` for streaming imports, `monitor` for a controlled WebSocket
 dashboard, or `worker` for a WASM job. The older scaffold command retains its
-Worker starter. Only Workers need the pinned Rust 1.88.0 toolchain.
+Worker starter. Only Workers need the pinned Rust 1.98.0 toolchain.
 Templates use exact published SDK dependencies; install them before building.
 
 ## First working preview
@@ -12,7 +12,7 @@ Templates use exact published SDK dependencies; install them before building.
 Install the CLI for the platform release used by your host:
 
 ```bash
-go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.14.0
+go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.15.0
 redevplugin init dev.example.notes "Notes" notes --template data
 cd notes
 npm install
@@ -51,7 +51,7 @@ without writing. Host validation remains authoritative; complex Rust schemas
 use lossless serde_json::Value and unsupported TS references use PluginJSONValue.
 
 `redevplugin doctor .` checks project/manifest validity, installed dependencies, Node 26,
-Worker Rust 1.88.0 and wasm32 target readiness, and existing bindings without
+Worker Rust 1.98.0 and wasm32 target readiness, and existing bindings without
 running author commands. Generation is optional for existing projects; an
 existing generated directory must match. New templates declare a tool-owned bindings directory. Dev regenerates it;
 check and test reject drift rather than modifying it. `redevplugin check .` also runs the selected
@@ -116,7 +116,7 @@ redevplugin runtime prepare ../notes-runtime
 This opt-in command requires Node 26, authenticated GitHub CLI, Rustup, and tar.
 It verifies the exact release workflow, tag, source commit and signed provenance
 of the platform manifest, verifies both published crate checksums and Cargo VCS
-identity, extracts only validated source archives, and builds with Rust 1.88.0 and
+identity, extracts only validated source archives, and builds with Rust 1.98.0 and
 the released lockfile. It prints the executable path and expected SHA-256 for
 `--runtime` and `--runtime-sha256`. Keep the JSON evidence with the build; an
 arbitrary executable's self-computed hash does not establish trust.

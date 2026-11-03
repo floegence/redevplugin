@@ -143,30 +143,15 @@ fn bootstrap(params: BootstrapParams) -> WorkerResult {
 }
 
 fn initialize() -> WorkerResult {
-    exec(
+    let statements = [
         "CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, content TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, tags TEXT NOT NULL DEFAULT '')",
-        vec![],
-    )?;
-    exec(
         "CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, content TEXT NOT NULL, updated_at TEXT NOT NULL)",
-        vec![],
-    )?;
-    exec(
         "CREATE TABLE IF NOT EXISTS memo_sequence (sequence INTEGER PRIMARY KEY AUTOINCREMENT)",
-        vec![],
-    )?;
-    exec(
         "CREATE INDEX IF NOT EXISTS idx_notes_feed ON notes (archived, pinned DESC, created_at DESC, id DESC)",
-        vec![],
-    )?;
-    exec(
         "CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes (updated_at DESC, id DESC)",
-        vec![],
-    )?;
-    exec(
         "CREATE TRIGGER IF NOT EXISTS clear_memos_draft_after_publish AFTER INSERT ON notes BEGIN DELETE FROM drafts WHERE id = 'composer'; END",
-        vec![],
-    )?;
+    ].into_iter().map(|sql| sqlite::Statement { sql: sql.to_string(), args: vec![] }).collect::<Vec<_>>();
+    sqlite::transaction(STORE_ID, DATABASE, &statements, 2_000)?;
     Ok(json!({"ready": true, "schema_version": 1}))
 }
 
@@ -588,12 +573,12 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, WorkerError> {
-    if value.is_empty() || value.len() % 2 != 0 {
+    if value.is_empty() || !value.len().is_multiple_of(2) {
         return Err(WorkerError::invalid_request("memo cursor is invalid"));
     }
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let high = hex_value(pair[0])?;
         let low = hex_value(pair[1])?;
         decoded.push((high << 4) | low);

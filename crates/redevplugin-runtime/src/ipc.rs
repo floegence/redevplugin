@@ -47,6 +47,9 @@ pub const ERR_RUNTIME_LEASE_INVALID: &str = "RUNTIME_LEASE_INVALID";
 pub const ERR_RUNTIME_LEASE_SIGNATURE_INVALID: &str = "RUNTIME_LEASE_SIGNATURE_INVALID";
 pub const ERR_LEASE_REPLAYED: &str = "PLUGIN_LEASE_REPLAYED";
 pub const ERR_WASM_WORKER_INVALID: &str = "WASM_WORKER_INVALID";
+pub const ERR_WASM_WORKER_BUDGET_EXCEEDED: &str = "WASM_WORKER_BUDGET_EXCEEDED";
+pub const ERR_WASM_WORKER_MEMORY_LIMIT: &str = "WASM_WORKER_MEMORY_LIMIT";
+pub const ERR_RUNTIME_INVOCATION_TIMEOUT: &str = "RUNTIME_INVOCATION_TIMEOUT";
 pub const ERR_WASM_WORKER_FAILED: &str = "WASM_WORKER_FAILED";
 pub const ERR_RUNTIME_CAPACITY_EXCEEDED: &str = "RUNTIME_CAPACITY_EXCEEDED";
 pub const ERR_RUNTIME_INVOCATION_CANCELED: &str = "RUNTIME_INVOCATION_CANCELED";
@@ -1057,6 +1060,24 @@ impl ParsedWorkerInvocation {
         ))
     }
 
+    pub fn remaining_execution_millis(&self, now_unix_ms: i64) -> IpcResult<u64> {
+        let limits = self
+            .lease
+            .limits
+            .as_ref()
+            .ok_or_else(|| invalid_field("runtime lease limits"))?;
+        let timeout = nonnegative_i64(limits.timeout_ms, "timeout_ms")?;
+        let issued = positive_i64(self.lease.issued_at_unix_ms, "issued_at_unix_ms")?;
+        let expires = positive_i64(self.lease.expires_at_unix_ms, "expires_at_unix_ms")?;
+        // A zero timeout means no tighter method cap, never an infinite lease.
+        let deadline = if timeout == 0 {
+            expires
+        } else {
+            issued.saturating_add(timeout).min(expires)
+        };
+        Ok(deadline.saturating_sub(now_unix_ms).max(0) as u64)
+    }
+
     pub fn memory_limit_bytes(&self) -> IpcResult<usize> {
         let memory_bytes = self
             .lease
@@ -1557,10 +1578,10 @@ fn runtime_lease_signature_payload_json(
     lease: &WorkerLeasePayload,
     method: &str,
 ) -> IpcResult<String> {
-    if let Some(lease_method) = optional_string_ref(&lease.method) {
-        if lease_method != method.trim() {
-            return Err(protocol_violation("runtime lease method mismatch"));
-        }
+    if let Some(lease_method) = optional_string_ref(&lease.method)
+        && lease_method != method.trim()
+    {
+        return Err(protocol_violation("runtime lease method mismatch"));
     }
     let lease_id = required_string(&lease.lease_id, "lease_id")?;
     let token_id = required_string(&lease.token_id, "token_id")?;
@@ -4226,6 +4247,26 @@ mod tests {
 
     fn runtime_lease_invocation_fixture() -> &'static str {
         include_str!("../testdata/runtime-lease-signature-v2-invocation.json")
+    }
+
+    #[test]
+    fn signed_execution_deadline_uses_tighter_timeout_or_expiry() {
+        let mut invocation = parse_worker_invocation(runtime_lease_invocation_fixture()).unwrap();
+        invocation.lease.issued_at_unix_ms = Some(1000);
+        invocation.lease.expires_at_unix_ms = Some(5000);
+        for (timeout, now, expected) in [
+            (0, 2000, 3000),
+            (2000, 2000, 1000),
+            (10000, 2000, 3000),
+            (2000, 3000, 0),
+            (0, 6000, 0),
+        ] {
+            invocation.lease.limits.as_mut().unwrap().timeout_ms = Some(timeout);
+            assert_eq!(
+                invocation.remaining_execution_millis(now).unwrap(),
+                expected
+            );
+        }
     }
 
     fn signed_runtime_lease_invocation_for_test(

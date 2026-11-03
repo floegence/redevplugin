@@ -131,9 +131,6 @@ function readRustPackages(root) {
 }
 
 function rustLegalOverrideFiles(root, packageName) {
-  if (["wasmi", "wasmi_collections", "wasmi_core", "wasmi_ir"].includes(packageName)) {
-    return scanLegalFiles(join(root, "third_party", "legal", "rust", "wasmi"));
-  }
   if (packageName === "wasmparser") {
     return scanLegalFiles(join(root, "third_party", "legal", "rust", "wasm-tools"));
   }

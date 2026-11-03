@@ -107,6 +107,7 @@ impl Drop for CancellationRegistration {
     }
 }
 
+#[derive(Clone)]
 pub struct InvocationJob {
     pub request_id: String,
     pub plugin_instance_id: String,

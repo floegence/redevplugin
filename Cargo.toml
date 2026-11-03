@@ -4,6 +4,7 @@ members = [
   "crates/redevplugin-runtime",
   "crates/redevplugin-worker-sdk",
   "internal/scaffoldworker",
+  "internal/runtimeworkloadworker",
   "internal/selectedfileworker",
   "internal/networkworker",
   "internal/dataupgradeworker",
@@ -14,8 +15,8 @@ members = [
 ]
 
 [workspace.package]
-version = "3.14.0"
+version = "3.15.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/floegence/redevplugin"
-rust-version = "1.88.0"
+rust-version = "1.98.0"

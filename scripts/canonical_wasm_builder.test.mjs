@@ -274,3 +274,10 @@ test("Cargo source snapshots reject configuration inherited from repository ance
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+test("runtime execution policy fixture matches the released ABI metadata", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const abi = JSON.parse(await readFile(new URL("../spec/plugin/wasm-abi.json", import.meta.url), "utf8"));
+  const fixture = JSON.parse(await readFile(new URL("../crates/redevplugin-runtime/testdata/execution-policy.json", import.meta.url), "utf8"));
+  assert.deepEqual(fixture, abi["x-runtime-execution"]);
+});

@@ -1,0 +1,14 @@
+{
+  "engine": "wasmtime-50.0.1",
+  "fuel_per_remaining_millisecond": 1000000,
+  "maximum_fuel": 10000000000,
+  "epoch_interval_milliseconds": 10,
+  "deadline": "min(issued_at_unix_ms + positive timeout_ms, expires_at_unix_ms); zero timeout uses expires_at_unix_ms",
+  "errors": {
+    "fuel": "WASM_WORKER_BUDGET_EXCEEDED",
+    "memory": "WASM_WORKER_MEMORY_LIMIT",
+    "deadline": "RUNTIME_INVOCATION_TIMEOUT",
+    "cancel": "RUNTIME_INVOCATION_CANCELED"
+  },
+  "isolation": "Fresh Store and instance for each invocation; engine and validated modules are reused. Fuel is never replenished. Host authority is revalidated on epoch checks and completion."
+}

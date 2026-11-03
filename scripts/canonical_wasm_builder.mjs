@@ -5,10 +5,12 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const pinnedRustImages = Object.freeze({
+  "1.98.0": "docker.io/library/rust:1.98.0-bookworm@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f",
   "1.88.0": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
 });
 
 const pinnedWasmTargetSHA256 = Object.freeze({
+  "1.98.0": "6a83991df51b41b353794b9fca8dd3b4f50af7bcf7719a59c31519eee5eae4de",
   "1.88.0": "3152d1cbc104215914e27562980c0d99b4164c7f1aa578794e003b16ce065c32",
 });
 

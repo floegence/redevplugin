@@ -21,7 +21,7 @@ test("embedded runtime command runs outside a repository and rejects bad request
 test("author runtime evidence is closed and binds source, toolchain and binary",()=>{
  const validate=new Ajv2020().compile(JSON.parse(readFileSync("spec/plugin/author-development.schema.json","utf8")));
  const digest="a".repeat(64),commit="b".repeat(40);
- const evidence={schema_version:"redevplugin.author-runtime.v1",platform_version:"3.14.0",target:"aarch64-apple-darwin",toolchain:"1.88.0",cargo_version:"cargo 1.88.0",rustc_version:"rustc 1.88.0",source_commit:commit,manifest_sha256:digest,crates:["redevplugin-runtime","redevplugin-worker-sdk"].map(name=>({name,version:"3.14.0",registry_checksum_sha256:digest,source_commit:commit})),binary:"redevplugin-runtime",binary_sha256:digest};
+ const evidence={schema_version:"redevplugin.author-runtime.v1",platform_version:"3.14.0",target:"aarch64-apple-darwin",toolchain:"1.98.0",cargo_version:"cargo 1.98.0",rustc_version:"rustc 1.98.0",source_commit:commit,manifest_sha256:digest,crates:["redevplugin-runtime","redevplugin-worker-sdk"].map(name=>({name,version:"3.14.0",registry_checksum_sha256:digest,source_commit:commit})),binary:"redevplugin-runtime",binary_sha256:digest};
  assert.equal(validate(evidence),true,JSON.stringify(validate.errors));
  assert.equal(validate({...evidence,binary_sha256:"invalid"}),false);
  assert.equal(validate({...evidence,trust:"verified"}),false);

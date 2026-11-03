@@ -54,7 +54,7 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 		`const workerArtifactLockPath = "examples/plugins/worker-artifacts.lock.json";`,
 		`process.platform === "linux" && process.arch === "x64"`,
 		`"--platform", "linux/amd64"`,
-		`docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0`,
+		`docker.io/library/rust:1.98.0-bookworm@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f`,
 		`CARGO_ENCODED_RUSTFLAGS`,
 		`--remap-path-prefix=${root}=/workspace`,
 		`--remap-path-prefix=${cargoHome}=/cargo`,
@@ -134,10 +134,10 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 	if err := json.Unmarshal(lockRaw, &lock); err != nil {
 		t.Fatal(err)
 	}
-	if lock.SchemaVersion != "redevplugin.example_worker_artifacts.v1" || lock.RustVersion != "1.88.0" {
+	if lock.SchemaVersion != "redevplugin.example_worker_artifacts.v1" || lock.RustVersion != "1.98.0" {
 		t.Fatalf("worker artifact lock identity = %q/%q", lock.SchemaVersion, lock.RustVersion)
 	}
-	if lock.CanonicalImage != "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0" {
+	if lock.CanonicalImage != "docker.io/library/rust:1.98.0-bookworm@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f" {
 		t.Fatalf("worker artifact canonical image = %q", lock.CanonicalImage)
 	}
 	if len(lock.SourceFiles) < 10 {
@@ -215,18 +215,18 @@ func TestScaffoldWorkerArtifactsUseCanonicalBuilderAndSourceLock(t *testing.T) {
 	if err := json.Unmarshal(lockRaw, &lock); err != nil {
 		t.Fatal(err)
 	}
-	if lock.SchemaVersion != "redevplugin.scaffold_worker_artifacts.v1" || lock.RustVersion != "1.88.0" {
+	if lock.SchemaVersion != "redevplugin.scaffold_worker_artifacts.v1" || lock.RustVersion != "1.98.0" {
 		t.Fatalf("scaffold worker lock identity = %q/%q", lock.SchemaVersion, lock.RustVersion)
 	}
-	if lock.CanonicalImage != "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0" {
+	if lock.CanonicalImage != "docker.io/library/rust:1.98.0-bookworm@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f" {
 		t.Fatalf("scaffold worker canonical image = %q", lock.CanonicalImage)
 	}
-	for _, path := range []string{"scripts/build_scaffold_assets.mjs", "scripts/canonical_wasm_builder.mjs", "internal/scaffoldworker/src/lib.rs"} {
+	for _, path := range []string{"scripts/build_scaffold_assets.mjs", "scripts/canonical_wasm_builder.mjs", "internal/scaffoldworker/src/lib.rs", "internal/runtimeworkloadworker/src/lib.rs", "internal/runtimeworkloadworker/src/guest.rs", "internal/runtimeworkloadworker/src/payload.json"} {
 		if digest := lock.SourceFiles[path]; len(digest) != 64 {
 			t.Fatalf("scaffold source %s digest = %q", path, digest)
 		}
 	}
-	if digest := lock.Artifacts["cmd/redevplugin/scaffold_assets/backend.wasm"]; len(lock.Artifacts) != 1 || len(digest) != 64 {
+	if digest := lock.Artifacts["cmd/redevplugin/scaffold_assets/backend.wasm"]; len(lock.Artifacts) != 2 || len(digest) != 64 {
 		t.Fatalf("scaffold artifact lock = %v", lock.Artifacts)
 	}
 	assertLockedDigests(t, root, lock.SourceFiles)

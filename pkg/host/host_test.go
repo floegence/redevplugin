@@ -4908,6 +4908,7 @@ func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, 
 }
 
 type testHostOptions struct {
+	productionStateOwners   bool
 	filePicker              FileSelectionAdapter
 	openContext             context.Context
 	stateRoot               string
@@ -5102,6 +5103,10 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if opts.backgroundRunnerFactory != nil {
 		backgroundModule = &BackgroundModule{RunnerFactory: opts.backgroundRunnerFactory, Policy: opts.backgroundPolicy}
 	}
+	stateOwners := &internalStateOwnerOverrides{surfaceTokens: surfaceTokens, confirmationIntents: confirmationIntentStore, sessionScopes: sessionScopes}
+	if opts.productionStateOwners {
+		stateOwners = nil
+	}
 	host, err := Open(openContext, Config{
 		Files:     filesModule,
 		Web:       &WebModule{Origins: testSurfaceOrigins{}},
@@ -5119,11 +5124,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			SecurityAudit:        securityJournal,
 			Diagnostics:          diagnostics,
 			Assets:               assetStore,
-			internalStateOwners: &internalStateOwnerOverrides{
-				surfaceTokens:       surfaceTokens,
-				confirmationIntents: confirmationIntentStore,
-				sessionScopes:       sessionScopes,
-			},
+			internalStateOwners:  stateOwners,
 		},
 		Release:      releaseModule,
 		Runtime:      runtimeModule,

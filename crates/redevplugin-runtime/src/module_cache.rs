@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-const WASMI_ENGINE_VERSION: &str = "2.0.0";
+const WASM_ENGINE_VERSION: &str = "wasmtime-50.0.1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModuleCacheMetrics {
@@ -17,7 +17,8 @@ pub struct ModuleCacheMetrics {
 
 #[derive(Clone)]
 pub struct ModuleCache {
-    engine: wasmi::Engine,
+    engine: wasmtime::Engine,
+    _epoch_ticker: Arc<crate::execution_budget::EpochTicker>,
     max_entries: usize,
     max_source_bytes: usize,
     state: Arc<Mutex<ModuleCacheState>>,
@@ -25,7 +26,7 @@ pub struct ModuleCache {
 
 #[derive(Clone)]
 pub struct CompiledModule {
-    pub module: Arc<wasmi::Module>,
+    pub module: Arc<wasmtime::Module>,
     pub contract: Arc<redevplugin_wasm_abi::ValidatedWorkerModule>,
     pub source_bytes: usize,
 }
@@ -94,7 +95,7 @@ struct ModuleCacheState {
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct ModuleKey {
     artifact_sha256: String,
-    wasmi_version: &'static str,
+    engine_version: &'static str,
     plugin_api: u16,
 }
 
@@ -153,8 +154,9 @@ impl CompileFlight {
 }
 
 impl ModuleCache {
-    pub fn new(engine: wasmi::Engine, max_entries: usize, max_source_bytes: usize) -> Self {
+    pub fn new(engine: wasmtime::Engine, max_entries: usize, max_source_bytes: usize) -> Self {
         Self {
+            _epoch_ticker: Arc::new(crate::execution_budget::EpochTicker::new(engine.clone())),
             engine,
             max_entries,
             max_source_bytes,
@@ -162,7 +164,7 @@ impl ModuleCache {
         }
     }
 
-    pub fn engine(&self) -> &wasmi::Engine {
+    pub fn engine(&self) -> &wasmtime::Engine {
         &self.engine
     }
 
@@ -196,7 +198,7 @@ impl ModuleCache {
         }
         let key = ModuleKey {
             artifact_sha256: artifact_sha256.to_string(),
-            wasmi_version: WASMI_ENGINE_VERSION,
+            engine_version: WASM_ENGINE_VERSION,
             plugin_api,
         };
         let (flight, leader) = {
@@ -293,7 +295,7 @@ impl ModuleCache {
         }
         let contract = redevplugin_wasm_abi::validate_worker_module(&source)
             .map_err(|err| ModuleCacheError::Invalid(err.to_string()))?;
-        let module = wasmi::Module::new(&self.engine, &source).map_err(|err| {
+        let module = wasmtime::Module::new(&self.engine, &source).map_err(|err| {
             ModuleCacheError::Invalid(format!("compile wasm worker module: {err}"))
         })?;
         Ok(CompiledModule {
@@ -808,7 +810,7 @@ mod tests {
         for index in 0..ENTRY_COUNT {
             let key = ModuleKey {
                 artifact_sha256: format!("sha256:{index:064x}"),
-                wasmi_version: WASMI_ENGINE_VERSION,
+                engine_version: WASM_ENGINE_VERSION,
                 plugin_api: PLUGIN_API,
             };
             let last_used = index as u64 + 1;
@@ -850,10 +852,10 @@ mod tests {
         }));
     }
 
-    fn engine() -> wasmi::Engine {
-        let mut config = wasmi::Config::default();
+    fn engine() -> wasmtime::Engine {
+        let mut config = wasmtime::Config::default();
         config.consume_fuel(true);
-        wasmi::Engine::new(&config)
+        wasmtime::Engine::new(&config).expect("validated worker engine configuration")
     }
 
     fn worker_module() -> Vec<u8> {
@@ -902,10 +904,10 @@ mod property_gates {
         }
     }
 
-    fn property_engine() -> wasmi::Engine {
-        let mut config = wasmi::Config::default();
+    fn property_engine() -> wasmtime::Engine {
+        let mut config = wasmtime::Config::default();
         config.consume_fuel(true);
-        wasmi::Engine::new(&config)
+        wasmtime::Engine::new(&config).expect("validated worker engine configuration")
     }
 
     fn property_worker_module() -> Vec<u8> {

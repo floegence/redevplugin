@@ -102,6 +102,14 @@ func encodeRegistryPluginRecord(record registry.PluginRecord) ([]byte, error) {
 }
 
 func decodeRegistryPluginRecord(raw []byte) (registry.PluginRecord, error) {
+	return decodeRegistryPluginRecordWith(raw, decodeExactCanonicalManifest)
+}
+
+func (s *Store) decodeRegistryPluginRecord(raw []byte) (registry.PluginRecord, error) {
+	return decodeRegistryPluginRecordWith(raw, s.manifests.decode)
+}
+
+func decodeRegistryPluginRecordWith(raw []byte, decode func(json.RawMessage) (manifest.Manifest, string, error)) (registry.PluginRecord, error) {
 	var durable durableRegistryPluginRecord
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -112,7 +120,7 @@ func decodeRegistryPluginRecord(raw []byte) (registry.PluginRecord, error) {
 		return registry.PluginRecord{}, fmt.Errorf("%w: plugin record JSON trailing value", ErrIncompatible)
 	}
 	record := durable.PluginRecord
-	current, canonical, err := decodeExactCanonicalManifest(durable.Manifest)
+	current, canonical, err := decode(durable.Manifest)
 	if err != nil {
 		return registry.PluginRecord{}, fmt.Errorf("%w: current manifest: %v", ErrIncompatible, err)
 	}
@@ -120,7 +128,7 @@ func decodeRegistryPluginRecord(raw []byte) (registry.PluginRecord, error) {
 	record.CanonicalManifest = canonical
 	record.VersionHistory = make([]registry.PluginVersion, len(durable.VersionHistory))
 	for index, version := range durable.VersionHistory {
-		decoded, versionCanonical, err := decodeExactCanonicalManifest(version.Manifest)
+		decoded, versionCanonical, err := decode(version.Manifest)
 		if err != nil {
 			return registry.PluginRecord{}, fmt.Errorf("%w: version history %d manifest: %v", ErrIncompatible, index, err)
 		}
@@ -249,7 +257,7 @@ func (v RegistryView) UpdateExternalPackage(ctx context.Context, ownerEnvHash st
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	existing, err := decodeRegistryPluginRecord([]byte(raw))
+	existing, err := v.store.decodeRegistryPluginRecord([]byte(raw))
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -281,18 +289,25 @@ func (v RegistryView) UpdateExternalPackage(ctx context.Context, ownerEnvHash st
 }
 
 func (v RegistryView) GetPlugin(ctx context.Context, ownerEnvHash, pluginInstanceID string) (registry.PluginRecord, error) {
-	snapshot, err := v.Get(ctx, ownerEnvHash, pluginInstanceID)
-	if err != nil {
-		if errors.Is(err, ErrRecordNotFound) {
-			return registry.PluginRecord{}, registry.ErrNotFound
-		}
+	if err := v.ready(); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	record, err := decodeRegistryPluginRecord(snapshot.Record.RawJSON)
+	// This API returns only the current record. Grants and policy belong to
+	// GetAuthorization; reading them here lengthens the serialized DB path
+	// without contributing to this result. Never cache mutable record state.
+	var raw []byte
+	err := v.store.db.QueryRowContext(ctx, "SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL", ownerEnvHash, pluginInstanceID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return registry.PluginRecord{}, registry.ErrNotFound
+	}
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	record.OwnerEnvHash = snapshot.Record.OwnerEnvHash
+	record, err := v.store.decodeRegistryPluginRecord(raw)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record.OwnerEnvHash = ownerEnvHash
 	return record, nil
 }
 
@@ -304,7 +319,7 @@ func (v RegistryView) GetAuthorization(ctx context.Context, ownerEnvHash, plugin
 		}
 		return registry.AuthorizationSnapshot{}, err
 	}
-	return decodeAuthorizationSnapshot(snapshot)
+	return v.store.decodeAuthorizationSnapshot(snapshot)
 }
 
 func (v RegistryView) ListAuthorization(ctx context.Context, ownerEnvHash string) ([]registry.AuthorizationSnapshot, error) {
@@ -323,9 +338,9 @@ func (v RegistryView) ListAuthorization(ctx context.Context, ownerEnvHash string
 	return result, nil
 }
 
-func decodeAuthorizationSnapshot(snapshot PluginSnapshot) (registry.AuthorizationSnapshot, error) {
+func (s *Store) decodeAuthorizationSnapshot(snapshot PluginSnapshot) (registry.AuthorizationSnapshot, error) {
 	var result registry.AuthorizationSnapshot
-	plugin, err := decodeRegistryPluginRecord(snapshot.Record.RawJSON)
+	plugin, err := s.decodeRegistryPluginRecord(snapshot.Record.RawJSON)
 	if err != nil {
 		return result, err
 	}
@@ -387,7 +402,7 @@ func (v RegistryView) ListPlugins(ctx context.Context, ownerEnvHash string) ([]r
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		record, err := decodeRegistryPluginRecord([]byte(raw))
+		record, err := v.store.decodeRegistryPluginRecord([]byte(raw))
 		if err != nil {
 			return nil, err
 		}
@@ -415,7 +430,7 @@ func (v RegistryView) ListStartupPrewarmPlugins(ctx context.Context) ([]registry
 		if err := rows.Scan(&owner, &instance, &fingerprint, &digest, &raw); err != nil {
 			return nil, err
 		}
-		record, err := decodeRegistryPluginRecord([]byte(raw))
+		record, err := v.store.decodeRegistryPluginRecord([]byte(raw))
 		if err != nil {
 			return nil, err
 		}
@@ -447,7 +462,7 @@ func (v RegistryView) PutPlugin(ctx context.Context, ownerEnvHash string, record
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	existing, err := decodeRegistryPluginRecord([]byte(raw))
+	existing, err := v.store.decodeRegistryPluginRecord([]byte(raw))
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -523,7 +538,7 @@ func (v RegistryView) BumpRevokeEpoch(ctx context.Context, ownerEnvHash, pluginI
 	} else if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	record, err := decodeRegistryPluginRecord([]byte(raw))
+	record, err := v.store.decodeRegistryPluginRecord([]byte(raw))
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}

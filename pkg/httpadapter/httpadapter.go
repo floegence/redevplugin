@@ -3818,6 +3818,12 @@ func errorCodeForWorkerExecutionErrorValue(workerError host.WorkerExecutionError
 		return security.ErrLeaseInvalid
 	case "RUNTIME_CONTROL_CHANNEL_STALE", "WASM_WORKER_FAILED", "HOSTCALL_FAILED":
 		return security.ErrRuntimeUnavailable
+	case "WASM_WORKER_BUDGET_EXCEEDED":
+		return security.ErrWorkerBudgetExceeded
+	case "WASM_WORKER_MEMORY_LIMIT":
+		return security.ErrWorkerMemoryLimit
+	case "RUNTIME_INVOCATION_TIMEOUT":
+		return security.ErrWorkerTimeout
 	case "WASM_WORKER_INVALID":
 		return security.ErrContractMismatch
 	default:
@@ -3839,6 +3845,10 @@ func httpStatusForWorkerExecutionErrorCode(code security.ErrorCode) int {
 		return http.StatusTooManyRequests
 	case security.ErrStorageQuotaExceeded:
 		return http.StatusRequestEntityTooLarge
+	case security.ErrWorkerBudgetExceeded, security.ErrWorkerMemoryLimit:
+		return http.StatusUnprocessableEntity
+	case security.ErrWorkerTimeout:
+		return http.StatusGatewayTimeout
 	case security.ErrContractMismatch:
 		return http.StatusBadGateway
 	case security.ErrRuntimeUnavailable, security.ErrRuntimeVersionMismatch:

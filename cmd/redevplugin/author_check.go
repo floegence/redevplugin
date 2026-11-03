@@ -169,13 +169,13 @@ func checkAuthorToolchains(ctx context.Context, p *authorproject.Project, worker
 	command := exec.CommandContext(ctx, "rustc", "--version")
 	command.Dir = p.Root
 	value, err = command.Output()
-	if err != nil || !strings.HasPrefix(string(value), "rustc 1.88.0 ") {
-		add("TOOLCHAIN_MISMATCH", "rustc", "Install Rust 1.88.0 with rustup toolchain install 1.88.0 --profile minimal")
+	if err != nil || !strings.HasPrefix(string(value), "rustc 1.98.0 ") {
+		add("TOOLCHAIN_MISMATCH", "rustc", "Install Rust 1.98.0 with rustup toolchain install 1.98.0 --profile minimal")
 	}
-	command = exec.CommandContext(ctx, "rustup", "target", "list", "--installed", "--toolchain", "1.88.0")
+	command = exec.CommandContext(ctx, "rustup", "target", "list", "--installed", "--toolchain", "1.98.0")
 	command.Dir = p.Root
 	value, err = command.Output()
 	if err != nil || !strings.Contains(string(value), "wasm32-unknown-unknown") {
-		add("TARGET_UNAVAILABLE", "wasm32-unknown-unknown", "Run rustup target add wasm32-unknown-unknown --toolchain 1.88.0")
+		add("TARGET_UNAVAILABLE", "wasm32-unknown-unknown", "Run rustup target add wasm32-unknown-unknown --toolchain 1.98.0")
 	}
 }

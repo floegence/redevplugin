@@ -9,7 +9,7 @@ import { validateTarGzipArchive } from "./archive_contract.mjs";
 import { parseStrictJSON } from "./strict_json.mjs";
 
 const repository = "floegence/redevplugin";
-const toolchain = "1.88.0";
+const toolchain = "1.98.0";
 const [version, destination] = process.argv.slice(2);
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(version ?? "") || !destination || process.argv.length !== 4) throw new Error("Expected platform version and destination directory");
 const targets = {"darwin-arm64":"aarch64-apple-darwin","darwin-x64":"x86_64-apple-darwin","linux-arm64":"aarch64-unknown-linux-gnu","linux-x64":"x86_64-unknown-linux-gnu"};

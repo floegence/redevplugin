@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.14.0
+  version: 3.15.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -2190,6 +2190,9 @@ components:
         - PLUGIN_RUNTIME_CONTRACT_MISMATCH
         - PLUGIN_UI_PROTOCOL_VIOLATION
         - PLUGIN_SURFACE_QUIESCE_TIMEOUT
+        - PLUGIN_WORKER_BUDGET_EXCEEDED
+        - PLUGIN_WORKER_MEMORY_LIMIT
+        - PLUGIN_WORKER_TIMEOUT
         - PLUGIN_CONTRACT_MISMATCH
         - PLUGIN_RETAINED_RECOVERY_CONFLICT
         - PLUGIN_CSRF_REQUIRED

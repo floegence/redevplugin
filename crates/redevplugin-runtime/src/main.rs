@@ -1,4 +1,7 @@
 mod codec;
+mod execution_budget;
+#[cfg(test)]
+mod execution_budget_tests;
 mod ipc;
 #[cfg(test)]
 mod ipc_session_revoke_tests;
@@ -12,6 +15,7 @@ mod wasm_abi;
 
 use crate::ipc as redevplugin_ipc;
 use crate::wasm_abi as redevplugin_wasm_abi;
+use execution_budget::{ExecutionBudget, WorkerFailure, WorkerLimits};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::Reverse;
@@ -23,9 +27,8 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendE
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use wasmi::{AsContext, AsContextMut, Config, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{AsContext, AsContextMut, Config, StoreLimitsBuilder};
 
-const WASM_WORKER_FUEL_PER_INVOCATION: u64 = 50_000_000;
 const SEMANTIC_IPC_CHUNKED_FLAG: u16 = 1 << 15;
 const SEMANTIC_IPC_MORE_FLAG: u16 = 1 << 14;
 const MAX_WASM_WORKER_REQUEST_BYTES: usize = 256 * 1024;
@@ -1461,10 +1464,11 @@ fn runtime_error_frame(
     )
 }
 
-fn worker_engine() -> wasmi::Engine {
+fn worker_engine() -> wasmtime::Engine {
     let mut config = Config::default();
     config.consume_fuel(true);
-    wasmi::Engine::new(&config)
+    config.epoch_interruption(true);
+    wasmtime::Engine::new(&config).expect("validated worker engine configuration")
 }
 
 fn module_cache_metrics(
@@ -1867,13 +1871,52 @@ fn handle_scheduled_worker_invocation(
     if job.cancellation.is_canceled() {
         return canceled_invocation_frame(request_id, runtime_generation_id);
     }
+    let remaining = match invocation.remaining_execution_millis(post_artifact_now) {
+        Ok(value) => value,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                err,
+            );
+        }
+    };
+    let authority_execution = Arc::clone(execution);
+    let authority_invocation = Arc::clone(&job.invocation);
+    let budget = ExecutionBudget::new(
+        Duration::from_millis(remaining),
+        Arc::clone(&job.cancellation),
+    )
+    .with_authority(move || {
+        let now =
+            authority_execution
+                .now_unix_millis()
+                .map_err(|message| WorkerFailure::Authority {
+                    code: redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                    message,
+                })?;
+        authority_execution
+            .shared
+            .validate_parsed_hostcall(&authority_invocation, now)
+            .map_err(|message| WorkerFailure::Authority {
+                code: runtime_validation_code(&message),
+                message,
+            })
+    });
+    let callback_job = job.clone();
+    let callback_execution = Arc::clone(execution);
     let result = execute_compiled_worker_module(
         execution.module_cache.engine(),
         &compiled.module,
         &compiled.contract,
         worker_request.as_bytes(),
         memory_limit_bytes,
-        |request| {
+        budget,
+        move |request| {
+            let job = &callback_job;
+            let execution = &callback_execution;
+            let invocation = job.invocation.as_ref();
             if job.cancellation.is_canceled() {
                 return Err(format!(
                     "{}: runtime invocation was canceled",
@@ -1892,12 +1935,7 @@ fn handle_scheduled_worker_invocation(
     let result = match result {
         Ok(result) => result,
         Err(err) => {
-            return invocation_error_frame(
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ERR_WASM_WORKER_INVALID,
-                &err,
-            );
+            return invocation_error_frame(request_id, runtime_generation_id, err.code(), &err);
         }
     };
     let completion_now = match execution.now_unix_millis() {
@@ -3181,51 +3219,58 @@ enum WorkerHostcallResponse {
     Closed,
 }
 
-type WorkerBrokerHostcall<'a> =
-    dyn FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String> + 'a;
+type WorkerBrokerHostcall =
+    dyn FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String> + 'static;
 
-struct WorkerHostState<'a> {
-    broker_hostcall: Box<WorkerBrokerHostcall<'a>>,
-    limits: StoreLimits,
+struct WorkerHostState {
+    broker_hostcall: Box<WorkerBrokerHostcall>,
+    limits: WorkerLimits,
     hostcall_failures: Vec<TrustedWorkerFailure>,
     last_error: Option<Vec<u8>>,
 }
 
-impl<'a> WorkerHostState<'a> {
+impl WorkerHostState {
     fn new(
         broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String>
-        + 'a,
+        + 'static,
         memory_limit_bytes: usize,
     ) -> Self {
         Self {
             broker_hostcall: Box::new(broker_hostcall),
-            limits: StoreLimitsBuilder::new()
-                .memory_size(memory_limit_bytes)
-                .table_elements(MAX_WASM_TABLE_ELEMENTS)
-                .instances(1)
-                .memories(1)
-                .tables(1)
-                .trap_on_grow_failure(true)
-                .build(),
+            limits: WorkerLimits(
+                StoreLimitsBuilder::new()
+                    .memory_size(memory_limit_bytes)
+                    .table_elements(MAX_WASM_TABLE_ELEMENTS)
+                    .instances(1)
+                    .memories(1)
+                    .tables(1)
+                    .trap_on_grow_failure(true)
+                    .build(),
+            ),
             hostcall_failures: Vec::new(),
             last_error: None,
         }
     }
 }
 
-fn execute_compiled_worker_module<'a>(
-    engine: &wasmi::Engine,
-    module: &wasmi::Module,
+fn execute_compiled_worker_module(
+    engine: &wasmtime::Engine,
+    module: &wasmtime::Module,
     contract: &redevplugin_wasm_abi::ValidatedWorkerModule,
     request_json: &[u8],
     memory_limit_bytes: usize,
-    broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String> + 'a,
-) -> Result<WorkerExecution, String> {
+    budget: ExecutionBudget,
+    broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String>
+    + 'static,
+) -> Result<WorkerExecution, WorkerFailure> {
+    budget.check()?;
     if request_json.is_empty() || request_json.len() > MAX_WASM_WORKER_REQUEST_BYTES {
-        return Err("worker request exceeds the current ABI size limit".to_string());
+        return Err("worker request exceeds the current ABI size limit"
+            .to_string()
+            .into());
     }
     if memory_limit_bytes == 0 {
-        return Err("worker memory limit must be positive".to_string());
+        return Err("worker memory limit must be positive".to_string().into());
     }
     let initial_memory_bytes = contract
         .memory
@@ -3233,41 +3278,50 @@ fn execute_compiled_worker_module<'a>(
         .checked_mul(WASM_PAGE_BYTES)
         .ok_or_else(|| "worker initial memory size overflows".to_string())?;
     if initial_memory_bytes > memory_limit_bytes as u64 {
-        return Err(format!(
-            "worker initial memory {initial_memory_bytes} exceeds lease limit {memory_limit_bytes}"
-        ));
+        return Err(WorkerFailure::Memory);
     }
-    let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(engine);
+    let mut linker = <wasmtime::Linker<WorkerHostState>>::new(engine);
     define_worker_hostcalls(&mut linker)?;
-    let mut store = wasmi::Store::new(
+    let mut store = wasmtime::Store::new(
         engine,
         WorkerHostState::new(broker_hostcall, memory_limit_bytes),
     );
     store.limiter(|state| &mut state.limits);
-    store
-        .set_fuel(WASM_WORKER_FUEL_PER_INVOCATION)
-        .map_err(|err| format!("configure wasm worker fuel: {err}"))?;
+    store.set_epoch_deadline(1);
+    let interrupt_engine = engine.clone();
+    let registration = budget
+        .cancellation
+        .register(move || interrupt_engine.increment_epoch());
+    budget.check()?;
+    store.set_fuel(budget.fuel).map_err(WorkerFailure::engine)?;
+    let budget = Arc::new(budget);
+    let epoch_budget = Arc::clone(&budget);
+    store.epoch_deadline_callback(move |_| {
+        epoch_budget.check().map_err(wasmtime::Error::new)?;
+        Ok(wasmtime::UpdateDeadline::Continue(1))
+    });
+    let _registration = registration;
     let instance = linker
-        .instantiate_and_start(&mut store, module)
-        .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
+        .instantiate(&mut store, module)
+        .map_err(WorkerFailure::engine)?;
     let memory = instance
-        .get_memory(&store, "memory")
+        .get_memory(&mut store, "memory")
         .ok_or_else(|| "worker must export memory".to_string())?;
     let alloc = instance
-        .get_typed_func::<i32, i32>(&store, "redevplugin_worker_alloc")
+        .get_typed_func::<i32, i32>(&mut store, "redevplugin_worker_alloc")
         .map_err(|err| format!("resolve worker allocator: {err}"))?;
     let dealloc = instance
-        .get_typed_func::<(i32, i32), ()>(&store, "redevplugin_worker_dealloc")
+        .get_typed_func::<(i32, i32), ()>(&mut store, "redevplugin_worker_dealloc")
         .map_err(|err| format!("resolve worker deallocator: {err}"))?;
     let invoke = instance
-        .get_typed_func::<(i32, i32), i64>(&store, redevplugin_wasm_abi::EXPORT_WORKER_INVOKE)
+        .get_typed_func::<(i32, i32), i64>(&mut store, redevplugin_wasm_abi::EXPORT_WORKER_INVOKE)
         .map_err(|err| format!("resolve worker invoke export: {err}"))?;
 
     let request_len = i32::try_from(request_json.len())
         .map_err(|_| "worker request length exceeds i32".to_string())?;
     let request_ptr = alloc
         .call(&mut store, request_len)
-        .map_err(|err| format!("allocate worker request: {err}"))?;
+        .map_err(WorkerFailure::engine)?;
     let request_offset = usize::try_from(request_ptr)
         .map_err(|_| "worker allocator returned a negative pointer".to_string())?;
     memory
@@ -3276,12 +3330,11 @@ fn execute_compiled_worker_module<'a>(
 
     let packed = match invoke.call(&mut store, (request_ptr, request_len)) {
         Ok(value) => value as u64,
-        Err(err) => {
-            let _ = dealloc.call(&mut store, (request_ptr, request_len));
-            return Err(format!("execute worker invoke export: {err}"));
-        }
+        Err(err) => return Err(WorkerFailure::engine(err)),
     };
-    let _ = dealloc.call(&mut store, (request_ptr, request_len));
+    dealloc
+        .call(&mut store, (request_ptr, request_len))
+        .map_err(WorkerFailure::engine)?;
 
     let response_ptr_u32 = u32::try_from(packed >> 32)
         .map_err(|_| "worker response pointer exceeds u32".to_string())?;
@@ -3294,17 +3347,20 @@ fn execute_compiled_worker_module<'a>(
     let response_size = usize::try_from(response_len)
         .map_err(|_| "worker response length is negative".to_string())?;
     if response_size == 0 || response_size > MAX_WASM_WORKER_RESPONSE_BYTES {
-        return Err("worker response exceeds the size limit".to_string());
+        return Err("worker response exceeds the size limit".to_string().into());
     }
     let response_offset = usize::try_from(response_ptr)
         .map_err(|_| "worker response pointer is negative".to_string())?;
     let mut response = vec![0_u8; response_size];
     let read_result = memory.read(store.as_context(), response_offset, &mut response);
-    let _ = dealloc.call(&mut store, (response_ptr, response_len));
+    dealloc
+        .call(&mut store, (response_ptr, response_len))
+        .map_err(WorkerFailure::engine)?;
     read_result.map_err(|err| format!("read worker response memory: {err}"))?;
     let response_json = String::from_utf8(response)
         .map_err(|_| "worker response must be UTF-8 JSON".to_string())?;
 
+    budget.check()?;
     let hostcall_failures = store.data().hostcall_failures.clone();
     Ok(WorkerExecution {
         response_json,
@@ -3319,14 +3375,12 @@ fn worker_error_is_hostcall(execution: &WorkerExecution, code: &str, message: &s
         .any(|failure| failure.code == code && failure.message == message)
 }
 
-fn define_worker_hostcalls<'a>(
-    linker: &mut wasmi::Linker<WorkerHostState<'a>>,
-) -> Result<(), String> {
+fn define_worker_hostcalls(linker: &mut wasmtime::Linker<WorkerHostState>) -> Result<(), String> {
     linker
         .func_wrap(
             "redevplugin.io",
             "rdp_call_v1",
-            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+            |mut caller: wasmtime::Caller<'_, WorkerHostState>,
              request_ptr: i32,
              request_len: i32,
              response_ptr: i32,
@@ -3346,7 +3400,7 @@ fn define_worker_hostcalls<'a>(
         .func_wrap(
             "redevplugin.io",
             "rdp_read_v1",
-            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+            |mut caller: wasmtime::Caller<'_, WorkerHostState>,
              handle: i64,
              destination_ptr: i32,
              destination_capacity: i32,
@@ -3366,7 +3420,7 @@ fn define_worker_hostcalls<'a>(
         .func_wrap(
             "redevplugin.io",
             "rdp_write_v1",
-            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+            |mut caller: wasmtime::Caller<'_, WorkerHostState>,
              handle: i64,
              source_ptr: i32,
              source_len: i32,
@@ -3386,7 +3440,7 @@ fn define_worker_hostcalls<'a>(
         .func_wrap(
             "redevplugin.io",
             "rdp_seek_v1",
-            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+            |mut caller: wasmtime::Caller<'_, WorkerHostState>,
              handle: i64,
              offset: i64,
              whence: i32|
@@ -3399,7 +3453,7 @@ fn define_worker_hostcalls<'a>(
         .func_wrap(
             "redevplugin.io",
             "rdp_close_v1",
-            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>, handle: i64| -> i32 {
+            |mut caller: wasmtime::Caller<'_, WorkerHostState>, handle: i64| -> i32 {
                 perform_io_close_hostcall(&mut caller, handle as u64)
             },
         )
@@ -3408,7 +3462,7 @@ fn define_worker_hostcalls<'a>(
         .func_wrap(
             "redevplugin.io",
             "rdp_last_error_v1",
-            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+            |mut caller: wasmtime::Caller<'_, WorkerHostState>,
              response_ptr: i32,
              response_capacity: i32|
              -> i32 {
@@ -3419,18 +3473,20 @@ fn define_worker_hostcalls<'a>(
     Ok(())
 }
 
-fn worker_memory(caller: &wasmi::Caller<'_, WorkerHostState<'_>>) -> Result<wasmi::Memory, i32> {
+fn worker_memory(
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
+) -> Result<wasmtime::Memory, i32> {
     caller
         .get_export("memory")
-        .and_then(wasmi::Extern::into_memory)
+        .and_then(wasmtime::Extern::into_memory)
         .ok_or(ABI_STATUS_INVALID_ARGUMENT)
 }
 
 fn checked_worker_region(
-    caller: &wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     pointer: i32,
     length: usize,
-) -> Result<(wasmi::Memory, usize), i32> {
+) -> Result<(wasmtime::Memory, usize), i32> {
     let offset = usize::try_from(pointer).map_err(|_| ABI_STATUS_INVALID_ARGUMENT)?;
     let end = offset
         .checked_add(length)
@@ -3503,7 +3559,7 @@ mod mount_unavailable_contract_tests {
 }
 
 fn record_io_error(
-    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     status: i32,
     message: impl AsRef<str>,
 ) -> i32 {
@@ -3511,7 +3567,7 @@ fn record_io_error(
 }
 
 fn record_io_failure(
-    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     status: i32,
     message: impl AsRef<str>,
     dispatched_write: bool,
@@ -3535,17 +3591,17 @@ fn record_io_failure(
     status
 }
 
-fn clear_io_error(caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>) {
+fn clear_io_error(caller: &mut wasmtime::Caller<'_, WorkerHostState>) {
     caller.data_mut().last_error = None;
 }
 
-fn callback_io_error(caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>, error: String) -> i32 {
+fn callback_io_error(caller: &mut wasmtime::Caller<'_, WorkerHostState>, error: String) -> i32 {
     let status = abi_status_for_error(&error);
     record_io_error(caller, status, error)
 }
 
 fn perform_io_control_hostcall(
-    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     request_ptr: i32,
     request_len: i32,
     response_ptr: i32,
@@ -3655,7 +3711,7 @@ fn perform_io_control_hostcall(
 }
 
 fn perform_io_read_hostcall(
-    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     handle: u64,
     destination_ptr: i32,
     destination_capacity: i32,
@@ -3728,7 +3784,7 @@ fn perform_io_read_hostcall(
 }
 
 fn perform_io_write_hostcall(
-    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     handle: u64,
     source_ptr: i32,
     source_len: i32,
@@ -3796,7 +3852,7 @@ fn perform_io_write_hostcall(
 }
 
 fn perform_io_seek_hostcall(
-    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     handle: u64,
     offset: i64,
     whence: i32,
@@ -3835,7 +3891,7 @@ fn perform_io_seek_hostcall(
 }
 
 fn perform_io_close_hostcall(
-    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     handle: u64,
 ) -> i32 {
     if handle == 0 {
@@ -3860,7 +3916,7 @@ fn perform_io_close_hostcall(
 }
 
 fn perform_io_last_error_hostcall(
-    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    caller: &mut wasmtime::Caller<'_, WorkerHostState>,
     response_ptr: i32,
     response_capacity: i32,
 ) -> i32 {
@@ -3890,7 +3946,7 @@ fn perform_io_last_error_hostcall(
     i32::try_from(snapshot.len()).unwrap_or(ABI_STATUS_RESOURCE_LIMIT)
 }
 
-fn record_hostcall_response(caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>, response: &str) {
+fn record_hostcall_response(caller: &mut wasmtime::Caller<'_, WorkerHostState>, response: &str) {
     let Ok(failure) = serde_json::from_str::<HostcallFailureResponse>(response) else {
         return;
     };
@@ -5476,11 +5532,11 @@ mod tests {
         include_str!("../testdata/runtime-lease-signature-v2-invocation.json")
     }
 
-    fn execute_worker_module_for_test<'a>(
+    fn execute_worker_module_for_test(
         wasm_bytes: &[u8],
         request_json: &[u8],
         memory_limit_bytes: usize,
-        mut broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
+        mut broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'static,
     ) -> Result<WorkerExecution, String> {
         let cache =
             module_cache::ModuleCache::new(worker_engine(), 1, wasm_bytes.len().saturating_add(1));
@@ -5499,16 +5555,18 @@ mod tests {
             &compiled.contract,
             request_json,
             memory_limit_bytes,
+            ExecutionBudget::new(Duration::from_secs(2), scheduler::Cancellation::new()),
             move |request| broker_hostcall(request).map(WorkerHostcallResponse::Json),
         )
+        .map_err(|err| err.to_string())
     }
 
-    fn execute_worker_module_with_io_for_test<'a>(
+    fn execute_worker_module_with_io_for_test(
         wasm_bytes: &[u8],
         request_json: &[u8],
         memory_limit_bytes: usize,
         broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<WorkerHostcallResponse, String>
-        + 'a,
+        + 'static,
     ) -> Result<WorkerExecution, String> {
         let cache =
             module_cache::ModuleCache::new(worker_engine(), 1, wasm_bytes.len().saturating_add(1));
@@ -5527,8 +5585,10 @@ mod tests {
             &compiled.contract,
             request_json,
             memory_limit_bytes,
+            ExecutionBudget::new(Duration::from_secs(2), scheduler::Cancellation::new()),
             broker_hostcall,
         )
+        .map_err(|err| err.to_string())
     }
 
     fn fixed_runtime_lease_clock() -> Result<i64, String> {
@@ -5969,7 +6029,7 @@ mod tests {
         )
         .expect_err("runaway worker must exhaust its invocation fuel");
 
-        assert!(error.contains("fuel consumed"), "{error}");
+        assert!(error.contains("computation budget exhausted"), "{error}");
     }
 
     #[test]
@@ -6037,12 +6097,13 @@ mod tests {
         ))
         .expect("compile plugin API hostcall fixture");
 
-        let mut close_count = 0;
+        let close_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_close_count = Arc::clone(&close_count);
         let execution = execute_worker_module_with_io_for_test(
             &module,
             br#"{"method":"io.test","params":{}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
-            |hostcall| match hostcall {
+            move |hostcall| match hostcall {
                 WorkerHostcallRequest::Control(raw) => {
                     assert_eq!(raw, request);
                     Ok(WorkerHostcallResponse::Json(
@@ -6077,7 +6138,7 @@ mod tests {
                     whence: 0,
                 } => Ok(WorkerHostcallResponse::Seeked(12)),
                 WorkerHostcallRequest::Close { handle: 7 } => {
-                    close_count += 1;
+                    callback_close_count.fetch_add(1, Ordering::Relaxed);
                     Ok(WorkerHostcallResponse::Closed)
                 }
                 _ => Err("unexpected plugin API hostcall".to_string()),
@@ -6085,7 +6146,7 @@ mod tests {
         )
         .expect("execute plugin API hostcall fixture");
         assert_eq!(execution.response_json, response);
-        assert_eq!(close_count, 2);
+        assert_eq!(close_count.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -6103,13 +6164,14 @@ mod tests {
                 i32.const 2000 i32.const 1024 call $error i64.extend_i32_u i64.or)
         )"#).unwrap();
         for failure in 0..3 {
-            let mut calls = 0;
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let callback_calls = Arc::clone(&calls);
             let result = execute_worker_module_with_io_for_test(
                 &module,
                 br#"{"method":"write","params":{}}"#,
                 TEST_WORKER_MEMORY_LIMIT_BYTES,
-                |_| {
-                    calls += 1;
+                move |_| {
+                    callback_calls.fetch_add(1, Ordering::Relaxed);
                     match failure {
                         0 => Err("TIMEOUT: lost write acknowledgement".to_string()),
                         1 => Ok(WorkerHostcallResponse::Written(3)),
@@ -6121,7 +6183,7 @@ mod tests {
             let error: serde_json::Value = serde_json::from_str(&result.response_json).unwrap();
             assert_eq!(error["details"]["mutation_outcome"], "unknown");
             assert_eq!(error["retryable"], false);
-            assert_eq!(calls, 1);
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
         }
     }
 
@@ -6185,7 +6247,7 @@ mod tests {
                 &module,
                 br#"{"method":"worker.echo","params":{}}"#,
                 TEST_WORKER_MEMORY_LIMIT_BYTES,
-                |request| {
+                move |request| {
                     perform_raw_io_hostcall(
                         &job,
                         &worker_execution,
@@ -6299,20 +6361,21 @@ mod tests {
         ))
         .expect("compile out-of-bounds plugin API fixture");
 
-        let mut hostcall_count = 0;
+        let hostcall_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_hostcall_count = Arc::clone(&hostcall_count);
         let execution = execute_worker_module_with_io_for_test(
             &module,
             br#"{"method":"io.bounds","params":{}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
-            |_| {
-                hostcall_count += 1;
+            move |_| {
+                callback_hostcall_count.fetch_add(1, Ordering::Relaxed);
                 Err("Host I/O must not run for invalid memory".to_string())
             },
         )
         .expect("execute out-of-bounds plugin API fixture");
 
         assert_eq!(execution.response_json, response);
-        assert_eq!(hostcall_count, 0);
+        assert_eq!(hostcall_count.load(Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -1415,7 +1415,7 @@ func TestAuthorTemplatePinsConsumerToolchainAndAuditedOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"channel = \"1.88.0\"", "wasm32-unknown-unknown"} {
+	for _, want := range []string{"channel = \"1.98.0\"", "wasm32-unknown-unknown"} {
 		if !bytes.Contains(toolchain, []byte(want)) {
 			t.Fatalf("toolchain missing %q", want)
 		}

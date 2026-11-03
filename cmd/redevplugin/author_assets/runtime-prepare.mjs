@@ -7627,7 +7627,7 @@ function assertOrigin(value, label, allowPath = false) {
 
 // scripts/author_runtime_prepare.mjs
 var repository = "floegence/redevplugin";
-var toolchain = "1.88.0";
+var toolchain = "1.98.0";
 var [version, destination] = process.argv.slice(2);
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(version ?? "") || !destination || process.argv.length !== 4) throw new Error("Expected platform version and destination directory");
 var targets = { "darwin-arm64": "aarch64-apple-darwin", "darwin-x64": "x86_64-apple-darwin", "linux-arm64": "aarch64-unknown-linux-gnu", "linux-x64": "x86_64-unknown-linux-gnu" };

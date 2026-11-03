@@ -32,6 +32,7 @@ type Config struct {
 }
 
 type Store struct {
+	manifests  manifestDecodeCache
 	db         *sql.DB
 	generation uint64
 	ready      bool
