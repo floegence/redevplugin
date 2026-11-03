@@ -7,6 +7,7 @@
 - Bound computation with engine-specific fuel derived from remaining signed lease time, a hard fuel ceiling, memory/table limits and independently checked deadlines; interrupt CPU execution on cancellation and revalidate revocation authority.
 - Distinguish computation-budget, memory-limit and deadline failures across runtime, Go, HTTP and TypeScript contracts; preserve unknown mutation outcomes.
 - Pin platform builds and generated Worker projects to Rust 1.98.0, and include a reproducible JSON/CPU workload matrix in canonical acceptance fixtures.
+- Qualify macOS hardened runtime execution and document the runtime-only executable-memory entitlement required by the engine; host products retain signing and notarization ownership.
 - Initialize the Memos schema in one existing atomic transaction and document bounded batches, pages and streams for authors.
 - Correct performance fixtures to use public Host-owned state and exclude client admission queues from invocation timing. Plugin API, internal wire and durable schema versions remain unchanged.
 

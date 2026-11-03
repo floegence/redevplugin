@@ -697,3 +697,20 @@ The generated `stored-manifest.schema.json` describes read-only inventory only.
 New package admission exclusively uses `manifest-v9.schema.json`. HTTP inventory
 omits absent historical Web metadata instead of inventing it. Hosts consume the
 generated types and action state without parsing historical package archives.
+
+## macOS Runtime Signing
+
+Wasmtime 50.0.1 publishes compiled code by changing anonymous memory from writable
+to executable. A host that signs its runtime with the macOS hardened runtime must
+grant only that helper executable
+`com.apple.security.cs.allow-unsigned-executable-memory`. The `allow-jit`
+entitlement alone does not support this engine's memory allocation path. Keep
+hardened runtime, library validation and other code-signing protections enabled;
+do not propagate this exception to the product shell or plugin documents.
+
+The host owns the final signature, notarization and bundled binary evidence.
+ReDevPlugin owns the engine requirement and qualifies an ad-hoc hardened helper
+with real Worker output, cancellation and cross-plugin fairness on macOS through
+`scripts/check_redevplugin_macos_jit.sh`. This local test does not certify a
+Developer ID signature or notarization. Linux retains sealed executable admission
+and runtime seccomp enforcement; guest code has no native-loader or syscall ABI.

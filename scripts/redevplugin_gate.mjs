@@ -25,7 +25,7 @@ export const stages = [
   { id: "performance", commitBound: true, ttl: day, command: "npm run performance:release", outputs: ["dist/performance-evidence.json", "dist/performance-evidence.route-authorization-diagnostic.json"] },
   { id: "stress", commitBound: true, ttl: day, command: "mkdir -p dist && ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-pre-push-stress.json", outputs: ["dist/redevplugin-pre-push-stress.json"] },
   { id: "property", ttl: day, command: "./scripts/check_redevplugin_property_gates.sh --stress" },
-  { id: "runtime-platform", commitBound: true, command: "./scripts/check_redevplugin_runtime_contract.sh --ci && ./scripts/check_redevplugin_platform.sh --ci" },
+  { id: "runtime-platform", commitBound: true, command: "./scripts/check_redevplugin_runtime_contract.sh --ci && ./scripts/check_redevplugin_platform.sh --ci && ./scripts/check_redevplugin_macos_jit.sh" },
 ];
 
 export function digest(value) {
