@@ -98,7 +98,7 @@ func (e *Executor) openSocket(ctx context.Context, req SocketRequest, transport 
 	if transport == TransportUDP {
 		result.allowPacket = func() bool { return e.udpRateLimiter.AllowUDPRoundTrip(e.now(), udpRateLimitKey(req.Grant)) }
 	}
-	result.stop = context.AfterFunc(lifetime, func() { _ = conn.Close() })
+	result.stop = context.AfterFunc(lifetime, func() { _ = result.closeConnection() })
 	return result, nil
 }
 
@@ -107,6 +107,7 @@ type boundedConnection struct {
 	cancel      context.CancelFunc
 	stop        func() bool
 	once        sync.Once
+	closeErr    error
 	readMu      sync.Mutex
 	writeMu     sync.Mutex
 	readLeft    int64
@@ -115,9 +116,16 @@ type boundedConnection struct {
 }
 
 func (c *boundedConnection) Close() error {
-	var err error
-	c.once.Do(func() { c.stop(); c.cancel(); err = c.Conn.Close() })
-	return err
+	c.stop()
+	c.cancel()
+	return c.closeConnection()
+}
+
+func (c *boundedConnection) closeConnection() error {
+	// Cancellation and explicit revocation share both completion and outcome.
+	// The callback can run before stop is assigned, so it only closes the socket.
+	c.once.Do(func() { c.closeErr = c.Conn.Close() })
+	return c.closeErr
 }
 func (c *boundedConnection) Read(p []byte) (int, error) {
 	c.readMu.Lock()

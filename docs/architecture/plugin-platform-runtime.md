@@ -714,3 +714,7 @@ with real Worker output, cancellation and cross-plugin fairness on macOS through
 `scripts/check_redevplugin_macos_jit.sh`. This local test does not certify a
 Developer ID signature or notarization. Linux retains sealed executable admission
 and runtime seccomp enforcement; guest code has no native-loader or syscall ABI.
+
+## Socket revocation completion
+
+TCP and UDP grants bind each connection to one lifetime. Cancellation, expiry and explicit closure share a synchronized close operation. Revocation waits for that operation and observes its original outcome; repeated closure does not create a second network error or hide a genuine close failure. Pending reads and writes remain interrupted, and quotas and half-close semantics are unchanged.

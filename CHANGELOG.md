@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.15.1
+
+- Give TCP and UDP cancellation, deadline expiry, explicit closure and revocation one synchronized socket-close owner; wait for the original close and preserve its actual outcome.
+- Prevent already-closed socket errors from falsely turning successful plugin disable into an unknown mutation result; retain genuine close failures and existing quotas, grant checks and half-close behavior.
+- Cover repeated and concurrent closure, asynchronous cancellation, TCP and UDP, and failed underlying close outcomes. Plugin API, internal wire and durable schema remain unchanged.
+
 ## v3.15.0
 
 - Reuse bounded, exact-canonical manifest parses while reading current authorization state on every request; project record-only queries without loading unused grants and policy.

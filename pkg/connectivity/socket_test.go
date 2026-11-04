@@ -85,6 +85,110 @@ func TestOpenSocketsCancelPendingReads(t *testing.T) {
 	}
 }
 
+type observedCloseConnection struct {
+	net.Conn
+	closed chan struct{}
+	resume <-chan struct{}
+	calls  atomic.Int32
+	err    error
+}
+
+func (c *observedCloseConnection) Close() error {
+	if c.calls.Add(1) != 1 {
+		return net.ErrClosed
+	}
+	_ = c.Conn.Close()
+	close(c.closed)
+	if c.resume != nil {
+		<-c.resume
+	}
+	return c.err
+}
+
+func TestSocketConcurrentCloseWaitsForCancellationOutcome(t *testing.T) {
+	client, peer := net.Pipe()
+	defer peer.Close()
+	resume := make(chan struct{})
+	closeFailure := errors.New("fixture delayed close failure")
+	observed := &observedCloseConnection{Conn: client, closed: make(chan struct{}), resume: resume, err: closeFailure}
+	executor := newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) { return observed, nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conn, err := executor.OpenTCP(ctx, SocketRequest{Grant: testGrant(t, TransportTCP, "tcp://api.example.com:443", time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-observed.closed:
+	case <-time.After(time.Second):
+		close(resume)
+		t.Fatal("cancellation did not begin closing")
+	}
+	done := make(chan error, 16)
+	for range 16 {
+		go func() { done <- conn.Close() }()
+	}
+	select {
+	case err := <-done:
+		close(resume)
+		t.Fatalf("close returned before completion: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(resume)
+	for range 16 {
+		select {
+		case err := <-done:
+			if !errors.Is(err, closeFailure) {
+				t.Fatalf("close lost original failure: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("close did not complete")
+		}
+	}
+	if calls := observed.calls.Load(); calls != 1 {
+		t.Fatalf("underlying close count = %d, want 1", calls)
+	}
+}
+
+func TestSocketCancellationAndExplicitCloseShareOutcome(t *testing.T) {
+	closeFailure := errors.New("fixture socket close failure")
+	for _, transport := range []Transport{TransportTCP, TransportUDP} {
+		for _, closeErr := range []error{nil, closeFailure} {
+			name := string(transport) + "/success"
+			if closeErr != nil {
+				name = string(transport) + "/failure"
+			}
+			t.Run(name, func(t *testing.T) {
+				client, peer := net.Pipe()
+				defer peer.Close()
+				observed := &observedCloseConnection{Conn: client, closed: make(chan struct{}), err: closeErr}
+				executor := newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) { return observed, nil })
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				conn, err := executor.openSocket(ctx, SocketRequest{Grant: testGrant(t, transport, string(transport)+"://api.example.com:443", time.Minute)}, transport)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cancel()
+				select {
+				case <-observed.closed:
+				case <-time.After(time.Second):
+					t.Fatal("cancellation did not close the connection")
+				}
+				for range 3 {
+					if err := conn.Close(); !errors.Is(err, closeErr) {
+						t.Fatalf("close outcome = %v, want %v", err, closeErr)
+					}
+				}
+				if calls := observed.calls.Load(); calls != 1 {
+					t.Fatalf("underlying close count = %d, want 1", calls)
+				}
+			})
+		}
+	}
+}
+
 func TestOpenUDPEnforcesDatagramBudgetAndRate(t *testing.T) {
 	receiver, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
