@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.15.2
+
+- Isolate the runaway Worker fuel-exhaustion test with an explicit small fuel budget and a typed budget-failure assertion while retaining its independent two-second deadline. Production fuel, deadline, cancellation and revocation policies are unchanged.
+- Include the synchronized TCP and UDP closure fix from v3.15.1. That immutable tag did not complete release qualification because the prior test could reach its deadline before exhausting fuel on a loaded runner; it is not a host-consumable platform release.
+
 ## v3.15.1
 
 - Give TCP and UDP cancellation, deadline expiry, explicit closure and revocation one synchronized socket-close owner; wait for the original close and preserve its actual outcome.

@@ -6021,15 +6021,32 @@ mod tests {
         )
         .expect("compile runaway worker fixture");
 
-        let error = execute_worker_module_for_test(
-            &module,
+        let cache =
+            module_cache::ModuleCache::new(worker_engine(), 1, module.len().saturating_add(1));
+        let compiled = cache
+            .get_or_compile(
+                "sha256:test-runaway-artifact",
+                platform_identity_gen::PLUGIN_API,
+                &scheduler::Cancellation::new(),
+                move || Ok(module),
+            )
+            .expect("compile runaway worker module");
+        let mut budget =
+            ExecutionBudget::new(Duration::from_secs(2), scheduler::Cancellation::new());
+        // Isolate fuel exhaustion from the independently enforced wall-clock deadline.
+        budget.fuel = 10_000;
+        let error = execute_compiled_worker_module(
+            cache.engine(),
+            &compiled.module,
+            &compiled.contract,
             br#"{"method":"runaway","params":{}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
-            unexpected_hostcall,
+            budget,
+            |request| unexpected_hostcall(request).map(WorkerHostcallResponse::Json),
         )
         .expect_err("runaway worker must exhaust its invocation fuel");
 
-        assert!(error.contains("computation budget exhausted"), "{error}");
+        assert!(matches!(error, WorkerFailure::Budget), "{error}");
     }
 
     #[test]
