@@ -67,6 +67,7 @@ bridge.onContext(context => {
   document.documentElement.dir = context.locale.direction;
 });
 bridge.onLifecycle(event => { if (event.type === "dispose") { lifetime.abort(); controls(); } });
+bridge.onBeforeClose(() => !dirty && !pending && !uncertain);
 async function watch() {
   if (watching) return;
   watching = true;

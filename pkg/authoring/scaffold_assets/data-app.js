@@ -1411,6 +1411,7 @@ bridge.onLifecycle((event) => {
     controls();
   }
 });
+bridge.onBeforeClose(() => !dirty && !pending && !uncertain);
 async function watch() {
   if (watching) return;
   watching = true;
