@@ -56,15 +56,18 @@ Rust DTOs/dispatch, and JSON-pointer source mappings. Use --check to detect drif
 without writing. Host validation remains authoritative; complex Rust schemas
 use lossless serde_json::Value and unsupported TS references use PluginJSONValue.
 
-`redevplugin doctor .` checks project/manifest validity, installed dependencies, Node 26,
-Worker Rust 1.98.0 and wasm32 target readiness, and existing bindings without
+`redevplugin doctor .` checks project/manifest validity, installed dependencies,
+generated template toolchain requirements, and existing bindings without
 running author commands. Generation is optional for existing projects; an
 existing generated directory must match. New templates declare a tool-owned bindings directory. Dev regenerates it;
 check and test reject drift rather than modifying it. `redevplugin check .` also runs the selected
 build/tests, compares source and packaged manifests, and validates the package.
-Both commands emit structured diagnostics with codes and source paths. Installed
-exact dependency versions must match the declaration. Custom non-npm commands
-remain executable checks; doctor cannot certify their arbitrary dependency graph.
+Both commands emit structured diagnostics with codes and source paths. For npm
+projects without a preparation command, installed exact dependency versions must
+match the declaration. A preparation command can install dependencies before the
+build, so dependency availability is checked by the build itself. Custom commands
+and toolchain declarations remain executable checks; doctor cannot certify their
+arbitrary dependency graph.
 
 The shared pipeline runs optional preparation, snapshots the source, validates the
 manifest and bindings, runs optional type checks, builds, runs declared tests for

@@ -51,6 +51,40 @@ func TestAuthorDevReadinessDoesNotRequireTestOnlyTool(t *testing.T) {
 	}
 }
 
+func TestGeneratedToolchainChecksDoNotConstrainCustomProjects(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "app")
+	if _, err := createPluginTemplate("example.toolchain", "Toolchain", root, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	if !authorUsesGeneratedNodeToolchain(root) || !authorUsesGeneratedRustToolchain(root) {
+		t.Fatal("generated toolchains were not detected")
+	}
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"engines":{"node":">=22"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "rust-toolchain.toml"), []byte("[toolchain]\nchannel = \"stable\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if authorUsesGeneratedNodeToolchain(root) || authorUsesGeneratedRustToolchain(root) {
+		t.Fatal("custom toolchains were treated as generated requirements")
+	}
+}
+
+func TestAuthorReadinessAllowsPreparationToInstallDependencies(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"dependencies":{"example":"1.0.0"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := &authorproject.Project{Root: root, Config: authorproject.Config{Prepare: []string{"go"}, Build: []string{"npm", "run", "build"}}}
+	var diagnostics []string
+	checkAuthorReadiness(context.Background(), project, false, false, func(code, _, _ string) { diagnostics = append(diagnostics, code) })
+	for _, code := range diagnostics {
+		if code == "DEPENDENCY_UNAVAILABLE" {
+			t.Fatal("readiness rejected dependencies that preparation may install")
+		}
+	}
+}
+
 func TestAuthorWebTemplateRunsBusinessTestsAndChecksTypesDuringBuild(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "app")
 	if _, err := createPluginTemplate("example.business", "Business", root, "web"); err != nil {

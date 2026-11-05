@@ -98,7 +98,10 @@ func checkAuthorReadiness(ctx context.Context, project *authorproject.Project, w
 			add("TOOL_UNAVAILABLE", argv[0], "Install the project's declared build tool")
 		}
 	}
-	checkAuthorDependencies(project, commands, add)
+	// Preparation may install dependencies before the build starts.
+	if len(project.Config.Prepare) == 0 {
+		checkAuthorDependencies(project, commands, add)
+	}
 	checkAuthorToolchains(ctx, project, commands, worker, add)
 	return tools
 }
@@ -166,13 +169,13 @@ func checkAuthorToolchains(ctx context.Context, p *authorproject.Project, comman
 			usesNPM = true
 		}
 	}
-	if usesNPM {
+	if usesNPM && authorUsesGeneratedNodeToolchain(p.Root) {
 		value, err := exec.CommandContext(ctx, "node", "--version").Output()
 		if err != nil || !strings.HasPrefix(strings.TrimSpace(string(value)), "v26.") {
 			add("TOOLCHAIN_MISMATCH", "node", "Use Node.js 26 for the generated author project")
 		}
 	}
-	if !worker {
+	if !worker || !authorUsesGeneratedRustToolchain(p.Root) {
 		return
 	}
 	command := exec.CommandContext(ctx, "rustc", "--version")
@@ -187,4 +190,20 @@ func checkAuthorToolchains(ctx context.Context, p *authorproject.Project, comman
 	if err != nil || !strings.Contains(string(value), "wasm32-unknown-unknown") {
 		add("TARGET_UNAVAILABLE", "wasm32-unknown-unknown", "Run rustup target add wasm32-unknown-unknown --toolchain 1.98.0")
 	}
+}
+
+func authorUsesGeneratedNodeToolchain(root string) bool {
+	raw, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Engines map[string]string `json:"engines"`
+	}
+	return json.Unmarshal(raw, &pkg) == nil && pkg.Engines["node"] == ">=26.0.0 <27"
+}
+
+func authorUsesGeneratedRustToolchain(root string) bool {
+	raw, err := os.ReadFile(filepath.Join(root, "rust-toolchain.toml"))
+	return err == nil && string(raw) == "[toolchain]\nchannel = \"1.98.0\"\ntargets = [\"wasm32-unknown-unknown\"]\nprofile = \"minimal\"\n"
 }
