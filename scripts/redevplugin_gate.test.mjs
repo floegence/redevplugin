@@ -239,6 +239,7 @@ test("the fixed stage plan preserves original coverage and moves cheap blockers 
   assert.deepEqual(stages.map(({ id }) => id), ["prepare", "audit", "contracts", "go", "web", "canonical-bridge", "author-browser", "rust", "rust-source", "performance", "stress", "property", "runtime-platform"]);
   assert.ok(stages.find(({ id }) => id === "audit").fresh);
   assert.ok(stages.find(({ id }) => id === "prepare").fresh);
+  assert.ok(stages.find(({ id }) => id === "performance").outputs.includes("dist/performance-evidence.web-diagnostic.json"));
   for (const path of ["./internal/controlstore", "./internal/dataupgradecontract"]) assert.ok(stages.find(({ id }) => id === "go").command.includes(path));
   const packageJSON = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
   assert.equal(packageJSON.scripts.check, "npm run check:contracts && npm run check:web");

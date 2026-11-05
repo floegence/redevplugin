@@ -133,7 +133,8 @@ Registration resolves only after Host acknowledgement. Duplicate or undeclared
 methods fail. Handlers receive JSON parameters and an AbortSignal; they never
 receive transport credentials. Once the last method is unregistered and any
 claimed calls have settled, the parent stops requesting method deliveries until
-a method is registered again. The application implements document identity,
+a method is registered again. Cancellation wakes an existing claim immediately;
+it does not wait for the idle receiver interval. The application implements document identity,
 expected revision checks, selections, and undo transactions in its existing
 model. A write handler must return a declared business conflict result when
 its expected revision is stale. The platform does not infer those fields.

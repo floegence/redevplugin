@@ -132,10 +132,13 @@ func testNativeWebApplicationBrowser(t *testing.T, parentHostname string) {
 	}
 	document["permissions"] = append(document["permissions"].([]any), "fs.selected.read", "fs.selected.write", "network.client")
 	document["network_access"] = map[string]any{"connectors": []any{map[string]any{"connector_id": "api", "transport": "http", "scope": "user", "configurable": true}}}
+	document["api"].(map[string]any)["required_features"] = []string{"surface.resources.v1"}
+	document["storage"] = map[string]any{"stores": []any{map[string]any{"store_id": "performance", "kind": "kv", "scope": "user", "quota_bytes": 1048576, "schema_version": 1}}}
 	surfaces := document["surfaces"].([]any)
 	surfaces[0].(map[string]any)["entry"] = "ui/文档.html"
 	surfaces[0].(map[string]any)["web"].(map[string]any)["spa"] = true
 	surfaces[0].(map[string]any)["web"].(map[string]any)["network"] = []any{map[string]any{"connector_id": "api", "transport": "http", "operations": []string{"http"}, "http_methods": []string{"GET"}}}
+	surfaces[0].(map[string]any)["web"].(map[string]any)["storage"] = []any{map[string]any{"store_id": "performance", "operations": []string{"get", "put"}}}
 	document["surfaces"] = append(surfaces, map[string]any{
 		"surface_id": "plain.view", "kind": "view", "label": "Existing application", "entry": "ui/plain.html",
 		"web": map[string]any{"root": "ui", "spa": false},
@@ -148,8 +151,10 @@ func testNativeWebApplicationBrowser(t *testing.T, parentHostname string) {
 	document["methods"] = []any{
 		map[string]any{"method": "document.read", "effect": "read", "execution": "sync", "route": map[string]any{"kind": "surface", "surface_id": "http.view"}, "request_schema": emptySchema, "response_schema": readSchema},
 		map[string]any{"method": "document.apply", "effect": "write", "execution": "sync", "route": map[string]any{"kind": "surface", "surface_id": "http.view"}, "request_schema": applySchema, "response_schema": resultSchema},
+		map[string]any{"method": "document.wait", "effect": "read", "execution": "operation", "cancel_policy": map[string]any{"cancelable": true, "disable_behavior": "cancel", "uninstall_behavior": "cancel_then_block_delete", "ack_timeout_ms": 2000}, "route": map[string]any{"kind": "surface", "surface_id": "http.view"}, "request_schema": emptySchema, "response_schema": emptySchema},
 	}
 	document["intents"] = []any{map[string]any{"intent_id": "document.read", "method": "document.read"}, map[string]any{"intent_id": "document.apply", "method": "document.apply"}}
+	document["intents"] = append(document["intents"].([]any), map[string]any{"intent_id": "document.wait", "method": "document.wait"})
 	manifestJSON, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)

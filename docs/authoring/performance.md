@@ -25,6 +25,20 @@ includes fixture setup and readiness and is not a product-wide cold-start or
 first-paint guarantee. Measure the actual product and workload separately when
 making latency or memory claims.
 
+The same gate retains `performance-evidence.web-diagnostic.json`, bound to the
+exact source commit, source diff hash, platform version and browser environment.
+Fresh browser contexts exercise local transport and an explicit 40 ms delay
+before each request. This models request delay, not a remote deployment or a
+bandwidth limit. Each profile keeps 20 method-call and 20 KV write/read roundtrip
+samples, five real Execution cancellations, idle receiver traffic, and closure
+of both independent Surfaces with route-release acknowledgements. Host-ready,
+method-ready and two-animation-frame timestamps are separate observations; the
+last is a rendering opportunity, not a first-paint metric. Parent-target JS heap
+and DOM counters before opening, while loaded and after closure exclude isolated
+child processes and total browser/Worker RSS. No forced collection or memory
+ceiling is inferred. These supplemental raw baselines have correctness checks;
+latency thresholds require comparable repeated evidence before adoption.
+
 Pure Web applications access declared private resources directly with the
 Surface SDK. Do not add a forwarding Worker for storage alone. The data template
 saves one user action, retains edits made during a save, checks the expected

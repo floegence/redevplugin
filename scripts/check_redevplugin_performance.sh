@@ -78,6 +78,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 MEASUREMENTS="$TMP_DIR/measurements.ndjson"
 COMPARISONS="$TMP_DIR/comparisons.ndjson"
 ROUTE_AUTHORIZATION_DIAGNOSTIC="${OUTPUT%.json}.route-authorization-diagnostic.json"
+WEB_DIAGNOSTIC="${OUTPUT%.json}.web-diagnostic.json"
 
 run_runtime_performance_tests() {
   local runtime_path="$1"
@@ -177,7 +178,7 @@ node scripts/measure_http_route_authorization_performance.mjs \
   --comparison-output "$COMPARISONS" \
   --diagnostic-output "$ROUTE_AUTHORIZATION_DIAGNOSTIC" \
   --gate "$MODE"
-REDEVPLUGIN_WEB_PERFORMANCE_OUTPUT="$MEASUREMENTS" REDEVPLUGIN_WEB_PERFORMANCE_GATE="$MODE" REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off \
+REDEVPLUGIN_WEB_PERFORMANCE_OUTPUT="$MEASUREMENTS" REDEVPLUGIN_WEB_PERFORMANCE_DIAGNOSTIC="$WEB_DIAGNOSTIC" REDEVPLUGIN_WEB_PERFORMANCE_GATE="$MODE" REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off \
   go test ./pkg/httpadapter -run '^TestNativeWebApplicationBrowser$' -count=1
 ARGS=(
   --output "$OUTPUT"

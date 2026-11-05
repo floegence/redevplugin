@@ -29,3 +29,12 @@ try {
 } catch (error) { state.error = String(error); }
 
 Object.assign(globalThis, { invokeDocument: async (index: number | undefined, method: string, params: Record<string, unknown> = {}) => client.invokeIntent({ plugin_instance_id: fixture.plugin_instance_id, surface_instance_id: index === undefined ? undefined : state.targets[index], intent_id: method, params }) });
+Object.assign(globalThis, { cancelWaitingDocument: async () => {
+  const running = (await client.listExecutions({ plugin_instance_id: fixture.plugin_instance_id, limit: 500 })).executions.filter(item => item.status === "running");
+  if (running.length !== 1 || !running[0].cancelable) throw new Error("Expected one cancelable document execution");
+  const executionID = running[0].execution_id;
+  await client.cancelExecution(executionID, "performance acceptance");
+  const receipt = await client.getExecution(executionID);
+  if (receipt.status !== "canceled") throw new Error("Document execution cancellation was not confirmed");
+  return receipt;
+} });

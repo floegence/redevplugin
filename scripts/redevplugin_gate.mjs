@@ -23,7 +23,7 @@ export const stages = [
   // Rust compilation and its crate-local fixtures do not read npm dependencies.
   { id: "rust", inputs: [...commonInputs, "Cargo.toml", "Cargo.lock", "crates/", "internal/", "examples/workers/", ".cargo/", "VERSION", "deny.toml", "spec/", "testdata/", "LICENSE"], nodeDependencies: false, command: "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace" },
   { id: "rust-source", commitBound: true, command: "npm run rust-source-packages:test" },
-  { id: "performance", commitBound: true, ttl: day, command: "npm run performance:release", outputs: ["dist/performance-evidence.json", "dist/performance-evidence.route-authorization-diagnostic.json"] },
+  { id: "performance", commitBound: true, ttl: day, command: "npm run performance:release", outputs: ["dist/performance-evidence.json", "dist/performance-evidence.route-authorization-diagnostic.json", "dist/performance-evidence.web-diagnostic.json"] },
   { id: "stress", commitBound: true, ttl: day, command: "mkdir -p dist && ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-pre-push-stress.json", outputs: ["dist/redevplugin-pre-push-stress.json"] },
   { id: "property", ttl: day, command: "./scripts/check_redevplugin_property_gates.sh --stress" },
   { id: "runtime-platform", commitBound: true, command: "./scripts/check_redevplugin_runtime_contract.sh --ci && ./scripts/check_redevplugin_platform.sh --ci && ./scripts/check_redevplugin_macos_jit.sh" },

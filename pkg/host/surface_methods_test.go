@@ -386,6 +386,23 @@ func TestSurfaceMethodsOperationCancellationUsesExecutionLifecycle(t *testing.T)
 	if err != nil || len(executions) != 1 {
 		t.Fatalf("execution: %+v %v", executions, err)
 	}
+	// Consume the enqueue notification before cancellation. A waiting claim must
+	// receive a new notification rather than wait for its one-second idle timer.
+	h.webSurfaces.mu.Lock()
+	var receiver *surfaceMethodReceiver
+	for _, live := range h.webSurfaces.byOrigin {
+		if live.request.SurfaceInstanceID == req.SurfaceInstanceID {
+			receiver = live.methodReceiver
+		}
+	}
+	h.webSurfaces.mu.Unlock()
+	if receiver == nil {
+		t.Fatal("bound receiver is missing")
+	}
+	select {
+	case <-receiver.wake:
+	default:
+	}
 	if _, err := h.CancelExecution(surfaceMethodTestContext(), executions[0].ID, "user_cancel"); err != nil {
 		t.Fatal(err)
 	}
@@ -396,6 +413,11 @@ func TestSurfaceMethodsOperationCancellationUsesExecutionLifecycle(t *testing.T)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("execution cancellation did not stop dispatch")
+	}
+	select {
+	case <-receiver.wake:
+	default:
+		t.Fatal("execution cancellation did not wake its waiting receiver")
 	}
 	terminal, err := h.GetExecution(surfaceMethodTestContext(), executions[0].ID)
 	if err != nil || terminal.Status != execution.StatusCanceled {

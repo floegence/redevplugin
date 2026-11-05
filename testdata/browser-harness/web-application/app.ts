@@ -1,4 +1,4 @@
-import { PluginBridgeClient, openPluginConnection } from "../../../packages/redevplugin-ui/src/plugin.js";
+import { PluginBridgeClient, openPluginConnection, pluginKV } from "../../../packages/redevplugin-ui/src/plugin.js";
 const bridge = new PluginBridgeClient();
 await bridge.ready();
 const connection = await openPluginConnection("api");
@@ -85,4 +85,16 @@ await bridge.registerMethod("document.apply", (params, { signal }) => {
   if (!document.execCommand("insertText", false, String(params.text))) throw new Error("Native editing transaction failed");
   return { revision: documentRevision, conflict: false };
 });
+await bridge.registerMethod("document.wait", (_params, { signal }) => new Promise((_resolve, reject) => {
+  Object.assign(state, { waiting: true, canceled: false });
+  const cancel = () => { Object.assign(state, { waiting: false, canceled: true }); reject(signal.reason); };
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
+}));
 Object.assign(state, { methodsReady: true });
+const performanceStore = pluginKV<{ index: number }>("performance");
+Object.assign(globalThis, { performanceResource: async (index: number) => {
+  const saved = await performanceStore.put("sample", { index });
+  const read = await performanceStore.read("sample");
+  if (read?.value.index !== index || read.etag !== saved.etag) throw new Error("Resource roundtrip lost data");
+} });

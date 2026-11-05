@@ -478,6 +478,12 @@ func (h *Host) invokeSurfaceMethod(ctx context.Context, record registry.PluginRe
 		dispatch.dispatched = call.claimed
 		delete(receiver.calls, invocationID)
 		receiver.mu.Unlock()
+		// A claim may already be waiting with this invocation in its active set.
+		// Wake that receiver so cancellation does not wait for the idle timer.
+		select {
+		case receiver.wake <- struct{}{}:
+		default:
+		}
 		if !dispatch.dispatched {
 			return dispatch, &mutation.Error{Outcome: mutation.OutcomeNotCommitted, Err: callCtx.Err()}
 		}

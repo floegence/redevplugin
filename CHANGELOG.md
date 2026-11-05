@@ -2,6 +2,8 @@
 
 ## v3.20.0
 
+- Wake the exact Surface receiver when an invocation is canceled instead of delaying application notification until the idle claim timer; preserve claimed-call unknown outcomes and existing execution authority.
+- Retain source-bound browser baselines for local and delayed method calls, private-resource roundtrips, real cancellation, and independent Surface cleanup, with explicitly scoped heap and DOM observations.
 - Keep mobile example details at a stable height so late content updates cannot move the close target during a pointer gesture. Retain concise, viewport-specific browser failure evidence and classify mixed browser/network failures as check failures.
 - Add bounded, cancellable waiting for the shared local gate without interrupting its owner or weakening the complete stage plan and evidence checks.
 - Compare captured source against the package's exact verified canonical manifest, preserving empty or omitted optional declarations and authored array order while rejecting stale output.
