@@ -3867,10 +3867,11 @@ element("action-recover").onclick = () => {
   void (async () => {
     const uncertain = actionUncertain;
     if (!uncertain || actionPending) return;
-    const approved = await confirmReview("Review uncertain action", uncertain, void 0, {
+    const approved = await confirmReview(uncertain.intent_id, uncertain, void 0, {
       title: "Review uncertain result",
       description: "Check the application and its observations first. The previous action may already have completed. Continuing allows another action; it does not retry the previous one.",
-      confirmLabel: "Allow another action"
+      confirmLabel: "Allow another action",
+      detailsLabel: "Submitted request"
     });
     if (!approved || actionUncertain !== uncertain) return;
     actionUncertain = void 0;
@@ -4066,6 +4067,7 @@ function confirmAction(intent, copy) {
   if (intent.signal.aborted || dialog.open) return Promise.resolve(false);
   const previous = document.activeElement;
   element("confirmation-title").textContent = copy?.title ?? "Review plugin action";
+  element("confirmation-details").textContent = copy?.detailsLabel ?? "Proposed effects";
   element("confirmation-description").textContent = copy?.description ?? "This action needs your approval. Review the method and its proposed effects before continuing.";
   element("confirmation-approve").textContent = copy?.confirmLabel ?? "Approve action";
   element("confirmation-method").textContent = intent.method;

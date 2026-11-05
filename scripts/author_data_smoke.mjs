@@ -87,7 +87,7 @@ try{
  await second.unrouteAll({behavior:"wait"});
  await refreshState();assert.equal(await second.getByRole("button",{name:"Run action",exact:true}).isDisabled(),true);
  const recovery=second.getByRole("button",{name:"Review uncertain result",exact:true});
- await recovery.click();await second.keyboard.press("Escape");
+ await recovery.click();assert.equal(await second.locator("#confirmation-details").textContent(),"Submitted request");assert.equal(await second.locator("#confirmation-method").textContent(),"document.replace");await second.keyboard.press("Escape");
  assert.equal(await second.getByRole("button",{name:"Run action",exact:true}).isDisabled(),true);
  assert.equal(await recovery.evaluate(element=>element===document.activeElement),true);
  const requestsAfterUnknown=[];const observe=request=>{if(new URL(request.url()).pathname.endsWith("/intents/invoke"))requestsAfterUnknown.push(request.url());};second.on("request",observe);
