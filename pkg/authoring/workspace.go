@@ -619,7 +619,7 @@ func (s *WorkspaceStore) Capture(ctx context.Context, owner Owner, id string) (A
 		return Artifact{}, err
 	}
 	// Package canonical bytes preserve authored field presence and array order.
-	// Re-encoding the normalized projection would change signed identity.
+	// Re-encoding the normalized projection would change package identity.
 	if !bytes.Equal(canonical, pkg.CanonicalManifestBytes) {
 		return Artifact{}, errors.New("packaged manifest differs from source; rebuild first")
 	}
