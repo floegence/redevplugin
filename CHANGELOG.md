@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.18.0
+
+- Keep the default Web application free of unused Host methods and intents, so an ordinary browser-only plugin does not start a Surface method receiver or issue its polling requests. Resource-oriented templates retain their declared actions, and the author preview hides action and resource tools when the package declares none.
+- Stop method delivery polling after the final registration is removed and claimed calls settle; resume it when the application registers a method again.
+- Streamline the first preview workflow to initialization, dependency installation, and `dev`; keep doctor and check as explicit troubleshooting and pre-publication commands.
+- Share author toolchain and dependency readiness checks with `dev`, reporting actionable failures before a development environment is opened.
+- Add an executable host-neutral embedding reference for authenticated inventory, installation, Surface lifecycle, and restart reconciliation.
+
 ## v3.19.0
 
 - Expose owner-scoped paginated inspected-install receipts so reload and restart recovery retains plugin identity and mutation outcome before installation completes.
@@ -32,12 +40,6 @@
 
 ## v3.15.2
 
-- Add the host-neutral author candidate handoff types and schema for binding a reviewed candidate to its source, package, owner, generation, and expiry.
-- Keep the default Web application free of unused Host methods and intents, so an ordinary browser-only plugin does not start a Surface method receiver or issue its polling requests. Resource-oriented templates retain their declared actions, and the author preview hides action and resource tools when the package declares none.
-- Stop method delivery polling after the final registration is removed and claimed calls settle; resume it when the application registers a method again.
-- Streamline the first preview workflow to initialization, dependency installation, and `dev`; keep doctor and check as explicit troubleshooting and pre-publication commands.
-- Share author toolchain and dependency readiness checks with `dev`, reporting actionable failures before a development environment is opened.
-- Add an executable host-neutral embedding reference for authenticated inventory, installation, Surface lifecycle, and restart reconciliation.
 - Isolate the runaway Worker fuel-exhaustion test with an explicit small fuel budget and a typed budget-failure assertion while retaining its independent two-second deadline. Production fuel, deadline, cancellation and revocation policies are unchanged.
 - Include the synchronized TCP and UDP closure fix from v3.15.1. That immutable tag did not complete release qualification because the prior test could reach its deadline before exhausting fuel on a loaded runner; it is not a host-consumable platform release.
 
