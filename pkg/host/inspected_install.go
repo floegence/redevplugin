@@ -14,6 +14,10 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
+// ErrInspectedInstallNotFound identifies an absent owner-scoped operation.
+// Hosts may reconcile this outcome without depending on the internal store.
+var ErrInspectedInstallNotFound = errors.New("inspected installation operation not found")
+
 type StartInspectedInstallRequest struct {
 	RequestID             string `json:"request_id"`
 	InspectionID          string `json:"inspection_id"`
@@ -131,6 +135,9 @@ func (h *Host) GetInspectedInstall(ctx context.Context, requestID string) (Inspe
 		return InspectedInstallOperation{}, err
 	}
 	op, err := h.controlStore.Executions().GetInspectedInstall(ctx, executionOwner(session), requestID)
+	if errors.Is(err, controlstore.ErrRecordNotFound) {
+		return InspectedInstallOperation{}, ErrInspectedInstallNotFound
+	}
 	if err != nil {
 		return InspectedInstallOperation{}, err
 	}

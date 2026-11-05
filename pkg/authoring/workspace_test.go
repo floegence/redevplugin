@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/floegence/redevplugin/v3/pkg/authorproject"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
@@ -303,5 +305,75 @@ func TestWorkspaceInitializationRecoversEveryPersistedStage(t *testing.T) {
 				t.Fatal("rebound initialization", err)
 			}
 		})
+	}
+}
+
+func TestWorkspaceBuildFailureSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "authors")
+	owner := Owner{"user", "env"}
+	s, err := OpenWorkspaceStore(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.Create(ctx, owner, "failed-build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Initialize(ctx, owner, w.ID, "dev.example.failed", "Failed", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(w.SourceDirectory, "manifest.json"), []byte("invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Build(ctx, owner, w.ID, authorproject.PipelineOptions{}); err == nil {
+		t.Fatal("invalid manifest accepted")
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenWorkspaceStore(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	report, err := s.BuildReport(ctx, owner, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report == nil || report.Status != "failed" || report.Error == "" || len(report.Stages) == 0 {
+		t.Fatalf("lost report: %+v", report)
+	}
+	if _, err = s.BuildReport(ctx, Owner{"other", "env"}, w.ID); !errors.Is(err, ErrWorkspaceNotFound) {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceRecoversInterruptedBuildReport(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "authors")
+	owner := Owner{"user", "env"}
+	s, err := OpenWorkspaceStore(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.Create(ctx, owner, "interrupted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.saveBuildReport(ctx, BuildReport{WorkspaceID: w.ID, Status: "running", StartedAt: time.Now(), Stages: []authorproject.Stage{}, Commands: []authorproject.CommandResult{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenWorkspaceStore(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	report, err := s.BuildReport(ctx, owner, w.ID)
+	if err != nil || report == nil || report.Status != "interrupted" {
+		t.Fatalf("report: %+v, %v", report, err)
 	}
 }

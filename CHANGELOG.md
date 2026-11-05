@@ -2,6 +2,9 @@
 
 ## v3.17.0
 
+- Persist failed author build stages and bounded command output independently of successful artifacts; mark interrupted attempts on restart.
+- Expose owner-scoped inspected-install absence through a public Go error so hosts can safely recover an interrupted start without importing internal storage.
+
 - Extract the CLI author templates, persistent development state and preview coordinator into the embeddable `pkg/authoring` library.
 - Add owner-bound managed workspaces, immutable retained package artifacts, explicit build/capture, isolated preview Hosts and exact preview selection recovery.
 - Route author Web Surfaces through the normal dedicated-origin sandbox, HTTP guard and Surface SDK; do not introduce an alternate renderer or implicit permission grants.

@@ -20,5 +20,19 @@
         "duration_ms": 0
       }
     ]
+  },
+  "build_report": {
+    "workspace_id": "author_AAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "status": "failed",
+    "started_at": "2026-11-05T00:00:00Z",
+    "stages": [
+      {
+        "name": "manifest",
+        "status": "failed",
+        "duration_ms": 1
+      }
+    ],
+    "commands": [],
+    "error": "Manifest validation failed"
   }
 }

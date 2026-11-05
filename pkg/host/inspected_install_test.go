@@ -182,3 +182,11 @@ func TestInspectedInstallConcurrentRequestClaims(t *testing.T) {
 		id = op.Execution.ID
 	}
 }
+
+func TestInspectedInstallMissingHasPublicIdentity(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	configureExternalPackageTestModule(h, &externalPackageTestStage{}, registry.SignatureAssessment{})
+	if _, err := h.GetInspectedInstall(hostTestContext(), "never-started"); !errors.Is(err, ErrInspectedInstallNotFound) {
+		t.Fatalf("missing operation: %v", err)
+	}
+}

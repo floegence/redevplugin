@@ -3503,7 +3503,7 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrInstallInterrupted
 	case errors.Is(err, registry.ErrReleaseInstallOperationConflict), errors.Is(err, host.ErrPluginAlreadyInstalled):
 		return security.ErrInstallStateConflict
-	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound):
+	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound), errors.Is(err, host.ErrInspectedInstallNotFound):
 		return security.ErrExecutionNotFound
 	case errors.Is(err, registry.ErrInvalidReleaseInstallOperation):
 		return security.ErrInvalidRequest
@@ -3617,7 +3617,7 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusServiceUnavailable
 	case errors.Is(err, registry.ErrReleaseInstallOperationConflict), errors.Is(err, host.ErrPluginAlreadyInstalled):
 		return http.StatusConflict
-	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound):
+	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound), errors.Is(err, host.ErrInspectedInstallNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, registry.ErrInvalidReleaseInstallOperation):
 		return http.StatusBadRequest
@@ -3646,7 +3646,7 @@ func errorCodeForExecutionError(err error) security.ErrorCode {
 		return security.ErrExecutionBlocked
 	case errors.Is(err, execution.ErrSequenceConflict):
 		return security.ErrInvalidRequest
-	case errors.Is(err, controlstore.ErrRecordNotFound):
+	case errors.Is(err, controlstore.ErrRecordNotFound), errors.Is(err, host.ErrInspectedInstallNotFound):
 		return security.ErrExecutionNotFound
 	default:
 		return security.ErrExecutionNotFound
@@ -3663,7 +3663,7 @@ func httpStatusForExecutionError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, execution.ErrSequenceConflict):
 		return http.StatusBadRequest
-	case errors.Is(err, controlstore.ErrRecordNotFound):
+	case errors.Is(err, controlstore.ErrRecordNotFound), errors.Is(err, host.ErrInspectedInstallNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, host.ErrActionDenied):
 		return http.StatusForbidden

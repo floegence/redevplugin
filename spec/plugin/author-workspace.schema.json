@@ -9,6 +9,9 @@
     },
     {
       "$ref": "#/$defs/artifact"
+    },
+    {
+      "$ref": "#/$defs/build_report"
     }
   ],
   "$defs": {
@@ -110,6 +113,98 @@
               }
             }
           }
+        }
+      }
+    },
+    "build_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace_id",
+        "status",
+        "started_at",
+        "stages",
+        "commands"
+      ],
+      "properties": {
+        "workspace_id": {
+          "type": "string",
+          "pattern": "^author_[A-Z2-7]{26}$"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "passed",
+            "failed",
+            "interrupted"
+          ]
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "status",
+              "duration_ms"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "enum": [
+                  "passed",
+                  "failed",
+                  "not_run"
+                ]
+              },
+              "duration_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "arguments",
+              "output",
+              "truncated",
+              "duration_ms"
+            ],
+            "properties": {
+              "arguments": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "output": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "duration_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "error": {
+          "type": "string"
         }
       }
     }

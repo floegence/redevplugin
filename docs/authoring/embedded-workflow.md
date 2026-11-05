@@ -15,6 +15,10 @@ command execution approval. Opening, listing, capturing, previewing, inspecting,
 and deleting do not execute author commands. `Capture` validates existing output
 and source-manifest equality; its package stage is not evidence that tests ran.
 
+`BuildReport` retains the latest attempt, actual stages and bounded command output
+separately from the last successful artifact. Restart marks an unfinished build
+interrupted; a failed build never replaces the preview or reports stale success.
+
 Each artifact contains immutable package bytes, package hash, source snapshot,
 and actual stage results. Later source edits do not invalidate it. Readback
 revalidates package integrity and identity. The source hash describes provenance;
@@ -53,7 +57,8 @@ environment before removing its workspace; product source tools must also stop.
 bytes into the production Host's external-package inspection. Inspection expiry
 requires a new review, not a new build. `StartInspectedInstall` accepts that exact
 review and a stable request ID. `GetInspectedInstall` queries the original result
-across session renewal and process restart. Both are available in the HTTP
+across session renewal and process restart. An absent operation returns the public
+`ErrInspectedInstallNotFound` and HTTP `execution_not_found`. Both are available in the HTTP
 adapter and generated TypeScript client. A lost response must be followed by
 querying the same request, never a fresh installation request.
 

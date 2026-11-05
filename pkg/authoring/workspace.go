@@ -47,6 +47,15 @@ type Workspace struct {
 	DevelopmentDirectory string    `json:"development_directory"`
 	CreatedAt            time.Time `json:"created_at"`
 }
+type BuildReport struct {
+	WorkspaceID string                        `json:"workspace_id"`
+	Status      string                        `json:"status"`
+	StartedAt   time.Time                     `json:"started_at"`
+	Stages      []authorproject.Stage         `json:"stages"`
+	Commands    []authorproject.CommandResult `json:"commands"`
+	Error       string                        `json:"error,omitempty"`
+}
+
 type Artifact struct {
 	ID            string                `json:"artifact_id"`
 	WorkspaceID   string                `json:"workspace_id"`
@@ -76,7 +85,8 @@ INSERT INTO author_schema VALUES(1,'redevplugin_author',1);
 CREATE TABLE workspaces(id TEXT PRIMARY KEY,owner_user TEXT NOT NULL,owner_env TEXT NOT NULL,request_id TEXT NOT NULL,created_at INTEGER NOT NULL,deleting INTEGER NOT NULL DEFAULT 0 CHECK(deleting IN (0,1)),UNIQUE(owner_user,owner_env,request_id));
 CREATE TABLE artifacts(id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,source_hash TEXT NOT NULL,package_hash TEXT NOT NULL,plugin_id TEXT NOT NULL,version TEXT NOT NULL,created_at INTEGER NOT NULL,stages TEXT NOT NULL);
 CREATE TABLE initializations(workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,plugin_id TEXT NOT NULL,display_name TEXT NOT NULL,template TEXT NOT NULL,stage TEXT NOT NULL CHECK(stage IN ('building','prepared','complete')));
-CREATE TABLE preview_selection(workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE, active_artifact TEXT NOT NULL DEFAULT '', pending_artifact TEXT NOT NULL DEFAULT '');`
+CREATE TABLE preview_selection(workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE, active_artifact TEXT NOT NULL DEFAULT '', pending_artifact TEXT NOT NULL DEFAULT '');
+CREATE TABLE build_reports(workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE, report TEXT NOT NULL);`
 
 var workspaceIDPattern = regexp.MustCompile(`^author_[A-Z2-7]{26}$`)
 var artifactIDPattern = regexp.MustCompile(`^artifact_[A-Z2-7]{26}$`)
@@ -216,6 +226,9 @@ func OpenWorkspaceStore(ctx context.Context, root string) (_ *WorkspaceStore, er
 		if _, err = s.Initialize(ctx, p.owner, p.id, p.plugin, p.name, p.template); err != nil {
 			return nil, err
 		}
+	}
+	if err = s.recoverBuildReports(ctx); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -462,7 +475,7 @@ func (s *WorkspaceStore) syncDirectory(path string) error {
 	}
 	return errors.Join(f.Sync(), f.Close())
 }
-func (s *WorkspaceStore) Build(ctx context.Context, owner Owner, id string, options authorproject.PipelineOptions) (Artifact, error) {
+func (s *WorkspaceStore) Build(ctx context.Context, owner Owner, id string, options authorproject.PipelineOptions) (_ Artifact, err error) {
 	s.mu.Lock()
 	w, err := s.get(ctx, owner, id)
 	if err != nil {
@@ -476,20 +489,99 @@ func (s *WorkspaceStore) Build(ctx context.Context, owner Owner, id string, opti
 		s.mu.Unlock()
 		return Artifact{}, errors.New("author build is already running")
 	}
+	report := BuildReport{WorkspaceID: id, Status: "running", StartedAt: time.Now().UTC(), Stages: []authorproject.Stage{}, Commands: []authorproject.CommandResult{}}
+	if err = s.saveBuildReport(ctx, report); err != nil {
+		s.mu.Unlock()
+		return Artifact{}, err
+	}
 	s.builds[id] = true
 	s.mu.Unlock()
-	defer func() { s.mu.Lock(); delete(s.builds, id); s.mu.Unlock() }()
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.builds, id)
+		report.Status = "passed"
+		if err != nil {
+			report.Status = "failed"
+			report.Error = err.Error()
+		}
+		err = errors.Join(err, s.saveBuildReport(context.WithoutCancel(ctx), report))
+	}()
 	project, err := authorproject.Load(w.SourceDirectory)
 	if err != nil {
 		return Artifact{}, err
 	}
 	result, err := project.Build(ctx, options)
+	report.Stages = result.Stages
+	report.Commands = result.Commands
 	if err != nil {
 		return Artifact{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.saveArtifact(ctx, w, result)
+}
+
+func (s *WorkspaceStore) saveBuildReport(ctx context.Context, report BuildReport) error {
+	raw, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, "INSERT INTO build_reports VALUES(?,?) ON CONFLICT(workspace_id) DO UPDATE SET report=excluded.report", report.WorkspaceID, string(raw))
+	return err
+}
+
+// BuildReport returns the latest actual build attempt independently of the last
+// successful artifact. A process interruption never turns a running check green.
+func (s *WorkspaceStore) BuildReport(ctx context.Context, owner Owner, id string) (*BuildReport, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.get(ctx, owner, id); err != nil {
+		return nil, err
+	}
+	var raw string
+	err := s.db.QueryRowContext(ctx, "SELECT report FROM build_reports WHERE workspace_id=?", id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var report BuildReport
+	err = json.Unmarshal([]byte(raw), &report)
+	return &report, err
+}
+func (s *WorkspaceStore) recoverBuildReports(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, "SELECT report FROM build_reports")
+	if err != nil {
+		return err
+	}
+	var pending []BuildReport
+	for rows.Next() {
+		var raw string
+		if err = rows.Scan(&raw); err != nil {
+			break
+		}
+		var report BuildReport
+		if err = json.Unmarshal([]byte(raw), &report); err != nil {
+			break
+		}
+		if report.Status == "running" {
+			report.Status = "interrupted"
+			report.Error = "Build interrupted before a durable result"
+			pending = append(pending, report)
+		}
+	}
+	err = errors.Join(err, rows.Err(), rows.Close())
+	if err != nil {
+		return err
+	}
+	for _, report := range pending {
+		if err = s.saveBuildReport(ctx, report); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Capture validates existing output without running project commands. The normal
