@@ -5,6 +5,23 @@ updates local to the changed controls and use browser Workers for CPU work that
 would block input. Package scripts, CSS, fonts and Worker assets; normal Surface
 CSP, dedicated origins and network confinement still apply.
 
+A pure Web Surface does not start a plugin Worker or use Worker IPC. Opening it
+still requires platform requests for authorization, assets and the isolated
+Surface handshake. An open Surface also renews its authority; these control
+requests continue even when the application makes no business calls. Declared
+resources and Host actions generate requests when used. Applications that
+register Surface methods also use a receiver to claim calls and observe their
+cancellation. With no registered methods, the receiver does not poll. After the
+last method is removed, it continues only until already claimed calls settle.
+
+The release browser performance gate measures opening the fixture and verifies
+that a plain Surface makes zero method receiver requests during a 1.5-second
+idle observation. This count is specific to the method endpoint; it is not a
+count of all startup, renewal or resource traffic. The opening measurement
+includes fixture setup and readiness and is not a product-wide cold-start or
+first-paint guarantee. Measure the actual product and workload separately when
+making latency or memory claims.
+
 Pure Web applications access declared private resources directly with the
 Surface SDK. Do not add a forwarding Worker for storage alone. The data template
 saves one user action, retains edits made during a save, checks the expected
