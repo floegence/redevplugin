@@ -60,22 +60,7 @@ func runAuthorCheck(ctx context.Context, root string, doctor bool) error {
 	stages := []authorproject.Stage{}
 	tools := map[string]bool{}
 	if project != nil {
-		commands := [][]string{project.Config.Build, project.Config.Test}
-		if len(project.Config.Prepare) > 0 {
-			commands = append(commands, project.Config.Prepare)
-		}
-		if len(project.Config.Typecheck) > 0 {
-			commands = append(commands, project.Config.Typecheck)
-		}
-		for _, argv := range commands {
-			_, failure := exec.LookPath(argv[0])
-			tools[argv[0]] = failure == nil
-			if failure != nil {
-				add("TOOL_UNAVAILABLE", argv[0], "Install the project's declared build/test tool")
-			}
-		}
-		checkAuthorDependencies(project, add)
-		checkAuthorToolchains(ctx, project, len(m.Workers) > 0, add)
+		tools = checkAuthorReadiness(ctx, project, len(m.Workers) > 0, true, add)
 		if !doctor && len(diagnostics) == 0 {
 			result, failure := project.Build(ctx, authorproject.PipelineOptions{Test: true})
 			stages = result.Stages
@@ -96,6 +81,27 @@ func runAuthorCheck(ctx context.Context, root string, doctor bool) error {
 	}
 	return nil
 }
+
+func checkAuthorReadiness(ctx context.Context, project *authorproject.Project, worker, includeTests bool, add func(string, string, string)) map[string]bool {
+	commands := [][]string{project.Config.Build, project.Config.Prepare, project.Config.Typecheck}
+	if includeTests {
+		commands = append(commands, project.Config.Test)
+	}
+	tools := map[string]bool{}
+	for _, argv := range commands {
+		if len(argv) == 0 {
+			continue
+		}
+		_, failure := exec.LookPath(argv[0])
+		tools[argv[0]] = failure == nil
+		if failure != nil {
+			add("TOOL_UNAVAILABLE", argv[0], "Install the project's declared build tool")
+		}
+	}
+	checkAuthorDependencies(project, commands, add)
+	checkAuthorToolchains(ctx, project, commands, worker, add)
+	return tools
+}
 func authorCommandOutput(commands []authorproject.CommandResult) string {
 	var output strings.Builder
 	for _, command := range commands {
@@ -103,9 +109,9 @@ func authorCommandOutput(commands []authorproject.CommandResult) string {
 	}
 	return output.String()
 }
-func checkAuthorDependencies(project *authorproject.Project, add func(string, string, string)) {
+func checkAuthorDependencies(project *authorproject.Project, commands [][]string, add func(string, string, string)) {
 	usesNPM := false
-	for _, argv := range [][]string{project.Config.Build, project.Config.Test, project.Config.Typecheck} {
+	for _, argv := range commands {
 		if len(argv) > 0 && (argv[0] == "npm" || argv[0] == "npm.cmd") {
 			usesNPM = true
 		}
@@ -153,26 +159,25 @@ func checkAuthorDependencies(project *authorproject.Project, add func(string, st
 	}
 }
 
-func checkAuthorToolchains(ctx context.Context, p *authorproject.Project, worker bool, add func(string, string, string)) {
+func checkAuthorToolchains(ctx context.Context, p *authorproject.Project, commands [][]string, worker bool, add func(string, string, string)) {
 	usesNPM := false
-	for _, command := range [][]string{p.Config.Build, p.Config.Test, p.Config.Typecheck} {
-		if len(command) > 0 && command[0] == "npm" {
+	for _, command := range commands {
+		if len(command) > 0 && (command[0] == "npm" || command[0] == "npm.cmd") {
 			usesNPM = true
 		}
 	}
-	if !usesNPM {
-		return
-	}
-	value, err := exec.CommandContext(ctx, "node", "--version").Output()
-	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(value)), "v26.") {
-		add("TOOLCHAIN_MISMATCH", "node", "Use Node.js 26 for the generated author project")
+	if usesNPM {
+		value, err := exec.CommandContext(ctx, "node", "--version").Output()
+		if err != nil || !strings.HasPrefix(strings.TrimSpace(string(value)), "v26.") {
+			add("TOOLCHAIN_MISMATCH", "node", "Use Node.js 26 for the generated author project")
+		}
 	}
 	if !worker {
 		return
 	}
 	command := exec.CommandContext(ctx, "rustc", "--version")
 	command.Dir = p.Root
-	value, err = command.Output()
+	value, err := command.Output()
 	if err != nil || !strings.HasPrefix(string(value), "rustc 1.98.0 ") {
 		add("TOOLCHAIN_MISMATCH", "rustc", "Install Rust 1.98.0 with rustup toolchain install 1.98.0 --profile minimal")
 	}

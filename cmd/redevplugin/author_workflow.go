@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	_ "embed"
@@ -11,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/authoring"
@@ -18,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -92,6 +96,21 @@ func runAuthorDev(ctx context.Context, args []string) (runErr error) {
 	project, err := authorproject.Load(root)
 	if err != nil {
 		return err
+	}
+	rawManifest, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		return fmt.Errorf("manifest.json: %w", err)
+	}
+	manifestDoc, _, err := manifest.DecodeCanonical(bytes.NewReader(rawManifest))
+	if err != nil {
+		return fmt.Errorf("manifest.json: %w", err)
+	}
+	var diagnostics []string
+	checkAuthorReadiness(ctx, project, len(manifestDoc.Workers) > 0, false, func(code, path, message string) {
+		diagnostics = append(diagnostics, code+" ("+path+"): "+message)
+	})
+	if len(diagnostics) > 0 {
+		return fmt.Errorf("author project needs attention:\n%s", strings.Join(diagnostics, "\n"))
 	}
 	if _, err := project.Snapshot(ctx); err != nil {
 		return err
