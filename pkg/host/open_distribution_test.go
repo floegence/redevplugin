@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
@@ -339,5 +340,27 @@ func TestOpenDistributionInspectionRejectsStaleCatalogEvidence(t *testing.T) {
 				t.Fatalf("inspection installed package: %v %v", records, err)
 			}
 		})
+	}
+}
+
+func TestOpenDistributionAutomaticUpdateBindsExactNetworkAuthorization(t *testing.T) {
+	current := registry.PluginRecord{PublisherID: "example", PluginID: "example.app", Version: "1.0.0", PackageHash: "one", AutomaticUpdates: true, PackageSourceProvenance: registry.PackageSourceProvenance{Kind: registry.PackageSourcePackageURL, SourceURL: "https://example.com/plugin.redevplugin"}, SecurityCapabilitySummary: registry.SecurityCapabilitySummary{CanonicalJSON: `{"network":[{"connector_id":"api","auth_declared":true,"tls_declared":true}]}`}}
+	current.Manifest.NetworkAccess = &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{{ConnectorID: "api", Auth: map[string]any{"secret_ref": "original"}, TLS: map[string]any{"server_name": "api.example.com"}}}}
+	for _, field := range []string{"auth", "tls", "permissions"} {
+		next := current
+		next.Version = "1.1.0"
+		next.PackageHash = "two"
+		next.Manifest.NetworkAccess = &manifest.NetworkAccessSpec{Connectors: append([]manifest.NetworkConnectorSpec(nil), current.Manifest.NetworkAccess.Connectors...)}
+		switch field {
+		case "auth":
+			next.Manifest.NetworkAccess.Connectors[0].Auth = map[string]any{"secret_ref": "another"}
+		case "tls":
+			next.Manifest.NetworkAccess.Connectors[0].TLS = map[string]any{"server_name": "different.example.com"}
+		case "permissions":
+			next.Manifest.Permissions = []manifest.PermissionID{manifest.PermissionNetworkClient}
+		}
+		if err := validateAutomaticUpdate(current, next); !errors.Is(err, ErrUpdateReviewRequired) {
+			t.Fatalf("changed %s automatically accepted: %v", field, err)
+		}
 	}
 }

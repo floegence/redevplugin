@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
@@ -137,6 +138,12 @@ func validateAutomaticUpdate(current, next registry.PluginRecord) error {
 	}
 	if after.Compare(before) <= 0 {
 		return fmt.Errorf("%w: no newer version", ErrExternalPackageRequestInvalid)
+	}
+	// The display summary intentionally reduces network auth/TLS to booleans.
+	// Automatic approval must also compare their exact declarations and the
+	// package permission ceiling, including currently unused permissions.
+	if !slices.Equal(current.Manifest.Permissions, next.Manifest.Permissions) || !reflect.DeepEqual(current.Manifest.NetworkAccess, next.Manifest.NetworkAccess) {
+		return fmt.Errorf("%w: network authorization or permissions changed", ErrUpdateReviewRequired)
 	}
 	var a, b ExternalPackageSecuritySummary
 	if json.Unmarshal([]byte(current.SecurityCapabilitySummary.CanonicalJSON), &a) != nil || json.Unmarshal([]byte(next.SecurityCapabilitySummary.CanonicalJSON), &b) != nil {
