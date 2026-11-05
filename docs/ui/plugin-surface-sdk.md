@@ -172,7 +172,8 @@ routes exposed by `pkg/httpadapter`, including:
 - repository plugin selection and package URL, GitHub, or upload inspection;
 - one `startInspectedInstall` path for official, community, and generated
   packages, bound to the inspection ID and exact package digest, with durable
-  request recovery through `getInspectedInstall`;
+  request recovery through `getInspectedInstall` and paginated receipt recovery
+  through `listInspectedInstalls`, including attempts with no installed record;
 - original-source update inspection and saved automatic-update preferences;
 - downgrade, enable, disable, uninstall, and surface open;
 - authenticated owner/session surface-scope revocation;

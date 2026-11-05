@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -204,6 +205,49 @@ func TestInspectedInstallMissingHasPublicIdentity(t *testing.T) {
 	configureExternalPackageTestModule(h, &externalPackageTestStage{})
 	if _, err := h.GetInspectedInstall(hostTestContext(), "never-started"); !errors.Is(err, ErrInspectedInstallNotFound) {
 		t.Fatalf("missing operation: %v", err)
+	}
+}
+
+func TestInspectedInstallListRecoversUninstalledIdentityAfterRestart(t *testing.T) {
+	options := testHostOptions{stateRoot: filepath.Join(t.TempDir(), "state"), productionStateOwners: true}
+	h, _, _ := newTestHostWithOptions(t, options)
+	ctx := hostTestContext()
+	session, _ := sessionctx.FromContext(ctx)
+	for i := range 3 {
+		_, _, err := h.controlStore.Executions().StartInspectedInstall(ctx, executionOwner(session), controlstore.InspectedInstall{RequestID: fmt.Sprintf("request-%d", i), InspectionID: fmt.Sprintf("inspection-%d", i), PackageSHA256: "sha256:" + strings.Repeat("a", 64), PluginID: fmt.Sprintf("example.plugin%d", i), Version: "1.0.0", Execution: execution.Execution{PluginInstanceID: fmt.Sprintf("instance-%d", i), Kind: execution.KindOperation}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, _ := newTestHostWithOptions(t, options)
+	configureExternalPackageTestModule(reopened, &externalPackageTestStage{})
+	session.OwnerSessionHash = "renewed"
+	session.SessionChannelIDHash = "new-channel"
+	ctx = sessionctx.WithContext(context.Background(), session)
+	page, err := reopened.ListInspectedInstalls(ctx, ListInspectedInstallsRequest{Limit: 2})
+	if err != nil || len(page.Operations) != 2 || page.NextCursor == 0 {
+		t.Fatalf("first page: %+v %v", page, err)
+	}
+	for i, op := range page.Operations {
+		if op.RequestID != fmt.Sprintf("request-%d", i) || op.PluginID != fmt.Sprintf("example.plugin%d", i) || op.Execution.PluginInstanceID != fmt.Sprintf("instance-%d", i) || op.MutationOutcome != mutation.OutcomeUnknown || op.Execution.Status != execution.StatusFailed {
+			t.Fatalf("lost recovery identity: %+v", op)
+		}
+	}
+	last, err := reopened.ListInspectedInstalls(ctx, ListInspectedInstallsRequest{Cursor: page.NextCursor, Limit: 2})
+	if err != nil || len(last.Operations) != 1 || last.NextCursor != 0 || last.Operations[0].RequestID != "request-2" {
+		t.Fatalf("last page: %+v %v", last, err)
+	}
+	filtered, err := reopened.ListInspectedInstalls(ctx, ListInspectedInstallsRequest{PluginInstanceID: "instance-1"})
+	if err != nil || len(filtered.Operations) != 1 || filtered.Operations[0].PluginID != "example.plugin1" {
+		t.Fatalf("filtered page: %+v %v", filtered, err)
+	}
+	session.OwnerUserHash = "different-user"
+	foreign, err := reopened.ListInspectedInstalls(sessionctx.WithContext(context.Background(), session), ListInspectedInstallsRequest{})
+	if err != nil || len(foreign.Operations) != 0 {
+		t.Fatalf("cross-owner list: %+v %v", foreign, err)
 	}
 }
 

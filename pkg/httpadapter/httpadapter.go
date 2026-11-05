@@ -888,6 +888,7 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackageUpdate }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/install-operations", websecurity.RouteActionInstallInspectedPackage, func(h *Handler) http.HandlerFunc { return h.handleStartInspectedInstall }),
 	queryRoute("/_redevplugin/api/plugins/external-packages/install-operations/query", websecurity.RouteActionGetExecution, func(h *Handler) http.HandlerFunc { return h.handleGetInspectedInstall }),
+	queryRoute("/_redevplugin/api/plugins/external-packages/install-operations/list", websecurity.RouteActionListExecutions, func(h *Handler) http.HandlerFunc { return h.handleListInspectedInstalls }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/disable", websecurity.RouteActionDisablePlugin, func(h *Handler) http.HandlerFunc { return h.handleDisable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/uninstall", websecurity.RouteActionUninstallPlugin, func(h *Handler) http.HandlerFunc { return h.handleUninstall }),
@@ -4117,6 +4118,20 @@ func (h Handler) handleGetInspectedInstall(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		code := errorCodeForManagementError(err)
 		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.install-operation.query", code, err), errorDetailsForManagementError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
+}
+func (h Handler) handleListInspectedInstalls(w http.ResponseWriter, r *http.Request) {
+	var req host.ListInspectedInstallsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.ListInspectedInstalls(r.Context(), req)
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.install-operation.list", code, err), errorDetailsForManagementError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})

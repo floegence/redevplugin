@@ -4598,7 +4598,7 @@ var PluginPlatformClient = class {
     return this.#requestQuery("/_redevplugin/api/plugins/repository/plugins/query", request2, options);
   }
   setAutomaticUpdates(request2, options = {}) {
-    return this.#mutatePlugin("/_redevplugin/api/plugins/updates/preferences", request2, options);
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/updates/preferences", request2, options);
   }
   async inspectPluginUpdate(request2, options = {}) {
     const result = await this.#requestMutation("POST", "/_redevplugin/api/plugins/updates/inspect", request2, options);
@@ -4618,6 +4618,9 @@ var PluginPlatformClient = class {
   }
   getInspectedInstall(requestID, options = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/query", { request_id: requestID }, options);
+  }
+  listInspectedInstalls(request2 = {}, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/list", request2, options);
   }
   downgradePlugin(request2, options = {}) {
     return this.#mutatePlugin("/_redevplugin/api/plugins/downgrade", request2, options);

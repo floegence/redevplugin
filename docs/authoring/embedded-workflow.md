@@ -57,9 +57,14 @@ environment before removing its workspace; product source tools must also stop.
 bytes into the production Host's external-package inspection. Inspection expiry
 requires a new review, not a new build. `StartInspectedInstall` accepts that exact
 review and a stable request ID. `GetInspectedInstall` queries the original result
-across session renewal and process restart. An absent operation returns the public
-`ErrInspectedInstallNotFound` and HTTP `execution_not_found`. Both are available in the HTTP
-adapter and generated TypeScript client. A lost response must be followed by
+across session renewal and process restart.
+`ListInspectedInstalls` restores paginated request, package, plugin and outcome
+identities even when an attempt never produced an installed catalog record.
+Hosts use these receipts to restore progress after reload without guessing a
+plugin ID from an instance ID or introducing a second installation journal.
+An absent operation returns the public `ErrInspectedInstallNotFound` and HTTP
+`execution_not_found`. These operations are available in the HTTP adapter and
+generated TypeScript client. A lost response must be followed by
 querying the same request, never a fresh installation request.
 
 The operation uses the existing Execution authority. Control schema 6 migrates
@@ -68,8 +73,9 @@ Terminal receipts remain durable to prevent delayed replay; the owner may not
 replace a request's inspected identity. A running operation reports unknown
 outcome until completion. Restart recovery requires the exact operation ID in
 committed execution approval evidence, not just equal package bytes. Missing
-proof remains unknown and never causes automatic reinstallation. Packages require no signature or publisher trust. Missing grants still require
-explicit authorization after installation.
+proof remains unknown and never causes automatic reinstallation. Packages require
+no signature or publisher trust. Missing grants still require explicit
+authorization after installation.
 
 `Remove` deletes only generated workspace resources and retains a creation
 receipt, preventing a delayed create retry from resurrecting a deleted draft.

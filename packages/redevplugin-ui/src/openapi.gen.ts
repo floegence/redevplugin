@@ -313,6 +313,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/_redevplugin/api/plugins/external-packages/install-operations/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description List durable installation receipts for the authenticated user and environment, including attempts that have no installed catalog record. */
+        post: operations["listInspectedInstalls"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_redevplugin/api/plugins/enable": {
         parameters: {
             query?: never;
@@ -2471,6 +2488,15 @@ export interface components {
             operation_scope?: "plugin_install";
             cursor?: number;
             limit?: number;
+        };
+        ListInspectedInstallsRequest: {
+            plugin_instance_id?: string;
+            cursor?: number;
+            limit?: number;
+        };
+        InspectedInstallList: {
+            operations: components["schemas"]["InspectedInstallOperation"][];
+            next_cursor: number;
         };
         StartInspectedInstallRequest: {
             request_id: string;
@@ -5249,6 +5275,35 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["InspectedInstallOperationResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
+        };
+    };
+    listInspectedInstalls: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListInspectedInstallsRequest"];
+            };
+        };
+        responses: {
+            /** @description Paginated installation identities and authoritative outcomes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        data: components["schemas"]["InspectedInstallList"];
+                    };
+                };
+            };
             default: components["responses"]["PlatformErrorResponse"];
         };
     };

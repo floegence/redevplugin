@@ -80,6 +80,8 @@ export type PluginUploadedExternalPackageIntent = PlatformSchemas["ExternalPacka
 export type PluginExternalPackageInspection = PlatformSchemas["ExternalPackageInspection"];
 export type PluginStartInspectedInstallRequest = PlatformSchemas["StartInspectedInstallRequest"];
 export type PluginInspectedInstallOperation = PlatformSchemas["InspectedInstallOperation"];
+export type PluginInspectedInstallList = PlatformSchemas["InspectedInstallList"];
+export type PluginListInspectedInstallsRequest = PlatformSchemas["ListInspectedInstallsRequest"];
 export type PluginDowngradeRequest = PlatformSchemas["DowngradeRequest"];
 export type PluginEnableRequest = PlatformSchemas["EnableRequest"];
 export type PluginDisableRequest = PlatformSchemas["DisableRequest"];
@@ -351,6 +353,9 @@ export class PluginPlatformClient {
   }
   getInspectedInstall(requestID: string, options: PluginRequestOptions = {}): Promise<PluginInspectedInstallOperation> {
     return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/query", { request_id: requestID }, options);
+  }
+  listInspectedInstalls(request: PluginListInspectedInstallsRequest = {}, options: PluginRequestOptions = {}): Promise<PluginInspectedInstallList> {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/list", request, options);
   }
   downgradePlugin(request: PluginDowngradeRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#mutatePlugin("/_redevplugin/api/plugins/downgrade", request, options);

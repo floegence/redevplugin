@@ -93,6 +93,31 @@ func (v ExecutionView) GetInspectedInstall(ctx context.Context, owner ExecutionO
 	op.Execution = e
 	return op, nil
 }
+
+// ListInspectedInstalls projects existing Execution receipts, including attempts
+// that never created an installed record. No separate operation store is used.
+func (v ExecutionView) ListInspectedInstalls(ctx context.Context, owner ExecutionOwner, pluginInstanceID string, cursor uint64, limit int) ([]InspectedInstall, uint64, error) {
+	executions, next, err := v.ListOwnedWithOperationScope(ctx, pluginInstanceID, "plugin_install", owner, cursor, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	result := make([]InspectedInstall, 0, len(executions))
+	for _, item := range executions {
+		var requestID string
+		if err := v.store.db.QueryRowContext(ctx, `SELECT json_extract(operation_json,'$.request_id') FROM execution WHERE execution_id=? AND owner_user_hash=? AND owner_env_hash=?`, item.ID, owner.OwnerUserHash, owner.OwnerEnvHash).Scan(&requestID); err != nil {
+			return nil, 0, err
+		}
+		op, err := v.GetInspectedInstall(ctx, owner, requestID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if op.Execution.ID != item.ID {
+			return nil, 0, ErrIncompatible
+		}
+		result = append(result, op)
+	}
+	return result, next, nil
+}
 func (v ExecutionView) StartInspectedInstall(ctx context.Context, owner ExecutionOwner, op InspectedInstall) (InspectedInstall, bool, error) {
 	if err := v.ready(); err != nil {
 		return op, false, err

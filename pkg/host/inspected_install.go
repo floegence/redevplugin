@@ -33,6 +33,44 @@ type InspectedInstallOperation struct {
 	Version         string              `json:"version"`
 	MutationOutcome mutation.Outcome    `json:"mutation_outcome"`
 }
+type ListInspectedInstallsRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+	Cursor           uint64 `json:"cursor,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+}
+type InspectedInstallList struct {
+	Operations []InspectedInstallOperation `json:"operations"`
+	NextCursor uint64                      `json:"next_cursor"`
+}
+
+// ListInspectedInstalls restores installation identity without relying on an
+// installed catalog record or client-local request storage.
+func (h *Host) ListInspectedInstalls(ctx context.Context, req ListInspectedInstallsRequest) (InspectedInstallList, error) {
+	release, err := h.ensureOpen()
+	if err != nil {
+		return InspectedInstallList{}, err
+	}
+	defer release()
+	if err = h.requireFeature(FeatureExternalPackage); err != nil {
+		return InspectedInstallList{}, err
+	}
+	if strings.TrimSpace(req.PluginInstanceID) != req.PluginInstanceID || req.Limit < 0 || req.Limit > 500 || req.Cursor > 9007199254740991 {
+		return InspectedInstallList{}, ErrExternalPackageRequestInvalid
+	}
+	authorization, err := h.authorizeManagement(ctx, ManagementActionListExecutions, authorizationCollectionTarget(ResourceExecution), relatedAuthorizationTargets(authorizationTarget(ResourcePlugin, req.PluginInstanceID))...)
+	if err != nil {
+		return InspectedInstallList{}, err
+	}
+	operations, next, err := h.controlStore.Executions().ListInspectedInstalls(ctx, executionOwner(authorization.session), req.PluginInstanceID, req.Cursor, req.Limit)
+	if err != nil {
+		return InspectedInstallList{}, err
+	}
+	result := InspectedInstallList{Operations: make([]InspectedInstallOperation, 0, len(operations)), NextCursor: next}
+	for _, operation := range operations {
+		result.Operations = append(result.Operations, inspectedInstallProjection(operation))
+	}
+	return result, nil
+}
 
 func inspectedInstallProjection(op controlstore.InspectedInstall) InspectedInstallOperation {
 	return InspectedInstallOperation{Execution: op.Execution, RequestID: op.RequestID, InspectionID: op.InspectionID, PackageSHA256: op.PackageSHA256, PluginID: op.PluginID, Version: op.Version, MutationOutcome: op.Outcome}

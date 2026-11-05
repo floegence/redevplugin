@@ -67,6 +67,13 @@ func TestExternalPackageUploadInspectInstallAndUpdate(t *testing.T) {
 	var operation host.InspectedInstallOperation
 	decodeExternalPackageData(t, commitRaw, &operation)
 	waitHTTPInstall(t, handler, operation.RequestID)
+	listed := externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations/list", map[string]any{"limit": 1}, http.StatusOK)
+	var receipts host.InspectedInstallList
+	decodeExternalPackageData(t, listed, &receipts)
+	if len(receipts.Operations) != 1 || receipts.NextCursor != 0 || receipts.Operations[0].RequestID != operation.RequestID || receipts.Operations[0].PluginID != inspection.PluginID {
+		t.Fatalf("installation list lost receipt identity: %+v", receipts)
+	}
+	externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations/list", map[string]any{"limit": 501}, http.StatusBadRequest)
 	installed, err := pluginHost.ListPlugins(httpTestContext())
 	if err != nil || len(installed) != 1 {
 		t.Fatalf("installed: %+v %v", installed, err)

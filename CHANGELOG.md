@@ -2,6 +2,7 @@
 
 ## v3.19.0
 
+- Expose owner-scoped paginated inspected-install receipts so reload and restart recovery retains plugin identity and mutation outcome before installation completes.
 - Recheck GitHub package source identity after downloading without requiring immutable Releases, and retry expired failed inspection cleanup.
 - Open plugin distribution: ordinary packages and repository indexes replace plugin signatures, publisher trust registries, release references, and developer-mode admission. Platform release manifests, product runtime identity, sandbox authorization, and runtime lease signatures remain unchanged.
 - Select each indexed plugin's highest stable namespaced release; support multiple plugins per repository and identical asset names in separate releases. Atomically upsert index entries without dropping sibling projects.

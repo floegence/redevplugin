@@ -3351,6 +3351,9 @@ var PluginPlatformClient = class {
   getInspectedInstall(requestID, options = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/query", { request_id: requestID }, options);
   }
+  listInspectedInstalls(request = {}, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/list", request, options);
+  }
   downgradePlugin(request, options = {}) {
     return this.#mutatePlugin("/_redevplugin/api/plugins/downgrade", request, options);
   }

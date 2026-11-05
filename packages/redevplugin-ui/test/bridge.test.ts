@@ -2106,3 +2106,15 @@ test("repository discovery uses the shared query contract", async () => {
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/repository/plugins/query");
   assert.deepEqual(JSON.parse(String(fetch.calls[0]?.init.body)), { url: "https://github.com/example/plugins", host: "redeven" });
 });
+
+
+test("installation receipt lists preserve identity for restart recovery", async () => {
+  const fetch = new FakeFetch();
+  const receipt = { request_id: "saved-request", inspection_id: "old-inspection", plugin_id: "example.plugin", version: "1.0.0", package_sha256: `sha256:${"a".repeat(64)}`, mutation_outcome: "unknown", execution: { execution_id: "operation-1", plugin_instance_id: "new-instance", kind: "operation", status: "failed", cursor: 1, cancelable: false, created_at: "2026-11-05T00:00:00Z", updated_at: "2026-11-05T00:00:00Z" } };
+  fetch.push({ ok: true, data: { operations: [receipt], next_cursor: 4 } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const result = await client.listInspectedInstalls({ cursor: 2, limit: 1 });
+  assert.deepEqual(result, { operations: [receipt], next_cursor: 4 });
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/external-packages/install-operations/list");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { cursor: 2, limit: 1 });
+});
