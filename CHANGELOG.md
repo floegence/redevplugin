@@ -2,6 +2,7 @@
 
 ## v3.18.0
 
+- Compare captured source against the package's exact verified canonical manifest, preserving empty or omitted optional declarations and signed array order while rejecting stale output.
 - Keep the default Web application free of unused Host methods and intents, so an ordinary browser-only plugin does not start a Surface method receiver or issue its polling requests. Resource-oriented templates retain their declared actions, and the author preview hides action and resource tools when the package declares none.
 - Stop method delivery polling after the final registration is removed and claimed calls settle; resume it when the application registers a method again.
 - Streamline the first preview workflow to initialization, dependency installation, and `dev`; keep doctor and check as explicit troubleshooting and pre-publication commands.

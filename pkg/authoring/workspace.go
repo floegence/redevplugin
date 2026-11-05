@@ -618,11 +618,9 @@ func (s *WorkspaceStore) Capture(ctx context.Context, owner Owner, id string) (A
 	if err != nil {
 		return Artifact{}, err
 	}
-	packaged, err := manifest.MarshalCanonical(pkg.Manifest)
-	if err != nil {
-		return Artifact{}, err
-	}
-	if !bytes.Equal(canonical, packaged) {
+	// Package canonical bytes preserve authored field presence and array order.
+	// Re-encoding the normalized projection would change signed identity.
+	if !bytes.Equal(canonical, pkg.CanonicalManifestBytes) {
 		return Artifact{}, errors.New("packaged manifest differs from source; rebuild first")
 	}
 	if before != after {

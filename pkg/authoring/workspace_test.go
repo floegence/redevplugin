@@ -385,3 +385,62 @@ func TestWorkspaceRecoversInterruptedBuildReport(t *testing.T) {
 		t.Fatalf("report: %+v, %v", report, err)
 	}
 }
+
+func TestWorkspaceCaptureBindsExactVerifiedManifest(t *testing.T) {
+	for _, variant := range []string{"empty intents", "omitted intents", "declared permission order"} {
+		t.Run(variant, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := OpenWorkspaceStore(ctx, filepath.Join(t.TempDir(), "authors"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			owner := Owner{User: "user", Environment: "environment"}
+			workspace, err := store.Create(ctx, owner, "capture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = store.Initialize(ctx, owner, workspace.ID, "dev.example.capture", "Capture", "web"); err != nil {
+				t.Fatal(err)
+			}
+			source := filepath.Join(workspace.SourceDirectory, "manifest.json")
+			raw, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err = json.Unmarshal(raw, &document); err != nil {
+				t.Fatal(err)
+			}
+			if variant == "omitted intents" {
+				delete(document, "intents")
+			}
+			if variant == "declared permission order" {
+				document["permissions"] = []string{"fs.workspace.write", "fs.workspace.read"}
+			}
+			raw, err = json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{source, filepath.Join(workspace.SourceDirectory, "dist", "manifest.json")} {
+				if err = os.WriteFile(path, raw, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err = store.Capture(ctx, owner, workspace.ID); err != nil {
+				t.Fatalf("exact package rejected: %v", err)
+			}
+			document["plugin"].(map[string]any)["display_name"] = "Changed after build"
+			raw, err = json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(source, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = store.Capture(ctx, owner, workspace.ID); err == nil {
+				t.Fatal("changed source manifest admitted without rebuilding")
+			}
+		})
+	}
+}
