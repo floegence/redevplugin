@@ -62,6 +62,49 @@ func TestRegistryViewPutPluginCannotCreateOrUpsert(t *testing.T) {
 	}
 }
 
+func TestRegistryAutomaticPreferencePreservesAuthorityAcrossRestart(t *testing.T) {
+	ctx := pluginDataCatalogContext("env-preference", "user-preference")
+	path := filepath.Join(t.TempDir(), "control.sqlite")
+	store, err := Open(ctx, Config{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	record, binding, shape := freshPluginDataCatalogInstall(t, "env-preference", "plugini_preference")
+	installed, err := store.InstallCommit(ctx, record, nil, binding, shape, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Registry().SetAutomaticUpdates(ctx, "other-owner", record.PluginInstanceID, installed.ManagementRevision, true, time.Now()); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("cross-owner preference: %v", err)
+	}
+	if _, err := store.Registry().SetAutomaticUpdates(ctx, "env-preference", record.PluginInstanceID, installed.ManagementRevision+1, true, time.Now()); !errors.Is(err, registry.ErrManagementRevisionConflict) {
+		t.Fatalf("stale preference revision: %v", err)
+	}
+	updated, err := store.Registry().SetAutomaticUpdates(ctx, "env-preference", record.PluginInstanceID, installed.ManagementRevision, true, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registry.AuthorizationRevisionsFromRecord(updated) != registry.AuthorizationRevisionsFromRecord(installed) || updated.ActiveFingerprint != installed.ActiveFingerprint {
+		t.Fatal("preference changed authorization")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(ctx, Config{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	persisted, err := reopened.Registry().GetPlugin(ctx, "env-preference", record.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.AutomaticUpdates || persisted.UpdateEligibility != registry.UpdateAutomaticEligible || registry.AuthorizationRevisionsFromRecord(persisted) != registry.AuthorizationRevisionsFromRecord(installed) {
+		t.Fatal("preference or authorization changed across restart")
+	}
+}
+
 func TestInstallCommitBindingFailureRollsBackPluginRecord(t *testing.T) {
 	ctx := pluginDataCatalogContext("env-install-failure", "user-install-failure")
 	store := openPluginDataCatalogStore(t)

@@ -282,12 +282,18 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 	if err != nil {
 		return inspection, err
 	}
+	defer func() {
+		if retErr != nil {
+			h.externalInspections.finish(inspection.InspectionID, externalPackageFailed)
+			retErr = errors.Join(retErr, h.removeExternalPackageInspectionArtifact(inspection.InspectionID, true))
+		}
+	}()
 	if (req.ExpectedPublisherID != "" && req.ExpectedPublisherID != inspection.PublisherID) || (req.ExpectedPluginID != "" && req.ExpectedPluginID != inspection.PluginID) || (req.ExpectedVersion != "" && req.ExpectedVersion != inspection.Version) || (req.ExpectedPackageSHA256 != "" && req.ExpectedPackageSHA256 != inspection.InspectedHashes.PackageSHA256) || (req.Source.PluginID != "" && req.Source.PluginID != inspection.PluginID) {
-		return ExternalPackageInspection{}, errors.Join(ErrExternalPackageConfirmation, h.removeExternalPackageInspectionArtifact(inspection.InspectionID, true))
+		return ExternalPackageInspection{}, ErrExternalPackageConfirmation
 	}
 	contractHash, contractErr := releaseprojection.CapabilityContractSetSHA256(inspection.SecuritySummary)
 	if contractErr != nil || (req.ExpectedSecuritySummarySHA256 != "" && req.ExpectedSecuritySummarySHA256 != inspection.SecuritySummary.SummarySHA256) || (req.ExpectedContractSetSHA256 != "" && req.ExpectedContractSetSHA256 != contractHash) {
-		return ExternalPackageInspection{}, errors.Join(ErrExternalPackageConfirmation, contractErr, h.removeExternalPackageInspectionArtifact(inspection.InspectionID, true))
+		return ExternalPackageInspection{}, errors.Join(ErrExternalPackageConfirmation, contractErr)
 	}
 	if provenance.Kind == registry.PackageSourceGitHubRepository {
 		pending, e := h.externalInspections.get(inspection.InspectionID, scope)
@@ -295,7 +301,7 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 			return ExternalPackageInspection{}, e
 		}
 		if pending.Record.PluginID != selectedPlugin || pending.Record.Version != selectedVersion {
-			return ExternalPackageInspection{}, errors.Join(ErrExternalPackageConfirmation, h.removeExternalPackageInspectionArtifact(inspection.InspectionID, true))
+			return ExternalPackageInspection{}, ErrExternalPackageConfirmation
 		}
 	}
 	return inspection, nil
@@ -566,6 +572,15 @@ func (h *Host) installInspectedPackage(ctx context.Context, req installInspected
 		}
 	}
 	record := pending.Record
+	// Preferences may change after inspection without revoking live Surfaces.
+	// Preserve the current choice at commit; a source switch always resets it.
+	if previous != nil {
+		record.AutomaticUpdates = previous.AutomaticUpdates && samePackageUpdateSource(previous.PackageSourceProvenance, record.PackageSourceProvenance)
+		record.UpdateEligibility = registry.UpdateManualOnly
+		if record.AutomaticUpdates && retrievableUpdateSource(record.PackageSourceProvenance) {
+			record.UpdateEligibility = registry.UpdateAutomaticEligible
+		}
+	}
 	record.ExecutionApproval.Status = registry.ExecutionApprovalUserApproved
 	record.ExecutionApproval.EvidenceReference = req.operationEvidence
 	record.ExecutionApproval.ReasonCodes = []string{"explicit_user_confirmation"}

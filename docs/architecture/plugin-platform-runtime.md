@@ -408,6 +408,9 @@ The OpenAPI, Go Host and TypeScript SDK expose the same inspect, accepted
 installation, outcome query and Event contracts. Update checks resolve the
 installed source. User-enabled automatic updates use the same inspection and
 Execution, with capability-change checks repeated under the lifecycle lock.
+Changing the automatic-update preference preserves management authority and live
+Surfaces. Commit rereads the current preference under that same lock, so an
+older inspection cannot restore a preference the user subsequently disabled.
 Plugin signing contracts and release-reference installation routes are absent.
 
 ## Runtime State Model

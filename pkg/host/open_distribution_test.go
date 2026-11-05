@@ -159,12 +159,22 @@ func TestOpenDistributionAutomaticPreferencePersistsOnInstallation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{PluginInstanceID: installed.Plugin.PluginInstanceID, SurfaceID: "lifecycle.view", ExpectedManagementRevision: installed.Plugin.ManagementRevision})
+	if err != nil {
+		t.Fatal(err)
+	}
 	record, err := h.SetAutomaticUpdates(ctx, SetAutomaticUpdatesRequest{PluginInstanceID: installed.Plugin.PluginInstanceID, ExpectedManagementRevision: installed.Plugin.ManagementRevision, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !record.AutomaticUpdates || record.UpdateEligibility != registry.UpdateAutomaticEligible {
 		t.Fatal("preference not persisted")
+	}
+	if record.ManagementRevision != installed.Plugin.ManagementRevision || record.RevokeEpoch != installed.Plugin.RevokeEpoch || record.ActiveFingerprint != installed.Plugin.ActiveFingerprint {
+		t.Fatal("update preference changed live Surface authority")
+	}
+	if _, err := h.PrepareSurface(ctx, exchangeAssetTicketRequestForBootstrap(bootstrap, time.Now())); err != nil {
+		t.Fatalf("preference change invalidated an open Surface: %v", err)
 	}
 	stage.setPackage(readTestPackage(t, buildVersionedLifecyclePackage(t, "1.1.0", "Original")))
 	next, err := h.InspectPluginUpdate(ctx, InspectPluginUpdateRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision})
@@ -252,6 +262,13 @@ func TestOpenDistributionPreferenceChangeInvalidatesInspectedUpdate(t *testing.T
 	current, err := h.getPluginRecord(ctx, enabled.PluginInstanceID)
 	if err != nil || current.Version != "1.0.0" || current.AutomaticUpdates {
 		t.Fatalf("preference changed installation: %+v %v", current, err)
+	}
+	updated, err := h.installInspectedPackage(ctx, installInspectedPackageRequest{InspectionID: candidate.InspectionID, ExpectedPackageSHA256: candidate.InspectedHashes.PackageSHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Plugin.AutomaticUpdates || updated.Plugin.UpdateEligibility != registry.UpdateManualOnly {
+		t.Fatal("manual update restored an obsolete automatic-update preference")
 	}
 }
 
@@ -362,5 +379,48 @@ func TestOpenDistributionAutomaticUpdateBindsExactNetworkAuthorization(t *testin
 		if err := validateAutomaticUpdate(current, next); !errors.Is(err, ErrUpdateReviewRequired) {
 			t.Fatalf("changed %s automatically accepted: %v", field, err)
 		}
+	}
+}
+
+func TestOpenDistributionRejectedInspectionCannotCommitAfterCleanupFailure(t *testing.T) {
+	for _, field := range []string{"package", "summary", "contracts"} {
+		t.Run(field, func(t *testing.T) {
+			h, _, _ := newTestHost(t)
+			cleanupErr := errors.New("temporary cleanup failure")
+			stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Package")), removeErr: cleanupErr}
+			configureExternalPackageTestModule(h, stage)
+			req := InspectExternalPackageRequest{Intent: ExternalPackageIntent{Action: "install"}, Source: ExternalPackageSource{Kind: "package_url", URL: "https://downloads.example.com/plugin.redevplugin"}}
+			switch field {
+			case "package":
+				req.ExpectedPackageSHA256 = "sha256:" + strings.Repeat("0", 64)
+			case "summary":
+				req.ExpectedSecuritySummarySHA256 = "sha256:" + strings.Repeat("0", 64)
+			case "contracts":
+				req.ExpectedContractSetSHA256 = "sha256:" + strings.Repeat("0", 64)
+			}
+			if _, err := h.InspectExternalPackage(hostTestContext(), req); !errors.Is(err, ErrExternalPackageConfirmation) || !errors.Is(err, cleanupErr) {
+				t.Fatalf("rejected inspection error = %v", err)
+			}
+			h.externalInspections.mu.Lock()
+			var retained []externalPackagePendingInspection
+			for _, pending := range h.externalInspections.records {
+				retained = append(retained, pending)
+			}
+			h.externalInspections.mu.Unlock()
+			if len(retained) != 1 {
+				t.Fatalf("retained cleanup records = %d", len(retained))
+			}
+			pending := retained[0]
+			if _, err := h.externalInspections.begin(pending.Inspection.InspectionID, pending.Scope, pending.Record.PackageHash, time.Now()); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
+				t.Fatalf("rejected candidate remained installable: %v", err)
+			}
+			stage.setRemoveError(nil)
+			if err := h.cleanupExternalPackageInspectionArtifacts(nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.externalInspections.get(pending.Inspection.InspectionID, pending.Scope); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
+				t.Fatalf("cleanup retry retained candidate: %v", err)
+			}
+		})
 	}
 }

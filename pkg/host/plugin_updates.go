@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -42,6 +41,10 @@ func (h *Host) SetAutomaticUpdates(ctx context.Context, req SetAutomaticUpdatesR
 		return result, err
 	}
 	defer release()
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return result, err
+	}
 	unlock, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
 	if err != nil {
 		return result, err
@@ -65,22 +68,7 @@ func (h *Host) SetAutomaticUpdates(ctx context.Context, req SetAutomaticUpdatesR
 		return result, err
 	}
 	defer func() { retErr = audit.complete(context.WithoutCancel(ctx), retErr) }()
-	current.AutomaticUpdates = req.Enabled
-	current.UpdateEligibility = registry.UpdateManualOnly
-	if req.Enabled {
-		current.UpdateEligibility = registry.UpdateAutomaticEligible
-	}
-	stored, err := h.putPluginRecord(ctx, current, time.Now().UTC())
-	if err != nil {
-		return result, err
-	}
-	if err = h.revokePluginRuntimeCapabilities(ctx, stored, time.Now().UTC()); err != nil {
-		return stored, mutation.Committed(err)
-	}
-	if err = h.refreshEnabledRuntimeState(ctx, stored); err != nil {
-		return stored, mutation.Committed(err)
-	}
-	return stored, nil
+	return h.controlStore.Registry().SetAutomaticUpdates(ctx, session.OwnerEnvHash, current.PluginInstanceID, req.ExpectedManagementRevision, req.Enabled, time.Now().UTC())
 }
 
 // InspectPluginUpdate resolves only the installation's original source. Hosts

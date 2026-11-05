@@ -9,6 +9,7 @@
 - Publish package inspection and icon evidence from the canonical parser for marketplace ingestion. Official/community classifications carry no installation authority.
 - Migrate control schema 6 to 7 transactionally, preserving package identity, assets, data, grants, and execution receipts while removing retired trust metadata. Existing signer-derived update eligibility does not become user consent.
 - Preserve shared content-addressed assets when a second installation fails; report committed installation with failed postcommit work without replaying the effect.
+- Keep rejected inspections uncommittable even when staging cleanup fails. Save update preferences without interrupting live Surfaces, and preserve the latest preference when committing a previously reviewed package.
 
 ## v3.17.0
 

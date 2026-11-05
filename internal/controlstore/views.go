@@ -500,6 +500,59 @@ func (v RegistryView) SetEnableState(ctx context.Context, ownerEnvHash, pluginIn
 	return record, nil
 }
 
+// SetAutomaticUpdates changes only the installation preference. It must not
+// invalidate Surface tokens or runtime leases bound to management authority.
+func (v RegistryView) SetAutomaticUpdates(ctx context.Context, ownerEnvHash, pluginInstanceID string, expectedManagementRevision uint64, enabled bool, now time.Time) (registry.PluginRecord, error) {
+	if err := v.ready(); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	tx, err := v.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var previous string
+	if err := tx.QueryRowContext(ctx, `SELECT record_json FROM plugin_records WHERE owner_env_hash=? AND plugin_instance_id=? AND deleted_at IS NULL`, ownerEnvHash, pluginInstanceID).Scan(&previous); errors.Is(err, sql.ErrNoRows) {
+		return registry.PluginRecord{}, registry.ErrNotFound
+	} else if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record, err := v.store.decodeRegistryPluginRecord([]byte(previous))
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if expectedManagementRevision == 0 || record.ManagementRevision != expectedManagementRevision {
+		return registry.PluginRecord{}, &registry.ManagementRevisionConflictError{PluginInstanceID: pluginInstanceID, Expected: expectedManagementRevision, Actual: record.ManagementRevision}
+	}
+	record.OwnerEnvHash = ownerEnvHash
+	record.AutomaticUpdates = enabled
+	record.UpdateEligibility = registry.UpdateManualOnly
+	if enabled {
+		record.UpdateEligibility = registry.UpdateAutomaticEligible
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	record.UpdatedAt = now
+	raw, err := encodeRegistryPluginRecord(record)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE plugin_records SET updated_at=?,record_json=? WHERE owner_env_hash=? AND plugin_instance_id=? AND record_json=? AND deleted_at IS NULL`, now.UnixNano(), string(raw), ownerEnvHash, pluginInstanceID, previous)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return registry.PluginRecord{}, err
+	} else if changed != 1 {
+		return registry.PluginRecord{}, ErrRevisionConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	return record, nil
+}
+
 func (v RegistryView) BumpRevokeEpoch(ctx context.Context, ownerEnvHash, pluginInstanceID string, now time.Time) (registry.PluginRecord, error) {
 	if err := v.ready(); err != nil {
 		return registry.PluginRecord{}, err

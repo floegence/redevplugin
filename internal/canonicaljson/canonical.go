@@ -20,7 +20,7 @@ const (
 )
 
 var (
-	ErrInvalidDocument = errors.New("release contract document is invalid")
+	ErrInvalidDocument = errors.New("canonical JSON document is invalid")
 )
 
 func canonicalJSON(value any) ([]byte, error) {
