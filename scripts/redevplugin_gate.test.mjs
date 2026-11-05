@@ -198,6 +198,29 @@ test("concurrent runs cannot write to the same evidence directory", (t) => {
   release(); acquireLock(f.cache)();
 });
 
+test("repeated release cannot delete a successor gate lock", (t) => {
+  const f = fixture(t);
+  const first = acquireLock(f.cache);
+  first();
+  const second = acquireLock(f.cache);
+  const path = join(f.cache, "running.json");
+  const successor = readFileSync(path, "utf8");
+  first();
+  assert.equal(readFileSync(path, "utf8"), successor);
+  assert.throws(() => acquireLock(f.cache), /another gate/);
+  second();
+});
+
+test("release leaves a replaced ownership record unchanged", (t) => {
+  const f = fixture(t);
+  const release = acquireLock(f.cache);
+  const path = join(f.cache, "running.json");
+  const successor = JSON.stringify({ pid: process.pid, host: hostname(), token: "successor" });
+  writeFileSync(path, successor);
+  release();
+  assert.equal(readFileSync(path, "utf8"), successor);
+});
+
 test("missing and mismatched baseline tags fail before heavy stages", (t) => {
   const f = fixture(t); mkdirSync(join(f.root, "testdata/quality"), { recursive: true });
   const path = "testdata/quality/probe.js"; writeFileSync(join(f.root, path), "probe");

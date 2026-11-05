@@ -201,7 +201,8 @@ async function prepareResources(root) {
 export function acquireLock(cache) {
   mkdirSync(cache, { recursive: true, mode: 0o700 });
   const path = join(cache, "running.json");
-  try { writeFileSync(path, JSON.stringify({ pid: process.pid, host: os.hostname() }), { flag: "wx", mode: 0o600 }); }
+  const identity = JSON.stringify({ pid: process.pid, host: os.hostname(), token: randomUUID() });
+  try { writeFileSync(path, identity, { flag: "wx", mode: 0o600 }); }
   catch (error) {
     if (error.code !== "EEXIST") throw error;
     const owner = JSON.parse(readFileSync(path, "utf8"));
@@ -212,7 +213,16 @@ export function acquireLock(cache) {
     }
     throw Object.assign(new Error("another gate is running for this checkout: " + path), { code: "GATE_BUSY" });
   }
-  return () => rmSync(path, { force: true });
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    try {
+      if (readFileSync(path, "utf8") === identity) rmSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  };
 }
 export async function waitForLock(cache, { timeoutMs = 0, signal, now = () => performance.now(), wait = delay, onWait = () => {} } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 3_600_000) throw new Error("gate lock wait must be between 0 and 3600 seconds");
