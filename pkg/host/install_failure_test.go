@@ -12,10 +12,9 @@ import (
 
 func TestInstallFailureClassifiesKnownPlatformFailures(t *testing.T) {
 	for _, test := range []struct {
-		name      string
-		err       error
-		want      security.ErrorCode
-		retryable bool
+		name string
+		err  error
+		want security.ErrorCode
 	}{
 		{name: "adapter", err: ErrAdapterFailure, want: security.ErrAdapterFailure},
 		{name: "feature", err: FeatureNotConfiguredError{Features: []Feature{FeatureCapability}}, want: security.ErrFeatureNotConfigured},
@@ -23,14 +22,14 @@ func TestInstallFailureClassifiesKnownPlatformFailures(t *testing.T) {
 		{name: "data binding", err: plugindata.ErrBindingConflict, want: security.ErrInstallStateConflict},
 		{name: "data binding revision", err: plugindata.ErrBindingRevisionConflict, want: security.ErrInstallStateConflict},
 		{name: "data not retained", err: plugindata.ErrNotRetained, want: security.ErrInstallStateConflict},
-		{name: "runtime not configured", err: ErrPluginRuntimeNotConfigured, want: security.ErrRuntimeUnavailable, retryable: true},
-		{name: "runtime feature missing", err: FeatureNotConfiguredError{Features: []Feature{FeatureRuntime}}, want: security.ErrRuntimeUnavailable, retryable: true},
-		{name: "runtime not ready", err: ErrRuntimeNotReady, want: security.ErrRuntimeUnavailable, retryable: true},
-		{name: "runtime ipc", err: ErrRuntimeIPCUnavailable, want: security.ErrRuntimeUnavailable, retryable: true},
-		{name: "runtime request", err: ErrRuntimeRequestFailed, want: security.ErrRuntimeUnavailable, retryable: true},
-		{name: "runtime handshake", err: ErrRuntimeHandshake, want: security.ErrRuntimeUnavailable, retryable: true},
+		{name: "runtime not configured", err: ErrPluginRuntimeNotConfigured, want: security.ErrRuntimeUnavailable},
+		{name: "runtime feature missing", err: FeatureNotConfiguredError{Features: []Feature{FeatureRuntime}}, want: security.ErrRuntimeUnavailable},
+		{name: "runtime not ready", err: ErrRuntimeNotReady, want: security.ErrRuntimeUnavailable},
+		{name: "runtime ipc", err: ErrRuntimeIPCUnavailable, want: security.ErrRuntimeUnavailable},
+		{name: "runtime request", err: ErrRuntimeRequestFailed, want: security.ErrRuntimeUnavailable},
+		{name: "runtime handshake", err: ErrRuntimeHandshake, want: security.ErrRuntimeUnavailable},
 		{name: "runtime version mismatch", err: ErrPluginRuntimeIncompatible, want: security.ErrRuntimeVersionMismatch},
-		{name: "unknown internal", err: errors.New("unexpected install failure"), want: security.ErrInternalFailure, retryable: true},
+		{name: "unknown internal", err: errors.New("unexpected install failure"), want: security.ErrInternalFailure},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := installFailureCode(test.err); got != string(test.want) {

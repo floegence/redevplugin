@@ -22,7 +22,7 @@ func installFailureCode(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return string(security.ErrReleaseTimeout)
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
 		return installFailureInterrupted
 	}
 	switch externalsource.CodeOf(err) {

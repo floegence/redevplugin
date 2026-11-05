@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
@@ -372,5 +373,33 @@ func TestGitHubRESTRejectsRepositoryIdentityMismatch(t *testing.T) {
 	}
 	if _, err := client.RepositoryIndex(context.Background(), "example", "plugin"); err == nil {
 		t.Fatal("accepted unrelated repository")
+	}
+}
+
+func TestGitHubReleasePaginationRejectsRepeatedTags(t *testing.T) {
+	calls := 0
+	client, err := NewGitHubRESTReleaseClient(GitHubRESTReleaseClientOptions{Transport: githubRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		batch := make([]GitHubReleaseTag, 100)
+		for i := range batch {
+			batch[i].Tag = fmt.Sprintf("plugin-v1.0.%d", i)
+		}
+		if calls > 1 {
+			batch = batch[:1]
+		}
+		raw, e := json.Marshal(batch)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return githubJSONResponse(string(raw)), nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ReleaseTags(context.Background(), "example", "plugin"); err == nil {
+		t.Fatal("changed pagination reported an authoritative latest release")
+	}
+	if calls != 2 {
+		t.Fatalf("unexpected page count %d", calls)
 	}
 }

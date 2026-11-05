@@ -541,7 +541,7 @@ func BuildExternalPackageSecuritySummary(m manifest.Manifest, pins []capabilityc
 	return buildExternalPackageSecuritySummary(m, pins, required)
 }
 
-// ProjectManifestWithCapabilityContracts resolves the signed capability
+// ProjectManifestWithCapabilityContracts resolves the exact capability
 // bindings against the exact Host contract artifacts supplied by the caller.
 // It is the single projection used when release evidence is produced and when
 // a Host validates the same evidence during installation.

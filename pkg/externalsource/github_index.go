@@ -71,6 +71,7 @@ func (client *GitHubRESTReleaseClient) ReleaseTags(ctx context.Context, owner, r
 		return nil, err
 	}
 	out := []GitHubReleaseTag{}
+	seen := make(map[string]bool)
 	for page := 1; page <= 10; page++ {
 		var batch []GitHubReleaseTag
 		path := fmt.Sprintf("/repos/%s/%s/releases?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repository), page)
@@ -79,6 +80,12 @@ func (client *GitHubRESTReleaseClient) ReleaseTags(ctx context.Context, owner, r
 		}
 		if len(batch) > 100 {
 			return nil, invalidSource("github_releases", "release page exceeds limit")
+		}
+		for _, release := range batch {
+			if release.Tag == "" || len(release.Tag) > 255 || strings.TrimSpace(release.Tag) != release.Tag || containsControl(release.Tag) || seen[release.Tag] {
+				return nil, invalidSource("github_releases", "release listing changed or contains an invalid tag")
+			}
+			seen[release.Tag] = true
 		}
 		out = append(out, batch...)
 		if len(batch) < 100 {
