@@ -22,7 +22,9 @@ redevplugin dev . --state ../notes-development --manual
 ```
 
 `dev` checks the tools and dependencies used for its build and reports actionable
-readiness diagnostics before opening its development environment. It then runs
+readiness diagnostics before opening its development environment. Project-relative
+commands such as `./scripts/build` resolve from the project directory, including
+when the CLI is launched from another directory. It then runs
 the declared checks and builds the first candidate. Use `redevplugin doctor .`
 when diagnosing a tool or dependency issue,
 and `redevplugin check .` before sharing or publishing a package.
@@ -146,8 +148,12 @@ checkbox; arbitrary private networks remain denied by the development policy.
 Plugin `network.client` permission must also be explicitly granted. Revoke stops
 existing authority; failed or uncertain operations are inspected rather than replayed.
 
-The action panel generates simple scalar fields from intent payload schemas and
-keeps a JSON editor for complex inputs. Surface writes use declared confirmation
+The action panel generates simple scalar fields from intent payload schemas
+(or the method request schema when absent) and keeps a JSON editor for complex
+inputs. Refresh preserves the selected action, fields, and JSON draft, including
+unfinished JSON. A pending action remains single-flight across refresh. An
+unknown result stays blocked until **Review uncertain result** is explicitly
+acknowledged after inspecting the application; this never replays the action. Surface writes use declared confirmation
 policy and exact live receiver targeting. Worker write actions that require a
 separate confirmation path remain in the plugin UI. Task inspection reads existing
 executions and events; cancellation is explicit and never resubmits an operation.
@@ -238,6 +244,16 @@ those session, authorization, origin, and observability integrations. For a live
 browser, use the slot-based parent in `examples/showcase/app.ts` with the
 `examples-server` command. Worker execution additionally requires the verified
 runtime preparation described above.
+
+`examples/embedding/browser` is a runnable loopback reference using the Go Host
+and HTTP adapter with the npm Surface SDK. Its browser acceptance covers two
+independent origins, authenticated inventory, private resource writes, exact
+method targeting, sibling closure, and persistence after host restart without a
+Worker runtime. The reference uses explicit test policies, not production auth.
+The candidate browser gate consumes packed npm artifacts. After publication,
+run `node scripts/embedding_browser_smoke.mjs --published 3.16.0` to install the
+CLI and reference host from the Go registry and both SDK packages from npm into
+an isolated temporary consumer; no sibling checkout wiring is used.
 
 ## Inspecting a running application
 

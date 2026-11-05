@@ -6,7 +6,10 @@
 - Stop method delivery polling after the final registration is removed and claimed calls settle; resume it when the application registers a method again.
 - Streamline the first preview workflow to initialization, dependency installation, and `dev`; keep doctor and check as explicit troubleshooting and pre-publication commands.
 - Share author toolchain and dependency readiness checks with `dev`, reporting actionable failures before a development environment is opened.
-- Add an executable host-neutral embedding reference for authenticated inventory, installation, Surface lifecycle, and restart reconciliation.
+- Preserve action selection and JSON/scalar drafts across preview refresh, keep pending actions single-flight, and require explicit review of uncertain results without replay. Honor absent confirmation policy and method request schemas.
+- Resolve project-relative build tools from the author project rather than the CLI working directory. Cover committed writes with lost responses in browser acceptance.
+- Qualify two plain Surfaces at startup, idle, local interaction, and after sibling closure, with separate control and method traffic observations.
+- Add an executable host-neutral embedding reference for authenticated inventory, installation, Surface lifecycle, and restart reconciliation; qualify a real independent browser host with packed or published SDK artifacts.
 
 ## v3.19.0
 

@@ -92,7 +92,11 @@ func checkAuthorReadiness(ctx context.Context, project *authorproject.Project, w
 		if len(argv) == 0 {
 			continue
 		}
-		_, failure := exec.LookPath(argv[0])
+		executable := argv[0]
+		if strings.ContainsAny(executable, `/\`) && !filepath.IsAbs(executable) {
+			executable = filepath.Join(project.Root, executable)
+		}
+		_, failure := exec.LookPath(executable)
 		tools[argv[0]] = failure == nil
 		if failure != nil {
 			add("TOOL_UNAVAILABLE", argv[0], "Install the project's declared build tool")

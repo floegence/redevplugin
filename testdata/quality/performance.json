@@ -209,7 +209,7 @@
     },
     {
       "id": "ui.web-surface-idle-method-requests",
-      "sample_count": 1,
+      "sample_count": 3,
       "metrics": [
         {
           "name": "max",

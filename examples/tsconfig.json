@@ -16,6 +16,7 @@
   "include": [
     "plugin-ui/**/*.ts",
     "showcase/**/*.ts",
+    "embedding/**/*.ts",
     "plugin-ui/**/*.tsx"
   ]
 }

@@ -109,6 +109,11 @@ func TestAuthorBrowserWorkflow(t *testing.T) {
 	if output, err := consumer.CombinedOutput(); err != nil {
 		t.Fatalf("external author consumer: %v\n%s", err, output)
 	}
+	embedding := exec.CommandContext(ctx, "node", "scripts/embedding_browser_smoke.mjs", "--candidate", cli)
+	embedding.Dir = repo
+	if output, err := embedding.CombinedOutput(); err != nil {
+		t.Fatalf("independent browser host: %v\n%s", err, output)
+	}
 	compileCommand := exec.CommandContext(ctx, "node", "scripts/author_bindings_compile.mjs", cli)
 	compileCommand.Dir = repo
 	if output, err := compileCommand.CombinedOutput(); err != nil {

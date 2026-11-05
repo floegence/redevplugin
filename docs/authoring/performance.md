@@ -15,9 +15,12 @@ cancellation. With no registered methods, the receiver does not poll. After the
 last method is removed, it continues only until already claimed calls settle.
 
 The release browser performance gate measures opening the fixture and verifies
-that a plain Surface makes zero method receiver requests during a 1.5-second
-idle observation. This count is specific to the method endpoint; it is not a
-count of all startup, renewal or resource traffic. The opening measurement
+that two independent plain Surfaces make zero method receiver requests at
+startup and during three 1.5-second observations: idle, local input, and input
+in the surviving sibling after one Surface closes. The log separates authority,
+lifecycle, Web control/resource, and document/asset requests for each phase.
+This is not a zero-network claim: the short observation need not include a
+lease renewal, whose scheduling and revocation behavior have dedicated SDK tests. The opening measurement
 includes fixture setup and readiness and is not a product-wide cold-start or
 first-paint guarantee. Measure the actual product and workload separately when
 making latency or memory claims.

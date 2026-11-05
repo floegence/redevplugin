@@ -111,3 +111,30 @@ func TestAuthorWebTemplateRunsBusinessTestsAndChecksTypesDuringBuild(t *testing.
 		t.Fatal("developer build has no static check stage")
 	}
 }
+
+func TestAuthorReadinessResolvesProjectRelativeCommands(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "scripts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "scripts", "build")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	project := &authorproject.Project{Root: root, Config: authorproject.Config{Build: []string{"./scripts/build"}}}
+	var diagnostics []string
+	checkAuthorReadiness(context.Background(), project, false, false, func(code, _, _ string) { diagnostics = append(diagnostics, code) })
+	if len(diagnostics) != 0 {
+		t.Fatalf("project-relative executable was rejected: %v", diagnostics)
+	}
+	if _, err := project.Run(context.Background(), project.Config.Build); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(script); err != nil {
+		t.Fatal(err)
+	}
+	checkAuthorReadiness(context.Background(), project, false, false, func(code, _, _ string) { diagnostics = append(diagnostics, code) })
+	if len(diagnostics) != 1 || diagnostics[0] != "TOOL_UNAVAILABLE" {
+		t.Fatalf("missing executable was accepted: %v", diagnostics)
+	}
+}

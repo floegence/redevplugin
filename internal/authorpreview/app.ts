@@ -7,7 +7,9 @@ const apply = element<HTMLButtonElement>("apply");
 let applying = false, candidateSource = "";
 let csrf = "", generation = 0, record: PluginCatalogRecord | undefined, opening = false, closing = false, stopped = false;
 let buildError = "", surfaceError = "", activeSurface = "", activeSurfaceId = "";
-let actionUncertain = false;
+let actionPending = false, inspectorPlugin = "";
+type UncertainAction = { plugin_instance_id: string; surface_instance_id?: string; intent_id: string; params: unknown };
+let actionUncertain: UncertainAction | undefined;
 const scope = createPluginSurfaceScope();
 const slot = PluginSurfaceSlot.create({ stage: element("stage"), onStateChange: state => {
   element("stage").setAttribute("aria-busy", String(state === "opening"));
@@ -38,16 +40,23 @@ reload.onclick = () => { void (async () => {
   await refreshCatalog(true);
 })().catch(showError); };
 element<HTMLButtonElement>("close-preview").onclick = () => { void requestClose().catch(showError); };
-element<HTMLButtonElement>("refresh-state").onclick = () => { void (async () => {
-  const selectedAction = element<HTMLSelectElement>("actions").value;
-  const params = element<HTMLTextAreaElement>("action-params").value;
-  await refreshCatalog(false);
-  if (Array.from(element<HTMLSelectElement>("actions").options).some(option => option.value === selectedAction)) {
-    element<HTMLSelectElement>("actions").value = selectedAction;
-    element<HTMLTextAreaElement>("action-params").value = params;
-  }
-  actionUncertain = false;
-  element<HTMLButtonElement>("action-run").disabled = !element<HTMLSelectElement>("actions").options.length;
+const refreshState = element<HTMLButtonElement>("refresh-state");
+refreshState.onclick = () => { void (async () => {
+  if (refreshState.disabled) return;
+  refreshState.disabled = true;
+  try { await refreshCatalog(false); }
+  finally { refreshState.disabled = false; }
+})().catch(showError); };
+element<HTMLButtonElement>("action-recover").onclick = () => { void (async () => {
+  const uncertain = actionUncertain;
+  if (!uncertain || actionPending) return;
+  const approved = await confirmReview("Review uncertain action", uncertain, undefined, {
+    title: "Review uncertain result", description: "Check the application and its observations first. The previous action may already have completed. Continuing allows another action; it does not retry the previous one.", confirmLabel: "Allow another action",
+  });
+  if (!approved || actionUncertain !== uncertain) return;
+  actionUncertain = undefined;
+  updateActionControls();
+  element<HTMLTextAreaElement>("action-params").focus();
 })().catch(showError); };
 surfaces.onchange = () => { void (async () => {
   const selected = surfaces.value;
@@ -148,13 +157,17 @@ async function openSelected(): Promise<void> {
   } finally { opening = false; reload.disabled = false; surfaces.disabled = false; }
 }
 
-function confirmReview(method: string, plan: unknown, signal = new AbortController().signal): Promise<boolean> {
-  return confirmAction({method, plan, signal} as PluginConfirmationIntent);
+type ConfirmationCopy = { title: string; description: string; confirmLabel: string };
+function confirmReview(method: string, plan: unknown, signal = new AbortController().signal, copy?: ConfirmationCopy): Promise<boolean> {
+  return confirmAction({method, plan, signal} as PluginConfirmationIntent, copy);
 }
-function confirmAction(intent: PluginConfirmationIntent): Promise<boolean> {
+function confirmAction(intent: PluginConfirmationIntent, copy?: ConfirmationCopy): Promise<boolean> {
   const dialog = element<HTMLDialogElement>("confirmation");
   if (intent.signal.aborted || dialog.open) return Promise.resolve(false);
   const previous = document.activeElement;
+  element("confirmation-title").textContent = copy?.title ?? "Review plugin action";
+  element("confirmation-description").textContent = copy?.description ?? "This action needs your approval. Review the method and its proposed effects before continuing.";
+  element("confirmation-approve").textContent = copy?.confirmLabel ?? "Approve action";
   element("confirmation-method").textContent = intent.method;
   element("confirmation-plan").textContent = JSON.stringify(intent.plan ?? {}, null, 2);
   dialog.returnValue = "cancel";
@@ -170,7 +183,20 @@ function confirmAction(intent: PluginConfirmationIntent): Promise<boolean> {
   });
 }
 
+function updateActionControls(): void {
+  const actions = element<HTMLSelectElement>("actions");
+  actions.disabled = actionPending;
+  element<HTMLTextAreaElement>("action-params").disabled = actionPending;
+  for (const input of element("action-fields").querySelectorAll("input")) input.disabled = actionPending;
+  element<HTMLButtonElement>("action-run").disabled = actionPending || Boolean(actionUncertain) || !actions.options.length;
+  element<HTMLButtonElement>("action-recover").hidden = !actionUncertain;
+  element<HTMLButtonElement>("action-recover").disabled = actionPending;
+  element("action-tools").setAttribute("aria-busy", String(actionPending));
+}
 function renderInspector(current: PluginCatalogRecord): void {
+  const selectedAction = inspectorPlugin === current.plugin_instance_id ? element<HTMLSelectElement>("actions").value : "";
+  const savedParams = element<HTMLTextAreaElement>("action-params").value;
+  inspectorPlugin = current.plugin_instance_id;
   const manifest = current.manifest;
   element("contract").textContent = JSON.stringify({ surfaces: manifest.surfaces, storage: manifest.storage, network: manifest.network_access, workers: manifest.workers }, null, 2);
   const actions = element<HTMLSelectElement>("actions"); actions.replaceChildren();
@@ -179,30 +205,48 @@ function renderInspector(current: PluginCatalogRecord): void {
     if (!method || (method.effect !== "read" && method.route.kind !== "surface")) continue;
     const option = document.createElement("option"); option.value = intent.intent_id; option.textContent = intent.intent_id + " · " + method.effect; actions.append(option);
   }
-  element("action-tools").hidden = !actions.options.length;
+  const preserve = Array.from(actions.options).some(option => option.value === selectedAction);
+  if (preserve) actions.value = selectedAction;
+  element("action-tools").hidden = !actions.options.length && !actionUncertain;
   element("resources").hidden = !hasDeclaredResources(manifest);
   const fields = element("action-fields"), json = element<HTMLTextAreaElement>("action-params");
-  const renderFields = (): void => {
+  const renderFields = (preservedJSON?: string): void => {
     fields.replaceChildren();
     const intent = manifest.intents?.find(item => item.intent_id === actions.value);
-    const schema = intent?.payload_schema as {properties?: Record<string, {type?: string; default?: unknown; description?: string}>} | undefined;
-    const values: Record<string, unknown> = {};
+    const method = manifest.methods?.find(item => item.method === intent?.method);
+    const schema = (intent?.payload_schema ?? method?.request_schema) as {properties?: Record<string, {type?: string; default?: unknown; description?: string}>} | undefined;
+    let values: Record<string, unknown> = {};
+    if (preservedJSON !== undefined) {
+      try { const parsed: unknown = JSON.parse(preservedJSON); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) values = parsed as Record<string, unknown>; }
+      catch { /* Keep invalid JSON editable without replacing the draft. */ }
+    }
     for (const [key, property] of Object.entries(schema?.properties ?? {})) {
       if (!["string", "number", "integer", "boolean"].includes(property.type ?? "")) continue;
       const label = document.createElement("label"); label.textContent = key;
       const input = document.createElement("input"); input.type = property.type === "boolean" ? "checkbox" : property.type === "string" ? "text" : "number";
       if (property.type === "integer") input.step = "1";
-      if (property.default !== undefined) { input.value = String(property.default); input.checked = property.default === true; values[key] = property.default; }
+      const value = preservedJSON === undefined ? property.default : values[key];
+      if (value !== undefined) { input.value = String(value); input.checked = value === true; values[key] = value; }
       input.title = property.description ?? key;
-      input.oninput = () => { values[key] = input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value; json.value = JSON.stringify(values, null, 2); };
+      input.oninput = () => {
+        try { const parsed: unknown = JSON.parse(json.value); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return; values = parsed as Record<string, unknown>; }
+        catch { return; }
+        values[key] = input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value;
+        json.value = JSON.stringify(values, null, 2);
+      };
       label.append(input); fields.append(label);
     }
-    json.value = JSON.stringify(values, null, 2);
+    json.value = preservedJSON ?? JSON.stringify(values, null, 2);
+    updateActionControls();
   };
-  actions.onchange = renderFields; renderFields();
-  const button = element<HTMLButtonElement>("action-run"); button.disabled = actionUncertain || !actions.options.length;
+  actions.onchange = () => renderFields();
+  json.oninput = () => renderFields(json.value);
+  renderFields(preserve ? savedParams : undefined);
+  const button = element<HTMLButtonElement>("action-run");
   button.onclick = () => { void (async () => {
-    button.disabled = true;
+    if (actionPending || actionUncertain || !actions.options.length) return;
+    actionPending = true; updateActionControls();
+    let dispatchedRequest: UncertainAction | undefined;
     try {
       const params: unknown = JSON.parse(element<HTMLTextAreaElement>("action-params").value);
       if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("Parameters must be a JSON object");
@@ -210,15 +254,18 @@ function renderInspector(current: PluginCatalogRecord): void {
       const method = current.manifest.methods?.find(item => item.method === intent?.method);
       if (method?.route.kind === "surface" && !activeSurface) throw new Error("Open the target Surface before invoking its action");
       const request: PluginIntentInvokeRequest = { plugin_instance_id: current.plugin_instance_id, intent_id: actions.value, ...(method?.route.kind === "surface" ? { surface_instance_id: activeSurface } : {}), params: params as Record<string, never> };
-      if (method?.effect !== "read" && method?.confirmation?.mode !== "none") {
+      if (method?.dangerous || method?.confirmation?.mode === "required" || method?.confirmation?.mode === "risk_based") {
         const prepared = await client.prepareIntentConfirmation(request);
         if (!await confirmReview(method?.method ?? actions.value, prepared.plan)) return;
         request.confirmation_id = prepared.confirmation_id;
       }
+      dispatchedRequest = { plugin_instance_id: current.plugin_instance_id, surface_instance_id: request.surface_instance_id, intent_id: request.intent_id, params };
       const result = await client.invokeIntent(request);
       element("action-result").textContent = JSON.stringify(result, null, 2);
-    } catch (error) { actionUncertain = pluginMutationOutcome(error) === "unknown"; element("action-result").textContent = failureMessage(error); }
-    finally { button.disabled = actionUncertain || !actions.options.length; }
+    } catch (error) {
+      if (dispatchedRequest && pluginMutationOutcome(error) === "unknown") actionUncertain = dispatchedRequest;
+      element("action-result").textContent = failureMessage(error);
+    } finally { actionPending = false; updateActionControls(); }
   })(); };
 }
 

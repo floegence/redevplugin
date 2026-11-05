@@ -64,15 +64,38 @@ export async function measureWebPerformance(url) {
     samples.set('ui.native-reordering', measurements.reorder);
     await page.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
     const plainPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    let idleMethodRequests = 0;
+    const traffic = { startup: {}, idle: {}, interaction: {}, closing: {}, sibling: {} };
+    let phase = 'startup';
+    plainPage.on('pageerror', error => errors.push(error.message));
     plainPage.on('request', request => {
-      if (new URL(request.url()).pathname.endsWith('/_redevplugin/api/plugins/surfaces/methods')) idleMethodRequests += 1;
+      const path = new URL(request.url()).pathname;
+      const kind = path.endsWith('/surfaces/methods') ? 'methods'
+        : path.endsWith('/bridge-token') ? 'authority'
+        : path.startsWith('/_redevplugin_web/') ? 'web-control-or-resource'
+        : path.startsWith('/_redevplugin/api/') ? 'lifecycle' : 'document-or-asset';
+      traffic[phase][kind] = (traffic[phase][kind] ?? 0) + 1;
     });
     await plainPage.goto(url + '?mode=plain', { waitUntil: 'domcontentloaded' });
     await plainPage.waitForFunction(() => globalThis.testState?.ready || globalThis.testState?.error, null, { polling: 10 });
     assert.equal(await plainPage.evaluate(() => globalThis.testState.error), '');
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    samples.set('ui.web-surface-idle-method-requests', [idleMethodRequests]);
+    const plainFrames = plainPage.frames().filter(frame => frame !== plainPage.mainFrame());
+    assert.equal(plainFrames.length, 2);
+    assert.notEqual(new URL(plainFrames[0].url()).origin, new URL(plainFrames[1].url()).origin);
+    assert.equal(traffic.startup.methods ?? 0, 0, 'plain startup must not register a method receiver');
+    for (const current of ['idle', 'interaction', 'sibling']) {
+      if (current === 'sibling') { phase = 'closing'; await plainPage.evaluate(() => globalThis.testSlots[0].close()); }
+      phase = current;
+      if (current !== 'idle') {
+        const target = plainFrames[current === 'sibling' ? 1 : 0];
+        await target.locator('input').fill(current + ' remains local');
+        assert.equal(await target.locator('output').textContent(), current + ' remains local');
+      }
+      await plainPage.waitForTimeout(1500);
+      samples.get('ui.web-surface-idle-method-requests').push(traffic[current].methods ?? 0);
+    }
+    assert.equal(await plainPage.locator('iframe').count(), 1);
+    assert.equal(await plainPage.evaluate(() => globalThis.testState.error), '');
+    console.log(JSON.stringify({ web_traffic: traffic, observation_ms_per_phase: 1500, initial_surface_count: 2, final_surface_count: 1 }));
     await plainPage.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
     await plainPage.close();
     assert.deepEqual(errors, []);
