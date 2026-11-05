@@ -124,7 +124,7 @@ html[data-plugin="sky-strike"] .plugin-nav[aria-pressed="true"] { box-shadow: in
   .mobile-details-button { display: grid; min-height: 67px; place-content: center; justify-items: center; gap: 4px; border: 0; border-left: 1px solid #29322e; padding: 5px 3px; }
   .mobile-details-button:hover { color: #ffffff; background: #1b2621; }
   .mobile-details-button small { display: none; }
-  .plugin-inspector { inset: auto 0 0; width: 100%; height: auto; max-height: min(78dvh, 680px); border-top: 1px solid #cdd7d1; border-left: 0; padding: 22px 20px 28px; box-shadow: 0 -24px 64px #14201938; }
+  .plugin-inspector { inset: auto 0 0; width: 100%; height: min(78dvh, 680px); max-height: min(78dvh, 680px); border-top: 1px solid #cdd7d1; border-left: 0; padding: 22px 20px 28px; box-shadow: 0 -24px 64px #14201938; }
 }
 
 @media (max-width: 360px) {

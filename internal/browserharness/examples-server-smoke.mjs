@@ -14,26 +14,30 @@ await mkdir(evidenceDir, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
 const desktop = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
-await desktop.addInitScript(() => {
-  if (window !== window.top) return;
-  const events = [];
-  const snapshot = () => ({
-    open: document.querySelector("#plugin-inspector")?.getAttribute("data-open"),
-    focus: document.activeElement?.id || document.activeElement?.tagName,
+let activePage = desktop;
+async function installInteractionEvidence(page) {
+  await page.addInitScript(() => {
+    if (window !== window.top) return;
+    const events = [];
+    const snapshot = () => ({
+      open: document.querySelector("#plugin-inspector")?.getAttribute("data-open"),
+      focus: document.activeElement?.id || document.activeElement?.tagName,
+    });
+    const record = (event) => {
+      events.push({ time: performance.now(), ...event, ...snapshot() });
+      if (events.length > 80) events.shift();
+    };
+    for (const type of ["pointerdown", "pointerup", "click", "focusin"]) {
+      document.addEventListener(type, (event) => record({ type, target: event.target?.id || event.target?.className }), true);
+    }
+    addEventListener("DOMContentLoaded", () => {
+      const inspector = document.querySelector("#plugin-inspector");
+      if (inspector) new MutationObserver(() => record({ type: "inspector-state" })).observe(inspector, { attributes: true, attributeFilter: ["data-open"] });
+    });
+    window.__showcaseInteractionEvents = events;
   });
-  const record = (event) => {
-    events.push({ time: performance.now(), ...event, ...snapshot() });
-    if (events.length > 80) events.shift();
-  };
-  for (const type of ["pointerdown", "pointerup", "click", "focusin"]) {
-    document.addEventListener(type, (event) => record({ type, target: event.target?.id || event.target?.className }), true);
-  }
-  addEventListener("DOMContentLoaded", () => {
-    const inspector = document.querySelector("#plugin-inspector");
-    if (inspector) new MutationObserver(() => record({ type: "inspector-state" })).observe(inspector, { attributes: true, attributeFilter: ["data-open"] });
-  });
-  window.__showcaseInteractionEvents = events;
-});
+}
+await installInteractionEvidence(desktop);
 await installWeatherReadFixtures(desktop);
 const desktopFailures = observePageFailures(desktop, baseURL);
 const methodCalls = [];
@@ -520,6 +524,8 @@ try {
   await desktop.screenshot({ path: resolve(evidenceDir, "examples-sky-strike-desktop.png"), fullPage: false });
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  activePage = mobile;
+  await installInteractionEvidence(mobile);
   await installWeatherReadFixtures(mobile);
   const mobileFailures = observePageFailures(mobile, baseURL);
   await mobile.goto(baseURL, { waitUntil: "domcontentloaded" });
@@ -528,10 +534,35 @@ try {
   const mobileFrame = mobile.frameLocator('iframe[title="Memos plugin"]');
   await assertNoHorizontalOverflow(mobileFrame);
   await mobile.locator("#mobile-inspector-toggle").click();
-  await mobile.locator('#plugin-inspector[data-open="true"]').waitFor();
-  await mobile.locator("#inspector-close").click();
-  await mobile.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached" });
-  assert.equal(await mobile.locator("#plugin-inspector").isVisible(), false, "closed mobile app details must be hidden");
+  const mobileClose = mobile.locator("#inspector-close");
+  // Native modal hit testing must settle before splitting a real click into
+  // down/up events. Keep Playwright's normal stability and event-target checks.
+  await mobileClose.click({ trial: true });
+  const closeBounds = await mobileClose.boundingBox();
+  assert.ok(closeBounds);
+  await mobile.mouse.move(closeBounds.x + closeBounds.width / 2, closeBounds.y + closeBounds.height / 2);
+  await mobile.mouse.down();
+  // A late Surface failure can reveal this row during a real pointer gesture.
+  // The close control must keep its position while the details content changes.
+  await mobile.evaluate(() => {
+    document.querySelector(".developer-details").open = true;
+    document.querySelector("#detail-error-row").hidden = false;
+    document.querySelector("#detail-error").textContent = "The app session ended before it was ready. Try opening it again.";
+  });
+  const updatedCloseBounds = await mobileClose.boundingBox();
+  assert.ok(updatedCloseBounds);
+  assert.equal(Math.abs(updatedCloseBounds.y - closeBounds.y) < 1, true, "mobile details updates must not move the close control during a pointer gesture");
+  await mobile.mouse.up();
+  await mobile.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached", timeout: 5_000 });
+  await mobile.evaluate(() => { document.querySelector(".developer-details").open = false; document.querySelector("#detail-error-row").hidden = true; });
+  for (let interaction = 0; interaction < 12; interaction += 1) {
+    await mobile.locator("#mobile-inspector-toggle").click();
+    await mobile.locator('#plugin-inspector[data-open="true"]').waitFor();
+    await mobile.locator("#inspector-close").click();
+    await mobile.locator('#plugin-inspector[data-open="false"]').waitFor({ state: "attached", timeout: 5_000 });
+    assert.equal(await mobile.locator("#plugin-inspector").isVisible(), false, "closed mobile app details must be hidden");
+    assert.equal(await mobile.locator("#mobile-inspector-toggle").evaluate((element) => document.activeElement === element), true, "closing mobile details restores the trigger focus");
+  }
   await mobileMemos.getByRole("button", { name: "Open explorer" }).click();
   await mobileMemos.locator(".memos-explorer").waitFor();
   await assertMinimumTouchSize(mobileMemos.getByRole("button", { name: "Close explorer" }), 44);
@@ -570,6 +601,8 @@ try {
   await mobile.close();
 
   const compact = await browser.newPage({ viewport: { width: 360, height: 720 }, deviceScaleFactor: 1 });
+  activePage = compact;
+  await installInteractionEvidence(compact);
   await installWeatherReadFixtures(compact);
   const compactFailures = observePageFailures(compact, baseURL);
   await compact.goto(`${baseURL}?plugin=memos`, { waitUntil: "domcontentloaded" });
@@ -700,11 +733,14 @@ try {
   }, null, 2) + "\n");
 } catch (error) {
   const diagnostics = {
+    cause_message: error instanceof Error ? error.message : String(error),
+    cause_stack: error instanceof Error ? error.stack : undefined,
+    active_viewport: activePage.viewportSize(),
+    active_inspector_events: await activePage.evaluate(() => window.__showcaseInteractionEvents).catch(() => []),
+    active_inspector_state: await activePage.locator("#plugin-inspector").evaluate((element) => ({ open: element.open, declared_open: element.dataset.open, hidden: element.getAttribute("aria-hidden"), focus: document.activeElement?.id })).catch(() => null),
     inspector_events: await desktop.evaluate(() => window.__showcaseInteractionEvents).catch(() => []),
     inspector_state: await desktop.locator("#plugin-inspector").evaluate((element) => ({ open: element.dataset.open, inert: element.inert, hidden: element.getAttribute("aria-hidden"), focus: document.activeElement?.id, transform: getComputedStyle(element).transform })).catch(() => null),
     placeholder_visible: await desktop.locator("#surface-placeholder").isVisible().catch(() => false),
-    cause_message: error instanceof Error ? error.message : String(error),
-    cause_stack: error instanceof Error ? error.stack : undefined,
     outer_status: await desktop.locator("#surface-placeholder p").textContent().catch(() => ""),
     detail_error: await desktop.locator("#detail-error").textContent().catch(() => ""),
     weather_text: await desktop.frameLocator('iframe[title="Weather plugin"]').locator("body").innerText({timeout: 1000}).catch(() => ""),
@@ -713,7 +749,9 @@ try {
     method_calls: methodCalls.map((body) => { const { method, params } = JSON.parse(body); return { method, params }; }),
     method_results: await Promise.all(methodResults),
   };
-  throw new Error(`examples smoke failed: ${JSON.stringify(diagnostics)}`, { cause: error });
+  await writeFile(resolve(evidenceDir, "examples-failure.json"), JSON.stringify(diagnostics, null, 2) + "\n");
+  await activePage.screenshot({ path: resolve(evidenceDir, "examples-failure.png"), fullPage: false }).catch(() => {});
+  throw new Error(`examples smoke failed: ${diagnostics.cause_message}\n${diagnostics.cause_stack}\nEvidence: ${resolve(evidenceDir, "examples-failure.json")}`, { cause: error });
 } finally {
   await desktop.close();
   await browser.close();

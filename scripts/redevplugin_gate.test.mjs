@@ -189,6 +189,8 @@ test("failure classification never retries assertions or interprets unknown fail
   assert.equal(failureKind({}, { code: 101 }, cargoTimeout), "environment");
   assert.equal(failureKind({}, { code: 101 }, "AssertionError: " + cargoTimeout), "check");
   assert.equal(failureKind({}, { code: 1 }, "unknown"), "check");
+  const mixedBrowserFailure = "Error: official registry index remained unavailable after bounded retries\nError: examples smoke failed: locator.waitFor: Timeout 30000ms exceeded.";
+  assert.equal(failureKind({}, { code: 1 }, mixedBrowserFailure), "check");
   assert.equal(failureKind({}, { signal: "SIGTERM" }, ""), "interrupted");
 });
 
