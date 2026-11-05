@@ -1,4 +1,4 @@
-// Package authorapi generates author bindings from the current signed manifest contract.
+// Package authorapi generates author bindings from the current manifest contract.
 package authorapi
 
 import (

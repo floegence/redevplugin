@@ -78,7 +78,7 @@ func (c *manifestDecodeCache) remove(element *list.Element) {
 
 // Manifest is a validated JSON value graph containing exported structs, maps,
 // slices, pointers and scalars. Clone containers without reparsing/normalizing
-// signed content. Caller mutation must never modify another read's manifest.
+// package content. Caller mutation must never modify another read's manifest.
 func cloneCachedManifest(value manifest.Manifest) manifest.Manifest {
 	return cloneManifestValue(reflect.ValueOf(value)).Interface().(manifest.Manifest)
 }

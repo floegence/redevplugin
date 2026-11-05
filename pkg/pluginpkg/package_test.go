@@ -152,7 +152,7 @@ func TestWritePackageRoundTripsUnsignedPackage(t *testing.T) {
 		t.Fatalf("Read() error = %v", err)
 	}
 	if read.PackageHash != built.PackageHash {
-		t.Fatalf("unsigned package round trip mismatch: hash=%s", read.PackageHash)
+		t.Fatalf("package round trip mismatch: hash=%s", read.PackageHash)
 	}
 }
 

@@ -173,7 +173,7 @@ func TestPersistedPreWebManifestMigration(t *testing.T) {
 						t.Fatal(err)
 					}
 					if actual.CanonicalManifest != next.CanonicalManifest || len(actual.VersionHistory) != 1 || actual.VersionHistory[0].CanonicalManifest != old.CanonicalManifest {
-						t.Fatal("signed manifest bytes changed")
+						t.Fatal("stored manifest bytes changed")
 					}
 					if actual.VersionHistory[0].DataGenerationID != "gen_retained-instance" {
 						t.Fatal("historical data generation lost")

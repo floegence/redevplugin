@@ -370,7 +370,7 @@ func validatePluginDataPackageIdentity(record registry.PluginRecord) error {
 		return fmt.Errorf("%w: package identity differs from its canonical manifest", plugindata.ErrInvalidArgument)
 	}
 	// Presentation hydration is derived from package-local locale assets, not a
-	// second signed manifest source. Compare the remaining normalized data exactly.
+	// second manifest source. Compare the remaining normalized data exactly.
 	actualManifest := record.Manifest
 	actualManifest.Presentation = decoded.Presentation
 	actualManifest.Presentation.DefaultLocale = record.Manifest.Presentation.DefaultLocale
@@ -384,7 +384,7 @@ func validatePluginDataPackageIdentity(record registry.PluginRecord) error {
 		return err
 	}
 	if !bytes.Equal(actual, expected) {
-		return fmt.Errorf("%w: package manifest differs from signed content", plugindata.ErrInvalidArgument)
+		return fmt.Errorf("%w: package manifest differs from package content", plugindata.ErrInvalidArgument)
 	}
 	return nil
 }

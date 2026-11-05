@@ -493,7 +493,7 @@ The local process grant does not override method or authenticated session ceilin
 Start, stdin writes/closure, termination, kill and close require both CanRead and
 CanWrite and a non-read method. Attach, status, output reads and wait require
 CanRead. The same broker applies to preflight and already-installed packages;
-signed manifests and retained data are not rewritten. A read method may retain
+package manifests and retained data are not rewritten. A read method may retain
 historical process declarations, but mutating operations return PERMISSION_DENIED.
 
 SQLite broker queries and transactions use a pinned physical connection with a

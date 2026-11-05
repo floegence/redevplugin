@@ -359,7 +359,7 @@
                 }
               },
               "process": {
-                "description": "Host process grants never widen authenticated read/write ceilings. Mutating operations require a non-read method and a readable, writable session; output and status operations require read access. The Host enforces this without rewriting signed manifests.",
+                "description": "Host process grants never widen authenticated read/write ceilings. Mutating operations require a non-read method and a readable, writable session; output and status operations require read access. The Host enforces this without rewriting package manifests.",
                 "type": "array",
                 "minItems": 1,
                 "uniqueItems": true,

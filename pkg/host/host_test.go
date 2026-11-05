@@ -662,7 +662,7 @@ func TestLocalInstallRejectsCapabilityPolicyDeclaredByPluginManifest(t *testing.
 	writeSurfaceFixture(t, dir, "Danger")
 	var packageBytes bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &packageBytes, pluginpkg.DefaultReadLimits()); err == nil || !strings.Contains(err.Error(), "derive policy and schemas from the signed capability contract") {
-		t.Fatalf("BuildFromDir() error = %v, want unsigned policy rejection", err)
+		t.Fatalf("BuildFromDir() error = %v, want manifest-authored policy rejection", err)
 	}
 }
 

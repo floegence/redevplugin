@@ -2784,8 +2784,6 @@ test("plugin disable immediately tears down matching local surface hosts", async
     plugin_id: hostBootstrap.pluginId,
     version: hostBootstrap.pluginVersion,
     active_fingerprint: hostBootstrap.activeFingerprint,
-    trust_state: "verified",
-    trust_assessment: { trust_state: "verified", verified_hashes: { package_sha256: digest("1"), manifest_sha256: digest("2"), entries_sha256: digest("3") } },
     enable_state: "disabled_by_user",
   });
   const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
@@ -2803,15 +2801,6 @@ const lifecyclePluginRecord = {
   plugin_id: hostBootstrap.pluginId,
   version: hostBootstrap.pluginVersion,
   active_fingerprint: hostBootstrap.activeFingerprint,
-  trust_state: "verified",
-  trust_assessment: {
-    trust_state: "verified",
-    verified_hashes: {
-      package_sha256: digest("1"),
-      manifest_sha256: digest("2"),
-      entries_sha256: digest("3"),
-    },
-  },
   enable_state: "disabled_by_user",
 };
 

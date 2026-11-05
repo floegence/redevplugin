@@ -3930,7 +3930,7 @@ export interface components {
                         operations: ("read" | "write" | "delete" | "list" | "get" | "put" | "query" | "exec")[];
                     }[];
                     network?: components["schemas"]["StoredManifestNetworkAccess"][];
-                    /** @description Host process grants never widen authenticated read/write ceilings. Mutating operations require a non-read method and a readable, writable session; output and status operations require read access. The Host enforces this without rewriting signed manifests. */
+                    /** @description Host process grants never widen authenticated read/write ceilings. Mutating operations require a non-read method and a readable, writable session; output and status operations require read access. The Host enforces this without rewriting package manifests. */
                     process?: {
                         operations: ("start" | "attach" | "status" | "write_stdin" | "close_stdin" | "read_stdout" | "read_stderr" | "wait" | "terminate" | "kill" | "close")[];
                     }[];

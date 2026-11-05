@@ -15,6 +15,7 @@ import {
   type FetchLike,
   type FetchResponseLike,
   type PluginEvent,
+  type PluginExternalPackageInspection,
   type PluginRuntimeHealth,
 } from "../src/trusted-parent.js";
 import { PluginMutationLifecycleError, PluginTransportError } from "../src/errors.js";
@@ -68,20 +69,14 @@ function sessionScopeRevokeResult(state: "fenced" | "draining" | "incomplete" | 
   };
 }
 
-function externalPackageInspectionResult(inspectionId: string, pluginInstanceId: string) {
+function externalPackageInspectionResult(inspectionId: string, pluginInstanceId: string): PluginExternalPackageInspection {
   const assessedAt = "2026-07-23T00:00:00Z";
   const hashes = {
     package_sha256: `sha256:${"a".repeat(64)}`,
     manifest_sha256: `sha256:${"b".repeat(64)}`,
     entries_sha256: `sha256:${"c".repeat(64)}`,
   };
-  const signatureAssessment = {
-    state: "absent",
-    reason_codes: ["signature_absent"],
-    assessed_hashes: hashes,
-    assessed_at: assessedAt,
-  };
-  const sourceProvenance = {
+  const sourceProvenance: PluginExternalPackageInspection["source_provenance"] = {
     kind: "package_url",
     source_origin: "https://plugins.example.test",
     source_path: "/containers-2.0.1.redevplugin",
@@ -89,17 +84,17 @@ function externalPackageInspectionResult(inspectionId: string, pluginInstanceId:
     package_sha256: hashes.package_sha256,
     resolved_at: assessedAt,
   };
-  const executionApproval = {
+  const executionApproval: PluginExternalPackageInspection["execution_approval"] = {
     state: "pending",
     reason_codes: ["user_confirmation_required"],
     assessed_at: assessedAt,
   };
-  const updateEligibility = {
+  const updateEligibility: PluginExternalPackageInspection["update_eligibility"] = {
     state: "manual_only",
-    reason_codes: ["signature_absent"],
+    reason_codes: ["manual_confirmation_required"],
     assessed_at: assessedAt,
   };
-  const securitySummary = {
+  const securitySummary: PluginExternalPackageInspection["security_summary"] = {
     summary_sha256: `sha256:${"d".repeat(64)}`,
     permissions: [{ permission_id: "containers.read", methods: ["containers.list"], required: true, effects: ["read"] }],
     methods: [],
@@ -123,13 +118,16 @@ function externalPackageInspectionResult(inspectionId: string, pluginInstanceId:
     publisher_id: "example.publisher",
     plugin_id: "example.containers",
     version: "2.0.1",
+    presentation: {
+      default_locale: "en",
+      locales: [{ locale: "en", plugin_name: "Containers", summary: "Manage containers", description: [], highlights: [], keywords: [], surfaces: [], settings: [] }],
+    },
+    presentation_sha256: `sha256:${"e".repeat(64)}`,
     inspected_hashes: hashes,
-    signature_assessment: signatureAssessment,
     source_provenance: sourceProvenance,
     execution_approval: executionApproval,
     update_eligibility: updateEligibility,
     security_summary: securitySummary,
-    confirmation_digest: `sha256:${"e".repeat(64)}`,
   };
 }
 
@@ -543,7 +541,7 @@ test("surface reload limiter rejects invalid timing options", () => {
 test("platform client forwards per-call abort signals without changing absolute API bases", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { plugins: [] } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", enable_state: "enabled" } });
   const controller = new AbortController();
   const client = new PluginPlatformClient({
     apiBaseURL: "https://host.example/plugin-api/",
@@ -1137,12 +1135,12 @@ test("platform client reads and patches plugin settings through host API", async
 
 test("platform client manages plugin lifecycle routes", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "enabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled_by_user", disabled_reason: "admin" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled_by_user" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", enable_state: "disabled_by_user", disabled_reason: "admin" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", enable_state: "disabled_by_user" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const localImportClient = new PluginLocalImportClient({ fetch: fetch.fetch });
   const uploadController = new AbortController();
@@ -1185,7 +1183,7 @@ test("platform client manages plugin lifecycle routes", async () => {
 
 test("local import update canonicalizes identity for transport and teardown", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", enable_state: "enabled" } });
   const scope = createPluginSurfaceScope();
   let disposed = 0;
   registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
@@ -1523,7 +1521,7 @@ test("platform client covers operation and data lifecycle routes", async () => {
   });
   fetch.push({ ok: true, data: { bundle_ref: "bundle_ref_1" } });
   fetch.push({ ok: true, data: { deleted: true } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled_by_user" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", enable_state: "disabled_by_user" } });
   fetch.push({ ok: true, data: { retained_data: [{ plugin_instance_id: "plugin_instance_1", generation_id: "generation_1", state: "retained", revision: 3, shape_hash: "a".repeat(64) }] } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", generation_id: "generation_1", state: "retained", revision: 3, shape_hash: "a".repeat(64) } });
   fetch.push({ ok: true, data: { deleted: [{ plugin_instance_id: "plugin_instance_3", generation_id: "generation_3", state: "retained", revision: 4, shape_hash: "b".repeat(64) }] } });

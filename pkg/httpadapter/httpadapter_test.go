@@ -1545,7 +1545,7 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 	}
 }
 
-func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) {
+func TestHandlerManagementRejectsInvalidPackageAndJSONUpload(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/"+url.PathEscape(nextHTTPTestPluginInstanceID(t))+"/local-import", bytes.NewBufferString("not-a-zip"))
@@ -1560,7 +1560,7 @@ func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) 
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Fatalf("trust_state input status = %d body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("JSON upload status = %d body = %s", rec.Code, rec.Body.String())
 	}
 }
 

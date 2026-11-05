@@ -355,7 +355,7 @@ func externalPackageProjectionFixture() (manifest.Manifest, []capabilitycontract
 		},
 		Presentation: manifest.PresentationSpec{
 			DefaultLocale: "en-US", Summary: "Inspect an external package.",
-			Description: []string{"Review package capabilities and trust evidence before installation."},
+			Description: []string{"Review package capabilities and source before installation."},
 			Highlights:  []string{"Verified package presentation"}, Keywords: []string{"external", "package"},
 			Localizations: []manifest.PresentationLocalizationSpec{{
 				Locale: "fr-FR", PluginName: "Externe", PublisherName: "Editeur exemple",

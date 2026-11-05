@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// UnmarshalJSON requires the routing decision to be explicit in signed input.
+// UnmarshalJSON requires the routing decision to be explicit in package input.
 func (web *SurfaceWebSpec) UnmarshalJSON(raw []byte) error {
 	var value struct {
 		Storage  []StorageBrokerAccessSpec `json:"storage,omitempty"`
