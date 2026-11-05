@@ -55,5 +55,7 @@ change an existing entry's digest. `check` and `doctor` validate an enclosing in
 
 A repository can contain multiple projects and ecosystems. Hosts must select an
 explicit plugin when more than one matches. Installation binds the chosen
-plugin, release, asset, content digest, and owner. Repository identity prevents
+plugin, release, asset, content digest, and owner. The downloader rechecks the
+selected repository, tag commit, release and asset after downloading; developers
+do not need to enable immutable GitHub Releases. Repository identity prevents
 a different source with the same plugin ID from silently taking over updates.

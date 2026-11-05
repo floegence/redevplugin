@@ -197,7 +197,7 @@ func (s *externalPackageInspectionStore) claimCleanup(scope *sessionctx.SessionS
 		if scope != nil && !record.Scope.Matches(*scope) {
 			continue
 		}
-		if expiredAt != nil && (record.State != externalPackagePending || expiredAt.Before(record.Inspection.ExpiresAt)) {
+		if expiredAt != nil && expiredAt.Before(record.Inspection.ExpiresAt) {
 			continue
 		}
 		claimed := record

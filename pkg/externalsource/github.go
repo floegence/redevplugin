@@ -2,6 +2,7 @@ package externalsource
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -164,8 +165,26 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 		return ResolvedGitHubAsset{}, err
 	}
 	if asset.Size > 0 && fetched.Artifact.Size != asset.Size {
-		_ = resolver.fetcher.stage.Remove(fetched.Artifact)
-		return ResolvedGitHubAsset{}, externalError(ErrorStageIntegrity, "resolve_github", repositoryURL, fmt.Errorf("downloaded asset size does not match release metadata"))
+		return ResolvedGitHubAsset{}, externalError(ErrorStageIntegrity, "resolve_github", repositoryURL, errors.Join(fmt.Errorf("downloaded asset size does not match release metadata"), resolver.fetcher.stage.Remove(fetched.Artifact)))
+	}
+	// GitHub releases need not enable immutable-release publishing. Re-resolve
+	// the selected identity after downloading so replaced assets and moved tags
+	// cannot be attached to the preceding source observation. Unrelated assets
+	// may change without invalidating this package.
+	observed, err := resolver.client.ReleaseByTag(ctx, owner, repository, tag)
+	if err == nil {
+		var selected []GitHubReleaseAsset
+		for _, candidate := range observed.Assets {
+			if candidate.Name == assetName {
+				selected = append(selected, candidate)
+			}
+		}
+		if observed.RepositoryID != release.RepositoryID || observed.ReleaseID != release.ReleaseID || observed.Tag != release.Tag || observed.ResolvedCommitSHA != release.ResolvedCommitSHA || len(selected) != 1 || selected[0] != asset {
+			err = fmt.Errorf("release identity changed during download")
+		}
+	}
+	if err != nil {
+		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, errors.Join(err, resolver.fetcher.stage.Remove(fetched.Artifact)))
 	}
 	return ResolvedGitHubAsset{
 		PluginID: plugin.PluginID, Version: selectedVersion,

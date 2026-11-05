@@ -2,6 +2,7 @@ package externalsource
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/netip"
@@ -14,6 +15,8 @@ import (
 
 type fakeGitHubClient struct {
 	release      GitHubRelease
+	afterRelease *GitHubRelease
+	afterError   error
 	latestCalls  int
 	byTagCalls   int
 	requestedTag string
@@ -27,6 +30,14 @@ func (client *fakeGitHubClient) LatestRelease(context.Context, string, string) (
 func (client *fakeGitHubClient) ReleaseByTag(_ context.Context, _, _, tag string) (GitHubRelease, error) {
 	client.byTagCalls++
 	client.requestedTag = tag
+	if client.byTagCalls > 1 {
+		if client.afterError != nil {
+			return GitHubRelease{}, client.afterError
+		}
+		if client.afterRelease != nil {
+			return *client.afterRelease, nil
+		}
+	}
 	return client.release, nil
 }
 
@@ -58,7 +69,7 @@ func TestGitHubReleaseResolverFetchesUniquePackageAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = fetcher.stage.Remove(result.Fetch.Artifact) })
-	if client.byTagCalls != 1 || client.latestCalls != 0 || client.requestedTag != "plugin-v1.2.3" {
+	if client.byTagCalls != 2 || client.latestCalls != 0 || client.requestedTag != "plugin-v1.2.3" {
 		t.Fatalf("client calls: latest=%d byTag=%d tag=%q", client.latestCalls, client.byTagCalls, client.requestedTag)
 	}
 	if result.RepositoryURL != "https://github.com/example/plugin" || result.RepositoryID != 101 || result.ReleaseID != 202 || result.AssetID != 303 {
@@ -66,6 +77,56 @@ func TestGitHubReleaseResolverFetchesUniquePackageAsset(t *testing.T) {
 	}
 	if strings.Contains(result.Fetch.Source, "secret") || strings.Contains(result.Fetch.Final, "secret") {
 		t.Fatalf("resolved result leaked signed query: %#v", result.Fetch)
+	}
+}
+
+func TestGitHubReleaseResolverRejectsIdentityChangesDuringDownload(t *testing.T) {
+	for _, field := range []string{"repository", "release", "commit", "tag", "asset", "name", "url", "size", "missing", "duplicate", "unavailable"} {
+		t.Run(field, func(t *testing.T) {
+			fetcher, directory := newTestFetcher(t, staticResolver{"objects.githubusercontent.com": {netip.MustParseAddr("1.1.1.1")}})
+			client := &fakeGitHubClient{release: GitHubRelease{RepositoryID: 1, ReleaseID: 2, Tag: "plugin-v1.0.0", ResolvedCommitSHA: strings.Repeat("a", 40), Assets: []GitHubReleaseAsset{{AssetID: 3, Name: "plugin.redevplugin", DownloadURL: "https://objects.githubusercontent.com/plugin", Size: 7}}}}
+			fetcher.roundTrip = func(_ context.Context, _ PackageURL, _ []netip.Addr, _ http.Header) (*http.Response, error) {
+				next := client.release
+				next.Assets = append([]GitHubReleaseAsset(nil), next.Assets...)
+				switch field {
+				case "repository":
+					next.RepositoryID++
+				case "release":
+					next.ReleaseID++
+				case "commit":
+					next.ResolvedCommitSHA = strings.Repeat("b", 40)
+				case "tag":
+					next.Tag = "plugin-v1.1.0"
+				case "asset":
+					next.Assets[0].AssetID++
+				case "name":
+					next.Assets[0].Name = "changed.redevplugin"
+				case "url":
+					next.Assets[0].DownloadURL += "-changed"
+				case "size":
+					next.Assets[0].Size++
+				case "missing":
+					next.Assets = nil
+				case "duplicate":
+					next.Assets = append(next.Assets, next.Assets[0])
+				case "unavailable":
+					client.afterError = errors.New("release disappeared")
+				}
+				client.afterRelease = &next
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("package")), ContentLength: 7}, nil
+			}
+			resolver, err := NewGitHubReleaseResolver(client, fetcher)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := resolver.ResolvePackage(context.Background(), GitHubRepositorySource{RepositoryURL: "https://github.com/example/plugin"}); err == nil {
+				t.Fatal("changed release metadata accepted")
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("rejected download retained staged bytes: %v %v", entries, err)
+			}
+		})
 	}
 }
 

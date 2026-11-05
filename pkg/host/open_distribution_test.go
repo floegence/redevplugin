@@ -415,7 +415,7 @@ func TestOpenDistributionRejectedInspectionCannotCommitAfterCleanupFailure(t *te
 				t.Fatalf("rejected candidate remained installable: %v", err)
 			}
 			stage.setRemoveError(nil)
-			if err := h.cleanupExternalPackageInspectionArtifacts(nil, nil); err != nil {
+			if err := h.removeExpiredExternalPackageInspectionArtifacts(pending.Inspection.ExpiresAt.Add(time.Second)); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := h.externalInspections.get(pending.Inspection.InspectionID, pending.Scope); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
