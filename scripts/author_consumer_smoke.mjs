@@ -27,11 +27,32 @@ try{
   const report=JSON.parse(run(cli,["test",project]));
   assert.equal(report.ok,true);assert.equal(report.stages.find(stage=>stage.name==="typecheck").status,"passed");
   assert.ok(report.commands.some(command=>command.arguments.join(" ")==="npm test"));
+  if(template==="web"){
+   const manifest=JSON.parse(await readFile(join(project,"manifest.json"),"utf8"));
+   assert.deepEqual(manifest.workers,[]);assert.deepEqual(manifest.methods,[]);assert.deepEqual(manifest.intents,[]);
+  }
   evidence.push({template,install_build_test_ms:Math.round(performance.now()-begin),stages:report.stages});
  }
+ browser=await chromium.launch({headless:true});
+ const webProject=join(root,"web"),webState=join(root,"web-state"),webURL=await start(webProject,webState);
+ let page=await browser.newPage();let methodRequests=0;
+ page.on("request",request=>{if(new URL(request.url()).pathname.endsWith("/_redevplugin/api/plugins/surfaces/methods"))methodRequests++});
+ await page.goto(webURL);let webFrame=page.frameLocator("#stage > iframe");
+ await webFrame.getByRole("heading",{name:"Consumer web"}).waitFor({timeout:30000});
+ await page.waitForFunction(()=>document.querySelector("#action-tools")?.hasAttribute("hidden")&&document.querySelector("#resources")?.hasAttribute("hidden"));
+ await webFrame.getByText("Ready",{exact:true}).waitFor({timeout:10000});
+ await webFrame.getByLabel("Message",{exact:true}).fill("Local browser interaction");
+ await webFrame.getByRole("button",{name:"Preview",exact:true}).click();
+ await webFrame.getByText("Local browser interaction",{exact:true}).waitFor();
+ await page.waitForTimeout(1500);assert.equal(methodRequests,0,"action-free Web preview must not start a methods receiver");
+ const webStatus=await page.evaluate(async()=>await(await fetch("/dev/status")).json());
+ assert.equal(webStatus.mode,"web");assert.equal(webStatus.error,"");
+ evidence.push({web_preview:"ready",idle_method_requests:methodRequests,worker_runtime_required:false});
+ await page.close();await stop();
  const project=join(root,"data"),state=join(root,"state"),url=await start(project,state);
- browser=await chromium.launch({headless:true});let page=await browser.newPage();await page.goto(url);
+ page=await browser.newPage();await page.goto(url);
  let frame=page.frameLocator("#stage > iframe");await frame.getByText("Ready",{exact:true}).waitFor({timeout:30000});
+ await page.waitForFunction(()=>!document.querySelector("#action-tools")?.hasAttribute("hidden")&&!document.querySelector("#resources")?.hasAttribute("hidden"));
  await frame.getByLabel("Document",{exact:true}).fill("persisted across restart");
  await frame.getByRole("button",{name:"Save",exact:true}).click();await frame.getByText("Saved",{exact:true}).waitFor();
  await frame.getByLabel("Document",{exact:true}).fill("unsaved draft survives candidate");
@@ -71,6 +92,6 @@ try{
  assert.equal((await fetch(new URL(nextURL).origin+"/dev/status")).status,403);
  assert.equal(current.persistent,true);
  await page.screenshot({path:join(repo,"dist/author-consumer-preview.png"),fullPage:true});
- console.log(JSON.stringify({schema_version:"redevplugin.author-consumer-evidence.v1",platform_version:version,evidence,acceptance:["five original template builds and tests","packed npm consumer","manual draft preservation","cancel application","fresh authority after apply","typecheck failure retention","data after process restart"]},null,2));
+ console.log(JSON.stringify({schema_version:"redevplugin.author-consumer-evidence.v1",platform_version:version,evidence,acceptance:["five original template builds and tests","action-free pure Web preview without Worker runtime or idle method receiver","packed npm consumer","manual draft preservation","cancel application","fresh authority after apply","typecheck failure retention","data after process restart"]},null,2));
 } catch(error){throw new Error(String(error)+"\n"+logs,{cause:error})}
 finally{if(browser)await browser.close();try{await stop()}finally{if(child&&child.exitCode===null)child.kill("SIGKILL");candidateCrates?.cleanup();await rm(root,{recursive:true,force:true})}}

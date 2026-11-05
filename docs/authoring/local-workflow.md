@@ -1,25 +1,29 @@
 # Local author workflow
 
 Create a project with `redevplugin init <plugin-id> <display-name> <directory>`.
-The default is a pure Web Surface. Choose `--template data` for a multi-window
-editor, `files` for streaming imports, `monitor` for a controlled WebSocket
-dashboard, or `worker` for a WASM job. The older scaffold command retains its
-Worker starter. Only Workers need the pinned Rust 1.98.0 toolchain.
+The default is a pure Web Surface with no declared host actions. Choose
+`--template data` for a multi-window editor, `files` for streaming imports,
+`monitor` for a controlled WebSocket dashboard, or `worker` for a WASM job.
+The older scaffold command retains its Worker starter. Only Workers need the
+pinned Rust 1.98.0 toolchain.
 Templates use exact published SDK dependencies; install them before building.
 
 ## First working preview
 
-Install the CLI for the platform release used by your host:
+Install the CLI for the platform release used by your host, then start the
+default Web preview:
 
 ```bash
 go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.19.0
-redevplugin init dev.example.notes "Notes" notes --template data
+redevplugin init dev.example.notes "Notes" notes
 cd notes
 npm install
-redevplugin doctor .
-redevplugin check .
 redevplugin dev . --state ../notes-development --manual
 ```
+
+`dev` runs the declared checks and builds the first candidate before opening the
+preview. Use `redevplugin doctor .` when diagnosing a tool or dependency issue,
+and `redevplugin check .` before sharing or publishing a package.
 
 Open the local URL printed by the command. Edit the application, save the source,
 and wait for **Apply update**. Your open frame and drafts stay available until you

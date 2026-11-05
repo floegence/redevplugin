@@ -142,6 +142,11 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 		manifestDoc.API.OptionalFeatures = nil
 	}
 
+	if template == "web" {
+		manifestDoc.Methods = []scaffoldMethodV9{}
+		manifestDoc.Intents = []manifest.IntentSpec{}
+	}
+
 	if template == "data" {
 		manifestDoc.API.RequiredFeatures = []manifest.FeatureID{manifest.FeatureSurfaceResources}
 		manifestDoc.Storage = &manifest.StorageSpec{Stores: []manifest.StoreSpec{{StoreID: "documents", Kind: "kv", Scope: "user", QuotaBytes: 8 << 20, SchemaVersion: 1}}}

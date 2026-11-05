@@ -1184,10 +1184,7 @@ bridge.onLifecycle((event) => {
     root.querySelector("button").disabled = true;
   }
 });
-void bridge.registerMethod("application.read", (_params, { signal }) => {
-  signal.throwIfAborted();
-  return { message: input.value };
-}).then(() => {
+void bridge.ready().then(() => {
   if (!disposed) status.textContent = "Ready";
 }).catch((error) => {
   if (disposed) return;

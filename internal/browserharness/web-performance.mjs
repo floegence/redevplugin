@@ -63,6 +63,18 @@ export async function measureWebPerformance(url) {
     samples.set('ui.native-leaf-update', measurements.leaf);
     samples.set('ui.native-reordering', measurements.reorder);
     await page.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
+    const plainPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    let idleMethodRequests = 0;
+    plainPage.on('request', request => {
+      if (new URL(request.url()).pathname.endsWith('/_redevplugin/api/plugins/surfaces/methods')) idleMethodRequests += 1;
+    });
+    await plainPage.goto(url + '?mode=plain', { waitUntil: 'domcontentloaded' });
+    await plainPage.waitForFunction(() => globalThis.testState?.ready || globalThis.testState?.error, null, { polling: 10 });
+    assert.equal(await plainPage.evaluate(() => globalThis.testState.error), '');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    samples.set('ui.web-surface-idle-method-requests', [idleMethodRequests]);
+    await plainPage.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
+    await plainPage.close();
     assert.deepEqual(errors, []);
     for (const specification of specifications) {
       const values = samples.get(specification.id).sort((left, right) => left - right);

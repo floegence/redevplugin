@@ -208,6 +208,18 @@
       ]
     },
     {
+      "id": "ui.web-surface-idle-method-requests",
+      "sample_count": 1,
+      "metrics": [
+        {
+          "name": "max",
+          "unit": "count",
+          "comparator": "eq",
+          "limit": 0
+        }
+      ]
+    },
+    {
       "id": "ui.native-reordering",
       "sample_count": 30,
       "metrics": [

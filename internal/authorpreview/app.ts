@@ -123,6 +123,8 @@ function renderInspector(current: PluginCatalogRecord): void {
     if (!method || (method.effect !== "read" && method.route.kind !== "surface")) continue;
     const option = document.createElement("option"); option.value = intent.intent_id; option.textContent = intent.intent_id + " · " + method.effect; actions.append(option);
   }
+  element("action-tools").hidden = !actions.options.length;
+  element("resources").hidden = !hasDeclaredResources(manifest);
   const fields = element("action-fields"), json = element<HTMLTextAreaElement>("action-params");
   const renderFields = (): void => {
     fields.replaceChildren();
@@ -162,6 +164,10 @@ function renderInspector(current: PluginCatalogRecord): void {
     } catch (error) { element("action-result").textContent = error instanceof Error ? error.message : String(error); }
     finally { button.disabled = !actions.options.length; }
   })(); };
+}
+
+function hasDeclaredResources(manifest: PluginCatalogRecord["manifest"]): boolean {
+  return Boolean(manifest.storage?.stores?.length || manifest.settings?.fields?.length || manifest.network_access?.connectors?.length || manifest.workers?.length || manifest.surfaces.some(surface => surface.web?.storage?.length || surface.web?.settings?.length || surface.web?.network?.length));
 }
 
 const observations = element<HTMLButtonElement>("observations-refresh");

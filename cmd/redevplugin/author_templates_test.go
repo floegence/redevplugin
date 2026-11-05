@@ -26,8 +26,18 @@ func TestInitDefaultsToPackageableWebApplication(t *testing.T) {
 	if len(pkg.Manifest.Workers) != 0 {
 		t.Fatal("Web application unexpectedly requires a Worker")
 	}
-	if len(pkg.Manifest.Methods) != 1 || pkg.Manifest.Methods[0].Method != "application.read" {
-		t.Fatal("expected the explicit Surface action")
+	if len(pkg.Manifest.Methods) != 0 || len(pkg.Manifest.Intents) != 0 {
+		t.Fatal("basic Web template unexpectedly declares a host action")
+	}
+	if len(pkg.Manifest.Surfaces) != 1 || pkg.Manifest.Surfaces[0].Web.Root != "ui" {
+		t.Fatal("basic Web template must retain its isolated Web Surface")
+	}
+	source, err := os.ReadFile(filepath.Join(root, "ui/src/app.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(source, []byte("bridge.onContext")) || !bytes.Contains(source, []byte("bridge.onLifecycle")) || bytes.Contains(source, []byte("registerMethod")) {
+		t.Fatal("basic Web template must retain context/lifecycle integration without registering an application action")
 	}
 	for _, name := range []string{"worker", "rust-toolchain.toml", "dist/workers"} {
 		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
@@ -40,6 +50,28 @@ func TestInitDefaultsToPackageableWebApplication(t *testing.T) {
 	}
 	if bytes.Contains(build, []byte("cargo")) {
 		t.Fatal("Web build requires Cargo")
+	}
+}
+
+func TestResourceTemplatesRetainTheirDeclaredSurfaceAction(t *testing.T) {
+	for _, template := range []string{"data", "monitor", "files"} {
+		t.Run(template, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), template)
+			if _, err := createPluginTemplate("example."+template, "Resource Application", root, template); err != nil {
+				t.Fatal(err)
+			}
+			project, err := authorproject.Load(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkg, _, err := project.Package(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pkg.Manifest.Methods) == 0 || len(pkg.Manifest.Intents) == 0 {
+				t.Fatal("resource template lost its explicit Surface action")
+			}
+		})
 	}
 }
 

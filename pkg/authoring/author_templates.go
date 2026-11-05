@@ -59,7 +59,7 @@ await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html
 `)
 	files["README.md"] = []byte(fmt.Sprintf(`# %s
 
-A regular Web application with one explicit Surface action. No Rust toolchain or
+A regular Web application with no default host action. No Rust toolchain or
 Worker is needed to build or package it. Dependencies use ReDevPlugin %s.
 
     npm install
@@ -69,9 +69,9 @@ Worker is needed to build or package it. Dependencies use ReDevPlugin %s.
     redevplugin package dist app.redevplugin
 
 Edit ui/src/app.ts and use your preferred browser framework. Internal functions
-and state stay ordinary application code. Declare cross-boundary actions in
-manifest.json. The application.read action reads the current input from the
-exact open Surface; it does not run when that Surface is closed.
+and state stay ordinary application code. This basic Web template declares no
+host actions; add a method and intent only when another trusted surface must
+invoke the application.
 
     redevplugin dev . --state ../development-state --manual
 

@@ -3982,6 +3982,8 @@ function renderInspector(current) {
     option.textContent = intent.intent_id + " \xB7 " + method.effect;
     actions.append(option);
   }
+  element("action-tools").hidden = !actions.options.length;
+  element("resources").hidden = !hasDeclaredResources(manifest);
   const fields = element("action-fields"), json = element("action-params");
   const renderFields = () => {
     fields.replaceChildren();
@@ -4038,6 +4040,9 @@ function renderInspector(current) {
       }
     })();
   };
+}
+function hasDeclaredResources(manifest) {
+  return Boolean(manifest.storage?.stores?.length || manifest.settings?.fields?.length || manifest.network_access?.connectors?.length || manifest.workers?.length || manifest.surfaces.some((surface) => surface.web?.storage?.length || surface.web?.settings?.length || surface.web?.network?.length));
 }
 var observations = element("observations-refresh");
 observations.onclick = () => {

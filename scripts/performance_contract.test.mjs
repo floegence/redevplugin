@@ -189,8 +189,8 @@ test("performance evidence rejects malformed raw route authorization profiles", 
 test("performance quality configuration is closed and unique", () => {
   const raw = JSON.parse(readFileSync(contractPath, "utf8"));
   assert.deepEqual(Object.keys(raw).sort(), ["comparison_probes", "scenarios"]);
-  assert.equal(raw.scenarios.length, 19);
-  assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 19);
+  assert.equal(raw.scenarios.length, 20);
+  assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 20);
   assert.deepEqual(
     raw.scenarios.map((scenario) => scenario.id).filter((id) => id.startsWith("operation.") || id.startsWith("stream.")),
     [],
