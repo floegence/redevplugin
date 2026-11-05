@@ -414,8 +414,7 @@ func validateJSONShape(raw []byte) error {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return err
 	}
-	var object func(any, []string, []string) (map[string]any, error)
-	object = func(value any, required, optional []string) (map[string]any, error) {
+	object := func(value any, required, optional []string) (map[string]any, error) {
 		fields, ok := value.(map[string]any)
 		if !ok {
 			return nil, errors.New("expected JSON object")
