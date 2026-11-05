@@ -599,7 +599,7 @@ func ProjectManifestWithCapabilityContracts(m manifest.Manifest, contracts []cap
 			return manifest.Manifest{}, nil, fmt.Errorf("capability target method %q is not published", declared.Route.TargetMethod)
 		}
 		if declared.Method != declared.Route.TargetMethod {
-			return manifest.Manifest{}, nil, fmt.Errorf("plugin method %q must match signed capability method %q", declared.Method, declared.Route.TargetMethod)
+			return manifest.Manifest{}, nil, fmt.Errorf("plugin method %q must match capability contract method %q", declared.Method, declared.Route.TargetMethod)
 		}
 		effective.Methods[index] = effectiveCapabilityMethod(declared, *target)
 		required[declared.Method] = canonicalExternalPackageStrings(target.RequiredPermissions)

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"sort"
 
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
@@ -92,34 +91,7 @@ func releaseSecuritySummary(m manifest.Manifest, pins []capabilitycontract.Pin, 
 	if len(pins) > 0 && len(contracts) == 0 {
 		return SecuritySummaryV1{}, "", ErrCapabilityContractsRequired
 	}
-	if len(contracts) > 0 {
-		summary, err := releaseprojection.BuildExternalPackageSecuritySummaryFromContracts(m, contracts)
-		if err != nil {
-			return SecuritySummaryV1{}, "", err
-		}
-		contractDigest, err := releaseprojection.CapabilityContractSetSHA256(summary)
-		if err != nil {
-			return SecuritySummaryV1{}, "", err
-		}
-		return summary, contractDigest, nil
-	}
-	required := make(map[string][]string, len(m.Methods))
-	workerPermissions := make([]string, 0, len(m.Permissions))
-	for _, permission := range m.Permissions {
-		workerPermissions = append(workerPermissions, string(permission))
-	}
-	sort.Strings(workerPermissions)
-	for _, method := range m.Methods {
-		if method.Route.Kind == manifest.MethodRouteWorker {
-			required[method.Method] = append([]string(nil), workerPermissions...)
-		} else {
-			// Capability method permissions are resolved by the Host's exact
-			// contract registry at install time; the package declaration has no
-			// second permission source to consult.
-			required[method.Method] = []string{}
-		}
-	}
-	summary, err := releaseprojection.BuildExternalPackageSecuritySummary(m, pins, required)
+	summary, err := releaseprojection.BuildExternalPackageSecuritySummaryFromContracts(m, contracts)
 	if err != nil {
 		return SecuritySummaryV1{}, "", err
 	}

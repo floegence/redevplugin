@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/releaseprojection"
 )
 
 func publisherPackage(t *testing.T, withIcon bool) (string, pluginpkg.Package, []byte) {
@@ -80,5 +82,20 @@ func TestExtractPackageIconUsesExactBytesAndNeverOverwrites(t *testing.T) {
 	}
 	if _, err := ExtractPresentationIcon(context.Background(), path, out); !errors.Is(err, ErrPresentationIconOutputExists) {
 		t.Fatal("overwrote output", err)
+	}
+}
+
+func TestPackageInspectionUsesHostScopedWorkerPermissions(t *testing.T) {
+	m := manifest.Manifest{Permissions: []manifest.PermissionID{manifest.PermissionNetworkClient}, Methods: []manifest.MethodSpec{{Method: "worker.read", Route: manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "worker"}, Permissions: []manifest.PermissionID{}}}}
+	expected, err := releaseprojection.BuildExternalPackageSecuritySummaryFromContracts(m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, _, err := releaseSecuritySummary(m, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.SummarySHA256 != expected.SummarySHA256 {
+		t.Fatal("publisher and Host disagree on scoped worker permissions")
 	}
 }
