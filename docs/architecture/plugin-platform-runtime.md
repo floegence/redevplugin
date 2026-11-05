@@ -360,7 +360,6 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/wasm-abi.json`;
 - `spec/plugin/worker-invocation.schema.json`;
 - `spec/internal/runtime-wire.schema.json`;
-- `spec/plugin/release-publisher-config-v1.schema.json`;
 - `spec/plugin/token-ticket-v4.schema.json`;
 - `spec/plugin/bridge.schema.json`;
 - `spec/plugin/web-surface-document.schema.json`;
