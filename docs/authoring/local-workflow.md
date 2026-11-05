@@ -250,18 +250,22 @@ and HTTP adapter with the npm Surface SDK. Its browser acceptance covers two
 independent origins, authenticated inventory, private resource writes, exact
 method targeting, sibling closure, and persistence after host restart without a
 Worker runtime. The reference uses explicit test policies, not production auth.
-The candidate browser gate consumes packed npm artifacts. After publication,
-run `node scripts/embedding_browser_smoke.mjs --published 3.16.0` to install the
-CLI and reference host from the Go registry and both SDK packages from npm into
-an isolated temporary consumer; no sibling checkout wiring is used.
+The candidate browser gate consumes packed npm artifacts. After the checked-out
+release has completed public verification, run
+`node scripts/embedding_browser_smoke.mjs --published "$(cat VERSION)"` from
+the repository root to install the CLI and reference host from the Go registry
+and both SDK packages from npm into an isolated temporary consumer; no sibling
+checkout wiring is used.
 
 ## Inspecting a running application
 
-The preview shows the verified contract, tests declared read intents, and lists
-existing executions and diagnostics on explicit refresh. Observation never
-starts or retries a job. Permission controls remain explicit. The standard
-preview does not configure external connections for the monitor template;
-bind them through the existing host connectivity adapters.
+The preview shows the verified contract and lets you explicitly invoke declared
+read intents and Surface actions. It lists existing executions and diagnostics
+on explicit refresh; observation never starts or retries a job. Permission
+controls remain explicit. Resources and connections presents declared connectors
+and lets you review and approve configurable destinations, including the monitor
+template's WebSocket connection. These controls use the normal Host connection
+review and approval lifecycle; they do not grant undeclared network access.
 
 Reloading a Surface preserves data. Stopping and restarting dev explicitly
 resets its temporary data and grants. Build failures keep the last valid
