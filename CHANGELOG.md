@@ -32,6 +32,7 @@
 
 ## v3.15.2
 
+- Add the host-neutral author candidate handoff types and schema for binding a reviewed candidate to its source, package, owner, generation, and expiry.
 - Keep the default Web application free of unused Host methods and intents, so an ordinary browser-only plugin does not start a Surface method receiver or issue its polling requests. Resource-oriented templates retain their declared actions, and the author preview hides action and resource tools when the package declares none.
 - Streamline the first preview workflow to initialization, dependency installation, and `dev`; keep doctor and check as explicit troubleshooting and pre-publication commands.
 - Isolate the runaway Worker fuel-exhaustion test with an explicit small fuel budget and a typed budget-failure assertion while retaining its independent two-second deadline. Production fuel, deadline, cancellation and revocation policies are unchanged.
