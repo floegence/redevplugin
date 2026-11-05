@@ -3520,6 +3520,52 @@ test("application delivery waits for polling before lease rotation and keeps cre
   await host.dispose();
 });
 
+test("method polling drains claimed calls after the last method is unregistered", async () => {
+  const frame = new FakeFrame(); const channel = fakeChannel(); const fetch = new FakeFetch();
+  fetch.push(preparation()); fetch.push(gatewayLease());
+  const requests: Array<Record<string, unknown>> = [];
+  const claims: Array<(value: FetchResponseLike) => void> = [];
+  const response = (data: unknown): FetchResponseLike => ({ ok: true, status: 200, json: async () => ({ ok: true, data }) });
+  const transport: FetchLike = async (input, init) => {
+    if (!input.endsWith("/methods")) return fetch.fetch(input, init);
+    const req = JSON.parse(init.body as string) as Record<string, unknown>; requests.push(req);
+    if (req.operation !== "claim") return response({ receiver_id: "receiver_one", cancelled: [] });
+    return new Promise<FetchResponseLike>((resolve, reject) => {
+      claims.push(resolve);
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+  };
+  const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel, hostTransport: createReDevPluginSurfaceTransport({ fetch: transport }) });
+  try {
+    const opening = host.open(); frame.load(); await waitFor(() => frame.transferred.length === 1); channel.port2.applicationReady(); await opening;
+    const publish = (id: string, methods: string[]): void => channel.port2.postMessage({ type: "redevplugin.bridge.methods", id, methods });
+    publish("rpc_1", ["document.apply"]);
+    await waitFor(() => claims.length === 1);
+    claims[0]!(response({ receiver_id: "receiver_one", cancelled: [], invocation: { invocation_id: "invoke_live", method: "document.apply", params: {}, deadline: new Date(Date.now() + 30000).toISOString() } }));
+    await waitFor(() => claims.length === 2);
+    publish("rpc_2", []);
+    await waitFor(() => channel.port1.sent.some(value => isMessageType(value, "redevplugin.bridge.response") && (value as { id?: string }).id === "rpc_2"));
+    claims[1]!(response({ receiver_id: "receiver_one", cancelled: [] }));
+    await waitFor(() => claims.length === 3);
+    channel.port2.postMessage({ type: "redevplugin.bridge.method_result", invocation_id: "invoke_live", data: null, failed: false });
+    await waitFor(() => requests.some(req => req.operation === "complete"));
+    claims[2]!(response({ receiver_id: "receiver_one", cancelled: [] }));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(claims.length, 3, "idle receiver must stop claiming after the active call settles");
+    publish("rpc_3", ["document.apply"]);
+    await waitFor(() => claims.length === 4);
+    claims[3]!(response({ receiver_id: "receiver_one", cancelled: [], invocation: { invocation_id: "invoke_cancel", method: "document.apply", params: {}, deadline: new Date(Date.now() + 30000).toISOString() } }));
+    await waitFor(() => claims.length === 5);
+    publish("rpc_4", []);
+    await waitFor(() => channel.port1.sent.some(value => isMessageType(value, "redevplugin.bridge.response") && (value as { id?: string }).id === "rpc_4"));
+    claims[4]!(response({ receiver_id: "receiver_one", cancelled: ["invoke_cancel"] }));
+    await waitFor(() => channel.port1.sent.some(value => isMessageType(value, "redevplugin.bridge.method_cancel") && (value as { invocation_id?: string }).invocation_id === "invoke_cancel"));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(claims.length, 5, "cancellation of the last claimed call must stop idle polling");
+    assert.deepEqual(requests.filter(req => req.operation === "register" || req.operation === "configure").map(req => req.operation), ["register", "configure", "configure", "configure"]);
+  } finally { await host.dispose(); }
+});
+
 test("unknown application registration invalidates only its exact surface without retry", async () => {
   const frame = new FakeFrame(); const channel = fakeChannel(); const fetch = new FakeFetch();
   fetch.push(preparation()); fetch.push(gatewayLease());

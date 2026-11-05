@@ -1246,6 +1246,8 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #receiverController?: AbortController;
   #receiverTransition: Promise<void> = Promise.resolve();
   #receiverInvocations = new Set<string>();
+  #receiverHasMethods = false;
+  #receiverPolling = false;
   #frameGenerationId: string;
   get frameGenerationId(): string { return this.#frameGenerationId; }
   readonly surfaceHandle: string;
@@ -1501,6 +1503,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       return;
     }
     this.#navigationPending = true;
+    this.#receiverHasMethods = false;
     this.#receiverController?.abort();
     this.#receiverInvocations.clear();
     this.#receiverTransition = this.#receiverTransition.then(async () => {
@@ -1660,6 +1663,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #disposeLocal(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#receiverHasMethods = false;
     this.#receiverController?.abort();
     this.#receiverInvocations.clear();
     clearTimeout(this.#navigationTimer);
@@ -1759,17 +1763,20 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         this.#receiverTransition = this.#receiverTransition.then(async () => {
           if (generation !== this.frameGenerationId || this.#disposed || controller.signal.aborted) return;
           const registering = !this.#receiverController || this.#receiverController.signal.aborted;
+          if (registering && methods.length === 0) {
+            this.#postToApplication({ type: "redevplugin.bridge.response", id, ok: true, data: null });
+            return;
+          }
           const result = await this.#receiverRequest(registering ? "register" : "configure", { methods }, controller.signal);
           this.#receiverID = result.receiver_id;
           if (generation !== this.frameGenerationId || this.#disposed) return;
+          this.#receiverHasMethods = methods.length > 0;
           this.#postToApplication({ type: "redevplugin.bridge.response", id, ok: true, data: null });
           if (registering) {
             const controller = new AbortController();
             this.#receiverController = controller;
-            void this.#pollMethods(generation, controller).catch(error => {
-              if (!controller.signal.aborted) void this.#failSurface(toBridgeError(error, "PLUGIN_SURFACE_METHOD_CONFLICT"));
-            });
           }
+          this.#startMethodPolling(generation);
         }).catch(async error => { await this.#failSurface(toBridgeError(error, "PLUGIN_SURFACE_METHOD_CONFLICT")); }).finally(() => {
           if (this.#pendingRequestControllers.get(id) === controller) this.#pendingRequestControllers.delete(id);
         });
@@ -2146,8 +2153,22 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     return result;
   }
 
+  #startMethodPolling(generation: string): void {
+    const controller = this.#receiverController;
+    if (!controller || controller.signal.aborted || this.#receiverPolling || (!this.#receiverHasMethods && this.#receiverInvocations.size === 0)) return;
+    this.#receiverPolling = true;
+    void this.#pollMethods(generation, controller).then(() => {
+      this.#receiverPolling = false;
+      if (!this.#disposed) this.#startMethodPolling(this.frameGenerationId);
+    }, error => {
+      this.#receiverPolling = false;
+      if (!controller.signal.aborted) void this.#failSurface(toBridgeError(error, "PLUGIN_SURFACE_METHOD_CONFLICT"));
+      else if (!this.#disposed) this.#startMethodPolling(this.frameGenerationId);
+    });
+  }
+
   async #pollMethods(generation: string, controller: AbortController): Promise<void> {
-    while (!controller.signal.aborted && !this.#disposed && generation === this.frameGenerationId) {
+    while (!controller.signal.aborted && !this.#disposed && generation === this.frameGenerationId && (this.#receiverHasMethods || this.#receiverInvocations.size > 0)) {
       const result = await this.#receiverRequest("claim", { active_invocations: [...this.#receiverInvocations] }, controller.signal);
       if (controller.signal.aborted || this.#disposed || generation !== this.frameGenerationId) return;
       for (const id of result.cancelled) {
