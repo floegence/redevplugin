@@ -43,13 +43,10 @@ export GOWORK=off
   tmp_scaffold_dir=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-scaffold.XXXXXX")
   tmp_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal.XXXXXX.redevplugin")
   tmp_fixture_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-generated-fixture.XXXXXX.redevplugin")
-  tmp_signed_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal-signed.XXXXXX.redevplugin")
   tmp_malicious_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-malicious.XXXXXX.redevplugin")
   tmp_malicious_log=$(mktemp "${TMPDIR:-/tmp}/redevplugin-malicious.XXXXXX.log")
-  tmp_private_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-private.XXXXXX.json")
-  tmp_public_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-public.XXXXXX.json")
   tmp_dev_state_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-dev-root.XXXXXX")
-  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_dev_state_root"; rm -f "$tmp_package" "$tmp_fixture_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
+  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_dev_state_root"; rm -f "$tmp_package" "$tmp_fixture_package" "$tmp_malicious_package" "$tmp_malicious_log"' EXIT
   for generated_fixture in testdata/generated_plugins/minimal testdata/generated_plugins/networked testdata/generated_plugins/storage testdata/generated_plugins/method-contract; do
     go run ./cmd/redevplugin validate "$generated_fixture/manifest.json" >/dev/null
     rm -f "$tmp_fixture_package"
@@ -78,10 +75,17 @@ export GOWORK=off
   rm -f "$tmp_fixture_package"
   go run ./cmd/redevplugin package testdata/generated_plugins/minimal "$tmp_fixture_package" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_fixture_package" >/dev/null
-  go run ./cmd/redevplugin keygen test-key "$tmp_private_key" "$tmp_public_key" >/dev/null
-  go run ./cmd/redevplugin sign "$tmp_fixture_package" "$tmp_private_key" "$tmp_signed_package" >/dev/null
-  go run ./cmd/redevplugin validate "$tmp_signed_package" | grep -q '"signed": true'
-  go run ./cmd/redevplugin install-verified "$tmp_signed_package" "$tmp_public_key" | grep -q '"trust_state": "verified"'
+  go run ./cmd/redevplugin release inspect "$tmp_fixture_package" | node --input-type=module -e '
+    import assert from "node:assert/strict";
+    import { readFileSync } from "node:fs";
+    const inspected = JSON.parse(readFileSync(0, "utf8"));
+    assert.equal(inspected.plugin_id, "com.example.minimal");
+    for (const field of ["package_sha256", "manifest_sha256", "entries_sha256", "presentation_sha256", "contract_set_sha256"]) {
+      assert.match(inspected[field], /^sha256:[0-9a-f]{64}$/);
+    }
+    assert.ok(inspected.presentation);
+    assert.ok(inspected.security_summary);
+  '
   go run ./cmd/redevplugin install-local "$tmp_fixture_package" >/dev/null
   go run ./cmd/redevplugin enable "$tmp_fixture_package" >/dev/null
   go run ./cmd/redevplugin disable "$tmp_fixture_package" >/dev/null
