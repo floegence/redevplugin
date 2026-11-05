@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.18.0
+## v3.19.0
 
 - Open plugin distribution: ordinary packages and repository indexes replace plugin signatures, publisher trust registries, release references, and developer-mode admission. Platform release manifests, product runtime identity, sandbox authorization, and runtime lease signatures remain unchanged.
 - Select each indexed plugin's highest stable namespaced release; support multiple plugins per repository and identical asset names in separate releases. Atomically upsert index entries without dropping sibling projects.
