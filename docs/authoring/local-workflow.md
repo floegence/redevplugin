@@ -14,7 +14,7 @@ Install the CLI for the platform release used by your host, then start the
 default Web preview:
 
 ```bash
-go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.19.0
+go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.20.0
 redevplugin init dev.example.notes "Notes" notes
 cd notes
 npm install

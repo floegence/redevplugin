@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.18.0
+## v3.20.0
 
 - Keep mobile example details at a stable height so late content updates cannot move the close target during a pointer gesture. Retain concise, viewport-specific browser failure evidence and classify mixed browser/network failures as check failures.
 - Add bounded, cancellable waiting for the shared local gate without interrupting its owner or weakening the complete stage plan and evidence checks.
