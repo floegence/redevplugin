@@ -32,7 +32,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
-	"github.com/floegence/redevplugin/v3/pkg/remoterelease"
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -127,7 +126,7 @@ var platformSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var packageValidationReasonSet = func() map[string]struct{} {
 	result := map[string]struct{}{}
-	for _, reason := range strings.Fields("manifest_missing manifest_field manifest_decode zip_invalid file_count duplicate_entry ambiguous_entry non_regular_entry invalid_utf8_path non_nfc_path symlink_entry directory_entry entry_bytes path_length compression_ratio total_uncompressed_bytes entry_open_failed entry_read_failed entry_close_failed entry_size_mismatch unsupported_signature_entry manifest_artifact package_asset_security package_artifact_boundary entry_path manifest_canonical_json canonical_hash package_signature empty_path slash_separator non_canonical_path path_traversal hidden_path external_icon_path unsupported_icon_format missing_icon_asset icon_magic_mismatch icon_too_large icon_dimensions query_or_fragment") {
+	for _, reason := range strings.Fields("manifest_missing manifest_field manifest_decode zip_invalid file_count duplicate_entry ambiguous_entry non_regular_entry invalid_utf8_path non_nfc_path symlink_entry directory_entry entry_bytes path_length compression_ratio total_uncompressed_bytes entry_open_failed entry_read_failed entry_close_failed entry_size_mismatch manifest_artifact package_asset_security package_artifact_boundary entry_path manifest_canonical_json canonical_hash empty_path slash_separator non_canonical_path path_traversal hidden_path external_icon_path unsupported_icon_format missing_icon_asset icon_magic_mismatch icon_too_large icon_dimensions query_or_fragment") {
 		result[reason] = struct{}{}
 	}
 	return result
@@ -428,31 +427,7 @@ func (route routeSpec) validate() error {
 	return nil
 }
 
-type startReleaseInstallExecutionRequest struct {
-	RequestID             string            `json:"request_id"`
-	PluginInstanceID      string            `json:"plugin_instance_id"`
-	ReleaseIdentityDigest string            `json:"release_identity_digest,omitempty"`
-	ManifestSHA256        string            `json:"manifest_sha256,omitempty"`
-	ContractSetSHA256     string            `json:"contract_set_sha256,omitempty"`
-	SummarySHA256         string            `json:"summary_sha256,omitempty"`
-	ReleaseRef            releaseRefRequest `json:"release_ref"`
-}
-
-type inspectExternalPackageRequest struct {
-	Intent host.ExternalPackageIntent `json:"intent"`
-	Source host.ExternalPackageSource `json:"source"`
-}
-
-type installInspectedPackageRequest struct {
-	InspectionID          string `json:"inspection_id"`
-	ExpectedPackageSHA256 string `json:"expected_package_sha256"`
-}
-
-type updateReleaseRefRequest struct {
-	PluginInstanceID           string            `json:"plugin_instance_id"`
-	ReleaseRef                 releaseRefRequest `json:"release_ref"`
-	ExpectedManagementRevision *uint64           `json:"expected_management_revision"`
-}
+type inspectExternalPackageRequest = host.InspectExternalPackageRequest
 
 type downgradeRequest struct {
 	PluginInstanceID           string  `json:"plugin_instance_id"`
@@ -904,19 +879,19 @@ func (e *jsonLimitError) status() int {
 }
 
 var routes = []routeSpec{
+	queryRoute("/_redevplugin/api/plugins/repository/plugins/query", host.ManagementActionListRepositoryPlugins, func(h *Handler) http.HandlerFunc { return h.handleListRepositoryPlugins }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/updates/preferences", host.ManagementActionSetAutomaticUpdates, func(h *Handler) http.HandlerFunc { return h.handleSetAutomaticUpdates }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/updates/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectPluginUpdate }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/executions/release-installs", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleStartReleaseInstallExecution }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectExternalPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackage }),
 	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackageUpdate }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/install-operations", websecurity.RouteActionInstallInspectedPackage, func(h *Handler) http.HandlerFunc { return h.handleStartInspectedInstall }),
 	queryRoute("/_redevplugin/api/plugins/external-packages/install-operations/query", websecurity.RouteActionGetExecution, func(h *Handler) http.HandlerFunc { return h.handleGetInspectedInstall }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/install", websecurity.RouteActionInstallInspectedPackage, func(h *Handler) http.HandlerFunc { return h.handleInstallInspectedPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/disable", websecurity.RouteActionDisablePlugin, func(h *Handler) http.HandlerFunc { return h.handleDisable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/uninstall", websecurity.RouteActionUninstallPlugin, func(h *Handler) http.HandlerFunc { return h.handleUninstall }),
 	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionUpdateLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleUpdateLocalPackageUpload }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/update-release-ref", websecurity.RouteActionUpdateReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/downgrade", websecurity.RouteActionDowngradePlugin, func(h *Handler) http.HandlerFunc { return h.handleDowngrade }),
 	queryRoute("/_redevplugin/api/plugins/catalog/query", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleCatalog }),
 	getRoute("/_redevplugin/api/plugins/{plugin_instance_id}/icon/{sha256}", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleReadPluginIcon }),
@@ -1304,6 +1279,7 @@ func requiredRevision(value *uint64, field string) (uint64, error) {
 
 const localImportContentType = "application/vnd.redevplugin.package+zip"
 const localImportRevisionHeader = "X-ReDevPlugin-Expected-Management-Revision"
+const allowSourceChangeHeader = "X-ReDevPlugin-Allow-Source-Change"
 const maxLocalImportBytes int64 = 256 << 20
 
 func (h Handler) handleImportLocalPackageUpload(w http.ResponseWriter, r *http.Request) {
@@ -1342,32 +1318,13 @@ func (h Handler) handleImportLocalPackageUpload(w http.ResponseWriter, r *http.R
 	h.writePluginMutationSuccess(w, r, "local-import.install.response", record)
 }
 
-func (h Handler) handleStartReleaseInstallExecution(w http.ResponseWriter, r *http.Request) {
-	var req startReleaseInstallExecutionRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	record, err := h.host.StartReleaseInstallExecution(r.Context(), host.StartReleaseInstallExecutionRequest{
-		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID,
-		ReleaseIdentityDigest: req.ReleaseIdentityDigest, ManifestSHA256: req.ManifestSHA256,
-		ContractSetSHA256: req.ContractSetSHA256, SummarySHA256: req.SummarySHA256, ReleaseRef: req.ReleaseRef.domain(),
-	})
-	if err != nil {
-		code := errorCodeForManagementError(err)
-		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "execution.release_install.start", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
-		return
-	}
-	writeMutationSuccess(w, record)
-}
-
 func (h Handler) handleInspectExternalPackage(w http.ResponseWriter, r *http.Request) {
 	var req inspectExternalPackageRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	inspection, err := h.host.InspectExternalPackage(r.Context(), host.InspectExternalPackageRequest{Intent: req.Intent, Source: req.Source})
+	inspection, err := h.host.InspectExternalPackage(r.Context(), req)
 	if err != nil {
 		code := errorCodeForManagementError(err)
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.inspect", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
@@ -1378,7 +1335,7 @@ func (h Handler) handleInspectExternalPackage(w http.ResponseWriter, r *http.Req
 
 func (h Handler) handleInspectUploadedExternalPackage(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	if len(r.Header.Values(localImportRevisionHeader)) != 0 {
+	if len(r.Header.Values(localImportRevisionHeader)) != 0 || len(r.Header.Values(allowSourceChangeHeader)) != 0 {
 		writeMutationInvalidRequestError(w, errors.New("expected management revision is not allowed for an install"))
 		return
 	}
@@ -1408,13 +1365,19 @@ func (h Handler) handleInspectUploadedExternalPackageUpdate(w http.ResponseWrite
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
+	values := r.Header.Values(allowSourceChangeHeader)
+	if len(values) > 1 || (len(values) == 1 && values[0] != "true" && values[0] != "false") {
+		writeMutationInvalidRequestError(w, errors.New("source change consent must be true or false"))
+		return
+	}
+	allowSourceChange := len(values) == 1 && values[0] == "true"
 	if !validateExternalPackageUploadRequest(w, r) {
 		return
 	}
 	inspection, err := h.host.InspectUploadedExternalPackage(r.Context(), host.InspectUploadedExternalPackageRequest{
 		Intent: host.ExternalPackageIntent{
 			Action: string(registry.ExternalPackageUpdate), PluginInstanceID: pluginInstanceID,
-			ExpectedManagementRevision: revision,
+			ExpectedManagementRevision: revision, AllowSourceChange: allowSourceChange,
 		},
 		Package: r.Body, DeclaredSize: r.ContentLength,
 	})
@@ -1428,28 +1391,6 @@ func (h Handler) handleInspectUploadedExternalPackageUpdate(w http.ResponseWrite
 func (h Handler) writeExternalPackageInspectError(w http.ResponseWriter, r *http.Request, err error) {
 	code := errorCodeForManagementError(err)
 	writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.upload.inspect", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
-}
-
-func (h Handler) handleInstallInspectedPackage(w http.ResponseWriter, r *http.Request) {
-	var req installInspectedPackageRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	result, err := h.host.InstallInspectedPackage(r.Context(), host.InstallInspectedPackageRequest{
-		InspectionID: req.InspectionID, ExpectedPackageSHA256: req.ExpectedPackageSHA256,
-	})
-	if err != nil {
-		code := errorCodeForManagementError(err)
-		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.install", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
-		return
-	}
-	projected, err := publicInstalledExternalPackage(result)
-	if err != nil {
-		h.writeProjectionError(w, r, "external-package.install.response", err)
-		return
-	}
-	writeMutationSuccess(w, projected)
 }
 
 func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
@@ -1665,29 +1606,6 @@ func stagePackageUpload(r *http.Request) (*os.File, int64, func(), error) {
 		return nil, 0, func() {}, err
 	}
 	return tmp, total, cleanup, nil
-}
-
-func (h Handler) handleUpdateReleaseRef(w http.ResponseWriter, r *http.Request) {
-	var req updateReleaseRefRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
-		return
-	}
-	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
-	if !ok {
-		return
-	}
-	record, err := h.host.UpdateReleaseRef(r.Context(), host.UpdateReleaseRefRequest{
-		PluginInstanceID:           req.PluginInstanceID,
-		ExpectedManagementRevision: expectedManagementRevision,
-		ReleaseRef:                 req.ReleaseRef.domain(),
-	})
-	if err != nil {
-		code := errorCodeForManagementError(err)
-		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "release.update", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
-		return
-	}
-	h.writePluginMutationSuccess(w, r, "release.update.response", record)
 }
 
 func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
@@ -2061,7 +1979,7 @@ func (h Handler) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 		cursor = *req.Cursor
 	}
 	operationScope := host.ExecutionOperationScope(req.OperationScope.get())
-	if operationScope != "" && operationScope != host.ExecutionOperationScopeReleaseInstall {
+	if operationScope != "" && operationScope != host.ExecutionOperationScopePluginInstall {
 		writeInvalidRequestError(w, errors.New("operation_scope is unsupported"))
 		return
 	}
@@ -3259,14 +3177,6 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin package exceeds platform limits"
 	case security.ErrPackagePathForbidden:
 		return "plugin package contains a forbidden path"
-	case security.ErrSignatureInvalid, security.ErrTrustVerificationInvalid:
-		return "plugin trust verification failed"
-	case security.ErrTrustStateDenied, security.ErrReleaseRefPolicyDenied:
-		return "plugin release policy denied the request"
-	case security.ErrTrustVerificationRequired:
-		return "plugin trust verification is unavailable"
-	case security.ErrReleaseRefVerificationFailed:
-		return "plugin release reference verification failed"
 	case security.ErrReleaseNetwork:
 		return "plugin release network request failed"
 	case security.ErrReleaseTimeout:
@@ -3451,21 +3361,14 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return security.ErrInvalidRequest
-	case errors.Is(err, remoterelease.ErrAssetMissing):
-		return security.ErrReleaseAssetMissing
-	case errors.Is(err, remoterelease.ErrAssetMismatch):
-		return security.ErrReleaseAssetIntegrity
-	case errors.Is(err, remoterelease.ErrInvalidAssetSet):
-		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
-	case errors.Is(err, host.ErrExternalPackageInstallBlocked):
-		return security.ErrSignatureInvalid
+	case errors.Is(err, host.ErrUpdateReviewRequired):
+		return security.ErrConfirmationRequired
 	case errors.Is(err, host.ErrExternalPackageConfirmation):
 		return security.ErrConfirmationInvalid
 	case errors.Is(err, host.ErrExternalPackageInspectionNotFound),
 		errors.Is(err, host.ErrExternalPackageInspectionExpired),
-		errors.Is(err, host.ErrExternalPackageInspectionStale),
 		errors.Is(err, host.ErrExternalPackageRequestInvalid),
 		errors.Is(err, registry.ErrInvalidExternalPackageInstall):
 		return security.ErrInvalidRequest
@@ -3487,26 +3390,14 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrRuntimeVersionMismatch
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrNamespaceNotFound):
 		return security.ErrInvalidRequest
-	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
-		return security.ErrTrustVerificationInvalid
-	case errors.Is(err, host.ErrPackageTrustVerifierRequired):
-		return security.ErrTrustVerificationRequired
-	case errors.Is(err, host.ErrReleaseArtifactResolverRequired):
-		return security.ErrTrustVerificationRequired
-	case errors.Is(err, host.ErrReleaseRefVerificationFailed):
-		return security.ErrReleaseRefVerificationFailed
-	case errors.Is(err, host.ErrReleaseRefPolicyDenied):
-		return security.ErrReleaseRefPolicyDenied
 	case errors.Is(err, context.DeadlineExceeded):
 		return security.ErrReleaseTimeout
 	case errors.Is(err, context.Canceled):
 		return security.ErrInstallInterrupted
-	case errors.Is(err, registry.ErrReleaseInstallOperationConflict), errors.Is(err, host.ErrPluginAlreadyInstalled):
+	case errors.Is(err, host.ErrPluginAlreadyInstalled):
 		return security.ErrInstallStateConflict
-	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound), errors.Is(err, host.ErrInspectedInstallNotFound):
+	case errors.Is(err, host.ErrInspectedInstallNotFound):
 		return security.ErrExecutionNotFound
-	case errors.Is(err, registry.ErrInvalidReleaseInstallOperation):
-		return security.ErrInvalidRequest
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
 	case errors.Is(err, host.ErrExecutionDeleteBlocked):
@@ -3574,10 +3465,6 @@ func httpStatusForManagementError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return http.StatusBadRequest
-	case errors.Is(err, remoterelease.ErrAssetMissing), errors.Is(err, remoterelease.ErrInvalidAssetSet):
-		return http.StatusBadGateway
-	case errors.Is(err, remoterelease.ErrAssetMismatch):
-		return http.StatusBadRequest
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, host.ErrFeatureNotConfigured):
@@ -3588,12 +3475,11 @@ func httpStatusForManagementError(err error) int {
 		errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, connectivity.ErrResourceScopeMismatch),
 		errors.Is(err, host.ErrStorageScopeMismatch):
 		return http.StatusForbidden
-	case errors.Is(err, host.ErrExternalPackageInstallBlocked):
-		return http.StatusForbidden
+	case errors.Is(err, host.ErrUpdateReviewRequired):
+		return http.StatusConflict
 	case errors.Is(err, host.ErrExternalPackageConfirmation),
 		errors.Is(err, host.ErrExternalPackageInspectionNotFound),
 		errors.Is(err, host.ErrExternalPackageInspectionExpired),
-		errors.Is(err, host.ErrExternalPackageInspectionStale),
 		errors.Is(err, host.ErrExternalPackageRequestInvalid),
 		errors.Is(err, registry.ErrInvalidExternalPackageInstall):
 		return http.StatusBadRequest
@@ -3601,26 +3487,14 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrNamespaceNotFound):
 		return http.StatusBadRequest
-	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
-		return http.StatusBadRequest
-	case errors.Is(err, host.ErrPackageTrustVerifierRequired):
-		return http.StatusForbidden
-	case errors.Is(err, host.ErrReleaseArtifactResolverRequired):
-		return http.StatusForbidden
-	case errors.Is(err, host.ErrReleaseRefVerificationFailed):
-		return http.StatusBadRequest
-	case errors.Is(err, host.ErrReleaseRefPolicyDenied):
-		return http.StatusForbidden
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout
 	case errors.Is(err, context.Canceled):
 		return http.StatusServiceUnavailable
-	case errors.Is(err, registry.ErrReleaseInstallOperationConflict), errors.Is(err, host.ErrPluginAlreadyInstalled):
+	case errors.Is(err, host.ErrPluginAlreadyInstalled):
 		return http.StatusConflict
-	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound), errors.Is(err, host.ErrInspectedInstallNotFound):
+	case errors.Is(err, host.ErrInspectedInstallNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, registry.ErrInvalidReleaseInstallOperation):
-		return http.StatusBadRequest
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, host.ErrExecutionDeleteBlocked):
@@ -4243,6 +4117,53 @@ func (h Handler) handleGetInspectedInstall(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		code := errorCodeForManagementError(err)
 		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.install-operation.query", code, err), errorDetailsForManagementError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
+}
+
+func (h Handler) handleSetAutomaticUpdates(w http.ResponseWriter, r *http.Request) {
+	var req host.SetAutomaticUpdatesRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.SetAutomaticUpdates(r.Context(), req)
+	if err != nil {
+		h.writeExternalPackageInspectError(w, r, err)
+		return
+	}
+	projected, err := publicPluginRecord(result)
+	if err != nil {
+		h.writeExternalPackageInspectError(w, r, err)
+		return
+	}
+	writeMutationSuccess(w, projected)
+}
+func (h Handler) handleInspectPluginUpdate(w http.ResponseWriter, r *http.Request) {
+	var req host.InspectPluginUpdateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.InspectPluginUpdate(r.Context(), req)
+	if err != nil {
+		h.writeExternalPackageInspectError(w, r, err)
+		return
+	}
+	writeMutationSuccess(w, result)
+}
+
+func (h Handler) handleListRepositoryPlugins(w http.ResponseWriter, r *http.Request) {
+	var req host.ListRepositoryPluginsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.ListRepositoryPlugins(r.Context(), req)
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "repository.plugins", code, err), errorDetailsForManagementError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})

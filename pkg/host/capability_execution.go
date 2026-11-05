@@ -576,9 +576,6 @@ func (h *Host) reconcileDurableExecutionStates(ctx context.Context) error {
 	if err := h.reconcileInspectedInstalls(ctx); err != nil {
 		return err
 	}
-	if err := h.reconcileCommittedReleaseInstalls(ctx); err != nil {
-		return err
-	}
 	result, err := h.controlStore.Executions().ReconcileOrphans(ctx, time.Now().UTC())
 	if err != nil {
 		return err

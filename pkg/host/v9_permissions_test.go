@@ -16,9 +16,9 @@ import (
 )
 
 func TestV9ExternalPackagePermissionConfirmationCoversWorkerIO(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildV9IOPermissionFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 
 	inspection, err := h.InspectUploadedExternalPackage(hostTestContext(), InspectUploadedExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"}, Package: bytes.NewReader([]byte("package")), DeclaredSize: 7,
@@ -40,7 +40,7 @@ func TestV9ExternalPackagePermissionConfirmationCoversWorkerIO(t *testing.T) {
 		t.Fatalf("inspection worker methods = %#v", inspection.SecuritySummary.Methods)
 	}
 
-	installed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	installed, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestV9ExternalPackagePermissionConfirmationCoversWorkerIO(t *testing.T) {
 }
 
 func TestV9WorkerMethodRequiresGrantedPackagePermissions(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	installed := installAndEnablePlugin(t, h, buildV9IOPermissionFixturePackage(t))
 	grants, err := h.ListPermissionGrants(hostTestContext(), ListPermissionGrantsRequest{PluginInstanceID: installed.PluginInstanceID})
 	if err != nil {
@@ -137,17 +137,17 @@ func TestV9ExternalPackageWorkerRunsAfterExplicitGrants(t *testing.T) {
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	diagnostics := &diagnosticSink{}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime, diagnostics: diagnostics,
+		runtimeManager: runtime, diagnostics: diagnostics,
 	})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildMultiPermissionWorkerFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	inspection, err := h.InspectUploadedExternalPackage(hostTestContext(), InspectUploadedExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"}, Package: bytes.NewReader([]byte("package")), DeclaredSize: 7,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	installed, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 	})
 	if err != nil || installed.Plugin == nil {

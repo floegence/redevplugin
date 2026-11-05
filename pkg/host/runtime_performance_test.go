@@ -383,8 +383,6 @@ func newPerformanceRuntimeHost(
 	t.Helper()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		productionStateOwners: true,
-		developerMode:         true,
-		localGenerated:        true,
 	})
 	blocker := newPerformanceBlockingIOBroker()
 	observabilityStore := observability.NewMemoryStore()

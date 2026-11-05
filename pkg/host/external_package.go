@@ -3,7 +3,6 @@ package host
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/releaseprojection"
+	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
@@ -31,9 +31,7 @@ var (
 	ErrExternalPackageInspectionNotFound = errors.New("external package inspection not found")
 	ErrExternalPackageInspectionExpired  = errors.New("external package inspection expired")
 	ErrExternalPackageConfirmation       = errors.New("external package hash does not match inspection")
-	ErrExternalPackageInstallBlocked     = errors.New("external package install is blocked by integrity assessment")
 	ErrExternalPackageInstallInProgress  = errors.New("external package install is in progress")
-	ErrExternalPackageInspectionStale    = errors.New("external package signature assessment changed after inspection")
 	ErrExternalPackageRequestInvalid     = errors.New("external package request is invalid")
 )
 
@@ -48,47 +46,31 @@ type externalPackageFetcher interface {
 }
 
 type externalPackageGitHubResolver interface {
+	ListPlugins(context.Context, string, string) ([]repositoryindex.Plugin, error)
 	ResolvePackage(context.Context, externalsource.GitHubRepositorySource) (externalsource.ResolvedGitHubAsset, error)
 }
 
-type ExternalPackageSignatureAssessmentRequest struct {
-	Package pluginpkg.Package `json:"package"`
-	Now     time.Time         `json:"-"`
-}
-
-// ExternalPackageSignatureAssessor returns a closed signature fact. Expected
-// outcomes such as unknown signer, invalid signature, and revocation belong in
-// the result; errors are reserved for unavailable assessment dependencies.
-type ExternalPackageSignatureAssessor interface {
-	AssessExternalPackageSignature(context.Context, ExternalPackageSignatureAssessmentRequest) (registry.SignatureAssessment, error)
-}
-
-type ExternalPackageSignatureFreshnessRequest struct {
-	PublisherID    string                       `json:"publisher_id"`
-	PluginID       string                       `json:"plugin_id"`
-	PackageSHA256  string                       `json:"package_sha256"`
-	ManifestSHA256 string                       `json:"manifest_sha256"`
-	EntriesSHA256  string                       `json:"entries_sha256"`
-	Assessment     registry.SignatureAssessment `json:"assessment"`
-	Now            time.Time                    `json:"-"`
-}
-
-// ExternalPackageSignatureFreshnessAssessor checks mutable keyring and
-// revocation facts without requiring the package payload again.
-type ExternalPackageSignatureFreshnessAssessor interface {
-	AssessExternalPackageSignatureFreshness(context.Context, ExternalPackageSignatureFreshnessRequest) (registry.SignatureAssessment, error)
-}
-
 type ExternalPackageSource struct {
-	Kind string `json:"kind"`
-	URL  string `json:"url"`
-	Tag  string `json:"tag,omitempty"`
+	Host         string `json:"host,omitempty"`
+	PluginID     string `json:"plugin_id,omitempty"`
+	RepositoryID string `json:"repository_id,omitempty"`
+	ReleaseID    string `json:"release_id,omitempty"`
+	AssetID      string `json:"asset_id,omitempty"`
+	Kind         string `json:"kind"`
+	URL          string `json:"url"`
+	Tag          string `json:"tag,omitempty"`
 }
 
 type InspectExternalPackageRequest struct {
-	Intent ExternalPackageIntent `json:"intent"`
-	Source ExternalPackageSource `json:"source"`
-	Now    time.Time             `json:"-"`
+	ExpectedSecuritySummarySHA256 string                `json:"expected_security_summary_sha256,omitempty"`
+	ExpectedContractSetSHA256     string                `json:"expected_contract_set_sha256,omitempty"`
+	ExpectedPublisherID           string                `json:"expected_publisher_id,omitempty"`
+	ExpectedPluginID              string                `json:"expected_plugin_id,omitempty"`
+	ExpectedVersion               string                `json:"expected_version,omitempty"`
+	ExpectedPackageSHA256         string                `json:"expected_package_sha256,omitempty"`
+	Intent                        ExternalPackageIntent `json:"intent"`
+	Source                        ExternalPackageSource `json:"source"`
+	Now                           time.Time             `json:"-"`
 }
 
 type InspectUploadedExternalPackageRequest struct {
@@ -98,8 +80,11 @@ type InspectUploadedExternalPackageRequest struct {
 	Now          time.Time             `json:"-"`
 }
 
-type InstallInspectedPackageRequest struct {
+type installInspectedPackageRequest struct {
+	claimed               bool
+	automatic             bool
 	operationEvidence     string
+	progress              func(stage, status string) error
 	InspectionID          string    `json:"inspection_id"`
 	ExpectedPackageSHA256 string    `json:"expected_package_sha256"`
 	Now                   time.Time `json:"-"`
@@ -289,11 +274,31 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 		return ExternalPackageInspection{}, err
 	}
 
-	fetched, provenance, err := h.fetchExternalPackage(ctx, req.Source, scope.OwnerEnvHash, now)
+	fetched, provenance, selectedPlugin, selectedVersion, err := h.fetchExternalPackage(ctx, req.Source, scope.OwnerEnvHash, now)
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
-	return h.inspectStagedExternalPackage(ctx, scope, intent, fetched.Artifact, provenance, now)
+	inspection, err := h.inspectStagedExternalPackage(ctx, scope, intent, fetched.Artifact, provenance, now)
+	if err != nil {
+		return inspection, err
+	}
+	if (req.ExpectedPublisherID != "" && req.ExpectedPublisherID != inspection.PublisherID) || (req.ExpectedPluginID != "" && req.ExpectedPluginID != inspection.PluginID) || (req.ExpectedVersion != "" && req.ExpectedVersion != inspection.Version) || (req.ExpectedPackageSHA256 != "" && req.ExpectedPackageSHA256 != inspection.InspectedHashes.PackageSHA256) || (req.Source.PluginID != "" && req.Source.PluginID != inspection.PluginID) {
+		return ExternalPackageInspection{}, errors.Join(ErrExternalPackageConfirmation, h.removeExternalPackageInspectionArtifact(inspection.InspectionID, true))
+	}
+	contractHash, contractErr := releaseprojection.CapabilityContractSetSHA256(inspection.SecuritySummary)
+	if contractErr != nil || (req.ExpectedSecuritySummarySHA256 != "" && req.ExpectedSecuritySummarySHA256 != inspection.SecuritySummary.SummarySHA256) || (req.ExpectedContractSetSHA256 != "" && req.ExpectedContractSetSHA256 != contractHash) {
+		return ExternalPackageInspection{}, errors.Join(ErrExternalPackageConfirmation, contractErr, h.removeExternalPackageInspectionArtifact(inspection.InspectionID, true))
+	}
+	if provenance.Kind == registry.PackageSourceGitHubRepository {
+		pending, e := h.externalInspections.get(inspection.InspectionID, scope)
+		if e != nil {
+			return ExternalPackageInspection{}, e
+		}
+		if pending.Record.PluginID != selectedPlugin || pending.Record.Version != selectedVersion {
+			return ExternalPackageInspection{}, errors.Join(ErrExternalPackageConfirmation, h.removeExternalPackageInspectionArtifact(inspection.InspectionID, true))
+		}
+	}
+	return inspection, nil
 }
 
 func (h *Host) InspectUploadedExternalPackage(ctx context.Context, req InspectUploadedExternalPackageRequest) (ExternalPackageInspection, error) {
@@ -371,7 +376,7 @@ func (h *Host) inspectStagedExternalPackage(
 		return ExternalPackageInspection{}, err
 	}
 	intent.PluginInstanceID = instanceID
-	if err := h.preflightPackageFeatures(pkg.Manifest, packageTrustInput{}); err != nil {
+	if err := h.preflightPackageFeatures(pkg.Manifest, packageInput{}); err != nil {
 		return ExternalPackageInspection{}, err
 	}
 	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest}); err != nil {
@@ -381,12 +386,10 @@ func (h *Host) inspectStagedExternalPackage(
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
-	signature := h.assessExternalPackageSignature(ctx, pkg, now)
-	trust := externalPackageLegacyTrust(pkg, signature)
 	provenance.PackageSHA256 = pkg.PackageHash
-	record := packageRecord(pkg, trust, instanceID, map[string]string{"source.type": "external"}, provenance, pins)
+	record := packageRecord(pkg, instanceID, map[string]string{"source.type": "external"}, provenance, pins)
 	if current != nil {
-		if err := validateSamePluginIdentity(*current, record); err != nil {
+		if err := validatePackageUpdate(*current, record, intent.AllowSourceChange); err != nil {
 			return ExternalPackageInspection{}, err
 		}
 		if _, err := pluginDataUpgradeRequired(current.Manifest, record.Manifest); err != nil {
@@ -406,12 +409,17 @@ func (h *Host) inspectStagedExternalPackage(
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
-	record.SignatureAssessment = signature
 	record.ExecutionApproval = registry.ExecutionApproval{
 		Status: registry.ExecutionApprovalPending, OwnerEnvHash: scope.OwnerEnvHash,
 		PackageSHA256: pkg.PackageHash, ReasonCodes: []string{"explicit_confirmation_required"}, AssessedAt: now,
 	}
 	record.UpdateEligibility = registry.UpdateManualOnly
+	if current != nil && samePackageUpdateSource(current.PackageSourceProvenance, record.PackageSourceProvenance) {
+		record.AutomaticUpdates = current.AutomaticUpdates
+		if record.AutomaticUpdates && retrievableUpdateSource(record.PackageSourceProvenance) {
+			record.UpdateEligibility = registry.UpdateAutomaticEligible
+		}
+	}
 	record.SecurityCapabilitySummary = registry.SecurityCapabilitySummary{
 		SchemaVersion: "redevplugin.external_security_summary.v1",
 		Summary:       securitySummary.SummarySHA256, SHA256: securitySummary.SummarySHA256,
@@ -421,13 +429,20 @@ func (h *Host) inspectStagedExternalPackage(
 	} else {
 		return ExternalPackageInspection{}, marshalErr
 	}
-	if signature.Status == registry.SignatureInvalid || signature.Status == registry.SignatureRevoked {
-		record.ExecutionApproval.Status = registry.ExecutionApprovalPolicyBlocked
-		record.ExecutionApproval.ReasonCodes = []string{"signature_integrity_failure"}
-		record.TrustState = registry.TrustBlockedSecurity
-		record.TrustAssessment.TrustState = registry.TrustBlockedSecurity
-	}
 
+	updateReasons := []string{"manual_confirmation_required"}
+	if current != nil && record.AutomaticUpdates {
+		if err := validateAutomaticUpdate(*current, record); err != nil {
+			record.UpdateEligibility = registry.UpdateManualOnly
+			if errors.Is(err, ErrUpdateReviewRequired) {
+				updateReasons = []string{"capabilities_changed"}
+			} else {
+				updateReasons = []string{"no_newer_version"}
+			}
+		} else {
+			updateReasons = []string{"user_enabled_original_source_updates"}
+		}
+	}
 	inspectionID, err := newExternalPackageID("inspection")
 	if err != nil {
 		return ExternalPackageInspection{}, err
@@ -441,13 +456,13 @@ func (h *Host) inspectStagedExternalPackage(
 		InspectionID: inspectionID, ExpiresAt: now.Add(externalPackageInspectionTTL), Intent: intent,
 		PublisherID: record.PublisherID, PluginID: record.PluginID, Version: record.Version,
 		Presentation: presentation, PresentationSHA256: presentationSHA256,
-		InspectedHashes:     packageHashSetForPackage(pkg),
-		SignatureAssessment: publicExternalSignatureAssessment(signature),
-		SourceProvenance:    publicExternalSourceProvenance(provenance),
-		ExecutionApproval:   publicExternalExecutionApproval(record.ExecutionApproval),
-		UpdateEligibility:   publicExternalUpdateEligibility(record.UpdateEligibility, signature, now),
-		SecuritySummary:     securitySummary,
+		InspectedHashes:   packageHashSetForPackage(pkg),
+		SourceProvenance:  publicExternalSourceProvenance(provenance),
+		ExecutionApproval: publicExternalExecutionApproval(record.ExecutionApproval),
+		UpdateEligibility: publicExternalUpdateEligibility(record.UpdateEligibility, now),
+		SecuritySummary:   securitySummary,
 	}
+	inspection.UpdateEligibility.ReasonCodes = updateReasons
 	h.externalInspections.put(externalPackagePendingInspection{
 		Scope: scope, Artifact: artifact, Inspection: inspection, Record: record, State: externalPackagePending,
 	})
@@ -455,93 +470,114 @@ func (h *Host) inspectStagedExternalPackage(
 	return inspection, nil
 }
 
-func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspectedPackageRequest) (result InstalledExternalPackage, retErr error) {
+func (h *Host) installInspectedPackage(ctx context.Context, req installInspectedPackageRequest) (result installedExternalPackageResult, retErr error) {
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
-		return InstalledExternalPackage{}, err
+		return installedExternalPackageResult{}, err
 	}
 	defer releaseOpen()
 	if err := h.requireFeature(FeatureExternalPackage); err != nil {
-		return InstalledExternalPackage{}, err
+		return installedExternalPackageResult{}, err
 	}
 	session, err := requireUserSession(ctx)
 	if err != nil {
-		return InstalledExternalPackage{}, err
+		return installedExternalPackageResult{}, err
 	}
 	scope, err := session.SessionScope()
 	if err != nil {
-		return InstalledExternalPackage{}, err
+		return installedExternalPackageResult{}, err
 	}
 	inspectionID := strings.TrimSpace(req.InspectionID)
 	preview, err := h.externalInspections.get(inspectionID, scope)
 	if err != nil {
-		return InstalledExternalPackage{}, err
+		return installedExternalPackageResult{}, err
 	}
 	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallInspectedPackage,
 		scopedAuthorizationTarget(ResourcePlugin, preview.Record.PluginInstanceID, sessionctx.ScopeEnvironment))
 	if err != nil {
-		return InstalledExternalPackage{}, err
+		return installedExternalPackageResult{}, err
 	}
 	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
 	if err != nil {
-		return InstalledExternalPackage{}, err
+		return installedExternalPackageResult{}, err
 	}
 	defer releaseReservation()
 	now := req.Now.UTC()
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	pending, err := h.externalInspections.begin(inspectionID, scope, strings.TrimSpace(req.ExpectedPackageSHA256), now)
+	pending := preview
+	if req.claimed {
+		if preview.State != externalPackageCommitting || preview.Inspection.InspectedHashes.PackageSHA256 != req.ExpectedPackageSHA256 {
+			return installedExternalPackageResult{}, ErrExternalPackageConfirmation
+		}
+	} else {
+		pending, err = h.externalInspections.begin(inspectionID, scope, strings.TrimSpace(req.ExpectedPackageSHA256), now)
+	}
 	if err != nil {
 		if errors.Is(err, ErrExternalPackageInspectionExpired) {
-			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
+			return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
 		}
-		return InstalledExternalPackage{}, err
-	}
-	if pending.Record.SignatureAssessment.Status == registry.SignatureInvalid || pending.Record.SignatureAssessment.Status == registry.SignatureRevoked {
-		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, ErrExternalPackageInstallBlocked)
+		return installedExternalPackageResult{}, err
 	}
 	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, pending.Record.PluginInstanceID)
 	if err != nil {
 		h.externalInspections.finish(pending.Inspection.InspectionID, externalPackagePending)
-		return InstalledExternalPackage{}, err
+		return installedExternalPackageResult{}, err
 	}
 	defer unlockLifecycle()
 	var previous *registry.PluginRecord
 	if pending.Inspection.Intent.Action == string(registry.ExternalPackageUpdate) {
 		current, err := h.controlStore.Registry().GetPlugin(ctx, scope.OwnerEnvHash, pending.Record.PluginInstanceID)
 		if err != nil {
-			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
+			return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
 		}
 		if err := requireManagementRevision(current, pending.Inspection.Intent.ExpectedManagementRevision); err != nil {
-			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
+			return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
+		}
+		if req.automatic {
+			if err := validateAutomaticUpdate(current, pending.Record); err != nil {
+				return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
+			}
 		}
 		previous = &current
+	} else if req.automatic {
+		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, ErrExternalPackageRequestInvalid)
+	}
+	if req.progress != nil {
+		if err := req.progress("verify", "running"); err != nil {
+			return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
+		}
 	}
 	// Reopen and parse the staged artifact immediately before install.
 	pkg, err := h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, pending.Artifact, pluginpkg.DefaultReadLimits())
 	if err != nil {
-		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
+		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
 	}
 	if pkg.PackageHash != pending.Record.PackageHash || pkg.ManifestHash != pending.Record.ManifestHash || pkg.EntriesHash != pending.Record.EntriesHash {
-		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, errors.New("external package changed after inspection"))
+		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, errors.New("external package changed after inspection"))
 	}
-	reassessedSignature := h.assessExternalPackageSignature(ctx, pkg, now)
-	if reassessedSignature.Status == registry.SignatureInvalid || reassessedSignature.Status == registry.SignatureRevoked {
-		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, ErrExternalPackageInstallBlocked)
-	}
-	if !sameExternalPackageSignatureFreshness(pending.Record.SignatureAssessment, reassessedSignature) {
-		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, ErrExternalPackageInspectionStale)
+	if req.progress != nil {
+		if err := req.progress("verify", "completed"); err != nil {
+			return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
+		}
+		if err := req.progress("install", "running"); err != nil {
+			return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
+		}
 	}
 	record := pending.Record
 	record.ExecutionApproval.Status = registry.ExecutionApprovalUserApproved
 	record.ExecutionApproval.EvidenceReference = req.operationEvidence
 	record.ExecutionApproval.ReasonCodes = []string{"explicit_user_confirmation"}
+	if req.automatic {
+		record.ExecutionApproval.Status = registry.ExecutionApprovalPolicyApproved
+		record.ExecutionApproval.ReasonCodes = []string{"user_enabled_original_source_update"}
+	}
 	record.ExecutionApproval.ApprovedAt = now
 	record.ExecutionApproval.AssessedAt = now
 	if record.EnableState == registry.EnableEnabled {
 		if err := h.validateEnabledRuntimeState(ctx, record); err != nil {
-			return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
+			return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
 		}
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{
@@ -549,12 +585,13 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 		PluginInstanceID: record.PluginInstanceID, RequestID: pending.Inspection.InspectionID,
 	})
 	if err != nil {
-		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
+		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
 	}
 	auditDetails := map[string]any{"status": "installing"}
 	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
-	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
-		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, err)
+	finishAssets, err := h.preparePackageAssets(ctx, &pkg)
+	if err != nil {
+		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
 	}
 	var stored registry.PluginRecord
 	if previous == nil {
@@ -566,17 +603,20 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 			Record:                     record, Now: now,
 		})
 	}
+	err = errors.Join(err, finishAssets(err == nil || mutation.ForError(err) != mutation.OutcomeNotCommitted))
 	if err != nil {
 		auditDetails["status"] = "failed"
-		var assetRollbackErr error
-		if mutation.ForError(err) == mutation.OutcomeNotCommitted {
-			assetRollbackErr = h.adapters.Assets.DeletePackage(context.WithoutCancel(ctx), record.PackageHash)
-		}
-		return InstalledExternalPackage{}, h.failExternalPackageInspection(pending, errors.Join(managementMutationError(record, err), assetRollbackErr))
+		// A digest identifies shared cached bytes, not an installation. Failed
+		// commit cleanup must never remove another instance's active assets.
+		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, managementMutationError(record, err))
 	}
 	auditDetails["status"] = "committed"
 	result = installedExternalPackage(stored, now)
 	var postCommitErr error
+	if req.progress != nil {
+		postCommitErr = errors.Join(postCommitErr, req.progress("install", "completed"))
+		postCommitErr = errors.Join(postCommitErr, req.progress("enable", "running"))
+	}
 	if previous == nil {
 		postCommitErr = errors.Join(
 			postCommitErr,
@@ -632,13 +672,12 @@ func (h *Host) updateExternalPackageRecord(ctx context.Context, session sessionc
 	return h.controlStore.Registry().UpdateExternalPackage(ctx, session.OwnerEnvHash, req)
 }
 
-func installedExternalPackage(record registry.PluginRecord, now time.Time) InstalledExternalPackage {
-	result := InstalledExternalPackage{Plugin: &record}
-	signature := publicExternalSignatureAssessment(record.SignatureAssessment)
+func installedExternalPackage(record registry.PluginRecord, now time.Time) installedExternalPackageResult {
+	result := installedExternalPackageResult{Plugin: &record}
 	provenance := publicExternalSourceProvenance(record.PackageSourceProvenance)
 	approval := publicExternalExecutionApproval(record.ExecutionApproval)
-	update := publicExternalUpdateEligibility(record.UpdateEligibility, record.SignatureAssessment, now)
-	result.SignatureAssessment, result.SourceProvenance = &signature, &provenance
+	update := publicExternalUpdateEligibility(record.UpdateEligibility, now)
+	result.SourceProvenance = &provenance
 	result.ExecutionApproval, result.UpdateEligibility = &approval, &update
 	if record.SecurityCapabilitySummary.CanonicalJSON != "" {
 		var summary ExternalPackageSecuritySummary
@@ -702,22 +741,25 @@ func (h *Host) removeExpiredExternalPackageInspectionArtifacts(now time.Time) er
 	return h.cleanupExternalPackageInspectionArtifacts(nil, &now)
 }
 
-func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageSource, quotaKey string, now time.Time) (externalsource.FetchResult, registry.PackageSourceProvenance, error) {
+func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageSource, quotaKey string, now time.Time) (externalsource.FetchResult, registry.PackageSourceProvenance, string, string, error) {
 	switch strings.TrimSpace(source.Kind) {
 	case string(registry.PackageSourcePackageURL):
-		if strings.TrimSpace(source.Tag) != "" {
-			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, fmt.Errorf("%w: tag is valid only for GitHub repository sources", ErrExternalPackageRequestInvalid)
+		if strings.TrimSpace(source.Tag) != "" || source.RepositoryID != "" || source.ReleaseID != "" || source.AssetID != "" || source.Host != "" || source.PluginID != "" {
+			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", fmt.Errorf("%w: tag is valid only for GitHub repository sources", ErrExternalPackageRequestInvalid)
 		}
 		fetched, err := h.adapters.ExternalPackageFetcher.FetchPackage(ctx, externalsource.FetchRequest{URL: source.URL, QuotaKey: quotaKey})
 		if err != nil {
-			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, err
+			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", err
 		}
 		provenance, err := directExternalPackageProvenance(fetched, now)
-		return fetched, provenance, err
+		return fetched, provenance, "", "", err
 	case string(registry.PackageSourceGitHubRepository):
-		resolved, err := h.adapters.ExternalPackageGitHubResolver.ResolvePackage(ctx, externalsource.GitHubRepositorySource{RepositoryURL: source.URL, Tag: source.Tag, QuotaKey: quotaKey})
+		resolved, err := h.adapters.ExternalPackageGitHubResolver.ResolvePackage(ctx, externalsource.GitHubRepositorySource{RepositoryURL: source.URL, Tag: source.Tag, QuotaKey: quotaKey, Host: source.Host, PluginID: source.PluginID})
 		if err != nil {
-			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, err
+			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", err
+		}
+		if (source.RepositoryID != "" && source.RepositoryID != strconv.FormatInt(resolved.RepositoryID, 10)) || (source.ReleaseID != "" && source.ReleaseID != strconv.FormatInt(resolved.ReleaseID, 10)) || (source.AssetID != "" && source.AssetID != strconv.FormatInt(resolved.AssetID, 10)) {
+			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", errors.Join(ErrExternalPackageConfirmation, h.adapters.ExternalPackageStageStore.Remove(resolved.Fetch.Artifact))
 		}
 		owner, repository := githubDisplayIdentity(resolved.RepositoryURL)
 		return resolved.Fetch, registry.PackageSourceProvenance{
@@ -725,9 +767,9 @@ func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageS
 			GitHubRepositoryID: strconv.FormatInt(resolved.RepositoryID, 10), GitHubReleaseID: strconv.FormatInt(resolved.ReleaseID, 10),
 			GitHubAssetID: strconv.FormatInt(resolved.AssetID, 10), GitHubOwner: owner, GitHubRepository: repository,
 			ReleaseTag: resolved.Tag, AssetName: resolved.AssetName, ResolvedRevision: resolved.ResolvedCommitSHA, RetrievedAt: now,
-		}, nil
+		}, resolved.PluginID, resolved.Version, nil
 	default:
-		return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, fmt.Errorf("%w: external package source kind is invalid", ErrExternalPackageRequestInvalid)
+		return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", fmt.Errorf("%w: external package source kind is invalid", ErrExternalPackageRequestInvalid)
 	}
 }
 
@@ -761,89 +803,12 @@ func (h *Host) externalPackageEffectiveManifest(record registry.PluginRecord) (m
 	return releaseprojection.ProjectManifestWithCapabilityContracts(record.Manifest, contracts)
 }
 
-func (h *Host) assessExternalPackageSignature(ctx context.Context, pkg pluginpkg.Package, now time.Time) registry.SignatureAssessment {
-	hashes := registry.TrustHashSet{PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash}
-	if pkg.PackageSignature == nil {
-		return registry.SignatureAssessment{
-			Status: registry.SignatureAbsent, AssessedHashes: hashes, PackageSHA256: pkg.PackageHash,
-			ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash,
-			ReasonCodes: []string{"signature_not_present"}, AssessedAt: now,
-		}
-	}
-	assessment, err := h.adapters.ExternalPackageSignatureAssessor.AssessExternalPackageSignature(ctx, ExternalPackageSignatureAssessmentRequest{Package: pkg, Now: now})
-	if err != nil {
-		assessment = registry.SignatureAssessment{Status: registry.SignatureUnavailable, ReasonCodes: []string{"signature_assessment_unavailable"}}
-	}
-	assessment.Algorithm = pkg.PackageSignature.Algorithm
-	assessment.KeyID = pkg.PackageSignature.KeyID
-	assessment.AssessedHashes = hashes
-	assessment.PackageSHA256 = pkg.PackageHash
-	assessment.ManifestSHA256 = pkg.ManifestHash
-	assessment.EntriesSHA256 = pkg.EntriesHash
-	assessment.AssessedAt = now
-	if assessment.AssessmentEpoch == "" {
-		raw := strings.Join([]string{string(assessment.Status), assessment.KeyringGeneration, assessment.RevocationGeneration, pkg.PackageHash}, "\x00")
-		digest := sha256.Sum256([]byte(raw))
-		assessment.AssessmentEpoch = "sha256:" + hex.EncodeToString(digest[:])
-	}
-	return assessment
-}
-
-func sameExternalPackageSignatureFreshness(inspected, current registry.SignatureAssessment) bool {
-	return inspected.Status == current.Status &&
-		inspected.Algorithm == current.Algorithm &&
-		inspected.KeyID == current.KeyID &&
-		inspected.PackageSHA256 == current.PackageSHA256 &&
-		inspected.ManifestSHA256 == current.ManifestSHA256 &&
-		inspected.EntriesSHA256 == current.EntriesSHA256 &&
-		inspected.EvidenceReference == current.EvidenceReference &&
-		inspected.KeyringGeneration == current.KeyringGeneration &&
-		inspected.RevocationGeneration == current.RevocationGeneration &&
-		inspected.AssessmentEpoch == current.AssessmentEpoch
-}
-
-func (h *Host) validateExternalPackageSignatureFreshness(ctx context.Context, record registry.PluginRecord) error {
-	if record.SignatureAssessment.Status != registry.SignatureVerified || !externalPackageSource(record.PackageSourceProvenance.Kind) {
-		return nil
-	}
-	assessor, ok := h.adapters.ExternalPackageSignatureAssessor.(ExternalPackageSignatureFreshnessAssessor)
-	if !ok {
-		// Configuration validation prevents this for new hosts. Keep existing
-		// callers fail-open for unavailable freshness, matching user-approved
-		// unknown/unavailable signature policy.
-		return nil
-	}
-	assessment, err := assessor.AssessExternalPackageSignatureFreshness(ctx, ExternalPackageSignatureFreshnessRequest{
-		PublisherID: record.PublisherID, PluginID: record.PluginID,
-		PackageSHA256: record.PackageHash, ManifestSHA256: record.ManifestHash, EntriesSHA256: record.EntriesHash,
-		Assessment: record.SignatureAssessment, Now: time.Now().UTC(),
-	})
-	if err != nil {
-		return nil
-	}
-	if assessment.Status == registry.SignatureInvalid || assessment.Status == registry.SignatureRevoked {
-		denied := fmt.Errorf("%w: external package signature freshness is %q", ErrPluginTrustDenied, assessment.Status)
-		return denied
-	}
-	return nil
-}
-
-func externalPackageSource(kind registry.PackageSourceKind) bool {
-	switch kind {
-	case registry.PackageSourcePackageURL, registry.PackageSourceGitHubRepository,
-		registry.PackageSourcePackageUpload, registry.PackageSourceOfficialCatalog, registry.PackageSourceApprovedCatalog:
-		return true
-	default:
-		return false
-	}
-}
-
 func normalizeExternalPackageIntent(intent ExternalPackageIntent) (ExternalPackageIntent, error) {
 	intent.Action = strings.TrimSpace(intent.Action)
 	intent.PluginInstanceID = strings.TrimSpace(intent.PluginInstanceID)
 	switch registry.ExternalPackageInstallIntent(intent.Action) {
 	case registry.ExternalPackageInstall:
-		if intent.PluginInstanceID != "" || intent.ExpectedManagementRevision != 0 {
+		if intent.PluginInstanceID != "" || intent.ExpectedManagementRevision != 0 || intent.AllowSourceChange {
 			return ExternalPackageIntent{}, fmt.Errorf("%w: external package install intent cannot select an instance or revision", ErrExternalPackageRequestInvalid)
 		}
 	case registry.ExternalPackageUpdate:
@@ -854,27 +819,6 @@ func normalizeExternalPackageIntent(intent ExternalPackageIntent) (ExternalPacka
 		return ExternalPackageIntent{}, fmt.Errorf("%w: external package intent is invalid", ErrExternalPackageRequestInvalid)
 	}
 	return intent, nil
-}
-
-func externalPackageLegacyTrust(pkg pluginpkg.Package, assessment registry.SignatureAssessment) registry.TrustAssessment {
-	state := registry.TrustNeedsReview
-	switch assessment.Status {
-	case registry.SignatureVerified:
-		state = registry.TrustVerified
-	case registry.SignatureAbsent:
-		state = registry.TrustUntrusted
-	case registry.SignatureInvalid, registry.SignatureRevoked:
-		state = registry.TrustBlockedSecurity
-	}
-	result := registry.TrustAssessment{
-		TrustState: state, ReasonCodes: append([]string(nil), assessment.ReasonCodes...),
-		VerifiedHashes:       registry.TrustHashSet{PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash},
-		TrustAssessmentEpoch: assessment.AssessmentEpoch,
-	}
-	if assessment.Status == registry.SignatureVerified {
-		result.VerifiedSignature = &registry.VerifiedSignature{Algorithm: assessment.Algorithm, KeyID: assessment.KeyID}
-	}
-	return result
 }
 
 func packageHashSetForPackage(pkg pluginpkg.Package) PackageHashSet {
@@ -920,14 +864,6 @@ func newExternalPackageID(prefix string) (string, error) {
 	return prefix + "_" + hex.EncodeToString(raw), nil
 }
 
-func publicExternalSignatureAssessment(value registry.SignatureAssessment) ExternalPackageSignatureAssessment {
-	return ExternalPackageSignatureAssessment{
-		State: string(value.Status), ReasonCodes: append([]string{}, value.ReasonCodes...),
-		AssessedHashes: PackageHashSet{PackageSHA256: value.PackageSHA256, ManifestSHA256: value.ManifestSHA256, EntriesSHA256: value.EntriesSHA256},
-		Algorithm:      value.Algorithm, KeyID: value.KeyID, AssessedAt: value.AssessedAt, AssessmentEpoch: value.AssessmentEpoch,
-	}
-}
-
 func publicExternalSourceProvenance(value registry.PackageSourceProvenance) ExternalPackageSourceProvenance {
 	redirects := make([]ExternalPackageRedirectHop, len(value.RedirectChain))
 	for index, hop := range value.RedirectChain {
@@ -951,10 +887,10 @@ func publicExternalExecutionApproval(value registry.ExecutionApproval) ExternalP
 	return ExternalPackageExecutionApproval{State: string(value.Status), ReasonCodes: append([]string{}, value.ReasonCodes...), AssessedAt: value.AssessedAt, ApprovedAt: approvedAt}
 }
 
-func publicExternalUpdateEligibility(value registry.UpdateEligibility, signature registry.SignatureAssessment, now time.Time) ExternalPackageUpdateEligibility {
+func publicExternalUpdateEligibility(value registry.UpdateEligibility, now time.Time) ExternalPackageUpdateEligibility {
 	reasons := []string{"manual_confirmation_required"}
-	if signature.Status != registry.SignatureVerified {
-		reasons = []string{"signature_not_verified"}
+	if value == registry.UpdateAutomaticEligible {
+		reasons = []string{"user_enabled_original_source_updates"}
 	}
 	return ExternalPackageUpdateEligibility{State: string(value), ReasonCodes: reasons, AssessedAt: now}
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/observability"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v3/pkg/trust"
 	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
 
@@ -27,12 +26,7 @@ func (environmentPolicy) Authorize(context.Context, host.AuthorizationRequest) e
 func (environmentPolicy) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {
 	return host.PolicyAllow, nil
 }
-func (environmentPolicy) DeveloperModeEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return true, nil
-}
-func (environmentPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return true, nil
-}
+
 func (environmentPolicy) AllocateSurfaceOrigin(_ context.Context, r host.SurfaceOriginRequest) (host.SurfaceOrigin, error) {
 	return host.SurfaceOrigin{Origin: "http://" + r.OriginKey + ".localhost:12345", ParentOrigin: "http://localhost:12345"}, nil
 }
@@ -60,7 +54,7 @@ func environmentOptions(t *testing.T, session sessionctx.Context) EnvironmentOpt
 	return EnvironmentOptions{Router: router, Guard: environmentTestGuard{session}, Configure: func(context.Context, string) (host.Config, func() error, error) {
 		events := observability.NewMemoryStore()
 		policy := environmentPolicy{}
-		return host.Config{Core: host.CoreAdapters{Policy: policy, Authorization: policy, PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}}, Audit: events, SecurityAudit: events, Diagnostics: events}, Web: &host.WebModule{Origins: policy}, Secrets: &host.SecretsModule{Store: secrets.NewMemoryStore()}, Connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})}}, nil, nil
+		return host.Config{Core: host.CoreAdapters{Policy: policy, Authorization: policy, Audit: events, SecurityAudit: events, Diagnostics: events}, Web: &host.WebModule{Origins: policy}, Secrets: &host.SecretsModule{Store: secrets.NewMemoryStore()}, Connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})}}, nil, nil
 	}}
 }
 func TestEnvironmentRecoversExactArtifactAndPreservesIsolation(t *testing.T) {

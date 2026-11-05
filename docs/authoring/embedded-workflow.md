@@ -68,8 +68,7 @@ Terminal receipts remain durable to prevent delayed replay; the owner may not
 replace a request's inspected identity. A running operation reports unknown
 outcome until completion. Restart recovery requires the exact operation ID in
 committed execution approval evidence, not just equal package bytes. Missing
-proof remains unknown and never causes automatic reinstallation. Invalid and
-revoked signatures still block installation; missing grants still require
+proof remains unknown and never causes automatic reinstallation. Packages require no signature or publisher trust. Missing grants still require
 explicit authorization after installation.
 
 `Remove` deletes only generated workspace resources and retains a creation

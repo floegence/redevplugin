@@ -14,7 +14,7 @@ import (
 func TestImportPluginDataSerializesPluginUpdate(t *testing.T) {
 	v1 := buildDataShapeFixturePackage(t, dataShapeFixtureOptions{Version: "1.0.0", SettingsSchema: 1, StorageSchema: 1})
 	v2 := buildDataShapeFixturePackage(t, dataShapeFixtureOptions{Version: "2.0.0", SettingsSchema: 1, StorageSchema: 1})
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, v1)
 	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,

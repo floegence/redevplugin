@@ -73,7 +73,6 @@ func obtainAttestedCapabilityRPCError(t *testing.T) error {
 		"DOCUMENT_NOT_FOUND", "adapter detail", map[string]any{"document_id": "doc-1"},
 	)}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
 		capabilityContract: &verified, capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
@@ -106,7 +105,7 @@ func obtainAttestedWorkerRPCError(t *testing.T) error {
 		Code: "WORKER_FAILED", Message: "Worker failed", Origin: runtimeclient.WorkerErrorOriginPlugin,
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime,
+		runtimeManager: runtime,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
@@ -131,13 +130,12 @@ func newRPCErrorReplaySinks(t *testing.T) []rpcErrorReplaySink {
 
 	coreAdapter := &recordingCoreActionAdapter{}
 	coreHost, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, coreActions: coreAdapter,
+		coreActions: coreAdapter,
 	})
 	coreInstalled, coreGateway := installEnableAndMintGateway(t, coreHost, buildCoreActionFixturePackage(t), "core.view")
 
 	capabilityAdapter := &recordingCapabilityAdapter{}
 	capabilityHost, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
 		capabilityID: "example.capability.tasks", capabilityAdapter: capabilityAdapter,
 	})
 	capabilityInstalled, capabilityGateway := installEnableAndMintGateway(
@@ -146,7 +144,6 @@ func newRPCErrorReplaySinks(t *testing.T) []rpcErrorReplaySink {
 
 	targetAdapter := &recordingCapabilityAdapter{}
 	targetHost, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
 		capabilityID: "example.capability.echo", capabilityAdapter: targetAdapter,
 	})
 	targetInstalled, targetGateway := installEnableAndMintGateway(t, targetHost, buildRPCFixturePackage(t), "rpc.view")
@@ -156,7 +153,7 @@ func newRPCErrorReplaySinks(t *testing.T) []rpcErrorReplaySink {
 		IPCChannelID: "ipc_sink", ConnectionNonce: "connection_nonce_sink_1234567890", Ready: true,
 	})
 	runtimeHost, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime,
+		runtimeManager: runtime,
 	})
 	runtimeInstalled, runtimeGateway := installEnableAndMintGateway(t, runtimeHost, buildWorkerFixturePackage(t), "worker.view")
 

@@ -3,13 +3,14 @@ package host
 import (
 	"context"
 	"encoding/json"
-	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func TestWebResourcesPrivateStorageAndWindowAuthority(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	var m map[string]any
 	if err := json.Unmarshal([]byte(workerStorageKVFixtureManifestJSON()), &m); err != nil {
 		t.Fatal(err)
@@ -97,7 +98,7 @@ func TestWebResourcesPrivateStorageAndWindowAuthority(t *testing.T) {
 }
 
 func TestWebResourcesSettingsUseRevisionAndSurfaceCeiling(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	var m map[string]any
 	_ = json.Unmarshal([]byte(currentSettingsManifestJSON()), &m)
 	m["api"].(map[string]any)["required_features"] = []string{"surface.resources.v1"}
@@ -129,7 +130,7 @@ func TestWebResourcesSettingsUseRevisionAndSurfaceCeiling(t *testing.T) {
 }
 
 func TestWebResourceConcurrencyReservationReleasesExactlyOnce(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	record := installAndEnablePlugin(t, h, buildFixturePackage(t))
 	req, _ := openTestWebSurface(t, h, record.PluginInstanceID, "resource_budget", hostRuntimeWritableTestContext())
 	h.webSurfaces.mu.Lock()

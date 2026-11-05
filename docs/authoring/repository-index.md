@@ -1,10 +1,9 @@
 # Repository discovery
 
-A repository can advertise multiple ReDevPlugin packages to host-specific
-catalogs without changing its existing layout for other ecosystems. Add the
-GitHub topic `redevplugin` and create `.redevplugin/index.json` at the root.
-For Redeven, also use the `redeven-plugin` topic and set `host` to `redeven`.
-The host value is a discovery declaration, not proof of compatibility or trust.
+Add the GitHub topic `redevplugin` and a `.redevplugin/index.json` on the default
+branch. `redeven-plugin` is an optional additional topic. A host target is a
+routing declaration. Authors need no registration, approval, signing key,
+release-reference attachment, or publisher verification.
 
 ```json
 {
@@ -18,29 +17,43 @@ The host value is a discovery declaration, not proof of compatibility or trust.
       "manifest": "manifest.json",
       "release": {
         "tag_template": "weather-v{version}",
-        "package_asset_template": "weather-{version}.redevplugin",
-        "release_ref_asset_template": "weather-{version}.release-ref.json"
+        "package_asset_template": "plugin.redevplugin"
       }
     }]
   }]
 }
 ```
 
-Use `.` for a plugin at the repository root. Paths are repository-relative,
-use `/`, and cannot traverse or contain symbolic links. Templates contain one
-`{version}` and match complete names. A catalog may apply further restrictions,
-including stable versions, review, trusted publishers and immutable releases.
-Presentation and permissions remain in the verified package, not this index.
+Each plugin owns a distinct `<release-key>-v{version}` namespace. Versions are
+strict stable SemVer. Drafts and prereleases are excluded. Version comparison
+uses SemVer, never publication time or the repository-wide latest Release.
+Every Release contains one matching ordinary `.redevplugin` package. Asset names
+can contain one `{version}` or be fixed; separate Releases can reuse the same
+asset name. Never replace a published version's package with different content.
 
-`redevplugin scaffold repository-index <root> <host>` creates an initial entry
-from a root manifest; review the host and asset names before publishing.
-`redevplugin repository inspect <root>` checks the index and emits JSON with
-per-entry policy digests. `redevplugin repository validate <root>` additionally
-checks every declared manifest and its plugin ID. An enclosing index is checked
-by `redevplugin check` and `doctor`. Adding a sibling entry does not change an
-existing entry's policy digest.
+Use `.` for a root project. Paths are repository-relative and cannot traverse
+or contain symbolic links. Plugin identity, author presentation, and capabilities
+come from validated package bytes. Official and community are presentation
+categories and share the same installation and update contracts.
 
-For new GitHub-hosted third-party plugins, a useful ID convention is
-`github.<owner>.<repository>.<plugin-slug>`. Freeze the chosen ID after release;
-repository moves must not silently change installed identity. GitHub coordinates
-and topics do not prove publisher identity or grant installation permissions.
+```sh
+redevplugin scaffold repository-index . redeven \
+  --project plugins/weather --manifest manifest.json \
+  --tag-template 'weather-v{version}' \
+  --package-asset-template plugin.redevplugin
+redevplugin repository validate .
+redevplugin package plugins/weather/dist plugin.redevplugin
+redevplugin release inspect plugin.redevplugin
+```
+
+Scaffolding appends to the existing index under an operating-system file lock.
+Identical calls are no-ops; changing an existing entry requires `--replace`.
+The complete proposed index and all declared manifests are validated before
+atomic replacement. Moving a project can be repaired with `--replace`.
+`repository inspect` emits per-entry content digests; unrelated entries do not
+change an existing entry's digest. `check` and `doctor` validate an enclosing index.
+
+A repository can contain multiple projects and ecosystems. Hosts must select an
+explicit plugin when more than one matches. Installation binds the chosen
+plugin, release, asset, content digest, and owner. Repository identity prevents
+a different source with the same plugin ID from silently taking over updates.

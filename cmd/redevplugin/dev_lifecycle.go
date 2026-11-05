@@ -513,7 +513,6 @@ func writeDevLifecycle(action string, stateRoot string, record registry.PluginRe
 			PluginInstanceID:   record.PluginInstanceID,
 			PluginID:           record.PluginID,
 			Version:            record.Version,
-			TrustState:         record.TrustState,
 			EnableState:        record.EnableState,
 			PolicyRevision:     record.PolicyRevision,
 			ManagementRevision: record.ManagementRevision,

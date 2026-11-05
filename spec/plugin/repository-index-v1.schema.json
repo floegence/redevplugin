@@ -4,16 +4,26 @@
   "title": "ReDevPlugin repository index v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "targets"],
+  "required": [
+    "schema_version",
+    "targets"
+  ],
   "properties": {
-    "$schema": { "type": "string", "format": "uri-reference" },
-    "schema_version": { "const": "redevplugin.repository-index.v1" },
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "schema_version": {
+      "const": "redevplugin.repository-index.v1"
+    },
     "targets": {
       "type": "array",
       "minItems": 1,
       "maxItems": 32,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/target" }
+      "items": {
+        "$ref": "#/$defs/target"
+      }
     }
   },
   "$defs": {
@@ -38,37 +48,80 @@
     "release": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tag_template", "package_asset_template", "release_ref_asset_template"],
+      "required": [
+        "tag_template",
+        "package_asset_template"
+      ],
       "properties": {
-        "tag_template": { "$ref": "#/$defs/template" },
-        "package_asset_template": { "$ref": "#/$defs/template" },
-        "release_ref_asset_template": { "$ref": "#/$defs/template" }
+        "tag_template": {
+          "type": "string",
+          "maxLength": 255,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-v\\{version\\}$"
+        },
+        "package_asset_template": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9._+@-]+(?:\\{version\\}[A-Za-z0-9._+@-]*)?\\.redevplugin$"
+        }
       }
     },
     "plugin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plugin_id", "path", "manifest", "release"],
+      "required": [
+        "plugin_id",
+        "path",
+        "manifest",
+        "release"
+      ],
       "properties": {
-        "plugin_id": { "$ref": "#/$defs/identifier" },
-        "path": { "$ref": "#/$defs/relativePath" },
-        "manifest": { "allOf": [{ "$ref": "#/$defs/relativePath" }, { "not": { "const": "." } }] },
-        "release": { "$ref": "#/$defs/release" }
+        "plugin_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "manifest": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/relativePath"
+            },
+            {
+              "not": {
+                "const": "."
+              }
+            }
+          ]
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        }
       }
     },
     "target": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ecosystem", "host", "plugins"],
+      "required": [
+        "ecosystem",
+        "host",
+        "plugins"
+      ],
       "properties": {
-        "ecosystem": { "const": "redevplugin" },
-        "host": { "$ref": "#/$defs/identifier" },
+        "ecosystem": {
+          "const": "redevplugin"
+        },
+        "host": {
+          "$ref": "#/$defs/identifier"
+        },
         "plugins": {
           "type": "array",
           "minItems": 1,
           "maxItems": 256,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/plugin" }
+          "items": {
+            "$ref": "#/$defs/plugin"
+          }
         }
       }
     }

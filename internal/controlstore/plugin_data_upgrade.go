@@ -69,7 +69,11 @@ func legacyVersionDataBindings(ctx context.Context, q schemaReader) ([]legacyVer
 		if err := rows.Scan(&owner, &instance, &raw, &generation, &shapeHash); err != nil {
 			return nil, err
 		}
-		record, err := decodeRegistryPluginRecord([]byte(raw))
+		normalized, err := normalizeReleasedPluginRecord([]byte(raw))
+		if err != nil {
+			return nil, err
+		}
+		record, err := decodeRegistryPluginRecord(normalized)
 		if err != nil {
 			return nil, err
 		}

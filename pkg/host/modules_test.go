@@ -15,14 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/v3/internal/testsupport/releasetrustfixture"
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
-	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
 func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {
@@ -30,7 +28,6 @@ func TestConfigExposesOnlyHostStateAndModules(t *testing.T) {
 	want := []string{
 		"StateRoot",
 		"Core",
-		"Release",
 		"Runtime",
 		"Capability",
 		"IO",
@@ -84,14 +81,14 @@ func TestOpenOwnsInternalPlatformState(t *testing.T) {
 	base := modularTestConfig(t)
 	base.StateRoot = stateRoot
 	base.Core = CoreAdapters{
-		Policy:               base.Core.Policy,
-		Authorization:        base.Core.Authorization,
-		PackageTrustVerifier: base.Core.PackageTrustVerifier,
-		Audit:                base.Core.Audit,
-		SecurityAudit:        base.Core.SecurityAudit,
-		Diagnostics:          base.Core.Diagnostics,
-		SurfaceCatalog:       base.Core.SurfaceCatalog,
-		Assets:               pluginpkg.NewMemoryAssetStore(),
+		Policy:        base.Core.Policy,
+		Authorization: base.Core.Authorization,
+
+		Audit:          base.Core.Audit,
+		SecurityAudit:  base.Core.SecurityAudit,
+		Diagnostics:    base.Core.Diagnostics,
+		SurfaceCatalog: base.Core.SurfaceCatalog,
+		Assets:         pluginpkg.NewMemoryAssetStore(),
 	}
 
 	h, err := Open(context.Background(), base)
@@ -222,11 +219,11 @@ func TestSelectedFilesModuleDiscoveryAndAdmission(t *testing.T) {
 		t.Fatalf("features = %v", got)
 	}
 	declaration := manifest.Manifest{API: manifest.PublicAPIRequirement{Major: 1, RequiredFeatures: []manifest.FeatureID{manifest.FeatureFSSelected}}}
-	if err := h.preflightPackageFeatures(declaration, packageTrustInput{}); err != nil {
+	if err := h.preflightPackageFeatures(declaration, packageInput{}); err != nil {
 		t.Fatal(err)
 	}
 	delete(h.features, Feature("files"))
-	if err := h.preflightPackageFeatures(declaration, packageTrustInput{}); err == nil {
+	if err := h.preflightPackageFeatures(declaration, packageInput{}); err == nil {
 		t.Fatal("missing required file module was accepted")
 	}
 }
@@ -277,7 +274,7 @@ func TestInstallPreflightReportsEveryMissingManifestFeatureBeforeSideEffects(t *
 	pkg.Manifest.Settings = &manifest.SettingsSpec{Fields: []manifest.SettingFieldSpec{{Type: "secret", SecretRef: "token"}}}
 	disableModuleFeatures(h, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction)
 
-	_, err := h.installResolvedPackage(hostTestContext(), pkg, "plugini_module_preflight", packageTrustInput{LocalImport: true}, time.Time{}, nil)
+	_, err := h.installResolvedPackage(hostTestContext(), pkg, "plugini_module_preflight", packageInput{LocalImport: true}, time.Time{}, nil)
 	assertMissingFeatures(t, err, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction)
 	assertModulePreflightHasNoWrites(t, h, assets, 0)
 }
@@ -332,13 +329,6 @@ func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *t
 	historic.PackageHash = "sha256:historic-network"
 	// The fixture synthesizes a historical package without passing through
 	// admission, so bind every security fact to the synthetic package exactly.
-	historic.TrustAssessment.VerifiedHashes.PackageSHA256 = historic.PackageHash
-	historic.TrustAssessment.VerifiedHashes.ManifestSHA256 = historic.ManifestHash
-	historic.TrustAssessment.VerifiedHashes.EntriesSHA256 = historic.EntriesHash
-	historic.SignatureAssessment.PackageSHA256 = historic.PackageHash
-	historic.SignatureAssessment.ManifestSHA256 = historic.ManifestHash
-	historic.SignatureAssessment.EntriesSHA256 = historic.EntriesHash
-	historic.SignatureAssessment.AssessedHashes = historic.TrustAssessment.VerifiedHashes
 	historic.PackageSourceProvenance.PackageSHA256 = historic.PackageHash
 	historic.ExecutionApproval.PackageSHA256 = historic.PackageHash
 	historic.SecurityCapabilitySummary = registry.SecurityCapabilitySummary{}
@@ -365,60 +355,6 @@ func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *t
 	assertModulePreflightHasNoWrites(t, h, assets, 1)
 }
 
-func TestReleaseInstallPreflightRejectsMissingRuntimeBeforeRegistryMutation(t *testing.T) {
-	ctx := hostTestContext()
-	fixture, err := releasetrustfixture.New(buildWorkerFixturePackage(t), releasetrustfixture.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref := PluginReleaseRef{
-		SourceID:              fixture.Identity.SourceID,
-		Channel:               fixture.Identity.Channel,
-		ReleaseMetadataRef:    fixture.Identity.ReleaseMetadataRef,
-		ReleaseMetadataSHA256: fixture.Identity.ReleaseMetadataSHA256,
-		PublisherID:           fixture.Identity.PublisherID,
-		PluginID:              fixture.Identity.PluginID,
-		Version:               fixture.Identity.Version,
-		ExpectedHashes: PackageHashSet{
-			PackageSHA256:  fixture.Package.PackageHash,
-			ManifestSHA256: fixture.Package.ManifestHash,
-			EntriesSHA256:  fixture.Package.EntriesHash,
-		},
-	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		releaseTrust:   fixture.ServiceSet,
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: ResolvedPackageArtifact{
-			ReleaseMetadataBytes:     fixture.MetadataBytes,
-			ReleaseMetadataSignature: fixture.MetadataSignature,
-			Reader:                   bytes.NewReader(fixture.PackageBytes),
-			Size:                     int64(len(fixture.PackageBytes)),
-			ArtifactSHA256:           fixture.ReleaseArtifactSHA256,
-		}},
-	})
-	assets := &modulePreflightAssetStore{AssetStore: h.adapters.Assets}
-	h.adapters.Assets = assets
-	assets.resetWrites()
-	disableModuleFeatures(h, FeatureRuntime)
-
-	pluginInstanceID := nextTestPluginInstanceID(t)
-	digests := releaseMarketDigestsForTest(t, h, ctx, pluginInstanceID, ref)
-	started, err := h.startReleaseInstallOperation(ctx, startReleaseInstallOperationRequest{
-		RequestID: "request_missing_runtime", PluginInstanceID: pluginInstanceID,
-		ReleaseRef: ref, ReleaseIdentityDigest: releaseInstallIdentityDigestForTest(t, ref), ManifestSHA256: ref.ExpectedHashes.ManifestSHA256,
-		ContractSetSHA256: digests.contract, SummarySHA256: digests.summary,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminal := waitForReleaseInstallOperation(t, h, ctx, started.Execution.ID)
-	if terminal.Execution.FailureCode != string(security.ErrRuntimeUnavailable) {
-		t.Fatalf("runtime preflight failure = %#v", terminal)
-	}
-	assertModulePreflightHasNoWrites(t, h, assets, 0)
-}
-
 type modulePreflightAssetStore struct {
 	pluginpkg.AssetStore
 	putPackageCalls int
@@ -435,7 +371,7 @@ func (s *modulePreflightAssetStore) resetWrites() {
 
 func newModulePreflightTestHost(t *testing.T) (*Host, *modulePreflightAssetStore) {
 	t.Helper()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	assets := &modulePreflightAssetStore{AssetStore: h.adapters.Assets}
 	h.adapters.Assets = assets
 	return h, assets
@@ -445,9 +381,6 @@ func disableModuleFeatures(h *Host, features ...Feature) {
 	for _, feature := range features {
 		delete(h.features, feature)
 		switch feature {
-		case FeatureRelease:
-			h.adapters.ReleaseTrust = nil
-			h.adapters.ReleaseArtifactResolver = nil
 		case FeatureRuntime:
 			h.adapters.RuntimeManager = nil
 		case FeatureCapability:
@@ -486,17 +419,17 @@ func assertModulePreflightHasNoWrites(t *testing.T, h *Host, assets *modulePrefl
 }
 
 func modularTestConfig(t *testing.T) Config {
-	legacy, _, _ := newTestHost(t, true, true)
+	legacy, _, _ := newTestHost(t)
 	adapters := legacy.adapters
 	return Config{StateRoot: filepath.Join(t.TempDir(), "control-state"), Core: CoreAdapters{
-		Policy:               adapters.Policy,
-		Authorization:        adapters.Authorization,
-		PackageTrustVerifier: adapters.PackageTrustVerifier,
-		Audit:                adapters.Audit,
-		SecurityAudit:        adapters.SecurityAudit,
-		Diagnostics:          adapters.Diagnostics,
-		SurfaceCatalog:       adapters.SurfaceCatalog,
-		Assets:               adapters.Assets,
+		Policy:        adapters.Policy,
+		Authorization: adapters.Authorization,
+
+		Audit:          adapters.Audit,
+		SecurityAudit:  adapters.SecurityAudit,
+		Diagnostics:    adapters.Diagnostics,
+		SurfaceCatalog: adapters.SurfaceCatalog,
+		Assets:         adapters.Assets,
 		internalStateOwners: &internalStateOwnerOverrides{
 			surfaceTokens:       adapters.SurfaceTokens,
 			confirmationIntents: adapters.ConfirmationIntents,

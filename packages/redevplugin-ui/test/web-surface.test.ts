@@ -2815,30 +2815,7 @@ const lifecyclePluginRecord = {
   enable_state: "disabled_by_user",
 };
 
-const releaseRef = {
-  source_id: "official",
-  channel: "stable",
-  release_metadata_ref: "plugins/com.example/com.example.plugin/1.1.0/release.json",
-  release_metadata_sha256: digest("4"),
-  publisher_id: "com.example",
-  plugin_id: hostBootstrap.pluginId,
-  version: "1.1.0",
-  expected_hashes: {
-    package_sha256: digest("5"),
-    manifest_sha256: digest("6"),
-    entries_sha256: digest("7"),
-  },
-};
-
 for (const lifecycle of [
-  {
-    name: "release update",
-    run: (client: PluginPlatformClient) => client.updateReleaseRef({
-      plugin_instance_id: hostBootstrap.pluginInstanceId,
-      release_ref: releaseRef,
-      expected_management_revision: 7,
-    }),
-  },
   {
     name: "downgrade",
     run: (client: PluginPlatformClient) => client.downgradePlugin({

@@ -16,7 +16,7 @@ import (
 func TestCriticalResourceMutationReservationsPreventPostFenceCommit(t *testing.T) {
 	for _, resource := range []string{"confirmation", "execution", "network_handle_grant", "storage_handle_grant"} {
 		t.Run(resource, func(t *testing.T) {
-			h, _, _ := newTestHost(t, true, true)
+			h, _, _ := newTestHost(t)
 			ctx := hostTestContext()
 			session, err := requireUserSession(ctx)
 			if err != nil {
@@ -141,7 +141,7 @@ func criticalSessionResourceMutation(
 }
 
 func TestOpenSurfaceReservationPreventsPostFenceCommit(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	ctx := hostTestContext()
 	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {

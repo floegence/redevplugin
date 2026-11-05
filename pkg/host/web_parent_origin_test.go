@@ -28,7 +28,7 @@ func TestWebSurfaceCanonicalLoopbackParentOrigins(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, buildFixturePackage(t))
 	for index, item := range fixture.Cases {
 		t.Run(item.Origin, func(t *testing.T) {

@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -18,23 +17,6 @@ func TestReleasePublisherSchemasMatchGoWireDTOs(t *testing.T) {
 		topLevel   reflect.Type
 		nestedDefs map[string]reflect.Type
 	}{
-		{
-			name:     "release-publisher-config-v1.schema.json",
-			topLevel: reflect.TypeOf(releasepublisher.ConfigV1{}),
-			nestedDefs: map[string]reflect.Type{
-				"public_key": reflect.TypeOf(releasepublisher.PublicKeyV1{}),
-			},
-		},
-		{
-			name:     "publisher-release-ref-v1.schema.json",
-			topLevel: reflect.TypeOf(releasepublisher.PublisherReleaseRefV1{}),
-			nestedDefs: map[string]reflect.Type{
-				"release_ref":    reflect.TypeOf(releasepublisher.PluginReleaseRefV1{}),
-				"public_key":     reflect.TypeOf(releasepublisher.PublicKeyV1{}),
-				"hash_set":       reflect.TypeOf(releasepublisher.PackageHashSetV1{}),
-				"published_file": reflect.TypeOf(releasepublisher.PublishedFileV1{}),
-			},
-		},
 		{
 			name:       "presentation-icon-evidence-v1.schema.json",
 			topLevel:   reflect.TypeOf(releasepublisher.PresentationIconEvidenceV1{}),
@@ -86,26 +68,6 @@ func publisherJSONFields(t *testing.T, typ reflect.Type) []string {
 }
 
 func TestReleasePublisherSchemasValidateRepresentativeDocuments(t *testing.T) {
-	publicKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	key := releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_root", PublicKey: publicKey}
-	config := releasepublisher.ConfigV1{
-		SchemaVersion: releasepublisher.ConfigSchemaVersion,
-		SourceID:      "example_official", Channel: "stable", SourceType: "registry", SourceClass: "official",
-		GeneratedAt: "2026-08-01T00:00:00Z", ExpiresAt: "2026-10-30T00:00:00Z",
-		Root:                 key,
-		Signing:              releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_signing", PublicKey: publicKey},
-		AllowedArtifactHosts: []string{"github.com"}, Distribution: "registry_ref",
-	}
-	reference := releasepublisher.PublisherReleaseRefV1{
-		SchemaVersion: releasepublisher.ReleaseRefSchemaVersion,
-		ReleaseRef: releasepublisher.PluginReleaseRefV1{
-			SourceID: "example_official", Channel: "stable", ReleaseMetadataRef: "sources/example_official/stable/releases/1.json",
-			ReleaseMetadataSHA256: strings.Repeat("1", 64), PublisherID: "example.publisher", PluginID: "example.publisher.weather", Version: "1.2.3",
-			ExpectedHashes: releasepublisher.PackageHashSetV1{PackageSHA256: "sha256:" + strings.Repeat("2", 64), ManifestSHA256: "sha256:" + strings.Repeat("3", 64), EntriesSHA256: "sha256:" + strings.Repeat("4", 64)},
-		},
-		Root:  key,
-		Files: []releasepublisher.PublishedFileV1{{Locator: "anchors/root.public.json", AssetName: "root.public.json", SHA256: strings.Repeat("5", 64), Size: 32}},
-	}
 	iconEvidence := releasepublisher.PresentationIconEvidenceV1{
 		SchemaVersion: releasepublisher.PresentationIconEvidenceSchemaVersion,
 		Path:          "ui/assets/plugin.png",
@@ -116,8 +78,6 @@ func TestReleasePublisherSchemasValidateRepresentativeDocuments(t *testing.T) {
 		Size:          1024,
 	}
 	for name, document := range map[string]any{
-		"release-publisher-config-v1.schema.json":   config,
-		"publisher-release-ref-v1.schema.json":      reference,
 		"presentation-icon-evidence-v1.schema.json": iconEvidence,
 	} {
 		t.Run(name, func(t *testing.T) {

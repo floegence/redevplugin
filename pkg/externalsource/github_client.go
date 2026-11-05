@@ -10,7 +10,9 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -74,6 +76,7 @@ func NewGitHubRESTReleaseClient(options GitHubRESTReleaseClientOptions) (*GitHub
 	return &GitHubRESTReleaseClient{
 		http: &http.Client{
 			Transport: transport,
+			Timeout:   30 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return errors.New("GitHub API redirects are disabled")
 			},
@@ -102,15 +105,11 @@ func (client *GitHubRESTReleaseClient) CloseIdleConnections() {
 	}
 }
 
-func (client *GitHubRESTReleaseClient) LatestRelease(ctx context.Context, owner, repository string) (GitHubRelease, error) {
-	return client.resolveRelease(ctx, owner, repository, "", true)
-}
-
 func (client *GitHubRESTReleaseClient) ReleaseByTag(ctx context.Context, owner, repository, tag string) (GitHubRelease, error) {
 	if tag == "" || len(tag) > 255 || strings.TrimSpace(tag) != tag || containsControl(tag) {
 		return GitHubRelease{}, invalidSource("github_release_by_tag", "GitHub release tag is invalid")
 	}
-	return client.resolveRelease(ctx, owner, repository, tag, false)
+	return client.resolveRelease(ctx, owner, repository, tag)
 }
 
 type githubAPIRepository struct {
@@ -123,6 +122,8 @@ type githubAPIRepository struct {
 
 type githubAPIRelease struct {
 	ID              int64  `json:"id"`
+	Draft           bool   `json:"draft"`
+	Prerelease      bool   `json:"prerelease"`
 	TagName         string `json:"tag_name"`
 	TargetCommitish string `json:"target_commitish"`
 	Assets          []struct {
@@ -137,7 +138,7 @@ type githubAPICommit struct {
 	SHA string `json:"sha"`
 }
 
-func (client *GitHubRESTReleaseClient) resolveRelease(ctx context.Context, owner, repository, tag string, latest bool) (GitHubRelease, error) {
+func (client *GitHubRESTReleaseClient) resolveRelease(ctx context.Context, owner, repository, tag string) (GitHubRelease, error) {
 	owner, repository, err := canonicalGitHubAPIRepository(owner, repository)
 	if err != nil {
 		return GitHubRelease{}, err
@@ -152,28 +153,25 @@ func (client *GitHubRESTReleaseClient) resolveRelease(ctx context.Context, owner
 		return GitHubRelease{}, githubAPIError("github_repository", fmt.Errorf("GitHub repository identity is invalid"))
 	}
 
-	releasePath := repositoryPath + "/releases/latest"
-	if !latest {
-		releasePath = repositoryPath + "/releases/tags/" + url.PathEscape(tag)
-	}
+	releasePath := repositoryPath + "/releases/tags/" + url.PathEscape(tag)
 	var releaseResponse githubAPIRelease
 	if err := client.getJSON(ctx, releasePath, &releaseResponse); err != nil {
 		return GitHubRelease{}, err
 	}
-	if releaseResponse.ID <= 0 || releaseResponse.TagName == "" || len(releaseResponse.TagName) > 255 ||
+	if releaseResponse.Draft || releaseResponse.Prerelease || releaseResponse.ID <= 0 || releaseResponse.TagName == "" || len(releaseResponse.TagName) > 255 ||
 		strings.TrimSpace(releaseResponse.TagName) != releaseResponse.TagName || containsControl(releaseResponse.TagName) ||
-		(!latest && releaseResponse.TagName != tag) || releaseResponse.TargetCommitish == "" ||
+		releaseResponse.TagName != tag || releaseResponse.TargetCommitish == "" ||
 		len(releaseResponse.TargetCommitish) > 255 || strings.TrimSpace(releaseResponse.TargetCommitish) != releaseResponse.TargetCommitish ||
 		containsControl(releaseResponse.TargetCommitish) || len(releaseResponse.Assets) > githubAPIMaxAssets {
 		return GitHubRelease{}, githubAPIError("github_release", fmt.Errorf("GitHub release identity is invalid"))
 	}
 
-	commitPath := repositoryPath + "/commits/" + url.PathEscape(releaseResponse.TargetCommitish)
+	commitPath := repositoryPath + "/commits/" + url.PathEscape(releaseResponse.TagName)
 	var commitResponse githubAPICommit
 	if err := client.getJSON(ctx, commitPath, &commitResponse); err != nil {
 		return GitHubRelease{}, err
 	}
-	if !isGitCommitSHA(commitResponse.SHA) || (isGitCommitSHA(releaseResponse.TargetCommitish) && commitResponse.SHA != releaseResponse.TargetCommitish) {
+	if !isGitCommitSHA(commitResponse.SHA) {
 		return GitHubRelease{}, githubAPIError("github_commit", fmt.Errorf("GitHub commit identity is invalid"))
 	}
 
@@ -211,8 +209,21 @@ func (client *GitHubRESTReleaseClient) getJSON(ctx context.Context, escapedPath 
 		return invalidSource("github_api", "GitHub REST client is not initialized")
 	}
 	requestURL, err := url.Parse(githubAPIOrigin + escapedPath)
-	if err != nil || requestURL.Scheme != "https" || requestURL.Host != "api.github.com" || requestURL.User != nil || requestURL.RawQuery != "" || requestURL.Fragment != "" {
+	if err != nil || requestURL.Scheme != "https" || requestURL.Host != "api.github.com" || requestURL.User != nil || requestURL.Fragment != "" {
 		return invalidSource("github_api", "GitHub API request path is invalid")
+	}
+	if requestURL.RawQuery != "" {
+		query, queryErr := url.ParseQuery(requestURL.RawQuery)
+		valid := false
+		if queryErr == nil && strings.HasSuffix(requestURL.Path, "/contents/.redevplugin/index.json") {
+			valid = len(query) == 1 && len(query["ref"]) == 1 && isGitCommitSHA(query.Get("ref"))
+		} else if queryErr == nil && strings.HasSuffix(requestURL.Path, "/releases") {
+			page, e := strconv.Atoi(query.Get("page"))
+			valid = e == nil && len(query) == 2 && len(query["page"]) == 1 && len(query["per_page"]) == 1 && query.Get("per_page") == "100" && page >= 1 && page <= 10 && strconv.Itoa(page) == query.Get("page")
+		}
+		if !valid {
+			return invalidSource("github_api", "GitHub API query is invalid")
+		}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
 	if err != nil {
@@ -263,17 +274,32 @@ func validateGitHubAPIJSON(raw []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	token, err := decoder.Token()
-	if err != nil || token != json.Delim('{') {
-		return errors.New("root must be an object")
+	if err != nil || (token != json.Delim('{') && token != json.Delim('[')) {
+		return errors.New("root must be an object or array")
 	}
-	if err := validateGitHubAPIJSONObject(decoder, 1); err != nil {
+	var rootErr error
+	expectedClose := json.Delim('}')
+	if token == json.Delim('[') {
+		expectedClose = json.Delim(']')
+		for count := 0; decoder.More(); count++ {
+			if count >= githubAPIMaxJSONItems {
+				return errors.New("array exceeds limit")
+			}
+			if err := validateGitHubAPIJSONValue(decoder, 1); err != nil {
+				return err
+			}
+		}
+	} else {
+		rootErr = validateGitHubAPIJSONObject(decoder, 1)
+	}
+	if err := rootErr; err != nil {
 		return err
 	}
 	closing, err := decoder.Token()
 	if err != nil {
 		return err
 	}
-	if closing != json.Delim('}') {
+	if closing != expectedClose {
 		return errors.New("mismatched root JSON delimiter")
 	}
 	if token, err := decoder.Token(); !errors.Is(err, io.EOF) || token != nil {

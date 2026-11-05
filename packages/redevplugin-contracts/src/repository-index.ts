@@ -5,7 +5,6 @@ export const repositoryIndexSchemaVersion = "redevplugin.repository-index.v1" as
 export type RepositoryIndexRelease = {
   tag_template: string;
   package_asset_template: string;
-  release_ref_asset_template: string;
 };
 
 export type RepositoryIndexPlugin = {
@@ -27,12 +26,13 @@ export type RepositoryIndex = {
   targets: RepositoryIndexTarget[];
 };
 
-const releaseTemplate = /^[A-Za-z0-9._+@-]*\{version\}[A-Za-z0-9._+@-]*$/;
+const releaseTemplate = /^[A-Za-z0-9._+@-]+(?:\{version\}[A-Za-z0-9._+@-]*)?$/;
+const tagTemplate = /^[a-z0-9]+(?:-[a-z0-9]+)*-v\{version\}$/;
 const stableVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
-/** Match a whole release tag against its reviewed template. */
+/** Match a whole release tag against its plugin namespace. */
 export function repositoryIndexVersionFromTag(template: string, tag: string): string | undefined {
-  if (template.length > 255 || tag.length > 255 || !releaseTemplate.test(template)) return undefined;
+  if (template.length > 255 || tag.length > 255 || !tagTemplate.test(template)) return undefined;
   const [prefix, suffix] = template.split("{version}");
   if (!tag.startsWith(prefix) || !tag.endsWith(suffix) || tag.length < prefix.length + suffix.length) return undefined;
   const version = tag.slice(prefix.length, tag.length - suffix.length);

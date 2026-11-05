@@ -1,9 +1,10 @@
 package httpadapter
 
 import (
-	"github.com/floegence/redevplugin/v3/pkg/host"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/floegence/redevplugin/v3/pkg/host"
 )
 
 func TestWebConnectionRejectsResourceAndCrossSiteRequestsBeforeHost(t *testing.T) {

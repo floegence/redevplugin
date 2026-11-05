@@ -16,7 +16,7 @@ import (
 
 func TestHostWithoutSessionPrewarmsBeforeAnyUIRequest(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
-	first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root, developerMode: true, localGenerated: true})
+	first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root})
 	installed := installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestHostWithoutSessionDoesNotStartRuntimeForEmptyOrDisabledCatalog(t *testi
 	for _, installed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "empty", true: "disabled"}[installed], func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "state")
-			first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root, developerMode: true, localGenerated: true})
+			first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root})
 			if installed {
 				record := installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
 				if _, err := first.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision}); err != nil {
@@ -97,7 +97,7 @@ func (manager *startupCompilationBlocker) PrewarmWorker(ctx context.Context, _ r
 
 func TestHostCloseCancelsSessionlessStartupCompilation(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
-	first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root, developerMode: true, localGenerated: true})
+	first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root})
 	installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
@@ -140,13 +140,13 @@ func (manager *startupStartGate) Start(ctx context.Context, target runtimetarget
 
 func TestStartupCompilationRechecksDisableAfterCatalogRead(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
-	first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root, developerMode: true, localGenerated: true})
+	first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root})
 	installed := installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
 	manager := &startupStartGate{recordingRuntimeManager: newRecordingRuntimeManager(), started: make(chan struct{}), release: make(chan struct{})}
-	second, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root, openContext: context.Background(), runtimeManager: manager, developerMode: true, localGenerated: true})
+	second, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root, openContext: context.Background(), runtimeManager: manager})
 	select {
 	case <-manager.started:
 	case <-time.After(time.Second):
@@ -171,7 +171,7 @@ func TestStartupCompilationDiagnosticsPersist(t *testing.T) {
 	for _, phase := range []string{"ready", "start", "compile"} {
 		t.Run(phase, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "state")
-			first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root, developerMode: true, localGenerated: true})
+			first, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: root})
 			installed := installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
 			if err := first.Close(); err != nil {
 				t.Fatal(err)

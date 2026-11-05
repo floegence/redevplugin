@@ -13,7 +13,7 @@ import (
 )
 
 func TestEnablePluginDoesNotMutateWhenSecurityAuditBeginFails(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installLifecycleFixture(t, h)
 	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
@@ -43,7 +43,7 @@ func TestEnablePluginDoesNotMutateWhenSecurityAuditBeginFails(t *testing.T) {
 }
 
 func TestEnablePluginReturnsUnknownWhenSecurityAuditCompletionFails(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installLifecycleFixture(t, h)
 	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
@@ -72,7 +72,7 @@ func TestEnablePluginReturnsUnknownWhenSecurityAuditCompletionFails(t *testing.T
 }
 
 func TestEnablePluginDoesNotDeliverSecurityAuditOutsideJournalExporter(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installLifecycleFixture(t, h)
 	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{
 		PluginInstanceID:           installed.PluginInstanceID,

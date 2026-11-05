@@ -38,12 +38,12 @@ func TestBuildAndReadPackage(t *testing.T) {
 }
 
 func TestPackageFromOwnedFilesTakesOwnership(t *testing.T) {
-	files, signatureFiles, err := collectFiles(writeFixturePackageDir(t), DefaultReadLimits())
+	files, err := collectFiles(writeFixturePackageDir(t), DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifestBytes := files["manifest.json"]
-	pkg, err := packageFromOwnedFiles(context.Background(), files, signatureFiles)
+	pkg, err := packageFromOwnedFiles(context.Background(), files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,8 +151,8 @@ func TestWritePackageRoundTripsUnsignedPackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
-	if read.PackageHash != built.PackageHash || read.PackageSignature != nil {
-		t.Fatalf("unsigned package round trip mismatch: hash=%s signature=%#v", read.PackageHash, read.PackageSignature)
+	if read.PackageHash != built.PackageHash {
+		t.Fatalf("unsigned package round trip mismatch: hash=%s", read.PackageHash)
 	}
 }
 
@@ -166,212 +166,17 @@ func TestWritePackageBorrowsPackageFilesWithoutMutation(t *testing.T) {
 	manifestBytes := pkg.Files["manifest.json"]
 	manifestBefore := append([]byte(nil), manifestBytes...)
 	filesBefore := pkg.Files
-	signaturesBefore := pkg.SignatureFiles
 
 	var output bytes.Buffer
 	if err := WritePackage(context.Background(), &output, pkg); err != nil {
 		t.Fatal(err)
 	}
-	if pkg.Files == nil || pkg.SignatureFiles == nil || len(pkg.Files) != len(filesBefore) || len(pkg.SignatureFiles) != len(signaturesBefore) {
+	if pkg.Files == nil || len(pkg.Files) != len(filesBefore) {
 		t.Fatal("WritePackage() changed caller-owned maps")
 	}
 	if len(manifestBytes) == 0 || &pkg.Files["manifest.json"][0] != &manifestBytes[0] || !bytes.Equal(pkg.Files["manifest.json"], manifestBefore) {
 		t.Fatal("WritePackage() replaced or mutated caller-owned file bytes")
 	}
-}
-
-func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	var before bytes.Buffer
-	beforePkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(dir, "signatures"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "signatures", "package.sig"), packageSignatureJSON(t, beforePkg, "test-signature"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var after bytes.Buffer
-	afterPkg, err := BuildFromDir(context.Background(), dir, &after, DefaultReadLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if beforePkg.PackageHash != afterPkg.PackageHash {
-		t.Fatalf("signature changed canonical package hash: %s != %s", beforePkg.PackageHash, afterPkg.PackageHash)
-	}
-	if afterPkg.PackageSignature == nil || afterPkg.PackageSignature.KeyID != "test-key" {
-		t.Fatalf("package signature was not parsed: %#v", afterPkg.PackageSignature)
-	}
-
-	read, err := Read(context.Background(), bytes.NewReader(after.Bytes()), int64(after.Len()), DefaultReadLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if read.PackageSignature == nil || read.PackageSignature.PackageHash != beforePkg.PackageHash {
-		t.Fatalf("read package signature mismatch: %#v", read.PackageSignature)
-	}
-	if _, ok := read.SignatureFiles[PackageSignaturePath]; !ok {
-		t.Fatalf("signature file was not retained: %#v", read.SignatureFiles)
-	}
-	if _, ok := read.Files[PackageSignaturePath]; ok {
-		t.Fatal("signature file leaked into canonical file set")
-	}
-}
-
-func TestWritePackageMaterializesDetachedSignature(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	var before bytes.Buffer
-	pkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sig := PackageSignature{
-		SchemaVersion: "redevplugin.package_signature.v1",
-		Algorithm:     PackageSignatureAlgorithmEd25519,
-		KeyID:         "test-key",
-		PublisherID:   pkg.Manifest.Publisher.PublisherID,
-		PluginID:      pkg.Manifest.PluginID(),
-		PackageHash:   pkg.PackageHash,
-		ManifestHash:  pkg.ManifestHash,
-		EntriesHash:   pkg.EntriesHash,
-		Signature:     "test-signature",
-		SignedAt:      "2026-06-30T00:00:00Z",
-	}
-	pkg.PackageSignature = &sig
-
-	var signedBytes bytes.Buffer
-	if err := WritePackage(context.Background(), &signedBytes, pkg); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
-	}
-	read, err := Read(context.Background(), bytes.NewReader(signedBytes.Bytes()), int64(signedBytes.Len()), DefaultReadLimits())
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	if read.PackageHash != pkg.PackageHash {
-		t.Fatalf("signature changed package hash: %s != %s", read.PackageHash, pkg.PackageHash)
-	}
-	if read.PackageSignature == nil || read.PackageSignature.KeyID != "test-key" {
-		t.Fatalf("signature not materialized: %#v", read.PackageSignature)
-	}
-	if _, ok := read.SignatureFiles[PackageSignaturePath]; !ok {
-		t.Fatal("signature file missing from detached signature set")
-	}
-	if _, ok := read.Files[PackageSignaturePath]; ok {
-		t.Fatal("signature file leaked into canonical files")
-	}
-}
-
-func TestReadRejectsSignatureHashMismatch(t *testing.T) {
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for entryPath, content := range map[string][]byte{
-		"manifest.json": []byte(validManifestJSON()),
-		"ui/index.html": []byte("<!doctype html><title>Plugin</title>"),
-		PackageSignaturePath: []byte(`{
-			"schema_version": "redevplugin.package_signature.v1",
-			"algorithm": "ed25519",
-			"key_id": "test-key",
-			"package_hash": "sha256:wrong",
-			"manifest_hash": "sha256:wrong",
-			"entries_hash": "sha256:wrong",
-			"signature": "test-signature"
-		}`),
-	} {
-		writer, err := zw.Create(entryPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := writer.Write(content); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits()); err == nil {
-		t.Fatal("Read() expected signature hash mismatch error")
-	}
-}
-
-func TestParsePackageSignatureRejectsTrailingJSONDocument(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	var built bytes.Buffer
-	pkg, err := BuildFromDir(context.Background(), dir, &built, DefaultReadLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(PackageSignature{
-		SchemaVersion: PackageSignatureSchemaVersion,
-		Algorithm:     PackageSignatureAlgorithmEd25519,
-		KeyID:         "test-key",
-		PublisherID:   pkg.Manifest.Publisher.PublisherID,
-		PluginID:      pkg.Manifest.PluginID(),
-		PackageHash:   pkg.PackageHash,
-		ManifestHash:  pkg.ManifestHash,
-		EntriesHash:   pkg.EntriesHash,
-		Signature:     "test-signature",
-		SignedAt:      "2026-07-20T00:00:00Z",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw = append(raw, []byte(` true`)...)
-	if _, err := parsePackageSignature(map[string][]byte{PackageSignaturePath: raw}, pkg.Manifest, pkg.ManifestHash, pkg.EntriesHash, pkg.PackageHash); err == nil {
-		t.Fatal("parsePackageSignature() accepted a trailing JSON document")
-	}
-}
-
-func TestBuildRejectsSignatureIdentityMismatch(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	var before bytes.Buffer
-	pkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sig := PackageSignature{
-		SchemaVersion: "redevplugin.package_signature.v1",
-		Algorithm:     "ed25519",
-		KeyID:         "test-key",
-		PublisherID:   "other-publisher",
-		PluginID:      pkg.Manifest.PluginID(),
-		PackageHash:   pkg.PackageHash,
-		ManifestHash:  pkg.ManifestHash,
-		EntriesHash:   pkg.EntriesHash,
-		Signature:     "test-signature",
-	}
-	raw, err := json.Marshal(sig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "signatures"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, PackageSignaturePath), raw, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var after bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &after, DefaultReadLimits()); err == nil {
-		t.Fatal("BuildFromDir() expected signature identity mismatch error")
-	}
-}
-
-func TestBuildRejectsUnsupportedSignatureEntry(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	if err := os.MkdirAll(filepath.Join(dir, "signatures"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "signatures", "extra.sig"), []byte("extra"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var buf bytes.Buffer
-	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
-	requireValidationError(t, err, ValidationCodePackagePathForbidden, "unsupported_signature_entry", "signatures/extra.sig", "")
 }
 
 func TestReadRejectsUnsafePath(t *testing.T) {
@@ -510,17 +315,6 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 			want:   ValidationCodePackageTooLarge,
 			reason: "path_length",
 			path:   "manifest.json",
-		},
-		{
-			name: "unsupported signature entry",
-			entries: map[string][]byte{
-				"manifest.json":        []byte(validManifestJSON()),
-				"ui/index.html":        []byte("<!doctype html><title>Plugin</title>"),
-				"signatures/extra.sig": []byte("extra"),
-			},
-			want:   ValidationCodePackagePathForbidden,
-			reason: "unsupported_signature_entry",
-			path:   "signatures/extra.sig",
 		},
 		{
 			name: "manifest field",
@@ -1139,12 +933,11 @@ func TestAssetStoreConsumesOwnedPackageFiles(t *testing.T) {
 	for _, tc := range assetStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			pkg := testAssetPackage(t)
-			pkg.SignatureFiles = map[string][]byte{PackageSignaturePath: []byte("signature")}
 			store := tc.open(t)
 			if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
 				t.Fatal(err)
 			}
-			if pkg.Files != nil || pkg.SignatureFiles != nil {
+			if pkg.Files != nil {
 				t.Fatal("PutOwnedPackage() retained caller access to transferred maps")
 			}
 		})
@@ -1168,14 +961,13 @@ func TestPutOwnedPackageConsumesFilesOnValidationFailure(t *testing.T) {
 	for _, tc := range assetStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			pkg := Package{
-				Entries:        []Entry{{Path: "ui/index.html", Size: 1, SHA256: sha256String([]byte("x")), Mode: "0644"}},
-				Files:          map[string][]byte{"ui/index.html": []byte("x")},
-				SignatureFiles: map[string][]byte{PackageSignaturePath: []byte("signature")},
+				Entries: []Entry{{Path: "ui/index.html", Size: 1, SHA256: sha256String([]byte("x")), Mode: "0644"}},
+				Files:   map[string][]byte{"ui/index.html": []byte("x")},
 			}
 			if err := tc.open(t).PutOwnedPackage(context.Background(), &pkg); err == nil {
 				t.Fatal("PutOwnedPackage() accepted a missing package hash")
 			}
-			if pkg.Files != nil || pkg.SignatureFiles != nil {
+			if pkg.Files != nil {
 				t.Fatal("failed PutOwnedPackage() did not consume transferred maps")
 			}
 		})
@@ -1190,7 +982,7 @@ func TestPutOwnedPackageRejectsUnindexedFiles(t *testing.T) {
 			if err := tc.open(t).PutOwnedPackage(context.Background(), &pkg); err == nil {
 				t.Fatal("PutOwnedPackage() accepted an unindexed file")
 			}
-			if pkg.Files != nil || pkg.SignatureFiles != nil {
+			if pkg.Files != nil {
 				t.Fatal("failed PutOwnedPackage() did not consume transferred maps")
 			}
 		})
@@ -1235,7 +1027,7 @@ func TestAssetStoreRejectsUnsafeAssetPath(t *testing.T) {
 			if _, err := store.ReadAsset(context.Background(), "sha256:test", "../manifest.json"); err == nil {
 				t.Fatal("ReadAsset() expected unsafe path error")
 			}
-			if _, err := store.ReadAsset(context.Background(), "sha256:test", PackageSignaturePath); err == nil {
+			if _, err := store.ReadAsset(context.Background(), "sha256:test", "signatures/package.sig"); err == nil {
 				t.Fatal("ReadAsset() expected signature path error")
 			}
 		})
@@ -1574,26 +1366,6 @@ func minimalMemoryExportWASMForTest(exportName string) []byte {
 	module = append(module, byte(len(exportPayload)))
 	module = append(module, exportPayload...)
 	return module
-}
-
-func packageSignatureJSON(t *testing.T, pkg Package, signature string) []byte {
-	t.Helper()
-	raw, err := json.Marshal(PackageSignature{
-		SchemaVersion: "redevplugin.package_signature.v1",
-		Algorithm:     "ed25519",
-		KeyID:         "test-key",
-		PublisherID:   pkg.Manifest.Publisher.PublisherID,
-		PluginID:      pkg.Manifest.PluginID(),
-		PackageHash:   pkg.PackageHash,
-		ManifestHash:  pkg.ManifestHash,
-		EntriesHash:   pkg.EntriesHash,
-		Signature:     signature,
-		SignedAt:      "2026-06-30T00:00:00Z",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
 }
 
 func validManifestJSON() string {

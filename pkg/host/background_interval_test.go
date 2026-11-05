@@ -90,7 +90,7 @@ func TestIntervalUsesBackgroundPolicyWithoutUserSession(t *testing.T) {
 				}
 				return PolicyDeny, nil
 			})
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 			record := installAndEnablePlugin(t, h, intervalFixture(t))
 			claim := claimTestInterval(t, h, record)
 			outcome, runErr := h.runBackgroundInterval(context.Background(), claim)
@@ -120,7 +120,7 @@ func TestIntervalUsesBackgroundPolicyWithoutUserSession(t *testing.T) {
 
 func TestIntervalNilPolicyDeniesAndRunnerCannotBypassClaim(t *testing.T) {
 	runtime := newRecordingRuntimeManager()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner})
 	record := installAndEnablePlugin(t, h, intervalFixture(t))
 	claim := claimTestInterval(t, h, record)
 	if outcome, runErr := h.runBackgroundInterval(context.Background(), claim); outcome != "blocked" {
@@ -141,7 +141,7 @@ func TestIntervalNilPolicyDeniesAndRunnerCannotBypassClaim(t *testing.T) {
 func TestIntervalRejectsChangedRevisionBeforeDispatch(t *testing.T) {
 	runtime := newRecordingRuntimeManager()
 	policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 	record := installAndEnablePlugin(t, h, intervalFixture(t))
 	claim := claimTestInterval(t, h, record)
 	claim.RevokeEpoch++
@@ -158,7 +158,7 @@ func TestIntervalLifecycleCancelsClaimedWorkAndKeepsSibling(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			runtime := &intervalBlockingRuntime{recordingRuntimeManager: newRecordingRuntimeManager(), entered: make(chan string, 4), canceled: make(chan string, 4), counts: map[string]int{}}
 			policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 			fixture := intervalFixture(t)
 			if action == "revoke" {
 				fixture = intervalFixtureWith(t, func(doc map[string]any) { doc["permissions"] = []string{"network.client"} })
@@ -263,7 +263,7 @@ func TestIntervalHostRestartPreservesNextRunAndMarksClaimUnknown(t *testing.T) {
 	stateRoot := filepath.Join(t.TempDir(), "host")
 	assets := pluginpkg.NewMemoryAssetStore()
 	policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-	options := testHostOptions{developerMode: true, localGenerated: true, stateRoot: stateRoot, assets: assets, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy}
+	options := testHostOptions{stateRoot: stateRoot, assets: assets, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy}
 	h, _, _ := newTestHostWithOptions(t, options)
 	record := installAndEnablePlugin(t, h, intervalFixture(t))
 	claim := claimTestInterval(t, h, record)
@@ -296,7 +296,7 @@ func TestIntervalHostRestartPreservesNextRunAndMarksClaimUnknown(t *testing.T) {
 func TestIntervalCancellationBeforeDispatchHasKnownOutcome(t *testing.T) {
 	runtime := newRecordingRuntimeManager()
 	policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 	record := installAndEnablePlugin(t, h, intervalFixture(t))
 	claim := claimTestInterval(t, h, record)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -310,7 +310,7 @@ func TestIntervalCancellationBeforeDispatchHasKnownOutcome(t *testing.T) {
 func TestIntervalTimeoutAfterDispatchIsUnknown(t *testing.T) {
 	runtime := &intervalBlockingRuntime{recordingRuntimeManager: newRecordingRuntimeManager(), entered: make(chan string, 4), canceled: make(chan string, 4), counts: map[string]int{}}
 	policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 	record := installAndEnablePlugin(t, h, intervalFixture(t))
 	claim := claimTestInterval(t, h, record)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -338,7 +338,7 @@ func TestIntervalLifecycleInvalidatesOldClaim(t *testing.T) {
 			runtime := newRecordingRuntimeManager()
 			runtime.result = capability.Result{Data: map[string]any{}}
 			policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 			fixture := intervalFixture(t)
 			if action == "revoke" {
 				fixture = intervalFixtureWith(t, func(doc map[string]any) { doc["permissions"] = []string{"network.client"} })
@@ -408,7 +408,7 @@ func TestIntervalLifecycleInvalidatesOldClaim(t *testing.T) {
 
 func TestIntervalInventoryTracksDurableState(t *testing.T) {
 	policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 	record := installAndEnablePlugin(t, h, intervalFixture(t))
 	claim := claimTestInterval(t, h, record)
 	inventory, err := h.ListPluginInventory(hostTestContext())
@@ -446,7 +446,7 @@ func TestIntervalInventoryTracksDurableState(t *testing.T) {
 func TestIntervalHostStartsWithoutSurfaceOrOnlineSession(t *testing.T) {
 	runtime := &intervalBlockingRuntime{recordingRuntimeManager: newRecordingRuntimeManager(), entered: make(chan string, 4), canceled: make(chan string, 4), counts: map[string]int{}}
 	policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, openContext: context.Background(), runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{openContext: context.Background(), runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 	record := installAndEnablePlugin(t, h, intervalFixtureWith(t, func(doc map[string]any) {
 		entry := doc["background"].(map[string]any)
 		entry["interval_ms"] = 1000

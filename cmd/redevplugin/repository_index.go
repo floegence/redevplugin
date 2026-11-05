@@ -1,13 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 
-	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 )
 
@@ -29,14 +27,14 @@ func runRepositoryIndex(args []string) error {
 		return err
 	}
 	type entry struct {
-		Ecosystem    string                 `json:"ecosystem"`
-		Host         string                 `json:"host"`
-		Plugin       repositoryindex.Plugin `json:"plugin"`
-		PolicySHA256 string                 `json:"policy_sha256"`
+		Ecosystem   string                 `json:"ecosystem"`
+		Host        string                 `json:"host"`
+		Plugin      repositoryindex.Plugin `json:"plugin"`
+		EntrySHA256 string                 `json:"entry_sha256"`
 	}
 	entries := make([]entry, 0, len(repo.Entries))
 	for _, item := range repo.Entries {
-		digest, err := repositoryindex.PolicyDigest(item.Target.Host, item.Plugin)
+		digest, err := repositoryindex.EntryDigest(item.Target.Host, item.Plugin)
 		if err != nil {
 			return fmt.Errorf("entry policy: %w", err)
 		}
@@ -52,45 +50,24 @@ func runRepositoryIndex(args []string) error {
 }
 
 func scaffoldRepositoryIndex(args []string) error {
-	if len(args) != 2 {
-		return errors.New("usage: redevplugin scaffold repository-index <repository-root> <host>")
+	if len(args) < 2 {
+		return errors.New("usage: redevplugin scaffold repository-index <repository-root> <host> --project <path> --tag-template <key>-v{version} --package-asset-template <name> [--manifest manifest.json] [--replace]")
 	}
-	root := args[0]
-	file, err := os.Open(filepath.Join(root, "manifest.json"))
-	if err != nil {
-		return fmt.Errorf("read root manifest: %w", err)
-	}
-	decoded, _, err := manifest.DecodeCanonical(file)
-	closeErr := file.Close()
-	if err != nil {
+	flags := flag.NewFlagSet("repository-index", flag.ContinueOnError)
+	project := flags.String("project", ".", "Plugin project path relative to the repository")
+	manifestPath := flags.String("manifest", "manifest.json", "Manifest path relative to the plugin project")
+	tag := flags.String("tag-template", "", "Release tag template")
+	asset := flags.String("package-asset-template", "", "Package asset template")
+	replace := flags.Bool("replace", false, "Replace the selected plugin entry")
+	if err := flags.Parse(args[2:]); err != nil {
 		return err
 	}
-	if closeErr != nil {
-		return closeErr
+	if flags.NArg() != 0 {
+		return errors.New("unexpected repository-index arguments")
 	}
-	index := repositoryindex.Index{SchemaVersion: repositoryindex.SchemaVersion, Targets: []repositoryindex.Target{{Ecosystem: "redevplugin", Host: args[1], Plugins: []repositoryindex.Plugin{{PluginID: decoded.PluginID(), Path: ".", Manifest: "manifest.json", Release: &repositoryindex.Release{TagTemplate: "v{version}", PackageAssetTemplate: "plugin-{version}.redevplugin", ReleaseRefAssetTemplate: "plugin-{version}.release-ref.json"}}}}}}
-	if err := repositoryindex.Validate(index); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(index, "", "  ")
+	changed, err := repositoryindex.Upsert(args[0], args[1], *project, *manifestPath, repositoryindex.Release{TagTemplate: *tag, PackageAssetTemplate: *asset}, *replace)
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(root, filepath.FromSlash(repositoryindex.IndexPath))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return err
-	}
-	_, writeErr := out.Write(append(raw, '\n'))
-	closeErr = out.Close()
-	if writeErr != nil {
-		return writeErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return writeJSON(map[string]any{"ok": true, "path": path, "note": "Review host and release asset templates before publishing."})
+	return writeJSON(map[string]any{"ok": true, "path": filepath.Join(args[0], repositoryindex.IndexPath), "changed": changed})
 }

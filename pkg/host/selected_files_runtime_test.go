@@ -32,7 +32,7 @@ func TestSelectedFilesThroughBuiltRustWorker(t *testing.T) {
 	if err := os.WriteFile(path, []byte("before"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, filePicker: selectedPickerFixture{path: path}})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{filePicker: selectedPickerFixture{path: path}})
 	runtimePath := filepath.Join(root, "target/debug/redevplugin-runtime")
 	if runtime.GOOS == "windows" {
 		runtimePath += ".exe"

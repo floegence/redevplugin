@@ -4,7 +4,7 @@ import {
   isPluginRecoveryCurrent,
   defaultPluginSurfaceReloadMax,
   defaultPluginSurfaceReloadWindowMs,
-  decodePluginReleaseInstallProgressEvent,
+  decodePluginInstallProgressEvent,
   pluginBridgeErrorCodes,
   pluginClientErrorCodes,
   pluginPlatformErrorCodes,
@@ -133,24 +133,6 @@ function externalPackageInspectionResult(inspectionId: string, pluginInstanceId:
   };
 }
 
-function installedExternalPackageResult(inspection: ReturnType<typeof externalPackageInspectionResult>) {
-  return {
-    plugin: {
-      plugin_instance_id: inspection.intent.plugin_instance_id,
-    },
-    activation: { status: "enabled" },
-    signature_assessment: inspection.signature_assessment,
-    source_provenance: inspection.source_provenance,
-    execution_approval: {
-      state: "user_approved",
-      reason_codes: [],
-      assessed_at: "2026-07-23T00:01:00Z",
-      approved_at: "2026-07-23T00:01:00Z",
-    },
-    update_eligibility: inspection.update_eligibility,
-    security_summary: inspection.security_summary,
-  };
-}
 
 test("stable error-code exports separate platform, bridge, and client-only codes", () => {
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_JSON_LIMIT_EXCEEDED"), true);
@@ -762,12 +744,14 @@ test("uploaded external package update inspection uses the encoded target and ex
     action: "update",
     plugin_instance_id: "plugin instance target",
     expected_management_revision: 9007199254740991,
+    allow_source_change: true,
   }, packageBlob);
 
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/plugin%20instance%20target/external-packages/upload/inspect");
   assert.equal(fetch.calls[0]?.init.method, "PUT");
   assert.equal(fetch.calls[0]?.init.body, packageBlob);
   assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Expected-Management-Revision"], "9007199254740991");
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Allow-Source-Change"], "true");
   assert.equal(disposed, 0);
   unregister();
 });
@@ -830,7 +814,7 @@ test("installing an inspected external package binds the exact package hash and 
   const fetch = new FakeFetch();
   const inspection = externalPackageInspectionResult("inspection_install", "plugin_instance_target");
   fetch.push({ ok: true, data: inspection });
-  fetch.push({ ok: true, data: installedExternalPackageResult(inspection) });
+  fetch.push({ ok: true, data: {execution:{status:"running",plugin_instance_id:"plugin_instance_target"}, mutation_outcome:"unknown"} });
   const scope = createPluginSurfaceScope();
   let targetDisposed = 0;
   let unrelatedDisposed = 0;
@@ -842,16 +826,18 @@ test("installing an inspected external package binds the exact package hash and 
     source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
   });
 
-  const result = await client.installInspectedPackage({
+  const result = await client.startInspectedInstall({
+request_id:"install-test",
     inspection_id: "inspection_install",
     expected_package_sha256: inspection.inspected_hashes.package_sha256,
   });
 
-  assert.equal(result.plugin.plugin_instance_id, "plugin_instance_target");
+  assert.equal(result.execution.plugin_instance_id, "plugin_instance_target");
   assert.equal(targetDisposed, 1);
   assert.equal(unrelatedDisposed, 0);
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/external-packages/install");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/external-packages/install-operations");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
+    request_id:"install-test",
     inspection_id: "inspection_install",
     expected_package_sha256: inspection.inspected_hashes.package_sha256,
   });
@@ -886,7 +872,8 @@ test("a rejected inspected-package install preserves the target surface", async 
   });
 
   await assert.rejects(
-    client.installInspectedPackage({
+    client.startInspectedInstall({
+request_id:"install-test",
       inspection_id: "inspection_not_committed",
       expected_package_sha256: inspection.inspected_hashes.package_sha256,
     }),
@@ -927,7 +914,8 @@ test("an unknown inspected-package install disposes the inspected target and not
   });
 
   await assert.rejects(
-    client.installInspectedPackage({
+    client.startInspectedInstall({
+request_id:"install-test",
       inspection_id: "inspection_unknown",
       expected_package_sha256: inspection.inspected_hashes.package_sha256,
     }),
@@ -945,51 +933,6 @@ test("external package client exposes no durable commit or query lifecycle", () 
   assert.equal("queryExternalPackageCommit" in client, false);
 });
 
-test("release installation starts through the unified execution route", async () => {
-  const fetch = new FakeFetch();
-  fetch.push({
-    ok: true,
-    data: {
-      execution_id: "release_install_1",
-      plugin_instance_id: "plugin_instance_1",
-      kind: "operation",
-      status: "running",
-      cursor: 0,
-      cancelable: false,
-      created_at: "2026-08-13T00:00:00Z",
-      updated_at: "2026-08-13T00:00:00Z",
-    },
-  });
-  const client = new PluginPlatformClient({ fetch: fetch.fetch });
-  const request = {
-    request_id: "request_1",
-    plugin_instance_id: "plugin_instance_1",
-    release_identity_digest: `sha256:${"e".repeat(64)}`,
-    manifest_sha256: `sha256:${"c".repeat(64)}`,
-    contract_set_sha256: `sha256:${"f".repeat(64)}`,
-    summary_sha256: `sha256:${"0".repeat(64)}`,
-    release_ref: {
-      source_id: "official",
-      channel: "stable",
-      release_metadata_ref: "release.json",
-      release_metadata_sha256: "a".repeat(64),
-      publisher_id: "publisher",
-      plugin_id: "plugin",
-      version: "1.0.0",
-      expected_hashes: {
-        package_sha256: `sha256:${"b".repeat(64)}`,
-        manifest_sha256: `sha256:${"c".repeat(64)}`,
-        entries_sha256: `sha256:${"d".repeat(64)}`,
-      },
-    },
-  } as const;
-
-  const result = await client.startReleaseInstallExecution(request);
-
-  assert.equal(result.execution_id, "release_install_1");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/executions/release-installs");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), request);
-});
 
 test("release install progress decoder requires explicit failure retryability", () => {
   const event = {
@@ -1008,7 +951,7 @@ test("release install progress decoder requires explicit failure retryability", 
       },
     },
   } satisfies PluginEvent;
-  assert.deepEqual(decodePluginReleaseInstallProgressEvent(event), event.payload.install_progress);
+  assert.deepEqual(decodePluginInstallProgressEvent(event), event.payload.install_progress);
   const nonRetryable = {
     ...event,
     payload: {
@@ -1019,7 +962,7 @@ test("release install progress decoder requires explicit failure retryability", 
       },
     },
   } satisfies PluginEvent;
-  assert.equal(decodePluginReleaseInstallProgressEvent(nonRetryable)?.retryable, false);
+  assert.equal(decodePluginInstallProgressEvent(nonRetryable)?.retryable, false);
 
   const running = {
     execution_id: "release_install_1",
@@ -1036,7 +979,7 @@ test("release install progress decoder requires explicit failure retryability", 
       },
     },
   } satisfies PluginEvent;
-  assert.deepEqual(decodePluginReleaseInstallProgressEvent(running), running.payload.install_progress);
+  assert.deepEqual(decodePluginInstallProgressEvent(running), running.payload.install_progress);
 
   const missingRetryable = {
     execution_id: "release_install_1",
@@ -1053,13 +996,13 @@ test("release install progress decoder requires explicit failure retryability", 
       },
     },
   } satisfies PluginEvent;
-  assert.equal(decodePluginReleaseInstallProgressEvent(missingRetryable), undefined);
+  assert.equal(decodePluginInstallProgressEvent(missingRetryable), undefined);
 
-  assert.equal(decodePluginReleaseInstallProgressEvent({
+  assert.equal(decodePluginInstallProgressEvent({
     ...event,
     execution_id: "different_execution",
   }), undefined);
-  assert.equal(decodePluginReleaseInstallProgressEvent({
+  assert.equal(decodePluginInstallProgressEvent({
     ...running,
     payload: {
       install_progress: {
@@ -1068,7 +1011,7 @@ test("release install progress decoder requires explicit failure retryability", 
       },
     },
   }), undefined);
-  assert.equal(decodePluginReleaseInstallProgressEvent({
+  assert.equal(decodePluginInstallProgressEvent({
     ...event,
     payload: {
       install_progress: {
@@ -1077,7 +1020,7 @@ test("release install progress decoder requires explicit failure retryability", 
       },
     },
   }), undefined);
-  assert.equal(decodePluginReleaseInstallProgressEvent({
+  assert.equal(decodePluginInstallProgressEvent({
     execution_id: "ordinary_operation",
     sequence: 1,
     kind: "progress",
@@ -1090,13 +1033,13 @@ test("release install execution listing uses the closed platform filter", async 
   fetch.push({ ok: true, data: { executions: [], next_cursor: 0 } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
-  await client.listReleaseInstallExecutions({ plugin_instance_id: "plugin_1", cursor: 20, limit: 50 });
+  await client.listPluginInstallExecutions({ plugin_instance_id: "plugin_1", cursor: 20, limit: 50 });
 
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
     plugin_instance_id: "plugin_1",
     cursor: 20,
     limit: 50,
-    operation_scope: "release_install",
+    operation_scope: "plugin_install",
   });
 });
 
@@ -1456,29 +1399,14 @@ test("platform cleanup failures preserve the original unknown mutation outcome",
   );
 });
 
-test("platform client updates plugin release refs without package bytes", async () => {
-  const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "2.0.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "enabled" } });
-  const client = new PluginPlatformClient({ fetch: fetch.fetch });
-  const releaseRef = {
-    source_id: "official",
-    channel: "stable",
-    release_metadata_ref: "plugins/com.example/com.example.plugin/1.0.0/release.json",
-    release_metadata_sha256: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-    publisher_id: "com.example",
-    plugin_id: "com.example.plugin",
-    version: "1.0.0",
-    expected_hashes: {
-      package_sha256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      manifest_sha256: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      entries_sha256: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    },
-  };
-
-  await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "2.0.0" }, expected_management_revision: 1 });
-
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/update-release-ref");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "2.0.0" }, expected_management_revision: 1 });
+test("platform client starts an exact inspected installation", async () => {
+ const fetch = new FakeFetch();
+ fetch.push({ok:true,data:{request_id:"install-1",inspection_id:"inspection-1",package_sha256:"sha256:"+"a".repeat(64)}});
+ const client = new PluginPlatformClient({fetch:fetch.fetch});
+ const request = {request_id:"install-1",inspection_id:"inspection-1",expected_package_sha256:"sha256:"+"a".repeat(64)};
+ await client.startInspectedInstall(request);
+ assert.equal(fetch.calls[0]?.input,"/_redevplugin/api/plugins/external-packages/install-operations");
+ assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""),request);
 });
 
 test("platform client manages runtime lifecycle routes", async () => {
@@ -2148,4 +2076,14 @@ test("inspected installs retain a stable request and query through POST", async 
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), request);
   assert.equal(fetch.calls[1]?.init.method, "POST");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { request_id: request.request_id });
+});
+
+test("repository discovery uses the shared query contract", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: [{ plugin_id: "example.app", path: ".", manifest: "manifest.json", release: { tag_template: "app-v{version}", package_asset_template: "plugin.redevplugin" } }] });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const result = await client.listRepositoryPlugins({ url: "https://github.com/example/plugins", host: "redeven" });
+  assert.equal(result[0]?.plugin_id, "example.app");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/repository/plugins/query");
+  assert.deepEqual(JSON.parse(String(fetch.calls[0]?.init.body)), { url: "https://github.com/example/plugins", host: "redeven" });
 });

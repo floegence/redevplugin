@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
@@ -19,7 +20,7 @@ import (
 )
 
 func TestInstallCommitInitializesPluginDataWithoutEnableCall(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := importCurrentLifecyclePackage(t, h, lifecycleManifestJSON("1.0.0", "Install Commit"))
 
 	binding, found, err := h.controlStore.GetBinding(hostTestContext(), installed.PluginInstanceID)
@@ -35,7 +36,7 @@ func TestInstallCommitInitializesPluginDataWithoutEnableCall(t *testing.T) {
 }
 
 func TestInstallCommitInitializesDefaultSettingsWithoutEnableCall(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := importCurrentLifecyclePackage(t, h, currentSettingsManifestJSON())
 
 	settings, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{
@@ -51,7 +52,7 @@ func TestInstallCommitInitializesDefaultSettingsWithoutEnableCall(t *testing.T) 
 }
 
 func TestInstallCommitPublishesSurfaceWithoutEnableCall(t *testing.T) {
-	h, surfaces, _ := newTestHost(t, true, true)
+	h, surfaces, _ := newTestHost(t)
 	installed := importCurrentLifecyclePackage(t, h, lifecycleManifestJSON("1.0.0", "Surface"))
 
 	if len(surfaces.snapshots) != 1 || len(surfaces.snapshots[0].Surfaces) != 1 || surfaces.snapshots[0].PluginInstanceID != installed.PluginInstanceID {
@@ -63,7 +64,7 @@ func TestInstallCommitInstallsConnectivityWithoutEnableCall(t *testing.T) {
 	base := connectivity.NewMemoryBroker()
 	broker := &installRecordingConnectivityBroker{Broker: base}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, connectivityBroker: broker,
+		connectivityBroker: broker,
 	})
 	importCurrentLifecyclePackage(t, h, currentNetworkManifestJSON())
 	if broker.installs != 1 {
@@ -72,7 +73,7 @@ func TestInstallCommitInstallsConnectivityWithoutEnableCall(t *testing.T) {
 }
 
 func TestInstallCommitAdvancesManagementRevisionOnce(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := importCurrentLifecyclePackage(t, h, lifecycleManifestJSON("1.0.0", "Revision"))
 	if installed.ManagementRevision != 1 {
 		t.Fatalf("install management revision = %d, want one lifecycle commit", installed.ManagementRevision)
@@ -87,7 +88,7 @@ func TestInstallCommitAdvancesManagementRevisionOnce(t *testing.T) {
 }
 
 func TestInstallCommitDefaultSettingsFailureLeavesNoRecordBindingOrAsset(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	settingsErr := errors.New("default settings initialization failed")
 	h.adapters.PluginData = &failingInstallCommitPluginData{PluginData: h.adapters.PluginData, err: settingsErr}
 	packageBytes := buildFixturePackage(t)
@@ -112,7 +113,7 @@ func TestInstallDerivedSurfaceFailureIsCommittedAndRetryDoesNotAdvanceRevision(t
 	surfaceErr := errors.New("surface catalog unavailable")
 	surfaces := &failingSurfaceSink{err: surfaceErr}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, surfaceCatalog: surfaces,
+		surfaceCatalog: surfaces,
 	})
 	pluginInstanceID := nextTestPluginInstanceID(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, pluginInstanceID, buildFixturePackage(t))
@@ -140,7 +141,7 @@ func TestInstallDerivedConnectivityFailureIsCommittedAndRetryDoesNotAdvanceRevis
 	connectivityErr := errors.New("connectivity unavailable")
 	broker := &installRecordingConnectivityBroker{Broker: connectivity.NewMemoryBroker(), installErr: connectivityErr}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, connectivityBroker: broker,
+		connectivityBroker: broker,
 	})
 	pluginInstanceID := nextTestPluginInstanceID(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, pluginInstanceID, buildCurrentLifecyclePackage(t, currentNetworkManifestJSON()))
@@ -162,7 +163,7 @@ func TestInstallDerivedConnectivityFailureIsCommittedAndRetryDoesNotAdvanceRevis
 }
 
 func TestOpenSurfaceMissingGrantReturnsPermissionRequiredAndKeepsEnabled(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildV9IOPermissionFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +186,7 @@ func TestOpenSurfaceMissingGrantReturnsPermissionRequiredAndKeepsEnabled(t *test
 }
 
 func TestPolicyFailureKeepsEnabledAndRevokesExistingSurface(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := importCurrentLifecyclePackage(t, h, lifecycleManifestJSON("1.0.0", "Policy"))
 	opened, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
@@ -196,7 +197,10 @@ func TestPolicyFailureKeepsEnabledAndRevokesExistingSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.Policy = policyAdapter{developerMode: false, localGenerated: false}
+	installed.ExecutionApproval.Status = registry.ExecutionApprovalPolicyBlocked
+	if installed, err = h.controlStore.Registry().PutPlugin(hostTestContext(), installed.OwnerEnvHash, installed, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		SurfaceID:                  "lifecycle.view",
@@ -221,7 +225,7 @@ func TestPolicyFailureKeepsEnabledAndRevokesExistingSurface(t *testing.T) {
 }
 
 func TestOnlyExplicitDisableProducesDisabledByUser(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := importCurrentLifecyclePackage(t, h, lifecycleManifestJSON("1.0.0", "Disable"))
 	if installed.EnableState != registry.EnableEnabled {
 		t.Fatalf("initial enable state = %q", installed.EnableState)
@@ -240,7 +244,7 @@ func TestOnlyExplicitDisableProducesDisabledByUser(t *testing.T) {
 }
 
 func TestExplicitReenablePreservesPluginDataBinding(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := importCurrentLifecyclePackage(t, h, lifecycleManifestJSON("1.0.0", "Re-enable"))
 	originalBinding, found, err := h.controlStore.GetBinding(hostTestContext(), installed.PluginInstanceID)
 	if err != nil || !found {

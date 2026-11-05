@@ -19,7 +19,7 @@ var ErrControlStoreRequired = errors.New("Host control store is required")
 
 type ExecutionOperationScope string
 
-const ExecutionOperationScopeReleaseInstall ExecutionOperationScope = "release_install"
+const ExecutionOperationScopePluginInstall ExecutionOperationScope = "plugin_install"
 
 type ListExecutionsOptions struct {
 	PluginInstanceID string
@@ -29,7 +29,8 @@ type ListExecutionsOptions struct {
 }
 
 // GetExecution returns one execution only when it belongs to the exact
-// authenticated session owner. Cross-owner identities are indistinguishable
+// authenticated owner. Installation receipts survive session renewal; other
+// executions remain session-bound. Cross-owner identities are indistinguishable
 // from absent records.
 func (h *Host) GetExecution(ctx context.Context, id string) (execution.Execution, error) {
 	return h.getExecution(ctx, id, nil)
@@ -54,7 +55,12 @@ func (h *Host) getExecution(ctx context.Context, id string, scope *SurfaceExecut
 	if h.controlStore == nil {
 		return execution.Execution{}, ErrControlStoreRequired
 	}
-	current, err := h.controlStore.Executions().GetOwned(ctx, id, executionOwner(authorization.session))
+	var current execution.Execution
+	if scope == nil {
+		current, err = h.controlStore.Executions().GetManagementOwned(ctx, id, executionOwner(authorization.session))
+	} else {
+		current, err = h.controlStore.Executions().GetOwned(ctx, id, executionOwner(authorization.session))
+	}
 	if err != nil {
 		return execution.Execution{}, err
 	}
@@ -75,11 +81,11 @@ func (h *Host) ListExecutions(ctx context.Context, pluginInstanceID string, curs
 }
 
 // ListExecutionsWithOptions returns one owner-scoped page and can select the
-// canonical release-install operation subset without introducing another
+// canonical plugin-install operation subset without introducing another
 // execution state machine or response type.
 func (h *Host) ListExecutionsWithOptions(ctx context.Context, options ListExecutionsOptions) ([]execution.Execution, uint64, error) {
 	pluginInstanceID := strings.TrimSpace(options.PluginInstanceID)
-	if options.OperationScope != "" && options.OperationScope != ExecutionOperationScopeReleaseInstall {
+	if options.OperationScope != "" && options.OperationScope != ExecutionOperationScopePluginInstall {
 		return nil, 0, fmt.Errorf("%w: unsupported execution operation scope", ErrMethodRequestContract)
 	}
 	authorization, err := h.authorizeManagement(ctx, ManagementActionListExecutions,
@@ -193,6 +199,12 @@ func (h *Host) eventsAfter(ctx context.Context, id string, cursor uint64, limit 
 		if err := h.authorizeSurfaceExecution(ctx, authorization.session, current, scope); err != nil {
 			return nil, err
 		}
+	}
+	if scope == nil {
+		if _, err := h.controlStore.Executions().GetManagementOwned(ctx, id, executionOwner(authorization.session)); err != nil {
+			return nil, err
+		}
+		return h.controlStore.Executions().EventsAfter(ctx, id, cursor, limit)
 	}
 	return h.controlStore.Executions().EventsAfterOwned(ctx, id, executionOwner(authorization.session), cursor, limit)
 }

@@ -2,12 +2,13 @@ package httpadapter
 
 import (
 	"errors"
+	"net/http"
+
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/security"
-	"net/http"
 )
 
 func (h Handler) connectionFailure(w http.ResponseWriter, r *http.Request, err error, mutates bool) {

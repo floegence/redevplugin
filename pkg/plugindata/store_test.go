@@ -959,9 +959,8 @@ func putPluginWithContext(t *testing.T, ctx context.Context, store registry.Stor
 		PluginID:          pluginManifest.PluginID(),
 		Version:           "1.0.0",
 		ActiveFingerprint: "sha256:" + instanceID,
-		TrustState:        registry.TrustVerified,
 		PackageSourceProvenance: registry.PackageSourceProvenance{
-			Kind:            registry.PackageSourceLocalGenerated,
+			Kind:            registry.PackageSourceLocalPackage,
 			SourceReference: "test",
 		},
 		EnableState: registry.EnableDisabledByUser,

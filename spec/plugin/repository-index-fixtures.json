@@ -1,8 +1,23 @@
 {
   "schema_version": "redevplugin.repository-index-fixtures.v1",
   "templates": [
-    { "template": "v{version}", "version": "1.2.3", "tag": "v1.2.3" },
-    { "template": "weather-v{version}-stable", "version": "12.0.45", "tag": "weather-v12.0.45-stable" }
+    {
+      "template": "plugin-v{version}",
+      "version": "1.2.3",
+      "tag": "plugin-v1.2.3"
+    },
+    {
+      "template": "weather-v{version}",
+      "version": "12.0.45",
+      "tag": "weather-v12.0.45"
+    }
   ],
-  "invalid_versions": ["", "1.0", "01.2.3", "1.2.3-rc.1", "1.2.3+build", "1.2.3/other"]
+  "invalid_versions": [
+    "",
+    "1.0",
+    "01.2.3",
+    "1.2.3-rc.1",
+    "1.2.3+build",
+    "1.2.3/other"
+  ]
 }

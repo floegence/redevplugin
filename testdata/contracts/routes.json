@@ -76,11 +76,6 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/executions/release-installs",
-    "effect": "mutation"
-  },
-  {
-    "method": "POST",
     "path": "/_redevplugin/api/plugins/executions/{execution_id}/cancel",
     "effect": "mutation"
   },
@@ -97,11 +92,6 @@
   {
     "method": "POST",
     "path": "/_redevplugin/api/plugins/external-packages/inspect",
-    "effect": "mutation"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/external-packages/install",
     "effect": "mutation"
   },
   {
@@ -188,6 +178,11 @@
     "method": "POST",
     "path": "/_redevplugin/api/plugins/permissions/revoke",
     "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/repository/plugins/query",
+    "effect": "query"
   },
   {
     "method": "POST",
@@ -326,7 +321,12 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/update-release-ref",
+    "path": "/_redevplugin/api/plugins/updates/inspect",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/updates/preferences",
     "effect": "mutation"
   },
   {

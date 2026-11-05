@@ -16,7 +16,6 @@ import (
 func TestCapabilityAsyncExecutionUsesControlStore(t *testing.T) {
 	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
 		capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
@@ -75,7 +74,6 @@ func TestCapabilityAsyncExecutionUsesControlStore(t *testing.T) {
 func TestCapabilitySubscriptionUsesControlStore(t *testing.T) {
 	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
 		capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
@@ -133,7 +131,6 @@ func TestCapabilitySubscriptionUsesControlStore(t *testing.T) {
 func TestCancelExecutionDispatchesThroughLiveExecution(t *testing.T) {
 	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
 		capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
@@ -193,7 +190,7 @@ func TestDurableExecutionReconciliationUsesOnlyControlStore(t *testing.T) {
 	if err := controlDB.Close(); err != nil {
 		t.Fatal(err)
 	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: stateRoot, developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{stateRoot: stateRoot})
 	control, err := h.GetExecution(hostTestContext(), "execution_control")
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +211,7 @@ func hostTestContextSession() sessionctx.Context {
 
 func TestSurfaceExecutionCannotAccessSiblingPlugin(t *testing.T) {
 	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{capabilityID: "example.capability.echo", capabilityAdapter: adapter})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
 	ctx := hostTestContext()
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{}})

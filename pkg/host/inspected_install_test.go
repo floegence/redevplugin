@@ -12,14 +12,13 @@ import (
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
-	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
 func TestInspectedInstallRecoversExactRequestAcrossSessionRenewal(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Created"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	ctx := hostTestContext()
 	inspection, err := h.InspectUploadedExternalPackage(ctx, InspectUploadedExternalPackageRequest{Intent: ExternalPackageIntent{Action: "install"}, Package: strings.NewReader("package"), DeclaredSize: 7})
 	if err != nil {
@@ -54,6 +53,17 @@ func TestInspectedInstallRecoversExactRequestAcrossSessionRenewal(t *testing.T) 
 	if err != nil || again.Execution.ID != started.Execution.ID {
 		t.Fatalf("recovery: %+v %v", again, err)
 	}
+	if recovered, err := h.GetExecution(renewed, started.Execution.ID); err != nil || recovered.Status != execution.StatusCompleted {
+		t.Fatalf("execution recovery: %+v %v", recovered, err)
+	}
+	events, err := h.EventsAfter(renewed, started.Execution.ID, 0, 100)
+	if err != nil || len(events) == 0 || events[len(events)-1].Kind != execution.EventTerminal {
+		t.Fatalf("event recovery: %+v %v", events, err)
+	}
+	listed, _, err := h.ListExecutionsWithOptions(renewed, ListExecutionsOptions{OperationScope: ExecutionOperationScopePluginInstall})
+	if err != nil || len(listed) != 1 || listed[0].ID != started.Execution.ID {
+		t.Fatalf("list recovery: %+v %v", listed, err)
+	}
 	request.ExpectedPackageSHA256 = "sha256:" + strings.Repeat("0", 64)
 	if _, err = h.StartInspectedInstall(renewed, request); !errors.Is(err, ErrExternalPackageConfirmation) {
 		t.Fatalf("conflicting retry: %v", err)
@@ -67,11 +77,17 @@ func TestInspectedInstallRecoversExactRequestAcrossSessionRenewal(t *testing.T) 
 	if _, err = h.GetInspectedInstall(foreign, request.RequestID); err == nil {
 		t.Fatal("foreign owner read outcome")
 	}
+	if _, err := h.GetExecution(foreign, started.Execution.ID); err == nil {
+		t.Fatal("foreign owner read execution")
+	}
+	if _, err := h.EventsAfter(foreign, started.Execution.ID, 0, 100); err == nil {
+		t.Fatal("foreign owner read events")
+	}
 }
 func TestInspectedInstallReconcilesOnlyExactCommitEvidence(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Created"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	ctx := hostTestContext()
 	session, _ := sessionctx.FromContext(ctx)
 	owner := executionOwner(session)
@@ -83,7 +99,7 @@ func TestInspectedInstallReconcilesOnlyExactCommitEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, operationEvidence: op.Execution.ID})
+	_, err = h.installInspectedPackage(ctx, installInspectedPackageRequest{InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, operationEvidence: op.Execution.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,10 +130,10 @@ func TestInspectedInstallReconcilesOnlyExactCommitEvidence(t *testing.T) {
 
 func TestInspectedInstallReceiptSurvivesHostRestart(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
-	options := testHostOptions{stateRoot: root, developerMode: true, localGenerated: true, productionStateOwners: true}
+	options := testHostOptions{stateRoot: root, productionStateOwners: true}
 	h, _, _ := newTestHostWithOptions(t, options)
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Created"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	ctx := hostTestContext()
 	session, _ := sessionctx.FromContext(ctx)
 	inspection, err := h.InspectUploadedExternalPackage(ctx, InspectUploadedExternalPackageRequest{Intent: ExternalPackageIntent{Action: "install"}, Package: strings.NewReader("package"), DeclaredSize: 7})
@@ -128,14 +144,14 @@ func TestInspectedInstallReceiptSurvivesHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{InspectionID: inspection.InspectionID, ExpectedPackageSHA256: op.PackageSHA256, operationEvidence: op.Execution.ID}); err != nil {
+	if _, err = h.installInspectedPackage(ctx, installInspectedPackageRequest{InspectionID: inspection.InspectionID, ExpectedPackageSHA256: op.PackageSHA256, operationEvidence: op.Execution.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if err = h.Close(); err != nil {
 		t.Fatal(err)
 	}
 	reopened, _, _ := newTestHostWithOptions(t, options)
-	configureExternalPackageTestModule(reopened, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(reopened, stage)
 	got, err := reopened.GetInspectedInstall(ctx, "restart")
 	if err != nil || got.MutationOutcome != mutation.OutcomeCommitted {
 		t.Fatalf("restart receipt: %+v %v", got, err)
@@ -146,9 +162,9 @@ func TestInspectedInstallReceiptSurvivesHostRestart(t *testing.T) {
 	}
 }
 func TestInspectedInstallConcurrentRequestClaims(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Created"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	ctx := hostTestContext()
 	inspection, err := h.InspectUploadedExternalPackage(ctx, InspectUploadedExternalPackageRequest{Intent: ExternalPackageIntent{Action: "install"}, Package: strings.NewReader("package"), DeclaredSize: 7})
 	if err != nil {
@@ -184,9 +200,79 @@ func TestInspectedInstallConcurrentRequestClaims(t *testing.T) {
 }
 
 func TestInspectedInstallMissingHasPublicIdentity(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	configureExternalPackageTestModule(h, &externalPackageTestStage{}, registry.SignatureAssessment{})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
+	configureExternalPackageTestModule(h, &externalPackageTestStage{})
 	if _, err := h.GetInspectedInstall(hostTestContext(), "never-started"); !errors.Is(err, ErrInspectedInstallNotFound) {
 		t.Fatalf("missing operation: %v", err)
+	}
+}
+
+func TestInspectedInstallProgressAndCommittedFailure(t *testing.T) {
+	for _, failCleanup := range []bool{false, true} {
+		t.Run(map[bool]string{false: "complete", true: "committed_cleanup_failure"}[failCleanup], func(t *testing.T) {
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{})
+			stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Created"))}
+			configureExternalPackageTestModule(h, stage)
+			ctx := hostTestContext()
+			inspection, err := h.InspectUploadedExternalPackage(ctx, InspectUploadedExternalPackageRequest{Intent: ExternalPackageIntent{Action: "install"}, Package: strings.NewReader("package"), DeclaredSize: 7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failCleanup {
+				stage.setRemoveError(errors.New("cleanup unavailable"))
+			}
+			req := StartInspectedInstallRequest{RequestID: "progress", InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256}
+			op, err := h.StartInspectedInstall(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for end := time.Now().Add(3 * time.Second); op.Execution.Status == execution.StatusRunning; {
+				if time.Now().After(end) {
+					t.Fatal("install timed out")
+				}
+				time.Sleep(time.Millisecond)
+				op, err = h.GetInspectedInstall(ctx, req.RequestID)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if op.MutationOutcome != mutation.OutcomeCommitted {
+				t.Fatalf("lost commit: %+v", op)
+			}
+			want := execution.StatusCompleted
+			if failCleanup {
+				want = execution.StatusFailed
+			}
+			if op.Execution.Status != want {
+				t.Fatalf("status: %+v", op)
+			}
+			events, err := h.EventsAfter(ctx, op.Execution.ID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stages []string
+			for _, event := range events {
+				if event.Kind == execution.EventProgress {
+					value := event.Payload["install_progress"].(map[string]any)
+					stages = append(stages, value["stage"].(string)+":"+value["status"].(string))
+				}
+			}
+			expected := "verify:running,verify:completed,install:running,install:completed,enable:running,enable:completed"
+			if failCleanup {
+				expected = strings.TrimSuffix(expected, "completed") + "failed"
+			}
+			if strings.Join(stages, ",") != expected {
+				t.Fatalf("progress: %v", stages)
+			}
+			records, err := h.ListPlugins(ctx)
+			if err != nil || len(records) != 1 {
+				t.Fatalf("installation lost: %v %v", records, err)
+			}
+			again, err := h.StartInspectedInstall(ctx, req)
+			if err != nil || again.Execution.ID != op.Execution.ID || again.Execution.Status != want {
+				t.Fatalf("retry changed outcome: %+v %v", again, err)
+			}
+			stage.setRemoveError(nil)
+		})
 	}
 }

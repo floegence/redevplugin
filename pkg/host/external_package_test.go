@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"path/filepath"
@@ -12,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
@@ -103,66 +106,11 @@ func (externalPackageTestGitHubResolver) ResolvePackage(context.Context, externa
 	return externalsource.ResolvedGitHubAsset{}, errors.New("unexpected GitHub resolution")
 }
 
-type externalPackageTestAssessor struct {
-	assessment registry.SignatureAssessment
-}
-
-type mutableExternalPackageTestAssessor struct {
-	mu             sync.Mutex
-	assessment     registry.SignatureAssessment
-	freshness      registry.SignatureAssessment
-	freshnessCalls int
-	freshnessErr   error
-}
-
-func (a externalPackageTestAssessor) AssessExternalPackageSignature(context.Context, ExternalPackageSignatureAssessmentRequest) (registry.SignatureAssessment, error) {
-	return a.assessment, nil
-}
-
-func (a externalPackageTestAssessor) AssessExternalPackageSignatureFreshness(_ context.Context, req ExternalPackageSignatureFreshnessRequest) (registry.SignatureAssessment, error) {
-	return req.Assessment, nil
-}
-
-func (a *mutableExternalPackageTestAssessor) AssessExternalPackageSignature(context.Context, ExternalPackageSignatureAssessmentRequest) (registry.SignatureAssessment, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.assessment, nil
-}
-
-func (a *mutableExternalPackageTestAssessor) AssessExternalPackageSignatureFreshness(_ context.Context, req ExternalPackageSignatureFreshnessRequest) (registry.SignatureAssessment, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.freshnessCalls++
-	if a.freshness.Status == "" {
-		return req.Assessment, a.freshnessErr
-	}
-	return a.freshness, a.freshnessErr
-}
-
-func (a *mutableExternalPackageTestAssessor) setAssessment(assessment registry.SignatureAssessment) {
-	a.mu.Lock()
-	a.assessment = assessment
-	a.mu.Unlock()
-}
-
-func (a *mutableExternalPackageTestAssessor) setFreshness(assessment registry.SignatureAssessment, err error) {
-	a.mu.Lock()
-	a.freshness = assessment
-	a.freshnessErr = err
-	a.mu.Unlock()
-}
-
-func (a *mutableExternalPackageTestAssessor) freshnessCallCount() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.freshnessCalls
-}
-
 func TestExternalPackageUnsignedInspectInstallEnablesWithoutGrants(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	pkg := readTestPackage(t, buildFixturePackage(t))
 	stage := &externalPackageTestStage{pkg: pkg}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 
 	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
@@ -176,17 +124,17 @@ func TestExternalPackageUnsignedInspectInstallEnablesWithoutGrants(t *testing.T)
 	if fetcher := h.adapters.ExternalPackageFetcher.(*externalPackageTestFetcher); fetcher.lastRequest.QuotaKey != "env_hash" {
 		t.Fatalf("fetch quota key = %q, want authenticated environment hash", fetcher.lastRequest.QuotaKey)
 	}
-	if inspection.SignatureAssessment.State != "absent" || inspection.ExecutionApproval.State != "pending" || inspection.UpdateEligibility.State != "manual_only" {
+	if inspection.ExecutionApproval.State != "pending" || inspection.UpdateEligibility.State != "manual_only" {
 		t.Fatalf("inspection facts = %#v", inspection)
 	}
 	if inspection.Intent.PluginInstanceID == "" || inspection.InspectedHashes.PackageSHA256 == "" {
 		t.Fatalf("inspection identity is incomplete: %#v", inspection)
 	}
-	committed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	committed, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, Now: now.Add(time.Minute),
 	})
 	if err != nil {
-		t.Fatalf("InstallInspectedPackage() error = %v", err)
+		t.Fatalf("installInspectedPackage() error = %v", err)
 	}
 	if committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableEnabled {
 		t.Fatalf("commit result = %#v", committed)
@@ -205,7 +153,7 @@ func TestExternalPackageUnsignedInspectInstallEnablesWithoutGrants(t *testing.T)
 		t.Fatalf("staged artifact remove count = %d, want 1", stage.removedCount())
 	}
 
-	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	if _, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, Now: now.Add(2 * time.Minute),
 	}); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
 		t.Fatalf("consumed inspection replay error = %v", err)
@@ -225,8 +173,7 @@ func TestStateRootExternalInstallNeedsNoCallerRegistryOrInstallStages(t *testing
 		packageFetcher: &externalPackageTestFetcher{result: externalsource.FetchResult{
 			Artifact: artifact, Source: "https://plugins.example.test/example.redevplugin", Final: "https://plugins.example.test/example.redevplugin",
 		}},
-		githubResolver:    externalPackageTestGitHubResolver{},
-		SignatureAssessor: externalPackageTestAssessor{},
+		githubResolver: externalPackageTestGitHubResolver{},
 	}
 	h, err := Open(hostTestContext(), config)
 	if err != nil {
@@ -242,7 +189,7 @@ func TestStateRootExternalInstallNeedsNoCallerRegistryOrInstallStages(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	installed, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, Now: now.Add(time.Minute),
 	})
 	if err != nil {
@@ -262,13 +209,12 @@ func TestStateRootExternalInstallNeedsNoCallerRegistryOrInstallStages(t *testing
 
 func TestSQLiteExternalPackageGrantRemainsExplicitAfterInstall(t *testing.T) {
 	ctx := hostTestContext()
-	fixture, verified := newReleaseInstallCapabilityFixture(t)
+	pkg, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
 		capabilityContract: &verified, capabilityAdapter: &recordingCapabilityAdapter{},
 	})
-	stage := &externalPackageTestStage{pkg: fixture.Package}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{Status: registry.SignatureUnknownSigner})
+	stage := &externalPackageTestStage{pkg: pkg}
+	configureExternalPackageTestModule(h, stage)
 	now := stableRecentTestNow()
 
 	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
@@ -279,15 +225,15 @@ func TestSQLiteExternalPackageGrantRemainsExplicitAfterInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectExternalPackage() error = %v", err)
 	}
-	committed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
+	committed, err := h.installInspectedPackage(ctx, installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 		Now: now.Add(time.Second),
 	})
 	if err != nil {
-		t.Fatalf("InstallInspectedPackage() error = %v", err)
+		t.Fatalf("installInspectedPackage() error = %v", err)
 	}
 	if committed.Plugin == nil {
-		t.Fatal("InstallInspectedPackage() returned no plugin")
+		t.Fatal("installInspectedPackage() returned no plugin")
 	}
 	if committed.Plugin.EnableState != registry.EnableEnabled {
 		t.Fatalf("external install did not persist enabled state: %#v", committed)
@@ -328,13 +274,12 @@ func TestSQLiteExternalPackageGrantRemainsExplicitAfterInstall(t *testing.T) {
 
 func TestExternalPackageInstallKeepsEnabledWhilePermissionIsRequired(t *testing.T) {
 	ctx := hostTestContext()
-	fixture, verified := newReleaseInstallCapabilityFixture(t)
+	pkg, verified := newReleaseInstallCapabilityFixture(t)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
 		capabilityContract: &verified, capabilityAdapter: &recordingCapabilityAdapter{},
 	})
-	stage := &externalPackageTestStage{pkg: fixture.Package}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{Status: registry.SignatureUnknownSigner})
+	stage := &externalPackageTestStage{pkg: pkg}
+	configureExternalPackageTestModule(h, stage)
 	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/permission-review.redevplugin"},
@@ -342,7 +287,7 @@ func TestExternalPackageInstallKeepsEnabledWhilePermissionIsRequired(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	committed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
+	committed, err := h.installInspectedPackage(ctx, installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 	})
 	if err != nil {
@@ -369,9 +314,9 @@ func TestExternalPackageInstallKeepsEnabledWhilePermissionIsRequired(t *testing.
 }
 
 func TestUploadedExternalPackageUsesOwnerScopedStageAndPersistsManualOnlyProvenance(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	now := time.Date(2026, 7, 23, 13, 0, 0, 0, time.UTC)
 
 	inspection, err := h.InspectUploadedExternalPackage(hostTestContext(), InspectUploadedExternalPackageRequest{
@@ -390,15 +335,15 @@ func TestUploadedExternalPackageUsesOwnerScopedStageAndPersistsManualOnlyProvena
 		inspection.SourceProvenance.SourceOrigin != "" || inspection.SourceProvenance.RepositoryURL != "" {
 		t.Fatalf("upload provenance = %#v", inspection.SourceProvenance)
 	}
-	if inspection.UpdateEligibility.State != "manual_only" || inspection.SignatureAssessment.State != "absent" {
+	if inspection.UpdateEligibility.State != "manual_only" {
 		t.Fatalf("upload security facts = %#v", inspection)
 	}
 
-	committed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	committed, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, Now: now.Add(time.Minute),
 	})
 	if err != nil {
-		t.Fatalf("InstallInspectedPackage() error = %v", err)
+		t.Fatalf("installInspectedPackage() error = %v", err)
 	}
 	if committed.Plugin == nil || committed.Plugin.PackageSourceProvenance.Kind != registry.PackageSourcePackageUpload ||
 		committed.Plugin.PackageSourceProvenance.UploadID != inspection.SourceProvenance.UploadID ||
@@ -416,11 +361,11 @@ func TestUploadedExternalPackageUsesOwnerScopedStageAndPersistsManualOnlyProvena
 	if err != nil {
 		t.Fatalf("InspectUploadedExternalPackage(update) error = %v", err)
 	}
-	updated, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	updated, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: updatedInspection.InspectionID, ExpectedPackageSHA256: updatedInspection.InspectedHashes.PackageSHA256, Now: now.Add(3 * time.Minute),
 	})
 	if err != nil {
-		t.Fatalf("InstallInspectedPackage(update) error = %v", err)
+		t.Fatalf("installInspectedPackage(update) error = %v", err)
 	}
 	if updated.Plugin == nil || len(updated.Plugin.VersionHistory) != 1 ||
 		updated.Plugin.VersionHistory[0].PackageSourceProvenance.Kind != registry.PackageSourcePackageUpload ||
@@ -430,12 +375,11 @@ func TestUploadedExternalPackageUsesOwnerScopedStageAndPersistsManualOnlyProvena
 	}
 }
 
-func TestExternalPackageInspectionBindsExactSessionAndBlocksInvalidSignature(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+func TestExternalPackageInspectionBindsExactSession(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	pkg := readTestPackage(t, buildFixturePackage(t))
-	pkg.PackageSignature = &pluginpkg.PackageSignature{SchemaVersion: pluginpkg.PackageSignatureSchemaVersion, Algorithm: "ed25519", KeyID: "known", Signature: "invalid"}
 	stage := &externalPackageTestStage{pkg: pkg}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{Status: registry.SignatureInvalid, ReasonCodes: []string{"signature_verification_failed"}})
+	configureExternalPackageTestModule(h, stage)
 
 	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
@@ -444,15 +388,15 @@ func TestExternalPackageInspectionBindsExactSessionAndBlocksInvalidSignature(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inspection.SignatureAssessment.State != "invalid" || inspection.ExecutionApproval.State != "policy_blocked" {
+	if inspection.ExecutionApproval.State != "pending" {
 		t.Fatalf("blocked inspection = %#v", inspection)
 	}
 	otherSession := hostTestContextWith("other_session", "user_hash", "env_hash", "other_channel")
-	if _, err := h.InstallInspectedPackage(otherSession, InstallInspectedPackageRequest{InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256}); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
+	if _, err := h.installInspectedPackage(otherSession, installInspectedPackageRequest{InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256}); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
 		t.Fatalf("cross-session commit error = %v", err)
 	}
-	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256}); !errors.Is(err, ErrExternalPackageInstallBlocked) {
-		t.Fatalf("invalid signature commit error = %v", err)
+	if _, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256}); err != nil {
+		t.Fatalf("same-session commit error = %v", err)
 	}
 	if stage.removedCount() != 1 {
 		t.Fatalf("blocked commit staged artifact remove count = %d, want 1", stage.removedCount())
@@ -460,10 +404,10 @@ func TestExternalPackageInspectionBindsExactSessionAndBlocksInvalidSignature(t *
 }
 
 func TestExternalPackageInspectRemovesExpiredPendingStageBeforeFetching(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	pkg := readTestPackage(t, buildFixturePackage(t))
 	stage := &externalPackageTestStage{pkg: pkg}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 
 	first, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
@@ -491,9 +435,9 @@ func TestExternalPackageInspectRemovesExpiredPendingStageBeforeFetching(t *testi
 
 func TestExternalPackageExpiredCleanupFailureRetainsInspectionForRetry(t *testing.T) {
 	cleanupErr := errors.New("stage cleanup failed")
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t)), removeErr: cleanupErr}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	first, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
@@ -538,9 +482,9 @@ func TestExternalPackageExpiredCleanupFailureRetainsInspectionForRetry(t *testin
 }
 
 func TestExternalPackageInspectReservationLetsSessionRevokeDrainRegisteredStage(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	baseFetcher := h.adapters.ExternalPackageFetcher.(*externalPackageTestFetcher)
 	blocking := &blockingExternalPackageTestFetcher{result: baseFetcher.result, entered: make(chan struct{}), release: make(chan struct{})}
 	h.adapters.ExternalPackageFetcher = blocking
@@ -578,9 +522,9 @@ func TestExternalPackageInspectReservationLetsSessionRevokeDrainRegisteredStage(
 
 func TestExternalPackageSessionRevokeCleanupFailureIsFencedAndRetryable(t *testing.T) {
 	cleanupErr := errors.New("session stage cleanup failed")
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	if _, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/revoke-cleanup-retry.redevplugin"},
@@ -614,38 +558,10 @@ func TestExternalPackageSessionRevokeCleanupFailureIsFencedAndRetryable(t *testi
 	}
 }
 
-func TestExternalPackageCommitReassessesSignatureAndBlocksNewRevocation(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	pkg := readTestPackage(t, buildFixturePackage(t))
-	pkg.PackageSignature = &pluginpkg.PackageSignature{SchemaVersion: pluginpkg.PackageSignatureSchemaVersion, Algorithm: "ed25519", KeyID: "known", Signature: "test"}
-	stage := &externalPackageTestStage{pkg: pkg}
-	assessor := &mutableExternalPackageTestAssessor{assessment: registry.SignatureAssessment{
-		Status: registry.SignatureVerified, EvidenceReference: "sha256:key", KeyringGeneration: "1", RevocationGeneration: "1",
-	}}
-	configureExternalPackageTestModuleWithAssessor(h, stage, assessor)
-
-	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
-		Intent: ExternalPackageIntent{Action: "install"},
-		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/revoked-after-inspect.redevplugin"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assessor.setAssessment(registry.SignatureAssessment{Status: registry.SignatureRevoked, ReasonCodes: []string{"signing_key_revoked"}})
-	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
-		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
-	}); !errors.Is(err, ErrExternalPackageInstallBlocked) {
-		t.Fatalf("InstallInspectedPackage() error = %v, want blocked", err)
-	}
-	if stage.removedCount() != 1 {
-		t.Fatalf("revoked commit staged artifact remove count = %d, want 1", stage.removedCount())
-	}
-}
-
 func TestExternalPackageExpiredInspectionRemovesStagedArtifact(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
@@ -655,10 +571,10 @@ func TestExternalPackageExpiredInspectionRemovesStagedArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	if _, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256, Now: inspection.ExpiresAt,
 	}); !errors.Is(err, ErrExternalPackageInspectionExpired) {
-		t.Fatalf("InstallInspectedPackage() error = %v, want expired", err)
+		t.Fatalf("installInspectedPackage() error = %v, want expired", err)
 	}
 	if stage.removedCount() != 1 {
 		t.Fatalf("expired inspection staged artifact remove count = %d, want 1", stage.removedCount())
@@ -666,9 +582,9 @@ func TestExternalPackageExpiredInspectionRemovesStagedArtifact(t *testing.T) {
 }
 
 func TestExternalPackageInstallBindsConfirmedHashAndReverifiedBytes(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/exact.redevplugin"},
@@ -676,14 +592,14 @@ func TestExternalPackageInstallBindsConfirmedHashAndReverifiedBytes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	if _, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: "sha256:other",
 	}); !errors.Is(err, ErrExternalPackageConfirmation) {
 		t.Fatalf("mismatched confirmation hash error = %v", err)
 	}
 
 	stage.setPackage(readTestPackage(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")))
-	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	if _, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 	}); err == nil || !strings.Contains(err.Error(), "changed after inspection") {
 		t.Fatalf("changed staged bytes error = %v", err)
@@ -694,9 +610,9 @@ func TestExternalPackageInstallBindsConfirmedHashAndReverifiedBytes(t *testing.T
 }
 
 func TestExternalPackageInspectionExpiresAcrossHostRestart(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/restart.redevplugin"},
@@ -705,7 +621,7 @@ func TestExternalPackageInspectionExpiresAcrossHostRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.externalInspections = newExternalPackageInspectionStore()
-	if _, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	if _, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 	}); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
 		t.Fatalf("inspection survived Host restart: %v", err)
@@ -713,9 +629,9 @@ func TestExternalPackageInspectionExpiresAcrossHostRestart(t *testing.T) {
 }
 
 func TestExternalFreshInstallUsesInstallCommitAndPublishesDerivedState(t *testing.T) {
-	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildCurrentLifecyclePackage(t, currentSettingsManifestJSON()))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/install-commit.redevplugin"},
@@ -723,7 +639,7 @@ func TestExternalFreshInstallUsesInstallCommitAndPublishesDerivedState(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	installed, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 	})
 	if err != nil {
@@ -754,98 +670,10 @@ func TestExternalFreshInstallUsesInstallCommitAndPublishesDerivedState(t *testin
 	}
 }
 
-func TestExternalPackageFreshnessRevokesRuntimeButKeepsEnabled(t *testing.T) {
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	pkg := readTestPackage(t, buildFixturePackage(t))
-	pkg.PackageSignature = &pluginpkg.PackageSignature{SchemaVersion: pluginpkg.PackageSignatureSchemaVersion, Algorithm: "ed25519", KeyID: "known", Signature: "test"}
-	stage := &externalPackageTestStage{pkg: pkg}
-	assessor := &mutableExternalPackageTestAssessor{assessment: registry.SignatureAssessment{
-		Status: registry.SignatureVerified, EvidenceReference: "sha256:key", KeyringGeneration: "1", RevocationGeneration: "1",
-	}}
-	configureExternalPackageTestModuleWithAssessor(h, stage, assessor)
-	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
-		Intent: ExternalPackageIntent{Action: "install"},
-		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/freshness.redevplugin"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	committed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
-		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := *committed.Plugin
-	opened, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
-		PluginInstanceID:           record.PluginInstanceID,
-		SurfaceID:                  "lifecycle.view",
-		SurfaceInstanceID:          "surface_before_signature_revocation",
-		ExpectedManagementRevision: record.ManagementRevision,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assessor.setFreshness(registry.SignatureAssessment{Status: registry.SignatureUnavailable}, errors.New("keyring offline"))
-	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
-		PluginInstanceID:           record.PluginInstanceID,
-		SurfaceID:                  "lifecycle.view",
-		SurfaceInstanceID:          "surface_while_signature_service_unavailable",
-		ExpectedManagementRevision: record.ManagementRevision,
-	}); err != nil {
-		t.Fatalf("OpenSurface() unavailable freshness error = %v", err)
-	}
-	assessor.setFreshness(registry.SignatureAssessment{Status: registry.SignatureRevoked}, nil)
-	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
-		PluginInstanceID:           record.PluginInstanceID,
-		SurfaceID:                  "lifecycle.view",
-		SurfaceInstanceID:          "surface_after_signature_revocation",
-		ExpectedManagementRevision: record.ManagementRevision,
-	}); !errors.Is(err, ErrPluginTrustDenied) {
-		t.Fatalf("OpenSurface() revoked freshness error = %v, want trust denied", err)
-	}
-	stored, err := h.getPluginRecord(hostTestContext(), record.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.EnableState != registry.EnableEnabled {
-		t.Fatalf("signature revocation changed enable state to %q", stored.EnableState)
-	}
-	if stored.RevokeEpoch <= record.RevokeEpoch {
-		t.Fatalf("signature revocation did not advance revoke epoch: before=%d after=%d", record.RevokeEpoch, stored.RevokeEpoch)
-	}
-	if _, err := h.PrepareSurface(hostTestContext(), PrepareSurfaceRequest{
-		SurfaceInstanceID: opened.SurfaceInstanceID,
-		AssetTicket:       opened.AssetTicket,
-	}); err == nil {
-		t.Fatal("PrepareSurface() reused a ticket after signature revocation")
-	}
-	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
-		t.Fatal("revoked freshness did not revoke runtime capabilities")
-	}
-}
-
-func TestExternalPackageFreshnessDoesNotAffectLocalPlugins(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	assessor := &mutableExternalPackageTestAssessor{}
-	h.adapters.ExternalPackageSignatureAssessor = assessor
-	if err := h.canRun(hostTestContext(), installed); err != nil {
-		t.Fatalf("canRun() local plugin error = %v", err)
-	}
-	if assessor.freshnessCallCount() != 0 {
-		t.Fatalf("local plugin freshness calls = %d, want 0", assessor.freshnessCallCount())
-	}
-}
-
 func TestExternalPackageHostCloseDrainsPendingStagedArtifacts(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	if _, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/pending-close.redevplugin"},
@@ -862,9 +690,9 @@ func TestExternalPackageHostCloseDrainsPendingStagedArtifacts(t *testing.T) {
 
 func TestExternalPackageHostCloseReturnsStageCleanupFailure(t *testing.T) {
 	cleanupErr := errors.New("stage cleanup failed")
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, expectCloseErr: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{expectCloseErr: true})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t)), removeErr: cleanupErr}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	if _, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/cleanup-failure.redevplugin"},
@@ -877,9 +705,9 @@ func TestExternalPackageHostCloseReturnsStageCleanupFailure(t *testing.T) {
 }
 
 func TestExternalPackageUpdatePreservesEnabledIntent(t *testing.T) {
-	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
 		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/lifecycle-v1.redevplugin"},
@@ -887,7 +715,7 @@ func TestExternalPackageUpdatePreservesEnabledIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	installed, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 	})
 	if err != nil {
@@ -905,7 +733,7 @@ func TestExternalPackageUpdatePreservesEnabledIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := h.InstallInspectedPackage(hostTestContext(), InstallInspectedPackageRequest{
+	updated, err := h.installInspectedPackage(hostTestContext(), installInspectedPackageRequest{
 		InspectionID: updateInspection.InspectionID, ExpectedPackageSHA256: updateInspection.InspectedHashes.PackageSHA256,
 	})
 	if err != nil {
@@ -930,9 +758,9 @@ func TestExternalPackageUpdatePreservesEnabledIntent(t *testing.T) {
 }
 
 func TestExternalPackageUpdatePreservesUserDisabledIntent(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
-	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	configureExternalPackageTestModule(h, stage)
 	ctx := hostTestContext()
 	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
 		Intent: ExternalPackageIntent{Action: "install"},
@@ -941,7 +769,7 @@ func TestExternalPackageUpdatePreservesUserDisabledIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
+	installed, err := h.installInspectedPackage(ctx, installInspectedPackageRequest{
 		InspectionID: inspection.InspectionID, ExpectedPackageSHA256: inspection.InspectedHashes.PackageSHA256,
 	})
 	if err != nil {
@@ -963,7 +791,7 @@ func TestExternalPackageUpdatePreservesUserDisabledIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{
+	updated, err := h.installInspectedPackage(ctx, installInspectedPackageRequest{
 		InspectionID: updateInspection.InspectionID, ExpectedPackageSHA256: updateInspection.InspectedHashes.PackageSHA256,
 	})
 	if err != nil {
@@ -974,11 +802,7 @@ func TestExternalPackageUpdatePreservesUserDisabledIntent(t *testing.T) {
 	}
 }
 
-func configureExternalPackageTestModule(h *Host, stage *externalPackageTestStage, assessment registry.SignatureAssessment) {
-	configureExternalPackageTestModuleWithAssessor(h, stage, externalPackageTestAssessor{assessment: assessment})
-}
-
-func configureExternalPackageTestModuleWithAssessor(h *Host, stage *externalPackageTestStage, assessor ExternalPackageSignatureAssessor) {
+func configureExternalPackageTestModule(h *Host, stage *externalPackageTestStage) {
 	rawDigest := sha256.Sum256([]byte("external-package-test-artifact"))
 	artifact := externalsource.StagedArtifact{ID: "0123456789abcdef0123456789abcdef", Size: 1, SHA256: hex.EncodeToString(rawDigest[:])}
 	stage.uploaded = artifact
@@ -987,6 +811,45 @@ func configureExternalPackageTestModuleWithAssessor(h *Host, stage *externalPack
 		Artifact: artifact, Source: "https://plugins.example.test/example.redevplugin", Final: "https://plugins.example.test/example.redevplugin",
 	}}
 	h.adapters.ExternalPackageGitHubResolver = externalPackageTestGitHubResolver{}
-	h.adapters.ExternalPackageSignatureAssessor = assessor
 	h.features[FeatureExternalPackage] = struct{}{}
+}
+
+func newReleaseInstallCapabilityFixture(t *testing.T) (pluginpkg.Package, capabilitycontract.KnownContract) {
+	t.Helper()
+	contract, err := fixtureCapabilityContract("example.capability.echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract.PublisherID = "fixture.capability"
+	known, err := capabilitycontract.NewKnownContract(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal([]byte(hostReleaseManifestJSON()), &document); err != nil {
+		t.Fatal(err)
+	}
+	pinBytes, err := json.Marshal(known.Pin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pinDocument map[string]any
+	if err := json.Unmarshal(pinBytes, &pinDocument); err != nil {
+		t.Fatal(err)
+	}
+	document["capability_bindings"] = []any{map[string]any{"binding_id": "fixture.echo", "contract": pinDocument}}
+	document["methods"] = []any{map[string]any{
+		"method": "echo.ping",
+		"route":  map[string]any{"kind": "capability", "binding_id": "fixture.echo", "target_method": "echo.ping"},
+	}}
+	manifestBytes, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := readTestPackage(t, buildHostReleasePackageFromManifest(t, string(manifestBytes)))
+	return pkg, known
+}
+
+func (externalPackageTestGitHubResolver) ListPlugins(context.Context, string, string) ([]repositoryindex.Plugin, error) {
+	return nil, errors.New("unexpected repository listing")
 }

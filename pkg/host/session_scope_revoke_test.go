@@ -17,7 +17,7 @@ import (
 )
 
 func TestRevokeSessionScopeFencesDrainsAndResumesIdempotently(t *testing.T) {
-	h, _, audits := newTestHost(t, true, true)
+	h, _, audits := newTestHost(t)
 	ctx := hostTestContext()
 	session, err := requireUserSession(ctx)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestRevokeSessionScopeWaitsForRuntimeTerminalAckAndPersistsCounts(t *testin
 		QueuedInvocations: 2, RunningInvocations: 1, StorageHostcalls: 3,
 		ActiveNetworkRequests: 5, Sockets: 7, NetworkStreams: 11,
 	}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtimeManager})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtimeManager})
 
 	result, err := h.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{Now: time.Now().UTC()})
 	if err != nil {
@@ -92,7 +92,7 @@ func TestRevokeSessionScopeWaitsForRuntimeTerminalAckAndPersistsCounts(t *testin
 }
 
 func TestRevokeSessionScopeCompletesWithStoppedRuntimeWithoutRestart(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	h.adapters.RuntimeManager = newNeverStartedProcessManagerForHost(t, h)
 
 	result, err := h.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{Now: time.Now().UTC()})
@@ -111,8 +111,8 @@ func TestRevokeSessionScopeResumesDurableIncompleteTeardownAfterReopenWithoutRun
 	failingRuntime := newRecordingRuntimeManager()
 	failingRuntime.sessionRevokeErr = errors.New("terminal runtime acknowledgement lost")
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: failingRuntime,
-		stateRoot: stateRoot, sessionScopePath: sessionScopePath,
+		runtimeManager: failingRuntime,
+		stateRoot:      stateRoot, sessionScopePath: sessionScopePath,
 	})
 	session, err := requireUserSession(hostTestContext())
 	if err != nil {
@@ -132,8 +132,8 @@ func TestRevokeSessionScopeResumesDurableIncompleteTeardownAfterReopenWithoutRun
 	}
 
 	reopened, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: newNeverStartedProcessManager(t),
-		stateRoot: stateRoot, sessionScopePath: sessionScopePath,
+		runtimeManager: newNeverStartedProcessManager(t),
+		stateRoot:      stateRoot, sessionScopePath: sessionScopePath,
 	})
 	scope, err := session.SessionScope()
 	if err != nil {
@@ -147,7 +147,7 @@ func TestRevokeSessionScopeResumesDurableIncompleteTeardownAfterReopenWithoutRun
 func TestRevokeSessionScopeRuntimeAckFailureIsCommittedIncomplete(t *testing.T) {
 	runtimeManager := newRecordingRuntimeManager()
 	runtimeManager.sessionRevokeErr = errors.New("terminal runtime acknowledgement lost")
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtimeManager})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtimeManager})
 
 	result, err := h.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{Now: time.Now().UTC()})
 	if !errors.Is(err, ErrSessionTeardownIncomplete) {

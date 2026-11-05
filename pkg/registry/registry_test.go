@@ -47,9 +47,8 @@ func TestStoreRevisionsAndList(t *testing.T) {
 				PluginID:          "com.example.test",
 				Version:           "1.0.0",
 				ActiveFingerprint: "sha256:test",
-				TrustState:        TrustVerified,
 				PackageSourceProvenance: PackageSourceProvenance{
-					Kind: PackageSourceLocalGenerated,
+					Kind: PackageSourceLocalPackage,
 				},
 				EnableState: EnableDisabledByUser,
 				Manifest:    currentTestManifest("com.example.test", "1.0.0"),
@@ -126,9 +125,8 @@ func TestStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
 				Version:           "1.0.0",
 				ActiveFingerprint: "sha256:v1",
 				PackageHash:       "sha256:v1",
-				TrustState:        TrustVerified,
 				PackageSourceProvenance: PackageSourceProvenance{
-					Kind: PackageSourceLocalGenerated,
+					Kind: PackageSourceLocalPackage,
 				},
 				EnableState: EnableEnabled,
 				Manifest:    currentTestManifest("com.example.test", "1.0.0"),
@@ -141,13 +139,12 @@ func TestStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
 			stored.Version = "2.0.0"
 			stored.ActiveFingerprint = "sha256:v2"
 			stored.PackageHash = "sha256:v2"
-			stored.SignatureAssessment = SignatureAssessment{}
 			stored.PackageSourceProvenance.PackageSHA256 = "sha256:v2"
 			stored.ExecutionApproval = ExecutionApproval{}
 			stored.UpdateEligibility = ""
 			stored.VersionHistory = []PluginVersion{{
 				Version: "1.0.0", PackageHash: "sha256:v1",
-				PackageSourceProvenance: PackageSourceProvenance{Kind: PackageSourceLocalGenerated},
+				PackageSourceProvenance: PackageSourceProvenance{Kind: PackageSourceLocalPackage},
 				Manifest:                currentTestManifest("com.example.test", "1.0.0"),
 			}}
 			updated, err := store.PutPlugin(registryTestContext(), stored, PutOptions{Now: now.Add(time.Second)})
@@ -175,20 +172,14 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 				PluginID:          "com.example.clone",
 				Version:           "1.0.0",
 				ActiveFingerprint: "sha256:clone",
-				TrustState:        TrustVerified,
-				TrustAssessment: TrustAssessment{
-					TrustState:  TrustVerified,
-					ReasonCodes: []string{"verified"},
-					Metadata:    map[string]string{"key": "original"},
-				},
+
 				PackageHash:  "sha256:package-current",
 				ManifestHash: "sha256:manifest-current",
 				EntriesHash:  "sha256:entries-current",
 				PackageSourceProvenance: PackageSourceProvenance{
-					Kind: PackageSourceLocalGenerated,
+					Kind: PackageSourceLocalPackage,
 				},
-				ReleaseTrustBinding:   testReleaseTrustBinding("source.original", "1.0.0"),
-				LocalImportProvenance: &LocalImportProvenance{ImportID: "import_original", Distribution: "local_import"},
+
 				CapabilityContracts: []capabilitycontract.Pin{{
 					PublisherID:     "example.publisher",
 					ContractID:      "example.documents.v1",
@@ -221,11 +212,11 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 					ManifestHash:      "sha256:manifest-history",
 					EntriesHash:       "sha256:entries-history",
 					PackageSourceProvenance: PackageSourceProvenance{
-						Kind: PackageSourceLocalGenerated,
+						Kind: PackageSourceLocalPackage,
 					},
-					ReleaseTrustBinding: testReleaseTrustBinding("history.original", "0.9.0"),
-					Manifest:            currentTestManifest("com.example.clone", "0.9.0"),
-					Metadata:            map[string]string{"history": "original"},
+
+					Manifest: currentTestManifest("com.example.clone", "0.9.0"),
+					Metadata: map[string]string{"history": "original"},
 				}},
 				Metadata: map[string]string{"record": "original"},
 			}
@@ -244,9 +235,6 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			record.ReleaseTrustBinding.SourceID = "source.mutated-input"
-			record.TrustAssessment.Metadata["key"] = "mutated-input"
-			stored.ReleaseTrustBinding.SourceID = "source.mutated-return"
 			stored.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["type"] = "number"
 			stored.VersionHistory[0].Metadata["history"] = "mutated-return"
 
@@ -254,9 +242,7 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.ReleaseTrustBinding.SourceID != "source.original" ||
-				got.TrustAssessment.Metadata["key"] != "original" ||
-				got.CanonicalManifest != string(canonical) ||
+			if got.CanonicalManifest != string(canonical) ||
 				got.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["type"] != "string" ||
 				got.VersionHistory[0].CanonicalManifest != string(historyCanonical) ||
 				got.VersionHistory[0].Metadata["history"] != "original" {
@@ -280,15 +266,6 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 	}
 }
 
-func testReleaseTrustBinding(sourceID string, version string) *ReleaseTrustBinding {
-	return &ReleaseTrustBinding{
-		SourceID: sourceID, Channel: "stable", ReleaseMetadataRef: "plugins/example/release.json",
-		ReleaseMetadataSHA256: strings.Repeat("1", 64), PublisherID: "example.publisher",
-		PluginID: "com.example.clone", Version: version,
-		RootEpoch: "1", PolicyEpoch: "1", RevocationEpoch: "1",
-	}
-}
-
 func TestStoreAbortInstall(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -299,9 +276,8 @@ func TestStoreAbortInstall(t *testing.T) {
 				PluginID:          "com.example.delete",
 				Version:           "1.0.0",
 				ActiveFingerprint: "sha256:delete",
-				TrustState:        TrustVerified,
 				PackageSourceProvenance: PackageSourceProvenance{
-					Kind: PackageSourceLocalGenerated,
+					Kind: PackageSourceLocalPackage,
 				},
 				EnableState: EnableEnabled,
 				Manifest:    currentTestManifest("com.example.delete", "1.0.0"),

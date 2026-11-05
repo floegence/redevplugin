@@ -33,7 +33,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
-	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
 	"github.com/floegence/redevplugin/v3/pkg/security"
@@ -133,14 +132,14 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 		t.Helper()
 		observabilityStore := observability.NewMemoryStore()
 		return Config{StateRoot: filepath.Join(t.TempDir(), "control-state"), Core: CoreAdapters{
-			Policy:               policyAdapter{decision: PolicyAllow},
-			Authorization:        allowAuthorizationAdapter{},
-			PackageTrustVerifier: &recordingPackageTrustVerifier{},
-			Audit:                observabilityStore,
-			SecurityAudit:        observabilityStore,
-			Diagnostics:          observabilityStore,
-			SurfaceCatalog:       &surfaceSink{},
-			Assets:               pluginpkg.NewMemoryAssetStore(),
+			Policy:        policyAdapter{decision: PolicyAllow},
+			Authorization: allowAuthorizationAdapter{},
+
+			Audit:          observabilityStore,
+			SecurityAudit:  observabilityStore,
+			Diagnostics:    observabilityStore,
+			SurfaceCatalog: &surfaceSink{},
+			Assets:         pluginpkg.NewMemoryAssetStore(),
 		}}
 	}
 
@@ -150,7 +149,6 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 	}{
 		{name: "policy", clear: func(a *CoreAdapters) { a.Policy = nil }},
 		{name: "authorization", clear: func(a *CoreAdapters) { a.Authorization = nil }},
-		{name: "package trust verifier", clear: func(a *CoreAdapters) { a.PackageTrustVerifier = nil }},
 		{name: "audit", clear: func(a *CoreAdapters) { a.Audit = nil }},
 		{name: "security audit", clear: func(a *CoreAdapters) { a.SecurityAudit = nil }},
 		{name: "diagnostics", clear: func(a *CoreAdapters) { a.Diagnostics = nil }},
@@ -168,7 +166,7 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 }
 
 func TestLifecycleInstallDisableUninstall(t *testing.T) {
-	host, surfaces, audits := newTestHost(t, true, true)
+	host, surfaces, audits := newTestHost(t)
 	packageBytes := buildFixturePackage(t)
 
 	installed, err := ImportLocalPackageBytes(hostTestContext(), host, nextTestPluginInstanceID(t), packageBytes)
@@ -181,10 +179,8 @@ func TestLifecycleInstallDisableUninstall(t *testing.T) {
 	if installed.PolicyRevision == 0 || installed.ManagementRevision == 0 {
 		t.Fatalf("revision fields not initialized: %#v", installed)
 	}
-	if installed.LocalImportProvenance == nil ||
-		installed.LocalImportProvenance.Distribution != string(PackageDistributionLocalImport) ||
-		installed.LocalImportProvenance.UnsignedPolicy != localImportUnsignedPolicy {
-		t.Fatalf("local import provenance mismatch: %#v", installed.LocalImportProvenance)
+	if installed.PackageSourceProvenance.Kind != registry.PackageSourceLocalPackage {
+		t.Fatalf("local import provenance mismatch: %#v", installed.PackageSourceProvenance)
 	}
 
 	if len(surfaces.snapshots) != 1 || len(surfaces.snapshots[0].Surfaces) != 1 {
@@ -218,7 +214,7 @@ func TestLifecycleInstallDisableUninstall(t *testing.T) {
 
 func TestReinstallWithRetainedDataReactivatesSamePluginInstance(t *testing.T) {
 	ctx := hostTestContext()
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	packageBytes := buildFixturePackage(t)
 	pluginInstanceID := nextTestPluginInstanceID(t)
 
@@ -270,7 +266,7 @@ func TestReinstallWithRetainedDataReactivatesSamePluginInstance(t *testing.T) {
 
 func TestDeleteDataReinstallCanOpenSurfaceInSameHostSession(t *testing.T) {
 	ctx := hostTestContext()
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	packageBytes := buildFixturePackage(t)
 	pluginInstanceID := nextTestPluginInstanceID(t)
 
@@ -324,81 +320,9 @@ func TestDeleteDataReinstallCanOpenSurfaceInSameHostSession(t *testing.T) {
 	}
 }
 
-func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
-	ctx := hostTestContext()
-	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
-
-	for _, tc := range []struct {
-		name           string
-		developerMode  bool
-		localGenerated bool
-	}{
-		{name: "developer mode disabled", developerMode: false, localGenerated: true},
-		{name: "local generated plugins disabled", developerMode: true, localGenerated: false},
-	} {
-		t.Run("install "+tc.name, func(t *testing.T) {
-			h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
-				developerMode:  tc.developerMode,
-				localGenerated: tc.localGenerated,
-			})
-			reader := &readAtProbe{reader: bytes.NewReader(packageBytes)}
-			if _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-				PluginInstanceID: nextTestPluginInstanceID(t),
-				PackageReader:    reader,
-				PackageSize:      int64(len(packageBytes)),
-			}); !errors.Is(err, security.ErrPolicyDenied) {
-				t.Fatalf("ImportLocalPackage() error = %v, want ErrPolicyDenied", err)
-			}
-			if reader.calls != 0 {
-				t.Fatalf("policy-denied import read package %d times", reader.calls)
-			}
-			records, err := h.ListPlugins(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(records) != 0 || len(surfaces.snapshots) != 0 || len(audits.events) != 0 {
-				t.Fatalf("policy-denied import produced side effects: records=%#v surfaces=%#v audits=%#v", records, surfaces.snapshots, audits.events)
-			}
-		})
-	}
-
-	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-	})
-	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), packageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	auditCountBefore := len(audits.events)
-	surfaceCountBefore := len(surfaces.snapshots)
-	h.adapters.Policy = policyAdapter{developerMode: false, localGenerated: true, decision: PolicyAllow}
-	nextBytes := buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle 2")
-	reader := &readAtProbe{reader: bytes.NewReader(nextBytes)}
-	if _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
-		PluginInstanceID:           installed.PluginInstanceID,
-		ExpectedManagementRevision: installed.ManagementRevision,
-		PackageReader:              reader,
-		PackageSize:                int64(len(nextBytes)),
-	}); !errors.Is(err, security.ErrPolicyDenied) {
-		t.Fatalf("UpdateLocalPackage() error = %v, want ErrPolicyDenied", err)
-	}
-	if reader.calls != 0 {
-		t.Fatalf("policy-denied update read package %d times", reader.calls)
-	}
-	stored, err := h.getPluginRecord(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.Version != installed.Version || stored.PackageHash != installed.PackageHash || stored.ManagementRevision != installed.ManagementRevision ||
-		len(audits.events) != auditCountBefore || len(surfaces.snapshots) != surfaceCountBefore {
-		t.Fatalf("policy-denied update produced side effects: stored=%#v audits=%#v surfaces=%#v", stored, audits.events, surfaces.snapshots)
-	}
-}
-
 func TestManagementRevisionFailsClosedWithoutSideEffects(t *testing.T) {
 	ctx := hostTestContext()
-	h, surfaces, audits := newTestHost(t, true, true)
+	h, surfaces, audits := newTestHost(t)
 	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -474,7 +398,7 @@ func TestManagementRevisionFailsClosedWithoutSideEffects(t *testing.T) {
 }
 
 func TestEnableReportsCommittedOutcomeAfterRegistryCommit(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -511,8 +435,6 @@ func TestEnableReportsCommittedOutcomeAfterRegistryCommit(t *testing.T) {
 func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) {
 	ctx := hostTestContext()
 	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
@@ -576,8 +498,8 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	if updated.Version != "2.0.0" || updated.EnableState != registry.EnableEnabled || len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Version != "1.0.0" {
 		t.Fatalf("updated record mismatch: %#v", updated)
 	}
-	if updated.LocalImportProvenance == nil || updated.VersionHistory[0].LocalImportProvenance == nil {
-		t.Fatalf("local import provenance missing from update/version history: updated=%#v history=%#v", updated.LocalImportProvenance, updated.VersionHistory[0].LocalImportProvenance)
+	if updated.PackageSourceProvenance.Kind != registry.PackageSourceLocalPackage || updated.VersionHistory[0].PackageSourceProvenance.Kind != registry.PackageSourceLocalPackage {
+		t.Fatalf("local import provenance missing from update/version history: updated=%#v history=%#v", updated.PackageSourceProvenance, updated.VersionHistory[0].PackageSourceProvenance)
 	}
 	if updated.ManagementRevision <= installed.ManagementRevision || updated.RevokeEpoch <= installed.RevokeEpoch {
 		t.Fatalf("update did not bump revision/revoke epoch: before=%#v after=%#v", installed, updated)
@@ -620,7 +542,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 
 func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
 	ctx := hostTestContext()
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
 	if err != nil {
 		t.Fatal(err)
@@ -638,7 +560,7 @@ func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
 
 func TestUpdateRejectsPluginDataContractChanges(t *testing.T) {
 	ctx := hostTestContext()
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	v1 := buildDataShapeFixturePackage(t, dataShapeFixtureOptions{
 		Version:        "1.0.0",
 		SettingsSchema: 1,
@@ -664,93 +586,6 @@ func TestUpdateRejectsPluginDataContractChanges(t *testing.T) {
 	}
 }
 
-func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
-	ctx := hostTestContext()
-	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "old"}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		trustVerifier:  verifier,
-	})
-	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	verifier.trustState = registry.TrustVerified
-	verifier.metadata = map[string]string{"trust.key_id": "new"}
-	nextBytes := buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")
-
-	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PackageReader:    bytes.NewReader(nextBytes),
-		PackageSize:      int64(len(nextBytes)), ExpectedManagementRevision: mustManagementRevision(t, h,
-			installed.PluginInstanceID),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if verifier.last.Action != PackageTrustActionUpdate || verifier.last.CurrentRecord == nil || verifier.last.CurrentRecord.PackageHash != installed.PackageHash {
-		t.Fatalf("verifier update request mismatch: %#v", verifier.last)
-	}
-	if updated.Metadata["trust.key_id"] != "new" {
-		t.Fatalf("updated metadata = %#v", updated.Metadata)
-	}
-	if len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Metadata["trust.key_id"] != "old" {
-		t.Fatalf("version history metadata mismatch: %#v", updated.VersionHistory)
-	}
-}
-
-func TestActiveFingerprintIncludesPackageCapabilitiesAndTrustEpochs(t *testing.T) {
-	pkg := readTestPackage(t, buildVersionedRPCPackage(t, "1.0.0", "RPC"))
-	trust := registry.TrustAssessment{
-		TrustState:           registry.TrustVerified,
-		TrustAssessmentEpoch: "trust_epoch_1",
-		PolicyEpoch:          "1",
-		RevocationEpoch:      "1",
-	}
-	first := activeFingerprintForPackage(pkg, "plugini_fingerprint", trust, nil)
-	if first == "" || first != activeFingerprintForPackage(pkg, "plugini_fingerprint", trust, nil) {
-		t.Fatalf("active fingerprint should be stable, got %q", first)
-	}
-	metadataChanged := trust
-	metadataChanged.Metadata = map[string]string{"ignored": "metadata"}
-	if got := activeFingerprintForPackage(pkg, "plugini_fingerprint", metadataChanged, nil); got != first {
-		t.Fatalf("metadata-only trust change affected active fingerprint: got %q want %q", got, first)
-	}
-	for name, mutate := range map[string]func(pluginpkg.Package, registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment){
-		"package_hash": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
-			pkg.PackageHash = strings.Repeat("a", 64)
-			return pkg, trust
-		},
-		"capability_contract": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
-			contract := pkg.Manifest.CapabilityBindings[0].Contract
-			contract.ContractID = "example.extra.v1"
-			contract.ArtifactSHA256 = strings.Repeat("a", 64)
-			pkg.Manifest.CapabilityBindings = append(pkg.Manifest.CapabilityBindings, manifest.CapabilityBinding{BindingID: "extra", Contract: contract})
-			return pkg, trust
-		},
-		"trust_epoch": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
-			trust.TrustAssessmentEpoch = "trust_epoch_2"
-			return pkg, trust
-		},
-		"policy_epoch": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
-			trust.PolicyEpoch = "2"
-			return pkg, trust
-		},
-		"revocation_epoch": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
-			trust.RevocationEpoch = "2"
-			return pkg, trust
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			changedPkg, changedTrust := mutate(pkg, trust)
-			if got := activeFingerprintForPackage(changedPkg, "plugini_fingerprint", changedTrust, nil); got == first {
-				t.Fatalf("active fingerprint did not change for %s", name)
-			}
-		})
-	}
-}
-
 func TestLocalInstallUsesTheManifestExactCapabilityContractPin(t *testing.T) {
 	capabilities := capability.NewRegistry()
 	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
@@ -765,7 +600,7 @@ func TestLocalInstallUsesTheManifestExactCapabilityContractPin(t *testing.T) {
 		}
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilities: capabilities,
+		capabilities: capabilities,
 	})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildRPCFixturePackage(t))
 	if err != nil {
@@ -782,7 +617,7 @@ func TestPermissionRequirementsProjectVerifiedContractWithoutCapabilityAdapter(t
 	if err := capabilities.AddContract(verified); err != nil {
 		t.Fatal(err)
 	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, capabilities: capabilities})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{capabilities: capabilities})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -831,108 +666,8 @@ func TestLocalInstallRejectsCapabilityPolicyDeclaredByPluginManifest(t *testing.
 	}
 }
 
-func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) {
-	ctx := hostTestContext()
-	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
-	runtime.revokeResult = runtimeclient.RevokeResult{ClosedStorageHandleCount: 1}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		runtimeManager: runtime,
-	})
-	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t))
-	if err != nil {
-		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
-	}
-	enabled := installed
-	now := stableRecentTestNow().Add(time.Minute)
-	handle, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
-		PluginInstanceID:    enabled.PluginInstanceID,
-		StoreID:             "db",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_1",
-		RuntimeShardID:      "runtime_shard_a",
-		Now:                 now,
-		TTL:                 time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("MintStorageHandleGrant() error = %v", err)
-	}
-	h.adapters.Policy = policyAdapter{developerMode: false, localGenerated: false}
-
-	if _, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
-		PluginInstanceID:    enabled.PluginInstanceID,
-		StoreID:             "db",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_2",
-		RuntimeShardID:      "runtime_shard_a",
-		Now:                 now.Add(time.Second),
-	}); err == nil || !strings.Contains(err.Error(), "unsigned local plugins require developer mode") {
-		t.Fatalf("MintStorageHandleGrant() after unsigned local policy failure error = %v, want policy failure", err)
-	}
-	current, err := h.getPluginRecord(ctx, enabled.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.EnableState != registry.EnableEnabled {
-		t.Fatalf("policy failure rewrote enable state: %s", current.EnableState)
-	}
-	if runtime.revokeCalls != 1 || runtime.lastRevokedPlugin != enabled.PluginInstanceID || runtime.lastRevokeEpoch != current.RevokeEpoch {
-		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d current=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, current)
-	}
-	if _, err := h.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
-		HandleGrantToken: handle.HandleGrant.HandleGrantToken,
-		Audience: bridge.Audience{
-			PluginInstanceID:     enabled.PluginInstanceID,
-			ActiveFingerprint:    enabled.ActiveFingerprint,
-			RuntimeInstanceID:    "runtime_1",
-			RuntimeGenerationID:  "runtime_gen_1",
-			RuntimeShardID:       "runtime_shard_a",
-			OwnerSessionHash:     "session_hash",
-			OwnerUserHash:        "user_hash",
-			OwnerEnvHash:         "env_hash",
-			SessionChannelIDHash: "channel_hash",
-			HandleID:             "storage:db",
-			Method:               "storage.sqlite",
-			ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
-		},
-		Revision: bridge.RevisionBinding{
-			PolicyRevision:     enabled.PolicyRevision,
-			ManagementRevision: enabled.ManagementRevision,
-			RevokeEpoch:        enabled.RevokeEpoch,
-		},
-		Now: now.Add(2 * time.Second),
-	}); !errors.Is(err, bridge.ErrTokenRevoked) {
-		t.Fatalf("ValidateHandleGrant() after unsigned local policy failure error = %v, want %v", err, bridge.ErrTokenRevoked)
-	}
-	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
-		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
-	}
-}
-
-func TestInstallTrustFailureDoesNotCommitPlugin(t *testing.T) {
-	ctx := hostTestContext()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		trustVerifier:  &recordingPackageTrustVerifier{err: errors.New("signature revoked")},
-	})
-	packageBytes := buildFixturePackage(t)
-	pluginInstanceID := nextTestPluginInstanceID(t)
-	if _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PluginInstanceID: pluginInstanceID,
-		PackageReader:    bytes.NewReader(packageBytes),
-		PackageSize:      int64(len(packageBytes)),
-	}); err == nil {
-		t.Fatal("ImportLocalPackage() expected trust failure")
-	}
-	if _, err := h.getPluginRecord(ctx, pluginInstanceID); !errors.Is(err, registry.ErrNotFound) {
-		t.Fatalf("GetPlugin() after failed install error = %v, want ErrNotFound", err)
-	}
-}
-
 func TestSurfaceBridgeLifecycle(t *testing.T) {
-	host, _, _ := newTestHost(t, true, true)
+	host, _, _ := newTestHost(t)
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), host, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
@@ -995,8 +730,6 @@ func TestOpenSurfaceDoesNotWaitForWorkerRuntime(t *testing.T) {
 		Ready:               true,
 	})
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		runtimeManager:    runtime,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
@@ -1040,8 +773,6 @@ func TestMintBridgeTokenSurvivesRuntimeGenerationChanges(t *testing.T) {
 		Ready:               true,
 	})
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: runtime,
 	})
 	now := stableRecentTestNow()
@@ -1084,7 +815,7 @@ func TestMintBridgeTokenSurvivesRuntimeGenerationChanges(t *testing.T) {
 }
 
 func TestWebSurfaceAssetRevalidatesAdapterBytes(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, buildFixturePackage(t))
 	req, _ := openTestWebSurface(t, h, installed.PluginInstanceID, "surface_integrity")
 	asset, err := h.ReadWebSurfaceAsset(context.Background(), ReadWebSurfaceAssetRequest{WebSurfaceRequest: req, Path: "/assets/status.png"})
@@ -1138,7 +869,7 @@ func TestWebSurfaceAssetRevalidatesAdapterBytes(t *testing.T) {
 }
 
 func TestReadPluginIconUsesInstalledPackageAsset(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildPresentationIconFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -1190,7 +921,7 @@ func (s mutatingAssetStore) ReadAsset(ctx context.Context, packageHash string, a
 }
 
 func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
-	host, _, _ := newTestHost(t, true, true)
+	host, _, _ := newTestHost(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), host, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -1215,8 +946,6 @@ func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -1255,7 +984,7 @@ func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 func TestCapabilityRejectionFailsClosedWhenAuditPersistenceFails(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+		capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 	h.securityJournal = &hostFailingSecurityJournal{beginErr: errors.New("audit store unavailable")}
@@ -1277,7 +1006,7 @@ func TestCapabilityTargetProjectorMayAddHostDerivedFields(t *testing.T) {
 		result:       capability.Result{Data: map[string]any{"ok": true}},
 		targetFields: map[string]any{"resource_id": "host-resource-1", "scope": "environment"},
 	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
 	for index := range contract.Methods {
 		if contract.Methods[index].Name == "echo.ping" {
@@ -1314,8 +1043,6 @@ func TestCallPluginMethodBindsCurrentRuntimeAfterGenerationChanges(t *testing.T)
 	})
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 		runtimeManager:    runtime,
@@ -1343,8 +1070,6 @@ func TestCallPluginMethodBindsCurrentRuntimeAfterGenerationChanges(t *testing.T)
 func TestCallPluginMethodRejectsRequestSchemaViolationBeforeDispatch(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -1370,8 +1095,6 @@ func TestCallPluginMethodRejectsRequestSchemaViolationBeforeDispatch(t *testing.
 func TestCallPluginMethodRejectsResponseSchemaViolation(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unknown": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -1404,9 +1127,7 @@ func TestCallPluginMethodNormalizesTypedResponseBeforeRedaction(t *testing.T) {
 		},
 	}}}
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: original}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true,
-	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
 	labels := contract.Methods[0].ResponseSchema["properties"].(map[string]any)["containers"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["labels"].(map[string]any)
 	labels["properties"].(map[string]any)["secret_token"].(map[string]any)["const"] = capability.ResponseRedactedValue
@@ -1443,7 +1164,7 @@ func TestCallPluginMethodRedactsCustomJSONRepresentation(t *testing.T) {
 		`{"containers":[{"id":"container-1","env":["DB_PASSWORD=custom-secret"]}]}`,
 	)}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+		capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
@@ -1480,7 +1201,7 @@ func TestCallPluginMethodRejectsNonJSONValuesBeforeRedaction(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"secret_token": tc.value}}}
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+				capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 			})
 			installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 			_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -1500,8 +1221,6 @@ func TestCallPluginMethodRejectsNonJSONValuesBeforeRedaction(t *testing.T) {
 func TestCallPluginMethodMarksMutatingResponseFailureOutcomeUnknown(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unknown": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -1541,7 +1260,7 @@ func TestCallPluginMethodMarksInvalidMutatingBusinessDetailsOutcomeUnknown(t *te
 			Details: map[string]any{"password": make(chan int)},
 		},
 	}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	if err := h.adapters.Capabilities.Register(capability.Registration{
 		Contract: verified, TargetProjector: capabilityAdapter, Adapter: capabilityAdapter,
 	}); err != nil {
@@ -1567,8 +1286,6 @@ func TestCallPluginMethodMarksInvalidMutatingBusinessDetailsOutcomeUnknown(t *te
 func TestCallPluginMethodMarksUnclassifiedMutatingAdapterFailureOutcomeUnknown(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{err: errors.New("adapter response was lost")}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -1616,8 +1333,6 @@ func TestCallPluginMethodRedactsCapabilityResponseData(t *testing.T) {
 		"secret_ref": "redis_password",
 	}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -1655,8 +1370,6 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 		diagnostics:       diagnostics,
@@ -1785,8 +1498,6 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.revokeResult = runtimeclient.RevokeResult{ClosedSocketCount: 3, ClosedStreamCount: 4, ClosedStorageHandleCount: 5}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 		runtimeManager:    runtime,
@@ -1851,8 +1562,6 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
@@ -1976,8 +1685,6 @@ func TestWorkerExecutionBindingCarriesManifestPermissions(t *testing.T) {
 	}
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: runtime,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildPermissionWorkerFixturePackage(t), "worker.view")
@@ -2034,8 +1741,6 @@ func TestWorkerExecutionBindingWithMultipleGrantedManifestPermissions(t *testing
 	}
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: runtime,
 	})
 	packageBytes := buildMultiPermissionWorkerFixturePackage(t)
@@ -2081,7 +1786,7 @@ func TestCallPluginMethodEnvironmentWorkerLeaseKeepsSessionOwnerUser(t *testing.
 	})
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime,
+		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildEnvironmentWorkerFixturePackage(t), "worker.view")
@@ -2106,8 +1811,6 @@ func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
@@ -2151,8 +1854,6 @@ func TestCallPluginMethodWorkerPayloadCarriesHostOnlyStorageGrants(t *testing.T)
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
@@ -2197,7 +1898,7 @@ func TestCallPluginMethodWorkerPayloadCarriesHostOnlyStorageGrants(t *testing.T)
 }
 
 func TestCallPluginMethodWorkerRouteRequiresRuntimeManager(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
 	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -2216,8 +1917,6 @@ func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
@@ -2246,8 +1945,6 @@ func TestCallPluginMethodWorkerRouteFailsClosedAfterUninstall(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
@@ -2275,9 +1972,7 @@ func TestCallPluginMethodWorkerRouteFailsClosedAfterUninstall(t *testing.T) {
 func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
 	coreAdapter := &recordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		coreActions:    coreAdapter,
+		coreActions: coreAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
 
@@ -2319,7 +2014,7 @@ func TestCoreActionTargetResolutionCannotMutateInvocationArguments(t *testing.T)
 		},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, coreActions: coreAdapter,
+		coreActions: coreAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildNestedCoreActionFixturePackage(t), "core.view")
 	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -2346,7 +2041,7 @@ func TestCallPluginMethodRejectsUnpublishedCoreActionBusinessError(t *testing.T)
 		Details:            map[string]any{"secret_token": "adapter-secret"},
 	}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, coreActions: coreAdapter,
+		coreActions: coreAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
 
@@ -2369,7 +2064,7 @@ func TestCallPluginMethodRejectsUnattestedCoreActionWorkerError(t *testing.T) {
 		Code: "FORGED", Message: "adapter-controlled secret", Origin: runtimeclient.WorkerErrorOriginPlugin,
 	}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, coreActions: coreAdapter,
+		coreActions: coreAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
 
@@ -2392,7 +2087,7 @@ func TestCallPluginMethodRejectsUnattestedTargetProjectorBusinessError(t *testin
 		Code: "FORGED", Message: "adapter controlled message", Details: map[string]any{"secret_token": "adapter-secret"},
 	}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+		capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -2419,7 +2114,7 @@ func TestCallPluginMethodRejectsUnattestedRuntimeBusinessError(t *testing.T) {
 		Code: "FORGED", Message: "runtime controlled message", Details: map[string]any{"secret_token": "runtime-secret"},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime,
+		runtimeManager: runtime,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -2436,7 +2131,7 @@ func TestCallPluginMethodRejectsUnattestedRuntimeBusinessError(t *testing.T) {
 }
 
 func TestCallPluginMethodCoreActionRequiresAdapter(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
 
 	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -2454,7 +2149,7 @@ func TestCallPluginMethodCoreActionRequiresAdapter(t *testing.T) {
 func TestDangerousWorkerAndCoreActionRoutesRequireConfirmation(t *testing.T) {
 	t.Run("core action", func(t *testing.T) {
 		adapter := &recordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
-		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, coreActions: adapter})
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{coreActions: adapter})
 		installed, gateway := installEnableAndMintGateway(t, h, buildDangerousCoreActionFixturePackage(t), "core.view")
 		call := CallMethodRequest{
 			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
@@ -2470,7 +2165,7 @@ func TestDangerousWorkerAndCoreActionRoutesRequireConfirmation(t *testing.T) {
 	t.Run("worker", func(t *testing.T) {
 		runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 		runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
-		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime})
 		installed, gateway := installEnableAndMintGateway(t, h, buildDangerousWorkerFixturePackage(t), "worker.view")
 		call := CallMethodRequest{
 			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
@@ -2514,7 +2209,7 @@ func TestCallPluginMethodRecordsNegativeAuditAndDiagnostic(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			diagnostics := &diagnosticSink{}
 			h, _, audits := newTestHostWithOptions(t, testHostOptions{
-				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: tc.adapter, diagnostics: diagnostics,
+				capabilityID: "example.capability.echo", capabilityAdapter: tc.adapter, diagnostics: diagnostics,
 			})
 			installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 			if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -2562,7 +2257,7 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 		}}
 		verified := verifyFixtureCapabilityContract(t, contract)
 		h, _, audits := newTestHostWithOptions(t, testHostOptions{
-			developerMode: true, localGenerated: true, capabilityContract: &verified, capabilityAdapter: adapter,
+			capabilityContract: &verified, capabilityAdapter: adapter,
 		})
 		installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
 			t,
@@ -2671,7 +2366,7 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 			"DETAILS_TOO_LARGE", "adapter detail", map[string]any{"env": environment},
 		)}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
-			developerMode: true, localGenerated: true, capabilityContract: &verified, capabilityAdapter: adapter,
+			capabilityContract: &verified, capabilityAdapter: adapter,
 		})
 		installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
 			t, rpcFixtureManifestJSON("1.0.0", "RPC"), "RPC", "echo", verified.Pin,
@@ -2720,8 +2415,6 @@ func TestCallPluginMethodRejectsInvalidGatewayToken(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 		diagnostics:       diagnostics,
@@ -2753,7 +2446,7 @@ func TestCallPluginMethodAuditsRemoteSessionMismatch(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo",
+		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
@@ -2775,48 +2468,10 @@ func TestCallPluginMethodAuditsRemoteSessionMismatch(t *testing.T) {
 	}
 }
 
-func TestCallPluginMethodAuditsTrustUnavailable(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
-	diagnostics := &diagnosticSink{}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo",
-		capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
-	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	record, err := h.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record.TrustState = registry.TrustUnavailable
-	record.TrustAssessment.TrustState = registry.TrustUnavailable
-	record.ExecutionApproval.Status = registry.ExecutionApprovalPending
-	if _, err := h.putPluginRecord(hostTestContext(), record, time.Time{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
-		BridgeChannelID: "bridge_rpc",
-		GatewayToken:    gateway.GatewayToken, Method: "echo.ping",
-	}); err == nil {
-		t.Fatal("CallPluginMethod() accepted a trust-unavailable plugin")
-	}
-	if capabilityAdapter.calls != 0 {
-		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
-	}
-	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "trust_unavailable" {
-		t.Fatalf("missing trust-unavailable audit: %#v", audits.events)
-	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "trust_unavailable" {
-		t.Fatalf("missing trust-unavailable diagnostic: %#v", diagnostics.events)
-	}
-}
-
 func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		policyDecision:    PolicyDeny,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
@@ -2848,8 +2503,6 @@ func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -2935,8 +2588,6 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 		diagnostics:       diagnostics,
@@ -2998,8 +2649,6 @@ func TestRejectMethodConfirmationConsumesIntentWithoutDispatch(t *testing.T) {
 	diagnostics := &diagnosticSink{}
 	confirmationIntents := security.NewMemoryConfirmationIntentStore()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:       true,
-		localGenerated:      true,
 		capabilityID:        "example.capability.echo",
 		capabilityAdapter:   capabilityAdapter,
 		confirmationIntents: confirmationIntents,
@@ -3072,8 +2721,6 @@ func TestRejectMethodConfirmationReportsUnknownAfterDurableReject(t *testing.T) 
 	confirmationIntents := security.NewMemoryConfirmationIntentStore()
 	audit := &switchableAuditSink{}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:       true,
-		localGenerated:      true,
 		capabilityID:        "example.capability.echo",
 		capabilityAdapter:   capabilityAdapter,
 		confirmationIntents: confirmationIntents,
@@ -3129,8 +2776,6 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 		},
 	}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.tasks",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3211,7 +2856,7 @@ func TestPrepareMethodConfirmationAcceptsContractValidatedDomainPlan(t *testing.
 		},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
+		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackageWithContract(t, contract), "method_contract.view")
 	call := CallMethodRequest{
@@ -3268,7 +2913,7 @@ func TestPrepareMethodConfirmationClassifiesInvalidKnownRiskPlanAsContractMismat
 		},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.tasks", capabilityAdapter: capabilityAdapter,
+		capabilityID: "example.capability.tasks", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
 	call := CallMethodRequest{
@@ -3294,7 +2939,7 @@ func TestConfirmedCapabilityRerunsPreflightAndRejectsAStalePlan(t *testing.T) {
 	}
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.tasks", capabilityAdapter: capabilityAdapter,
+		capabilityID: "example.capability.tasks", capabilityAdapter: capabilityAdapter,
 		diagnostics: diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
@@ -3356,8 +3001,6 @@ func TestPrepareMethodConfirmationNormalizesTypedRiskPlanAndRedactsDetails(t *te
 		},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.tasks",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3405,8 +3048,6 @@ func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
 		planHash:                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:       true,
-		localGenerated:      true,
 		capabilityID:        "example.capability.echo",
 		capabilityAdapter:   capabilityAdapter,
 		confirmationIntents: confirmationIntents,
@@ -3441,8 +3082,6 @@ func TestConfirmationIntentRejectsChangedResolvedTargetAndCannotReplay(t *testin
 		targetFields: map[string]any{"target": "db"},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3476,10 +3115,7 @@ func TestConfirmationIntentRejectsChangedResolvedTargetAndCannotReplay(t *testin
 
 func TestCapabilityExecutionEnforcesConcurrentAndDurationQuota(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-	})
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{})
 	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
 	for index := range contract.Methods {
 		if contract.Methods[index].Name == "documents.archive" {
@@ -3529,7 +3165,7 @@ func TestCapabilityExecutionRejectsSuccessReturnedAfterDurationQuota(t *testing.
 	capabilityAdapter := &quotaExpiryCapabilityAdapter{recordingCapabilityAdapter: recordingCapabilityAdapter{
 		result: capability.Result{Data: map[string]any{"ok": true}},
 	}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
 	for index := range contract.Methods {
 		if contract.Methods[index].Name == "echo.ping" {
@@ -3576,8 +3212,6 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	confirmationIntents := security.NewMemoryConfirmationIntentStore()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:       true,
-		localGenerated:      true,
 		capabilityID:        "example.capability.echo",
 		capabilityAdapter:   capabilityAdapter,
 		runtimeManager:      runtime,
@@ -3646,8 +3280,6 @@ func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 	connectivityBroker := connectivity.NewMemoryBroker()
 	diagnostics := &diagnosticSink{}
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		runtimeManager:     runtime,
 		connectivityBroker: connectivityBroker,
 		diagnostics:        diagnostics,
@@ -3714,8 +3346,6 @@ func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3762,8 +3392,6 @@ func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 func TestInvokeIntentRequiresPermissions(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3789,8 +3417,6 @@ func TestInvokeIntentRequiresPermissions(t *testing.T) {
 func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3824,8 +3450,6 @@ func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3857,8 +3481,6 @@ func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
 func TestConfirmationIntentCannotBeReusedForDifferentParams(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3893,8 +3515,6 @@ func TestConfirmationIntentCannotBeReusedForDifferentParams(t *testing.T) {
 func TestConfirmationIntentConsumesOnceAfterSuccess(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3927,8 +3547,6 @@ func TestConfirmationIntentConsumesOnceAfterSuccess(t *testing.T) {
 func TestConfirmationIntentBindsFullParamsBeyondManifestHashFieldHints(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
@@ -3963,7 +3581,7 @@ func TestStorageQuotaFilesFromManifestUsesBoundedDefault(t *testing.T) {
 }
 
 func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
-	host, _, audits := newTestHost(t, true, true)
+	host, _, audits := newTestHost(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), host, nextTestPluginInstanceID(t), buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -4040,8 +3658,6 @@ func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
 func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	connectivityBroker := connectivity.NewMemoryBroker()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		connectivityBroker: connectivityBroker,
 	})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
@@ -4239,8 +3855,6 @@ func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing
 	ctxB := hostTestContextWith("session_b", "user_b", "env_b", "channel_b")
 	connectivityBroker := connectivity.NewMemoryBroker()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		connectivityBroker: connectivityBroker,
 	})
 	packageBytes := buildNetworkFixturePackage(t)
@@ -4386,8 +4000,6 @@ func TestRecoverEnabledRestoresRuntimeState(t *testing.T) {
 	ctx := hostTestContext()
 	stateRoot := filepath.Join(t.TempDir(), "control-state")
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 		stateRoot:          stateRoot,
 	})
@@ -4415,17 +4027,15 @@ func TestRecoverEnabledRestoresRuntimeState(t *testing.T) {
 		StateRoot: stateRoot,
 		Core: CoreAdapters{
 			Policy: policyAdapter{
-				developerMode:  true,
-				localGenerated: true,
-				decision:       PolicyAllow,
+				decision: PolicyAllow,
 			},
-			Authorization:        allowAuthorizationAdapter{},
-			PackageTrustVerifier: h.adapters.PackageTrustVerifier,
-			Audit:                restartedAudits,
-			SecurityAudit:        restartedAuditJournal,
-			Diagnostics:          restartedDiagnostics,
-			SurfaceCatalog:       restartedSurfaces,
-			Assets:               h.adapters.Assets,
+			Authorization: allowAuthorizationAdapter{},
+
+			Audit:          restartedAudits,
+			SecurityAudit:  restartedAuditJournal,
+			Diagnostics:    restartedDiagnostics,
+			SurfaceCatalog: restartedSurfaces,
+			Assets:         h.adapters.Assets,
 		},
 		Runtime:      &RuntimeModule{manager: newRecordingRuntimeManager()},
 		Capability:   &CapabilityModule{Registry: capability.NewRegistry()},
@@ -4476,8 +4086,6 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	runtime.revokeResult = runtimeclient.RevokeResult{ClosedSocketCount: 8, ClosedStreamCount: 9, ClosedStorageHandleCount: 10}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		runtimeManager:    runtime,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
@@ -4520,9 +4128,7 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 func TestSecretLifecycleUsesAdapter(t *testing.T) {
 	secrets := &recordingSecretStore{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		secrets:        secrets,
+		secrets: secrets,
 	})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildSettingsFixturePackage(t))
 	if err != nil {
@@ -4557,7 +4163,7 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 	t.Run("settings", func(t *testing.T) {
 		secretStore := &recordingSecretStore{}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
-			developerMode: true, localGenerated: true, secrets: secretStore,
+			secrets: secretStore,
 		})
 		installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildSettingsFixturePackage(t))
 		if err != nil {
@@ -4580,7 +4186,7 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 	t.Run("connector auth and tls", func(t *testing.T) {
 		secretStore := &recordingSecretStore{}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
-			developerMode: true, localGenerated: true, secrets: secretStore,
+			secrets: secretStore,
 		})
 		installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildConnectorSecretFixturePackage(t))
 		if err != nil {
@@ -4639,7 +4245,7 @@ func TestSecretAdapterFailureRedactsCauseAndPreservesOutcome(t *testing.T) {
 func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *testing.T) {
 	secretStore := secrets.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, secrets: secretStore,
+		secrets: secretStore,
 	})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildSettingsFixturePackage(t))
 	if err != nil {
@@ -4691,15 +4297,13 @@ func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *te
 }
 
 func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	withSecrets, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		secrets:        &recordingSecretStore{},
+		secrets: &recordingSecretStore{},
 	})
 	if err := withSecrets.BindSecretRef(hostTestContext(), SecretBindRequest{
 		PluginInstanceID: installed.PluginInstanceID,
@@ -4725,7 +4329,7 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 func TestExplicitDiagnosticsSinkReceivesScopedDiagnostics(t *testing.T) {
 	diagnostics := observability.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, diagnostics: diagnostics,
+		diagnostics: diagnostics,
 	})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
@@ -4903,23 +4507,19 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 	}
 }
 
-func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, *surfaceSink, *auditSink) {
-	return newTestHostWithOptions(t, testHostOptions{developerMode: developerMode, localGenerated: localGenerated})
+func newTestHost(t *testing.T) (*Host, *surfaceSink, *auditSink) {
+	return newTestHostWithOptions(t, testHostOptions{})
 }
 
 type testHostOptions struct {
-	productionStateOwners   bool
-	filePicker              FileSelectionAdapter
-	openContext             context.Context
-	stateRoot               string
-	assets                  pluginpkg.AssetStore
-	developerMode           bool
-	localGenerated          bool
+	productionStateOwners bool
+	filePicker            FileSelectionAdapter
+	openContext           context.Context
+	stateRoot             string
+	assets                pluginpkg.AssetStore
+
 	policyDecision          PolicyDecision
 	authorization           AuthorizationAdapter
-	trustVerifier           PackageTrustVerifier
-	releaseTrust            *releasetrust.ServiceSet
-	releaseArtifactResolver ReleaseArtifactResolver
 	connectivityBroker      connectivity.Broker
 	networkExecutor         connectivity.NetworkExecutor
 	confirmationIntents     security.ConfirmationIntentStore
@@ -4990,11 +4590,6 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if authorization == nil {
 		authorization = allowAuthorizationAdapter{}
 	}
-	trustVerifier := opts.trustVerifier
-	if trustVerifier == nil {
-		trustVerifier = &recordingPackageTrustVerifier{}
-	}
-	releaseArtifactResolver := opts.releaseArtifactResolver
 	diagnostics := opts.diagnostics
 	if diagnostics == nil {
 		diagnostics = observability.NewMemoryStore()
@@ -5080,13 +4675,6 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if err != nil {
 		t.Fatal(err)
 	}
-	var releaseModule *ReleaseModule
-	if opts.releaseTrust != nil || releaseArtifactResolver != nil {
-		releaseModule = &ReleaseModule{
-			Trust:                   opts.releaseTrust,
-			ReleaseArtifactResolver: releaseArtifactResolver,
-		}
-	}
 	stateRoot := opts.stateRoot
 	if stateRoot == "" {
 		stateRoot = filepath.Join(t.TempDir(), "control-state")
@@ -5113,20 +4701,17 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		StateRoot: stateRoot,
 		Core: CoreAdapters{
 			Policy: policyAdapter{
-				developerMode:  opts.developerMode,
-				localGenerated: opts.localGenerated,
-				decision:       decision,
+				decision: decision,
 			},
-			Authorization:        authorization,
-			PackageTrustVerifier: trustVerifier,
-			SurfaceCatalog:       surfaceCatalog,
-			Audit:                audit,
-			SecurityAudit:        securityJournal,
-			Diagnostics:          diagnostics,
-			Assets:               assetStore,
-			internalStateOwners:  stateOwners,
+			Authorization: authorization,
+
+			SurfaceCatalog:      surfaceCatalog,
+			Audit:               audit,
+			SecurityAudit:       securityJournal,
+			Diagnostics:         diagnostics,
+			Assets:              assetStore,
+			internalStateOwners: stateOwners,
 		},
-		Release:      releaseModule,
 		Runtime:      runtimeModule,
 		Capability:   &CapabilityModule{Registry: capabilities},
 		Connectivity: &ConnectivityModule{Broker: connectivityBroker, NetworkExecutor: networkExecutor},
@@ -6945,9 +6530,7 @@ func (r *readAtProbe) ReadAt(p []byte, off int64) (int, error) {
 }
 
 type policyAdapter struct {
-	developerMode  bool
-	localGenerated bool
-	decision       PolicyDecision
+	decision PolicyDecision
 }
 
 type allowAuthorizationAdapter struct{}
@@ -6964,61 +6547,6 @@ func (p policyAdapter) EvaluateLocalPolicy(context.Context, sessionctx.Context, 
 		return PolicyAllow, nil
 	}
 	return p.decision, nil
-}
-
-func (p policyAdapter) DeveloperModeEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return p.developerMode, nil
-}
-
-func (p policyAdapter) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return p.localGenerated, nil
-}
-
-type recordingPackageTrustVerifier struct {
-	trustState registry.TrustState
-	metadata   map[string]string
-	err        error
-	last       PackageTrustVerificationRequest
-}
-
-func (v *recordingPackageTrustVerifier) VerifyPackageTrust(_ context.Context, req PackageTrustVerificationRequest) (PackageTrustVerificationResult, error) {
-	v.last = req
-	if v.err != nil {
-		return PackageTrustVerificationResult{}, v.err
-	}
-	trustState := v.trustState
-	if trustState == "" {
-		if req.LocalImport {
-			if req.Package.PackageSignature != nil {
-				trustState = registry.TrustVerified
-			} else {
-				trustState = registry.TrustUnsignedLocal
-			}
-		} else {
-			trustState = registry.TrustUntrusted
-		}
-	}
-	return PackageTrustVerificationResult{
-		TrustState:  trustState,
-		ReasonCodes: []string{"test_verifier"},
-		Metadata:    cloneStringMap(v.metadata),
-	}, nil
-}
-
-type recordingReleaseArtifactResolver struct {
-	artifact ResolvedPackageArtifact
-	err      error
-	last     ReleaseArtifactResolveRequest
-	calls    int
-}
-
-func (r *recordingReleaseArtifactResolver) ResolveReleaseArtifact(_ context.Context, req ReleaseArtifactResolveRequest) (ResolvedPackageArtifact, error) {
-	r.calls++
-	r.last = req
-	if r.err != nil {
-		return ResolvedPackageArtifact{}, r.err
-	}
-	return r.artifact, nil
 }
 
 func readTestPackage(t *testing.T, data []byte) pluginpkg.Package {

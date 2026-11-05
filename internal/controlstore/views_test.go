@@ -283,9 +283,9 @@ func externalControlRecord(instanceID, version string, now time.Time) registry.P
 	return registry.PluginRecord{
 		PluginInstanceID: instanceID, PublisherID: "publisher", PluginID: "com.example", Version: version,
 		ActiveFingerprint: "sha256:fingerprint", PackageHash: "sha256:package", ManifestHash: "sha256:manifest", EntriesHash: "sha256:entries",
-		TrustState: registry.TrustUntrusted, EnableState: registry.EnableEnabled,
-		Manifest:                currentManifest,
-		SignatureAssessment:     registry.SignatureAssessment{Status: registry.SignatureAbsent, PackageSHA256: "sha256:package", ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries", AssessedHashes: registry.TrustHashSet{PackageSHA256: "sha256:package", ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries"}},
+		EnableState: registry.EnableEnabled,
+		Manifest:    currentManifest,
+
 		PackageSourceProvenance: registry.PackageSourceProvenance{Kind: registry.PackageSourcePackageURL, SourceURL: "https://plugins.example.test/p", FinalURL: "https://plugins.example.test/p", PackageSHA256: "sha256:package", RetrievedAt: now},
 		ExecutionApproval:       registry.ExecutionApproval{Status: registry.ExecutionApprovalUserApproved, OwnerEnvHash: "env", PackageSHA256: "sha256:package", ApprovedAt: now, AssessedAt: now},
 		UpdateEligibility:       registry.UpdateManualOnly,
@@ -453,106 +453,6 @@ func TestExecutionViewPersistsStrictCursorCancelAndTerminal(t *testing.T) {
 	}
 }
 
-func TestReleaseInstallPayloadDefersIdentityStateAndCursorToExecution(t *testing.T) {
-	ctx := context.Background()
-	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	view := store.Executions()
-	now := time.Unix(20, 0).UTC()
-	request := registry.StartReleaseInstallOperationRequest{
-		RequestID: "request_install", ExecutionID: "execution_install", PluginInstanceID: "plugin_install",
-		ManifestSHA256: "sha256:" + strings.Repeat("c", 64), ContractSetSHA256: "sha256:" + strings.Repeat("b", 64), SummarySHA256: "sha256:" + strings.Repeat("d", 64),
-		Release: registry.ReleaseInstallIdentity{
-			SourceID: "official", Channel: "stable", ReleaseMetadataRef: "release.json",
-			ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0",
-			PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64),
-		},
-		Now: now,
-	}
-	request.ReleaseIdentityDigest, err = registry.ReleaseInstallIdentitySHA256(request.Release)
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := ExecutionOwner{OwnerSessionHash: "session", OwnerUserHash: "user", OwnerEnvHash: "env", SessionChannelIDHash: "channel"}
-	started, created, err := view.StartReleaseInstall(ctx, owner, request)
-	if err != nil || !created {
-		t.Fatalf("StartReleaseInstall() = %#v, %t, %v", started, created, err)
-	}
-	replayed, created, err := view.StartReleaseInstall(ctx, owner, request)
-	if err != nil || created || replayed.Execution.ID != started.Execution.ID {
-		t.Fatalf("idempotent StartReleaseInstall() = %#v, %t, %v", replayed, created, err)
-	}
-	conflicting := request
-	conflicting.ExecutionID = "execution_install_conflict"
-	conflicting.SummarySHA256 = "sha256:" + strings.Repeat("0", 64)
-	if _, _, err := view.StartReleaseInstall(ctx, owner, conflicting); !errors.Is(err, registry.ErrReleaseInstallOperationConflict) {
-		t.Fatalf("conflicting request replay error = %v", err)
-	}
-	otherOwner := owner
-	otherOwner.OwnerSessionHash = "other_session"
-	otherOwner.OwnerUserHash = "other_user"
-	otherOwner.OwnerEnvHash = "other_env"
-	otherOwner.SessionChannelIDHash = "other_channel"
-	otherRequest := request
-	otherRequest.ExecutionID = "execution_install_other_owner"
-	if _, created, err := view.StartReleaseInstall(ctx, otherOwner, otherRequest); err != nil || !created {
-		t.Fatalf("other-owner StartReleaseInstall() created=%t, err=%v", created, err)
-	}
-	var raw string
-	if err := store.db.QueryRowContext(ctx, `SELECT operation_json FROM execution WHERE execution_id=?`, request.ExecutionID).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var payload struct {
-		Operation map[string]json.RawMessage `json:"operation"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(raw, `"activation"`) || strings.Contains(raw, `"activation_request"`) {
-		t.Errorf("release-install payload still persists activation state: %s", raw)
-	}
-	for _, retired := range []string{"execution_id", "operation_id", "status", "cursor", "terminal_at", "revision", "created_at", "updated_at"} {
-		if _, exists := payload.Operation[retired]; exists {
-			t.Errorf("release-install domain payload mirrors execution field %q: %s", retired, raw)
-		}
-	}
-	updated, err := view.UpdateReleaseInstall(ctx, owner.OwnerEnvHash, registry.UpdateReleaseInstallOperationRequest{
-		ExecutionID: request.ExecutionID, ExpectedCursor: started.Execution.Cursor, Status: execution.StatusRunning,
-		Phase: "download_package", Progress: registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressBytes, Completed: 1, Total: 2},
-		Attempt: 1, MutationOutcome: "not_committed", Now: now.Add(time.Second),
-	})
-	if err != nil || updated.Execution.Cursor != 1 {
-		t.Fatalf("UpdateReleaseInstall() = %#v, %v", updated, err)
-	}
-	_, err = view.UpdateReleaseInstall(ctx, owner.OwnerEnvHash, registry.UpdateReleaseInstallOperationRequest{
-		ExecutionID: request.ExecutionID, ExpectedCursor: 0, Status: execution.StatusRunning,
-		Phase: "verify_hashes", Progress: registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate},
-		Attempt: 1, MutationOutcome: "not_committed", Now: now.Add(2 * time.Second),
-	})
-	if !errors.Is(err, registry.ErrReleaseInstallOperationConflict) {
-		t.Fatalf("stale cursor update error = %v", err)
-	}
-	record := registry.PluginRecord{PluginInstanceID: request.PluginInstanceID, EnableState: registry.EnableEnabled}
-	completed, err := view.UpdateReleaseInstall(ctx, owner.OwnerEnvHash, registry.UpdateReleaseInstallOperationRequest{
-		ExecutionID: request.ExecutionID, ExpectedCursor: updated.Execution.Cursor, Status: execution.StatusCompleted,
-		Phase: "complete", Progress: registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressItems, Completed: 1, Total: 1},
-		Attempt: 1, MutationOutcome: "committed", PluginRecord: &record, Now: now.Add(3 * time.Second),
-	})
-	if err != nil || completed.Execution.Status != execution.StatusCompleted || completed.PluginRecord == nil || completed.PluginRecord.EnableState != registry.EnableEnabled {
-		t.Fatalf("completed release install = %#v, %v", completed, err)
-	}
-	events, err := view.EventsAfter(ctx, request.ExecutionID, 0, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 2 || events[0].Kind != execution.EventProgress || events[1].Kind != execution.EventTerminal {
-		t.Fatalf("release-install event envelope = %#v", events)
-	}
-}
-
 func TestExecutionViewReconcilesOrphansWithoutChangingTerminalRecords(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "control.sqlite")})
@@ -570,27 +470,6 @@ func TestExecutionViewReconcilesOrphansWithoutChangingTerminalRecords(t *testing
 		if err := view.Create(ctx, value); err != nil {
 			t.Fatal(err)
 		}
-	}
-	releaseIdentity := registry.ReleaseInstallIdentity{
-		SourceID: "official", Channel: "stable", ReleaseMetadataRef: "release.json",
-		ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "publisher", PluginID: "plugin", Version: "1.0.0",
-		PackageSHA256: "sha256:" + strings.Repeat("b", 64), ManifestSHA256: "sha256:" + strings.Repeat("c", 64), EntriesSHA256: "sha256:" + strings.Repeat("d", 64),
-	}
-	releaseDigest, err := registry.ReleaseInstallIdentitySHA256(releaseIdentity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	internalOwner := ExecutionOwner{
-		OwnerSessionHash: "internal_unowned", OwnerUserHash: "internal_unowned",
-		OwnerEnvHash: "internal_unowned", SessionChannelIDHash: "internal_unowned",
-	}
-	if _, _, err := view.StartReleaseInstall(ctx, internalOwner, registry.StartReleaseInstallOperationRequest{
-		RequestID: "request_interrupted", ExecutionID: "release-interrupted", PluginInstanceID: "plugin",
-		ReleaseIdentityDigest: releaseDigest, ManifestSHA256: releaseIdentity.ManifestSHA256,
-		ContractSetSHA256: "sha256:" + strings.Repeat("e", 64), SummarySHA256: "sha256:" + strings.Repeat("f", 64),
-		Release: releaseIdentity, Now: createdAt,
-	}); err != nil {
-		t.Fatal(err)
 	}
 	if err := view.RequestCancel(ctx, "cancel-requested", createdAt.Add(time.Second)); err != nil {
 		t.Fatal(err)
@@ -612,12 +491,12 @@ func TestExecutionViewReconcilesOrphansWithoutChangingTerminalRecords(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Orphaned != 1 || result.Canceled != 1 || result.Interrupted != 1 {
+	if result.Orphaned != 1 || result.Canceled != 1 || result.Interrupted != 0 {
 		t.Fatalf("ReconcileOrphans() = %#v", result)
 	}
 	for id, wantStatus := range map[string]string{
 		"running": execution.StatusOrphaned, "cancel-requested": execution.StatusCanceled,
-		"completed": execution.StatusCompleted, "release-interrupted": execution.StatusFailed,
+		"completed": execution.StatusCompleted,
 	} {
 		got, err := view.Get(ctx, id)
 		if err != nil {

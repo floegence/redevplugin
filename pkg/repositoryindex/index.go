@@ -1,5 +1,5 @@
 // Package repositoryindex parses the host-neutral repository discovery contract.
-// It deliberately does not search GitHub, execute repository code, or grant trust.
+// It deliberately does not search GitHub, execute repository code, or execute plugins.
 package repositoryindex
 
 import (
@@ -31,7 +31,9 @@ const (
 
 var (
 	identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$`)
+	tagPattern        = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*-v\{version\}$`)
 	templatePattern   = regexp.MustCompile(`^[A-Za-z0-9._+@-]*\{version\}[A-Za-z0-9._+@-]*$`)
+	assetPattern      = regexp.MustCompile(`^[A-Za-z0-9._+@-]+(?:\{version\}[A-Za-z0-9._+@-]*)?$`)
 	pathPartPattern   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 )
 
@@ -55,9 +57,8 @@ type Plugin struct {
 }
 
 type Release struct {
-	TagTemplate             string `json:"tag_template"`
-	PackageAssetTemplate    string `json:"package_asset_template"`
-	ReleaseRefAssetTemplate string `json:"release_ref_asset_template"`
+	TagTemplate          string `json:"tag_template"`
+	PackageAssetTemplate string `json:"package_asset_template"`
 }
 
 type Entry struct {
@@ -151,6 +152,8 @@ func Validate(value Index) error {
 	}
 	seenTargets := make(map[string]struct{}, len(value.Targets))
 	pluginCount := 0
+	byID := map[string]Plugin{}
+	byTag := map[string]string{}
 	for targetIndex, target := range value.Targets {
 		if target.Ecosystem != "redevplugin" || !identifierPattern.MatchString(target.Host) {
 			return fmt.Errorf("targets[%d] has an invalid ecosystem or host", targetIndex)
@@ -164,7 +167,6 @@ func Validate(value Index) error {
 			return fmt.Errorf("targets[%d].plugins must be non-empty and bounded", targetIndex)
 		}
 		seenIDs := make(map[string]struct{}, len(target.Plugins))
-		seenAssets := make(map[string]string, len(target.Plugins)*2)
 		for pluginIndex, plugin := range target.Plugins {
 			pluginCount++
 			if pluginCount > MaxPlugins {
@@ -186,12 +188,14 @@ func Validate(value Index) error {
 			if err := validateRelease(*plugin.Release); err != nil {
 				return fmt.Errorf("targets[%d].plugins[%d].release: %w", targetIndex, pluginIndex, err)
 			}
-			for _, asset := range []string{plugin.Release.PackageAssetTemplate, plugin.Release.ReleaseRefAssetTemplate} {
-				if previous, exists := seenAssets[asset]; exists {
-					return fmt.Errorf("targets[%d] plugins %q and %q have colliding asset templates", targetIndex, previous, plugin.PluginID)
-				}
-				seenAssets[asset] = plugin.PluginID
+			if previous, exists := byTag[plugin.Release.TagTemplate]; exists && previous != plugin.PluginID {
+				return fmt.Errorf("plugins %q and %q share a release namespace", previous, plugin.PluginID)
 			}
+			if previous, exists := byID[plugin.PluginID]; exists && (previous.Path != plugin.Path || previous.Manifest != plugin.Manifest || *previous.Release != *plugin.Release) {
+				return fmt.Errorf("plugin %q has inconsistent declarations across targets", plugin.PluginID)
+			}
+			byTag[plugin.Release.TagTemplate] = plugin.PluginID
+			byID[plugin.PluginID] = plugin
 		}
 	}
 	return nil
@@ -210,8 +214,8 @@ func (repo Repository) Find(ecosystem, host string) []Entry {
 	return entries
 }
 
-// PolicyDigest binds one plugin and its target independently of sibling entries.
-func PolicyDigest(host string, plugin Plugin) (string, error) {
+// EntryDigest binds one plugin and its target independently of sibling entries.
+func EntryDigest(host string, plugin Plugin) (string, error) {
 	value := Index{SchemaVersion: SchemaVersion, Targets: []Target{{Ecosystem: "redevplugin", Host: host, Plugins: []Plugin{plugin}}}}
 	if err := Validate(value); err != nil {
 		return "", err
@@ -234,31 +238,35 @@ func ValidateRepository(root string) (Repository, error) {
 		return Repository{}, err
 	}
 	for _, entry := range repo.Entries {
-		manifestPath, err := repositoryPath(repo.Root, entry.Plugin.Path, entry.Plugin.Manifest)
-		if err != nil {
-			return Repository{}, fmt.Errorf("%s/%s: %w", entry.Plugin.Path, entry.Plugin.Manifest, err)
-		}
-		file, err := os.Open(manifestPath)
-		if err != nil {
-			return Repository{}, fmt.Errorf("plugin %q manifest: %w", entry.Plugin.PluginID, err)
-		}
-		decoded, _, decodeErr := manifest.DecodeCanonical(file)
-		closeErr := file.Close()
-		if decodeErr != nil {
-			return Repository{}, fmt.Errorf("plugin %q manifest: %w", entry.Plugin.PluginID, decodeErr)
-		}
-		if closeErr != nil {
-			return Repository{}, fmt.Errorf("plugin %q manifest close: %w", entry.Plugin.PluginID, closeErr)
-		}
-		if decoded.PluginID() != entry.Plugin.PluginID {
-			return Repository{}, fmt.Errorf("plugin %q does not match manifest plugin_id %q", entry.Plugin.PluginID, decoded.PluginID())
+		if err := validatePluginManifest(repo.Root, entry.Plugin); err != nil {
+			return Repository{}, err
 		}
 	}
 	return repo, nil
 }
 
+func validatePluginManifest(root string, plugin Plugin) error {
+	path, err := repositoryPath(root, plugin.Path, plugin.Manifest)
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("plugin %q manifest: %w", plugin.PluginID, err)
+	}
+	decoded, _, decodeErr := manifest.DecodeCanonical(file)
+	closeErr := file.Close()
+	if err := errors.Join(decodeErr, closeErr); err != nil {
+		return err
+	}
+	if decoded.PluginID() != plugin.PluginID {
+		return fmt.Errorf("plugin %q does not match manifest plugin_id %q", plugin.PluginID, decoded.PluginID())
+	}
+	return nil
+}
+
 func Render(template, version string) (string, error) {
-	if len(template) > 255 || !templatePattern.MatchString(template) {
+	if len(template) > 255 || !assetPattern.MatchString(template) {
 		return "", errors.New("release template is invalid")
 	}
 	if _, err := versionpkgParseStable(version); err != nil {
@@ -273,7 +281,7 @@ func Render(template, version string) (string, error) {
 
 // VersionFromTag matches the complete tag and extracts a stable SemVer.
 func VersionFromTag(template, tag string) (string, error) {
-	if len(template) > 255 || !templatePattern.MatchString(template) || len(tag) > 255 {
+	if len(template) > 255 || !tagPattern.MatchString(template) || len(tag) > 255 {
 		return "", errors.New("release template or tag is invalid")
 	}
 	parts := strings.Split(template, "{version}")
@@ -300,12 +308,17 @@ func sha256Hex(value []byte) string {
 }
 
 func validateRelease(value Release) error {
+	if !tagPattern.MatchString(value.TagTemplate) {
+		return errors.New("tag_template must be <release-key>-v{version}")
+	}
+	if !strings.HasSuffix(value.PackageAssetTemplate, ".redevplugin") {
+		return errors.New("package asset must end in .redevplugin")
+	}
 	for name, template := range map[string]string{
-		"tag_template":               value.TagTemplate,
-		"package_asset_template":     value.PackageAssetTemplate,
-		"release_ref_asset_template": value.ReleaseRefAssetTemplate,
+		"tag_template":           value.TagTemplate,
+		"package_asset_template": value.PackageAssetTemplate,
 	} {
-		if len(template) > 255 || !templatePattern.MatchString(template) {
+		if len(template) > 255 || (name == "tag_template" && !templatePattern.MatchString(template)) || (name == "package_asset_template" && !assetPattern.MatchString(template)) {
 			return fmt.Errorf("%s is invalid", name)
 		}
 	}
@@ -481,7 +494,7 @@ func validateJSONShape(raw []byte) error {
 					return err
 				}
 			}
-			release, err := object(plugin["release"], []string{"tag_template", "package_asset_template", "release_ref_asset_template"}, nil)
+			release, err := object(plugin["release"], []string{"tag_template", "package_asset_template"}, nil)
 			if err != nil {
 				return err
 			}

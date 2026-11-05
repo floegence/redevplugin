@@ -43,19 +43,6 @@ func TestPrepareExternalPackageReinstallInheritsDeletedRevokeFloor(t *testing.T)
 	}
 }
 
-func TestExternalPackageInstallRejectsInvalidOrRevokedSignature(t *testing.T) {
-	for _, status := range []SignatureAssessmentStatus{SignatureInvalid, SignatureRevoked} {
-		t.Run(string(status), func(t *testing.T) {
-			req := externalPackageInstallRequest("owner_env_hash_test", time.Now().UTC())
-			req.Record.SignatureAssessment.Status = status
-			req.Record.ExecutionApproval.Status = ExecutionApprovalPolicyBlocked
-			if _, err := PrepareExternalPackageInstall("owner_env_hash_test", req, nil); !errors.Is(err, ErrInvalidExternalPackageInstall) {
-				t.Fatalf("PrepareExternalPackageInstall() error = %v", err)
-			}
-		})
-	}
-}
-
 func TestExternalPackageInstallEnablesByDefaultWithoutGrant(t *testing.T) {
 	req := externalPackageInstallRequest("owner_env_hash_test", time.Now().UTC())
 	installed, err := PrepareExternalPackageInstall("owner_env_hash_test", req, nil)
@@ -82,39 +69,6 @@ func TestCurrentPluginRecordRequiresExplicitPackageSourceProvenance(t *testing.T
 	}
 }
 
-func TestExplicitLocalImportNormalizesExecutionApproval(t *testing.T) {
-	now := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
-	record := externalPackageInstallRequest("owner_env_hash_test", now).Record
-	record.TrustState = TrustUnsignedLocal
-	record.TrustAssessment = TrustAssessment{TrustState: TrustUnsignedLocal}
-	record.SignatureAssessment = SignatureAssessment{}
-	record.PackageSourceProvenance = PackageSourceProvenance{
-		Kind:            PackageSourceLocalGenerated,
-		PackageSHA256:   record.PackageHash,
-		SourceReference: "local_import",
-	}
-	record.LocalImportProvenance = &LocalImportProvenance{
-		ImportID:       "local_import",
-		Distribution:   "local_import",
-		PolicyEpoch:    "local_import",
-		UnsignedPolicy: "dev_only",
-		AssessedAt:     now.Format(time.RFC3339),
-	}
-	record.ExecutionApproval = ExecutionApproval{}
-
-	stored, err := PreparePluginPut("owner_env_hash_test", record, nil, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.ExecutionApproval.Status != ExecutionApprovalUserApproved ||
-		stored.ExecutionApproval.OwnerEnvHash != "owner_env_hash_test" ||
-		stored.ExecutionApproval.PackageSHA256 != record.PackageHash ||
-		!stored.ExecutionApproval.ApprovedAt.Equal(now) ||
-		!RunnablePluginRecord(stored) {
-		t.Fatalf("local import execution approval = %#v", stored.ExecutionApproval)
-	}
-}
-
 func TestExternalSourceDoesNotInferExecutionApproval(t *testing.T) {
 	now := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
 	record := externalPackageInstallRequest("owner_env_hash_test", now).Record
@@ -129,33 +83,6 @@ func TestExternalSourceDoesNotInferExecutionApproval(t *testing.T) {
 	}
 }
 
-func TestIncompleteLocalImportDoesNotInferExecutionApproval(t *testing.T) {
-	now := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
-	record := externalPackageInstallRequest("owner_env_hash_test", now).Record
-	record.TrustState = TrustUnsignedLocal
-	record.TrustAssessment = TrustAssessment{TrustState: TrustUnsignedLocal}
-	record.SignatureAssessment = SignatureAssessment{}
-	record.PackageSourceProvenance = PackageSourceProvenance{
-		Kind:            PackageSourceLocalGenerated,
-		PackageSHA256:   record.PackageHash,
-		SourceReference: "local_import",
-	}
-	record.LocalImportProvenance = &LocalImportProvenance{
-		ImportID:     "local_import",
-		Distribution: "local_import",
-		AssessedAt:   now.Format(time.RFC3339),
-	}
-	record.ExecutionApproval = ExecutionApproval{}
-
-	stored, err := PreparePluginPut("owner_env_hash_test", record, nil, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.ExecutionApproval.Status != ExecutionApprovalPending || RunnablePluginRecord(stored) {
-		t.Fatalf("incomplete local import execution approval = %#v", stored.ExecutionApproval)
-	}
-}
-
 func TestVersionHistorySecurityNormalizationDoesNotInferLifecycleApproval(t *testing.T) {
 	record := normalizePluginSecurityFacts(PluginRecord{
 		OwnerEnvHash: "owner_env_hash_test",
@@ -165,7 +92,6 @@ func TestVersionHistorySecurityNormalizationDoesNotInferLifecycleApproval(t *tes
 			PackageHash:  "sha256:history-package",
 			ManifestHash: "sha256:history-manifest",
 			EntriesHash:  "sha256:history-entries",
-			TrustState:   TrustVerified,
 		}},
 	})
 
@@ -192,12 +118,7 @@ func externalPackageInstallRequest(ownerEnvHash string, now time.Time) InstallEx
 			PackageHash:       packageHash,
 			ManifestHash:      "sha256:manifest",
 			EntriesHash:       "sha256:entries",
-			TrustState:        TrustNeedsReview,
-			SignatureAssessment: SignatureAssessment{
-				Status:         SignatureAbsent,
-				AssessedHashes: TrustHashSet{PackageSHA256: packageHash, ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries"},
-				PackageSHA256:  packageHash, ManifestSHA256: "sha256:manifest", EntriesSHA256: "sha256:entries",
-			},
+
 			PackageSourceProvenance: PackageSourceProvenance{
 				Kind: PackageSourceGitHubRepository, RepositoryURL: "https://github.com/example/plugin",
 				GitHubRepositoryID: "R_123", GitHubReleaseID: "REL_123", GitHubAssetID: "ASSET_123", PackageSHA256: packageHash,

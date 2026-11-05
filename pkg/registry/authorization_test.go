@@ -184,8 +184,7 @@ func TestExternalPackageAuthorizationStoreContract(t *testing.T) {
 			if !decision.Allowed {
 				t.Fatalf("Authorize() decision = %#v, want allowed", decision)
 			}
-			if !reflect.DeepEqual(decision.State.SignatureAssessment, req.Record.SignatureAssessment) ||
-				decision.State.PackageSourceKind != req.Record.PackageSourceProvenance.Kind ||
+			if decision.State.PackageSourceKind != req.Record.PackageSourceProvenance.Kind ||
 				!reflect.DeepEqual(decision.State.ExecutionApproval, req.Record.ExecutionApproval) {
 				t.Fatalf("Authorize() external package state = %#v", decision.State)
 			}
@@ -357,9 +356,8 @@ func authorizationTestPlugin(pluginInstanceID string, pluginID string) PluginRec
 		PluginID:          pluginID,
 		Version:           "1.0.0",
 		ActiveFingerprint: "sha256:" + pluginInstanceID,
-		TrustState:        TrustVerified,
 		PackageSourceProvenance: PackageSourceProvenance{
-			Kind: PackageSourceLocalGenerated,
+			Kind: PackageSourceLocalPackage,
 		},
 		EnableState: EnableEnabled,
 		Manifest:    currentTestManifest(pluginID, "1.0.0"),

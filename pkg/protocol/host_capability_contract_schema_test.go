@@ -41,19 +41,6 @@ func TestKnownHostCapabilitySchemasContainOnlyContractAndLocalIdentity(t *testin
 	}
 }
 
-func TestReleaseMetadataDoesNotRepublishHostCapabilityIdentity(t *testing.T) {
-	root := hostCapabilityRepositoryRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-metadata.schema.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, retired := range [][]byte{[]byte("host_requirements"), []byte("required_capability_contracts"), []byte("host_capability_contract_ref")} {
-		if bytes.Contains(raw, retired) {
-			t.Fatalf("release metadata retains capability projection %q", retired)
-		}
-	}
-}
-
 func hostCapabilityRepositoryRoot(t testing.TB) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

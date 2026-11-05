@@ -27,7 +27,7 @@ func TestIntervalStorageDoesNotRequireOnlineManagementAuthorization(t *testing.T
 	runtime.result = capability.Result{Data: map[string]any{}}
 	authorization := &onlineOnlyIntervalAuthorization{}
 	policy := intervalPolicyFunc(func(context.Context, BackgroundPolicyRequest) (PolicyDecision, error) { return PolicyAllow, nil })
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, authorization: authorization, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, authorization: authorization, backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy})
 	archive := intervalFixtureWith(t, func(doc map[string]any) {
 		doc["storage"] = map[string]any{"stores": []any{map[string]any{"store_id": "counter", "kind": "sqlite", "scope": "environment", "quota_bytes": 1048576, "schema_version": 1}}}
 		method := doc["methods"].([]any)[0].(map[string]any)
@@ -84,7 +84,7 @@ func TestIntervalStorageDoesNotRequireOnlineManagementAuthorization(t *testing.T
 
 func TestIntervalFailureDiagnosticPersists(t *testing.T) {
 	diagnostics := observability.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, diagnostics: diagnostics, backgroundRunnerFactory: NewBackgroundWorkerRunner})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{diagnostics: diagnostics, backgroundRunnerFactory: NewBackgroundWorkerRunner})
 	record := installAndEnablePlugin(t, h, intervalFixture(t))
 	if err := h.controlStore.ReconcileIntervals(context.Background(), time.Now()); err != nil {
 		t.Fatal(err)

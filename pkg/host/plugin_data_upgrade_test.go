@@ -31,7 +31,7 @@ func TestPluginDataUpgradeRestoresSharedVersionGeneration(t *testing.T) {
 	for _, schema := range []int{1, 2} {
 		t.Run(fmt.Sprintf("schema_%d", schema), func(t *testing.T) {
 			manager := &upgradeRuntimeManager{recordingRuntimeManager: newRecordingRuntimeManager()}
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: manager})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 			ctx := hostTestContext()
 			first, err := ImportLocalPackageBytes(ctx, h, "shared-generation", buildWorkerStorageFixturePackage(t))
 			if err != nil {
@@ -96,7 +96,7 @@ func TestPluginDataUpgradeRestoresSharedVersionGeneration(t *testing.T) {
 
 func TestPluginDataUpgradePreservesDisabledState(t *testing.T) {
 	manager := &upgradeRuntimeManager{recordingRuntimeManager: newRecordingRuntimeManager()}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: manager})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 	ctx := hostTestContext()
 	old, err := ImportLocalPackageBytes(ctx, h, "disabled-upgrade", buildWorkerStorageFixturePackage(t))
 	if err != nil {
@@ -171,7 +171,7 @@ func TestPluginDataUpgradeThroughUpdatePreservesAtomicIdentity(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprintf("fail_%v", fail), func(t *testing.T) {
 			manager := &upgradeRuntimeManager{recordingRuntimeManager: newRecordingRuntimeManager()}
-			opts := testHostOptions{developerMode: true, localGenerated: true, runtimeManager: manager, stateRoot: filepath.Join(t.TempDir(), "state")}
+			opts := testHostOptions{runtimeManager: manager, stateRoot: filepath.Join(t.TempDir(), "state")}
 			h, _, _ := newTestHostWithOptions(t, opts)
 			ctx := hostTestContext()
 			old, err := ImportLocalPackageBytes(ctx, h, "upgrade", buildWorkerStorageFixturePackage(t))
@@ -308,15 +308,15 @@ func TestPluginDataUpgradeExternalInstallFlow(t *testing.T) {
 	for _, disabled := range []bool{false, true} {
 		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
 			manager := &upgradeRuntimeManager{recordingRuntimeManager: newRecordingRuntimeManager()}
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: manager})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 			ctx := hostTestContext()
 			stage := &externalPackageTestStage{pkg: readTestPackage(t, buildWorkerStorageFixturePackage(t))}
-			configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+			configureExternalPackageTestModule(h, stage)
 			inspect, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{Intent: ExternalPackageIntent{Action: "install"}, Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/upgrade-v1.redevplugin"}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			installed, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{InspectionID: inspect.InspectionID, ExpectedPackageSHA256: inspect.InspectedHashes.PackageSHA256})
+			installed, err := h.installInspectedPackage(ctx, installInspectedPackageRequest{InspectionID: inspect.InspectionID, ExpectedPackageSHA256: inspect.InspectedHashes.PackageSHA256})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -336,7 +336,7 @@ func TestPluginDataUpgradeExternalInstallFlow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := h.InstallInspectedPackage(ctx, InstallInspectedPackageRequest{InspectionID: inspect.InspectionID, ExpectedPackageSHA256: inspect.InspectedHashes.PackageSHA256})
+			result, err := h.installInspectedPackage(ctx, installInspectedPackageRequest{InspectionID: inspect.InspectionID, ExpectedPackageSHA256: inspect.InspectedHashes.PackageSHA256})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -355,7 +355,7 @@ func TestPluginDataUpgradeCancellationAndTimeoutRestoreAdmission(t *testing.T) {
 	for _, timeout := range []bool{false, true} {
 		t.Run(fmt.Sprint(timeout), func(t *testing.T) {
 			manager := &upgradeRuntimeManager{recordingRuntimeManager: newRecordingRuntimeManager()}
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: manager})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 			ctx, cancel := context.WithCancel(hostTestContext())
 			defer cancel()
 			old, err := ImportLocalPackageBytes(ctx, h, "cancel-upgrade", buildWorkerStorageFixturePackage(t))
@@ -427,7 +427,7 @@ func TestPluginDataUpgradeRejectsSharedInvalidRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &upgradeRuntimeManager{recordingRuntimeManager: newRecordingRuntimeManager()}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: manager})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 	ctx := hostTestContext()
 	old, err := ImportLocalPackageBytes(ctx, h, "invalid-wire", buildWorkerStorageFixturePackage(t))
 	if err != nil {

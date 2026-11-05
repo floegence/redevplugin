@@ -18,17 +18,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
-type TrustState string
-
-const (
-	TrustVerified        TrustState = "verified"
-	TrustUnsignedLocal   TrustState = "unsigned_local"
-	TrustUntrusted       TrustState = "untrusted"
-	TrustNeedsReview     TrustState = "needs_review"
-	TrustUnavailable     TrustState = "trust_unavailable"
-	TrustBlockedSecurity TrustState = "blocked_security"
-)
-
 type EnableState string
 
 const (
@@ -43,43 +32,8 @@ func ValidateEnableState(state EnableState) error {
 	return nil
 }
 
-type TrustHashSet struct {
-	PackageSHA256  string `json:"package_sha256"`
-	ManifestSHA256 string `json:"manifest_sha256"`
-	EntriesSHA256  string `json:"entries_sha256"`
-}
-
-type VerifiedSignature struct {
-	Algorithm string `json:"algorithm"`
-	KeyID     string `json:"key_id"`
-}
-
-type TrustAssessment struct {
-	TrustState           TrustState         `json:"trust_state"`
-	ReasonCodes          []string           `json:"reason_codes,omitempty"`
-	VerifiedHashes       TrustHashSet       `json:"verified_hashes"`
-	VerifiedSignature    *VerifiedSignature `json:"verified_signature,omitempty"`
-	TrustAssessmentEpoch string             `json:"trust_assessment_epoch,omitempty"`
-	PolicyEpoch          string             `json:"policy_epoch,omitempty"`
-	RevocationEpoch      string             `json:"revocation_epoch,omitempty"`
-	Metadata             map[string]string  `json:"metadata,omitempty"`
-}
-
-type ReleaseTrustBinding struct {
-	SourceID              string `json:"source_id"`
-	Channel               string `json:"channel"`
-	ReleaseMetadataRef    string `json:"release_metadata_ref"`
-	ReleaseMetadataSHA256 string `json:"release_metadata_sha256"`
-	PublisherID           string `json:"publisher_id"`
-	PluginID              string `json:"plugin_id"`
-	Version               string `json:"version"`
-	PackageSigningKeyID   string `json:"package_signing_key_id"`
-	RootEpoch             string `json:"root_epoch"`
-	PolicyEpoch           string `json:"policy_epoch"`
-	RevocationEpoch       string `json:"revocation_epoch"`
-}
-
 type PluginRecord struct {
+	AutomaticUpdates          bool                      `json:"automatic_updates"`
 	OwnerEnvHash              string                    `json:"-"`
 	PluginInstanceID          string                    `json:"plugin_instance_id"`
 	PublisherID               string                    `json:"publisher_id"`
@@ -89,15 +43,10 @@ type PluginRecord struct {
 	PackageHash               string                    `json:"package_hash"`
 	ManifestHash              string                    `json:"manifest_hash"`
 	EntriesHash               string                    `json:"entries_hash"`
-	TrustState                TrustState                `json:"trust_state"`
-	TrustAssessment           TrustAssessment           `json:"trust_assessment"`
-	SignatureAssessment       SignatureAssessment       `json:"signature_assessment"`
 	PackageSourceProvenance   PackageSourceProvenance   `json:"source_provenance"`
 	ExecutionApproval         ExecutionApproval         `json:"execution_approval"`
 	UpdateEligibility         UpdateEligibility         `json:"update_eligibility"`
 	SecurityCapabilitySummary SecurityCapabilitySummary `json:"security_summary"`
-	ReleaseTrustBinding       *ReleaseTrustBinding      `json:"release_trust_binding,omitempty"`
-	LocalImportProvenance     *LocalImportProvenance    `json:"local_import_provenance,omitempty"`
 	CapabilityContracts       []capabilitycontract.Pin  `json:"capability_contracts,omitempty"`
 	EnableState               EnableState               `json:"enable_state"`
 	DisabledReason            string                    `json:"disabled_reason,omitempty"`
@@ -122,29 +71,16 @@ type PluginVersion struct {
 	PackageHash               string                    `json:"package_hash"`
 	ManifestHash              string                    `json:"manifest_hash"`
 	EntriesHash               string                    `json:"entries_hash"`
-	TrustState                TrustState                `json:"trust_state"`
-	TrustAssessment           TrustAssessment           `json:"trust_assessment"`
-	SignatureAssessment       SignatureAssessment       `json:"signature_assessment"`
 	PackageSourceProvenance   PackageSourceProvenance   `json:"source_provenance"`
 	ExecutionApproval         ExecutionApproval         `json:"execution_approval"`
 	UpdateEligibility         UpdateEligibility         `json:"update_eligibility"`
 	SecurityCapabilitySummary SecurityCapabilitySummary `json:"security_summary"`
-	ReleaseTrustBinding       *ReleaseTrustBinding      `json:"release_trust_binding,omitempty"`
-	LocalImportProvenance     *LocalImportProvenance    `json:"local_import_provenance,omitempty"`
 	CapabilityContracts       []capabilitycontract.Pin  `json:"capability_contracts,omitempty"`
 	Manifest                  manifest.Manifest         `json:"manifest"`
 	CanonicalManifest         string                    `json:"-"`
 	PackageEntries            []pluginpkg.Entry         `json:"package_entries"`
 	ActivatedAt               time.Time                 `json:"activated_at"`
 	Metadata                  map[string]string         `json:"metadata,omitempty"`
-}
-
-type LocalImportProvenance struct {
-	ImportID       string `json:"import_id"`
-	Distribution   string `json:"distribution"`
-	PolicyEpoch    string `json:"policy_epoch"`
-	UnsignedPolicy string `json:"unsigned_policy"`
-	AssessedAt     string `json:"assessed_at"`
 }
 
 type PutOptions struct {
@@ -265,7 +201,6 @@ func PreparePluginPut(ownerEnvHash string, record PluginRecord, existing *Plugin
 	}
 	record.UpdatedAt = now
 	record = normalizePluginSecurityFacts(record)
-	record = approveExplicitLocalImport(record)
 	if err := validatePersistedPluginSecurityFacts(record); err != nil {
 		return PluginRecord{}, err
 	}
@@ -423,25 +358,6 @@ func (s *MemoryStore) AbortInstall(ctx context.Context, pluginInstanceID string)
 	return nil
 }
 
-func normalizeTrustAssessment(record PluginRecord) PluginRecord {
-	if record.TrustAssessment.TrustState == "" {
-		record.TrustAssessment.TrustState = record.TrustState
-	}
-	if record.TrustAssessment.TrustState != "" {
-		record.TrustState = record.TrustAssessment.TrustState
-	}
-	if record.TrustAssessment.VerifiedHashes.PackageSHA256 == "" {
-		record.TrustAssessment.VerifiedHashes.PackageSHA256 = record.PackageHash
-	}
-	if record.TrustAssessment.VerifiedHashes.ManifestSHA256 == "" {
-		record.TrustAssessment.VerifiedHashes.ManifestSHA256 = record.ManifestHash
-	}
-	if record.TrustAssessment.VerifiedHashes.EntriesSHA256 == "" {
-		record.TrustAssessment.VerifiedHashes.EntriesSHA256 = record.EntriesHash
-	}
-	return record
-}
-
 func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
 	ownerEnvHash := record.OwnerEnvHash
 	canonicalManifest := record.CanonicalManifest
@@ -473,11 +389,7 @@ func RunnablePluginRecord(record PluginRecord) bool {
 		}
 	}
 	if !validPackageSourceProvenance(record.PackageSourceProvenance) ||
-		!validSignatureAssessmentStatus(record.SignatureAssessment.Status) ||
 		!validExecutionApprovalStatus(record.ExecutionApproval.Status) {
-		return false
-	}
-	if record.SignatureAssessment.Status == SignatureInvalid || record.SignatureAssessment.Status == SignatureRevoked {
 		return false
 	}
 	return record.ExecutionApproval.Status == ExecutionApprovalUserApproved ||

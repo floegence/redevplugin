@@ -6,6 +6,9 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 )
 
 const githubHost = "github.com"
@@ -21,12 +24,15 @@ type GitHubRepositorySource struct {
 	RepositoryURL string
 	Tag           string
 	QuotaKey      string
+	Host          string
+	PluginID      string
 }
 
 // GitHubReleaseClient owns GitHub API authentication and returns stable GitHub
 // identities. The resolver never clones, checks out, builds, or executes source.
 type GitHubReleaseClient interface {
-	LatestRelease(ctx context.Context, owner, repository string) (GitHubRelease, error)
+	RepositoryIndex(ctx context.Context, owner, repository string) (repositoryindex.Index, error)
+	ReleaseTags(ctx context.Context, owner, repository string) ([]GitHubReleaseTag, error)
 	ReleaseByTag(ctx context.Context, owner, repository, tag string) (GitHubRelease, error)
 }
 
@@ -51,6 +57,8 @@ type GitHubReleaseAsset struct {
 // ResolvedGitHubAsset binds downloaded bytes to immutable GitHub release and
 // asset identities. URLs in this result are safe for logs and persistence.
 type ResolvedGitHubAsset struct {
+	PluginID          string
+	Version           string
 	RepositoryURL     string
 	RepositoryID      int64
 	ReleaseID         int64
@@ -93,6 +101,8 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 	if resolver == nil || resolver.client == nil || resolver.fetcher == nil {
 		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "GitHub resolver is not initialized")
 	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	owner, repository, repositoryURL, err := parseGitHubRepositoryURL(source.RepositoryURL)
 	if err != nil {
 		return ResolvedGitHubAsset{}, err
@@ -102,12 +112,29 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "GitHub release tag is invalid")
 	}
 
-	var release GitHubRelease
-	if tag == "" {
-		release, err = resolver.client.LatestRelease(ctx, owner, repository)
-	} else {
-		release, err = resolver.client.ReleaseByTag(ctx, owner, repository, tag)
+	index, err := resolver.client.RepositoryIndex(ctx, owner, repository)
+	if err != nil {
+		return ResolvedGitHubAsset{}, err
 	}
+	plugin, err := selectRepositoryPlugin(index, source.Host, source.PluginID)
+	if err != nil {
+		return ResolvedGitHubAsset{}, err
+	}
+	if tag == "" {
+		tags, e := resolver.client.ReleaseTags(ctx, owner, repository)
+		if e != nil {
+			return ResolvedGitHubAsset{}, e
+		}
+		tag, err = selectPluginTag(plugin, tags)
+		if err != nil {
+			return ResolvedGitHubAsset{}, err
+		}
+	}
+	selectedVersion, err := repositoryindex.VersionFromTag(plugin.Release.TagTemplate, tag)
+	if err != nil {
+		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "release tag does not match selected plugin")
+	}
+	release, err := resolver.client.ReleaseByTag(ctx, owner, repository, tag)
 	if err != nil {
 		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, err)
 	}
@@ -115,7 +142,17 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, fmt.Errorf("release identity is invalid"))
 	}
 
-	asset, err := uniquePluginAsset(release.Assets, repositoryURL)
+	assetName, err := repositoryindex.Render(plugin.Release.PackageAssetTemplate, selectedVersion)
+	if err != nil {
+		return ResolvedGitHubAsset{}, err
+	}
+	matches := []GitHubReleaseAsset{}
+	for _, asset := range release.Assets {
+		if asset.Name == assetName {
+			matches = append(matches, asset)
+		}
+	}
+	asset, err := uniquePluginAsset(matches, repositoryURL)
 	if err != nil {
 		return ResolvedGitHubAsset{}, err
 	}
@@ -131,6 +168,7 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 		return ResolvedGitHubAsset{}, externalError(ErrorStageIntegrity, "resolve_github", repositoryURL, fmt.Errorf("downloaded asset size does not match release metadata"))
 	}
 	return ResolvedGitHubAsset{
+		PluginID: plugin.PluginID, Version: selectedVersion,
 		RepositoryURL:     repositoryURL,
 		RepositoryID:      release.RepositoryID,
 		ReleaseID:         release.ReleaseID,

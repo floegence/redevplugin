@@ -46,7 +46,7 @@ func TestIntervalThroughBuiltRustRuntime(t *testing.T) {
 			t.Fatal(err)
 		}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
-			developerMode: true, localGenerated: true, stateRoot: stateRoot, assets: assets,
+			stateRoot: stateRoot, assets: assets,
 			authorization: &onlineOnlyIntervalAuthorization{},
 			openContext:   context.Background(), backgroundRunnerFactory: NewBackgroundWorkerRunner, backgroundPolicy: policy,
 			runtimeManagerFactory: func(deps testRuntimeManagerDependencies) (runtimeclient.Manager, error) {

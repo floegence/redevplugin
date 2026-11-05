@@ -11,7 +11,7 @@ import (
 
 func TestRetainedRecoveryPreservesTargetDataAndReconcilesWithoutReplay(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "recovery-root")
-	opts := testHostOptions{developerMode: true, localGenerated: true, stateRoot: root}
+	opts := testHostOptions{stateRoot: root}
 	h, _, _ := newTestHostWithOptions(t, opts)
 	ctx := hostTestContext()
 	pkg := buildWorkerStorageFixturePackage(t)
@@ -119,7 +119,7 @@ func TestRetainedRecoveryPreservesTargetDataAndReconcilesWithoutReplay(t *testin
 }
 
 func TestRetainedRecoveryDiscoveryAuthorizesTargetBeforeReading(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
 	h.adapters.Authorization = authorization
 	_, err := h.ListRetainedData(hostTestContext(), ListRetainedDataRequest{TargetPluginInstanceID: " target "})

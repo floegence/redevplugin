@@ -21,7 +21,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/observability"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v3/pkg/trust"
 	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
 
@@ -152,7 +151,7 @@ func Open(ctx context.Context, options Options) (opened *Harness, err error) {
 	assets.path = filepath.Join(h.stateRoot, "assets")
 	h.events = observability.NewMemoryStore(options.Events)
 	config := host.Config{StateRoot: h.stateRoot, Core: host.CoreAdapters{
-		Policy: testPolicy{h}, Authorization: testPolicy{h}, PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
+		Policy: testPolicy{h}, Authorization: testPolicy{h},
 		Audit: h.events, SecurityAudit: h.events, Diagnostics: h.events, Assets: assets,
 	}, Runtime: options.Runtime, Capability: options.Capability, IO: options.IO, Files: options.Files, Connectivity: options.Connectivity, Secrets: options.Secrets, CoreAction: options.CoreAction, Background: options.Background}
 	if h.origin != "" {
@@ -230,12 +229,6 @@ func (p testPolicy) EvaluateLocalPolicy(ctx context.Context, s sessionctx.Contex
 	}
 	return host.PolicyAllow, nil
 }
-func (p testPolicy) DeveloperModeEnabled(_ context.Context, s sessionctx.Context) (bool, error) {
-	return p.h.accepts(s) && p.h.localPackages, nil
-}
-func (p testPolicy) LocalGeneratedPluginsEnabled(_ context.Context, s sessionctx.Context) (bool, error) {
-	return p.h.accepts(s) && p.h.localPackages, nil
-}
 
 // Delay opening package assets until Host has admitted its control root. This
 // wrapper owns acquisition only; FileAssetStore owns all storage semantics.
@@ -267,7 +260,6 @@ func (s *lazyAssets) PutOwnedPackage(ctx context.Context, pkg *pluginpkg.Package
 	if err != nil {
 		if pkg != nil {
 			pkg.Files = nil
-			pkg.SignatureFiles = nil
 		}
 		return err
 	}

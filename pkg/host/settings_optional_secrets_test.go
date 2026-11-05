@@ -56,7 +56,7 @@ func TestOrdinarySettingsDoNotRequireSecrets(t *testing.T) {
 }
 
 func TestSettingsOnlyReadSecretsForTheRequestedScope(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	manifestJSON := strings.Replace(currentSettingsManifestJSON(), `"fields": [`, `"fields": [{"key": "environment_token", "type": "secret", "scope": "environment", "label": "Environment token", "secret_ref": "environment_token"},`, 1)
 	installed := importCurrentLifecyclePackage(t, h, manifestJSON)
 	h.adapters.Secrets = &failingSecretListStore{SecretStoreAdapter: h.adapters.Secrets, err: errors.New("environment vault unavailable")}
@@ -73,7 +73,7 @@ func TestSettingsSecretPreflightDoesNotCommitValues(t *testing.T) {
 			name = "unavailable vault"
 		}
 		t.Run(name, func(t *testing.T) {
-			h, _, _ := newTestHost(t, true, true)
+			h, _, _ := newTestHost(t)
 			manifestJSON := strings.Replace(currentSettingsManifestJSON(), `"fields": [`, `"fields": [{"key": "api_token", "type": "secret", "scope": "user", "label": "API token", "secret_ref": "api_token"},`, 1)
 			installed := importCurrentLifecyclePackage(t, h, manifestJSON)
 			before, err := h.adapters.PluginData.GetSettings(hostTestContext(), installed.PluginInstanceID, sessionctx.ScopeUser)

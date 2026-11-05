@@ -19,8 +19,6 @@ import (
 
 func TestUIOnlyLifecycleDoesNotRequireRuntimeManager(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:         true,
-		localGenerated:        true,
 		withoutRuntimeManager: true,
 	})
 	packageBytes := buildFixturePackage(t)
@@ -57,7 +55,7 @@ func TestFirstWorkerInstallStartsAndPrewarmsUnreadyRuntime(t *testing.T) {
 	manager.health.Ready = false
 	manager.startHealthReady = true
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
+		runtimeManager: manager,
 	})
 	defer h.Close()
 
@@ -89,7 +87,7 @@ func TestWorkerInstallKeepsCommittedEnabledIntentWhenRuntimeStartFails(t *testin
 	manager.startHealthReady = true
 	manager.startErr = errors.New("runtime start failed")
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
+		runtimeManager: manager,
 	})
 	defer h.Close()
 
@@ -119,8 +117,6 @@ func TestUIOnlyDisableDoesNotRevokeRuntime(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	manager.revokeErr = errors.New("runtime must not be called")
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: manager,
 	})
 	packageBytes := buildFixturePackage(t)
@@ -156,8 +152,6 @@ func TestWorkerFailSafeLifecycleDoesNotRestartStoppedRuntime(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			installManager := newRecordingRuntimeManager()
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode:  true,
-				localGenerated: true,
 				runtimeManager: installManager,
 			})
 			enabled, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
@@ -229,8 +223,6 @@ func newNeverStartedProcessManagerForHost(t *testing.T, h *Host) *runtimeclient.
 
 func TestWorkerInstallRejectsMissingRuntimeBeforeMutation(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:         true,
-		localGenerated:        true,
 		withoutRuntimeManager: true,
 	})
 	packageBytes := buildWorkerFixturePackage(t)
@@ -272,7 +264,7 @@ func TestWorkerInstallPreservesRuntimeAvailabilityFailures(t *testing.T) {
 			manager.healthErr = test.healthErr
 			manager.preflightErr = test.preflightErr
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode: true, localGenerated: true, runtimeManager: manager,
+				runtimeManager: manager,
 			})
 			packageBytes := buildWorkerFixturePackage(t)
 			_, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
@@ -306,8 +298,6 @@ func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing
 	}
 	manager := recordingRuntimeManagerForDescriptor(descriptor)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: manager,
 	})
 	packageBytes := buildWorkerFixturePackageVersion(t, "1.0.0")
@@ -362,8 +352,6 @@ func TestStartRuntimeRequiresExplicitCanonicalTarget(t *testing.T) {
 func TestWorkerEnableRuntimeFailureKeepsEnabled(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: manager,
 	})
 	installed := importWorkerVersion(t, h, "1.0.0")
@@ -398,7 +386,7 @@ func TestWorkerUpdateReusesRuntimeAndPrewarmsCommittedPackage(t *testing.T) {
 	manager.health.Ready = false
 	manager.startHealthReady = true
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
+		runtimeManager: manager,
 	})
 	defer h.Close()
 	installed := importWorkerVersion(t, h, "1.0.0")
@@ -426,8 +414,6 @@ func TestWorkerUpdateReusesRuntimeAndPrewarmsCommittedPackage(t *testing.T) {
 func TestWorkerUpdateRejectsPreflightFailureBeforeMutation(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: manager,
 	})
 	installed := importWorkerVersion(t, h, "1.0.0")
@@ -455,8 +441,6 @@ func TestWorkerUpdateRejectsPreflightFailureBeforeMutation(t *testing.T) {
 func TestWorkerDowngradeRejectsPreflightFailureBeforeMutation(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: manager,
 	})
 	installed := importWorkerVersion(t, h, "1.0.0")
@@ -492,8 +476,6 @@ func TestWorkerDowngradeRejectsPreflightFailureBeforeMutation(t *testing.T) {
 func TestWorkerInvocationRejectsStaleBindingDescriptorBeforeDispatch(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: manager,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
@@ -535,8 +517,6 @@ func TestWorkerInvocationRejectsStaleBindingDescriptorBeforeDispatch(t *testing.
 func TestWorkerOpenSurfaceIgnoresIncompatibleRuntimeHealth(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: manager,
 	})
 	installed := installAndEnablePlugin(t, h, buildWorkerFixturePackage(t))
@@ -564,8 +544,6 @@ func TestWorkerOpenSurfaceIgnoresIncompatibleRuntimeHealth(t *testing.T) {
 func TestStopRuntimePreservesUIOnlySurface(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: manager,
 	})
 	packageBytes := buildFixturePackage(t)

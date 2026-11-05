@@ -28,7 +28,7 @@ type selectedPickerFixture struct {
 }
 
 func TestSelectedFilesSurfaceHandlesAreWindowBound(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, filePicker: selectedPickerFixture{canceled: true}})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{filePicker: selectedPickerFixture{canceled: true}})
 	installed := installAndEnablePlugin(t, h, buildSelectedFileFixture(t))
 	session, _ := sessionctx.FromContext(hostTestContext())
 	session.CanRead, session.CanWrite = true, true
@@ -98,7 +98,10 @@ func TestSelectedFilesSurfaceHandlesAreWindowBound(t *testing.T) {
 	if err != nil || pending.Review == nil {
 		t.Fatalf("pending review: %+v %v", pending, err)
 	}
-	h.adapters.Policy = policyAdapter{developerMode: false, localGenerated: true, decision: PolicyAllow}
+	installed.ExecutionApproval.Status = registry.ExecutionApprovalPolicyBlocked
+	if _, err := h.controlStore.Registry().PutPlugin(hostTestContext(), installed.OwnerEnvHash, installed, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.ApproveFileResource(ctx, ApproveFileResourceRequest{PluginInstanceID: installed.PluginInstanceID, ReviewID: pending.Review.ReviewID}); err == nil {
 		t.Fatal("changed host policy still permitted approval")
 	}
@@ -112,7 +115,7 @@ func (p selectedPickerFixture) SelectFile(context.Context, FileSelectionRequest)
 }
 
 func TestSelectedFilesReviewApprovalAndRevocation(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, filePicker: selectedPickerFixture{canceled: true}})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{filePicker: selectedPickerFixture{canceled: true}})
 	installed := installAndEnablePlugin(t, h, buildSelectedFileFixture(t))
 	ctx := hostTestContext()
 	session, _ := sessionctx.FromContext(ctx)
@@ -202,7 +205,7 @@ func TestSelectedFileApprovalAttemptConsumesReview(t *testing.T) {
 			if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, filePicker: selectedPickerFixture{path: path}})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{filePicker: selectedPickerFixture{path: path}})
 			installed := installAndEnablePlugin(t, h, buildSelectedFileFixture(t))
 			session, _ := sessionctx.FromContext(hostTestContext())
 			session.CanRead = true
@@ -248,7 +251,7 @@ func (p blockingFilePicker) SelectFile(ctx context.Context, _ FileSelectionReque
 }
 
 func TestSelectedFilesHostCloseCancelsPendingPicker(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, filePicker: selectedPickerFixture{canceled: true}})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{filePicker: selectedPickerFixture{canceled: true}})
 	installed := installAndEnablePlugin(t, h, buildSelectedFileFixture(t))
 	session, _ := sessionctx.FromContext(hostTestContext())
 	session.CanRead = true
@@ -296,7 +299,7 @@ func (ctx *selectedTeardownWaitContext) Done() <-chan struct{} {
 }
 
 func TestSelectedFilesReuseCurrentSessionReservationDuringTeardown(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, filePicker: selectedPickerFixture{canceled: true}})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{filePicker: selectedPickerFixture{canceled: true}})
 	session, _ := sessionctx.FromContext(hostTestContext())
 	session.CanRead, session.CanWrite = true, true
 	ctx := sessionctx.WithContext(context.Background(), session)
@@ -348,7 +351,7 @@ func TestSelectedFilesPersistAcrossHostRestartAndRejectReplacement(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := testHostOptions{filePicker: selectedPickerFixture{canceled: true}, stateRoot: stateRoot, assets: assets, developerMode: true, localGenerated: true}
+	opts := testHostOptions{filePicker: selectedPickerFixture{canceled: true}, stateRoot: stateRoot, assets: assets}
 	h, _, _ := newTestHostWithOptions(t, opts)
 	installed := installAndEnablePlugin(t, h, buildSelectedFileFixture(t))
 	session, _ := sessionctx.FromContext(hostTestContext())

@@ -10,7 +10,7 @@ import (
 )
 
 func TestWebPrivateFileStreamRevokesWithoutBlockingSibling(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	var m map[string]any
 	if err := json.Unmarshal([]byte(workerStorageKVFixtureManifestJSON()), &m); err != nil {
 		t.Fatal(err)

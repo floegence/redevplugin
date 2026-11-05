@@ -14,7 +14,7 @@ import (
 )
 
 func TestWebSurfaceEntryLeaseRevocationAndIndependentContainers(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, buildFixturePackage(t))
 	now := stableRecentTestNow()
 	type opened struct {
@@ -163,7 +163,7 @@ func openTestWebSurfaceGateway(t *testing.T, h *Host, pluginID, surfaceID string
 }
 
 func TestWebSurfaceRechecksRevocationAfterAssetRead(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, buildFixturePackage(t))
 	request, surface := openTestWebSurface(t, h, installed.PluginInstanceID, "surface_read_revoke")
 	assets := &performanceCountingAssetStore{AssetStore: h.adapters.Assets}

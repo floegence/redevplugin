@@ -9,7 +9,7 @@ state machines.
 
 ReDevPlugin owns reusable extension mechanics:
 
-- package layout, canonical package hashing, detached signatures, validation,
+- package layout, canonical package hashing, validation,
   and asset storage;
 - plugin registry, install/update/enable/open/disable/uninstall lifecycle,
   PluginData export/import, retained bindings, and unreferenced object recovery;
@@ -73,11 +73,8 @@ and marked that exact asset session prepared.
   native backend artifacts, and exposes filesystem-backed asset storage.
 - `pkg/host` coordinates lifecycle, permissions, policy, settings, storage,
   network grants, runtime execution, retained data, audit, and
-  diagnostics through host-provided adapters. Official or registry-backed
-  installs should use release references resolved by host-registered
-  `ReleaseSourcePolicyResolver` and `ReleaseArtifactResolver` adapters; the Host
-  still owns package reading, hash comparison, trust verification, staged
-  install, registry mutation, audit, and diagnostics.
+  diagnostics through host-provided adapters. All distributed packages use
+  source resolution, inspection, and one durable inspected-install Execution.
   Lifecycle mutation uses a reference-counted per-plugin lock registry: install,
   update, downgrade, enable, disable, and uninstall take the plugin write lock;
   surface opening and final Event commits take the read lock. Release
@@ -86,12 +83,6 @@ and marked that exact asset session prepared.
   including external packages, commits through the same atomic plugin-data and
   tombstone transaction; external-package update persistence cannot create a
   new installed record.
-- `pkg/releasetrust` owns current release-document verification. A validated,
-  immutable source configuration and root Ed25519 key are the trust inputs.
-  Release metadata and package signatures bind exact SHA-256 digests and the
-  current source policy and revocation epochs. Invalid, expired, or revoked
-  documents fail closed; no local trusted-time, transparency ledger, publisher
-  continuity, or activation-lease state participates in admission.
 - Host-selected package download transports supply normal DNS, routing, proxies,
   VPN connectivity and trust roots through the Go Fetcher and ExternalPackage
   module. ReDevPlugin retains each redirect, artifact-host, credential, quota,
@@ -100,23 +91,11 @@ and marked that exact asset session prepared.
   Authorized HTTPS hostname connectors may separately use the host network
   factory within the existing grant-bound executor pools; it never supplies
   permission, registry, broker, retry or execution semantics.
-- `pkg/releasepublisher` creates a recoverable sequence of public external
-  signer requests, verifies closed Ed25519 responses, and emits an immutable
-  release asset set plus its exact locator-to-asset projection. It never accepts
-  signer commands, credential references, storage locations, or account data.
-- `pkg/remoterelease` binds that locator projection to reviewed HTTPS URLs,
-  exact sizes, and SHA-256 values. It implements the release-document and Host
-  artifact resolver interfaces over the hardened
-  `pkg/externalsource` downloader, including an exact allowed-host check before
-  every redirect hop. Concurrent reads of one immutable asset digest share one
-  in-flight fetch; every caller receives owned bytes only after the existing
-  size and SHA-256 checks succeed. A canceled waiter does not cancel the owner,
-  and failed or invalid results are not cached. Release providers retain
-  package bytes; ReDevPlugin verifies them after direct download.
-  The hardened downloader reuses an idle HTTPS connection only when a later
-  request has re-resolved the same exact origin to the same sorted public IP
-  pin set. Origin or pin changes use a distinct transport; the pool is bounded
-  to 32 entries with a 30-second idle timeout.
+- `pkg/releasepublisher` inspects ordinary packages and extracts validated
+  presentation icons. It uses the same package parser and exact capability
+  contracts as the Host. Authors publish the package and repository index.
+- `pkg/externalsource` resolves a selected index entry and stable SemVer tag,
+  downloads the exact asset with bounded HTTPS retrieval, and stages its bytes.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, Execution/Event reads and cancellation, surface
   prepare/token/dispose, parent-only POST asset transport, and
@@ -140,35 +119,14 @@ and marked that exact asset session prepared.
 - `pkg/protocol` tests keep OpenAPI, schemas, route fixtures, Go DTOs,
   TypeScript SDK bindings, Rust IPC, WASM ABI, and compatibility hashes aligned.
 
-### Release Document Cache
+### Installation Recovery
 
-Hosts can open `remoterelease.OpenDocumentCache(ctx, absolutePath)` once per
-state root and pass it as `AssetSetOptions.DocumentCache` to each immutable
-release projection. Close it after the Host and release operations stop. A host
-may continue without this optional cache if opening it fails.
-
-The platform owns the SQLite layout in
-`spec/internal/release-document-cache.sql`: lineage
-`redevplugin_release_documents`, schema 1. It is a new disposable cache, not a
-migration of the control database or installed plugin state. Empty interrupted
-creation recovers transactionally; an unknown lineage, future schema, or extra
-schema object fails without changing the existing database. Each document is at
-most 1 MiB, with FIFO eviction at 128 entries or 8 MiB of payload. Transactions
-preserve committed entries across interruption; the database page quota bounds
-storage growth. Cache misses and read/write failures use the existing bounded
-remote transport.
-
-Only release documents are retained. A cache hit must match the **current**
-reviewed asset projection's exact SHA-256 and size. Signature, expiry, policy,
-revocation, owner and execution checks are unchanged and are performed by their
-existing authorities. The cache contains no tokens, trust decisions or plugin
-packages. It does not discover a newer release or make a stale market snapshot
-fresh. A changed projection cannot reuse old bytes at the same locator.
-
-Startup recovery can therefore validate already-downloaded trust documents
-locally while the runtime starts, instead of repeating five sequential network
-round trips after every process restart. Initial downloads and changed or
-expired trust evidence retain their normal verification and failure behavior.
+Installations reuse the control database's Execution and Event tables. Request
+IDs bind stable user/environment ownership and the exact inspection/digest.
+The inspected bytes are session-bound before acceptance. Installation results,
+progress and events remain recoverable after session renewal. Runtime calls stay
+bound to their exact session and surface. Interrupted commits are reconciled
+against package-bound installation evidence; unknown effects are never replayed.
 
 ### Runtime Recovery
 
@@ -281,7 +239,7 @@ accepting memory/export metadata. The Rust ABI crate runs
 execution. The signed invocation memory budget is then applied to the Wasmi
 store so a valid module still cannot use `memory.grow` beyond its grant. The
 manifest contract rejects worker budgets above the 256 MiB platform ceiling;
-host package trust policy may impose a smaller product limit.
+host resource policy may impose a smaller product limit.
 
 The Go supervisor derives a bounded context for runtime-origin Hostcalls before
 entering host adapters. Workers import only `redevplugin.io`: `rdp_call_v1`
@@ -402,17 +360,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/wasm-abi.json`;
 - `spec/plugin/worker-invocation.schema.json`;
 - `spec/internal/runtime-wire.schema.json`;
-- `spec/plugin/package-signature-v1.schema.json`;
-- `spec/plugin/release-metadata.schema.json`;
-- `spec/plugin/release-root-delegation-v1.schema.json`;
 - `spec/plugin/release-publisher-config-v1.schema.json`;
-- `spec/plugin/publisher-release-ref-v1.schema.json`;
-- `spec/plugin/external-signer-request-v1.schema.json`;
-- `spec/plugin/external-signer-response-v1.schema.json`;
-- `spec/plugin/release-source-policy-v3.schema.json`;
-- `spec/plugin/release-source-policy-pointer-v2.schema.json`;
-- `spec/plugin/release-revocation-v3.schema.json`;
-- `spec/plugin/release-revocation-pointer-v2.schema.json`;
 - `spec/plugin/token-ticket-v4.schema.json`;
 - `spec/plugin/bridge.schema.json`;
 - `spec/plugin/web-surface-document.schema.json`;
@@ -456,28 +404,11 @@ revokes the server surface, clears the iframe and ports, and records one crash i
 the shared reload limiter so a host can perform a bounded retry without retaining
 stale authority.
 
-The plugin-platform OpenAPI contract defines release-reference management routes
-and opt-in local-import package routes. Local-import install/update requests are
-for explicitly named local, developer, or import flows and still run through the
-same manifest validator, trust verifier, staged install, lifecycle, audit, and
-diagnostic path, but they are not part of the default route set. Official or
-registry-backed product installs obtain display-ready presentation and permission
-evidence from the market, then call `executions/release-installs` once with the
-exact `PluginReleaseRef` and its declaration digests. ReDevPlugin recomputes the
-canonical release-reference identity digest before accepting the task. The host
-source policy resolver freezes the source policy snapshot before the artifact
-resolver runs. The artifact resolver receives that snapshot and returns only an
-untrusted artifact handle plus signed release-metadata bytes and signature bytes.
-ReDevPlugin verifies and closed-world decodes that metadata, derives the canonical
-release, then verifies package hashes, signatures, trust, compatibility, identity,
-and the declared permission summary before registry mutation. Updates continue to
-use `update-release-ref`.
-
-The manifest defines the complete PluginData shape. Update and downgrade may
-switch package code only when the target shape hash is identical to the active
-shape; a different settings or storage schema requires a new plugin identity.
-Opaque bundle import verifies owner identity, shape hash, content hash, and the
-target management revision before publishing a new generation.
+The OpenAPI, Go Host and TypeScript SDK expose the same inspect, accepted
+installation, outcome query and Event contracts. Update checks resolve the
+installed source. User-enabled automatic updates use the same inspection and
+Execution, with capability-change checks repeated under the lifecycle lock.
+Plugin signing contracts and release-reference installation routes are absent.
 
 ## Runtime State Model
 

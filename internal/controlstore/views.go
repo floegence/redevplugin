@@ -18,7 +18,6 @@ import (
 	"github.com/floegence/redevplugin/v3/internal/jsonvalue"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
-	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/security"
@@ -49,11 +48,6 @@ type ExecutionReconcileResult struct {
 	Records     []execution.Execution
 }
 
-type ReleaseInstallRecoveryCandidate struct {
-	OwnerEnvHash string
-	Operation    registry.ReleaseInstallOperation
-}
-
 type ExecutionPruneRequest struct {
 	Before                      time.Time
 	Limit                       int
@@ -61,14 +55,6 @@ type ExecutionPruneRequest struct {
 }
 
 type ExecutionPruneResult struct{ Deleted int }
-
-const releaseInstallPayloadKind = "release_install_v1"
-
-type releaseInstallPayload struct {
-	Kind      string                           `json:"kind"`
-	Operation registry.ReleaseInstallOperation `json:"operation"`
-	Release   registry.ReleaseInstallIdentity  `json:"release"`
-}
 
 type durableRegistryPluginRecord struct {
 	registry.PluginRecord
@@ -166,12 +152,6 @@ func decodeExactCanonicalManifest(raw json.RawMessage) (manifest.Manifest, strin
 		return manifest.Manifest{}, "", errors.New("manifest JSON is not canonical")
 	}
 	return decoded, string(canonical), nil
-}
-
-func encodeReleaseInstallOperation(operation registry.ReleaseInstallOperation) ([]byte, error) {
-	return json.Marshal(releaseInstallPayload{
-		Kind: releaseInstallPayloadKind, Operation: operation, Release: operation.Release,
-	})
 }
 
 func (owner ExecutionOwner) Valid() bool {
@@ -763,239 +743,6 @@ func (v ExecutionView) CreateOwned(ctx context.Context, value execution.Executio
 	return err
 }
 
-func (v ExecutionView) StartReleaseInstall(ctx context.Context, owner ExecutionOwner, req registry.StartReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, bool, error) {
-	if err := v.ready(); err != nil {
-		return registry.ReleaseInstallOperation{}, false, err
-	}
-	if !owner.Valid() || owner.OwnerEnvHash == "" {
-		return registry.ReleaseInstallOperation{}, false, ErrRecordNotFound
-	}
-	prepared, err := registry.PrepareReleaseInstallOperation(req)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, false, err
-	}
-	tx, err := v.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, releaseInstallSelect+` WHERE owner_session_hash=? AND owner_user_hash=? AND owner_env_hash=? AND session_channel_id_hash=? AND kind=? ORDER BY created_at,execution_id`, owner.OwnerSessionHash, owner.OwnerUserHash, owner.OwnerEnvHash, owner.SessionChannelIDHash, execution.KindOperation)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, false, err
-	}
-	var existing []registry.ReleaseInstallOperation
-	for rows.Next() {
-		operation, err := scanReleaseInstallOperation(rows)
-		if errors.Is(err, registry.ErrReleaseInstallOperationNotFound) {
-			continue
-		}
-		if err != nil {
-			_ = rows.Close()
-			return registry.ReleaseInstallOperation{}, false, err
-		}
-		existing = append(existing, operation)
-	}
-	if err := rows.Close(); err != nil {
-		return registry.ReleaseInstallOperation{}, false, err
-	}
-	for _, operation := range existing {
-		if operation.RequestID == prepared.RequestID {
-			if operation.RequestSHA256 != prepared.RequestSHA256 {
-				return registry.ReleaseInstallOperation{}, false, registry.ErrReleaseInstallOperationConflict
-			}
-			return operation, false, nil
-		}
-		if operation.Execution.ID == prepared.Execution.ID {
-			return registry.ReleaseInstallOperation{}, false, registry.ErrReleaseInstallOperationConflict
-		}
-		if operation.PluginInstanceID == prepared.PluginInstanceID && operation.Execution.Status == execution.StatusRunning {
-			return operation, false, nil
-		}
-	}
-	raw, err := encodeReleaseInstallOperation(prepared)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, false, err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO execution(execution_id,plugin_instance_id,owner_session_hash,owner_user_hash,owner_env_hash,session_channel_id_hash,kind,status,cursor,failure_code,cancelable,created_at,updated_at,cancel_requested_at,terminal_at,operation_json,stream_json) VALUES(?,?,?,?,?,?,?,?,0,'',0,?,?,NULL,NULL,?,'null')`, prepared.Execution.ID, prepared.PluginInstanceID, owner.OwnerSessionHash, owner.OwnerUserHash, owner.OwnerEnvHash, owner.SessionChannelIDHash, execution.KindOperation, execution.StatusRunning, prepared.Execution.CreatedAt.UnixNano(), prepared.Execution.UpdatedAt.UnixNano(), string(raw))
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return registry.ReleaseInstallOperation{}, false, err
-	}
-	return prepared, true, nil
-}
-
-func (v ExecutionView) GetReleaseInstall(ctx context.Context, ownerEnvHash, executionID string) (registry.ReleaseInstallOperation, error) {
-	return scanReleaseInstallOperation(v.store.db.QueryRowContext(ctx, releaseInstallSelect+` WHERE owner_env_hash=? AND execution_id=? AND kind=?`, ownerEnvHash, executionID, execution.KindOperation))
-}
-
-func (v ExecutionView) ListReleaseInstallRecoveryCandidates(ctx context.Context) ([]ReleaseInstallRecoveryCandidate, error) {
-	rows, err := v.store.db.QueryContext(ctx, releaseInstallRecoverySelect+` WHERE kind=? AND status=? ORDER BY created_at,execution_id`, execution.KindOperation, execution.StatusRunning)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []ReleaseInstallRecoveryCandidate
-	for rows.Next() {
-		candidate, err := scanReleaseInstallRecoveryCandidate(rows)
-		if errors.Is(err, registry.ErrReleaseInstallOperationNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, candidate)
-	}
-	return result, rows.Err()
-}
-
-func (v ExecutionView) UpdateReleaseInstall(ctx context.Context, ownerEnvHash string, req registry.UpdateReleaseInstallOperationRequest) (registry.ReleaseInstallOperation, error) {
-	tx, err := v.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	current, err := scanReleaseInstallOperation(tx.QueryRowContext(ctx, releaseInstallSelect+` WHERE owner_env_hash=? AND execution_id=? AND kind=?`, ownerEnvHash, req.ExecutionID, execution.KindOperation))
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	updated, err := registry.ApplyReleaseInstallOperationUpdate(current, req)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	raw, err := encodeReleaseInstallOperation(updated)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	status, failureCode := req.Status, ""
-	if status == execution.StatusFailed {
-		failureCode = updated.Failure.Code
-	}
-	eventPayload := releaseInstallEventPayload(updated, status)
-	payload, err := json.Marshal(eventPayload)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	var terminalAt any
-	if status != execution.StatusRunning {
-		terminalAt = req.Now.UTC().UnixNano()
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE execution SET status=?,cursor=cursor+1,failure_code=?,updated_at=?,terminal_at=?,operation_json=? WHERE owner_env_hash=? AND execution_id=? AND kind=? AND cursor=? AND status=?`, status, failureCode, req.Now.UTC().UnixNano(), terminalAt, string(raw), ownerEnvHash, req.ExecutionID, execution.KindOperation, req.ExpectedCursor, current.Execution.Status)
-	if err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	if changed, _ := result.RowsAffected(); changed != 1 {
-		return registry.ReleaseInstallOperation{}, registry.ErrReleaseInstallOperationConflict
-	}
-	var sequence uint64
-	if err := tx.QueryRowContext(ctx, `SELECT cursor FROM execution WHERE execution_id=?`, req.ExecutionID).Scan(&sequence); err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	kind := execution.EventProgress
-	if status != execution.StatusRunning {
-		kind = execution.EventTerminal
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_events(execution_id,sequence,kind,payload_json,error_json) VALUES(?,?,?,?,?)`, req.ExecutionID, sequence, kind, string(payload), "null"); err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return registry.ReleaseInstallOperation{}, err
-	}
-	return scanReleaseInstallOperation(v.store.db.QueryRowContext(ctx, releaseInstallSelect+` WHERE owner_env_hash=? AND execution_id=? AND kind=?`, ownerEnvHash, req.ExecutionID, execution.KindOperation))
-}
-
-func releaseInstallEventPayload(updated registry.ReleaseInstallOperation, status string) map[string]any {
-	installProgress := registry.ReleaseInstallProgressEvent{
-		TaskID: updated.Execution.ID, RequestID: updated.RequestID,
-		Stage: registry.ReleaseInstallStageForPhase(updated.Phase), Status: registry.ReleaseInstallStageRunning,
-	}
-	if updated.Progress.Kind != registry.ReleaseInstallProgressIndeterminate {
-		completed, total := updated.Progress.Completed, updated.Progress.Total
-		installProgress.Completed, installProgress.Total = &completed, &total
-	}
-	payload := map[string]any{
-		"phase": updated.Phase, "progress": updated.Progress, "install_progress": installProgress,
-	}
-	if status != execution.StatusRunning {
-		payload["status"] = status
-	}
-	switch status {
-	case execution.StatusFailed:
-		payload["failure_phase"] = updated.Phase
-		installProgress.Status = registry.ReleaseInstallStageFailed
-		installProgress.FailureCode = updated.Failure.Code
-		installProgress.FailureStage = installProgress.Stage
-		retryable := updated.Failure.Retryable
-		installProgress.Retryable = &retryable
-		payload["install_progress"] = installProgress
-	case execution.StatusCompleted:
-		installProgress.Status = registry.ReleaseInstallStageCompleted
-		payload["install_progress"] = installProgress
-	}
-	return payload
-}
-
-const releaseInstallSelect = `SELECT execution_id,plugin_instance_id,kind,status,cursor,failure_code,cancelable,created_at,updated_at,cancel_requested_at,terminal_at,operation_json FROM execution`
-const releaseInstallRecoverySelect = `SELECT owner_env_hash,execution_id,plugin_instance_id,kind,status,cursor,failure_code,cancelable,created_at,updated_at,cancel_requested_at,terminal_at,operation_json FROM execution`
-
-func scanReleaseInstallOperation(row scanner) (registry.ReleaseInstallOperation, error) {
-	return scanReleaseInstallOperationValues(row.Scan)
-}
-
-func scanReleaseInstallRecoveryCandidate(row scanner) (ReleaseInstallRecoveryCandidate, error) {
-	var ownerEnvHash string
-	operation, err := scanReleaseInstallOperationValues(func(dest ...any) error {
-		return row.Scan(append([]any{&ownerEnvHash}, dest...)...)
-	})
-	if err != nil {
-		return ReleaseInstallRecoveryCandidate{}, err
-	}
-	if strings.TrimSpace(ownerEnvHash) == "" {
-		return ReleaseInstallRecoveryCandidate{}, fmt.Errorf("%w: release install owner environment is empty", ErrIncompatible)
-	}
-	return ReleaseInstallRecoveryCandidate{OwnerEnvHash: ownerEnvHash, Operation: operation}, nil
-}
-
-func scanReleaseInstallOperationValues(scan func(dest ...any) error) (registry.ReleaseInstallOperation, error) {
-	var control execution.Execution
-	var raw string
-	var createdAt, updatedAt int64
-	var cancelRequestedAt, terminalAt sql.NullInt64
-	if err := scan(&control.ID, &control.PluginInstanceID, &control.Kind, &control.Status, &control.Cursor, &control.FailureCode, &control.Cancelable, &createdAt, &updatedAt, &cancelRequestedAt, &terminalAt, &raw); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return registry.ReleaseInstallOperation{}, registry.ErrReleaseInstallOperationNotFound
-		}
-		return registry.ReleaseInstallOperation{}, err
-	}
-	operation, ok := decodeReleaseInstallOperation(raw)
-	if !ok {
-		return registry.ReleaseInstallOperation{}, registry.ErrReleaseInstallOperationNotFound
-	}
-	control.CreatedAt = time.Unix(0, createdAt).UTC()
-	control.UpdatedAt = time.Unix(0, updatedAt).UTC()
-	control.CancelRequestedAt = nullTimePointer(cancelRequestedAt)
-	control.TerminalAt = nullTimePointer(terminalAt)
-	if err := control.Validate(); err != nil {
-		return registry.ReleaseInstallOperation{}, fmt.Errorf("%w: release install execution row: %v", ErrIncompatible, err)
-	}
-	if operation.PluginInstanceID != control.PluginInstanceID {
-		return registry.ReleaseInstallOperation{}, fmt.Errorf("%w: release install payload identity mismatch", ErrIncompatible)
-	}
-	operation.Execution = control
-	return operation, nil
-}
-
-func decodeReleaseInstallOperation(raw string) (registry.ReleaseInstallOperation, bool) {
-	var payload releaseInstallPayload
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload.Kind != releaseInstallPayloadKind || payload.Operation.RequestID == "" {
-		return registry.ReleaseInstallOperation{}, false
-	}
-	operation := payload.Operation
-	operation.Release = payload.Release
-	return operation, true
-}
-
 func (v ExecutionView) Get(ctx context.Context, id string) (execution.Execution, error) {
 	if err := v.ready(); err != nil {
 		return execution.Execution{}, err
@@ -1043,6 +790,22 @@ func (v ExecutionView) GetOwned(ctx context.Context, id string, owner ExecutionO
 	return value, err
 }
 
+// GetManagementOwned lets the same user recover installation outcomes after a
+// session renewal. Plugin executions retain their exact session ownership.
+func (v ExecutionView) GetManagementOwned(ctx context.Context, id string, owner ExecutionOwner) (execution.Execution, error) {
+	if err := v.ready(); err != nil {
+		return execution.Execution{}, err
+	}
+	if !owner.Valid() {
+		return execution.Execution{}, ErrRecordNotFound
+	}
+	value, err := scanExecution(v.store.db.QueryRowContext(ctx, executionSelect+` WHERE execution_id=? AND owner_user_hash=? AND owner_env_hash=? AND ((owner_session_hash=? AND session_channel_id_hash=?) OR json_extract(operation_json,'$.kind')=?)`, id, owner.OwnerUserHash, owner.OwnerEnvHash, owner.OwnerSessionHash, owner.SessionChannelIDHash, inspectedInstallKind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return execution.Execution{}, ErrRecordNotFound
+	}
+	return value, err
+}
+
 func (v ExecutionView) ListOwned(ctx context.Context, pluginInstanceID string, owner ExecutionOwner, cursor uint64, limit int) ([]execution.Execution, uint64, error) {
 	return v.ListOwnedWithOperationScope(ctx, pluginInstanceID, "", owner, cursor, limit)
 }
@@ -1057,18 +820,18 @@ func (v ExecutionView) ListOwnedWithOperationScope(ctx context.Context, pluginIn
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	query := executionSelect + ` WHERE owner_session_hash=? AND owner_user_hash=? AND owner_env_hash=? AND session_channel_id_hash=?`
-	args := []any{owner.OwnerSessionHash, owner.OwnerUserHash, owner.OwnerEnvHash, owner.SessionChannelIDHash}
+	query := executionSelect + ` WHERE owner_user_hash=? AND owner_env_hash=? AND ((owner_session_hash=? AND session_channel_id_hash=?) OR json_extract(operation_json,'$.kind')=?)`
+	args := []any{owner.OwnerUserHash, owner.OwnerEnvHash, owner.OwnerSessionHash, owner.SessionChannelIDHash, inspectedInstallKind}
 	if pluginInstanceID != "" {
 		query += ` AND plugin_instance_id=?`
 		args = append(args, pluginInstanceID)
 	}
 	if operationScope != "" {
-		if operationScope != "release_install" {
+		if operationScope != "plugin_install" {
 			return nil, 0, ErrStateConflict
 		}
 		query += ` AND json_extract(operation_json,'$.kind')=?`
-		args = append(args, releaseInstallPayloadKind)
+		args = append(args, inspectedInstallKind)
 	}
 	if cursor != 0 {
 		query += ` AND rowid>?`
@@ -1245,44 +1008,6 @@ func (v ExecutionView) ReconcileOrphans(ctx context.Context, now time.Time) (Exe
 	}
 	result := ExecutionReconcileResult{Records: make([]execution.Execution, 0, len(pending))}
 	for _, value := range pending {
-		if value.Status == execution.StatusRunning {
-			var raw string
-			if err := tx.QueryRowContext(ctx, `SELECT operation_json FROM execution WHERE execution_id=?`, value.ID).Scan(&raw); err != nil {
-				return ExecutionReconcileResult{}, err
-			}
-			if operation, ok := decodeReleaseInstallOperation(raw); ok {
-				operation.Execution = value
-				updated, err := registry.ApplyReleaseInstallOperationUpdate(operation, registry.UpdateReleaseInstallOperationRequest{
-					ExecutionID: value.ID, ExpectedCursor: value.Cursor, Status: execution.StatusFailed,
-					Phase: operation.Phase, Progress: registry.ReleaseInstallProgress{Kind: registry.ReleaseInstallProgressIndeterminate},
-					Attempt: max(operation.Attempt, 1), MutationOutcome: mutation.OutcomeNotCommitted,
-					Failure: &registry.ReleaseInstallFailure{Code: string(security.ErrInstallInterrupted), Retryable: true}, Now: now,
-				})
-				if err != nil {
-					return ExecutionReconcileResult{}, err
-				}
-				updatedRaw, err := encodeReleaseInstallOperation(updated)
-				if err != nil {
-					return ExecutionReconcileResult{}, err
-				}
-				event, err := execution.NewEvent(value, value.Cursor+1, execution.EventTerminal, releaseInstallEventPayload(updated, execution.StatusFailed))
-				if err != nil {
-					return ExecutionReconcileResult{}, err
-				}
-				if err := value.Finish(execution.StatusFailed, string(security.ErrInstallInterrupted), event, now); err != nil {
-					return ExecutionReconcileResult{}, err
-				}
-				if err := insertEvent(ctx, tx, event); err != nil {
-					return ExecutionReconcileResult{}, err
-				}
-				if _, err := tx.ExecContext(ctx, `UPDATE execution SET status=?,cursor=?,failure_code=?,updated_at=?,terminal_at=?,operation_json=? WHERE execution_id=?`, value.Status, value.Cursor, value.FailureCode, value.UpdatedAt.UnixNano(), value.TerminalAt.UnixNano(), string(updatedRaw), value.ID); err != nil {
-					return ExecutionReconcileResult{}, err
-				}
-				result.Interrupted++
-				result.Records = append(result.Records, value)
-				continue
-			}
-		}
 		status := execution.StatusOrphaned
 		failureCode := "platform_failed"
 		if value.Status == execution.StatusCancelRequested {

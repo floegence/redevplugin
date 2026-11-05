@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"testing"
+
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 )
 
 type socketAdmissionObserver struct {
@@ -21,7 +22,7 @@ func (o *socketAdmissionObserver) OpenWebSocket(_ context.Context, req connectiv
 }
 func TestWebSocketRequiresSurfaceGrantAndExactConnection(t *testing.T) {
 	observer := &socketAdmissionObserver{}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, networkExecutor: observer})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{networkExecutor: observer})
 	var m map[string]any
 	_ = json.Unmarshal([]byte(currentNetworkManifestJSON()), &m)
 	m["api"].(map[string]any)["required_features"] = []string{"surface.resources.v1", "net.websocket.v1"}

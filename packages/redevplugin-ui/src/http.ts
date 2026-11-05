@@ -210,8 +210,8 @@ const packageValidationReasons = [
   "ambiguous_entry", "non_regular_entry", "invalid_utf8_path", "non_nfc_path", "symlink_entry",
   "directory_entry", "entry_bytes", "path_length", "compression_ratio", "total_uncompressed_bytes",
   "entry_open_failed", "entry_read_failed", "entry_close_failed", "entry_size_mismatch",
-  "unsupported_signature_entry", "manifest_artifact", "package_asset_security", "package_artifact_boundary",
-  "entry_path", "manifest_canonical_json", "canonical_hash", "package_signature", "empty_path",
+  "manifest_artifact", "package_asset_security", "package_artifact_boundary",
+  "entry_path", "manifest_canonical_json", "canonical_hash", "empty_path",
   "slash_separator", "non_canonical_path", "path_traversal", "hidden_path", "external_icon_path",
   "unsupported_icon_format", "missing_icon_asset", "icon_magic_mismatch", "query_or_fragment",
 ] as const;

@@ -169,7 +169,7 @@ outcomes invalidate only the exact surface. The parent SDK never retries claims.
 routes exposed by `pkg/httpadapter`, including:
 
 - platform identity and current plugin inventory read;
-- release-reference install/update for official or registry-backed product
+- inspected-package install/update for official or community product
   flows where the host page sends `PluginReleaseRef` rather than package bytes;
 - downgrade, enable, disable, uninstall, and surface open;
 - authenticated owner/session surface-scope revocation;
@@ -207,19 +207,19 @@ pages can consume the SDK and raw HTTP contract consistently. Audit events stay
 behind the host's internal `AuditSink`; the generic HTTP adapter and TypeScript
 client do not expose them.
 
-Trusted product UI should not transport official `.redevplugin` package bytes
-through browser state. For official or registry-backed installs, review the
-market's display-ready install preview and pass its exact release reference and
-declaration digests to `startReleaseInstallExecution`. The Host recomputes the
-canonical release-reference identity digest, resolves the package once, and
-verifies the displayed manifest and permission evidence before mutation. Updates
-use `updateReleaseRef`; artifact resolution, hash verification, trust assessment,
-staged install/update, and registry mutation stay server-side.
+Product UI calls `inspectExternalPackage` with the selected source and optional
+expected package and declaration digests, presents the normalized result, then
+calls `startInspectedInstall` with a stable request ID and the inspected digest.
+Local package uploads use `inspectUploadedExternalPackage` and the same start
+operation. Use `getInspectedInstall` after lost responses or session renewal,
+and the normal Execution/Event API for progress. Never retry an unknown effect
+with a new request ID. Refresh authoritative inventory after completion.
 
-Raw package import is intentionally not part of `PluginPlatformClient`. Explicit
-local or developer import flows must opt into `PluginLocalImportClient` from
-`@floegence/redevplugin-ui/local-import`, and hosts must only mount those routes
-when local import is allowed for that product surface.
+`inspectPluginUpdate` resolves the original installed source. The user's
+`setAutomaticUpdates` preference is stored on that installation. Automatic starts
+require an unchanged capability summary and newer version. Source changes always
+require explicit review. Accepted updates invalidate only the target surface;
+receipts and event queries do not mutate other surfaces.
 
 ## Surface Host And Lifecycle
 
@@ -443,7 +443,7 @@ Worker WebSocket, TCP and UDP use the bounded Worker SDK resources.
 
 ## Author presentation collections
 
-Host inspection, inventory and release verification expose normalized author presentation through the published contract. Required collection fields remain JSON arrays even when empty: highlights, surfaces, settings and setting options never become null. Hosts consume the locale resolver directly and do not add product-specific null adapters. Presentation hashes bind that normalized projection; package bytes and embedded signatures are unchanged by presentation projection.
+Host inspection, inventory and release verification expose normalized author presentation through the published contract. Required collection fields remain JSON arrays even when empty: highlights, surfaces, settings and setting options never become null. Hosts consume the locale resolver directly and do not add product-specific null adapters. Presentation hashes bind that normalized projection; package bytes are unchanged by presentation projection.
 
 ## Retained data recovery in host management UI
 
@@ -487,3 +487,29 @@ credential after renewal. An ID from another plugin cannot be queried or cancele
 even within the same host session. Hosts must upgrade the coordinated platform
 release; no application-authored gateway fields, extra manifest settings or
 custom execution dispatcher are needed.
+
+
+## Open package installation and updates
+
+Use `listRepositoryPlugins` to select a plugin when a GitHub repository declares
+multiple projects. The Host owns index parsing and per-plugin release selection.
+Pass the selection to `inspectExternalPackage`; catalog identity and digest fields
+are assertions and never override package-derived identity or presentation.
+File uploads use `inspectUploadedExternalPackage` and the same inspection result.
+
+After user confirmation, retain one request ID and call `startInspectedInstall`.
+Use `getInspectedInstall` and the existing Execution/Event stream for progress and
+outcome recovery, including after session renewal. A lost response must query the
+same request; a failed operation is never silently replayed with a fresh ID. A
+committed outcome with a failure still represents an installed package: refresh
+inventory and offer runtime recovery rather than reinstalling it.
+
+`setAutomaticUpdates` stores an explicit per-installation preference.
+`inspectPluginUpdate` resolves only the saved source. Hosts may schedule checks
+for enabled preferences and start eligible inspections with `automatic: true`.
+The Host repeats preference, source, revision, version, and capability checks at
+commit. A capability change returns manual eligibility with `capabilities_changed`;
+render its inspection for user confirmation. Same-version changed bytes fail.
+Source replacement uses `allow_source_change` only on an explicit update and resets
+automatic updates. Installed grants, user-disable state, and sandbox boundaries
+remain authoritative. Official and community entries use this identical flow.

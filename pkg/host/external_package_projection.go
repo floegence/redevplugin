@@ -1,44 +1,42 @@
 package host
 
 import (
+	"time"
+
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/releaseprojection"
-	"time"
 )
 
 type ExternalPackageIntent = releaseprojection.ExternalPackageIntent
 type PackageHashSet = releaseprojection.PackageHashSet
-type ExternalPackageSignatureAssessment = releaseprojection.ExternalPackageSignatureAssessment
 type ExternalPackageRedirectHop = releaseprojection.ExternalPackageRedirectHop
 type ExternalPackageSourceProvenance = releaseprojection.ExternalPackageSourceProvenance
 type ExternalPackageExecutionApproval = releaseprojection.ExternalPackageExecutionApproval
 type ExternalPackageUpdateEligibility = releaseprojection.ExternalPackageUpdateEligibility
 type ExternalPackageInspection struct {
-	InspectionID        string                             `json:"inspection_id"`
-	ExpiresAt           time.Time                          `json:"expires_at"`
-	Intent              ExternalPackageIntent              `json:"intent"`
-	PublisherID         string                             `json:"publisher_id"`
-	PluginID            string                             `json:"plugin_id"`
-	Version             string                             `json:"version"`
-	Presentation        manifest.PresentationCatalog       `json:"presentation"`
-	PresentationSHA256  string                             `json:"presentation_sha256"`
-	InspectedHashes     PackageHashSet                     `json:"inspected_hashes"`
-	SignatureAssessment ExternalPackageSignatureAssessment `json:"signature_assessment"`
-	SourceProvenance    ExternalPackageSourceProvenance    `json:"source_provenance"`
-	ExecutionApproval   ExternalPackageExecutionApproval   `json:"execution_approval"`
-	UpdateEligibility   ExternalPackageUpdateEligibility   `json:"update_eligibility"`
-	SecuritySummary     ExternalPackageSecuritySummary     `json:"security_summary"`
+	InspectionID       string                           `json:"inspection_id"`
+	ExpiresAt          time.Time                        `json:"expires_at"`
+	Intent             ExternalPackageIntent            `json:"intent"`
+	PublisherID        string                           `json:"publisher_id"`
+	PluginID           string                           `json:"plugin_id"`
+	Version            string                           `json:"version"`
+	Presentation       manifest.PresentationCatalog     `json:"presentation"`
+	PresentationSHA256 string                           `json:"presentation_sha256"`
+	InspectedHashes    PackageHashSet                   `json:"inspected_hashes"`
+	SourceProvenance   ExternalPackageSourceProvenance  `json:"source_provenance"`
+	ExecutionApproval  ExternalPackageExecutionApproval `json:"execution_approval"`
+	UpdateEligibility  ExternalPackageUpdateEligibility `json:"update_eligibility"`
+	SecuritySummary    ExternalPackageSecuritySummary   `json:"security_summary"`
 }
 
-type InstalledExternalPackage struct {
-	Plugin              *registry.PluginRecord              `json:"plugin"`
-	SignatureAssessment *ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
-	SourceProvenance    *ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
-	ExecutionApproval   *ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
-	UpdateEligibility   *ExternalPackageUpdateEligibility   `json:"update_eligibility,omitempty"`
-	SecuritySummary     *ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
+type installedExternalPackageResult struct {
+	Plugin            *registry.PluginRecord            `json:"plugin"`
+	SourceProvenance  *ExternalPackageSourceProvenance  `json:"source_provenance,omitempty"`
+	ExecutionApproval *ExternalPackageExecutionApproval `json:"execution_approval,omitempty"`
+	UpdateEligibility *ExternalPackageUpdateEligibility `json:"update_eligibility,omitempty"`
+	SecuritySummary   *ExternalPackageSecuritySummary   `json:"security_summary,omitempty"`
 }
 
 // The projection is owned by the host-neutral releaseprojection package so

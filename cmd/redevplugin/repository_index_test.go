@@ -12,7 +12,7 @@ func TestRepositoryIndexScaffoldAndAuthorCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := scaffoldRepositoryIndex([]string{root, "redeven"}); err != nil {
+	if err := scaffoldRepositoryIndex([]string{root, "redeven", "--tag-template", "plugin-v{version}", "--package-asset-template", "plugin-{version}.redevplugin"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := runRepositoryIndex([]string{"validate", root}); err != nil {
@@ -27,8 +27,8 @@ func TestRepositoryIndexScaffoldAndAuthorCheck(t *testing.T) {
 	if err := checkEnclosingRepositoryIndex(root, "github.alice.repo.other"); err == nil {
 		t.Fatal("accepted unlisted project")
 	}
-	if err := scaffoldRepositoryIndex([]string{root, "redeven"}); err == nil {
-		t.Fatal("overwrote index")
+	if err := scaffoldRepositoryIndex([]string{root, "redeven", "--tag-template", "plugin-v{version}", "--package-asset-template", "plugin-{version}.redevplugin"}); err != nil {
+		t.Fatalf("idempotent upsert failed: %v", err)
 	}
 }
 

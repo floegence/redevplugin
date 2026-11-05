@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.18.0
+
+- Open plugin distribution: ordinary packages and repository indexes replace plugin signatures, publisher trust registries, release references, and developer-mode admission. Platform release manifests, product runtime identity, sandbox authorization, and runtime lease signatures remain unchanged.
+- Select each indexed plugin's highest stable namespaced release; support multiple plugins per repository and identical asset names in separate releases. Atomically upsert index entries without dropping sibling projects.
+- Route package URLs, GitHub repositories, uploads, and generated artifacts through the same exact inspected-install Execution, with durable user/environment-bound request recovery and progress. Remove the duplicate synchronous HTTP installation and signed-release installation APIs.
+- Add repository-plugin selection, original-source update inspection, and persisted automatic-update preferences. Automatic updates require a higher version and unchanged capabilities, never grant permissions, and cannot adopt another source. Explicit updates retain immutable version content and require consent for source changes.
+- Publish package inspection and icon evidence from the canonical parser for marketplace ingestion. Official/community classifications carry no installation authority.
+- Migrate control schema 6 to 7 transactionally, preserving package identity, assets, data, grants, and execution receipts while removing retired trust metadata. Existing signer-derived update eligibility does not become user consent.
+- Preserve shared content-addressed assets when a second installation fails; report committed installation with failed postcommit work without replaying the effect.
+
 ## v3.17.0
 
 - Persist failed author build stages and bounded command output independently of successful artifacts; mark interrupted attempts on restart.

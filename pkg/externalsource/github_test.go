@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 )
 
 type fakeGitHubClient struct {
@@ -41,7 +43,7 @@ func TestGitHubReleaseResolverFetchesUniquePackageAsset(t *testing.T) {
 		ResolvedCommitSHA: "0123456789abcdef0123456789abcdef01234567",
 		RepositoryID:      101,
 		ReleaseID:         202,
-		Tag:               "v1.2.3",
+		Tag:               "plugin-v1.2.3",
 		Assets: []GitHubReleaseAsset{
 			{AssetID: 1, Name: "checksums.txt", DownloadURL: "https://objects.githubusercontent.com/checksums", Size: 10},
 			{AssetID: 303, Name: "plugin.redevplugin", DownloadURL: "https://objects.githubusercontent.com/plugin?token=secret", Size: int64(len(content))},
@@ -51,12 +53,12 @@ func TestGitHubReleaseResolverFetchesUniquePackageAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := resolver.ResolvePackage(context.Background(), GitHubRepositorySource{RepositoryURL: "https://GitHub.com/Example/Plugin", Tag: "v1.2.3"})
+	result, err := resolver.ResolvePackage(context.Background(), GitHubRepositorySource{RepositoryURL: "https://GitHub.com/Example/Plugin", Tag: "plugin-v1.2.3"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = fetcher.stage.Remove(result.Fetch.Artifact) })
-	if client.byTagCalls != 1 || client.latestCalls != 0 || client.requestedTag != "v1.2.3" {
+	if client.byTagCalls != 1 || client.latestCalls != 0 || client.requestedTag != "plugin-v1.2.3" {
 		t.Fatalf("client calls: latest=%d byTag=%d tag=%q", client.latestCalls, client.byTagCalls, client.requestedTag)
 	}
 	if result.RepositoryURL != "https://github.com/example/plugin" || result.RepositoryID != 101 || result.ReleaseID != 202 || result.AssetID != 303 {
@@ -105,7 +107,7 @@ func TestGitHubReleaseResolverRemovesSizeMismatch(t *testing.T) {
 		ResolvedCommitSHA: "0123456789abcdef0123456789abcdef01234567",
 		RepositoryID:      1,
 		ReleaseID:         2,
-		Tag:               "v1",
+		Tag:               "plugin-v1.0.0",
 		Assets: []GitHubReleaseAsset{{
 			AssetID: 3, Name: "plugin.redevplugin", DownloadURL: "https://objects.githubusercontent.com/plugin", Size: 100,
 		}},
@@ -121,5 +123,34 @@ func TestGitHubReleaseResolverRemovesSizeMismatch(t *testing.T) {
 	entries, readErr := os.ReadDir(directory)
 	if readErr != nil || len(entries) != 0 {
 		t.Fatalf("stage directory %q entries=%v err=%v", directory, entries, readErr)
+	}
+}
+
+func (client *fakeGitHubClient) RepositoryIndex(context.Context, string, string) (repositoryindex.Index, error) {
+	return repositoryindex.Index{SchemaVersion: repositoryindex.SchemaVersion, Targets: []repositoryindex.Target{{Ecosystem: "redevplugin", Host: "example", Plugins: []repositoryindex.Plugin{{PluginID: "example.plugin", Path: ".", Manifest: "manifest.json", Release: &repositoryindex.Release{TagTemplate: "plugin-v{version}", PackageAssetTemplate: "plugin.redevplugin"}}}}}}, nil
+}
+func (client *fakeGitHubClient) ReleaseTags(context.Context, string, string) ([]GitHubReleaseTag, error) {
+	return []GitHubReleaseTag{{Tag: client.release.Tag}}, nil
+}
+
+func TestRepositoryPluginSelectionIsUnambiguousAndVersionOrdered(t *testing.T) {
+	index, _ := (&fakeGitHubClient{}).RepositoryIndex(context.Background(), "", "")
+	plugin := index.Targets[0].Plugins[0]
+	tags := []GitHubReleaseTag{{Tag: "other-v90.0.0"}, {Tag: "plugin-v1.9.0"}, {Tag: "plugin-v1.10.0"}, {Tag: "plugin-v2.0.0-rc.1"}, {Tag: "plugin-v3.0.0", Draft: true}, {Tag: "plugin-v4.0.0", Prerelease: true}}
+	tag, err := selectPluginTag(plugin, tags)
+	if err != nil || tag != "plugin-v1.10.0" {
+		t.Fatalf("selection: %s %v", tag, err)
+	}
+	other := plugin
+	other.PluginID = "example.second"
+	other.Path = "second"
+	other.Release = &repositoryindex.Release{TagTemplate: "second-v{version}", PackageAssetTemplate: "plugin.redevplugin"}
+	index.Targets[0].Plugins = append(index.Targets[0].Plugins, other)
+	if _, err := selectRepositoryPlugin(index, "example", ""); err == nil {
+		t.Fatal("ambiguous repository selected arbitrary plugin")
+	}
+	selected, err := selectRepositoryPlugin(index, "example", "example.second")
+	if err != nil || selected.PluginID != other.PluginID {
+		t.Fatalf("explicit selection: %+v %v", selected, err)
 	}
 }

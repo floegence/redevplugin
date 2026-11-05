@@ -36,14 +36,12 @@ const (
 	RouteActionCancelFileResource         = host.ManagementActionCancelFileResource
 	RouteActionListFileResources          = host.ManagementActionListFileResources
 	RouteActionRevokeFileResource         = host.ManagementActionRevokeFileResource
-	RouteActionInstallReleaseRef          = host.ManagementActionInstallReleaseRef
 	RouteActionInspectExternalPackage     = host.ManagementActionInspectExternalPackage
 	RouteActionInstallInspectedPackage    = host.ManagementActionInstallInspectedPackage
 	RouteActionEnablePlugin               = host.ManagementActionEnablePlugin
 	RouteActionDisablePlugin              = host.ManagementActionDisablePlugin
 	RouteActionUninstallPlugin            = host.ManagementActionUninstallPlugin
 	RouteActionUpdateLocalPackage         = host.ManagementActionUpdateLocalPackage
-	RouteActionUpdateReleaseRef           = host.ManagementActionUpdateReleaseRef
 	RouteActionDowngradePlugin            = host.ManagementActionDowngradePlugin
 	RouteActionListPlugins                = host.ManagementActionListPlugins
 	RouteActionListFeatures               = host.ManagementActionListFeatures

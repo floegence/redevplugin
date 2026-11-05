@@ -161,10 +161,6 @@ func clonePackageFilesForPerformanceEvidence(pkg Package) Package {
 	for path, content := range pkg.Files {
 		cloned.Files[path] = append([]byte(nil), content...)
 	}
-	cloned.SignatureFiles = make(map[string][]byte, len(pkg.SignatureFiles))
-	for path, content := range pkg.SignatureFiles {
-		cloned.SignatureFiles[path] = append([]byte(nil), content...)
-	}
 	return cloned
 }
 

@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/net/http/httpguts"
 	"net/http"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/floegence/redevplugin/v3/internal/controlstore"
 	"github.com/floegence/redevplugin/v3/internal/resourceio"

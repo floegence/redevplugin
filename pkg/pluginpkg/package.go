@@ -64,11 +64,9 @@ type Package struct {
 	CanonicalManifestBytes []byte            `json:"-"`
 	Entries                []Entry           `json:"entries"`
 	EntriesHash            string            `json:"entries_hash"`
-	PackageSignature       *PackageSignature `json:"package_signature,omitempty"`
-	// Files and SignatureFiles are owned materialized bytes. Borrowing APIs do
+	// Files contains owned materialized bytes. Borrowing APIs do
 	// not mutate them; AssetStore.PutOwnedPackage transfers and clears them.
-	Files          map[string][]byte `json:"-"`
-	SignatureFiles map[string][]byte `json:"-"`
+	Files map[string][]byte `json:"-"`
 }
 
 // ReadLimits is an immutable set of resource limits for package archives.
@@ -141,9 +139,6 @@ func (l ReadLimits) WithMaxCompressionRatio(value int64) (ReadLimits, error) {
 	return l, l.validate()
 }
 
-const PackageSignaturePath = "signatures/package.sig"
-const PackageSignatureSchemaVersion = "redevplugin.package_signature.v1"
-const PackageSignatureAlgorithmEd25519 = "ed25519"
 const maxWASMTableElements uint32 = 65_536
 
 var forbiddenShellExtensions = map[string]struct{}{
@@ -198,19 +193,6 @@ const (
 
 var ErrPresentationIconUnavailable = errors.New("presentation icon is unavailable")
 
-type PackageSignature struct {
-	SchemaVersion string `json:"schema_version"`
-	Algorithm     string `json:"algorithm"`
-	KeyID         string `json:"key_id"`
-	PublisherID   string `json:"publisher_id,omitempty"`
-	PluginID      string `json:"plugin_id,omitempty"`
-	PackageHash   string `json:"package_hash"`
-	ManifestHash  string `json:"manifest_hash"`
-	EntriesHash   string `json:"entries_hash"`
-	Signature     string `json:"signature"`
-	SignedAt      string `json:"signed_at,omitempty"`
-}
-
 var deterministicModTime = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 var errZipEntrySizeMismatch = errors.New("zip entry size mismatch")
 
@@ -218,11 +200,11 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, limits ReadLi
 	if err := limits.validate(); err != nil {
 		return Package{}, err
 	}
-	files, signatureFiles, err := collectFiles(srcDir, limits)
+	files, err := collectFiles(srcDir, limits)
 	if err != nil {
 		return Package{}, err
 	}
-	pkg, err := packageFromOwnedFiles(ctx, files, signatureFiles)
+	pkg, err := packageFromOwnedFiles(ctx, files)
 	if err != nil {
 		return Package{}, err
 	}
@@ -239,15 +221,7 @@ func WritePackage(ctx context.Context, w io.Writer, pkg Package) error {
 	if len(pkg.Files) == 0 {
 		return errors.New("package files are required")
 	}
-	signatureFiles := map[string][]byte{}
-	if pkg.PackageSignature != nil {
-		signatureBytes, err := marshalPackageSignature(*pkg.PackageSignature)
-		if err != nil {
-			return err
-		}
-		signatureFiles[PackageSignaturePath] = signatureBytes
-	}
-	normalized, err := packageMetadataFromFiles(ctx, pkg.Files, signatureFiles)
+	normalized, err := packageMetadataFromFiles(ctx, pkg.Files)
 	if err != nil {
 		return err
 	}
@@ -261,7 +235,6 @@ func WritePackage(ctx context.Context, w io.Writer, pkg Package) error {
 		return fmt.Errorf("entries_hash mismatch: %s != %s", normalized.EntriesHash, pkg.EntriesHash)
 	}
 	normalized.Files = pkg.Files
-	normalized.SignatureFiles = signatureFiles
 	return writePackageZip(ctx, w, normalized)
 }
 
@@ -290,30 +263,6 @@ func writePackageZip(ctx context.Context, w io.Writer, pkg Package) error {
 			return err
 		}
 	}
-	signaturePaths := sortedFilePaths(pkg.SignatureFiles)
-	for _, entryPath := range signaturePaths {
-		select {
-		case <-ctx.Done():
-			_ = zipWriter.Close()
-			return ctx.Err()
-		default:
-		}
-		header := &zip.FileHeader{
-			Name:     entryPath,
-			Method:   zip.Deflate,
-			Modified: deterministicModTime,
-		}
-		header.SetMode(0o644)
-		writer, err := zipWriter.CreateHeader(header)
-		if err != nil {
-			_ = zipWriter.Close()
-			return err
-		}
-		if _, err := writer.Write(pkg.SignatureFiles[entryPath]); err != nil {
-			_ = zipWriter.Close()
-			return err
-		}
-	}
 	if err := zipWriter.Close(); err != nil {
 		return err
 	}
@@ -333,7 +282,6 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Pa
 	}
 
 	files := map[string][]byte{}
-	signatureFiles := map[string][]byte{}
 	seenPaths := map[string]struct{}{}
 	securityPaths := map[string]string{}
 	var total int64
@@ -408,17 +356,10 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Pa
 		if uint64(len(content)) != file.UncompressedSize64 {
 			return Package{}, validationErrorf(ValidationCodePackageInvalid, "entry_size_mismatch", entryPath, "", "entry %q size mismatch", entryPath)
 		}
-		if strings.HasPrefix(entryPath, "signatures/") {
-			if entryPath != PackageSignaturePath {
-				return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "unsupported_signature_entry", entryPath, "", "unsupported signature entry %q", entryPath)
-			}
-			signatureFiles[entryPath] = content
-			continue
-		}
 		files[entryPath] = content
 	}
 
-	return packageFromOwnedFiles(ctx, files, signatureFiles)
+	return packageFromOwnedFiles(ctx, files)
 }
 
 func ReadFile(ctx context.Context, filename string, limits ReadLimits) (Package, error) {
@@ -434,19 +375,18 @@ func ReadFile(ctx context.Context, filename string, limits ReadLimits) (Package,
 	return Read(ctx, file, stat.Size(), limits)
 }
 
-// packageFromOwnedFiles takes ownership of both maps and their byte slices.
-func packageFromOwnedFiles(ctx context.Context, files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
-	pkg, err := packageMetadataFromFiles(ctx, files, signatureFiles)
+// packageFromOwnedFiles takes ownership of the map and their byte slices.
+func packageFromOwnedFiles(ctx context.Context, files map[string][]byte) (Package, error) {
+	pkg, err := packageMetadataFromFiles(ctx, files)
 	if err != nil {
 		return Package{}, err
 	}
 	pkg.Files = files
-	pkg.SignatureFiles = signatureFiles
 	return pkg, nil
 }
 
-// packageMetadataFromFiles borrows both maps for the duration of the call.
-func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
+// packageMetadataFromFiles borrows the map for the duration of the call.
+func packageMetadataFromFiles(ctx context.Context, files map[string][]byte) (Package, error) {
 	manifestBytes, ok := files["manifest.json"]
 	if !ok {
 		return Package{}, validationErrorf(ValidationCodeManifestInvalid, "manifest_missing", "manifest.json", "", "manifest.json is required")
@@ -478,10 +418,6 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 	if err != nil {
 		return Package{}, wrapValidationError(ValidationCodePackageInvalid, "canonical_hash", "", "", err)
 	}
-	packageSignature, err := parsePackageSignature(signatureFiles, decodedManifest, manifestHash, entriesHash, packageHash)
-	if err != nil {
-		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_signature")
-	}
 	return Package{
 		Manifest:               decodedManifest,
 		PackageHash:            packageHash,
@@ -490,13 +426,11 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, sign
 		CanonicalManifestBytes: append([]byte(nil), canonicalManifest...),
 		Entries:                entries,
 		EntriesHash:            entriesHash,
-		PackageSignature:       packageSignature,
 	}, nil
 }
 
-func collectFiles(srcDir string, limits ReadLimits) (map[string][]byte, map[string][]byte, error) {
+func collectFiles(srcDir string, limits ReadLimits) (map[string][]byte, error) {
 	files := map[string][]byte{}
-	signatureFiles := map[string][]byte{}
 	securityPaths := map[string]string{}
 	var total int64
 	err := filepath.WalkDir(srcDir, func(filename string, d fs.DirEntry, err error) error {
@@ -549,17 +483,10 @@ func collectFiles(srcDir string, limits ReadLimits) (map[string][]byte, map[stri
 		if err != nil {
 			return err
 		}
-		if strings.HasPrefix(entryPath, "signatures/") {
-			if entryPath != PackageSignaturePath {
-				return validationErrorf(ValidationCodePackagePathForbidden, "unsupported_signature_entry", entryPath, "", "unsupported signature entry %q", entryPath)
-			}
-			signatureFiles[entryPath] = content
-			return nil
-		}
 		files[entryPath] = content
 		return nil
 	})
-	return files, signatureFiles, err
+	return files, err
 }
 
 func validateEntryPath(entryPath string) (string, error) {
@@ -1482,61 +1409,6 @@ func canonicalHashes(entries []Entry, manifestHash string) (entriesHash string, 
 func sha256String(content []byte) string {
 	sum := sha256.Sum256(content)
 	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-func parsePackageSignature(signatureFiles map[string][]byte, m manifest.Manifest, manifestHash string, entriesHash string, packageHash string) (*PackageSignature, error) {
-	if len(signatureFiles) == 0 {
-		return nil, nil
-	}
-	raw, ok := signatureFiles[PackageSignaturePath]
-	if !ok {
-		return nil, fmt.Errorf("%s is required when signature files are present", PackageSignaturePath)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var sig PackageSignature
-	if err := decoder.Decode(&sig); err != nil {
-		return nil, fmt.Errorf("%s: %w", PackageSignaturePath, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%s: trailing JSON value", PackageSignaturePath)
-	}
-	if sig.SchemaVersion != PackageSignatureSchemaVersion {
-		return nil, fmt.Errorf("%s: unsupported schema_version %q", PackageSignaturePath, sig.SchemaVersion)
-	}
-	if sig.Algorithm != PackageSignatureAlgorithmEd25519 {
-		return nil, fmt.Errorf("%s: unsupported algorithm %q", PackageSignaturePath, sig.Algorithm)
-	}
-	if strings.TrimSpace(sig.KeyID) == "" {
-		return nil, fmt.Errorf("%s: key_id is required", PackageSignaturePath)
-	}
-	if strings.TrimSpace(sig.Signature) == "" {
-		return nil, fmt.Errorf("%s: signature is required", PackageSignaturePath)
-	}
-	if sig.PublisherID != "" && sig.PublisherID != m.Publisher.PublisherID {
-		return nil, fmt.Errorf("%s: publisher_id mismatch", PackageSignaturePath)
-	}
-	if sig.PluginID != "" && sig.PluginID != m.PluginID() {
-		return nil, fmt.Errorf("%s: plugin_id mismatch", PackageSignaturePath)
-	}
-	if sig.ManifestHash != manifestHash {
-		return nil, fmt.Errorf("%s: manifest_hash mismatch", PackageSignaturePath)
-	}
-	if sig.EntriesHash != entriesHash {
-		return nil, fmt.Errorf("%s: entries_hash mismatch", PackageSignaturePath)
-	}
-	if sig.PackageHash != packageHash {
-		return nil, fmt.Errorf("%s: package_hash mismatch", PackageSignaturePath)
-	}
-	return &sig, nil
-}
-
-func marshalPackageSignature(sig PackageSignature) ([]byte, error) {
-	if sig.SchemaVersion == "" {
-		sig.SchemaVersion = PackageSignatureSchemaVersion
-	}
-	return json.Marshal(sig)
 }
 
 func sortEntries(entries []Entry) {

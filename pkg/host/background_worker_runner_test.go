@@ -44,7 +44,7 @@ func TestBackgroundWorkerRunnerCancelsWorkerInvocation(t *testing.T) {
 		canceled:                make(chan struct{}),
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime,
+		runtimeManager:          runtime,
 		backgroundRunnerFactory: NewBackgroundWorkerRunner,
 	})
 	record := installAndEnablePlugin(t, h, buildBackgroundWorkerFixturePackage(t))
@@ -77,7 +77,7 @@ func TestBackgroundWorkerRunnerReportsInvocationFailure(t *testing.T) {
 	runtime := newRecordingRuntimeManager()
 	runtime.err = errors.New("worker fixture failed")
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime, diagnostics: diagnostics,
+		runtimeManager: runtime, diagnostics: diagnostics,
 		backgroundRunnerFactory: NewBackgroundWorkerRunner,
 	})
 	record := installAndEnablePlugin(t, h, buildBackgroundWorkerFixturePackage(t))
@@ -156,7 +156,7 @@ func buildBackgroundWorkerFixtureWith(t *testing.T, transform func(string) strin
 }
 
 func TestBackgroundWorkerRunnerDoesNotBypassConfirmation(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, backgroundRunnerFactory: NewBackgroundWorkerRunner})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{backgroundRunnerFactory: NewBackgroundWorkerRunner})
 	record := installAndEnablePlugin(t, h, buildBackgroundWorkerFixtureWith(t, func(value string) string {
 		return strings.Replace(value, `"execution": "sync",`, `"execution": "sync", "dangerous": true, "confirmation": {"mode": "required", "request_hash_fields": ["message"]},`, 1)
 	}))
@@ -171,7 +171,7 @@ func TestBackgroundWorkerRunnerDoesNotBypassConfirmation(t *testing.T) {
 }
 
 func TestBackgroundWorkerRunnerValidatesRequest(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, backgroundRunnerFactory: NewBackgroundWorkerRunner})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{backgroundRunnerFactory: NewBackgroundWorkerRunner})
 	record := installAndEnablePlugin(t, h, buildBackgroundWorkerFixtureWith(t, func(value string) string {
 		return strings.Replace(value, `"request_schema": {`, `"request_schema": {"required": ["message"],`, 1)
 	}))
@@ -188,7 +188,7 @@ func TestBackgroundWorkerRunnerValidatesRequest(t *testing.T) {
 func TestBackgroundWorkerRunnerUsesExplicitMethodAndNormalExecution(t *testing.T) {
 	runtime := &permissionInspectingRuntimeManager{recordingRuntimeManager: newRecordingRuntimeManager(), entered: make(chan struct{}, 1), release: make(chan struct{})}
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime, backgroundRunnerFactory: NewBackgroundWorkerRunner})
 	record := installAndEnablePlugin(t, h, buildBackgroundWorkerFixtureWith(t, func(value string) string {
 		var doc map[string]any
 		if err := json.Unmarshal([]byte(value), &doc); err != nil {
@@ -241,9 +241,9 @@ func TestBackgroundWorkerRunnerUsesExplicitMethodAndNormalExecution(t *testing.T
 }
 
 func TestBackgroundWorkerRunnerHonorsHostPolicy(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, backgroundRunnerFactory: NewBackgroundWorkerRunner})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{backgroundRunnerFactory: NewBackgroundWorkerRunner})
 	record := installAndEnablePlugin(t, h, buildBackgroundWorkerFixturePackage(t))
-	h.adapters.Policy = policyAdapter{developerMode: true, localGenerated: true, decision: PolicyDeny}
+	h.adapters.Policy = policyAdapter{decision: PolicyDeny}
 	runner, err := NewBackgroundWorkerRunner(h)
 	if err != nil {
 		t.Fatal(err)

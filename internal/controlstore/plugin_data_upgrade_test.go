@@ -128,15 +128,9 @@ func pluginDataUpgradeRecord(t *testing.T, current registry.PluginRecord, versio
 	next.CanonicalManifest = string(canonical)
 	sum := sha256.Sum256(canonical)
 	next.ManifestHash = "sha256:" + hex.EncodeToString(sum[:])
-	next.SignatureAssessment.ManifestSHA256 = next.ManifestHash
-	next.SignatureAssessment.AssessedHashes.ManifestSHA256 = next.ManifestHash
-	next.TrustAssessment.VerifiedHashes.ManifestSHA256 = next.ManifestHash
 	next.ActiveFingerprint = "sha256:fingerprint-" + version
 	next.PackageHash = "sha256:package-" + version
 	next.ExecutionApproval.PackageSHA256 = next.PackageHash
-	next.SignatureAssessment.PackageSHA256 = next.PackageHash
-	next.SignatureAssessment.AssessedHashes.PackageSHA256 = next.PackageHash
-	next.TrustAssessment.VerifiedHashes.PackageSHA256 = next.PackageHash
 	next.PackageSourceProvenance.PackageSHA256 = next.PackageHash
 	return next
 }

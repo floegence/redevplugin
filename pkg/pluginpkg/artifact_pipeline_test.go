@@ -313,7 +313,7 @@ func testAssetPackage(t *testing.T) Package {
 		"ui/index.html":    []byte("<!doctype html><title>Plugin</title><script type=\"module\" src=\"assets/app.js\"></script>"),
 		"ui/assets/app.js": []byte("void 0;"),
 	}
-	pkg, err := packageFromOwnedFiles(context.Background(), files, nil)
+	pkg, err := packageFromOwnedFiles(context.Background(), files)
 	if err != nil {
 		t.Fatal(err)
 	}

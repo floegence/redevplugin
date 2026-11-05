@@ -7,7 +7,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/floegence/redevplugin/v3/pkg/releasecontract"
+	"github.com/floegence/redevplugin/v3/internal/canonicaljson"
 )
 
 func decodeCurrent(r io.Reader) (Manifest, []byte, error) {
@@ -52,7 +52,7 @@ func canonicalManifestJSON(raw []byte) ([]byte, error) {
 	if header.SchemaVersion != SchemaVersionV9 {
 		return nil, ValidationError{Field: "schema_version", Message: "unsupported manifest schema"}
 	}
-	return releasecontract.CanonicalJSON(raw)
+	return canonicaljson.CanonicalJSON(raw)
 }
 
 // CanonicalJSON returns the exact hash input for the current manifest.

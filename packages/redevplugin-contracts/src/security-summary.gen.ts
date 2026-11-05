@@ -190,6 +190,68 @@ export type ExternalPackageSurfaceStorageSummary = {
   operations: Array<"read" | "write" | "get" | "put" | "delete" | "list" | "query" | "exec">;
 };
 
+export type PackageInspection = {
+  publisher_id: string;
+  plugin_id: string;
+  version: string;
+  package_sha256: string;
+  entries_sha256: string;
+  manifest_sha256: string;
+  presentation: PresentationCatalog;
+  presentation_sha256: string;
+  presentation_icon?: PresentationIconEvidence;
+  contract_set_sha256: string;
+  security_summary: ExternalPackageSecuritySummary;
+};
+
+export type PresentationCatalog = {
+  default_locale: string;
+  icon?: PresentationIcon;
+  locales: Array<PresentationLocale>;
+};
+
+export type PresentationIcon = {
+  path: string;
+};
+
+export type PresentationLocale = {
+  locale: string;
+  plugin_name: string;
+  publisher_name?: string;
+  summary: string;
+  description: Array<string>;
+  highlights: Array<string>;
+  keywords: Array<string>;
+  surfaces: Array<ResolvedSurfacePresentation>;
+  settings: Array<ResolvedSettingPresentation>;
+};
+
+export type ResolvedSurfacePresentation = {
+  surface_id: string;
+  label: string;
+};
+
+export type ResolvedSettingPresentation = {
+  key: string;
+  label: string;
+  options: Array<SettingOptionPresentation>;
+};
+
+export type SettingOptionPresentation = {
+  value: string;
+  label: string;
+};
+
+export type PresentationIconEvidence = {
+  schema_version: "redevplugin.presentation_icon_evidence.v1";
+  path: string;
+  media_type: "image/png" | "image/webp";
+  width: number;
+  height: number;
+  sha256: string;
+  size: number;
+};
+
 export const securitySummarySchemas = {
   "ExternalPackageSecuritySummary": {
     "type": "object",
@@ -1140,6 +1202,295 @@ export const securitySummarySchemas = {
             "exec"
           ]
         }
+      }
+    }
+  },
+  "PackageInspection": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "publisher_id",
+      "plugin_id",
+      "version",
+      "package_sha256",
+      "entries_sha256",
+      "manifest_sha256",
+      "presentation",
+      "presentation_sha256",
+      "contract_set_sha256",
+      "security_summary"
+    ],
+    "properties": {
+      "publisher_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "plugin_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "version": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+      },
+      "package_sha256": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "entries_sha256": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "manifest_sha256": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "presentation": {
+        "ref": "PresentationCatalog"
+      },
+      "presentation_sha256": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "presentation_icon": {
+        "ref": "PresentationIconEvidence"
+      },
+      "contract_set_sha256": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "security_summary": {
+        "ref": "ExternalPackageSecuritySummary"
+      }
+    }
+  },
+  "PresentationCatalog": {
+    "type": "object",
+    "required": [
+      "default_locale",
+      "locales"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "default_locale": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 255
+      },
+      "icon": {
+        "ref": "PresentationIcon"
+      },
+      "locales": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "ref": "PresentationLocale"
+        }
+      }
+    }
+  },
+  "PresentationIcon": {
+    "type": "object",
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\\.(?:[Pp][Nn][Gg]|[Ww][Ee][Bb][Pp])$"
+      }
+    }
+  },
+  "PresentationLocale": {
+    "type": "object",
+    "required": [
+      "locale",
+      "plugin_name",
+      "summary",
+      "description",
+      "highlights",
+      "keywords",
+      "surfaces",
+      "settings"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "locale": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 255
+      },
+      "plugin_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "publisher_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "summary": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
+      "description": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 12,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      },
+      "highlights": {
+        "type": "array",
+        "maxItems": 8,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      },
+      "keywords": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 12,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "surfaces": {
+        "type": "array",
+        "items": {
+          "ref": "ResolvedSurfacePresentation"
+        }
+      },
+      "settings": {
+        "type": "array",
+        "items": {
+          "ref": "ResolvedSettingPresentation"
+        }
+      }
+    }
+  },
+  "ResolvedSurfacePresentation": {
+    "type": "object",
+    "required": [
+      "surface_id",
+      "label"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "surface_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "label": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    }
+  },
+  "ResolvedSettingPresentation": {
+    "type": "object",
+    "required": [
+      "key",
+      "label",
+      "options"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "key": {
+        "type": "string",
+        "minLength": 1
+      },
+      "label": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "options": {
+        "type": "array",
+        "items": {
+          "ref": "SettingOptionPresentation"
+        }
+      }
+    }
+  },
+  "SettingOptionPresentation": {
+    "type": "object",
+    "required": [
+      "value",
+      "label"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "value": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "label": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    }
+  },
+  "PresentationIconEvidence": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema_version",
+      "path",
+      "media_type",
+      "width",
+      "height",
+      "sha256",
+      "size"
+    ],
+    "properties": {
+      "schema_version": {
+        "const": "redevplugin.presentation_icon_evidence.v1"
+      },
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\\.(?:[Pp][Nn][Gg]|[Ww][Ee][Bb][Pp])$"
+      },
+      "media_type": {
+        "enum": [
+          "image/png",
+          "image/webp"
+        ]
+      },
+      "width": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 512
+      },
+      "height": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 512
+      },
+      "sha256": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "size": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 524288
       }
     }
   }
@@ -2100,6 +2451,297 @@ export const securitySummaryJSONSchema = {
           }
         }
       }
+    },
+    "PackageInspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publisher_id",
+        "plugin_id",
+        "version",
+        "package_sha256",
+        "entries_sha256",
+        "manifest_sha256",
+        "presentation",
+        "presentation_sha256",
+        "contract_set_sha256",
+        "security_summary"
+      ],
+      "properties": {
+        "publisher_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plugin_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "package_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "entries_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "presentation": {
+          "$ref": "#/$defs/PresentationCatalog"
+        },
+        "presentation_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "presentation_icon": {
+          "$ref": "#/$defs/PresentationIconEvidence"
+        },
+        "contract_set_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "security_summary": {
+          "$ref": "#/$defs/ExternalPackageSecuritySummary"
+        }
+      }
+    },
+    "PresentationCatalog": {
+      "type": "object",
+      "required": [
+        "default_locale",
+        "locales"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "default_locale": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 255
+        },
+        "icon": {
+          "$ref": "#/$defs/PresentationIcon"
+        },
+        "locales": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/PresentationLocale"
+          }
+        }
+      }
+    },
+    "PresentationIcon": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\\.(?:[Pp][Nn][Gg]|[Ww][Ee][Bb][Pp])$"
+        }
+      }
+    },
+    "PresentationLocale": {
+      "type": "object",
+      "required": [
+        "locale",
+        "plugin_name",
+        "summary",
+        "description",
+        "highlights",
+        "keywords",
+        "surfaces",
+        "settings"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "locale": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 255
+        },
+        "plugin_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "publisher_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "description": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "highlights": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "surfaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResolvedSurfacePresentation"
+          }
+        },
+        "settings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResolvedSettingPresentation"
+          }
+        }
+      }
+    },
+    "ResolvedSurfacePresentation": {
+      "type": "object",
+      "required": [
+        "surface_id",
+        "label"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "surface_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "ResolvedSettingPresentation": {
+      "type": "object",
+      "required": [
+        "key",
+        "label",
+        "options"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SettingOptionPresentation"
+          }
+        }
+      }
+    },
+    "SettingOptionPresentation": {
+      "type": "object",
+      "required": [
+        "value",
+        "label"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "PresentationIconEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "path",
+        "media_type",
+        "width",
+        "height",
+        "sha256",
+        "size"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "redevplugin.presentation_icon_evidence.v1"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\\.(?:[Pp][Nn][Gg]|[Ww][Ee][Bb][Pp])$"
+        },
+        "media_type": {
+          "enum": [
+            "image/png",
+            "image/webp"
+          ]
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 524288
+        }
+      }
     }
   }
 } as const;
+
+export const packageInspectionJSONSchema = { ...securitySummaryJSONSchema, $ref: "#/$defs/PackageInspection" } as const;

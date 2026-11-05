@@ -1281,12 +1281,6 @@ var pluginPlatformErrorCodes = [
   "PLUGIN_PACKAGE_INVALID",
   "PLUGIN_PACKAGE_TOO_LARGE",
   "PLUGIN_PACKAGE_PATH_FORBIDDEN",
-  "PLUGIN_SIGNATURE_INVALID",
-  "PLUGIN_TRUST_STATE_DENIED",
-  "PLUGIN_TRUST_VERIFICATION_REQUIRED",
-  "PLUGIN_TRUST_VERIFICATION_INVALID",
-  "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
-  "PLUGIN_RELEASE_REF_POLICY_DENIED",
   "PLUGIN_RELEASE_NETWORK",
   "PLUGIN_RELEASE_TIMEOUT",
   "PLUGIN_RELEASE_ASSET_MISSING",
@@ -1361,12 +1355,6 @@ var pluginBridgeErrorCodes = [
   "PLUGIN_PACKAGE_INVALID",
   "PLUGIN_PACKAGE_TOO_LARGE",
   "PLUGIN_PACKAGE_PATH_FORBIDDEN",
-  "PLUGIN_SIGNATURE_INVALID",
-  "PLUGIN_TRUST_STATE_DENIED",
-  "PLUGIN_TRUST_VERIFICATION_REQUIRED",
-  "PLUGIN_TRUST_VERIFICATION_INVALID",
-  "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
-  "PLUGIN_RELEASE_REF_POLICY_DENIED",
   "PLUGIN_RELEASE_NETWORK",
   "PLUGIN_RELEASE_TIMEOUT",
   "PLUGIN_RELEASE_ASSET_MISSING",
@@ -1652,14 +1640,12 @@ var packageValidationReasons = [
   "entry_read_failed",
   "entry_close_failed",
   "entry_size_mismatch",
-  "unsupported_signature_entry",
   "manifest_artifact",
   "package_asset_security",
   "package_artifact_boundary",
   "entry_path",
   "manifest_canonical_json",
   "canonical_hash",
-  "package_signature",
   "empty_path",
   "slash_separator",
   "non_canonical_path",
@@ -4600,7 +4586,7 @@ var PluginPlatformClient = class {
       path,
       packageBlob,
       options,
-      update ? { "X-ReDevPlugin-Expected-Management-Revision": String(canonicalIntent.expected_management_revision) } : {}
+      update ? { "X-ReDevPlugin-Expected-Management-Revision": String(canonicalIntent.expected_management_revision), ...canonicalIntent.allow_source_change === void 0 ? {} : { "X-ReDevPlugin-Allow-Source-Change": String(canonicalIntent.allow_source_change) } } : {}
     );
     this.#externalInspectionTargets.set(
       inspection.inspection_id,
@@ -4608,11 +4594,22 @@ var PluginPlatformClient = class {
     );
     return inspection;
   }
+  listRepositoryPlugins(request2, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/repository/plugins/query", request2, options);
+  }
+  setAutomaticUpdates(request2, options = {}) {
+    return this.#mutatePlugin("/_redevplugin/api/plugins/updates/preferences", request2, options);
+  }
+  async inspectPluginUpdate(request2, options = {}) {
+    const result = await this.#requestMutation("POST", "/_redevplugin/api/plugins/updates/inspect", request2, options);
+    this.#externalInspectionTargets.set(result.inspection_id, request2.plugin_instance_id);
+    return result;
+  }
   async startInspectedInstall(request2, options = {}) {
     const target = this.#externalInspectionTargets.get(request2.inspection_id);
     try {
       const operation = await this.#requestMutation("POST", "/_redevplugin/api/plugins/external-packages/install-operations", request2, options);
-      if (target && operation.execution.status === "running") await disposePluginSurfaceScope(this.#surfaceScope, target);
+      if (target && (operation.execution.status === "running" || operation.mutation_outcome !== "not_committed")) await disposePluginSurfaceScope(this.#surfaceScope, target);
       return operation;
     } catch (error) {
       if (target) await this.#handleMutationFailure(error, target, "Inspected install admission and local surface teardown failed");
@@ -4621,27 +4618,6 @@ var PluginPlatformClient = class {
   }
   getInspectedInstall(requestID, options = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/query", { request_id: requestID }, options);
-  }
-  async installInspectedPackage(request2, options = {}) {
-    const target = this.#externalInspectionTargets.get(request2.inspection_id);
-    let result;
-    try {
-      result = await this.#requestMutation(
-        "POST",
-        "/_redevplugin/api/plugins/external-packages/install",
-        request2,
-        options
-      );
-    } catch (error) {
-      await this.#handleMutationFailure(error, target || void 0, "External package install and local surface teardown failed");
-      throw error;
-    }
-    await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
-    this.#externalInspectionTargets.delete(request2.inspection_id);
-    return result;
-  }
-  updateReleaseRef(request2, options = {}) {
-    return this.#mutatePlugin("/_redevplugin/api/plugins/update-release-ref", request2, options);
   }
   downgradePlugin(request2, options = {}) {
     return this.#mutatePlugin("/_redevplugin/api/plugins/downgrade", request2, options);
@@ -4745,11 +4721,8 @@ var PluginPlatformClient = class {
   listExecutions(options = {}, requestOptions = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/executions/query", options, requestOptions);
   }
-  listReleaseInstallExecutions(options = {}, requestOptions = {}) {
-    return this.listExecutions({ ...options, operation_scope: "release_install" }, requestOptions);
-  }
-  startReleaseInstallExecution(request2, options = {}) {
-    return this.#requestMutation("POST", "/_redevplugin/api/plugins/executions/release-installs", request2, options);
+  listPluginInstallExecutions(options = {}, requestOptions = {}) {
+    return this.listExecutions({ ...options, operation_scope: "plugin_install" }, requestOptions);
   }
   getExecution(executionID, options = {}) {
     return this.#requestQuery(`/_redevplugin/api/plugins/executions/${encodeURIComponent(executionID)}/query`, {}, options);
@@ -4991,7 +4964,10 @@ function canonicalUploadedExternalPackageIntent(intent) {
   if (value.action !== "update") {
     throw new TypeError("uploaded external package intent action must be install or update");
   }
-  const updateKeys = ["action", "expected_management_revision", "plugin_instance_id"];
+  const updateKeys = ["action", ...value.allow_source_change === void 0 ? [] : ["allow_source_change"], "expected_management_revision", "plugin_instance_id"];
+  if (value.allow_source_change !== void 0 && typeof value.allow_source_change !== "boolean") {
+    throw new TypeError("uploaded package source change consent must be boolean");
+  }
   if (keys.length !== updateKeys.length || keys.some((key, index) => key !== updateKeys[index])) {
     throw new TypeError("uploaded external package update intent requires only action, plugin_instance_id, and expected_management_revision");
   }
@@ -5004,7 +4980,8 @@ function canonicalUploadedExternalPackageIntent(intent) {
   return {
     action: "update",
     plugin_instance_id: value.plugin_instance_id,
-    expected_management_revision: value.expected_management_revision
+    expected_management_revision: value.expected_management_revision,
+    ...value.allow_source_change === void 0 ? {} : { allow_source_change: value.allow_source_change }
   };
 }
 var sessionScopeCountKeys2 = [

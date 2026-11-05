@@ -49,7 +49,7 @@ func TestPluginDataUpgradeThroughBuiltRustRuntime(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := hostTestContext()
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 			supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{Limits: runtimeclient.DefaultRuntimeLimits(), HandshakeTimeout: hostRuntimeProcessHandshakeTimeout, HeartbeatInterval: 2 * time.Second, MaxHeartbeatStaleness: 5 * time.Second, RuntimePath: runtimePath, ArtifactIdentity: hostRuntimeTestDescriptor(t, runtimePath), Diagnostics: h.adapters.Diagnostics, Artifacts: runtimeArtifactProvider{assets: h.adapters.Assets}, StreamSink: hostRuntimeStreamSink{executions: h.executions}, IOBroker: h.runtimeIO})
 			if err != nil {
 				t.Fatal(err)
@@ -111,7 +111,7 @@ func TestPluginDataUpgradeThroughAuthorSDK(t *testing.T) {
 		}
 	}
 	ctx := hostTestContext()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	runtimePath := filepath.Join(root, "target/debug/redevplugin-runtime")
 	if runtime.GOOS == "windows" {
 		runtimePath += ".exe"

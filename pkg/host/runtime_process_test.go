@@ -164,7 +164,7 @@ func TestProcessManagerRevokesExactSessionAcrossTwoBuiltRustRuntimeShards(t *tes
 	if runtime.GOOS == "windows" {
 		runtimePath += ".exe"
 	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, withoutRuntimeManager: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{withoutRuntimeManager: true})
 	manager, err := runtimeclient.NewProcessManager(runtimeclient.ProcessManagerOptions{
 		ShardCount: 2,
 		Supervisor: runtimeclient.ProcessSupervisorOptions{
@@ -224,10 +224,7 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 
 	ctx := hostTestContext()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
 		HandshakeTimeout:      hostRuntimeProcessHandshakeTimeout,
@@ -328,10 +325,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 	}
 
 	ctx := hostRuntimeWritableTestContext()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
 		HeartbeatInterval:     2 * time.Second,
@@ -460,10 +454,7 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 	}
 
 	ctx := hostRuntimeWritableTestContext()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
 		HeartbeatInterval:     2 * time.Second,
@@ -551,10 +542,7 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 	}
 
 	ctx := hostRuntimeWritableTestContext()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
 		HeartbeatInterval:     2 * time.Second,

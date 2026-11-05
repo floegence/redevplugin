@@ -4,10 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/coder/websocket"
-	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v3/pkg/connectivity"
-	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +16,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
 
 type allowNetworkFixture struct{}
@@ -89,7 +90,7 @@ func TestControlledNetworkThroughBuiltRustWorker(t *testing.T) {
 			_, _ = udp.WriteToUDP(buffer[:n], peer)
 		}
 	}()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, networkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{networkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})})
 	h.privateNetworkPolicy = allowNetworkFixture{}
 	runtimePath := filepath.Join(root, "target/debug/redevplugin-runtime")
 	if runtime.GOOS == "windows" {

@@ -1,10 +1,11 @@
 package httpadapter
 
 import (
-	"github.com/floegence/redevplugin/v3/pkg/host"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/floegence/redevplugin/v3/pkg/host"
 )
 
 func TestWebResourcesRejectCrossOriginAndExecutableFetches(t *testing.T) {

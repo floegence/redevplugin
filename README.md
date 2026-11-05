@@ -30,16 +30,6 @@ capabilities.
   `PlatformReleaseManifest` containing the exact hashes of the Go, npm, crate,
   and contract artifacts. The manifest is not checked into an artifact whose
   hash it contains.
-- The contract libraries also expose canonical release-signing DTOs and
-  build, preimage, strict-decode, and verifier APIs for root delegation,
-  packages, release metadata, source policy and its pointer, and revocation and
-  its pointer. The seven signing usages are domain separated, timestamps are
-  explicit inputs, and pointer genesis is fixed to epoch `0` plus the all-zero
-  SHA-256 sentinel. These APIs live in `pkg/releasecontract` and the opt-in
-  contracts packages; `pkg/releasetrust` consumes the one canonical release
-  metadata contract.
-- Source policy and revocation documents remain mutable security facts. They do
-  not create an additional platform compatibility matrix.
 - The contracts npm package owns strict security-summary normalization and
   canonical SHA-256 APIs, generated from OpenAPI and verified against Go byte
   fixtures. Hosts and markets consume this complete evidence contract instead
@@ -77,37 +67,24 @@ canonical BCP 47 tags and must cover every translatable field without missing,
 extra, or duplicate surface, setting, or option references.
 
 ReDevPlugin validates author text as NFC-normalized Unicode plain text, includes
-the complete catalog in the canonical manifest and signature boundary, and
+the complete catalog in the canonical manifest boundary, and
 projects a normalized catalog plus its SHA-256 digest from verified inspection
 and installed inventory APIs. The Go and TypeScript resolvers use exact match,
 RFC 4647 parent lookup, then the author-declared default locale. They do not add
 an English fallback or mix locales within one resolved presentation.
-- `redevplugin release prepare`, `apply-signature`, `finalize`, and `verify`
-  provide a resumable publisher flow for signed packages, release metadata,
-  source policy, revocation, root delegation, and current release signatures.
-  The external signer exchange contains only public key identities, signing
-  subjects, preimage digests, and signatures; signer storage and invocation
-  remain entirely outside this repository and its configuration.
-- `pkg/remoterelease` adapts one reviewed, content-addressed release asset set
-  to the release-document and Host artifact resolver
-  interfaces. Downloads reuse `pkg/externalsource` public-DNS validation,
-  pinned dialing, TLS verification, redirect checks, exact host allowlists,
-  byte ceilings, and SHA-256 readback. A bounded in-memory content-addressed
-  cache is shared by Host operations using that asset set; every hit revalidates
-  size and digest, and corrupt entries are discarded and fetched again. Host
-  products can therefore download packages directly from the release provider
-  without a registry proxy.
+- `redevplugin release inspect` validates ordinary release packages and emits
+  package identity, content hashes, presentation, and capability summaries.
+  `release extract-presentation-icon` writes only the validated package icon.
+  Authors publish a package and `.redevplugin/index.json`, with independent
+  stable tag namespaces for each plugin. No signing or registration is required.
+- All sources share the same inspection and durable installation Execution.
+  Installed-source updates preserve user preferences, permissions and data.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,
   capability adapters, HTTP routes, session context, and web security.
-- Host capability contracts are published as signed exact-pin bundles containing
-  a restricted schema, compatibility metadata, generated plugin-side client,
-  notices, manifest, and signature. The Host verifies source-policy key usage,
-  every file digest, publisher identity, compatibility floor, and the complete
-  pin before a package can bind the capability. Capability artifact adapters
-  declare each file as either a host-provided artifact with no network chain or
-  a registry artifact with request-bound public-network evidence; missing or
-  contradictory origin evidence fails closed.
+- Host capability contracts are exact artifacts registered by the Host. Package
+  bindings resolve only against that closed local registry; no capability
+  publisher, signing service or remote admission chain is required.
 - `plugindata.FileStore` is the single data authority behind lifecycle,
   non-secret settings, files, KV, SQLite, retained bindings, and opaque export
   bundles. It resolves every request through the current registry binding,
@@ -146,12 +123,8 @@ an English fallback or mix locales within one resolved presentation.
   WASM data conversions when the shape changes. Downgrades restore exact retained
   package-bound generations. See [data upgrades](docs/authoring/data-upgrades.md)
   for conversion, rollback, quota, and unknown-outcome rules.
-- Plugin package IO keeps deterministic canonical package hashes separate from
-  detached `signatures/package.sig` metadata. Signature files are retained for
-  trust verification but are excluded from canonical package entries, asset
-  serving, and the package hash to avoid self-referential signatures. The
-  signature directory is closed-world: package IO rejects any signature entry
-  other than `signatures/package.sig`.
+- Package IO validates every entry and includes all package content in the
+  canonical digest. Plugin signature files have no special semantics.
 - Package validation accepts package-local HTML entries under a declared Web
   root and rejects unsafe paths, reserved platform paths, missing entries, and
   the removed worker-UI format. Ordinary modules, inline scripts, styles, and
@@ -169,70 +142,15 @@ an English fallback or mix locales within one resolved presentation.
   `PLUGIN_PACKAGE_INVALID`, `PLUGIN_PACKAGE_TOO_LARGE`, or
   `PLUGIN_PACKAGE_PATH_FORBIDDEN`) and expose structured `error_details` such as
   `reason`, package `path`, and manifest JSON `pointer` through the HTTP adapter.
-- Install and update flows do not accept caller-supplied `trust_state` values.
-  Release-ref installs carry a release metadata ref plus hash, freeze source
-  policy before artifact resolution, and then run trust assessment, while
-  local-import flows carry explicit local import provenance. Runnable verified
-  state requires a host-provided `PackageTrustVerifier`; unsigned local packages
-  can be enabled only when host policy permits local generated plugins.
-- Release inspection verifies an exact release reference before confirmation
-  and returns Host-derived permission IDs, method bindings, and effects without
-  installing a plugin. One `InstallCommit` atomically persists the record,
-  PluginData binding, and default settings with `enable_state=enabled`. Required
-  permissions are granted only when the request explicitly approves their
-  signed IDs; missing grants make the affected open/capability action return
-  `permission_required` without changing lifecycle state. Fetch, download,
-  integrity verification, and commit progress use the shared Execution/Event
-  stream. Runtime and surface publication are retryable derived work after the
-  durable commit.
-- External package admission accepts a public HTTPS package URL or GitHub
-  repository through a process-local `inspect -> confirm -> install` transaction. The
-  inspection returns immutable source, hash, signature, execution-approval,
-  update-eligibility, and effective capability evidence for explicit review.
-  Signature state does not decide basic manual installation: absent,
-  unknown-signer, and temporarily unavailable assessments may be confirmed and
-  remain manual-update-only. A successful commit installs the plugin as enabled;
-  unapproved capabilities remain unavailable until the user grants them.
-  Invalid or revoked signatures block installation and execution. Each opaque,
-  expiring inspection stays bound to the exact authenticated owner/session; the
-  installer reopens and revalidates public HTTPS, DNS, redirects, TLS identity,
-  size, and exact bytes before the single Host control transaction. Only an
-  explicit user disable writes `disabled_by_user`; trust, policy, permission,
-  readiness, and runtime failures revoke derived resources without rewriting
-  that intent.
-- The host-neutral `pkg/trust` package provides an Ed25519 verifier and keyring
-  interface for package signatures. Hosts still decide which keys, publishers,
-  registries, or enterprise policies are trusted, but they can reuse the common
-  canonical signature payload and verification checks.
-- Package-signature schema tests keep `package-signature-v1.schema.json`
-  aligned with the Go `pluginpkg.PackageSignature` envelope, Ed25519 algorithm
-  constant, required hash fields, signature fields, and optional publisher,
-  plugin, and signed-at metadata.
-- The CLI can generate local Ed25519 signing keys and produce signed package
-  artifacts without placing private keys in shell arguments. Start with
-  `redevplugin scaffold <plugin-id> <display-name> <out-dir>`, package the
-  generated UI plus one current `plugin_api=1` WASM backend worker, then sign it:
-  `redevplugin keygen <key-id> <private.json> <public.json>` followed by
-  `redevplugin sign <unsigned.redevplugin> <private.json> <signed.redevplugin>`.
-  Development harnesses can then run
-  `redevplugin install-verified <signed.redevplugin> <public.json>` to prove
-  the Host trust-verifier path accepts the signed package.
-- Release publishers that keep signing outside the CLI can run
-  `redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace>`,
-  apply each closed response with
-  `redevplugin release apply-signature <workspace> <response.json>`, then run
-  `redevplugin release finalize <workspace> <out-dir> [capability-contract.json ...]` and
-  `redevplugin release verify <out-dir> [capability-contract.json ...]`. For a declared presentation icon,
-  `redevplugin release extract-presentation-icon <out-dir> <out-file> [capability-contract.json ...]` repeats
-  full release verification before writing the exact verified image and refuses
-  to overwrite an existing target. Repeating a completed step with the same
-  bytes is idempotent; a changed request, response, or output fails closed.
-  Current release verification binds each response to its exact Ed25519 key,
-  usage, and canonical signing preimage. SHA-256 or signature mismatches fail
-  before publication.
-  Capability contracts and exact pins are part of the host's closed local
-  registry. ReDevPlugin validates that registry at startup and does not resolve
-  or publish capability bundles through an independent distribution channel.
+- Package admission resolves a selected HTTPS or GitHub source, validates the
+  package and creates a session-bound inspection. One durable installation
+  Execution commits the exact accepted bytes and exposes progress and outcome
+  recovery. Signature and publisher trust systems are not enabled.
+- An installed package starts enabled. Runtime permissions require separate
+  grants. User-enabled updates resolve the original source and require a newer
+  version without capability changes; changed sources require explicit review.
+- `release inspect` and `release extract-presentation-icon` provide package
+  summaries and validated images. Neither command requires signing inputs.
 - The public Go package pkg/testhost composes the real Host, HTTP adapter,
   isolated Web surfaces, durable package assets, and bounded events with explicit
   test adapters. It denies management and resources by default and is shared by
@@ -295,7 +213,7 @@ an English fallback or mix locales within one resolved presentation.
   `wasmparser::Validator::validate_all` before runtime execution, and the Wasmi
   store enforces the signed memory budget even when a worker calls
   `memory.grow`. The manifest platform ceiling is 256 MiB per worker; a Host
-  may reject a lower value through its package trust policy.
+  may reject a lower value through its resource policy.
 - Plugin backend authors use the published `redevplugin-worker-sdk` crate at the
   same platform version. The signed platform release manifest binds its
   registry coordinate and checksum; hosts and plugin authors do not copy a
@@ -365,8 +283,8 @@ an English fallback or mix locales within one resolved presentation.
   source/port-bound MessageChannel messaging, UI protocol version, and
   parent-only token boundaries aligned with the TypeScript SDK.
 - The TypeScript package includes sandbox iframe bridge helpers and a host-side
-  `PluginPlatformClient` for release-reference platform management routes:
-  release-ref install/update, downgrade, enable/disable/uninstall, surface open, runtime
+  `PluginPlatformClient` for package platform management routes:
+  inspected install/update, downgrade, enable/disable/uninstall, surface open, runtime
   start/health/recover-enabled/retry/stop, settings schema/read/patch, execution
   list/get/cancel, data export/import, permission grant/revoke/list, secret
   bind/test/delete, host-mediated intent list/invoke, and owner-scoped diagnostic

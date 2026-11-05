@@ -52,18 +52,19 @@ export const repositoryIndexJSONSchema = {
       "additionalProperties": false,
       "required": [
         "tag_template",
-        "package_asset_template",
-        "release_ref_asset_template"
+        "package_asset_template"
       ],
       "properties": {
         "tag_template": {
-          "$ref": "#/$defs/template"
+          "type": "string",
+          "maxLength": 255,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-v\\{version\\}$"
         },
         "package_asset_template": {
-          "$ref": "#/$defs/template"
-        },
-        "release_ref_asset_template": {
-          "$ref": "#/$defs/template"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9._+@-]+(?:\\{version\\}[A-Za-z0-9._+@-]*)?\\.redevplugin$"
         }
       }
     },

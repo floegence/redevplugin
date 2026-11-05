@@ -31,7 +31,7 @@ must use the selected surface state rather than recomputing permission rules.
 Permission requirements additionally expose the effective method mapping, bound
 to the plugin instance, active fingerprint, version, and management revision.
 
-Original canonical manifest bytes remain the signature authority. Optional
+Original canonical manifest bytes remain the package identity authority. Optional
 fields are not inserted into existing manifests, and existing package hashes
 and capability pins remain unchanged. Revoking a grant invalidates existing
 surface gateways; a freshly opened local surface cannot restore the revoked
@@ -60,7 +60,7 @@ The existing Worker SDK, method dispatcher, broker grants and WASM ABI apply.
 
 The Host persists one plan per environment and installed instance in control
 schema 5. An invocation receives a random durable claim before dispatch; it
-rechecks package trust, current fingerprint, management/policy revisions, revoke
+rechecks package approval, current fingerprint, management/policy revisions, revoke
 epoch and grants. BackgroundModule.Policy authorizes the declared method without
 an online user session. Its request contains only verified identity, method name
 and effect classification with revisions. An absent policy denies execution. This adapter never grants a

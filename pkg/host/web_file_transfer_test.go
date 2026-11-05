@@ -30,7 +30,7 @@ func TestWebSelectedFileBinaryTransferAndPartialOutcome(t *testing.T) {
 	if err := os.WriteFile(path, payload, 0600); err != nil {
 		t.Fatal(err)
 	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, filePicker: selectedPickerFixture{path: path}})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{filePicker: selectedPickerFixture{path: path}})
 	var m map[string]any
 	_ = json.Unmarshal([]byte(fixtureManifestJSON()), &m)
 	m["permissions"] = append(m["permissions"].([]any), "fs.selected.read", "fs.selected.write")

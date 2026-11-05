@@ -3,7 +3,6 @@ package host
 import (
 	"context"
 	"errors"
-	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +11,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
 
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"

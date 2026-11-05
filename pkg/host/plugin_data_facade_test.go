@@ -9,7 +9,7 @@ import (
 )
 
 func TestPluginDataFileFacadeDerivesExactSessionResourceScope(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, "plugini_data_facade", buildWorkerStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func TestPluginDataFileFacadeDerivesExactSessionResourceScope(t *testing.T) {
 }
 
 func TestInspectPluginDataReturnsHostOwnedFacts(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	installed, err := ImportLocalPackageBytes(hostTestContext(), h, "plugini_data_inspect", buildWorkerStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)

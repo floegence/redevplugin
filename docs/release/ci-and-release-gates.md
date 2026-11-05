@@ -94,14 +94,14 @@ the same command shape.
 
 - exact `VERSION`, plugin API, and internal wire projections without fallback
   decoders or compatibility ranges;
-- OpenAPI/HTTP route/TypeScript SDK binding coverage, including release-reference
-  install/update routes that keep official package bytes out of trusted browser
-  requests;
+- OpenAPI/HTTP route/TypeScript SDK binding coverage, including inspected-package
+  install/update routes that resolve catalog and URL packages on the Host and
+  accept explicit local uploads through the same inspection lifecycle;
 - Web document/transport consistency across package validation, the Go
   resource handler, browser bootstrap, and TypeScript SDK;
 - the platform release manifest schema, deterministic external-staging
   generator, and exact canonical contract set;
-- manifest, package signature, token/ticket, bridge, error-code, release
+- manifest, package integrity, token/ticket, bridge, error-code, release
   metadata, runtime wire, WASM ABI, worker invocation, network
   grant, the capability contract/pin schemas, and target classifier
   contract snippets;
@@ -284,8 +284,8 @@ quotas, revocation, and diagnostics contracts.
 
 The contracts npm package exposes one explicit root surface:
 
-- `@floegence/redevplugin-contracts` contains the current release-signing types,
-  strict decoders, and canonical signing helpers. It does not publish another
+- `@floegence/redevplugin-contracts` contains the current repository-index, presentation and security-summary
+  types, strict validators and canonical content helpers. It does not publish another
   contract registry or release index.
 
 The UI npm package exposes five deliberate import surfaces:
@@ -296,7 +296,7 @@ The UI npm package exposes five deliberate import surfaces:
   capability helpers, process client, and plugin API identity. It does not
   expose management, bearer tokens, or local package import.
 - The /local-import entrypoint contains the explicit dev/admin raw package
-  import client. Official release-reference product paths must not bundle it.
+  import client. Product distribution paths must not bundle it.
 - The /testing entrypoint contains the production bridge fixture, context
   builder, and deterministic clock. Fixture results do not certify real Host
   permission enforcement or WASM execution.
@@ -328,8 +328,8 @@ are derived from the `spec/` path, so no hand-maintained contract registry or
 per-artifact compatibility version exists. Performance results remain local
 quality evidence and are not publication artifacts.
 
-Any change to the release-reference install/update request schema, route set,
-trust-state enum, token/ticket schema, or bridge contract must update the
+Any change to the inspected-package install/update request schema, route set,
+source identity, token/ticket schema, or bridge contract must update the
 machine-readable contract, route fixtures, SDK bindings, release hash, and
 focused contract tests in the same feature change.
 

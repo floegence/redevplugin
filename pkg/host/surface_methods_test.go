@@ -57,7 +57,7 @@ func openSurfaceMethodReceiver(t *testing.T, h *Host, pluginID, id string) Surfa
 }
 
 func TestSurfaceMethodsExactTargetClaimAndReceiverCAS(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, surfaceMethodsFixture(t))
 	first := openSurfaceMethodReceiver(t, h, installed.PluginInstanceID, "document_first")
 	second := openSurfaceMethodReceiver(t, h, installed.PluginInstanceID, "document_second")
@@ -124,7 +124,7 @@ func TestSurfaceMethodsExactTargetClaimAndReceiverCAS(t *testing.T) {
 }
 
 func TestSurfaceMethodsCancellationUnknownAfterClaimAndConfirmationGeneration(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, surfaceMethodsFixture(t))
 	receiver := openSurfaceMethodReceiver(t, h, installed.PluginInstanceID, "document_cancel")
 	call := InvokeIntentRequest{PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: receiver.SurfaceInstanceID, IntentID: "document.confirm"}
@@ -178,7 +178,7 @@ func surfaceMethodTestContext() context.Context {
 }
 
 func TestSurfaceMethodsUnregisterRejectsQueuedCallWithoutDispatch(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, surfaceMethodsFixture(t))
 	req := openSurfaceMethodReceiver(t, h, installed.PluginInstanceID, "document_unregister")
 	result := make(chan error, 1)
@@ -225,7 +225,7 @@ func waitForSurfaceMethodQueue(t *testing.T, h *Host, id string) {
 }
 
 func TestSurfaceMethodsCancellationBeforeClaimIsNotCommitted(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, surfaceMethodsFixture(t))
 	req := openSurfaceMethodReceiver(t, h, installed.PluginInstanceID, "document_preclaim")
 	ctx, cancel := context.WithCancel(surfaceMethodTestContext())
@@ -253,7 +253,7 @@ func TestSurfaceMethodsCancellationBeforeClaimIsNotCommitted(t *testing.T) {
 }
 
 func TestSurfaceMethodsOneShotConfirmationAndResponseContract(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, surfaceMethodsFixture(t))
 	req := openSurfaceMethodReceiver(t, h, installed.PluginInstanceID, "document_approval")
 	call := InvokeIntentRequest{PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: req.SurfaceInstanceID, IntentID: "document.confirm"}
@@ -303,7 +303,7 @@ func TestSurfaceMethodsOneShotConfirmationAndResponseContract(t *testing.T) {
 }
 
 func TestSurfaceMethodsRejectWrongOwnerAndUndeclaredMethod(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, surfaceMethodsFixture(t))
 	req := openSurfaceMethodReceiver(t, h, installed.PluginInstanceID, "document_owner")
 	req.Operation = "configure"
@@ -369,7 +369,7 @@ func TestSurfaceMethodsClosedOperationRequestShapes(t *testing.T) {
 }
 
 func TestSurfaceMethodsOperationCancellationUsesExecutionLifecycle(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	installed := installAndEnablePlugin(t, h, surfaceMethodsFixture(t))
 	req := openSurfaceMethodReceiver(t, h, installed.PluginInstanceID, "document_operation")
 	result := make(chan error, 1)

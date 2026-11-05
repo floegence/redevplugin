@@ -287,13 +287,6 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"manifest_field",
 		"path:",
 		"pointer:",
-		"UpdateReleaseRefRequest:",
-		"PluginReleaseRef:",
-		"PackageHashSet:",
-		"release_metadata_sha256:",
-		"trust_unavailable",
-		"expected_hashes:",
-		"package_sha256: { type: string, pattern: \"^(sha256:)?[0-9a-f]{64}$\" }",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("OpenAPI schema missing snippet %q", snippet)
@@ -418,7 +411,7 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 		properties []string
 		snippets   []string
 	}{
-		{path: "/_redevplugin/api/plugins/executions/query", schema: "ListExecutionsRequest", properties: []string{"cursor", "limit", "operation_scope", "plugin_instance_id"}, snippets: []string{"minimum: 1, maximum: 500", "enum: [release_install]"}},
+		{path: "/_redevplugin/api/plugins/executions/query", schema: "ListExecutionsRequest", properties: []string{"cursor", "limit", "operation_scope", "plugin_instance_id"}, snippets: []string{"minimum: 1, maximum: 500", "enum: [plugin_install]"}},
 		{path: "/_redevplugin/api/plugins/intents/query", schema: "ListIntentsQueryRequest", properties: []string{"intent_id", "plugin_instance_id"}},
 		{path: "/_redevplugin/api/plugins/permissions/query", schema: "ListPermissionsQueryRequest", properties: []string{"active_only", "plugin_instance_id"}, snippets: []string{"active_only: { type: boolean }"}},
 		{path: "/_redevplugin/api/plugins/permissions/requirements/query", schema: "PermissionRequirementsQueryRequest", properties: []string{"plugin_instance_id"}},
@@ -546,90 +539,6 @@ func openAPISchemaBlock(t *testing.T, source string, schemaName string) string {
 		}
 	}
 	return strings.Join(lines[:end], "\n")
-}
-
-func TestReleaseRefTrustSchemasDefineClosedContracts(t *testing.T) {
-	root := repoRoot(t)
-	schemas := []struct {
-		path     string
-		snippets []string
-	}{
-		{
-			path: "release-metadata.schema.json",
-			snippets: []string{
-				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_metadata" }`,
-				`"release_metadata_signature": { "$ref": "#/$defs/release_metadata_signature" }`,
-				`"package_signature": { "$ref": "#/$defs/package_release_signature" }`,
-				`"source_policy_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
-				`"revocation_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
-			},
-		},
-		{
-			path: "release-root-delegation-v1.schema.json",
-			snippets: []string{
-				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_root_delegation.v1" }`,
-				`"delegated_keys":`,
-			},
-		},
-		{
-			path: "release-source-policy-v3.schema.json",
-			snippets: []string{
-				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_source_policy.v3" }`,
-				`"unsigned_policy": { "enum": ["dev_only", "review_required", "block"] }`,
-				`"minimum_revocation_epoch": { "$ref": "#/$defs/epoch" }`,
-				`"source_policy_pointer"`,
-			},
-		},
-		{
-			path: "release-source-policy-pointer-v2.schema.json",
-			snippets: []string{
-				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_source_policy_pointer.v2" }`,
-				`"document_sha256": { "$ref": "#/$defs/sha256" }`,
-			},
-		},
-		{
-			path: "release-revocation-v3.schema.json",
-			snippets: []string{
-				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_revocation.v3" }`,
-				`"revoked_key_ids":`,
-				`"revoked_releases":`,
-			},
-		},
-		{
-			path: "release-revocation-pointer-v2.schema.json",
-			snippets: []string{
-				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_revocation_pointer.v2" }`,
-				`"document_sha256": { "$ref": "#/$defs/sha256" }`,
-			},
-		},
-	}
-	for _, schema := range schemas {
-		raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", schema.path))
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(raw)
-		for _, snippet := range schema.snippets {
-			if !strings.Contains(text, snippet) {
-				t.Fatalf("%s missing snippet %q", schema.path, snippet)
-			}
-		}
-	}
-	rootDelegation, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-root-delegation-v1.schema.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, retired := range []string{"signing_ledger", "trusted_time"} {
-		if strings.Contains(string(rootDelegation), retired) {
-			t.Fatalf("release-root-delegation-v1.schema.json retains retired trust field %q", retired)
-		}
-	}
 }
 
 func readRouteFixtures(path string) ([]routeFixture, error) {
@@ -797,6 +706,9 @@ func readOpenAPIRoutes(path string) ([]routeFixture, error) {
 
 func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 	return []typeScriptSDKRouteBinding{
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/repository/plugins/query"}, Owner: "listRepositoryPlugins", Snippets: []string{"listRepositoryPlugins(", "/_redevplugin/api/plugins/repository/plugins/query"}},
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/updates/preferences"}, Owner: "setAutomaticUpdates", Snippets: []string{"setAutomaticUpdates(", "/_redevplugin/api/plugins/updates/preferences"}},
+		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/updates/inspect"}, Owner: "inspectPluginUpdate", Snippets: []string{"inspectPluginUpdate(", "/_redevplugin/api/plugins/updates/inspect"}},
 		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/install-operations"}, Owner: "PluginPlatformClient.startInspectedInstall", Snippets: []string{"startInspectedInstall(request: PluginStartInspectedInstallRequest", `"POST", "/_redevplugin/api/plugins/external-packages/install-operations"`}},
 		{routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/install-operations/query"}, Owner: "PluginPlatformClient.getInspectedInstall", Snippets: []string{"getInspectedInstall(requestID: string", `"/_redevplugin/api/plugins/external-packages/install-operations/query", { request_id: requestID }`}},
 
@@ -839,11 +751,6 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"inspectUploadedExternalPackage(", "${encodeURIComponent(canonicalIntent.plugin_instance_id)}/external-packages/upload/inspect"},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/install"},
-			Owner:        "PluginPlatformClient.installInspectedPackage",
-			Snippets:     []string{"installInspectedPackage(request: PluginInstallInspectedPackageRequest", `"POST", "/_redevplugin/api/plugins/external-packages/install"`},
-		},
-		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},
 			Owner:        "PluginPlatformClient.enablePlugin",
 			Snippets:     []string{"enablePlugin(request: PluginEnableRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/enable"`},
@@ -857,11 +764,6 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/uninstall"},
 			Owner:        "PluginPlatformClient.uninstallPlugin",
 			Snippets:     []string{"uninstallPlugin(request: PluginUninstallRequest)", `#mutatePlugin("/_redevplugin/api/plugins/uninstall"`},
-		},
-		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/update-release-ref"},
-			Owner:        "PluginPlatformClient.updateReleaseRef",
-			Snippets:     []string{"updateReleaseRef(request: PluginUpdateReleaseRefRequest)", `#mutatePlugin("/_redevplugin/api/plugins/update-release-ref"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/downgrade"},
@@ -932,11 +834,6 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/executions/query"},
 			Owner:        "PluginPlatformClient.listExecutions",
 			Snippets:     []string{"listExecutions(options: PluginExecutionListOptions", `#requestQuery("/_redevplugin/api/plugins/executions/query"`},
-		},
-		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/executions/release-installs"},
-			Owner:        "PluginPlatformClient.startReleaseInstallExecution",
-			Snippets:     []string{"startReleaseInstallExecution(request: PluginStartReleaseInstallExecutionRequest", `#requestMutation("POST", "/_redevplugin/api/plugins/executions/release-installs"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/executions/{execution_id}/query"},
@@ -1112,13 +1009,13 @@ func routesWithoutTypeScriptSDKBindings() []routeWithoutTypeScriptSDKBinding {
 
 func requiredJSONRequestBodyRoutes() []routeFixture {
 	return []routeFixture{
-		{Method: "POST", Path: "/_redevplugin/api/plugins/executions/release-installs"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/repository/plugins/query"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/updates/preferences"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/updates/inspect"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/inspect"},
-		{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/install"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/disable"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/uninstall"},
-		{Method: "POST", Path: "/_redevplugin/api/plugins/update-release-ref"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/downgrade"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/catalog/query"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/features/query"},

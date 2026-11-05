@@ -27,7 +27,7 @@ func (e *webNetworkObserver) OpenHTTP(ctx context.Context, req connectivity.HTTP
 }
 func TestWebConnectionDeclarationURLAndWindowLifetime(t *testing.T) {
 	observer := &webNetworkObserver{}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, networkExecutor: observer})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{networkExecutor: observer})
 	var m map[string]any
 	if err := json.Unmarshal([]byte(currentNetworkManifestJSON()), &m); err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestWebConnectionDeclarationURLAndWindowLifetime(t *testing.T) {
 	}
 }
 func TestWebConnectionCannotBorrowWorkerDeclaration(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	record := installAndEnablePlugin(t, h, buildWorkerNetworkFixturePackage(t))
 	if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{PluginInstanceID: record.PluginInstanceID, PermissionID: "network.client", ExpectedPolicyRevision: record.PolicyRevision, ExpectedManagementRevision: record.ManagementRevision, ExpectedRevokeEpoch: record.RevokeEpoch}); err != nil {
 		t.Fatal(err)

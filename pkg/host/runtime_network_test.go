@@ -6,9 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v3/pkg/version"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +14,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
+	"github.com/floegence/redevplugin/v3/pkg/version"
 
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"

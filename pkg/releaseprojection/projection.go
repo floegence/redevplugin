@@ -20,19 +20,10 @@ type PackageHashSet struct {
 }
 
 type ExternalPackageIntent struct {
+	AllowSourceChange          bool   `json:"allow_source_change,omitempty"`
 	Action                     string `json:"action"`
 	PluginInstanceID           string `json:"plugin_instance_id,omitempty"`
 	ExpectedManagementRevision uint64 `json:"expected_management_revision,omitempty"`
-}
-
-type ExternalPackageSignatureAssessment struct {
-	State           string         `json:"state"`
-	ReasonCodes     []string       `json:"reason_codes"`
-	AssessedHashes  PackageHashSet `json:"assessed_hashes"`
-	Algorithm       string         `json:"algorithm,omitempty"`
-	KeyID           string         `json:"key_id,omitempty"`
-	AssessedAt      time.Time      `json:"assessed_at"`
-	AssessmentEpoch string         `json:"assessment_epoch,omitempty"`
 }
 
 type ExternalPackageRedirectHop struct {

@@ -16,7 +16,7 @@ func TestExternalPackageFeatureIsPublishedByTheOpenAPIContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	block := openAPISchemaBlock(t, string(raw), "PluginFeaturesSuccessResponse")
-	if !strings.Contains(block, "enum: [release, runtime, capability, io, connectivity, secrets, core_action, external_package, process, background, files]") {
+	if !strings.Contains(block, "enum: [runtime, capability, io, connectivity, secrets, core_action, external_package, process, background, files]") {
 		t.Fatalf("PluginFeaturesSuccessResponse does not publish external_package:\n%s", block)
 	}
 }
@@ -44,11 +44,11 @@ func TestExternalPackageRoutesExposeClosedInspectAndInstallFlow(t *testing.T) {
 			errorResponse: "MutationPlatformErrorResponse",
 		},
 		{
-			path:          "/_redevplugin/api/plugins/external-packages/install",
-			operationID:   "installInspectedPackage",
+			path:          "/_redevplugin/api/plugins/external-packages/install-operations",
+			operationID:   "startInspectedInstall",
 			effect:        "mutation",
-			requestBody:   "InstallInspectedPackageRequest",
-			response:      "InstalledExternalPackageResponse",
+			requestBody:   "StartInspectedInstallRequest",
+			response:      "InspectedInstallOperationResponse",
 			errorResponse: "MutationPlatformErrorResponse",
 		},
 	}
@@ -100,8 +100,8 @@ func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 		schema     string
 		properties []string
 	}{
-		{schema: "InspectExternalPackageRequest", properties: []string{"intent", "source"}},
-		{schema: "InstallInspectedPackageRequest", properties: []string{"expected_package_sha256", "inspection_id"}},
+		{schema: "InspectExternalPackageRequest", properties: []string{"expected_contract_set_sha256", "expected_package_sha256", "expected_plugin_id", "expected_publisher_id", "expected_security_summary_sha256", "expected_version", "intent", "source"}},
+		{schema: "StartInspectedInstallRequest", properties: []string{"automatic", "expected_package_sha256", "inspection_id", "request_id"}},
 	}
 	for _, tt := range tests {
 		block := openAPISchemaBlock(t, source, tt.schema)
@@ -142,8 +142,8 @@ func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := string(raw)
-	facts := []string{"signature_assessment", "source_provenance", "execution_approval", "update_eligibility"}
-	for _, schemaName := range []string{"ExternalPackageInspection", "InstalledExternalPackage"} {
+	facts := []string{"source_provenance", "execution_approval", "update_eligibility"}
+	for _, schemaName := range []string{"ExternalPackageInspection"} {
 		block := openAPISchemaBlock(t, source, schemaName)
 		for _, fact := range facts {
 			if !strings.Contains(block, fact) {
@@ -153,10 +153,9 @@ func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
 	}
 
 	checks := map[string][]string{
-		"ExternalPackageSignatureAssessment": {"verified", "absent", "unknown_signer", "invalid", "revoked", "unavailable", "assessed_hashes"},
-		"ExternalPackageExecutionApproval":   {"pending", "user_approved", "policy_approved", "policy_blocked"},
-		"ExternalPackageUpdateEligibility":   {"manual_only", "automatic_eligible"},
-		"ExternalPackageSourceProvenance":    {"package_url", "github_repository", "repository_id", "release_id", "asset_id", "package_sha256", "resolved_commit_sha"},
+		"ExternalPackageExecutionApproval": {"pending", "user_approved", "policy_approved", "policy_blocked"},
+		"ExternalPackageUpdateEligibility": {"manual_only", "automatic_eligible"},
+		"ExternalPackageSourceProvenance":  {"package_url", "github_repository", "repository_id", "release_id", "asset_id", "package_sha256", "resolved_commit_sha"},
 	}
 	for schemaName, snippets := range checks {
 		block := openAPISchemaBlock(t, source, schemaName)
@@ -181,20 +180,21 @@ func TestExternalPackageResponsesKeepOrthogonalSecurityFacts(t *testing.T) {
 	}
 }
 
-func TestExternalPackageProjectionPreservesLegacyTrustFields(t *testing.T) {
+func TestOpenDistributionExposesNoPluginTrustContract(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	source := string(raw)
-	trustState := openAPISchemaBlock(t, source, "TrustState")
-	if !strings.Contains(trustState, "enum: [verified, unsigned_local, untrusted, needs_review, trust_unavailable, blocked_security]") {
-		t.Fatalf("TrustState compatibility enum changed unexpectedly:\n%s", trustState)
+	for _, retired := range []string{"TrustState:", "TrustAssessment:", "ExternalPackageSignatureAssessment:", "PluginReleaseRef:", "trust_state:", "signature_assessment:"} {
+		if strings.Contains(source, retired) {
+			t.Fatalf("OpenAPI retains plugin trust contract %q", retired)
+		}
 	}
 	pluginRecord := openAPISchemaBlock(t, source, "PluginRecord")
-	for _, snippet := range []string{"trust_state:", "trust_assessment:", "local_import_provenance:", "signature_assessment:", "source_provenance:", "execution_approval:", "update_eligibility:", "security_summary:"} {
-		if !strings.Contains(pluginRecord, snippet) {
-			t.Fatalf("PluginRecord is missing compatibility or external package projection %q", snippet)
+	for _, field := range []string{"source_provenance:", "execution_approval:", "update_eligibility:", "security_summary:"} {
+		if !strings.Contains(pluginRecord, field) {
+			t.Fatalf("PluginRecord missing %q", field)
 		}
 	}
 }

@@ -12,7 +12,7 @@ Templates use exact published SDK dependencies; install them before building.
 Install the CLI for the platform release used by your host:
 
 ```bash
-go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.17.0
+go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.18.0
 redevplugin init dev.example.notes "Notes" notes --template data
 cd notes
 npm install
@@ -235,3 +235,8 @@ or replace the source build commands. It covers manual apply/cancel, unsaved dra
 retention, failed-typecheck retention, a fresh Surface after apply, persistent
 restart, explicit reset, and configurable live monitor connections. Timings are
 machine observations, not a claim that a human usability study has been completed.
+
+Local preview updates explicitly apply edited package bytes while the project
+version remains unchanged. This behavior is confined to `local_package`
+installations and is never an automatic or remote update. Published version
+content remains immutable; editing a distributed release requires a new version.

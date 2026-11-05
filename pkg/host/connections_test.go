@@ -4,30 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"testing"
+	"time"
+
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
-	"path/filepath"
-	"testing"
-	"time"
 )
 
-type connectionPolicyLockProbe struct {
-	PolicyAdapter
-	authority *connectionAuthority
-	called    bool
-	unlocked  bool
-}
-
-func (p *connectionPolicyLockProbe) DeveloperModeEnabled(ctx context.Context, s sessionctx.Context) (bool, error) {
-	p.called = true
-	p.unlocked = p.authority.mu.TryLock()
-	if p.unlocked {
-		p.authority.mu.Unlock()
-	}
-	return p.PolicyAdapter.DeveloperModeEnabled(ctx, s)
-}
 func networkInvocation(t *testing.T, record registry.PluginRecord, session sessionctx.Context) resourceio.Invocation {
 	t.Helper()
 	scope, err := session.ResourceScope(sessionctx.ScopeUser)
@@ -39,20 +25,6 @@ func networkInvocation(t *testing.T, record registry.PluginRecord, session sessi
 		t.Fatal(err)
 	}
 	return resourceio.Invocation{Owner: resourceio.Owner{PluginInstanceID: record.PluginInstanceID, ActiveFingerprint: record.ActiveFingerprint, ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch, Scope: scope, Session: owner, InvocationID: "connection-test", RuntimeGeneration: "connection-test", Lifetime: resourceio.LifetimeInvocation}, Plugin: resourceio.Plugin{ID: record.PluginID, InstanceID: record.PluginInstanceID, Version: record.Version}, PolicyRevision: record.PolicyRevision, Permissions: map[string]bool{resourceio.PermissionNetworkClient: true}, CanRead: true, CanWrite: true}
-}
-func TestConnectionAdmissionCallsPolicyOutsideAuthorityLock(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	record := installAndEnablePlugin(t, h, buildWorkerNetworkFixturePackage(t))
-	probe := &connectionPolicyLockProbe{PolicyAdapter: h.adapters.Policy, authority: h.connections}
-	h.adapters.Policy = probe
-	session, _ := sessionctx.FromContext(hostTestContext())
-	lease, err := h.connections.acquire(hostTestContext(), networkInvocation(t, record, session), "api", "GET")
-	if err == nil {
-		lease.release()
-	}
-	if !probe.called || !probe.unlocked {
-		t.Fatalf("policy called=%v without authority lock=%v", probe.called, probe.unlocked)
-	}
 }
 
 func configuredNetworkFixture(t *testing.T) []byte {
@@ -80,7 +52,7 @@ func configuredNetworkFixture(t *testing.T) []byte {
 }
 func connectionFixture(t *testing.T, packages ...[]byte) (*Host, context.Context, registry.PluginRecord, resourceio.Invocation) {
 	t.Helper()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	fixture := configuredNetworkFixture(t)
 	if len(packages) > 0 {
 		fixture = packages[0]
@@ -179,7 +151,7 @@ func TestConnectionPolicyDenialReturnsWithoutDrainingItsOwnInvocation(t *testing
 		t.Fatal(err)
 	}
 	defer func() { _ = h.runtimeIO.release(inv.Owner.InvocationID) }()
-	h.adapters.Policy = policyAdapter{developerMode: false, localGenerated: true, decision: PolicyAllow}
+	h.adapters.Policy = policyAdapter{decision: PolicyAllow}
 	done := make(chan error, 1)
 	go func() {
 		op, registered, release, err := h.runtimeIO.acquire(ctx, inv.Owner.InvocationID)

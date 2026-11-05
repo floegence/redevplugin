@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -13,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/authoring"
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"
@@ -27,7 +25,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/storage"
-	"github.com/floegence/redevplugin/v3/pkg/trust"
 	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
@@ -40,9 +37,6 @@ type validateSummary struct {
 	PackageHash     string `json:"package_hash,omitempty"`
 	ManifestHash    string `json:"manifest_hash,omitempty"`
 	EntriesHash     string `json:"entries_hash,omitempty"`
-	Signed          bool   `json:"signed,omitempty"`
-	SignatureKey    string `json:"signature_key,omitempty"`
-	SignatureAlgo   string `json:"signature_algorithm,omitempty"`
 }
 
 type lifecycleSummary struct {
@@ -51,39 +45,16 @@ type lifecycleSummary struct {
 	PluginInstanceID   string               `json:"plugin_instance_id"`
 	PluginID           string               `json:"plugin_id"`
 	Version            string               `json:"version"`
-	TrustState         registry.TrustState  `json:"trust_state"`
 	EnableState        registry.EnableState `json:"enable_state"`
 	PolicyRevision     uint64               `json:"policy_revision"`
 	ManagementRevision uint64               `json:"management_revision"`
 	RevokeEpoch        uint64               `json:"revoke_epoch"`
 }
 
-type keygenSummary struct {
-	OK         bool   `json:"ok"`
-	Algorithm  string `json:"algorithm"`
-	KeyID      string `json:"key_id"`
-	PrivateKey string `json:"private_key_file"`
-	PublicKey  string `json:"public_key_file"`
-	CreatedAt  string `json:"created_at"`
-}
-
 type platformVersionSummary struct {
 	PlatformVersion string `json:"platform_version"`
 	PluginAPI       uint16 `json:"plugin_api"`
 	InternalWire    uint16 `json:"internal_wire"`
-}
-
-type presentationInspectionSummary struct {
-	OK                 bool                                         `json:"ok"`
-	Phase              string                                       `json:"phase"`
-	Output             string                                       `json:"output"`
-	Presentation       manifest.PresentationCatalog                 `json:"presentation"`
-	PresentationIcon   *releasepublisher.PresentationIconEvidenceV1 `json:"presentation_icon,omitempty"`
-	ManifestSHA256     string                                       `json:"manifest_sha256"`
-	PresentationSHA256 string                                       `json:"presentation_sha256"`
-	ContractSetSHA256  string                                       `json:"contract_set_sha256"`
-	SecuritySummary    releasepublisher.SecuritySummaryV1           `json:"security_summary"`
-	VerifierVersion    string                                       `json:"verifier_version"`
 }
 
 type presentationIconExtractionSummary struct {
@@ -108,27 +79,6 @@ type dataInspectSummary struct {
 	Bindings         []plugindata.Binding      `json:"bindings"`
 	Objects          []plugindata.Object       `json:"objects"`
 	Namespaces       []storage.NamespaceRecord `json:"namespaces"`
-}
-
-type signingPrivateKeyFile struct {
-	SchemaVersion string `json:"schema_version"`
-	Algorithm     string `json:"algorithm"`
-	KeyID         string `json:"key_id"`
-	PublisherID   string `json:"publisher_id,omitempty"`
-	PluginID      string `json:"plugin_id,omitempty"`
-	PrivateKey    string `json:"private_key"`
-	PublicKey     string `json:"public_key,omitempty"`
-	CreatedAt     string `json:"created_at,omitempty"`
-}
-
-type signingPublicKeyFile struct {
-	SchemaVersion string `json:"schema_version"`
-	Algorithm     string `json:"algorithm"`
-	KeyID         string `json:"key_id"`
-	PublisherID   string `json:"publisher_id,omitempty"`
-	PluginID      string `json:"plugin_id,omitempty"`
-	PublicKey     string `json:"public_key"`
-	CreatedAt     string `json:"created_at,omitempty"`
 }
 
 func main() {
@@ -193,16 +143,6 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return writeJSON(summary)
-	case "keygen":
-		if len(args) != 4 {
-			return usage()
-		}
-		return keygen(args[1], args[2], args[3])
-	case "sign":
-		if len(args) != 4 {
-			return usage()
-		}
-		return signPackage(ctx, args[1], args[2], args[3])
 	case "version":
 		return writeJSON(platformVersionSummary{PlatformVersion: version.CurrentPlatformVersion(), PluginAPI: 1, InternalWire: 1})
 	case "release":
@@ -221,11 +161,6 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return lifecycleHarness(ctx, "install-local", args[1])
-	case "install-verified":
-		if len(args) != 3 {
-			return usage()
-		}
-		return installVerifiedHarness(ctx, args[1], args[2])
 	case "dev-install":
 		if len(args) != 3 {
 			return usage()
@@ -386,7 +321,6 @@ func validate(ctx context.Context, filename string) error {
 		if err != nil {
 			return err
 		}
-		signed, signatureKey, signatureAlgo := packageSignatureSummary(pkg)
 		return writeJSON(validateSummary{
 			DataShapeSHA256: shapeHash,
 			OK:              true,
@@ -396,9 +330,6 @@ func validate(ctx context.Context, filename string) error {
 			PackageHash:     pkg.PackageHash,
 			ManifestHash:    pkg.ManifestHash,
 			EntriesHash:     pkg.EntriesHash,
-			Signed:          signed,
-			SignatureKey:    signatureKey,
-			SignatureAlgo:   signatureAlgo,
 		})
 	}
 	raw, err := os.ReadFile(filename)
@@ -440,145 +371,15 @@ func buildPackage(ctx context.Context, srcDir string, outFile string) error {
 	if err := os.WriteFile(outFile, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
-	signed, signatureKey, signatureAlgo := packageSignatureSummary(pkg)
 	return writeJSON(validateSummary{
-		OK:            true,
-		Kind:          "package",
-		PluginID:      pkg.Manifest.PluginID(),
-		Version:       pkg.Manifest.Version(),
-		PackageHash:   pkg.PackageHash,
-		ManifestHash:  pkg.ManifestHash,
-		EntriesHash:   pkg.EntriesHash,
-		Signed:        signed,
-		SignatureKey:  signatureKey,
-		SignatureAlgo: signatureAlgo,
+		OK:           true,
+		Kind:         "package",
+		PluginID:     pkg.Manifest.PluginID(),
+		Version:      pkg.Manifest.Version(),
+		PackageHash:  pkg.PackageHash,
+		ManifestHash: pkg.ManifestHash,
+		EntriesHash:  pkg.EntriesHash,
 	})
-}
-
-func keygen(keyID string, privateFile string, publicFile string) error {
-	keyID = strings.TrimSpace(keyID)
-	if keyID == "" {
-		return fmt.Errorf("key_id is required")
-	}
-	publicKey, privateKey, err := ed25519.GenerateKey(crand.Reader)
-	if err != nil {
-		return err
-	}
-	createdAt := time.Now().UTC().Format(time.RFC3339)
-	privateDoc := signingPrivateKeyFile{
-		SchemaVersion: "redevplugin.ed25519_signing_key.v1",
-		Algorithm:     trust.AlgorithmEd25519,
-		KeyID:         keyID,
-		PrivateKey:    base64.StdEncoding.EncodeToString(privateKey),
-		PublicKey:     base64.StdEncoding.EncodeToString(publicKey),
-		CreatedAt:     createdAt,
-	}
-	publicDoc := signingPublicKeyFile{
-		SchemaVersion: "redevplugin.ed25519_signing_key.v1",
-		Algorithm:     trust.AlgorithmEd25519,
-		KeyID:         keyID,
-		PublicKey:     base64.StdEncoding.EncodeToString(publicKey),
-		CreatedAt:     createdAt,
-	}
-	if err := writeJSONFile(privateFile, privateDoc, 0o600); err != nil {
-		return err
-	}
-	if err := writeJSONFile(publicFile, publicDoc, 0o644); err != nil {
-		return err
-	}
-	return writeJSON(keygenSummary{
-		OK:         true,
-		Algorithm:  trust.AlgorithmEd25519,
-		KeyID:      keyID,
-		PrivateKey: privateFile,
-		PublicKey:  publicFile,
-		CreatedAt:  createdAt,
-	})
-}
-
-func signPackage(ctx context.Context, packageFile string, privateKeyFile string, outFile string) error {
-	pkg, err := pluginpkg.ReadFile(ctx, packageFile, pluginpkg.DefaultReadLimits())
-	if err != nil {
-		return err
-	}
-	privateDoc, privateKey, err := readSigningPrivateKey(privateKeyFile)
-	if err != nil {
-		return err
-	}
-	sig, err := trust.SignatureForPackage(pkg, privateDoc.KeyID, privateDoc.PublisherID, privateDoc.PluginID, privateKey, time.Now().UTC())
-	if err != nil {
-		return err
-	}
-	pkg.PackageSignature = &sig
-	var buf bytes.Buffer
-	if err := pluginpkg.WritePackage(ctx, &buf, pkg); err != nil {
-		return err
-	}
-	if err := writeBytesFile(outFile, buf.Bytes(), 0o644); err != nil {
-		return err
-	}
-	signedPkg, err := pluginpkg.Read(ctx, bytes.NewReader(buf.Bytes()), int64(buf.Len()), pluginpkg.DefaultReadLimits())
-	if err != nil {
-		return err
-	}
-	signed, signatureKey, signatureAlgo := packageSignatureSummary(signedPkg)
-	return writeJSON(validateSummary{
-		OK:            true,
-		Kind:          "package",
-		PluginID:      signedPkg.Manifest.PluginID(),
-		Version:       signedPkg.Manifest.Version(),
-		PackageHash:   signedPkg.PackageHash,
-		ManifestHash:  signedPkg.ManifestHash,
-		EntriesHash:   signedPkg.EntriesHash,
-		Signed:        signed,
-		SignatureKey:  signatureKey,
-		SignatureAlgo: signatureAlgo,
-	})
-}
-
-func readSigningPrivateKey(filename string) (signingPrivateKeyFile, ed25519.PrivateKey, error) {
-	raw, err := os.ReadFile(filename)
-	if err != nil {
-		return signingPrivateKeyFile{}, nil, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var doc signingPrivateKeyFile
-	if err := decoder.Decode(&doc); err != nil {
-		return signingPrivateKeyFile{}, nil, err
-	}
-	if doc.SchemaVersion != "redevplugin.ed25519_signing_key.v1" {
-		return signingPrivateKeyFile{}, nil, fmt.Errorf("unsupported key schema_version %q", doc.SchemaVersion)
-	}
-	if doc.Algorithm != trust.AlgorithmEd25519 {
-		return signingPrivateKeyFile{}, nil, fmt.Errorf("unsupported key algorithm %q", doc.Algorithm)
-	}
-	if strings.TrimSpace(doc.KeyID) == "" {
-		return signingPrivateKeyFile{}, nil, fmt.Errorf("key_id is required")
-	}
-	privateKey, err := base64.StdEncoding.DecodeString(doc.PrivateKey)
-	if err != nil || len(privateKey) != ed25519.PrivateKeySize {
-		return signingPrivateKeyFile{}, nil, fmt.Errorf("private_key is not a valid ed25519 private key")
-	}
-	if doc.PublicKey != "" {
-		publicKey, err := base64.StdEncoding.DecodeString(doc.PublicKey)
-		if err != nil || len(publicKey) != ed25519.PublicKeySize {
-			return signingPrivateKeyFile{}, nil, fmt.Errorf("public_key is not a valid ed25519 public key")
-		}
-		derivedPublicKey := ed25519.PrivateKey(privateKey).Public().(ed25519.PublicKey)
-		if !bytes.Equal(publicKey, derivedPublicKey) {
-			return signingPrivateKeyFile{}, nil, fmt.Errorf("public_key does not match private_key")
-		}
-	}
-	doc.KeyID = strings.TrimSpace(doc.KeyID)
-	return doc, ed25519.PrivateKey(privateKey), nil
-}
-
-func packageSignatureSummary(pkg pluginpkg.Package) (bool, string, string) {
-	if pkg.PackageSignature == nil {
-		return false, "", ""
-	}
-	return true, pkg.PackageSignature.KeyID, pkg.PackageSignature.Algorithm
 }
 
 func optionalSecretScope(args []string) string {
@@ -594,16 +395,6 @@ func writeJSON(v any) error {
 	return encoder.Encode(v)
 }
 
-func writeJSONFile(filename string, value any, perm os.FileMode) error {
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		return err
-	}
-	return writeBytesFile(filename, buf.Bytes(), perm)
-}
-
 func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 	if outDir := filepath.Dir(filename); outDir != "." {
 		if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -617,7 +408,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin repository inspect|validate <repository-root> | redevplugin scaffold repository-index <repository-root> <host> | redevplugin check <source-dir> | redevplugin doctor <source-dir> | redevplugin init <plugin-id> <display-name> <out-dir> [--template web|data|worker|monitor|files] | redevplugin generate <manifest.json> <output-dir> [--check] | redevplugin runtime prepare <new-directory> | redevplugin dev <source-dir> [--state <directory>] [--manual] [--runtime <path> --runtime-sha256 <digest>] | redevplugin test <source-dir> [--runtime <path> --runtime-sha256 <digest> --surface <id> --method <name> --params <json>] | redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> [capability-contract.json ...] | redevplugin release verify <out-dir> [capability-contract.json ...] | redevplugin release extract-presentation-icon <out-dir> <out-file> [capability-contract.json ...] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
+	return fmt.Errorf("usage: redevplugin repository inspect|validate <repository-root> | redevplugin scaffold repository-index <repository-root> <host> | redevplugin check <source-dir> | redevplugin doctor <source-dir> | redevplugin init <plugin-id> <display-name> <out-dir> [--template web|data|worker|monitor|files] | redevplugin generate <manifest.json> <output-dir> [--check] | redevplugin runtime prepare <new-directory> | redevplugin dev <source-dir> [--state <directory>] [--manual] [--runtime <path> --runtime-sha256 <digest>] | redevplugin test <source-dir> [--runtime <path> --runtime-sha256 <digest> --surface <id> --method <name> --params <json>] | redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin>| redevplugin release inspect <package.redevplugin> [capability-contract.json ...] | redevplugin release extract-presentation-icon <package.redevplugin> <out-file> [capability-contract.json ...] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package>| redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -666,50 +457,6 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	return writeLifecycle(action, record)
 }
 
-func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFile string) error {
-	data, err := os.ReadFile(packageFile)
-	if err != nil {
-		return err
-	}
-	publicDoc, publicKey, err := readSigningPublicKey(publicKeyFile)
-	if err != nil {
-		return err
-	}
-	root, err := os.MkdirTemp("", "redevplugin-verified-install-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(root)
-	adapters, err := newEphemeralCLIAdapters(root)
-	if err != nil {
-		return err
-	}
-	verifier := trust.Ed25519Verifier{
-		Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
-			Algorithm:   publicDoc.Algorithm,
-			KeyID:       publicDoc.KeyID,
-			PublisherID: publicDoc.PublisherID,
-			PluginID:    publicDoc.PluginID,
-			PublicKey:   publicKey,
-		}}},
-	}
-	adapters.Core.PackageTrustVerifier = verifier
-	h, err := host.Open(ctx, adapters)
-	if err != nil {
-		return err
-	}
-	defer h.Close()
-	pluginInstanceID, err := newCLIPluginInstanceID()
-	if err != nil {
-		return err
-	}
-	record, err := host.ImportLocalPackageBytes(ctx, h, pluginInstanceID, data)
-	if err != nil {
-		return err
-	}
-	return writeLifecycle("install-verified", record)
-}
-
 func newCLIPluginInstanceID() (string, error) {
 	raw := make([]byte, 18)
 	if _, err := crand.Read(raw); err != nil {
@@ -725,40 +472,11 @@ func writeLifecycle(action string, record registry.PluginRecord) error {
 		PluginInstanceID:   record.PluginInstanceID,
 		PluginID:           record.PluginID,
 		Version:            record.Version,
-		TrustState:         record.TrustState,
 		EnableState:        record.EnableState,
 		PolicyRevision:     record.PolicyRevision,
 		ManagementRevision: record.ManagementRevision,
 		RevokeEpoch:        record.RevokeEpoch,
 	})
-}
-
-func readSigningPublicKey(filename string) (signingPublicKeyFile, ed25519.PublicKey, error) {
-	raw, err := os.ReadFile(filename)
-	if err != nil {
-		return signingPublicKeyFile{}, nil, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var doc signingPublicKeyFile
-	if err := decoder.Decode(&doc); err != nil {
-		return signingPublicKeyFile{}, nil, err
-	}
-	if doc.SchemaVersion != "redevplugin.ed25519_signing_key.v1" {
-		return signingPublicKeyFile{}, nil, fmt.Errorf("unsupported key schema_version %q", doc.SchemaVersion)
-	}
-	if doc.Algorithm != trust.AlgorithmEd25519 {
-		return signingPublicKeyFile{}, nil, fmt.Errorf("unsupported key algorithm %q", doc.Algorithm)
-	}
-	doc.KeyID = strings.TrimSpace(doc.KeyID)
-	if doc.KeyID == "" {
-		return signingPublicKeyFile{}, nil, fmt.Errorf("key_id is required")
-	}
-	publicKey, err := base64.StdEncoding.DecodeString(doc.PublicKey)
-	if err != nil || len(publicKey) != ed25519.PublicKeySize {
-		return signingPublicKeyFile{}, nil, fmt.Errorf("public_key is not a valid ed25519 public key")
-	}
-	return doc, ed25519.PublicKey(publicKey), nil
 }
 
 func cliContext(ctx context.Context) context.Context {
@@ -776,13 +494,12 @@ func newEphemeralCLIAdapters(stateRoot string) (host.Config, error) {
 	return host.Config{
 		StateRoot: stateRoot,
 		Core: host.CoreAdapters{
-			Policy:               staticPolicyAdapter{},
-			Authorization:        staticAuthorizationAdapter{},
-			PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
-			Audit:                events,
-			SecurityAudit:        events,
-			Diagnostics:          events,
-			Assets:               pluginpkg.NewMemoryAssetStore(),
+			Policy:        staticPolicyAdapter{},
+			Authorization: staticAuthorizationAdapter{},
+			Audit:         events,
+			SecurityAudit: events,
+			Diagnostics:   events,
+			Assets:        pluginpkg.NewMemoryAssetStore(),
 		},
 		Connectivity: &host.ConnectivityModule{
 			Broker:          connectivityBroker,
@@ -805,14 +522,6 @@ func (staticAuthorizationAdapter) Authorize(_ context.Context, req host.Authoriz
 
 func (staticPolicyAdapter) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {
 	return host.PolicyAllow, nil
-}
-
-func (staticPolicyAdapter) DeveloperModeEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return true, nil
-}
-
-func (staticPolicyAdapter) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return true, nil
 }
 
 type scaffoldSummary = authoring.TemplateResult

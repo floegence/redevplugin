@@ -16,7 +16,7 @@ grants, and runtime state.
 Host products provide concrete policy and adapters, but the reusable security
 mechanics live here:
 
-- manifest/package/signature validation;
+- manifest/package validation;
 - sandbox bootstrap and bridge token/session issuance;
 - permission grants and security policy caps;
 - confirmation requirements and stable error shapes;
@@ -59,46 +59,25 @@ Validation errors expose stable platform error codes and structured
 UI should branch on the stable code/details rather than scraping localized
 messages.
 
-## Signatures And Trust
+## Open Package Distribution
 
-All package entry points use one preimage from
-releasecontract.PackageSignatureSigningPreimage: the signing domain prefix,
-package usage, and canonical signature object with its signature field removed.
-Ed25519 signs its SHA-256 digest. Local signing, release external-signer
-requests, release verification, and Host admission share that exact operation.
-The manifest hash already binds the plugin version. Source, channel, and
-distribution authorization belong to the independently signed release metadata
-and source policy; local package inspection does not guess them. Version 3.7.2
-rejects both previous incompatible signature encodings. Affected packages must
-be rebuilt and signed at a new immutable release coordinate; no trusted-key or
-integrity bypass is provided.
+Plugins are ordinary packages. No signature, signing key, publisher trust,
+review record, or release reference participates in discovery or installation.
+All archive entries contribute to the content digest. Files named
+`signatures/package.sig` have ordinary file semantics.
 
-Detached package signatures live in `signatures/package.sig`. Signature metadata
-is retained for trust verification but excluded from canonical package entries
-and canonical package hashes, avoiding self-referential signatures. The
-`signatures/` directory is closed-world; any entry other than
-`signatures/package.sig` is rejected during package build/read.
+The Host resolves HTTPS sources or the selected repository-index entry, checks
+package structure, bounds, paths, declared identity and selected content, and
+creates an owner/session-bound inspection. The user accepts that exact digest
+through `StartInspectedInstall`. The existing Execution persists idempotent
+request recovery, progress, and the mutation outcome. Restart never blindly
+replays an uncertain effect. Installation enables the package but grants no
+runtime permissions. Source metadata and execution approval are separate facts.
 
-`pkg/trust` provides an Ed25519 verifier and keyring interface. Hosts decide
-which publishers, keys, registries, local developer flows, host-artifact package
-references, or enterprise policies are trusted. Management install and update
-requests do not accept caller-supplied `trust_state` values; runnable verified
-state is emitted only by a host-provided trust verifier.
-
-Release-reference install and update routes are the preferred path for official
-or registry-backed package distribution. The trusted host UI sends only a
-`PluginReleaseRef` containing source, release metadata ref/hash, publisher,
-plugin, version, and expected package/manifest/entries hashes. The host
-`ReleaseSourcePolicyResolver` freezes the source policy snapshot before
-`ReleaseArtifactResolver` runs. The artifact resolver receives that snapshot and
-returns only signed release-metadata bytes, metadata-signature bytes, and an
-untrusted package artifact handle. ReDevPlugin verifies the metadata signature,
-closed-world decodes the canonical release, validates the resolver-scoped
-distribution reference, reads the package, compares all hashes, passes the
-package through the host trust verifier, stages the install/update, and only
-then mutates the registry. A resolver may not return trusted parsed release
-fields or turn unbound URLs, filesystem paths, undeclared redirect hosts, or
-path traversal into installable artifacts.
+Automatic updates require an explicit saved user preference, the original
+repository ID or exact HTTPS URL, a strictly newer version, and unchanged
+capabilities. A source change requires explicit user action and resets the
+automatic-update preference. Same-version content changes are rejected.
 
 The external-source downloader accepts a trusted host-owned single-hop HTTPS
 transport through `externalsource.FetcherOptions.Transport` and
@@ -109,8 +88,7 @@ private sources, proxy authentication, and trust roots. A synthetic/private IP
 address alone does not invalidate that host policy. This adapter does not grant
 any network access to plugin JavaScript or WASM.
 
-ReDevPlugin still validates each URL and redirect, signed source host constraints,
-origin-scoped credentials, cancellation, identity encoding, streaming quotas,
+ReDevPlugin still validates each URL and redirect, origin-scoped credentials, cancellation, identity encoding, streaming quotas,
 staged bytes, and exact content hashes. TLS hostname and certificate verification
 are required. Custom transports must return each redirect without following it
 and must not attach ambient cookies or origin credentials. Go transports are
@@ -124,9 +102,9 @@ hostname, and keys reuse by scheme, hostname, port, and validated address set.
 Its pool remains bounded to 32 entries with 30-second idle expiry. It is an
 explicit deployment default, not a claim that private DNS or VPN use is unsafe.
 Desktop hosts must register their normal network transport. Construction makes
-no network request. Download, proxy, DNS and trust-document transport failures
+no network request. Download, proxy, DNS and metadata transport failures
 stay operation-scoped and keep their original error cause; they must not become
-signature failures or prevent the host's unrelated functionality from starting.
+package integrity failures or prevent the host's unrelated functionality from starting.
 
 Authorized plugin HTTPS requests use a separate opt-in Go adapter,
 `connectivity.ExecutorOptions.HostHTTPTransport`. It does not authorize a
@@ -357,7 +335,7 @@ Custom `MarshalJSON` and `MarshalText` implementations are executable
 host-adapter code, not sandboxed plugin code. ReDevPlugin strictly bounds and
 validates encoded bytes, but cannot prevent a host adapter from consuming
 resources inside these methods before they return. Hosts must apply their normal
-trust and review policy to adapter implementations; the response boundary does
+product authorization policy to adapter implementations; the response boundary does
 not claim to sandbox host code. An `omitzero` response field with a custom
 `IsZero` method is rejected without calling that method, eliminating a stateful
 double-observation path. Reflective zero-value checks remain supported.
@@ -417,7 +395,7 @@ its memory and export contract. The Rust ABI crate independently runs
 execution. A syntactically valid worker still receives the signed invocation
 memory ceiling, and `memory.grow` beyond that budget fails closed at runtime.
 The manifest cannot request more than 256 MiB per worker, and a Host package
-trust policy may enforce a lower ceiling. Hosts can additionally configure an
+resource policy may enforce a lower ceiling. Hosts can additionally configure an
 Ed25519 runtime lease verifier on the Go supervisor. The verifier checks a
 canonical `runtime_execution_lease` payload
 that excludes the signature itself, while covering

@@ -22,6 +22,7 @@ const inspectedInstallKind = "inspected_install_v1"
 // InspectedInstall is a payload of the existing Execution authority. Session
 // identity is retained for audit; outcome recovery uses stable user/environment.
 type InspectedInstall struct {
+	Automatic     bool                `json:"automatic,omitempty"`
 	Kind          string              `json:"kind"`
 	Execution     execution.Execution `json:"-"`
 	RequestID     string              `json:"request_id"`
@@ -130,7 +131,7 @@ func (v ExecutionView) StartInspectedInstall(ctx context.Context, owner Executio
 		return op, true, nil
 	}
 	old, err := v.GetInspectedInstall(ctx, owner, op.RequestID)
-	if err == nil && (old.InspectionID != op.InspectionID || old.PackageSHA256 != op.PackageSHA256) {
+	if err == nil && (old.InspectionID != op.InspectionID || old.PackageSHA256 != op.PackageSHA256 || old.Automatic != op.Automatic) {
 		return old, false, ErrStateConflict
 	}
 	return old, false, err
@@ -148,16 +149,15 @@ func (v ExecutionView) FinishInspectedInstall(ctx context.Context, owner Executi
 	}
 	current.Outcome = outcome
 	status := execution.StatusFailed
-	if outcome == mutation.OutcomeCommitted {
+	if outcome == mutation.OutcomeCommitted && code == "" {
 		status = execution.StatusCompleted
-		code = ""
 	}
 	raw, err := json.Marshal(current)
 	if err != nil {
 		return current, err
 	}
 	now := time.Now().UTC()
-	event, err := execution.NewEvent(current.Execution, current.Execution.Cursor+1, execution.EventTerminal, map[string]any{"status": status, "mutation_outcome": outcome, "package_sha256": current.PackageSHA256, "request_id": requestID})
+	event, err := execution.NewEvent(current.Execution, current.Execution.Cursor+1, execution.EventTerminal, map[string]any{"status": status, "mutation_outcome": outcome, "package_sha256": current.PackageSHA256, "request_id": requestID, "failure_code": code})
 	if err != nil {
 		return current, err
 	}

@@ -35,7 +35,7 @@ func (manager *invocationPreparationManager) PrewarmWorker(ctx context.Context, 
 func TestWorkerCallReusesPreparationUntilRuntimeGenerationChanges(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
+		runtimeManager: manager,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	manager.prewarmCalls = 0
@@ -72,7 +72,7 @@ func TestWorkerCallReusesPreparationUntilRuntimeGenerationChanges(t *testing.T) 
 func TestWorkerCallWaitsForPreparationAndCancelsQueuedWaiter(t *testing.T) {
 	manager := &invocationPreparationManager{recordingRuntimeManager: newRecordingRuntimeManager()}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
+		runtimeManager: manager,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	manager.started = make(chan struct{})
@@ -116,7 +116,7 @@ func TestWorkerCallWaitsForPreparationAndCancelsQueuedWaiter(t *testing.T) {
 func TestWorkerCallPreparesColdRuntimeBeforeDispatch(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
+		runtimeManager: manager,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	manager.health.Ready = false
@@ -141,7 +141,7 @@ func TestWorkerCallPreparesColdRuntimeBeforeDispatch(t *testing.T) {
 func TestWorkerCallJoinsStartupPreparation(t *testing.T) {
 	manager := &invocationPreparationManager{recordingRuntimeManager: newRecordingRuntimeManager()}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
+		runtimeManager: manager,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	manager.health.RuntimeGenerationID = "runtime_generation_startup"
@@ -186,7 +186,7 @@ func TestWorkerCallJoinsStartupPreparation(t *testing.T) {
 func TestWorkerCallRejectsGenerationChangeDuringPreparation(t *testing.T) {
 	manager := &invocationPreparationManager{recordingRuntimeManager: newRecordingRuntimeManager()}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
+		runtimeManager: manager,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	manager.health.RuntimeGenerationID = "runtime_generation_preparing"
@@ -224,7 +224,7 @@ func TestWorkerCallPreparationFailureDoesNotDispatch(t *testing.T) {
 		t.Run(failure.Error(), func(t *testing.T) {
 			manager := &invocationPreparationManager{recordingRuntimeManager: newRecordingRuntimeManager()}
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode: true, localGenerated: true, runtimeManager: manager,
+				runtimeManager: manager,
 			})
 			installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 			manager.prewarmErr = failure

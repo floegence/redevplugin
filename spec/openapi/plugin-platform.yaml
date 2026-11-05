@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.17.0
-  description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
+  version: 3.18.0
+  description: Host-neutral plugin lifecycle, inspection, execution, data, and sandbox routes. All distributed plugins use ordinary packages and one exact-digest inspected-install Execution. Installation never grants runtime permissions. Automatic updates require the saved user preference, original source, a newer immutable version, and unchanged capabilities.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
   require_closed_json_bodies: true
@@ -250,7 +250,7 @@ paths:
     post:
       operationId: inspectExternalPackage
       x-redevplugin-route-effect: mutation
-      description: Resolves and inspects a package from a caller-selected URL or GitHub repository without installing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller.
+      description: Resolves and inspects a package from a caller-selected URL or GitHub repository without installing it. Package identity, hashes, provenance, approval, and update eligibility are computed by the platform and cannot be supplied by the caller.
       requestBody:
         $ref: "#/components/requestBodies/InspectExternalPackageRequest"
       responses:
@@ -260,7 +260,7 @@ paths:
     post:
       operationId: inspectUploadedExternalPackageInstall
       x-redevplugin-route-effect: mutation
-      description: Uploads and inspects a package for installation. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The process-local inspection expires and must be explicitly installed with its exact package digest.
+      description: Uploads and inspects a package for installation. Package identity, hashes, provenance, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The process-local inspection expires and must be explicitly installed with its exact package digest.
       requestBody:
         required: true
         content:
@@ -273,7 +273,7 @@ paths:
     put:
       operationId: inspectUploadedExternalPackageUpdate
       x-redevplugin-route-effect: mutation
-      description: Uploads and inspects a package for an optimistic-concurrency-controlled update. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The process-local inspection expires and must be explicitly installed with its exact package digest.
+      description: Uploads and inspects a package for an optimistic-concurrency-controlled update. Package identity, hashes, provenance, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The process-local inspection expires and must be explicitly installed with its exact package digest.
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
         - name: X-ReDevPlugin-Expected-Management-Revision
@@ -281,6 +281,12 @@ paths:
           required: true
           description: Canonical decimal management revision. Duplicate, combined, empty, or whitespace-padded values are rejected.
           schema: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        - name: X-ReDevPlugin-Allow-Source-Change
+          in: header
+          required: false
+          description: Explicit consent to replace the original update source with this uploaded package. Only the exact literal true or false is accepted.
+          schema:
+            type: boolean
       requestBody:
         required: true
         content:
@@ -295,10 +301,7 @@ paths:
       x-redevplugin-route-effect: mutation
       description: Accept one exact reviewed package using a stable user/environment-scoped request ID. Repeated requests return the original durable outcome and never replay an uncertain effect.
       requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/StartInspectedInstallRequest" }
+        $ref: "#/components/requestBodies/StartInspectedInstallRequest"
       responses:
         "200": { $ref: "#/components/responses/InspectedInstallOperationResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
@@ -319,16 +322,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/InspectedInstallOperationResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/external-packages/install:
-    post:
-      operationId: installInspectedPackage
-      x-redevplugin-route-effect: mutation
-      description: Reopens and installs one unexpired process-local inspection after the user confirms its exact package digest. The inspection is bound to the exact authenticated session. Invalid or revoked signatures fail closed; an accepted package is installed enabled, while permission grants remain separate explicit mutations.
-      requestBody:
-        $ref: "#/components/requestBodies/InstallInspectedPackageRequest"
-      responses:
-        "200": { $ref: "#/components/responses/InstalledExternalPackageResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/enable:
     post:
       operationId: enablePlugin
@@ -353,15 +346,6 @@ paths:
       x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/UninstallRequest"
-      responses:
-        "200": { $ref: "#/components/responses/PluginRecordResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/update-release-ref:
-    post:
-      operationId: updateReleaseRef
-      x-redevplugin-route-effect: mutation
-      requestBody:
-        $ref: "#/components/requestBodies/UpdateReleaseRefRequest"
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
@@ -526,16 +510,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ExecutionListResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/executions/release-installs:
-    post:
-      operationId: startReleaseInstallExecution
-      x-redevplugin-route-effect: mutation
-      description: Starts or idempotently recovers an owner-bound release installation and returns only its unified Execution identity.
-      requestBody:
-        $ref: "#/components/requestBodies/StartReleaseInstallExecutionRequest"
-      responses:
-        "200": { $ref: "#/components/responses/ExecutionResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/executions/{execution_id}/query:
     post:
       operationId: getPluginExecution
@@ -889,6 +863,33 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/SettingsSnapshotResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/updates/preferences:
+    post:
+      operationId: setAutomaticUpdates
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        $ref: "#/components/requestBodies/SetAutomaticUpdatesRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/updates/inspect:
+    post:
+      operationId: inspectPluginUpdate
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        $ref: "#/components/requestBodies/InspectPluginUpdateRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ExternalPackageInspectionResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/repository/plugins/query:
+    post:
+      operationId: listRepositoryPlugins
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/ListRepositoryPluginsRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ListRepositoryPluginsResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
 components:
   parameters:
     ExecutionID:
@@ -969,7 +970,7 @@ components:
           schema:
             $ref: "#/components/schemas/SessionScopeRevokeSuccessResponse"
     PluginRecordResponse:
-      description: Plugin lifecycle response with typed registry trust assessment.
+      description: Plugin lifecycle response with the authoritative installation record.
       content:
         application/json:
           schema:
@@ -992,12 +993,6 @@ components:
               ok: { type: boolean, const: true }
               mutation_outcome: { type: string, enum: [committed, not_committed, unknown] }
               data: { $ref: "#/components/schemas/InspectedInstallOperation" }
-    InstalledExternalPackageResponse:
-      description: Installed external package with explicit trust, approval, provenance, and update facts.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/InstalledExternalPackageSuccessResponse"
     PluginCatalogResponse:
       description: Installed plugin catalog response with typed registry records.
       content:
@@ -1178,6 +1173,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/SettingsSnapshotSuccessResponse"
+    ListRepositoryPluginsResponse:
+      description: Validated plugin declarations from the repository index, sorted by plugin ID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ListRepositoryPluginsSuccessResponse"
   requestBodies:
     InspectExternalPackageRequest:
       required: true
@@ -1185,18 +1186,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/InspectExternalPackageRequest"
-    InstallInspectedPackageRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/InstallInspectedPackageRequest"
-    UpdateReleaseRefRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/UpdateReleaseRefRequest"
     DowngradeRequest:
       required: true
       content:
@@ -1263,12 +1252,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ListExecutionsRequest"
-    StartReleaseInstallExecutionRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/StartReleaseInstallExecutionRequest"
     ListRetainedDataQueryRequest:
       required: true
       content:
@@ -1431,6 +1414,30 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/PatchSettingsRequest"
+    SetAutomaticUpdatesRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SetAutomaticUpdatesRequest"
+    InspectPluginUpdateRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InspectPluginUpdateRequest"
+    StartInspectedInstallRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StartInspectedInstallRequest"
+    ListRepositoryPluginsRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ListRepositoryPluginsRequest"
   schemas:
     SurfaceResourceRequest:
       $ref: "../plugin/surface-resources.schema.json#/$defs/request"
@@ -1644,13 +1651,6 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/ExternalPackageInspection" }
-    InstalledExternalPackageSuccessResponse:
-      type: object
-      required: [ok, data]
-      additionalProperties: false
-      properties:
-        ok: { const: true }
-        data: { $ref: "#/components/schemas/InstalledExternalPackage" }
     PluginCatalogSuccessResponse:
       type: object
       required: [ok, data]
@@ -1669,7 +1669,7 @@ components:
           uniqueItems: true
           items:
             type: string
-            enum: [release, runtime, capability, io, connectivity, secrets, core_action, external_package, process, background, files]
+            enum: [runtime, capability, io, connectivity, secrets, core_action, external_package, process, background, files]
     PluginMethodConfirmationPreparationSuccessResponse:
       type: object
       required: [ok, data]
@@ -2073,7 +2073,7 @@ components:
       properties:
         reason:
           type: string
-          enum: [manifest_missing, manifest_field, manifest_decode, zip_invalid, file_count, duplicate_entry, ambiguous_entry, non_regular_entry, invalid_utf8_path, non_nfc_path, symlink_entry, directory_entry, entry_bytes, path_length, compression_ratio, total_uncompressed_bytes, entry_open_failed, entry_read_failed, entry_close_failed, entry_size_mismatch, unsupported_signature_entry, manifest_artifact, package_asset_security, package_artifact_boundary, entry_path, manifest_canonical_json, canonical_hash, package_signature, empty_path, slash_separator, non_canonical_path, path_traversal, hidden_path, external_icon_path, unsupported_icon_format, missing_icon_asset, icon_magic_mismatch, query_or_fragment]
+          enum: [manifest_missing, manifest_field, manifest_decode, zip_invalid, file_count, duplicate_entry, ambiguous_entry, non_regular_entry, invalid_utf8_path, non_nfc_path, symlink_entry, directory_entry, entry_bytes, path_length, compression_ratio, total_uncompressed_bytes, entry_open_failed, entry_read_failed, entry_close_failed, entry_size_mismatch, manifest_artifact, package_asset_security, package_artifact_boundary, entry_path, manifest_canonical_json, canonical_hash, empty_path, slash_separator, non_canonical_path, path_traversal, hidden_path, external_icon_path, unsupported_icon_format, missing_icon_asset, icon_magic_mismatch, query_or_fragment]
         path:
           type: string
           description: Package-local entry path related to the error, when available.
@@ -2175,12 +2175,6 @@ components:
       type: string
       enum:
         - PLUGIN_INVALID_REQUEST
-        - PLUGIN_SIGNATURE_INVALID
-        - PLUGIN_TRUST_STATE_DENIED
-        - PLUGIN_TRUST_VERIFICATION_REQUIRED
-        - PLUGIN_TRUST_VERIFICATION_INVALID
-        - PLUGIN_RELEASE_REF_VERIFICATION_FAILED
-        - PLUGIN_RELEASE_REF_POLICY_DENIED
         - PLUGIN_RELEASE_NETWORK
         - PLUGIN_RELEASE_TIMEOUT
         - PLUGIN_RELEASE_ASSET_MISSING
@@ -2284,8 +2278,6 @@ components:
             - permission_required
             - policy_restricted
             - package_invalid
-            - signature_invalid
-            - signature_revoked
             - runtime_unavailable
             - incompatible
         recovery_action: { type: string, enum: [retry] }
@@ -2666,7 +2658,7 @@ components:
           enum: [ready, failed]
         reason:
           type: string
-          enum: [unknown, trust_state_advanced, trust_revoked, recovery_canceled, recovery_timeout]
+          enum: [unknown, recovery_canceled, recovery_timeout]
         action:
           type: string
           enum: [retry, reinstall, contact_admin]
@@ -2781,6 +2773,9 @@ components:
             action: { const: update }
             plugin_instance_id: { type: string, minLength: 1 }
             expected_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+            allow_source_change:
+              type: boolean
+              description: Explicit user consent to replacing the installed source.
     ExternalPackageIntent:
       description: Server-resolved install or update intent. The platform generates the install instance identifier during inspection.
       oneOf:
@@ -2797,6 +2792,9 @@ components:
             action: { const: update }
             plugin_instance_id: { type: string, minLength: 1 }
             expected_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+            allow_source_change:
+              type: boolean
+              description: Explicit user consent to replacing the installed source.
     ExternalPackageSource:
       description: Caller-selected external source. Redirect resolution, package hashes, identity, and provenance are derived by the platform.
       oneOf:
@@ -2816,41 +2814,53 @@ components:
               type: string
               minLength: 1
               maxLength: 255
-              description: Optional exact release tag. When omitted, the resolver selects the repository's latest eligible release.
+              description: Exact stable tag within the selected plugin release namespace; omitted selects its highest stable SemVer.
+            host:
+              type: string
+              minLength: 1
+              maxLength: 255
+            plugin_id:
+              type: string
+              minLength: 1
+              maxLength: 255
+            repository_id:
+              type: string
+              minLength: 1
+              maxLength: 255
+            release_id:
+              type: string
+              minLength: 1
+              maxLength: 255
+            asset_id:
+              type: string
+              minLength: 1
+              maxLength: 255
     InspectExternalPackageRequest:
       type: object
-      description: Requests server-side inspection. Trust, hashes, package identity, approval, provenance, signature assessment, and update eligibility are intentionally not caller-controlled.
+      description: Inspects a package. Optional expected identity and digest assert a catalog selection; they never override the parsed package.
       required: [intent, source]
       additionalProperties: false
       properties:
         intent: { $ref: "#/components/schemas/ExternalPackageIntentRequest" }
         source: { $ref: "#/components/schemas/ExternalPackageSource" }
-    InstallInspectedPackageRequest:
-      type: object
-      description: Confirms an unexpired process-local inspection by its exact package digest. A successful install is enabled; only a later explicit disable mutation can persist disabled_by_user.
-      required: [inspection_id, expected_package_sha256]
-      additionalProperties: false
-      properties:
-        inspection_id: { type: string, minLength: 1 }
-        expected_package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-    ExternalPackageSignatureAssessment:
-      type: object
-      description: Cryptographic signature fact computed over the inspected artifact. The absent state is installable and affects trust classification and automatic-update eligibility only.
-      required: [state, reason_codes, assessed_hashes, assessed_at]
-      additionalProperties: false
-      properties:
-        state:
+        expected_publisher_id:
           type: string
-          enum: [verified, absent, unknown_signer, invalid, revoked, unavailable]
-        reason_codes:
-          type: array
-          uniqueItems: true
-          items: { type: string, minLength: 1 }
-        assessed_hashes: { $ref: "#/components/schemas/TrustHashSet" }
-        algorithm: { type: string, minLength: 1 }
-        key_id: { type: string, minLength: 1 }
-        assessed_at: { type: string, format: date-time }
-        assessment_epoch: { type: string, minLength: 1 }
+          minLength: 1
+        expected_plugin_id:
+          type: string
+          minLength: 1
+        expected_version:
+          type: string
+          minLength: 1
+        expected_package_sha256:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+        expected_security_summary_sha256:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+        expected_contract_set_sha256:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
     ExternalPackageRedirectHop:
       type: object
       description: Credential-free redirect projection. Userinfo, query strings, and fragments are never exposed.
@@ -2918,7 +2928,7 @@ components:
             resolved_at: { type: string, format: date-time }
     ExternalPackageExecutionApproval:
       type: object
-      description: Execution decision independent from signature state. Session and owner hashes are excluded from this public projection.
+      description: Owner-bound execution decision. Session and owner hashes are excluded from this public projection.
       required: [state, reason_codes, assessed_at]
       additionalProperties: false
       properties:
@@ -2933,7 +2943,7 @@ components:
         approved_at: { type: string, format: date-time }
     ExternalPackageUpdateEligibility:
       type: object
-      description: Automatic-update decision. Unsigned or otherwise unverified packages remain installable but are normally manual-only.
+      description: Automatic-update eligibility derived from the saved preference, original source, newer version, and capability comparison.
       required: [state, reason_codes, assessed_at]
       additionalProperties: false
       properties:
@@ -3334,8 +3344,21 @@ components:
           items: { $ref: "#/components/schemas/PresentationLocale" }
     ExternalPackageInspection:
       type: object
-      description: Immutable inspection projection. Package identity and all four trust/security facts are server-derived.
-      required: [inspection_id, expires_at, intent, publisher_id, plugin_id, version, presentation, presentation_sha256, inspected_hashes, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
+      description: Exact package inspection bound to the requesting session. Installation does not grant runtime permissions.
+      required:
+        - inspection_id
+        - expires_at
+        - intent
+        - publisher_id
+        - plugin_id
+        - version
+        - presentation
+        - presentation_sha256
+        - inspected_hashes
+        - source_provenance
+        - execution_approval
+        - update_eligibility
+        - security_summary
       additionalProperties: false
       properties:
         inspection_id: { type: string, minLength: 1 }
@@ -3346,64 +3369,24 @@ components:
         version: { $ref: "#/components/schemas/StrictSemVer" }
         presentation: { $ref: "#/components/schemas/PresentationCatalog" }
         presentation_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
-        inspected_hashes: { $ref: "#/components/schemas/TrustHashSet" }
-        signature_assessment: { $ref: "#/components/schemas/ExternalPackageSignatureAssessment" }
+        inspected_hashes: { $ref: "#/components/schemas/PackageContentHashes" }
         source_provenance: { $ref: "#/components/schemas/ExternalPackageSourceProvenance" }
         execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
         update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
         security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
-    InstalledExternalPackage:
-      type: object
-      required: [plugin, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
-      additionalProperties: false
-      properties:
-        plugin: { $ref: "#/components/schemas/PluginRecord" }
-        signature_assessment: { $ref: "#/components/schemas/ExternalPackageSignatureAssessment" }
-        source_provenance: { $ref: "#/components/schemas/ExternalPackageSourceProvenance" }
-        execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
-        update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
-        security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
-    TrustState:
-      type: string
-      enum: [verified, unsigned_local, untrusted, needs_review, trust_unavailable, blocked_security]
-    TrustHashSet:
-      type: object
-      required: [package_sha256, manifest_sha256, entries_sha256]
-      additionalProperties: false
-      properties:
-        package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        entries_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-    VerifiedSignature:
-      type: object
-      required: [algorithm, key_id]
-      additionalProperties: false
-      properties:
-        algorithm: { type: string, minLength: 1 }
-        key_id: { type: string, minLength: 1 }
-    TrustAssessment:
-      type: object
-      required: [trust_state, verified_hashes]
-      additionalProperties: false
-      properties:
-        trust_state:
-          $ref: "#/components/schemas/TrustState"
-        reason_codes:
-          type: array
-          items: { type: string }
-        verified_hashes:
-          $ref: "#/components/schemas/TrustHashSet"
-        verified_signature:
-          $ref: "#/components/schemas/VerifiedSignature"
-        trust_assessment_epoch: { type: string }
-        policy_epoch: { type: string }
-        revocation_epoch: { type: string }
-        metadata:
-          type: object
-          additionalProperties: { type: string }
     PluginVersion:
       type: object
-      required: [version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment, manifest, presentation, presentation_sha256, package_entries, activated_at]
+      required:
+        - version
+        - active_fingerprint
+        - package_hash
+        - manifest_hash
+        - entries_hash
+        - manifest
+        - presentation
+        - presentation_sha256
+        - package_entries
+        - activated_at
       additionalProperties: false
       properties:
         data_generation_id:
@@ -3415,18 +3398,6 @@ components:
         package_hash: { type: string, minLength: 1 }
         manifest_hash: { type: string, minLength: 1 }
         entries_hash: { type: string, minLength: 1 }
-        trust_state:
-          $ref: "#/components/schemas/TrustState"
-        trust_assessment:
-          $ref: "#/components/schemas/TrustAssessment"
-        source_policy_snapshot_hash: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        source_policy_snapshot:
-          type: object
-          additionalProperties: true
-        local_import_provenance:
-          $ref: "#/components/schemas/LocalImportProvenance"
-        signature_assessment:
-          $ref: "#/components/schemas/ExternalPackageSignatureAssessment"
         source_provenance:
           $ref: "#/components/schemas/ExternalPackageSourceProvenance"
         execution_approval:
@@ -3452,7 +3423,26 @@ components:
     PluginRecord:
       type: object
       description: Explicit public HTTP projection of a registry record. Persistent owner identity is excluded.
-      required: [plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment, enable_state, policy_revision, management_revision, revoke_epoch, manifest, presentation, presentation_sha256, package_entries, installed_at, updated_at]
+      required:
+        - plugin_instance_id
+        - publisher_id
+        - plugin_id
+        - version
+        - active_fingerprint
+        - package_hash
+        - manifest_hash
+        - entries_hash
+        - enable_state
+        - policy_revision
+        - management_revision
+        - revoke_epoch
+        - manifest
+        - presentation
+        - presentation_sha256
+        - package_entries
+        - installed_at
+        - updated_at
+        - automatic_updates
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
@@ -3463,18 +3453,6 @@ components:
         package_hash: { type: string }
         manifest_hash: { type: string }
         entries_hash: { type: string }
-        trust_state:
-          $ref: "#/components/schemas/TrustState"
-        trust_assessment:
-          $ref: "#/components/schemas/TrustAssessment"
-        source_policy_snapshot_hash: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        source_policy_snapshot:
-          type: object
-          additionalProperties: true
-        local_import_provenance:
-          $ref: "#/components/schemas/LocalImportProvenance"
-        signature_assessment:
-          $ref: "#/components/schemas/ExternalPackageSignatureAssessment"
         source_provenance:
           $ref: "#/components/schemas/ExternalPackageSourceProvenance"
         execution_approval:
@@ -3511,6 +3489,8 @@ components:
         metadata:
           type: object
           additionalProperties: { type: string }
+        automatic_updates:
+          type: boolean
     PackageEntry:
       type: object
       required: [path, size, sha256, mode]
@@ -3521,16 +3501,6 @@ components:
         sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
         mode: { type: string, minLength: 1 }
         content_type: { type: string }
-    LocalImportProvenance:
-      type: object
-      required: [import_id, distribution, policy_epoch, unsigned_policy, assessed_at]
-      additionalProperties: false
-      properties:
-        import_id: { type: string, minLength: 1 }
-        distribution: { enum: [local_import] }
-        policy_epoch: { type: string, minLength: 1 }
-        unsigned_policy: { enum: [dev_only, review_required, block] }
-        assessed_at: { type: string, format: date-time }
     PackageHashSet:
       type: object
       required: [package_sha256, manifest_sha256, entries_sha256]
@@ -3539,29 +3509,6 @@ components:
         package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
         manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
         entries_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-    PluginReleaseRef:
-      type: object
-      required: [source_id, channel, release_metadata_ref, release_metadata_sha256, publisher_id, plugin_id, version, expected_hashes]
-      additionalProperties: false
-      properties:
-        source_id: { type: string, minLength: 1 }
-        channel: { type: string, pattern: "^[a-z][a-z0-9._-]{0,127}$" }
-        release_metadata_ref: { type: string, minLength: 1 }
-        release_metadata_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        publisher_id: { type: string, minLength: 1 }
-        plugin_id: { type: string, minLength: 1 }
-        version: { $ref: "#/components/schemas/StrictSemVer" }
-        expected_hashes:
-          $ref: "#/components/schemas/PackageHashSet"
-    UpdateReleaseRefRequest:
-      type: object
-      required: [plugin_instance_id, release_ref, expected_management_revision]
-      additionalProperties: false
-      properties:
-        plugin_instance_id: { type: string, minLength: 1 }
-        release_ref:
-          $ref: "#/components/schemas/PluginReleaseRef"
-        expected_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     DowngradeRequest:
       type: object
       required: [plugin_instance_id, expected_management_revision]
@@ -3626,7 +3573,7 @@ components:
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
-        operation_scope: { type: string, enum: [release_install] }
+        operation_scope: { type: string, enum: [plugin_install] }
         cursor: { type: integer, minimum: 0, maximum: 9007199254740991 }
         limit: { type: integer, minimum: 1, maximum: 500 }
     StartInspectedInstallRequest:
@@ -3637,6 +3584,9 @@ components:
         request_id: { type: string, minLength: 1, maxLength: 160 }
         inspection_id: { type: string, minLength: 1 }
         expected_package_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        automatic:
+          type: boolean
+          description: Uses the saved automatic-update preference. Requires original source, a newer version, and unchanged capabilities; never grants permissions.
     InspectedInstallOperation:
       type: object
       additionalProperties: false
@@ -3649,22 +3599,6 @@ components:
         plugin_id: { type: string }
         version: { type: string }
         mutation_outcome: { type: string, enum: [committed, not_committed, unknown] }
-    StartReleaseInstallExecutionRequest:
-      type: object
-      required: [request_id, plugin_instance_id, release_ref, release_identity_digest, manifest_sha256, contract_set_sha256, summary_sha256]
-      additionalProperties: false
-      properties:
-        request_id: { type: string, minLength: 1, maxLength: 256 }
-        plugin_instance_id: { type: string, minLength: 1 }
-        release_identity_digest:
-          type: string
-          pattern: "^sha256:[0-9a-f]{64}$"
-          description: SHA-256 of the canonical JSON encoding of release_ref. The Host recomputes and verifies this digest before accepting the install task.
-        manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        contract_set_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        summary_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
-        release_ref:
-          $ref: "#/components/schemas/PluginReleaseRef"
     ListRetainedDataQueryRequest:
       type: object
       additionalProperties: false
@@ -4031,35 +3965,8 @@ components:
           type: object
           additionalProperties: true
           properties:
-            install_progress: { $ref: "#/components/schemas/ReleaseInstallProgressEvent" }
+            install_progress: { $ref: "#/components/schemas/PluginInstallProgressEvent" }
         error: { $ref: "#/components/schemas/PublicError" }
-    ReleaseInstallProgressEvent:
-      type: object
-      additionalProperties: false
-      required: [task_id, request_id, stage, status]
-      allOf:
-        - if:
-            properties:
-              status: { const: failed }
-            required: [status]
-          then:
-            required: [failure_code, failure_stage, retryable]
-          else:
-            not:
-              anyOf:
-                - required: [failure_code]
-                - required: [failure_stage]
-                - required: [retryable]
-      properties:
-        task_id: { type: string, minLength: 1 }
-        request_id: { type: string, minLength: 1 }
-        stage: { type: string, enum: [download, verify, install, enable] }
-        status: { type: string, enum: [pending, running, completed, failed] }
-        completed: { type: integer, minimum: 0, maximum: 9007199254740991 }
-        total: { type: integer, minimum: 1, maximum: 9007199254740991 }
-        failure_code: { type: string, minLength: 1 }
-        failure_stage: { type: string, enum: [download, verify, install, enable] }
-        retryable: { type: boolean }
     PublicError:
       type: object
       additionalProperties: false
@@ -4252,3 +4159,140 @@ components:
           minItems: 1
           uniqueItems: true
           items: { type: string, minLength: 1 }
+    PackageContentHashes:
+      type: object
+      required: [package_sha256, manifest_sha256, entries_sha256]
+      additionalProperties: false
+      properties:
+        package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        entries_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+    PluginInstallProgressEvent:
+      type: object
+      additionalProperties: false
+      required: [task_id, request_id, stage, status]
+      allOf:
+        - if:
+            properties:
+              status: { const: failed }
+            required: [status]
+          then:
+            required: [failure_code, failure_stage, retryable]
+          else:
+            not:
+              anyOf:
+                - required: [failure_code]
+                - required: [failure_stage]
+                - required: [retryable]
+      properties:
+        task_id: { type: string, minLength: 1 }
+        request_id: { type: string, minLength: 1 }
+        stage: { type: string, enum: [download, verify, install, enable] }
+        status: { type: string, enum: [pending, running, completed, failed] }
+        completed: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        total: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        failure_code: { type: string, minLength: 1 }
+        failure_stage: { type: string, enum: [download, verify, install, enable] }
+        retryable: { type: boolean }
+    SetAutomaticUpdatesRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - plugin_instance_id
+        - expected_management_revision
+        - enabled
+      properties:
+        plugin_instance_id:
+          type: string
+          minLength: 1
+        expected_management_revision:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        enabled:
+          type: boolean
+    InspectPluginUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - plugin_instance_id
+        - expected_management_revision
+      properties:
+        plugin_instance_id:
+          type: string
+          minLength: 1
+        expected_management_revision:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+    ListRepositoryPluginsRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+        host:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$
+    RepositoryPlugin:
+      $ref: ../plugin/repository-index-v1.schema.json#/$defs/plugin
+    ListRepositoryPluginsSuccessResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - ok
+        - data
+      properties:
+        ok:
+          const: true
+        data:
+          type: array
+          maxItems: 256
+          items:
+            $ref: "#/components/schemas/RepositoryPlugin"
+    PackageInspection:
+      type: object
+      additionalProperties: false
+      description: CLI and publisher projection derived exclusively from the validated package and exact capability contract artifacts.
+      required:
+        - publisher_id
+        - plugin_id
+        - version
+        - package_sha256
+        - entries_sha256
+        - manifest_sha256
+        - presentation
+        - presentation_sha256
+        - contract_set_sha256
+        - security_summary
+      properties:
+        publisher_id:
+          type: string
+          minLength: 1
+        plugin_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          pattern: "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        package_sha256: &a1
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+        entries_sha256: *a1
+        manifest_sha256: *a1
+        presentation:
+          $ref: "#/components/schemas/PresentationCatalog"
+        presentation_sha256: *a1
+        presentation_icon:
+          $ref: "#/components/schemas/PresentationIconEvidence"
+        contract_set_sha256: *a1
+        security_summary:
+          $ref: "#/components/schemas/ExternalPackageSecuritySummary"
+    PresentationIconEvidence:
+      $ref: ../plugin/presentation-icon-evidence-v1.schema.json

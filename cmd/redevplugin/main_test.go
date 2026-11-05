@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
 	"github.com/floegence/redevplugin/v3/pkg/host"
-	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
@@ -28,118 +26,8 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/settings"
 	"github.com/floegence/redevplugin/v3/pkg/storage"
-	"github.com/floegence/redevplugin/v3/pkg/trust"
 	"github.com/floegence/redevplugin/v3/pkg/version"
 )
-
-func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
-	dir := t.TempDir()
-	srcDir := filepath.Join(dir, "plugin")
-	writeCLITestFile(t, filepath.Join(srcDir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v9",
-		"publisher": {"publisher_id": "example", "display_name": "Example"},
-		"plugin": {
-			"plugin_id": "com.example.cli",
-			"display_name": "CLI",
-			"version": "1.0.0"
-		},
-		"api": {"major": 1, "required_features": [], "optional_features": []},
-		"permissions": [],
-		"presentation": {"locales": {"default": "en-US"}},
-		"surfaces": [
-			{"surface_id": "cli.view", "kind": "view", "label": "CLI", "entry": "ui/index.html", "web": {"root": "ui", "spa": false}}
-		],
-		"workers": [],
-		"methods": []
-	}`)
-	writeCLITestFile(t, filepath.Join(srcDir, "ui", "index.html"), `<!doctype html><title>CLI</title><body><main>CLI</main><script type="module" src="assets/app.js"></script></body>`)
-	writeCLITestFile(t, filepath.Join(srcDir, "ui", "assets", "app.js"), "void 0;")
-
-	unsignedPackage := filepath.Join(dir, "unsigned.redevplugin")
-	signedPackage := filepath.Join(dir, "signed.redevplugin")
-	privateKeyFile := filepath.Join(dir, "private.json")
-	publicKeyFile := filepath.Join(dir, "public.json")
-
-	if _, err := captureCLIOutput(t, "package", srcDir, unsignedPackage); err != nil {
-		t.Fatalf("package command error = %v", err)
-	}
-	if _, err := captureCLIOutput(t, "keygen", "test-key", privateKeyFile, publicKeyFile); err != nil {
-		t.Fatalf("keygen command error = %v", err)
-	}
-	signOutput, err := captureCLIOutput(t, "sign", unsignedPackage, privateKeyFile, signedPackage)
-	if err != nil {
-		t.Fatalf("sign command error = %v", err)
-	}
-	var signSummary validateSummary
-	if err := json.Unmarshal(signOutput, &signSummary); err != nil {
-		t.Fatalf("sign output decode error = %v: %s", err, signOutput)
-	}
-	if !signSummary.Signed || signSummary.SignatureKey != "test-key" || signSummary.SignatureAlgo != trust.AlgorithmEd25519 {
-		t.Fatalf("sign summary mismatch: %#v", signSummary)
-	}
-
-	validateOutput, err := captureCLIOutput(t, "validate", signedPackage)
-	if err != nil {
-		t.Fatalf("validate command error = %v", err)
-	}
-	var validateResult validateSummary
-	if err := json.Unmarshal(validateOutput, &validateResult); err != nil {
-		t.Fatalf("validate output decode error = %v: %s", err, validateOutput)
-	}
-	if !validateResult.Signed || validateResult.PackageHash != signSummary.PackageHash {
-		t.Fatalf("validate summary mismatch: %#v sign=%#v", validateResult, signSummary)
-	}
-
-	signedPkg, err := pluginpkg.ReadFile(context.Background(), signedPackage, pluginpkg.DefaultReadLimits())
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	shape, err := plugindata.ShapeFromManifest(signedPkg.Manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantShape, err := plugindata.HashShape(shape)
-	if err != nil || validateResult.DataShapeSHA256 != wantShape {
-		t.Fatalf("package data shape: %q want %q: %v", validateResult.DataShapeSHA256, wantShape, err)
-	}
-	manifestOutput, err := captureCLIOutput(t, "validate", filepath.Join(srcDir, "manifest.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var manifestResult validateSummary
-	if err := json.Unmarshal(manifestOutput, &manifestResult); err != nil || manifestResult.DataShapeSHA256 != wantShape {
-		t.Fatalf("manifest data shape: %s %v", manifestOutput, err)
-	}
-	publicKey := readCLITestPublicKey(t, publicKeyFile)
-	verifier := trust.Ed25519Verifier{
-		Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
-			Algorithm: trust.AlgorithmEd25519,
-			KeyID:     "test-key",
-			PublicKey: publicKey,
-		}}},
-		Now: func() time.Time {
-			return time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
-		},
-	}
-	if _, err := verifier.VerifyPackageTrust(context.Background(), host.PackageTrustVerificationRequest{
-		Package:     signedPkg,
-		LocalImport: true,
-	}); err != nil {
-		t.Fatalf("VerifyPackageTrust() error = %v", err)
-	}
-
-	installOutput, err := captureCLIOutput(t, "install-verified", signedPackage, publicKeyFile)
-	if err != nil {
-		t.Fatalf("install-verified command error = %v", err)
-	}
-	var installSummary lifecycleSummary
-	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
-		t.Fatalf("install-verified output decode error = %v: %s", err, installOutput)
-	}
-	if installSummary.TrustState != registry.TrustVerified || installSummary.EnableState != registry.EnableEnabled {
-		t.Fatalf("install-verified summary mismatch: %#v", installSummary)
-	}
-}
 
 func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	dir := t.TempDir()
@@ -1035,45 +923,6 @@ func TestCLIVersionPrintsCurrentPlatformIdentity(t *testing.T) {
 	}
 }
 
-func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
-	summary := presentationInspectionSummary{
-		OK:           true,
-		Phase:        "verified",
-		Output:       "/tmp/release",
-		Presentation: manifest.PresentationCatalog{DefaultLocale: "en-US", Locales: []manifest.PresentationLocale{}},
-		PresentationIcon: &releasepublisher.PresentationIconEvidenceV1{
-			SchemaVersion: releasepublisher.PresentationIconEvidenceSchemaVersion,
-			Path:          "ui/assets/plugin.png", MediaType: "image/png", Width: 128, Height: 128,
-			SHA256: "sha256:" + strings.Repeat("a", 64), Size: 1024,
-		},
-		ManifestSHA256:     "sha256:manifest",
-		PresentationSHA256: "sha256:presentation",
-		ContractSetSHA256:  "sha256:contract",
-		SecuritySummary:    releasepublisher.SecuritySummaryV1{Permissions: []releasepublisher.PermissionSummaryV1{}},
-		VerifierVersion:    "1.0.0",
-	}
-	raw, err := json.Marshal(summary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var output map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &output); err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{
-		"ok", "phase", "output", "presentation", "presentation_icon", "manifest_sha256", "presentation_sha256", "verifier_version",
-		"contract_set_sha256", "security_summary",
-	} {
-		value, exists := output[field]
-		if !exists || len(value) == 0 || string(value) == `""` || string(value) == "null" {
-			t.Fatalf("release verify JSON field %q = %s", field, value)
-		}
-	}
-	if len(output) != 10 {
-		t.Fatalf("release verify JSON fields = %#v", output)
-	}
-}
-
 func TestReleaseIconExtractionJSONContract(t *testing.T) {
 	summary := presentationIconExtractionSummary{
 		OK: true, Phase: "presentation_icon_extracted", Output: "/tmp/release", IconOutput: "/tmp/icon.png",
@@ -1210,25 +1059,6 @@ func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {
 func cliRepoRoot(t *testing.T) string {
 	t.Helper()
 	return filepath.Clean(filepath.Join("..", ".."))
-}
-
-func readCLITestPublicKey(t *testing.T, filename string) ed25519.PublicKey {
-	t.Helper()
-	_, publicKey, err := readSigningPublicKey(filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return publicKey
-}
-
-func writeCLITestFile(t *testing.T, filename string, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func makeScaffoldUIOnly(t *testing.T, filename string) {
@@ -1400,5 +1230,33 @@ func TestAuthorTemplatePinsConsumerToolchainAndAuditedOverrides(t *testing.T) {
 	}
 	if pkg.Overrides["dompurify"] != "3.4.17" || pkg.Overrides["katex"] != "0.18.2" {
 		t.Fatalf("overrides = %+v", pkg.Overrides)
+	}
+}
+
+func TestCLIOrdinaryPackageInspectionNeedsNoSigningInputs(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "plugin")
+	if _, err := captureCLIOutput(t, "scaffold", "example.open", "Open", project); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(root, "plugin.redevplugin")
+	if _, err := captureCLIOutput(t, "package", filepath.Join(project, "dist"), archive); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := captureCLIOutput(t, "release", "inspect", archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspected releasepublisher.PackageInspection
+	if err = json.Unmarshal(raw, &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if inspected.PluginID != "example.open" || inspected.PackageSHA256 == "" || inspected.SecuritySummary.SummarySHA256 == "" {
+		t.Fatalf("inspection: %s", raw)
+	}
+	for _, retired := range []string{"keygen", "sign", "install-verified"} {
+		if _, err := captureCLIOutput(t, retired); err == nil {
+			t.Fatalf("retired signing command %s accepted", retired)
+		}
 	}
 }

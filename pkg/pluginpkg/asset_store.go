@@ -17,7 +17,7 @@ var (
 
 type AssetStore interface {
 	Durable() bool
-	// PutOwnedPackage takes ownership of pkg.Files and pkg.SignatureFiles when
+	// PutOwnedPackage takes ownership of pkg.Files when
 	// the call begins, including when the operation returns an error. Callers
 	// must not retain aliases to transferred byte slices.
 	PutOwnedPackage(ctx context.Context, pkg *Package) error
@@ -92,7 +92,6 @@ func takePackageFiles(pkg *Package) (map[string][]byte, error) {
 	}
 	files := pkg.Files
 	pkg.Files = nil
-	pkg.SignatureFiles = nil
 	if len(files) == 0 {
 		return nil, errors.New("package files are required")
 	}
@@ -107,9 +106,6 @@ func (s *MemoryAssetStore) ReadAsset(_ context.Context, packageHash string, asse
 	assetPath, err := validateEntryPath(strings.TrimSpace(assetPath))
 	if err != nil {
 		return Asset{}, fmt.Errorf("%w: %v", ErrInvalidAssetPath, err)
-	}
-	if strings.HasPrefix(assetPath, "signatures/") {
-		return Asset{}, fmt.Errorf("%w: signatures are not served", ErrInvalidAssetPath)
 	}
 
 	s.mu.RLock()

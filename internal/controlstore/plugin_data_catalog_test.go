@@ -398,22 +398,9 @@ func freshPluginDataCatalogInstall(t *testing.T, ownerEnvHash, instanceID string
 		PackageHash:       "sha256:package",
 		ManifestHash:      "sha256:" + hex.EncodeToString(manifestSum[:]),
 		EntriesHash:       "sha256:entries",
-		TrustState:        registry.TrustVerified,
-		TrustAssessment: registry.TrustAssessment{
-			TrustState: registry.TrustVerified,
-			VerifiedHashes: registry.TrustHashSet{
-				PackageSHA256: "sha256:package", ManifestSHA256: "sha256:" + hex.EncodeToString(manifestSum[:]), EntriesSHA256: "sha256:entries",
-			},
-		},
-		SignatureAssessment: registry.SignatureAssessment{
-			Status: registry.SignatureAbsent,
-			AssessedHashes: registry.TrustHashSet{
-				PackageSHA256: "sha256:package", ManifestSHA256: "sha256:" + hex.EncodeToString(manifestSum[:]), EntriesSHA256: "sha256:entries",
-			},
-			PackageSHA256: "sha256:package", ManifestSHA256: "sha256:" + hex.EncodeToString(manifestSum[:]), EntriesSHA256: "sha256:entries",
-		},
+
 		PackageSourceProvenance: registry.PackageSourceProvenance{
-			Kind: registry.PackageSourceLocalGenerated, PackageSHA256: "sha256:package",
+			Kind: registry.PackageSourceLocalPackage, PackageSHA256: "sha256:package",
 		},
 		ExecutionApproval: registry.ExecutionApproval{
 			Status: registry.ExecutionApprovalUserApproved, OwnerEnvHash: ownerEnvHash, PackageSHA256: "sha256:package",

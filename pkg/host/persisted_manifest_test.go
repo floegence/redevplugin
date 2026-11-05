@@ -16,7 +16,7 @@ import (
 )
 
 func TestPersistedPreWebPackageRemainsManageableButCannotRun(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	record, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestPersistedPreWebHostRestartUpdateAndSiblingIsolation(t *testing.T) {
 		}
 		return store
 	}
-	options := testHostOptions{stateRoot: root, assets: openAssets(), developerMode: true, localGenerated: true}
+	options := testHostOptions{stateRoot: root, assets: openAssets()}
 	h, _, _ := newTestHostWithOptions(t, options)
 	ctx := hostTestContext()
 	old, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildVersionedLifecyclePackage(t, "1.0.0", "Retained"))
@@ -89,13 +89,6 @@ func TestPersistedPreWebHostRestartUpdateAndSiblingIsolation(t *testing.T) {
 	hash := "sha256:" + hex.EncodeToString(digest[:])
 	stored["manifest"] = canonical
 	stored["manifest_hash"], _ = json.Marshal(hash)
-	assessment := old.SignatureAssessment
-	assessment.ManifestSHA256 = hash
-	assessment.AssessedHashes.ManifestSHA256 = hash
-	stored["signature_assessment"], _ = json.Marshal(assessment)
-	trust := old.TrustAssessment
-	trust.VerifiedHashes.ManifestSHA256 = hash
-	stored["trust_assessment"], _ = json.Marshal(trust)
 	encoded, err = json.Marshal(stored)
 	if err != nil {
 		t.Fatal(err)
@@ -172,5 +165,60 @@ func TestPersistedPreWebHostRestartUpdateAndSiblingIsolation(t *testing.T) {
 	inventory, err = h.ListPluginInventory(ctx)
 	if err != nil || len(inventory) != 1 || inventory[0].Plugin.PluginInstanceID != sibling.PluginInstanceID || !inventory[0].ActionState.CanOpen {
 		t.Fatalf("sibling after uninstall: %+v %v", inventory, err)
+	}
+}
+
+func TestOpenDistributionMigrationKeepsInstalledPackageAssetsAcrossRestart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	assetsPath := filepath.Join(t.TempDir(), "assets")
+	assets, err := pluginpkg.NewFileAssetStore(assetsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := testHostOptions{stateRoot: root, assets: assets}
+	h, _, _ := newTestHostWithOptions(t, options)
+	ctx := hostTestContext()
+	record, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildVersionedLifecyclePackage(t, "1.0.0", "Retained"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(root, "control.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Released asset stores retained only content entries; signature files were
+	// never stored as executable assets. Keep the exact content digest and files.
+	if _, err = db.Exec(`UPDATE plugin_records SET record_json=json_set(record_json,'$.trust_state','verified','$.signature_assessment',json('{"state":"verified"}'),'$.source_provenance.kind','local_generated')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE control_schema SET version=6 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		options.assets, err = pluginpkg.NewFileAssetStore(assetsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, _, _ = newTestHostWithOptions(t, options)
+		current, err := h.getPluginRecord(ctx, record.PluginInstanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.PackageHash != record.PackageHash || current.CanonicalManifest != record.CanonicalManifest {
+			t.Fatal("migration rewrote package identity")
+		}
+		surface, err := h.OpenSurface(ctx, OpenSurfaceRequest{PluginInstanceID: current.PluginInstanceID, SurfaceID: "lifecycle.view", ExpectedManagementRevision: current.ManagementRevision})
+		if err != nil || surface.SurfaceInstanceID == "" {
+			t.Fatalf("retained package no longer opens: %+v %v", surface, err)
+		}
+		if err = h.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

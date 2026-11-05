@@ -24,8 +24,6 @@ import (
 func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
 	supervisor := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
 		runtimeManager: supervisor,
 	})
 
@@ -197,8 +195,8 @@ func TestStopRuntimePreservesSurfacesWhenManagerStopFails(t *testing.T) {
 	manager.stopErrOnce = true
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: manager,
-		capabilityID: "example.capability.echo", capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"echo": "hello"}}},
+		runtimeManager: manager,
+		capabilityID:   "example.capability.echo", capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"echo": "hello"}}},
 		diagnostics: diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
@@ -302,7 +300,7 @@ func (d *recordingClosePluginData) Close() error {
 }
 
 func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	pkg, err := pluginPackageFromBytesForRuntimeTest(buildWorkerFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)

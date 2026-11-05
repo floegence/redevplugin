@@ -3,13 +3,14 @@ package httpadapter
 import (
 	"encoding/json"
 	"errors"
-	"github.com/floegence/redevplugin/v3/pkg/connectivity"
-	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
 
 	"github.com/floegence/redevplugin/v3/pkg/host"
 )

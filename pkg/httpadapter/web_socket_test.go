@@ -3,14 +3,15 @@ package httpadapter
 import (
 	"bytes"
 	"context"
-	"github.com/coder/websocket"
-	"github.com/floegence/redevplugin/v3/pkg/host"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/floegence/redevplugin/v3/pkg/host"
 )
 
 func TestWebSocketRelayPreservesMessagesAndCancels(t *testing.T) {

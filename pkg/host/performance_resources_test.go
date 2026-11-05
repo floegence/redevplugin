@@ -50,7 +50,7 @@ func (w *measuredStreamWriter) Write(p []byte) (int, error) {
 }
 
 func TestPerformanceSurfaceFileStreamBounds(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, productionStateOwners: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{productionStateOwners: true})
 	var manifest map[string]any
 	if err := json.Unmarshal([]byte(workerStorageKVFixtureManifestJSON()), &manifest); err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestPerformanceSurfaceFileStreamBounds(t *testing.T) {
 // This exercises Surface authorization, audit and durable storage together.
 // It measures the public Host boundary, not browser transport latency.
 func TestPerformanceSurfaceKVBatch(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, productionStateOwners: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{productionStateOwners: true})
 	var manifest map[string]any
 	if err := json.Unmarshal([]byte(workerStorageKVFixtureManifestJSON()), &manifest); err != nil {
 		t.Fatal(err)

@@ -24,8 +24,6 @@ const (
 	PluginActionBlockedPermission         PluginActionBlockedReason = "permission_required"
 	PluginActionBlockedPolicy             PluginActionBlockedReason = "policy_restricted"
 	PluginActionBlockedPackageInvalid     PluginActionBlockedReason = "package_invalid"
-	PluginActionBlockedSignatureInvalid   PluginActionBlockedReason = "signature_invalid"
-	PluginActionBlockedSignatureRevoked   PluginActionBlockedReason = "signature_revoked"
 	PluginActionBlockedRuntimeUnavailable PluginActionBlockedReason = "runtime_unavailable"
 	PluginActionBlockedIncompatible       PluginActionBlockedReason = "incompatible"
 )
@@ -197,22 +195,6 @@ func (h *Host) pluginActionStateWithAuthorization(record registry.PluginRecord, 
 		state.BlockedReason = PluginActionBlockedPackageInvalid
 		return state
 	}
-	switch record.SignatureAssessment.Status {
-	case registry.SignatureInvalid:
-		state.BlockedReason = PluginActionBlockedSignatureInvalid
-	case registry.SignatureRevoked:
-		state.BlockedReason = PluginActionBlockedSignatureRevoked
-	case registry.SignatureUnavailable:
-		state.BlockedReason = PluginActionBlockedRuntimeUnavailable
-	case "":
-		if !registry.RunnablePluginRecord(record) {
-			state.BlockedReason = PluginActionBlockedPackageInvalid
-		}
-	default:
-		if !registry.RunnablePluginRecord(record) {
-			state.BlockedReason = PluginActionBlockedPackageInvalid
-		}
-	}
 	if state.BlockedReason == "" && !registry.RunnablePluginRecord(record) {
 		state.BlockedReason = PluginActionBlockedPackageInvalid
 	}
@@ -237,9 +219,7 @@ func (h *Host) pluginActionStateWithAuthorization(record registry.PluginRecord, 
 		state.CanEnable = record.EnableState == registry.EnableDisabledByUser && state.BlockedReason == PluginActionBlockedDisabled
 	}
 	if state.BlockedReason == PluginActionBlockedRuntimeUnavailable ||
-		state.BlockedReason == PluginActionBlockedIncompatible ||
-		state.BlockedReason == PluginActionBlockedSignatureInvalid ||
-		state.BlockedReason == PluginActionBlockedSignatureRevoked {
+		state.BlockedReason == PluginActionBlockedIncompatible {
 		state.RecoveryAction = "retry"
 	}
 	return state

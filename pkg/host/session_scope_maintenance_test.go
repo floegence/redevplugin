@@ -207,7 +207,7 @@ func newSessionMaintenanceTestHost(t *testing.T, stateRoot string) *Host {
 		StateRoot: stateRoot,
 		Core: CoreAdapters{
 			Policy: policyAdapter{decision: PolicyAllow}, Authorization: allowAuthorizationAdapter{},
-			PackageTrustVerifier: &recordingPackageTrustVerifier{}, Audit: events, SecurityAudit: events,
+			Audit: events, SecurityAudit: events,
 			Diagnostics: events, SurfaceCatalog: &surfaceSink{}, Assets: pluginpkg.NewMemoryAssetStore(),
 		},
 	})

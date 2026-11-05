@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -57,11 +58,11 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionListIntents,
 		ManagementActionInvokeIntent,
 		ManagementActionImportLocalPackage,
-		ManagementActionInstallReleaseRef,
 		ManagementActionInspectExternalPackage,
+		ManagementActionListRepositoryPlugins,
+		ManagementActionSetAutomaticUpdates,
 		ManagementActionInstallInspectedPackage,
 		ManagementActionUpdateLocalPackage,
-		ManagementActionUpdateReleaseRef,
 		ManagementActionDowngradePlugin,
 		ManagementActionListPlugins,
 		ManagementActionListFeatures,
@@ -117,9 +118,7 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 	adapterFailure := errors.New("private authorization backend detail")
 	authorization := &recordingAuthorizationAdapter{err: adapterFailure}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		authorization:  authorization,
+		authorization: authorization,
 	})
 	ctx := hostTestContext()
 	wantSession, err := requireUserSession(ctx)
@@ -148,7 +147,6 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"invoke intent", ManagementActionInvokeIntent, func() error { _, err := h.InvokeIntent(ctx, InvokeIntentRequest{}); return err }},
 		{"import local package", ManagementActionImportLocalPackage, func() error { _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{}); return err }},
 		{"update local package", ManagementActionUpdateLocalPackage, func() error { _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{}); return err }},
-		{"update release ref", ManagementActionUpdateReleaseRef, func() error { _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{}); return err }},
 		{"downgrade", ManagementActionDowngradePlugin, func() error { _, err := h.DowngradePlugin(ctx, DowngradeRequest{}); return err }},
 		{"list plugins", ManagementActionListPlugins, func() error { _, err := h.ListPlugins(ctx); return err }},
 		{"list features", ManagementActionListFeatures, func() error { _, err := h.Features(ctx); return err }},
@@ -377,16 +375,16 @@ func TestDirectHostAPIsProjectClosedAuthorizationResources(t *testing.T) {
 
 func TestOpenRejectsTypedNilAuthorizationAdapter(t *testing.T) {
 	config := func() Config {
-		h, _, _ := newTestHost(t, true, true)
+		h, _, _ := newTestHost(t)
 		return Config{StateRoot: filepath.Join(t.TempDir(), "typed-nil-control-state"), Core: CoreAdapters{
-			Policy:               h.adapters.Policy,
-			Authorization:        h.adapters.Authorization,
-			PackageTrustVerifier: h.adapters.PackageTrustVerifier,
-			Audit:                h.adapters.Audit,
-			SecurityAudit:        h.adapters.SecurityAudit,
-			Diagnostics:          h.adapters.Diagnostics,
-			SurfaceCatalog:       h.adapters.SurfaceCatalog,
-			Assets:               h.adapters.Assets,
+			Policy:        h.adapters.Policy,
+			Authorization: h.adapters.Authorization,
+
+			Audit:          h.adapters.Audit,
+			SecurityAudit:  h.adapters.SecurityAudit,
+			Diagnostics:    h.adapters.Diagnostics,
+			SurfaceCatalog: h.adapters.SurfaceCatalog,
+			Assets:         h.adapters.Assets,
 		}}
 	}()
 	var typedNil *recordingAuthorizationAdapter
@@ -401,7 +399,7 @@ func TestOpenRejectsTypedNilAuthorizationAdapter(t *testing.T) {
 
 func TestAuthorizationCanonicalizesTargetsBeforeAdapterDispatch(t *testing.T) {
 	authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization, developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
 	reader := &readAtProbe{reader: bytes.NewReader(buildFixturePackage(t))}
 
 	_, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
@@ -428,9 +426,7 @@ func TestAuthorizationCanonicalizesTargetsBeforeAdapterDispatch(t *testing.T) {
 func TestInstallEntryPointsRejectMissingPluginInstanceIDBeforeExternalInput(t *testing.T) {
 	authorization := &recordingAuthorizationAdapter{}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		authorization:  authorization,
-		developerMode:  true,
-		localGenerated: true,
+		authorization: authorization,
 	})
 	reader := &readAtProbe{reader: bytes.NewReader(buildFixturePackage(t))}
 
@@ -464,26 +460,6 @@ func TestAuthorizationAdapterOperationalFailureIsSanitized(t *testing.T) {
 }
 
 func TestReleaseUpdateAndIntentAuthorizationPrecedeDiscovery(t *testing.T) {
-	t.Run("release update", func(t *testing.T) {
-		authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
-		artifactResolver := &recordingReleaseArtifactResolver{}
-		h, _, _ := newTestHostWithOptions(t, testHostOptions{
-			authorization: authorization,
-		})
-		_, err := h.UpdateReleaseRef(hostTestContext(), UpdateReleaseRefRequest{
-			PluginInstanceID: "  plugini_update_auth  ",
-		})
-		if !errors.Is(err, ErrActionDenied) {
-			t.Fatalf("UpdateReleaseRef() error = %v, want ErrActionDenied", err)
-		}
-		if artifactResolver.calls != 0 {
-			t.Fatalf("authorization denial reached artifact discovery: calls=%d", artifactResolver.calls)
-		}
-		wantScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
-		if len(authorization.requests) != 1 || !authorizationTargetsEqual(authorization.requests[0].Target, AuthorizationTarget{Kind: ResourcePlugin, ID: "plugini_update_auth", Scope: &wantScope}) {
-			t.Fatalf("authorization requests = %#v", authorization.requests)
-		}
-	})
 
 	t.Run("intent invoke", func(t *testing.T) {
 		authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
@@ -551,7 +527,7 @@ func TestScopedDirectActionsDeriveResourceScopeBeforeAuthorization(t *testing.T)
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 			record, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), test.packageData(t))
 			if err != nil {
 				t.Fatal(err)
@@ -582,7 +558,7 @@ func TestScopedDirectActionsDeriveResourceScopeBeforeAuthorization(t *testing.T)
 }
 
 func TestDeleteExportAuthorizationBindsBundleAndPluginOwnership(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
 	h.adapters.Authorization = authorization
 

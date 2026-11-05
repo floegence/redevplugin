@@ -36,9 +36,6 @@ func storedPreWebManifest(t *testing.T, record registry.PluginRecord) registry.P
 	record.CanonicalManifest = string(canonical)
 	sum := sha256.Sum256(canonical)
 	record.ManifestHash = "sha256:" + hex.EncodeToString(sum[:])
-	record.SignatureAssessment.ManifestSHA256 = record.ManifestHash
-	record.SignatureAssessment.AssessedHashes.ManifestSHA256 = record.ManifestHash
-	record.TrustAssessment.VerifiedHashes.ManifestSHA256 = record.ManifestHash
 	return record
 }
 
@@ -155,8 +152,6 @@ func TestPersistedPreWebManifestMigration(t *testing.T) {
 				}
 				old := storedPreWebManifest(t, record)
 				next.VersionHistory[0].ManifestHash = old.ManifestHash
-				next.VersionHistory[0].SignatureAssessment = old.SignatureAssessment
-				next.VersionHistory[0].TrustAssessment = old.TrustAssessment
 				// Write the exact historical wire form, without the current encoder.
 				raw, err := json.Marshal(durableRegistryPluginRecord{PluginRecord: next, Manifest: json.RawMessage(next.CanonicalManifest), VersionHistory: []durablePluginVersion{{PluginVersion: next.VersionHistory[0], Manifest: json.RawMessage(old.CanonicalManifest)}}})
 				if err != nil {
@@ -209,7 +204,7 @@ func TestPersistedPreWebManifestMigration(t *testing.T) {
 				snapshot := replacement.VersionHistory[0]
 				snapshot.Version, snapshot.Manifest, snapshot.CanonicalManifest, snapshot.ManifestHash = actual.Version, actual.Manifest, actual.CanonicalManifest, actual.ManifestHash
 				snapshot.PackageHash, snapshot.EntriesHash, snapshot.ActiveFingerprint = actual.PackageHash, actual.EntriesHash, actual.ActiveFingerprint
-				snapshot.SignatureAssessment, snapshot.TrustAssessment, snapshot.PackageSourceProvenance, snapshot.ExecutionApproval = actual.SignatureAssessment, actual.TrustAssessment, actual.PackageSourceProvenance, actual.ExecutionApproval
+				snapshot.PackageSourceProvenance, snapshot.ExecutionApproval = actual.PackageSourceProvenance, actual.ExecutionApproval
 				snapshot.DataGenerationID = "gen_retained-instance"
 				replacement.VersionHistory = append(actual.VersionHistory, snapshot)
 				replacement.EnableState = actual.EnableState

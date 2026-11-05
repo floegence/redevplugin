@@ -78,7 +78,7 @@ func (manager *blockingStartupRuntimeManager) BindPlugin(ctx context.Context, pl
 }
 
 func TestListPluginInventoryReturnsAuthoritativeActionState(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	record := installAndEnablePlugin(t, h, buildFixturePackage(t))
 
 	listed, err := h.ListPluginInventory(hostTestContext())
@@ -121,7 +121,7 @@ func TestListPluginInventoryReturnsAuthoritativeActionState(t *testing.T) {
 func TestListPluginInventoryDoesNotMergeRuntimeReadinessIntoEnabledState(t *testing.T) {
 	runtime := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime,
+		runtimeManager: runtime,
 	})
 	record := installAndEnablePlugin(t, h, buildWorkerFixturePackage(t))
 	runtime.healthErr = runtimeclient.ErrRuntimeNotReady
@@ -141,8 +141,7 @@ func TestListPluginInventoryDoesNotMergeRuntimeReadinessIntoEnabledState(t *test
 func TestHostStartupPublishesInventoryBeforeBackgroundRuntimeRecovery(t *testing.T) {
 	stateRoot := filepath.Join(t.TempDir(), "control-state")
 	first, _, _ := newTestHostWithOptions(t, testHostOptions{
-		stateRoot: stateRoot, developerMode: true, localGenerated: true,
-	})
+		stateRoot: stateRoot})
 	installed := installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
@@ -155,8 +154,7 @@ func TestHostStartupPublishesInventoryBeforeBackgroundRuntimeRecovery(t *testing
 	}
 	surfaces := &startupSurfaceSink{published: make(chan SurfaceSnapshot, 1)}
 	second, _, _ := newTestHostWithOptions(t, testHostOptions{
-		stateRoot: stateRoot, developerMode: true, localGenerated: true,
-		runtimeManager: runtime, surfaceCatalog: surfaces,
+		stateRoot: stateRoot, runtimeManager: runtime, surfaceCatalog: surfaces,
 	})
 	defer func() {
 		close(runtime.release)
@@ -181,8 +179,7 @@ func TestHostStartupPublishesInventoryBeforeBackgroundRuntimeRecovery(t *testing
 func TestHostStartupPrewarmsPersistedWorkerArtifact(t *testing.T) {
 	stateRoot := filepath.Join(t.TempDir(), "control-state")
 	first, _, _ := newTestHostWithOptions(t, testHostOptions{
-		stateRoot: stateRoot, developerMode: true, localGenerated: true,
-	})
+		stateRoot: stateRoot})
 	installed := installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
 	record, err := first.getPluginRecord(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
@@ -195,8 +192,7 @@ func TestHostStartupPrewarmsPersistedWorkerArtifact(t *testing.T) {
 	runtime := newRecordingRuntimeManager()
 	runtime.prewarmStarted = make(chan runtimeclient.PrewarmWorkerRequest, 1)
 	second, _, _ := newTestHostWithOptions(t, testHostOptions{
-		stateRoot: stateRoot, developerMode: true, localGenerated: true,
-		runtimeManager: runtime,
+		stateRoot: stateRoot, runtimeManager: runtime,
 	})
 	defer func() { _ = second }()
 
@@ -219,8 +215,7 @@ func TestHostStartupPrewarmsPersistedWorkerArtifact(t *testing.T) {
 func TestHostStartupStartsUnreadyRuntimeAfterInventoryAndCloseCancelsRecovery(t *testing.T) {
 	stateRoot := filepath.Join(t.TempDir(), "control-state")
 	first, _, _ := newTestHostWithOptions(t, testHostOptions{
-		stateRoot: stateRoot, developerMode: true, localGenerated: true,
-	})
+		stateRoot: stateRoot})
 	installAndEnablePlugin(t, first, buildWorkerFixturePackage(t))
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
@@ -235,8 +230,7 @@ func TestHostStartupStartsUnreadyRuntimeAfterInventoryAndCloseCancelsRecovery(t 
 	}
 	runtime.health.Ready = false
 	second, _, _ := newTestHostWithOptions(t, testHostOptions{
-		stateRoot: stateRoot, developerMode: true, localGenerated: true,
-		runtimeManager: runtime, surfaceCatalog: surfaces,
+		stateRoot: stateRoot, runtimeManager: runtime, surfaceCatalog: surfaces,
 	})
 
 	select {
@@ -256,8 +250,6 @@ func TestHostStartupStartsUnreadyRuntimeAfterInventoryAndCloseCancelsRecovery(t 
 
 func TestListPluginInventoryBlocksOpenWhenRequiredGrantIsMissing(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
@@ -277,8 +269,6 @@ func TestListPluginInventoryBlocksOpenWhenRequiredGrantIsMissing(t *testing.T) {
 
 func TestListPluginInventoryBlocksOpenWhenSecurityPolicyDeniesMethod(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
@@ -308,7 +298,7 @@ func TestListPluginInventoryBlocksOpenWhenSecurityPolicyDeniesMethod(t *testing.
 }
 
 func TestRecoverEnabledIsIdempotentAndDoesNotRepublishStartupInventory(t *testing.T) {
-	h, surfaces, _ := newTestHost(t, true, true)
+	h, surfaces, _ := newTestHost(t)
 	record := installAndEnablePlugin(t, h, buildFixturePackage(t))
 	surfaces.snapshots = nil
 
@@ -343,7 +333,7 @@ func TestRecoverEnabledDoesNotCacheCanceledAttempt(t *testing.T) {
 		started:                 make(chan struct{}),
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, runtimeManager: runtime,
+		runtimeManager: runtime,
 	})
 	defer h.Close()
 	installed := installAndEnablePlugin(t, h, buildWorkerFixturePackage(t))
@@ -386,7 +376,7 @@ func TestRecoverEnabledDoesNotCacheCanceledAttempt(t *testing.T) {
 }
 
 func TestRetryPluginRecoveryRejectsDisabledPluginWithoutChangingStoredObservation(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	record := installAndEnablePlugin(t, h, buildFixturePackage(t))
 
 	first, err := h.RecoverEnabled(hostTestContext())
@@ -419,7 +409,7 @@ func TestRetryPluginRecoveryRejectsDisabledPluginWithoutChangingStoredObservatio
 // the installation it examined, not every future installation with that ID.
 func TestRecoverEnabledDoesNotCarryFailureAcrossReinstall(t *testing.T) {
 	manager := newRecordingRuntimeManager()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: manager})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 	ctx := hostTestContext()
 	packageBytes := buildWorkerFixturePackage(t)
 	record := installAndEnablePlugin(t, h, packageBytes)
@@ -464,7 +454,7 @@ func TestRecoverEnabledDoesNotCarryFailureAcrossReinstall(t *testing.T) {
 }
 
 func TestRecoveryIdentityRejectsReplacementAndManagementChanges(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	h, _, _ := newTestHost(t)
 	record := installAndEnablePlugin(t, h, buildFixturePackage(t))
 	result := recoveryResultForRecord(record)
 	for _, field := range []string{"instance", "fingerprint", "installed", "revision", "disabled", "deleted"} {

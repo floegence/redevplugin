@@ -641,9 +641,6 @@ func validateServableAssetPath(assetPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrInvalidAssetPath, err)
 	}
-	if strings.HasPrefix(assetPath, "signatures/") {
-		return "", fmt.Errorf("%w: signatures are not served", ErrInvalidAssetPath)
-	}
 	return assetPath, nil
 }
 

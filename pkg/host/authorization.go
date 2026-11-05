@@ -41,11 +41,11 @@ const (
 	ManagementActionListIntents                ManagementAction = "intent.list"
 	ManagementActionInvokeIntent               ManagementAction = "intent.invoke"
 	ManagementActionImportLocalPackage         ManagementAction = "plugin.import_local_package"
-	ManagementActionInstallReleaseRef          ManagementAction = "plugin.install_release_ref"
+	ManagementActionSetAutomaticUpdates        ManagementAction = "plugin.set_automatic_updates"
+	ManagementActionListRepositoryPlugins      ManagementAction = "plugin.list_repository_plugins"
 	ManagementActionInspectExternalPackage     ManagementAction = "plugin.inspect_external_package"
 	ManagementActionInstallInspectedPackage    ManagementAction = "plugin.install_inspected_package"
 	ManagementActionUpdateLocalPackage         ManagementAction = "plugin.update_local_package"
-	ManagementActionUpdateReleaseRef           ManagementAction = "plugin.update_release_ref"
 	ManagementActionDowngradePlugin            ManagementAction = "plugin.downgrade"
 	ManagementActionListPlugins                ManagementAction = "plugin.list"
 	ManagementActionListFeatures               ManagementAction = "platform.list_features"
@@ -112,9 +112,9 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourceMethod
 	case ManagementActionListIntents, ManagementActionInvokeIntent, ManagementActionPrepareIntentConfirmation:
 		return ResourceIntent
-	case ManagementActionImportLocalPackage, ManagementActionInstallReleaseRef,
-		ManagementActionInspectExternalPackage, ManagementActionInstallInspectedPackage,
-		ManagementActionUpdateLocalPackage, ManagementActionUpdateReleaseRef,
+	case ManagementActionImportLocalPackage,
+		ManagementActionInspectExternalPackage, ManagementActionListRepositoryPlugins, ManagementActionInstallInspectedPackage, ManagementActionSetAutomaticUpdates,
+		ManagementActionUpdateLocalPackage,
 		ManagementActionDowngradePlugin, ManagementActionListPlugins,
 		ManagementActionEnablePlugin,
 		ManagementActionDisablePlugin, ManagementActionUninstallPlugin:
@@ -388,7 +388,7 @@ func canonicalAuthorizationTarget(session sessionctx.Context, spec authorization
 func (action ManagementAction) allowsCollectionTarget() bool {
 	switch action {
 	case ManagementActionRevokeSessionScope,
-		ManagementActionInspectExternalPackage,
+		ManagementActionInspectExternalPackage, ManagementActionListRepositoryPlugins,
 		ManagementActionListIntents,
 		ManagementActionListPlugins,
 		ManagementActionRecoverEnabledPlugins,

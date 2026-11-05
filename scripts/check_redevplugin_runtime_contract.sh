@@ -28,8 +28,6 @@ for required in \
   spec/plugin/manifest-v9.schema.json \
   spec/plugin/error-codes.schema.json \
   spec/plugin/bridge.schema.json \
-  spec/plugin/package-signature-v1.schema.json \
-  spec/plugin/release-metadata.schema.json \
   spec/plugin/wasm-abi.json \
   spec/plugin/worker-invocation.schema.json \
   spec/internal/runtime-wire.schema.json; do

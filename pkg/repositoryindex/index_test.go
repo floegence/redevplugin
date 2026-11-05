@@ -9,7 +9,7 @@ import (
 )
 
 func validIndex() Index {
-	return Index{SchemaVersion: SchemaVersion, Targets: []Target{{Ecosystem: "redevplugin", Host: "redeven", Plugins: []Plugin{{PluginID: "github.alice.weather-tools.weather", Path: "plugins/weather", Manifest: "manifest.json", Release: &Release{TagTemplate: "v{version}", PackageAssetTemplate: "weather-{version}.redevplugin", ReleaseRefAssetTemplate: "weather-{version}.release-ref.json"}}}}}}
+	return Index{SchemaVersion: SchemaVersion, Targets: []Target{{Ecosystem: "redevplugin", Host: "redeven", Plugins: []Plugin{{PluginID: "github.alice.weather-tools.weather", Path: "plugins/weather", Manifest: "manifest.json", Release: &Release{TagTemplate: "weather-v{version}", PackageAssetTemplate: "weather-{version}.redevplugin"}}}}}}
 }
 
 func TestDecodeAndRender(t *testing.T) {
@@ -29,11 +29,23 @@ func TestDecodeAndRender(t *testing.T) {
 	}
 }
 
+func TestIndependentReleaseAssetsAndPackageOnlyIndex(t *testing.T) {
+	raw := []byte(`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin-{version}.redevplugin"}},{"plugin_id":"beta","path":"beta","manifest":"manifest.json","release":{"tag_template":"beta-v{version}","package_asset_template":"plugin-{version}.redevplugin"}}]}]}`)
+	index, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.Targets[0].Plugins[1].Release.TagTemplate = "alpha-v{version}"
+	if err := Validate(index); err == nil {
+		t.Fatal("accepted two plugins sharing a release namespace")
+	}
+}
+
 func TestDecodeRejectsAmbiguousOrUnsafeInput(t *testing.T) {
 	cases := []string{
 		`{"schema_version":"redevplugin.repository-index.v1","schema_version":"redevplugin.repository-index.v1","targets":[]}`,
 		`{"schema_version":"redevplugin.repository-index.v2","targets":[]}`,
-		`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"x","path":"../outside","manifest":"manifest.json","release":{"tag_template":"v{version}","package_asset_template":"x-{version}.redevplugin","release_ref_asset_template":"x-{version}.release-ref.json"}}]}]}`,
+		`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"x","path":"../outside","manifest":"manifest.json","release":{"tag_template":"v{version}","package_asset_template":"x-{version}.redevplugin"}}]}]}`,
 	}
 	for _, raw := range cases {
 		if _, err := Decode([]byte(raw)); err == nil {
@@ -59,7 +71,7 @@ func TestStrictShapeAndStableVersion(t *testing.T) {
 			t.Fatalf("accepted version %q", value)
 		}
 	}
-	if got, err := VersionFromTag("plugin-v{version}-stable", "plugin-v1.2.3-stable"); err != nil || got != "1.2.3" {
+	if got, err := VersionFromTag("plugin-v{version}", "plugin-v1.2.3"); err != nil || got != "1.2.3" {
 		t.Fatalf("tag version %q: %v", got, err)
 	}
 	if _, err := VersionFromTag("plugin-v{version}", "other-plugin-v1.2.3"); err == nil {
@@ -67,26 +79,26 @@ func TestStrictShapeAndStableVersion(t *testing.T) {
 	}
 }
 
-func TestPolicyDigestIndependentOfSiblings(t *testing.T) {
+func TestEntryDigestIndependentOfSiblings(t *testing.T) {
 	index := validIndex()
 	plugin := index.Targets[0].Plugins[0]
-	first, err := PolicyDigest("redeven", plugin)
+	first, err := EntryDigest("redeven", plugin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	index.Targets[0].Plugins = append(index.Targets[0].Plugins, Plugin{PluginID: "other"})
-	second, err := PolicyDigest("redeven", index.Targets[0].Plugins[0])
+	second, err := EntryDigest("redeven", index.Targets[0].Plugins[0])
 	if err != nil || first != second {
 		t.Fatalf("digest changed: %q %q %v", first, second, err)
 	}
 	plugin.Path = "other"
-	third, err := PolicyDigest("redeven", plugin)
+	third, err := EntryDigest("redeven", plugin)
 	if err != nil || third == first {
 		t.Fatalf("changed policy did not change digest: %v", err)
 	}
 }
 
-func TestRejectCollidingAssets(t *testing.T) {
+func TestRejectCollidingReleaseNamespaces(t *testing.T) {
 	index := validIndex()
 	other := index.Targets[0].Plugins[0]
 	other.PluginID = "github.alice.weather-tools.other"
@@ -94,7 +106,7 @@ func TestRejectCollidingAssets(t *testing.T) {
 	if err := Validate(index); err == nil {
 		t.Fatal("accepted colliding release assets")
 	}
-	other.Release = &Release{TagTemplate: "v{version}", PackageAssetTemplate: "other-{version}.redevplugin", ReleaseRefAssetTemplate: "other-{version}.release-ref.json"}
+	other.Release = &Release{TagTemplate: "other-v{version}", PackageAssetTemplate: "other-{version}.redevplugin"}
 	index.Targets[0].Plugins[1] = other
 	if err := Validate(index); err != nil {
 		t.Fatal(err)

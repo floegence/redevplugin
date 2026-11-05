@@ -66,14 +66,14 @@ func TestStressGateExecutionCancelOwnershipEvidence(t *testing.T) {
 	pluginHost, err := host.Open(ctx, host.Config{
 		StateRoot: filepath.Join(t.TempDir(), "control-state"),
 		Core: host.CoreAdapters{
-			Policy:               stressPolicy{},
-			Authorization:        stressAuthorization{},
-			PackageTrustVerifier: platformAdapter,
-			Audit:                diagnostics,
-			SecurityAudit:        securityJournal,
-			Diagnostics:          diagnostics,
-			SurfaceCatalog:       platformAdapter,
-			Assets:               pluginpkg.NewMemoryAssetStore(),
+			Policy:        stressPolicy{},
+			Authorization: stressAuthorization{},
+
+			Audit:          diagnostics,
+			SecurityAudit:  securityJournal,
+			Diagnostics:    diagnostics,
+			SurfaceCatalog: platformAdapter,
+			Assets:         pluginpkg.NewMemoryAssetStore(),
 		},
 		Connectivity: &host.ConnectivityModule{Broker: connectivityBroker, NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
 		Secrets:      &host.SecretsModule{Store: secrets.NewMemoryStore()},
@@ -668,7 +668,7 @@ func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []
 			PluginID:         pluginManifest.Plugin.PluginID,
 			Version:          pluginManifest.Plugin.Version,
 			PackageSourceProvenance: registry.PackageSourceProvenance{
-				Kind: registry.PackageSourceLocalGenerated,
+				Kind: registry.PackageSourceLocalPackage,
 			},
 			EnableState: registry.EnableDisabledByUser,
 			Manifest:    pluginManifest,
@@ -801,10 +801,6 @@ func stressResourceScope(t testing.TB, ctx context.Context, kind sessionctx.Scop
 
 type stressPlatformAdapter struct{}
 
-func (stressPlatformAdapter) VerifyPackageTrust(context.Context, host.PackageTrustVerificationRequest) (host.PackageTrustVerificationResult, error) {
-	return host.PackageTrustVerificationResult{TrustState: registry.TrustUnsignedLocal}, nil
-}
-
 func (stressPlatformAdapter) PublishSurfaces(context.Context, host.SurfaceSnapshot) error {
 	return nil
 }
@@ -830,14 +826,6 @@ func (stressAuthorization) Authorize(_ context.Context, req host.AuthorizationRe
 
 func (stressPolicy) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {
 	return host.PolicyAllow, nil
-}
-
-func (stressPolicy) DeveloperModeEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return true, nil
-}
-
-func (stressPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return true, nil
 }
 
 type stressIPCFrame struct {

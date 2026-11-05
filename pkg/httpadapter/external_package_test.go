@@ -2,8 +2,9 @@ package httpadapter
 
 import (
 	"bytes"
-	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,24 +14,12 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/host"
-	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
-
-type httpExternalPackageAssessor struct {
-	status registry.SignatureAssessmentStatus
-}
-
-func (assessor httpExternalPackageAssessor) AssessExternalPackageSignature(context.Context, host.ExternalPackageSignatureAssessmentRequest) (registry.SignatureAssessment, error) {
-	return registry.SignatureAssessment{Status: assessor.status, ReasonCodes: []string{"test_" + string(assessor.status)}}, nil
-}
-
-func (httpExternalPackageAssessor) AssessExternalPackageSignatureFreshness(_ context.Context, req host.ExternalPackageSignatureFreshnessRequest) (registry.SignatureAssessment, error) {
-	return req.Assessment, nil
-}
 
 func TestExternalPackageRoutesDeclareClosedSecurityContracts(t *testing.T) {
 	want := map[string]struct {
@@ -41,7 +30,7 @@ func TestExternalPackageRoutesDeclareClosedSecurityContracts(t *testing.T) {
 		"/_redevplugin/api/plugins/external-packages/inspect":                             {http.MethodPost, websecurity.RouteActionInspectExternalPackage, websecurity.RouteEffectMutation},
 		"/_redevplugin/api/plugins/external-packages/upload/inspect":                      {http.MethodPost, websecurity.RouteActionInspectExternalPackage, websecurity.RouteEffectMutation},
 		"/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect": {http.MethodPut, websecurity.RouteActionInspectExternalPackage, websecurity.RouteEffectMutation},
-		"/_redevplugin/api/plugins/external-packages/install":                             {http.MethodPost, websecurity.RouteActionInstallInspectedPackage, websecurity.RouteEffectMutation},
+		"/_redevplugin/api/plugins/external-packages/install-operations":                  {http.MethodPost, websecurity.RouteActionInstallInspectedPackage, websecurity.RouteEffectMutation},
 	}
 	for _, route := range routes {
 		expected, ok := want[route.Path]
@@ -59,8 +48,9 @@ func TestExternalPackageRoutesDeclareClosedSecurityContracts(t *testing.T) {
 }
 
 func TestExternalPackageUploadInspectInstallAndUpdate(t *testing.T) {
-	module := newHTTPExternalPackageModule(t, registry.SignatureAbsent)
-	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module}), allowHTTPTestGuard())
+	module := newHTTPExternalPackageModule(t)
+	pluginHost := newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module})
+	handler := mustNewHandler(t, pluginHost, allowHTTPTestGuard())
 	raw := buildHTTPFixturePackage(t)
 
 	installRaw := externalPackageUploadRequest(t, handler, http.MethodPost,
@@ -71,29 +61,35 @@ func TestExternalPackageUploadInspectInstallAndUpdate(t *testing.T) {
 		inspection.UpdateEligibility.State != "manual_only" {
 		t.Fatalf("upload inspection=%#v", inspection)
 	}
-	commitRaw := externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install", map[string]any{
-		"inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256,
+	commitRaw := externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations", map[string]any{
+		"request_id": "install-http-test", "inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256,
 	}, http.StatusOK)
-	var committed installedExternalPackageResponse
-	decodeExternalPackageData(t, commitRaw, &committed)
-	if committed.Plugin == nil || committed.SourceProvenance == nil || committed.SourceProvenance.UploadID != inspection.SourceProvenance.UploadID {
-		t.Fatalf("committed upload = %#v", committed)
+	var operation host.InspectedInstallOperation
+	decodeExternalPackageData(t, commitRaw, &operation)
+	waitHTTPInstall(t, handler, operation.RequestID)
+	installed, err := pluginHost.ListPlugins(httpTestContext())
+	if err != nil || len(installed) != 1 {
+		t.Fatalf("installed: %+v %v", installed, err)
+	}
+	committed := struct{ Plugin *registry.PluginRecord }{Plugin: &installed[0]}
+	if committed.Plugin.PackageSourceProvenance.UploadID != inspection.SourceProvenance.UploadID {
+		t.Fatal("source changed")
 	}
 
 	revision := strconv.FormatUint(committed.Plugin.ManagementRevision, 10)
 	updateRaw := externalPackageUploadRequest(t, handler, http.MethodPut,
 		"/_redevplugin/api/plugins/"+committed.Plugin.PluginInstanceID+"/external-packages/upload/inspect", raw,
-		http.Header{localImportRevisionHeader: []string{revision}, "Content-Type": []string{localImportContentType}}, -1, http.StatusOK)
+		http.Header{localImportRevisionHeader: []string{revision}, allowSourceChangeHeader: []string{"true"}, "Content-Type": []string{localImportContentType}}, -1, http.StatusOK)
 	var updateInspection host.ExternalPackageInspection
 	decodeExternalPackageData(t, updateRaw, &updateInspection)
-	if updateInspection.Intent.Action != "update" || updateInspection.Intent.PluginInstanceID != committed.Plugin.PluginInstanceID ||
+	if !updateInspection.Intent.AllowSourceChange || updateInspection.Intent.Action != "update" || updateInspection.Intent.PluginInstanceID != committed.Plugin.PluginInstanceID ||
 		updateInspection.Intent.ExpectedManagementRevision != committed.Plugin.ManagementRevision {
 		t.Fatalf("update inspection=%#v", updateInspection)
 	}
 }
 
 func TestExternalPackageUploadHeadersAndLimitsRejectBeforeStage(t *testing.T) {
-	module := newHTTPExternalPackageModule(t, registry.SignatureAbsent)
+	module := newHTTPExternalPackageModule(t)
 	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module}), allowHTTPTestGuard())
 	tests := []struct {
 		name          string
@@ -106,6 +102,7 @@ func TestExternalPackageUploadHeadersAndLimitsRejectBeforeStage(t *testing.T) {
 		{name: "duplicate content type", headers: http.Header{"Content-Type": []string{localImportContentType, localImportContentType}}, contentLength: 1, wantStatus: http.StatusUnsupportedMediaType},
 		{name: "compressed", headers: http.Header{"Content-Type": []string{localImportContentType}, "Content-Encoding": []string{"gzip"}}, contentLength: 1, wantStatus: http.StatusUnsupportedMediaType},
 		{name: "multiple encodings", headers: http.Header{"Content-Type": []string{localImportContentType}, "Content-Encoding": []string{"identity", "identity"}}, contentLength: 1, wantStatus: http.StatusUnsupportedMediaType},
+		{name: "install source consent", headers: http.Header{"Content-Type": []string{localImportContentType}, allowSourceChangeHeader: []string{"true"}}, contentLength: 1, wantStatus: http.StatusBadRequest},
 		{name: "empty", headers: http.Header{"Content-Type": []string{localImportContentType}}, contentLength: 0, wantStatus: http.StatusBadRequest},
 		{name: "oversize", headers: http.Header{"Content-Type": []string{localImportContentType}}, contentLength: externalsource.MaxArtifactBytes + 1, wantStatus: http.StatusRequestEntityTooLarge},
 	}
@@ -118,65 +115,15 @@ func TestExternalPackageUploadHeadersAndLimitsRejectBeforeStage(t *testing.T) {
 }
 
 func TestExternalPackageUploadErrorDoesNotDefaultToPermissionDenied(t *testing.T) {
-	module := newHTTPExternalPackageModule(t, registry.SignatureAbsent)
+	module := newHTTPExternalPackageModule(t)
 	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module}), allowHTTPTestGuard())
 	raw := externalPackageUploadRequest(t, handler, http.MethodPost,
 		"/_redevplugin/api/plugins/external-packages/upload/inspect", []byte("chunk"), nil, externalsource.MaxArtifactBytes+1, http.StatusRequestEntityTooLarge)
 	assertExternalPackageErrorCode(t, raw, security.ErrPackageTooLarge)
 }
 
-func TestExternalPackageUploadSignatureStatesPreserveAdmissionPolicy(t *testing.T) {
-	for _, status := range []registry.SignatureAssessmentStatus{
-		registry.SignatureAbsent, registry.SignatureUnknownSigner, registry.SignatureUnavailable,
-		registry.SignatureVerified, registry.SignatureInvalid, registry.SignatureRevoked,
-	} {
-		t.Run(string(status), func(t *testing.T) {
-			module := newHTTPExternalPackageModule(t, status)
-			handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module}), allowHTTPTestGuard())
-			packageBytes := buildHTTPExternalPackage(t, status)
-			raw := externalPackageUploadRequest(t, handler, http.MethodPost,
-				"/_redevplugin/api/plugins/external-packages/upload/inspect", packageBytes, nil, int64(len(packageBytes)), http.StatusOK)
-			var inspection host.ExternalPackageInspection
-			decodeExternalPackageData(t, raw, &inspection)
-			if inspection.SignatureAssessment.State != string(status) || inspection.UpdateEligibility.State != "manual_only" {
-				t.Fatalf("inspection = %#v", inspection)
-			}
-			blocked := status == registry.SignatureInvalid || status == registry.SignatureRevoked
-			wantApproval := "pending"
-			wantStatus := http.StatusOK
-			if blocked {
-				wantApproval = "policy_blocked"
-				wantStatus = http.StatusForbidden
-			}
-			if inspection.ExecutionApproval.State != wantApproval {
-				t.Fatalf("approval = %#v", inspection.ExecutionApproval)
-			}
-			commitRaw := externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install", map[string]any{
-				"inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256,
-			}, wantStatus)
-			if blocked {
-				assertExternalPackageErrorCode(t, commitRaw, security.ErrSignatureInvalid)
-			}
-		})
-	}
-}
-
-func TestInstalledExternalPackageWireProjectionContainsNoReceiptLifecycle(t *testing.T) {
-	projected, err := publicInstalledExternalPackage(host.InstalledExternalPackage{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(projected)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(raw, []byte("receipt")) || bytes.Contains(raw, []byte("commit_id")) || bytes.Contains(raw, []byte("failure_code")) {
-		t.Fatalf("installed package projection retained durable commit lifecycle: %s", raw)
-	}
-}
-
 func TestExternalPackageUploadUpdateRejectsSlashPluginInstanceIDs(t *testing.T) {
-	module := newHTTPExternalPackageModule(t, registry.SignatureAbsent)
+	module := newHTTPExternalPackageModule(t)
 	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module}), allowHTTPTestGuard())
 	for _, path := range []string{
 		"/_redevplugin/api/plugins/plugin/bad/external-packages/upload/inspect",
@@ -188,7 +135,7 @@ func TestExternalPackageUploadUpdateRejectsSlashPluginInstanceIDs(t *testing.T) 
 }
 
 func TestExternalPackageRoutesBindInspectionToSessionAndHideOwnerHashes(t *testing.T) {
-	module := newHTTPExternalPackageModule(t, registry.SignatureAbsent)
+	module := newHTTPExternalPackageModule(t)
 	pluginHost := newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module})
 	original := mustNewHandler(t, pluginHost, allowHTTPTestGuard())
 
@@ -217,83 +164,25 @@ func TestExternalPackageRoutesBindInspectionToSessionAndHideOwnerHashes(t *testi
 		OwnerSessionHash: "other_session", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "other_channel",
 	}}
 	crossSession := mustNewHandler(t, pluginHost, crossSessionGuard)
-	crossCommit := externalPackageRequest(t, crossSession, "/_redevplugin/api/plugins/external-packages/install", map[string]any{
-		"inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256,
+	crossCommit := externalPackageRequest(t, crossSession, "/_redevplugin/api/plugins/external-packages/install-operations", map[string]any{
+		"request_id": "install-http-test", "inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256,
 	}, http.StatusBadRequest)
 	assertExternalPackageErrorCode(t, crossCommit, security.ErrInvalidRequest)
 	assertExternalPackageJSONHasNoOwnerHashes(t, crossCommit)
 
-	commitRaw := externalPackageRequest(t, original, "/_redevplugin/api/plugins/external-packages/install", map[string]any{
-		"inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256,
+	commitRaw := externalPackageRequest(t, original, "/_redevplugin/api/plugins/external-packages/install-operations", map[string]any{
+		"request_id": "install-http-test", "inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256,
 	}, http.StatusOK)
 	assertExternalPackageJSONHasNoOwnerHashes(t, commitRaw)
-	var committed installedExternalPackageResponse
-	decodeExternalPackageData(t, commitRaw, &committed)
-	if committed.Plugin == nil {
-		t.Fatalf("commit = %#v", committed)
-	}
+	var operation host.InspectedInstallOperation
+	decodeExternalPackageData(t, commitRaw, &operation)
+	waitHTTPInstall(t, original, operation.RequestID)
+
 }
 
-func TestExternalPackageInvalidAndRevokedCommitErrorsAreStable(t *testing.T) {
-	for _, status := range []registry.SignatureAssessmentStatus{registry.SignatureInvalid, registry.SignatureRevoked} {
-		t.Run(string(status), func(t *testing.T) {
-			module := newHTTPExternalPackageModule(t, status)
-			handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module}), allowHTTPTestGuard())
-			rawPackage := buildHTTPExternalPackage(t, status)
-			inspectRaw := externalPackageUploadRequest(t, handler, http.MethodPost,
-				"/_redevplugin/api/plugins/external-packages/upload/inspect", rawPackage, nil, int64(len(rawPackage)), http.StatusOK)
-			var inspection host.ExternalPackageInspection
-			decodeExternalPackageData(t, inspectRaw, &inspection)
-			if inspection.SignatureAssessment.State != string(status) || inspection.ExecutionApproval.State != "policy_blocked" {
-				t.Fatalf("inspection = %#v", inspection)
-			}
-			commitRaw := externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install", map[string]any{
-				"inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256,
-			}, http.StatusForbidden)
-			assertExternalPackageErrorCode(t, commitRaw, security.ErrSignatureInvalid)
-			var envelope decodedErrorResponse
-			if err := json.Unmarshal(commitRaw, &envelope); err != nil {
-				t.Fatal(err)
-			}
-			if envelope.Message != "plugin trust verification failed" || envelope.MutationOutcome != "not_committed" {
-				t.Fatalf("blocked commit error is unstable: %#v", envelope)
-			}
-			assertExternalPackageJSONHasNoOwnerHashes(t, commitRaw)
-		})
-	}
-}
-
-func newHTTPExternalPackageModule(t *testing.T, status registry.SignatureAssessmentStatus) *host.ExternalPackageModule {
+func newHTTPExternalPackageModule(t *testing.T) *host.ExternalPackageModule {
 	t.Helper()
-	return &host.ExternalPackageModule{SignatureAssessor: httpExternalPackageAssessor{status: status}}
-}
-
-func buildHTTPExternalPackage(t *testing.T, status registry.SignatureAssessmentStatus) []byte {
-	t.Helper()
-	raw := buildHTTPFixturePackage(t)
-	if status == registry.SignatureAbsent {
-		return raw
-	}
-	pkg, err := pluginpkg.Read(context.Background(), bytes.NewReader(raw), int64(len(raw)), pluginpkg.DefaultReadLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	pkg.PackageSignature = &pluginpkg.PackageSignature{
-		SchemaVersion: pluginpkg.PackageSignatureSchemaVersion,
-		Algorithm:     pluginpkg.PackageSignatureAlgorithmEd25519,
-		KeyID:         "test-key",
-		PublisherID:   pkg.Manifest.Publisher.PublisherID,
-		PluginID:      pkg.Manifest.Plugin.PluginID,
-		PackageHash:   pkg.PackageHash,
-		ManifestHash:  pkg.ManifestHash,
-		EntriesHash:   pkg.EntriesHash,
-		Signature:     "invalid-test-signature",
-	}
-	var signed bytes.Buffer
-	if err := pluginpkg.WritePackage(context.Background(), &signed, pkg); err != nil {
-		t.Fatal(err)
-	}
-	return signed.Bytes()
+	return &host.ExternalPackageModule{}
 }
 
 func externalPackageRequest(t *testing.T, handler http.Handler, path string, body any, wantStatus int) []byte {
@@ -370,7 +259,7 @@ func assertExternalPackageJSONHasNoOwnerHashes(t *testing.T, raw []byte) {
 }
 
 func TestInspectedInstallOperationHTTPRecoversSameRequest(t *testing.T) {
-	module := newHTTPExternalPackageModule(t, registry.SignatureAbsent)
+	module := newHTTPExternalPackageModule(t)
 	platform := newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module})
 	handler := mustNewHandler(t, platform, allowHTTPTestGuard())
 	raw := buildHTTPFixturePackage(t)
@@ -405,4 +294,84 @@ func TestInspectedInstallOperationHTTPRecoversSameRequest(t *testing.T) {
 	externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations", request, http.StatusOK)
 	request["expected_package_sha256"] = "sha256:" + strings.Repeat("a", 64)
 	externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations", request, http.StatusBadRequest)
+}
+
+func waitHTTPInstall(t *testing.T, handler http.Handler, requestID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		raw := externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations/query", map[string]any{"request_id": requestID}, http.StatusOK)
+		var op host.InspectedInstallOperation
+		decodeExternalPackageData(t, raw, &op)
+		if op.Execution.Status != "running" {
+			if op.Execution.Status != "completed" {
+				t.Fatalf("installation failed: %+v", op)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("installation timed out")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestUpdateReviewUsesStableConfirmationError(t *testing.T) {
+	if got := errorCodeForManagementError(host.ErrUpdateReviewRequired); got != security.ErrConfirmationRequired {
+		t.Fatalf("code=%s", got)
+	}
+	if got := httpStatusForManagementError(host.ErrUpdateReviewRequired); got != http.StatusConflict {
+		t.Fatalf("status=%d", got)
+	}
+}
+
+type repositoryQueryTransport func(*http.Request) (*http.Response, error)
+
+func (f repositoryQueryTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestRepositoryPluginQueryUsesPlatformIndexAndHostSelection(t *testing.T) {
+	index := `{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"example.zulu","path":"zulu","manifest":"manifest.json","release":{"tag_template":"zulu-v{version}","package_asset_template":"plugin.redevplugin"}},{"plugin_id":"example.alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin.redevplugin"}}]}]}`
+	sha := strings.Repeat("a", 40)
+	calls := 0
+	module := newHTTPExternalPackageModule(t)
+	module.GitHub.Transport = repositoryQueryTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var body string
+		switch r.URL.Path {
+		case "/repos/example/plugins":
+			body = `{"id":1,"name":"plugins","owner":{"login":"example"},"default_branch":"main"}`
+		case "/repos/example/plugins/commits/main":
+			body = `{"sha":"` + sha + `"}`
+		case "/repos/example/plugins/contents/.redevplugin/index.json":
+			if r.URL.Query().Get("ref") != sha {
+				t.Fatal("unbound index read")
+			}
+			raw, err := json.Marshal(map[string]any{"type": "file", "encoding": "base64", "path": repositoryindex.IndexPath, "size": len(index), "content": base64.StdEncoding.EncodeToString([]byte(index))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = string(raw)
+		default:
+			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module}), allowHTTPTestGuard())
+	path := "/_redevplugin/api/plugins/repository/plugins/query"
+	raw := externalPackageRequest(t, handler, path, map[string]any{"url": "https://github.com/example/plugins", "host": "redeven"}, http.StatusOK)
+	var result []repositoryindex.Plugin
+	decodeExternalPackageData(t, raw, &result)
+	if len(result) != 2 || result[0].PluginID != "example.alpha" || result[1].PluginID != "example.zulu" || calls != 3 {
+		t.Fatalf("repository selection: %+v calls=%d", result, calls)
+	}
+	raw = externalPackageRequest(t, handler, path, map[string]any{"url": "https://github.com/example/plugins", "host": "another-host"}, http.StatusOK)
+	decodeExternalPackageData(t, raw, &result)
+	if len(result) != 0 {
+		t.Fatal("returned plugins for another host")
+	}
+	before := calls
+	externalPackageRequest(t, handler, path, map[string]any{"url": "https://example.com/example/plugins"}, http.StatusBadRequest)
+	if calls != before {
+		t.Fatal("invalid repository URL reached provider")
+	}
 }

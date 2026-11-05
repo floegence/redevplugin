@@ -70,24 +70,16 @@ export function getPluginSurfaceActionState(
   return { surface_id: surfaceId, can_open: state.can_open, ...(state.blocked_reason ? { blocked_reason: state.blocked_reason } : {}) };
 }
 export type PluginFeatures = PlatformSchemas["PluginFeaturesSuccessResponse"]["data"];
-export type PluginTrustState = PlatformSchemas["TrustState"];
-export type PluginTrustHashSet = PlatformSchemas["TrustHashSet"];
-export type PluginVerifiedSignature = PlatformSchemas["VerifiedSignature"];
-export type PluginTrustAssessment = PlatformSchemas["TrustAssessment"];
-export type PluginLocalImportProvenance = PlatformSchemas["LocalImportProvenance"];
+export type PluginPackageContentHashes = PlatformSchemas["PackageContentHashes"];
 export type PluginVersionRecord = PlatformSchemas["PluginVersion"];
 export type PluginRecord = PlatformSchemas["PluginRecord"];
 export type PluginEnableState = PluginRecord["enable_state"];
 export type PluginPackageHashSet = PlatformSchemas["PackageHashSet"];
-export type PluginReleaseRef = PlatformSchemas["PluginReleaseRef"];
-export type PluginUpdateReleaseRefRequest = PlatformSchemas["UpdateReleaseRefRequest"];
 export type PluginInspectExternalPackageRequest = PlatformSchemas["InspectExternalPackageRequest"];
 export type PluginUploadedExternalPackageIntent = PlatformSchemas["ExternalPackageIntentRequest"];
 export type PluginExternalPackageInspection = PlatformSchemas["ExternalPackageInspection"];
 export type PluginStartInspectedInstallRequest = PlatformSchemas["StartInspectedInstallRequest"];
 export type PluginInspectedInstallOperation = PlatformSchemas["InspectedInstallOperation"];
-export type PluginInstallInspectedPackageRequest = PlatformSchemas["InstallInspectedPackageRequest"];
-export type PluginInstalledExternalPackage = PlatformSchemas["InstalledExternalPackage"];
 export type PluginDowngradeRequest = PlatformSchemas["DowngradeRequest"];
 export type PluginEnableRequest = PlatformSchemas["EnableRequest"];
 export type PluginDisableRequest = PlatformSchemas["DisableRequest"];
@@ -168,17 +160,16 @@ export type PluginSettingsPatchRequest = PluginSettingsPatchBase & (
 export type PluginCapabilityContractPin = PlatformSchemas["HostCapabilityPinV1"];
 export type PluginExecution = PlatformSchemas["Execution"];
 export type PluginEvent = PlatformSchemas["Event"];
-export type PluginReleaseInstallProgressEvent = PlatformSchemas["ReleaseInstallProgressEvent"];
-export type PluginStartReleaseInstallExecutionRequest = PlatformSchemas["StartReleaseInstallExecutionRequest"];
+export type PluginInstallProgressEvent = PlatformSchemas["PluginInstallProgressEvent"];
 export type PluginExecutionList = PlatformSchemas["ExecutionList"];
 export type PluginExecutionEventList = PlatformSchemas["ExecutionEventList"];
 export type PluginExecutionListOptions = PlatformSchemas["ListExecutionsRequest"];
-export type PluginReleaseInstallExecutionListOptions = Omit<PluginExecutionListOptions, "operation_scope">;
+export type PluginInstallExecutionListOptions = Omit<PluginExecutionListOptions, "operation_scope">;
 export type PluginExecutionEventListOptions = PlatformSchemas["ListExecutionEventsRequest"];
 
-const releaseInstallStages = ["download", "verify", "install", "enable"] as const;
-const releaseInstallStatuses = ["pending", "running", "completed", "failed"] as const;
-const releaseInstallProgressKeys = [
+const pluginInstallStages = ["download", "verify", "install", "enable"] as const;
+const pluginInstallStatuses = ["pending", "running", "completed", "failed"] as const;
+const pluginInstallProgressKeys = [
   "task_id",
   "request_id",
   "stage",
@@ -190,17 +181,17 @@ const releaseInstallProgressKeys = [
   "retryable",
 ] as const;
 
-/** Reads the stable release-install progress projection from an execution event. */
-export function decodePluginReleaseInstallProgressEvent(
+/** Reads the stable plugin-install progress projection from an execution event. */
+export function decodePluginInstallProgressEvent(
   event: PluginEvent,
-): PluginReleaseInstallProgressEvent | undefined {
+): PluginInstallProgressEvent | undefined {
   const payload = event?.payload;
   if (!isRecord(payload)) return undefined;
   const value = payload.install_progress;
-  if (!isRecord(value) || !hasOnlyKeys(value, releaseInstallProgressKeys)) return undefined;
+  if (!isRecord(value) || !hasOnlyKeys(value, pluginInstallProgressKeys)) return undefined;
   if (!isNonEmptyString(value.task_id) || !isNonEmptyString(value.request_id)) return undefined;
   if (value.task_id !== event.execution_id) return undefined;
-  if (!isOneOf(value.stage, releaseInstallStages) || !isOneOf(value.status, releaseInstallStatuses)) {
+  if (!isOneOf(value.stage, pluginInstallStages) || !isOneOf(value.status, pluginInstallStatuses)) {
     return undefined;
   }
 
@@ -219,7 +210,7 @@ export function decodePluginReleaseInstallProgressEvent(
   if (failed) {
     if (
       !isNonEmptyString(value.failure_code) ||
-      !isOneOf(value.failure_stage, releaseInstallStages) ||
+      !isOneOf(value.failure_stage, pluginInstallStages) ||
       value.failure_stage !== value.stage ||
       typeof value.retryable !== "boolean"
     ) {
@@ -228,7 +219,7 @@ export function decodePluginReleaseInstallProgressEvent(
   } else if (value.failure_code !== undefined || value.failure_stage !== undefined || value.retryable !== undefined) {
     return undefined;
   }
-  return value as PluginReleaseInstallProgressEvent;
+  return value as PluginInstallProgressEvent;
 }
 
 export type PluginIntentRecord = PlatformSchemas["PluginIntentRecord"];
@@ -323,7 +314,7 @@ export class PluginPlatformClient {
       packageBlob,
       options,
       update
-        ? { "X-ReDevPlugin-Expected-Management-Revision": String(canonicalIntent.expected_management_revision) }
+        ? { "X-ReDevPlugin-Expected-Management-Revision": String(canonicalIntent.expected_management_revision), ...(canonicalIntent.allow_source_change === undefined ? {} : { "X-ReDevPlugin-Allow-Source-Change": String(canonicalIntent.allow_source_change) }) }
         : {},
     );
     this.#externalInspectionTargets.set(
@@ -332,13 +323,24 @@ export class PluginPlatformClient {
     );
     return inspection;
   }
+  listRepositoryPlugins(request: PlatformSchemas["ListRepositoryPluginsRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["RepositoryPlugin"][]> {
+    return this.#requestQuery("/_redevplugin/api/plugins/repository/plugins/query", request, options);
+  }
+  setAutomaticUpdates(request: PlatformSchemas["SetAutomaticUpdatesRequest"], options: PluginRequestOptions = {}): Promise<PluginRecord> {
+    return this.#mutatePlugin("/_redevplugin/api/plugins/updates/preferences", request, options);
+  }
+  async inspectPluginUpdate(request: PlatformSchemas["InspectPluginUpdateRequest"], options: PluginRequestOptions = {}): Promise<PluginExternalPackageInspection> {
+    const result = await this.#requestMutation<PluginExternalPackageInspection>("POST", "/_redevplugin/api/plugins/updates/inspect", request, options);
+    this.#externalInspectionTargets.set(result.inspection_id, request.plugin_instance_id);
+    return result;
+  }
   async startInspectedInstall(request: PluginStartInspectedInstallRequest, options: PluginRequestOptions = {}): Promise<PluginInspectedInstallOperation> {
     const target = this.#externalInspectionTargets.get(request.inspection_id);
     try {
       const operation = await this.#requestMutation<PluginInspectedInstallOperation>("POST", "/_redevplugin/api/plugins/external-packages/install-operations", request, options);
       // Accepted updates may revoke the old generation before completion is
       // observed. Close only that exact known target; receipt queries stay reads.
-      if (target && operation.execution.status === "running") await disposePluginSurfaceScope(this.#surfaceScope, target);
+      if (target && (operation.execution.status === "running" || operation.mutation_outcome !== "not_committed")) await disposePluginSurfaceScope(this.#surfaceScope, target);
       return operation;
     } catch (error) {
       if (target) await this.#handleMutationFailure(error, target, "Inspected install admission and local surface teardown failed");
@@ -347,24 +349,6 @@ export class PluginPlatformClient {
   }
   getInspectedInstall(requestID: string, options: PluginRequestOptions = {}): Promise<PluginInspectedInstallOperation> {
     return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/query", { request_id: requestID }, options);
-  }
-  async installInspectedPackage(request: PluginInstallInspectedPackageRequest, options: PluginRequestOptions = {}): Promise<PluginInstalledExternalPackage> {
-    const target = this.#externalInspectionTargets.get(request.inspection_id);
-    let result: PluginInstalledExternalPackage;
-    try {
-      result = await this.#requestMutation(
-        "POST", "/_redevplugin/api/plugins/external-packages/install", request, options,
-      );
-    } catch (error) {
-      await this.#handleMutationFailure(error, target || undefined, "External package install and local surface teardown failed");
-      throw error;
-    }
-    await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
-    this.#externalInspectionTargets.delete(request.inspection_id);
-    return result;
-  }
-  updateReleaseRef(request: PluginUpdateReleaseRefRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
-    return this.#mutatePlugin("/_redevplugin/api/plugins/update-release-ref", request, options);
   }
   downgradePlugin(request: PluginDowngradeRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#mutatePlugin("/_redevplugin/api/plugins/downgrade", request, options);
@@ -472,11 +456,8 @@ export class PluginPlatformClient {
   listExecutions(options: PluginExecutionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginExecutionList> {
     return this.#requestQuery("/_redevplugin/api/plugins/executions/query", options, requestOptions);
   }
-  listReleaseInstallExecutions(options: PluginReleaseInstallExecutionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginExecutionList> {
-    return this.listExecutions({ ...options, operation_scope: "release_install" }, requestOptions);
-  }
-  startReleaseInstallExecution(request: PluginStartReleaseInstallExecutionRequest, options: PluginRequestOptions = {}): Promise<PluginExecution> {
-    return this.#requestMutation("POST", "/_redevplugin/api/plugins/executions/release-installs", request, options);
+  listPluginInstallExecutions(options: PluginInstallExecutionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginExecutionList> {
+    return this.listExecutions({ ...options, operation_scope: "plugin_install" }, requestOptions);
   }
   getExecution(executionID: string, options: PluginRequestOptions = {}): Promise<PluginExecution> {
     return this.#requestQuery(`/_redevplugin/api/plugins/executions/${encodeURIComponent(executionID)}/query`, {}, options);
@@ -757,7 +738,10 @@ function canonicalUploadedExternalPackageIntent(intent: PluginUploadedExternalPa
   if (value.action !== "update") {
     throw new TypeError("uploaded external package intent action must be install or update");
   }
-  const updateKeys = ["action", "expected_management_revision", "plugin_instance_id"];
+  const updateKeys = ["action", ...(value.allow_source_change === undefined ? [] : ["allow_source_change"]), "expected_management_revision", "plugin_instance_id"];
+  if (value.allow_source_change !== undefined && typeof value.allow_source_change !== "boolean") {
+    throw new TypeError("uploaded package source change consent must be boolean");
+  }
   if (keys.length !== updateKeys.length || keys.some((key, index) => key !== updateKeys[index])) {
     throw new TypeError("uploaded external package update intent requires only action, plugin_instance_id, and expected_management_revision");
   }
@@ -776,6 +760,7 @@ function canonicalUploadedExternalPackageIntent(intent: PluginUploadedExternalPa
     action: "update",
     plugin_instance_id: value.plugin_instance_id,
     expected_management_revision: value.expected_management_revision as number,
+    ...(value.allow_source_change === undefined ? {} : { allow_source_change: value.allow_source_change as boolean }),
   };
 }
 

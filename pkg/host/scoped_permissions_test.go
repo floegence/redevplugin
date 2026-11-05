@@ -19,7 +19,7 @@ import (
 func TestScopedWorkerPermissionsReachRuntimeBroker(t *testing.T) {
 	runtime := &permissionInspectingRuntimeManager{recordingRuntimeManager: newRecordingRuntimeManager(), entered: make(chan struct{}, 1), release: make(chan struct{})}
 	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: runtime})
 	record := installAndEnablePlugin(t, h, buildScopedWorkerFixturePackage(t))
 	revisions := mustAuthorizationRevisions(t, h, record.PluginInstanceID)
 	if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{PluginInstanceID: record.PluginInstanceID, PermissionID: "fs.environment.read", ExpectedPolicyRevision: revisions.PolicyRevision, ExpectedManagementRevision: revisions.ManagementRevision, ExpectedRevokeEpoch: revisions.RevokeEpoch}); err != nil {
@@ -82,7 +82,7 @@ func TestScopedWorkerPermissionsReachRuntimeBroker(t *testing.T) {
 }
 
 func TestScopedSurfaceOpensWithoutUnrelatedPermissions(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
 	record := installAndEnablePlugin(t, h, buildScopedWorkerFixturePackage(t))
 	inventory, err := h.ListPluginInventory(hostTestContext())
 	if err != nil {
@@ -156,7 +156,7 @@ func buildScopedWorkerFixtureWith(t *testing.T, transform func(map[string]any)) 
 }
 
 func TestScopedSurfaceDoesNotStartUnrelatedBackground(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, backgroundRunnerFactory: NewBackgroundWorkerRunner})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{backgroundRunnerFactory: NewBackgroundWorkerRunner})
 	record := installAndEnablePlugin(t, h, buildScopedWorkerFixtureWith(t, func(doc map[string]any) {
 		doc["api"].(map[string]any)["required_features"] = []string{"authorization.scoped.v1", "background.method.v1"}
 		doc["workers"].([]any)[0].(map[string]any)["scope"] = "environment"

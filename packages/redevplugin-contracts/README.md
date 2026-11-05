@@ -1,14 +1,12 @@
 # @floegence/redevplugin-contracts
 
-This opt-in package provides typed, domain-separated canonical release-signing
-DTOs, preimage builders, strict decoders, browser-compatible Ed25519 verifier
-adapters, and verified presentation-evidence types.
+Host-neutral repository-index, author presentation, and capability-summary
+contracts for ordinary ReDevPlugin packages. Plugin publication requires no
+signature, trust registry, registration, or review service. Markets and hosts
+share these validators rather than maintain independent package definitions.
 
-Canonical machine contracts ship as exact artifacts named by the signed
-`PlatformReleaseManifest`; this npm package does not embed a second registry or
-package-set index. Host products choose their own trusted keys and policy. This
-package owns only host-neutral canonicalization, verification request shapes,
-and presentation evidence.
+Canonical contracts ship in the platform release artifact set. Platform release
+integrity and runtime lease verification remain independent of plugin admission.
 
 ## Security summary evidence
 
@@ -24,7 +22,7 @@ order is preserved, and optional absent properties stay absent.
 `securitySummarySHA256(value)` and `capabilityContractSetSHA256(value)` use Web
 Crypto and match the Go release projection's compact, HTML-safe JSON bytes.
 Compare the calculated digest to the claimed digest explicitly; normalization
-does not establish package trust, installation authority, or permission grants.
+does not establish installation authority, or permission grants.
 Markets and hosts should consume these APIs rather than keep their own field
 allowlists, summary DTOs, or hash payload builders.
 

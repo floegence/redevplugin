@@ -164,9 +164,8 @@ func putCatalogPlugin(t *testing.T, store Store, instanceID string, now time.Tim
 		PluginID:          "com.example.atomic",
 		Version:           "1.0.0",
 		ActiveFingerprint: "sha256:" + instanceID,
-		TrustState:        TrustVerified,
 		PackageSourceProvenance: PackageSourceProvenance{
-			Kind: PackageSourceLocalGenerated,
+			Kind: PackageSourceLocalPackage,
 		},
 		EnableState: EnableDisabledByUser,
 		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV9,

@@ -90,14 +90,7 @@ func TestPublicWireMappersPreservePublishedFields(t *testing.T) {
 		PackageHash:       "package_hash_1",
 		ManifestHash:      "manifest_hash_1",
 		EntriesHash:       "entries_hash_1",
-		TrustState:        registry.TrustVerified,
-		TrustAssessment: registry.TrustAssessment{
-			TrustState: registry.TrustVerified,
-			VerifiedSignature: &registry.VerifiedSignature{
-				Algorithm: "ed25519",
-				KeyID:     "key_1",
-			},
-		},
+
 		EnableState:        registry.EnableEnabled,
 		PolicyRevision:     2,
 		ManagementRevision: 3,
@@ -115,8 +108,8 @@ func TestPublicWireMappersPreservePublishedFields(t *testing.T) {
 	if plugin.PluginInstanceID != record.PluginInstanceID || plugin.PublisherID != record.PublisherID ||
 		plugin.PluginID != record.PluginID || plugin.Version != record.Version || plugin.ActiveFingerprint != record.ActiveFingerprint ||
 		plugin.PolicyRevision != record.PolicyRevision || plugin.ManagementRevision != record.ManagementRevision ||
-		plugin.RevokeEpoch != record.RevokeEpoch || plugin.TrustAssessment.VerifiedSignature == nil ||
-		plugin.TrustAssessment.VerifiedSignature.KeyID != "key_1" || len(plugin.VersionHistory) != 1 ||
+		plugin.RevokeEpoch != record.RevokeEpoch ||
+		len(plugin.VersionHistory) != 1 ||
 		plugin.VersionHistory[0].ActiveFingerprint != "fingerprint_0" || plugin.VersionHistory[0].DataGenerationID != "generation_0" {
 		t.Fatalf("public plugin mapper lost published fields: %#v", plugin)
 	}
@@ -157,11 +150,7 @@ func TestPublicWireMappersPreservePublishedFields(t *testing.T) {
 func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 	defaultSize := &manifest.WidgetSizeSpec{Width: 640, Height: 480}
 	record := registry.PluginRecord{
-		ReleaseTrustBinding: &registry.ReleaseTrustBinding{SourceID: "source.original"},
-		TrustAssessment: registry.TrustAssessment{
-			ReasonCodes: []string{"verified"},
-			Metadata:    map[string]string{"trust": "original"},
-		},
+
 		CapabilityContracts: []capabilitycontract.Pin{{ContractID: "contract.original"}},
 		Manifest: manifest.Manifest{
 			Surfaces: []manifest.SurfaceSpec{{SurfaceID: "surface.original", DefaultSize: defaultSize}},
@@ -178,16 +167,13 @@ func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 		},
 		PackageEntries: []pluginpkg.Entry{{Path: "ui/original.js"}},
 		VersionHistory: []registry.PluginVersion{{
-			ReleaseTrustBinding: &registry.ReleaseTrustBinding{SourceID: "history.original"},
-			Metadata:            map[string]string{"history": "original"},
+
+			Metadata: map[string]string{"history": "original"},
 		}},
 		Metadata: map[string]string{"record": "original"},
 	}
 	publicRecord := mustPublicPluginRecord(t, record)
 
-	record.ReleaseTrustBinding.SourceID = "source.mutated"
-	record.TrustAssessment.ReasonCodes[0] = "mutated"
-	record.TrustAssessment.Metadata["trust"] = "mutated"
 	record.CapabilityContracts[0].ContractID = "contract.mutated"
 	record.Manifest.Surfaces[0].SurfaceID = "surface.mutated"
 	record.Manifest.Surfaces[0].DefaultSize.Width = 1
@@ -195,19 +181,15 @@ func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 	record.Manifest.NetworkAccess.Connectors[0].Destinations[0] = "mutated.example"
 	record.Manifest.NetworkAccess.Connectors[0].Auth["headers"].(map[string]any)["authorization"] = "mutated"
 	record.PackageEntries[0].Path = "ui/mutated.js"
-	record.VersionHistory[0].ReleaseTrustBinding.SourceID = "history.mutated"
 	record.VersionHistory[0].Metadata["history"] = "mutated"
 	record.Metadata["record"] = "mutated"
 
-	if publicRecord.ReleaseTrustBinding.SourceID != "source.original" ||
-		publicRecord.TrustAssessment.ReasonCodes[0] != "verified" || publicRecord.TrustAssessment.Metadata["trust"] != "original" ||
-		publicRecord.CapabilityContracts[0].ContractID != "contract.original" || publicRecord.Manifest.Surfaces[0].SurfaceID != "surface.original" ||
+	if publicRecord.CapabilityContracts[0].ContractID != "contract.original" || publicRecord.Manifest.Surfaces[0].SurfaceID != "surface.original" ||
 		publicRecord.Manifest.Surfaces[0].DefaultSize.Width != 640 ||
 		publicRecord.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["name"].(map[string]any)["type"] != "string" ||
 		publicRecord.Manifest.NetworkAccess.Connectors[0].Destinations[0] != "example.com" ||
 		publicRecord.Manifest.NetworkAccess.Connectors[0].Auth["headers"].(map[string]any)["authorization"] != "declared" ||
 		publicRecord.PackageEntries[0].Path != "ui/original.js" ||
-		publicRecord.VersionHistory[0].ReleaseTrustBinding.SourceID != "history.original" ||
 		publicRecord.VersionHistory[0].Metadata["history"] != "original" || publicRecord.Metadata["record"] != "original" {
 		t.Fatalf("public plugin projection shares nested domain state: %#v", publicRecord)
 	}
@@ -259,8 +241,8 @@ func TestPublicWireClonePreservesCanonicalNumbersAndNulls(t *testing.T) {
 func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 	types := []any{
 		successResponse{}, mutationSuccessResponse{}, errorBody{}, mutationErrorBody{}, errorDetails{},
-		packageHashSetRequest{}, releaseRefRequest{}, trustHashSetResponse{}, verifiedSignatureResponse{},
-		trustAssessmentResponse{}, localImportProvenanceResponse{}, pluginVersionResponse{},
+		packageHashSetRequest{},
+		pluginVersionResponse{},
 		capabilityPinResponse{}, packageEntryResponse{}, manifestPublisherResponse{}, manifestPluginResponse{},
 		manifestLocalizedSurfaceResponse{}, manifestLocalizedSettingResponse{}, manifestPresentationLocalizationResponse{},
 		manifestPresentationResponse{}, presentationLocaleResponse{}, presentationCatalogResponse{},
@@ -401,35 +383,11 @@ func TestPublicAggregateProjectionsMatchPublishedFieldSets(t *testing.T) {
 }
 
 func TestPublicPlatformMappersOwnValues(t *testing.T) {
-	features := []host.Feature{host.FeatureRelease, host.FeatureRuntime}
+	features := []host.Feature{host.FeatureExternalPackage, host.FeatureRuntime}
 	publicFeatureSet := publicFeatures(features)
 	features[0] = host.FeatureSecrets
-	if !reflect.DeepEqual(publicFeatureSet, []string{string(host.FeatureRelease), string(host.FeatureRuntime)}) {
+	if !reflect.DeepEqual(publicFeatureSet, []string{string(host.FeatureExternalPackage), string(host.FeatureRuntime)}) {
 		t.Fatalf("publicFeatures() = %#v", publicFeatureSet)
-	}
-}
-
-func TestReleaseRefWireRequestRejectsNestedUnknownFields(t *testing.T) {
-	raw := []byte(`{
-		"release_ref": {
-			"source_id": "source_1",
-			"channel": "stable",
-			"release_metadata_ref": "release_1",
-			"release_metadata_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			"publisher_id": "publisher.example",
-			"plugin_id": "plugin.example",
-			"version": "1.2.3",
-			"expected_hashes": {
-				"package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-				"manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-				"entries_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-				"owner_env_hash": "attacker_controlled"
-			}
-		}
-	}`)
-	var request startReleaseInstallExecutionRequest
-	if err := decodeStrictJSON(raw, &request); err == nil || !strings.Contains(err.Error(), "owner_env_hash") {
-		t.Fatalf("decodeStrictJSON() error = %v, want nested unknown field rejection", err)
 	}
 }
 

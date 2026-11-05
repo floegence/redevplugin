@@ -33,38 +33,30 @@ type AuthorizationSnapshot struct {
 }
 
 type AuthorizationState struct {
-	PluginInstanceID    string                 `json:"plugin_instance_id"`
-	PluginVersion       string                 `json:"plugin_version"`
-	ActiveFingerprint   string                 `json:"active_fingerprint"`
-	TrustState          TrustState             `json:"trust_state"`
-	SignatureAssessment SignatureAssessment    `json:"signature_assessment"`
-	PackageSourceKind   PackageSourceKind      `json:"package_source_kind"`
-	ExecutionApproval   ExecutionApproval      `json:"execution_approval"`
-	EnableState         EnableState            `json:"enable_state"`
-	Revisions           AuthorizationRevisions `json:"revisions"`
+	PluginInstanceID  string                 `json:"plugin_instance_id"`
+	PluginVersion     string                 `json:"plugin_version"`
+	ActiveFingerprint string                 `json:"active_fingerprint"`
+	PackageSourceKind PackageSourceKind      `json:"package_source_kind"`
+	ExecutionApproval ExecutionApproval      `json:"execution_approval"`
+	EnableState       EnableState            `json:"enable_state"`
+	Revisions         AuthorizationRevisions `json:"revisions"`
 }
 
 func authorizationStateFromRecord(record PluginRecord) AuthorizationState {
 	return AuthorizationState{
-		PluginInstanceID:    record.PluginInstanceID,
-		PluginVersion:       record.Version,
-		ActiveFingerprint:   record.ActiveFingerprint,
-		TrustState:          record.TrustState,
-		SignatureAssessment: record.SignatureAssessment,
-		PackageSourceKind:   record.PackageSourceProvenance.Kind,
-		ExecutionApproval:   record.ExecutionApproval,
-		EnableState:         record.EnableState,
-		Revisions:           AuthorizationRevisionsFromRecord(record),
+		PluginInstanceID:  record.PluginInstanceID,
+		PluginVersion:     record.Version,
+		ActiveFingerprint: record.ActiveFingerprint,
+		PackageSourceKind: record.PackageSourceProvenance.Kind,
+		ExecutionApproval: record.ExecutionApproval,
+		EnableState:       record.EnableState,
+		Revisions:         AuthorizationRevisionsFromRecord(record),
 	}
 }
 
 func RunnableAuthorizationState(state AuthorizationState) bool {
 	if !validPackageSourceKind(state.PackageSourceKind) ||
-		!validSignatureAssessmentStatus(state.SignatureAssessment.Status) ||
 		!validExecutionApprovalStatus(state.ExecutionApproval.Status) {
-		return false
-	}
-	if state.SignatureAssessment.Status == SignatureInvalid || state.SignatureAssessment.Status == SignatureRevoked {
 		return false
 	}
 	return state.ExecutionApproval.Status == ExecutionApprovalUserApproved ||

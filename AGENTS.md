@@ -25,7 +25,7 @@ Workbench components, or Redeven business adapters.
 This repository owns:
 
 - the embeddable Go Host library, adapter interfaces, registry, lifecycle APIs,
-  package/manifest/signature validation, permissions, confirmations, audit
+  package/manifest validation, permissions, confirmations, audit
   contracts, runtime manager/supervisor, and mountable HTTP adapter;
 - the TypeScript UI package for sandboxed plugin surfaces, bridge SDK, generated
   clients, settings/intent helpers, and host-neutral developer utilities;
@@ -73,7 +73,7 @@ surface that a host imports:
   shells.
 - Host/back-end platform implementation lives in released Go packages:
   lifecycle services, the Host-owned control database and process-local package
-  inspection state, manifest/package/signature validators, permission and
+  inspection state, manifest/package validators, permission and
   confirmation pipeline, token/ticket issuance, broker contracts, unified
   Execution/Event envelopes, runtime manager/supervisor,
   stable errors, audit DTOs, HTTP adapter, and adapter interfaces.
@@ -145,7 +145,7 @@ Use this placement rule when designing a new package:
 
 - Platform library: belongs here. It defines reusable plugin package,
   lifecycle, registry, bridge, sandbox, broker, runtime, Execution/Event,
-  permission, signing, generated SDK, CLI validator, template, or compatibility
+  permission, generated SDK, CLI validator, template, or compatibility
   behavior.
 - Host adapter contract: belongs here as an interface, DTO, schema, callback, or
   fixture when the concept is reusable across host products.
@@ -174,8 +174,7 @@ ReDevPlugin and implement the policy or capability in the host product.
 Redeven is the first host product, not the owner of the plugin platform. The
 boundary must stay explicit in both directions:
 
-- ReDevPlugin defines the plugin package format, manifest schema, signature
-  model, trust and enable state machines, lifecycle API, sandbox bootstrap,
+- ReDevPlugin defines the plugin package format, manifest schema, source identity and enable state machines, lifecycle API, sandbox bootstrap,
   bridge protocol, token/ticket rules, permission evaluation, confirmation
   intents, storage/network broker contracts, runtime manager/supervisor, Rust
   runtime wire, WASM author ABI, CLI validators, templates, and release manifest.
@@ -218,8 +217,8 @@ Use this responsibility matrix as the default decision rule:
 
 | Area | ReDevPlugin owns | Host product owns |
 | --- | --- | --- |
-| Package and trust | Package layout, canonical hashes, signing rules, manifest validation, trust state contracts, release artifact identity | Which registries or local sources are allowed, product review UX, enterprise policy caps |
-| Lifecycle | Install, enable, open, disable, uninstall, update, downgrade, export/import, diagnostics, and data-retention APIs; durable owner-scoped release-install operations with idempotent request recovery, restart reconciliation, progress, and stable failure codes | Where those actions appear in product UI, who may invoke them, and how they are audited in the host product |
+| Package and source | Package layout, canonical hashes, manifest validation, source identity, release artifact identity | Which registries or local sources are allowed, product review UX, enterprise policy caps |
+| Lifecycle | Install, enable, open, disable, uninstall, update, downgrade, export/import, diagnostics, and data-retention APIs; durable owner-scoped inspected-install Executions with idempotent request recovery, restart reconciliation, progress, and stable failure codes | Where those actions appear in product UI, who may invoke them, and how they are audited in the host product |
 | UI runtime | Sandboxed iframe bootstrap, asset ticket/session protocol, bridge SDK, dedicated-origin source/port-bound MessageChannel messaging, settings and intent contracts | Activity Bar, Workbench, Settings, Desktop shell, route mounting, native product chrome, and product copy |
 | Backend runtime | Rust `redevplugin-runtime` source crates, runtime admission and manager/supervisor, WASM actor/job model, IPC, leases, quotas, revocation, hostcall contracts, stream envelopes | Fixed package coordinates and toolchain, verified source build, product binary/SBOM/provenance/signature, process placement, and diagnostics presentation |
 | Storage, network, and secrets | Host-neutral broker contracts, request contexts, Go connectivity target classification, quotas, secret reference contracts, and stable errors | Concrete vault, filesystem root, environment policy, allowlists, proxy settings, and product-specific grant UX |
@@ -230,26 +229,23 @@ If the right column is needed before the left column has a stable contract, add
 or fix the ReDevPlugin contract first and release it before asking a host product
 to depend on the behavior.
 
-External package admission keeps source, signature, execution approval, and
-update eligibility as independent security facts. A host may allow a user to
-inspect and explicitly install a package from any supported HTTPS package
-URL or GitHub repository even when the package is unsigned, the signer is
-unknown, or signature assessment is temporarily unavailable. Those outcomes do
-not grant trust or automatic-update eligibility. After the user confirms the
-exact inspected bytes and the package passes integrity and scope validation,
-`InstallCommit` persists the plugin as `enabled`. Missing grants remain an
-open/capability authorization boundary: the affected action returns
-`permission_required`, while the plugin stays enabled and visible. An invalid
-signature or a signature from a revoked key is an integrity failure and must
-block commit and execution.
+Plugin distribution is open. Authors publish ordinary `.redevplugin` packages
+and a repository index. Plugin signatures, trust evidence, publisher registration,
+review admission, release references and external signer exchanges are disabled
+and absent from public contracts. Official/community classification is display
+metadata and never changes installation or update authority.
 
-The platform owns the process-local `inspect -> install` transaction, immutable
-package and source evidence, exact owner/session binding before installation,
-and generated SDK routes. Hosts own the product review UI,
-the decision to expose external sources, trusted keyring and revocation inputs,
-and any stricter enterprise source policy. A host must not convert a missing
-signature into an installation ban, silently grant permissions after commit, or
-make an unverified package eligible for automatic updates.
+The platform owns source resolution, package inspection, exact content and owner
+binding, one durable inspected-install Execution, progress and retry recovery.
+Installing enables the plugin without granting runtime permissions. Automatic
+updates require a saved user preference, the original source, a higher stable
+version and unchanged capabilities. Source changes require explicit confirmation;
+same-version content replacement is rejected. Hosts provide source selection,
+review presentation and scheduling UX through these released APIs.
+
+Runtime isolation, permission grants, session credentials, token/ticket and lease
+verification remain unchanged. Platform release manifests and product runtime
+artifact validation remain independent release requirements.
 
 Any platform bug found while integrating Redeven must be fixed in ReDevPlugin
 first, released as a versioned artifact, and then consumed by Redeven. Temporary
@@ -403,7 +399,7 @@ uninstall, or update the retained installation to a current package. Unknown,
 mixed, corrupt, and future declarations remain rejected. Removing this reader
 requires proving no supported installed or historical data still needs it.
 
-Manifest presentation is author-owned signed package content. ReDevPlugin owns
+Manifest presentation is author-owned package content. ReDevPlugin owns
 its validation, canonicalization, locale resolution, inspection, and installed
 inventory projection. A host or market must consume the verified normalized
 presentation and must not maintain a second manifest parser, author-copy
@@ -415,7 +411,7 @@ only the published versioned evidence and extracted bytes; they must not parse a
 identity. A market may retain only the current evidence-bound derived image and
 must not treat it as package or installation authority.
 
-The control database kind is `redevplugin_control_v3` at schema version 6.
+The control database kind is `redevplugin_control_v3` at schema version 7.
 Schema 2 transactionally migrates the exact released schema 1 and adds selected-file
 resource authority without changing existing registry, grants, or settings.
 Schema 3 adds owner-scoped controlled connections through the same atomic migration
@@ -428,7 +424,10 @@ revision-bound cancellation. Hosts supply BackgroundPolicyAdapter and present
 verified inventory state; they must not implement a second scheduler.
 Schema 6 adds a unique owner-scoped inspected-package install claim to the
 existing Execution authority, preserving request receipts across restart.
-The Host accepts only an explicit state root and never discovers or imports a
+Schema 7 removes retired plugin admission fields from existing records and
+retained generations transactionally, preserving package identity, grants, data
+and execution receipts. It does not infer new execution permission or update
+sources. The Host accepts only an explicit state root and never discovers or imports a
 2.x sibling root. A wrong, legacy, drifted, or future root fails closed without
 changing its bytes. The v3 kind is the permanent lineage once 3.0 is released;
 future supported changes append contiguous migrations instead of resetting the
@@ -925,13 +924,13 @@ Core invariants:
   execution owner, and Host policy remains authoritative;
 - host products may register business capabilities, but they must not bypass the
   ReDevPlugin permission, confirmation, token, lease, audit, or lifecycle chain.
-- package and release-document retrieval uses a trusted host-selected single-hop
+- package and repository-index retrieval uses a trusted host-selected single-hop
   HTTPS transport for normal DNS, VPN routes, system/explicit proxies, and private
   sources. Address classes are not evidence that a user-selected network is
   invalid. Hosts own network policy; plugin execution grants remain separate.
   An omitted transport retains the documented public-address-pinned server
   policy, not automatic desktop network detection. ReDevPlugin validates URLs,
-  every redirect, source-declared artifact hosts, origin-scoped credentials,
+  every redirect, origin-scoped credentials,
   verified TLS, bounded identity-encoded bytes, staging and exact hashes under
   either policy. Custom transports must not follow redirects or attach ambient
   cookies or origin credentials. Proxy authentication belongs to the transport;
@@ -944,19 +943,13 @@ Core invariants:
   literal-address targets and other protocols retain address-bound enforcement;
 - download transport construction is local and must not probe connectivity or
   block host startup. Network failures affect only the attempted operation and
-  remain distinguishable from integrity or signature failures;
-- external package installation reopens and re-verifies the exact staged artifact,
-  binds the explicit approval to the authenticated session and environment owner,
-  and never treats an absent or unknown signature as a permission grant or an
-  automatic-update entitlement;
-- invalid or revoked signatures fail closed, while absent, unknown-signer, and
-  temporarily unavailable signature assessments may proceed only through
-  explicit user confirmation and remain manual-update-only. A successful
-  `InstallCommit` always persists `enable_state=enabled`; missing grants make
-  only the affected open/capability call return `permission_required`. Only an
-  explicit user disable writes `disabled_by_user`. Trust, policy, permission,
-  readiness, or runtime failures revoke the relevant leases, tokens, handles,
-  or surfaces without rewriting lifecycle state.
+  remain distinguishable from package integrity failures;
+- external package installation reopens and re-verifies exact staged bytes, binds
+  acceptance to the authenticated owner, and never grants runtime permissions;
+- no plugin-signature or publisher-trust policy participates in admission.
+  Missing grants affect only the relevant open/capability action. Explicit user
+  disable remains the only user-disabled lifecycle state; runtime or permission
+  failures revoke derived authority without rewriting that intent.
 
 ## First-Principles And Occam Review
 

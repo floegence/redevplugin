@@ -3,6 +3,8 @@ package externalsource
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -33,7 +35,7 @@ func githubJSONResponse(body string) *http.Response {
 	}
 }
 
-func TestGitHubRESTReleaseClientResolvesLatestReleaseAndStableIdentity(t *testing.T) {
+func TestGitHubRESTReleaseClientResolvesTaggedReleaseAndStableIdentity(t *testing.T) {
 	const resolvedSHA = "0123456789abcdef0123456789abcdef01234567"
 	var mu sync.Mutex
 	var requests []githubAPIRequestSnapshot
@@ -46,7 +48,7 @@ func TestGitHubRESTReleaseClientResolvesLatestReleaseAndStableIdentity(t *testin
 		switch request.URL.EscapedPath() {
 		case "/repos/example/plugin":
 			return githubJSONResponse(`{"id":101,"name":"Plugin","owner":{"login":"Example"},"ignored_by_projection":true}`), nil
-		case "/repos/example/plugin/releases/latest":
+		case "/repos/example/plugin/releases/tags/v2.0.1":
 			return githubJSONResponse(`{
   "id":202,
   "tag_name":"v2.0.1",
@@ -56,7 +58,7 @@ func TestGitHubRESTReleaseClientResolvesLatestReleaseAndStableIdentity(t *testin
     {"id":304,"name":"checksums.txt","browser_download_url":"https://github.com/example/plugin/releases/download/v2.0.1/checksums.txt","size":128}
   ]
 }`), nil
-		case "/repos/example/plugin/commits/main":
+		case "/repos/example/plugin/commits/v2.0.1":
 			return githubJSONResponse(`{"sha":"` + resolvedSHA + `","commit":{"message":"release"}}`), nil
 		default:
 			t.Fatalf("unexpected GitHub API path %q", request.URL.EscapedPath())
@@ -70,7 +72,7 @@ func TestGitHubRESTReleaseClientResolvesLatestReleaseAndStableIdentity(t *testin
 		t.Fatal(err)
 	}
 
-	release, err := client.LatestRelease(context.Background(), "Example", "Plugin")
+	release, err := client.ReleaseByTag(context.Background(), "Example", "Plugin", "v2.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +112,7 @@ func TestGitHubRESTReleaseClientEscapesTagAndRevalidatesCommitSHA(t *testing.T) 
 			return githubJSONResponse(`{"id":1,"name":"plugin","owner":{"login":"example"}}`), nil
 		case "/repos/example/plugin/releases/tags/v2.0%2Fstable":
 			return githubJSONResponse(`{"id":2,"tag_name":"v2.0/stable","target_commitish":"` + requestedSHA + `","assets":[]}`), nil
-		case "/repos/example/plugin/commits/" + requestedSHA:
+		case "/repos/example/plugin/commits/v2.0%2Fstable":
 			return githubJSONResponse(`{"sha":"` + requestedSHA + `"}`), nil
 		default:
 			t.Fatalf("unexpected GitHub API path %q", request.URL.EscapedPath())
@@ -126,7 +128,7 @@ func TestGitHubRESTReleaseClientEscapesTagAndRevalidatesCommitSHA(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if release.ResolvedCommitSHA != requestedSHA || len(paths) != 3 || paths[2] != "/repos/example/plugin/commits/"+requestedSHA {
+	if release.ResolvedCommitSHA != requestedSHA || len(paths) != 3 || paths[2] != "/repos/example/plugin/commits/v2.0%2Fstable" {
 		t.Fatalf("release=%#v paths=%#v", release, paths)
 	}
 }
@@ -146,7 +148,7 @@ func TestGitHubRESTReleaseClientRejectsRedirectWithoutCredentialLeak(t *testing.
 		t.Fatal(err)
 	}
 
-	_, err = client.LatestRelease(context.Background(), "example", "plugin")
+	_, err = client.ReleaseByTag(context.Background(), "example", "plugin", "v2.0.1")
 	if CodeOf(err) != ErrorGitHubRelease {
 		t.Fatalf("redirect error code=%q err=%v", CodeOf(err), err)
 	}
@@ -216,7 +218,7 @@ func TestGitHubRESTReleaseClientBoundsAndClassifiesResponses(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = client.LatestRelease(context.Background(), "example", "plugin")
+			_, err = client.ReleaseByTag(context.Background(), "example", "plugin", "v2.0.1")
 			if CodeOf(err) != ErrorGitHubRelease {
 				t.Fatalf("error code=%q err=%v", CodeOf(err), err)
 			}
@@ -246,9 +248,9 @@ func TestGitHubRESTReleaseClientRejectsIdentityDriftAndUnsafeOptions(t *testing.
 		switch request.URL.EscapedPath() {
 		case "/repos/example/plugin":
 			return githubJSONResponse(`{"id":1,"name":"plugin","owner":{"login":"example"}}`), nil
-		case "/repos/example/plugin/releases/latest":
+		case "/repos/example/plugin/releases/tags/v2.0.1":
 			return githubJSONResponse(`{"id":2,"tag_name":"v1","target_commitish":"` + requestedSHA + `","assets":[]}`), nil
-		case "/repos/example/plugin/commits/" + requestedSHA:
+		case "/repos/example/plugin/commits/v2.0%2Fstable":
 			return githubJSONResponse(`{"sha":"` + differentSHA + `"}`), nil
 		default:
 			return nil, errors.New("unexpected request")
@@ -258,10 +260,10 @@ func TestGitHubRESTReleaseClientRejectsIdentityDriftAndUnsafeOptions(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.LatestRelease(context.Background(), "example", "plugin"); CodeOf(err) != ErrorGitHubRelease {
+	if _, err := client.ReleaseByTag(context.Background(), "example", "plugin", "v2.0.1"); CodeOf(err) != ErrorGitHubRelease {
 		t.Fatalf("commit drift code=%q err=%v", CodeOf(err), err)
 	}
-	if _, err := client.LatestRelease(context.Background(), "../escape", "plugin"); CodeOf(err) != ErrorInvalidSource {
+	if _, err := client.ReleaseByTag(context.Background(), "../escape", "plugin", "v2.0.1"); CodeOf(err) != ErrorInvalidSource {
 		t.Fatalf("invalid repository code=%q err=%v", CodeOf(err), err)
 	}
 }
@@ -294,5 +296,81 @@ func TestGitHubRESTReleaseClientPreservesHostProxyAndProvidesResolverConstructor
 	}
 	if _, ok := resolver.client.(*GitHubRESTReleaseClient); !ok {
 		t.Fatalf("resolver client = %T", resolver.client)
+	}
+}
+
+func TestGitHubRESTIndexPinsContentsToResolvedCommit(t *testing.T) {
+	raw := `{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"example.alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin.redevplugin"}}]}]}`
+	sha := strings.Repeat("a", 40)
+	transport := githubRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.EscapedPath() {
+		case "/repos/example/plugin":
+			return githubJSONResponse(`{"id":1,"name":"plugin","owner":{"login":"example"},"default_branch":"main"}`), nil
+		case "/repos/example/plugin/commits/main":
+			return githubJSONResponse(`{"sha":"` + sha + `"}`), nil
+		case "/repos/example/plugin/contents/.redevplugin/index.json":
+			if request.URL.Query().Get("ref") != sha {
+				t.Fatal("contents not commit bound")
+			}
+			content, _ := json.Marshal(map[string]any{"type": "file", "encoding": "base64", "path": ".redevplugin/index.json", "size": len(raw), "content": base64.StdEncoding.EncodeToString([]byte(raw))})
+			return githubJSONResponse(string(content)), nil
+		}
+		t.Fatalf("unexpected request %s", request.URL)
+		return nil, errors.New("unexpected request")
+	})
+	client, err := NewGitHubRESTReleaseClient(GitHubRESTReleaseClientOptions{Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := client.RepositoryIndex(context.Background(), "example", "plugin")
+	if err != nil || len(index.Targets) != 1 || index.Targets[0].Plugins[0].PluginID != "example.alpha" {
+		t.Fatalf("index: %+v %v", index, err)
+	}
+}
+
+func TestGitHubRESTRejectsDraftAndPrereleaseExactTags(t *testing.T) {
+	for _, flag := range []string{"draft", "prerelease"} {
+		t.Run(flag, func(t *testing.T) {
+			transport := githubRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/releases/tags/alpha-v1.0.0") {
+					return githubJSONResponse(`{"id":2,"tag_name":"alpha-v1.0.0","target_commitish":"main","assets":[],"` + flag + `":true}`), nil
+				}
+				if request.URL.Path == "/repos/example/plugin" {
+					return githubJSONResponse(`{"id":1,"name":"plugin","owner":{"login":"example"}}`), nil
+				}
+				t.Fatalf("unstable release proceeded to %s", request.URL.Path)
+				return nil, errors.New("unexpected")
+			})
+			client, err := NewGitHubRESTReleaseClient(GitHubRESTReleaseClientOptions{Transport: transport})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.ReleaseByTag(context.Background(), "example", "plugin", "alpha-v1.0.0"); err == nil {
+				t.Fatal("unstable release accepted")
+			}
+		})
+	}
+}
+
+func TestGitHubRESTRejectsUnknownQueriesBeforeTransport(t *testing.T) {
+	client, err := NewGitHubRESTReleaseClient(GitHubRESTReleaseClientOptions{Transport: githubRoundTripFunc(func(*http.Request) (*http.Response, error) { t.Fatal("invalid query reached network"); return nil, nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/repos/example/plugin?token=secret", "/repos/example/plugin/releases?page=1&page=2&per_page=100", "/repos/example/plugin/releases?page=11&per_page=100", "/repos/example/plugin/contents/.redevplugin/index.json?ref=main"} {
+		if err := client.getJSON(context.Background(), path, new(any)); err == nil {
+			t.Errorf("accepted %s", path)
+		}
+	}
+}
+func TestGitHubRESTRejectsRepositoryIdentityMismatch(t *testing.T) {
+	client, err := NewGitHubRESTReleaseClient(GitHubRESTReleaseClientOptions{Transport: githubRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return githubJSONResponse(`{"id":1,"name":"other","owner":{"login":"example"},"default_branch":"main"}`), nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.RepositoryIndex(context.Background(), "example", "plugin"); err == nil {
+		t.Fatal("accepted unrelated repository")
 	}
 }

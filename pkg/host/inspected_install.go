@@ -19,6 +19,7 @@ import (
 var ErrInspectedInstallNotFound = errors.New("inspected installation operation not found")
 
 type StartInspectedInstallRequest struct {
+	Automatic             bool   `json:"automatic,omitempty"`
 	RequestID             string `json:"request_id"`
 	InspectionID          string `json:"inspection_id"`
 	ExpectedPackageSHA256 string `json:"expected_package_sha256"`
@@ -64,7 +65,7 @@ func (h *Host) StartInspectedInstall(ctx context.Context, req StartInspectedInst
 		if _, err = h.authorizeManagementSession(ctx, session, ManagementActionInstallInspectedPackage, scopedAuthorizationTarget(ResourcePlugin, old.Execution.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
 			return InspectedInstallOperation{}, err
 		}
-		if old.InspectionID != req.InspectionID || old.PackageSHA256 != req.ExpectedPackageSHA256 {
+		if old.InspectionID != req.InspectionID || old.PackageSHA256 != req.ExpectedPackageSHA256 || old.Automatic != req.Automatic {
 			return InspectedInstallOperation{}, ErrExternalPackageConfirmation
 		}
 		return inspectedInstallProjection(old), nil
@@ -92,7 +93,28 @@ func (h *Host) StartInspectedInstall(ctx context.Context, req StartInspectedInst
 	if !time.Now().Before(pending.Inspection.ExpiresAt) {
 		return InspectedInstallOperation{}, ErrExternalPackageInspectionExpired
 	}
-	op, created, err := h.controlStore.Executions().StartInspectedInstall(ctx, owner, controlstore.InspectedInstall{RequestID: req.RequestID, InspectionID: req.InspectionID, PackageSHA256: req.ExpectedPackageSHA256, PluginID: pending.Record.PluginID, Version: pending.Record.Version, Execution: execution.Execution{PluginInstanceID: pending.Record.PluginInstanceID, Kind: execution.KindOperation}})
+	if req.Automatic {
+		if pending.Inspection.Intent.Action != "update" || pending.Inspection.Intent.AllowSourceChange {
+			return InspectedInstallOperation{}, ErrExternalPackageRequestInvalid
+		}
+		current, e := h.getPluginRecord(ctx, pending.Record.PluginInstanceID)
+		if e != nil {
+			return InspectedInstallOperation{}, e
+		}
+		if e = validateAutomaticUpdate(current, pending.Record); e != nil {
+			return InspectedInstallOperation{}, e
+		}
+	}
+	if _, err = h.externalInspections.begin(req.InspectionID, scope, req.ExpectedPackageSHA256, time.Now().UTC()); err != nil {
+		return InspectedInstallOperation{}, err
+	}
+	accepted := false
+	defer func() {
+		if !accepted {
+			h.externalInspections.finish(req.InspectionID, externalPackagePending)
+		}
+	}()
+	op, created, err := h.controlStore.Executions().StartInspectedInstall(ctx, owner, controlstore.InspectedInstall{Automatic: req.Automatic, RequestID: req.RequestID, InspectionID: req.InspectionID, PackageSHA256: req.ExpectedPackageSHA256, PluginID: pending.Record.PluginID, Version: pending.Record.Version, Execution: execution.Execution{PluginInstanceID: pending.Record.PluginInstanceID, Kind: execution.KindOperation}})
 	if errors.Is(err, controlstore.ErrStateConflict) {
 		return InspectedInstallOperation{}, ErrExternalPackageInstallInProgress
 	}
@@ -102,22 +124,38 @@ func (h *Host) StartInspectedInstall(ctx context.Context, req StartInspectedInst
 	if !created {
 		return inspectedInstallProjection(op), nil
 	}
+	accepted = true
 	if !h.startLifecycleJob(func(job context.Context) {
 		job = sessionctx.WithContext(job, session)
 		job, cancel := context.WithTimeout(job, 5*time.Minute)
 		defer cancel()
-		_, failure := h.InstallInspectedPackage(job, InstallInspectedPackageRequest{InspectionID: req.InspectionID, ExpectedPackageSHA256: req.ExpectedPackageSHA256, operationEvidence: op.Execution.ID})
+		stage := "verify"
+		progress := func(next, status string) error {
+			stage = next
+			return h.reportInstallProgress(job, owner, req.RequestID, next, status, "")
+		}
+		_, failure := h.installInspectedPackage(job, installInspectedPackageRequest{InspectionID: req.InspectionID, ExpectedPackageSHA256: req.ExpectedPackageSHA256, operationEvidence: op.Execution.ID, progress: progress, automatic: req.Automatic, claimed: true})
 		outcome := mutation.OutcomeCommitted
 		code := ""
 		if failure != nil {
+			h.externalInspections.finish(req.InspectionID, externalPackageFailed)
+			failure = errors.Join(failure, h.removeExternalPackageInspectionArtifact(req.InspectionID, true))
 			outcome = mutation.ForError(failure)
-			code = releaseInstallFailureCode(failure)
+			code = installFailureCode(failure)
+		}
+		status := "completed"
+		if failure != nil {
+			status = "failed"
+		}
+		if progressErr := h.reportInstallProgress(context.WithoutCancel(job), owner, req.RequestID, stage, status, code); progressErr != nil {
+			h.diagnostic(context.WithoutCancel(job), observability.DiagnosticEvent{Type: "plugin.execution.failed", PluginInstanceID: op.Execution.PluginInstanceID, Severity: observability.DiagnosticSeverityWarning, Message: "Installation progress persistence failed", Details: observability.DiagnosticDetails{Operation: "inspected_install_progress"}})
 		}
 		if _, finishErr := h.controlStore.Executions().FinishInspectedInstall(context.WithoutCancel(job), owner, req.RequestID, outcome, code); finishErr != nil {
 			h.diagnostic(context.WithoutCancel(job), observability.DiagnosticEvent{Type: "plugin.execution.failed", PluginInstanceID: op.Execution.PluginInstanceID, Severity: observability.DiagnosticSeverityWarning, Message: "Installation result persistence requires restart reconciliation", Details: observability.DiagnosticDetails{Operation: "inspected_install_finish"}, Failure: observability.FailureFromError(observability.FailureOwner, observability.FailureComponentLifecycle, observability.FailureOperationLifecycle, finishErr)})
 		}
 	}) {
-		op, err = h.controlStore.Executions().FinishInspectedInstall(context.WithoutCancel(ctx), owner, req.RequestID, mutation.OutcomeNotCommitted, releaseInstallFailureInterrupted)
+		h.externalInspections.finish(req.InspectionID, externalPackagePending)
+		op, err = h.controlStore.Executions().FinishInspectedInstall(context.WithoutCancel(ctx), owner, req.RequestID, mutation.OutcomeNotCommitted, installFailureInterrupted)
 	}
 	return inspectedInstallProjection(op), err
 }
@@ -153,7 +191,7 @@ func (h *Host) reconcileInspectedInstalls(ctx context.Context) error {
 	}
 	for _, c := range candidates {
 		outcome := mutation.OutcomeUnknown
-		code := releaseInstallFailureInterrupted
+		code := installFailureInterrupted
 		record, failure := h.controlStore.Registry().GetPlugin(ctx, c.Owner.OwnerEnvHash, c.Operation.Execution.PluginInstanceID)
 		if failure == nil && inspectedInstallCommitted(c.Operation, record) {
 			outcome = mutation.OutcomeCommitted
@@ -167,7 +205,7 @@ func (h *Host) reconcileInspectedInstalls(ctx context.Context) error {
 }
 func inspectedInstallCommitted(op controlstore.InspectedInstall, record registry.PluginRecord) bool {
 	match := func(hash string, approval registry.ExecutionApproval) bool {
-		return hash == op.PackageSHA256 && approval.EvidenceReference == op.Execution.ID && approval.Status == registry.ExecutionApprovalUserApproved
+		return hash == op.PackageSHA256 && approval.EvidenceReference == op.Execution.ID && (approval.Status == registry.ExecutionApprovalUserApproved || approval.Status == registry.ExecutionApprovalPolicyApproved)
 	}
 	if match(record.PackageHash, record.ExecutionApproval) {
 		return true

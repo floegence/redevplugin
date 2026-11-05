@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v3/internal/runtimeclient"
-	"github.com/floegence/redevplugin/v3/internal/testsupport/releasetrustfixture"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
 	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
@@ -37,8 +36,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
-	"github.com/floegence/redevplugin/v3/pkg/releasetrust"
-	"github.com/floegence/redevplugin/v3/pkg/remoterelease"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
 	"github.com/floegence/redevplugin/v3/pkg/security"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -284,7 +281,6 @@ func TestDataLifecycleErrorMappingKeepsConflictSemanticsDistinct(t *testing.T) {
 func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 	routes := RouteSet()
 	want := map[string]bool{
-		"POST /_redevplugin/api/plugins/executions/release-installs":                  false,
 		"POST /_redevplugin/api/plugins/enable":                                       false,
 		"POST /_redevplugin/api/plugins/surfaces/open":                                false,
 		"POST /_redevplugin/api/plugins/session/revoke-scope":                         false,
@@ -302,7 +298,6 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/retained-data/cleanup-expired":                false,
 		"POST /_redevplugin/api/plugins/intents/query":                                false,
 		"POST /_redevplugin/api/plugins/intents/invoke":                               false,
-		"POST /_redevplugin/api/plugins/update-release-ref":                           false,
 		"POST /_redevplugin/api/plugins/permissions/query":                            false,
 		"POST /_redevplugin/api/plugins/permissions/requirements/query":               false,
 		"POST /_redevplugin/api/plugins/permissions/grant":                            false,
@@ -1517,106 +1512,6 @@ func TestHandlerManagementRevisionContractFailsClosed(t *testing.T) {
 	})
 	if opened.SurfaceInstanceID != "surface_revision_check" {
 		t.Fatalf("open after stale request = %#v", opened)
-	}
-}
-
-func TestHandlerReleaseInstallDownloadsAfterConfirmation(t *testing.T) {
-	fixture, ref := newHTTPReleaseTrustFixture(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), releasetrustfixture.Options{SourceID: "official"})
-	resolver := &httpRecordingReleaseArtifactResolver{
-		artifact: httpResolvedArtifactForFixture(fixture),
-	}
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
-		releaseTrust:            fixture.ServiceSet,
-		releaseArtifactResolver: resolver,
-	})
-	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-
-	pluginInstanceID := nextHTTPTestPluginInstanceID(t)
-	required := make(map[string][]string, len(fixture.Package.Manifest.Methods))
-	for _, method := range fixture.Package.Manifest.Methods {
-		if method.Route.Kind == manifest.MethodRouteWorker {
-			for _, permission := range fixture.Package.Manifest.Permissions {
-				required[method.Method] = append(required[method.Method], string(permission))
-			}
-		}
-	}
-	summary, err := host.BuildExternalPackageSecuritySummary(fixture.Package.Manifest, nil, required)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contractDigest, err := host.CapabilityContractSetSHA256(summary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	releaseIdentityDigest, err := registry.ReleaseInstallIdentitySHA256(registry.ReleaseInstallIdentity{
-		SourceID: ref.SourceID, Channel: ref.Channel, ReleaseMetadataRef: ref.ReleaseMetadataRef, ReleaseMetadataSHA256: ref.ReleaseMetadataSHA256,
-		PublisherID: ref.PublisherID, PluginID: ref.PluginID, Version: ref.Version, PackageSHA256: ref.ExpectedHashes.PackageSHA256,
-		ManifestSHA256: ref.ExpectedHashes.ManifestSHA256, EntriesSHA256: ref.ExpectedHashes.EntriesSHA256,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	started := postJSON[execution.Execution](t, handler, "/_redevplugin/api/plugins/executions/release-installs", map[string]any{
-		"request_id":              "request_http_release_install",
-		"plugin_instance_id":      pluginInstanceID,
-		"release_ref":             ref,
-		"release_identity_digest": releaseIdentityDigest,
-		"manifest_sha256":         fixture.Package.ManifestHash,
-		"contract_set_sha256":     contractDigest,
-		"summary_sha256":          summary.SummarySHA256,
-	})
-	deadline := time.Now().Add(5 * time.Second)
-	for started.Status == execution.StatusRunning && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-		var err error
-		started, err = h.GetExecution(httpTestContext(), started.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if started.Status != execution.StatusCompleted {
-		t.Fatalf("release install execution = %#v", started)
-	}
-	installedPlugins, err := h.ListPlugins(httpTestContext())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(installedPlugins) != 1 {
-		t.Fatalf("installed plugins = %#v", installedPlugins)
-	}
-	installed := installedPlugins[0]
-
-	if installed.PackageHash != fixture.Package.PackageHash || installed.TrustState != registry.TrustVerified {
-		t.Fatalf("install release ref response mismatch: %#v", installed)
-	}
-	wantMetadataSignatureRef := fixture.Metadata.ReleaseMetadataSignature.SignatureRef
-	wantPackageSignatureBundleRef := fixture.Metadata.PackageSignature.SignatureBundleRef
-	if installed.Metadata["source_id"] != "official" ||
-		installed.Metadata["source.type"] != "registry" ||
-		installed.Metadata["source.class"] != "official" ||
-		installed.Metadata["source.distribution"] != string(host.PackageDistributionRegistryRef) ||
-		installed.Metadata["source.install_policy"] != "allow" ||
-		installed.Metadata["source.unsigned_policy"] != "block" ||
-		installed.Metadata["source.downgrade_policy"] != "block" ||
-		installed.Metadata["source.policy_epoch"] != "1" ||
-		installed.Metadata["source.root_epoch"] != "1" ||
-		installed.Metadata["source.revocation_epoch"] != "1" ||
-		installed.Metadata["release.metadata_signature_algorithm"] != "ed25519" ||
-		installed.Metadata["release.metadata_signature_key_id"] != fixture.Metadata.ReleaseMetadataSignature.KeyID ||
-		installed.Metadata["release.metadata_signature_ref"] != wantMetadataSignatureRef ||
-		installed.Metadata["release.package_signature_algorithm"] != "ed25519" ||
-		installed.Metadata["release.package_signature_key_id"] != fixture.Metadata.PackageSignature.KeyID ||
-		installed.Metadata["release.package_signature_bundle_ref"] != wantPackageSignatureBundleRef {
-		t.Fatalf("metadata = %#v", installed.Metadata)
-	}
-	if resolver.last.Action != host.PackageTrustActionInstall || resolver.last.ReleaseRef.PluginID != fixture.Package.Manifest.PluginID() {
-		t.Fatalf("resolver request mismatch: %#v", resolver.last)
-	}
-	if resolver.last.SourcePolicy.SourceClass != "official" || !resolver.last.SourcePolicy.RequireSignature {
-		t.Fatalf("resolver source policy mismatch: %#v", resolver.last.SourcePolicy)
-	}
-	if resolver.calls != 1 {
-		t.Fatalf("release resolver calls = %d, want one install fetch", resolver.calls)
 	}
 }
 
@@ -3455,17 +3350,10 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 		{name: "management adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management feature", err: host.ErrFeatureNotConfigured, code: security.ErrFeatureNotConfigured, status: http.StatusNotImplemented, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management capability contract", err: capability.ErrRegistrationMissing, code: security.ErrContractMismatch, status: http.StatusConflict, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
-		{name: "management external package stale", err: host.ErrExternalPackageInspectionStale, code: security.ErrInvalidRequest, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management external package request", err: host.ErrExternalPackageRequestInvalid, code: security.ErrInvalidRequest, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management timeout", err: context.DeadlineExceeded, code: security.ErrReleaseTimeout, status: http.StatusGatewayTimeout, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management interrupted", err: context.Canceled, code: security.ErrInstallInterrupted, status: http.StatusServiceUnavailable, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
-		{name: "management install conflict", err: registry.ErrReleaseInstallOperationConflict, code: security.ErrInstallStateConflict, status: http.StatusConflict, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
-		{name: "management install missing", err: registry.ErrReleaseInstallOperationNotFound, code: security.ErrExecutionNotFound, status: http.StatusNotFound, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "inspected install missing", err: host.ErrInspectedInstallNotFound, code: security.ErrExecutionNotFound, status: http.StatusNotFound, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
-		{name: "management install invalid", err: registry.ErrInvalidReleaseInstallOperation, code: security.ErrInvalidRequest, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
-		{name: "management remote release missing", err: remoterelease.ErrAssetMissing, code: security.ErrReleaseAssetMissing, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
-		{name: "management remote release mismatch", err: remoterelease.ErrAssetMismatch, code: security.ErrReleaseAssetIntegrity, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
-		{name: "management remote release invalid adapter", err: remoterelease.ErrInvalidAssetSet, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management network policy", err: &externalsource.Error{Code: externalsource.ErrorTargetBlocked}, code: security.ErrNetworkTargetDenied, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management redirect policy", err: &externalsource.Error{Code: externalsource.ErrorRedirectDenied}, code: security.ErrNetworkTargetDenied, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management redirect limit", err: &externalsource.Error{Code: externalsource.ErrorTooManyRedirects}, code: security.ErrNetworkTargetDenied, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
@@ -4304,17 +4192,15 @@ func newHTTPTestHost(t *testing.T) *host.Host {
 }
 
 type httpTestHostOptions struct {
-	connectivity            *host.ConnectivityModule
-	webOrigins              host.SurfaceOriginAdapter
-	files                   *host.FilesModule
-	authorization           host.AuthorizationAdapter
-	secrets                 host.SecretStoreAdapter
-	diagnostics             host.DiagnosticsSink
-	surfaceCatalog          host.SurfaceCatalogSink
-	releaseTrust            *releasetrust.ServiceSet
-	releaseArtifactResolver host.ReleaseArtifactResolver
-	capabilityID            string
-	capabilityAdapter       interface {
+	connectivity      *host.ConnectivityModule
+	webOrigins        host.SurfaceOriginAdapter
+	files             *host.FilesModule
+	authorization     host.AuthorizationAdapter
+	secrets           host.SecretStoreAdapter
+	diagnostics       host.DiagnosticsSink
+	surfaceCatalog    host.SurfaceCatalogSink
+	capabilityID      string
+	capabilityAdapter interface {
 		capability.Adapter
 		capability.TargetProjector
 	}
@@ -4352,13 +4238,6 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	if surfaceCatalog == nil {
 		surfaceCatalog = httpSurfaceCatalogSink{}
 	}
-	var releaseModule *host.ReleaseModule
-	if opts.releaseTrust != nil || opts.releaseArtifactResolver != nil {
-		releaseModule = &host.ReleaseModule{
-			Trust:                   opts.releaseTrust,
-			ReleaseArtifactResolver: opts.releaseArtifactResolver,
-		}
-	}
 	webOrigins := opts.webOrigins
 	if webOrigins == nil {
 		webOrigins = httpTestWebOrigins{}
@@ -4372,16 +4251,15 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		Files:     opts.files,
 		StateRoot: filepath.Join(t.TempDir(), "control"),
 		Core: host.CoreAdapters{
-			Policy:               httpTestPolicy{},
-			Authorization:        authorization,
-			PackageTrustVerifier: httpTestPackageTrustVerifier{},
-			Audit:                observabilityStore,
-			SecurityAudit:        observabilityStore,
-			Diagnostics:          diagnostics,
-			SurfaceCatalog:       surfaceCatalog,
-			Assets:               pluginpkg.NewMemoryAssetStore(),
+			Policy:        httpTestPolicy{},
+			Authorization: authorization,
+
+			Audit:          observabilityStore,
+			SecurityAudit:  observabilityStore,
+			Diagnostics:    diagnostics,
+			SurfaceCatalog: surfaceCatalog,
+			Assets:         pluginpkg.NewMemoryAssetStore(),
 		},
-		Release:         releaseModule,
 		Capability:      &host.CapabilityModule{Registry: capabilities},
 		Connectivity:    connectivityModule,
 		Secrets:         &host.SecretsModule{Store: secretStore},
@@ -5016,33 +4894,6 @@ func (httpTestPolicy) EvaluateLocalPolicy(context.Context, sessionctx.Context, h
 	return host.PolicyAllow, nil
 }
 
-func (httpTestPolicy) DeveloperModeEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return true, nil
-}
-
-func (httpTestPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
-	return true, nil
-}
-
-type httpTestPackageTrustVerifier struct{}
-
-func (httpTestPackageTrustVerifier) VerifyPackageTrust(_ context.Context, req host.PackageTrustVerificationRequest) (host.PackageTrustVerificationResult, error) {
-	if req.LocalImport {
-		if req.Package.PackageSignature != nil {
-			return host.PackageTrustVerificationResult{TrustState: registry.TrustVerified}, nil
-		}
-		return host.PackageTrustVerificationResult{TrustState: registry.TrustUnsignedLocal}, nil
-	}
-	return host.PackageTrustVerificationResult{TrustState: registry.TrustUntrusted}, nil
-}
-
-type httpRecordingReleaseArtifactResolver struct {
-	artifact host.ResolvedPackageArtifact
-	err      error
-	last     host.ReleaseArtifactResolveRequest
-	calls    int
-}
-
 type httpReadProbe struct {
 	reader io.Reader
 	calls  int
@@ -5068,45 +4919,6 @@ func (s *httpFailingSurfaceCatalogSink) PublishSurfaces(context.Context, host.Su
 		return errors.New("surface catalog unavailable")
 	}
 	return nil
-}
-
-func (r *httpRecordingReleaseArtifactResolver) ResolveReleaseArtifact(_ context.Context, req host.ReleaseArtifactResolveRequest) (host.ResolvedPackageArtifact, error) {
-	r.calls++
-	r.last = req
-	if r.err != nil {
-		return host.ResolvedPackageArtifact{}, r.err
-	}
-	return r.artifact, nil
-}
-
-func httpResolvedArtifactForFixture(fixture *releasetrustfixture.Fixture) host.ResolvedPackageArtifact {
-	return host.ResolvedPackageArtifact{
-		ReleaseMetadataBytes:     fixture.MetadataBytes,
-		ReleaseMetadataSignature: fixture.MetadataSignature,
-		Reader:                   bytes.NewReader(fixture.PackageBytes),
-		Size:                     int64(len(fixture.PackageBytes)),
-		ArtifactSHA256:           fixture.ReleaseArtifactSHA256,
-	}
-}
-
-func newHTTPReleaseTrustFixture(t *testing.T, packageBytes []byte, options releasetrustfixture.Options) (*releasetrustfixture.Fixture, host.PluginReleaseRef) {
-	t.Helper()
-	fixture, err := releasetrustfixture.New(packageBytes, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := fixture.Identity
-	pkg := fixture.Package
-	return fixture, host.PluginReleaseRef{
-		SourceID: identity.SourceID, Channel: identity.Channel,
-		ReleaseMetadataRef: identity.ReleaseMetadataRef, ReleaseMetadataSHA256: identity.ReleaseMetadataSHA256,
-		PublisherID: identity.PublisherID, PluginID: identity.PluginID, Version: identity.Version,
-		ExpectedHashes: host.PackageHashSet{
-			PackageSHA256:  pkg.PackageHash,
-			ManifestSHA256: pkg.ManifestHash,
-			EntriesSHA256:  pkg.EntriesHash,
-		},
-	}
 }
 
 type httpRecordingCapabilityAdapter struct {

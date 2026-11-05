@@ -24,7 +24,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/secrets"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
-	"github.com/floegence/redevplugin/v3/pkg/trust"
 	"github.com/floegence/redevplugin/v3/pkg/websecurity"
 )
 
@@ -278,13 +277,13 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		StateRoot: stateRoot,
 		Web:       &host.WebModule{Origins: webOrigins},
 		Core: host.CoreAdapters{
-			Policy:               staticPolicyAdapter{},
-			Authorization:        staticAuthorizationAdapter{},
-			PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
-			Audit:                events,
-			SecurityAudit:        events,
-			Diagnostics:          events,
-			Assets:               assetStore,
+			Policy:        staticPolicyAdapter{},
+			Authorization: staticAuthorizationAdapter{},
+
+			Audit:         events,
+			SecurityAudit: events,
+			Diagnostics:   events,
+			Assets:        assetStore,
 		},
 		Runtime: runtimeModule,
 		Connectivity: &host.ConnectivityModule{

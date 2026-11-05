@@ -2,9 +2,10 @@ package host
 
 import (
 	"context"
+	"sync"
+
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
-	"sync"
 )
 
 func (h *Host) reserveWebResource(req WebSurfaceRequest, lifetime context.Context) (func(), error) {
