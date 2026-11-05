@@ -101,6 +101,33 @@ func TestRejectCollidingAssets(t *testing.T) {
 	}
 }
 
+func TestSharedTemplateFixtures(t *testing.T) {
+	raw, err := os.ReadFile("../../spec/plugin/repository-index-fixtures.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures struct {
+		Templates       []struct{ Template, Version, Tag string } `json:"templates"`
+		InvalidVersions []string                                  `json:"invalid_versions"`
+	}
+	if err := json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range fixtures.Templates {
+		if got, err := Render(item.Template, item.Version); err != nil || got != item.Tag {
+			t.Fatalf("render %q: %q %v", item.Template, got, err)
+		}
+		if got, err := VersionFromTag(item.Template, item.Tag); err != nil || got != item.Version {
+			t.Fatalf("match %q: %q %v", item.Tag, got, err)
+		}
+	}
+	for _, value := range fixtures.InvalidVersions {
+		if _, err := Render("v{version}", value); err == nil {
+			t.Fatalf("accepted %q", value)
+		}
+	}
+}
+
 func TestRepositoryRejectsSymlink(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".redevplugin"), 0o755); err != nil {

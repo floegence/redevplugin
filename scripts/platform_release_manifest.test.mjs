@@ -24,6 +24,7 @@ test("manifest module can be imported from a stdin Node program", () => {
 });
 
 const expectedCanonicalContracts = [
+  "contract:author/author-candidate.schema.json",
   "contract:internal/release-document-cache.sql",
   "contract:internal/runtime-wire-fixtures.json",
   "contract:internal/runtime-wire.schema.json",
@@ -61,6 +62,7 @@ const expectedCanonicalContracts = [
   "contract:plugin/release-root-delegation-v1.schema.json",
   "contract:plugin/release-source-policy-pointer-v2.schema.json",
   "contract:plugin/release-source-policy-v3.schema.json",
+  "contract:plugin/repository-index-fixtures.json",
   "contract:plugin/repository-index-v1.schema.json",
   "contract:plugin/resource-scope-v1.schema.json",
   "contract:plugin/retained-recovery-fixture.json",
