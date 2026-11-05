@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.16.0
+
+- Define the host-neutral repository index, release templates and per-plugin policy digest; provide validation and author CLI commands without granting discovery entries installation trust.
+- Add an author candidate handoff contract for source project review.
+- Include the fixes and qualification changes described in v3.15.2.
+
 ## v3.15.2
 
 - Isolate the runaway Worker fuel-exhaustion test with an explicit small fuel budget and a typed budget-failure assertion while retaining its independent two-second deadline. Production fuel, deadline, cancellation and revocation policies are unchanged.
