@@ -24,7 +24,7 @@ func configureDataTemplate(files map[string][]byte, displayName string) {
 	files["README.md"] = append(files["README.md"], []byte("\nThis data application uses a user-scoped private KV store directly from its Surface.\nSaving uses content ETags; a conflict keeps the unsaved editor text. An unknown\nwrite result is never retried automatically. Reload explicitly before saving again.\nContent ETags identify bytes, not a monotonic revision: equal content has an equal ETag.\n")...)
 }
 
-func configureWebTemplate(files map[string][]byte, displayName, platformVersion string) {
+func configureWebTemplate(files map[string][]byte, displayName, platformVersion, template string) {
 	for _, name := range []string{"rust-toolchain.toml", "worker/Cargo.toml", "worker/src/lib.rs", "dist/workers/backend.wasm"} {
 		delete(files, name)
 	}
@@ -57,18 +57,20 @@ await mkdir(resolve(root, "dist/ui/assets"), { recursive: true });
 await copyFile(resolve(root, "manifest.json"), resolve(root, "dist/manifest.json"));
 await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html"));
 `)
+	actions := "This basic Web template declares no host actions; add a method and intent only when another trusted surface must invoke the application."
+	if template != "web" {
+		actions = "This resource template declares application.read to inspect the exact open Surface. The data template also declares document.replace for revision-checked edits. Review manifest.json and use the generated action bindings for the actions in this project."
+	}
 	files["README.md"] = []byte(fmt.Sprintf(`# %s
 
-A regular Web application with no default host action. No Rust toolchain or
+A regular Web application. No Rust toolchain or
 Worker is needed to build or package it. Dependencies use ReDevPlugin %s.
 
     npm install
     redevplugin dev .
 
 Edit ui/src/app.ts and use your preferred browser framework. Internal functions
-and state stay ordinary application code. This basic Web template declares no
-host actions; add a method and intent only when another trusted surface must
-invoke the application.
+and state stay ordinary application code. %s
 
     redevplugin dev . --state ../development-state --manual
 
@@ -77,7 +79,7 @@ verified runtime when adding a Worker. Build and test commands only run against
 this explicitly selected source project, never during package installation.
 Use redevplugin doctor . for environment diagnostics, and redevplugin check .
 and redevplugin test . before packaging with redevplugin package dist app.redevplugin.
-`, displayName, platformVersion))
+`, displayName, platformVersion, actions))
 }
 
 //go:embed scaffold_assets/monitor-app.ts

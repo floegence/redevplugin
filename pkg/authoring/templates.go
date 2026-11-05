@@ -194,7 +194,7 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 		return TemplateResult{}, err
 	}
 	if template != "worker" {
-		configureWebTemplate(files, displayName, platformVersion)
+		configureWebTemplate(files, displayName, platformVersion, template)
 	}
 	if template == "data" {
 		configureDataTemplate(files, displayName)

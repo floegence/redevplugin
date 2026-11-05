@@ -71,6 +71,13 @@ func TestResourceTemplatesRetainTheirDeclaredSurfaceAction(t *testing.T) {
 			if len(pkg.Manifest.Methods) == 0 || len(pkg.Manifest.Intents) == 0 {
 				t.Fatal("resource template lost its explicit Surface action")
 			}
+			readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(readme, []byte("no default host action")) || bytes.Contains(readme, []byte("declares no")) || !bytes.Contains(readme, []byte("application.read")) {
+				t.Fatal("resource README does not describe its declared Surface actions")
+			}
 		})
 	}
 }
