@@ -15,6 +15,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/authorapi"
 	"github.com/floegence/redevplugin/v3/pkg/authorproject"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 )
 
 type authorDiagnostic struct {
@@ -43,6 +44,9 @@ func runAuthorCheck(ctx context.Context, root string, doctor bool) error {
 		}
 	}
 	if err == nil {
+		if failure := checkEnclosingRepositoryIndex(root, m.PluginID()); failure != nil {
+			add("REPOSITORY_INDEX_INVALID", repositoryindex.IndexPath, failure.Error())
+		}
 		directory := "generated"
 		if project != nil && project.Config.Bindings != "" {
 			directory = project.Config.Bindings
