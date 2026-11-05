@@ -228,6 +228,11 @@ explicit persistent root, narrowly allowed management actions, authenticated
 catalog HTTP, package installation, Surface preparation and disposal, and
 inventory reconciliation after restart. Run it with
 `GOWORK=off go test ./examples/embedding -run '^Example_referenceLifecycle$'`.
+`examples/embedding/resources_test.go` demonstrates explicit storage admission,
+independent Surface authority, a targeted action, and session teardown against
+the same real Host. Its manually simulated entry and handshake are test-only;
+browser hosts use the published Surface SDK. Run it with
+`GOWORK=off go test ./examples/embedding -run '^TestReferenceResourcesAndSession$'`.
 The test harness supplies fake product adapters; a production host replaces
 those session, authorization, origin, and observability integrations. For a live
 browser, use the slot-based parent in `examples/showcase/app.ts` with the
