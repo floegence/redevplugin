@@ -169,8 +169,11 @@ outcomes invalidate only the exact surface. The parent SDK never retries claims.
 routes exposed by `pkg/httpadapter`, including:
 
 - platform identity and current plugin inventory read;
-- inspected-package install/update for official or community product
-  flows where the host page sends `PluginReleaseRef` rather than package bytes;
+- repository plugin selection and package URL, GitHub, or upload inspection;
+- one `startInspectedInstall` path for official, community, and generated
+  packages, bound to the inspection ID and exact package digest, with durable
+  request recovery through `getInspectedInstall`;
+- original-source update inspection and saved automatic-update preferences;
 - downgrade, enable, disable, uninstall, and surface open;
 - authenticated owner/session surface-scope revocation;
 - runtime start, health, recover-enabled, explicit recovery retry, and stop;
