@@ -63,10 +63,7 @@ A regular Web application with no default host action. No Rust toolchain or
 Worker is needed to build or package it. Dependencies use ReDevPlugin %s.
 
     npm install
-    redevplugin doctor .
-    redevplugin check .
-    redevplugin test .
-    redevplugin package dist app.redevplugin
+    redevplugin dev .
 
 Edit ui/src/app.ts and use your preferred browser framework. Internal functions
 and state stay ordinary application code. This basic Web template declares no
@@ -78,6 +75,8 @@ invoke the application.
 The preview uses a real isolated Host and authenticated sandbox. Add an explicit
 verified runtime when adding a Worker. Build and test commands only run against
 this explicitly selected source project, never during package installation.
+Use redevplugin doctor . for environment diagnostics, and redevplugin check .
+and redevplugin test . before packaging with redevplugin package dist app.redevplugin.
 `, displayName, platformVersion))
 }
 
