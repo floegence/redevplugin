@@ -6,6 +6,7 @@ import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
 import { canonicalRustImage, readPinnedRustVersion } from "./canonical_wasm_builder.mjs";
 
 const day = 24 * 60 * 60 * 1000;
@@ -209,13 +210,43 @@ export function acquireLock(cache) {
       if (failure.code === "ESRCH") throw new Error("stale gate lock; confirm its recorded process has stopped before removing: " + path);
       throw failure;
     }
-    throw new Error("another gate is running for this checkout: " + path);
+    throw Object.assign(new Error("another gate is running for this checkout: " + path), { code: "GATE_BUSY" });
   }
   return () => rmSync(path, { force: true });
 }
+export async function waitForLock(cache, { timeoutMs = 0, signal, now = () => performance.now(), wait = delay, onWait = () => {} } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 3_600_000) throw new Error("gate lock wait must be between 0 and 3600 seconds");
+  const deadline = now() + timeoutMs;
+  let notified = false;
+  for (;;) {
+    signal?.throwIfAborted();
+    try { return acquireLock(cache); }
+    catch (error) {
+      if (error.code !== "GATE_BUSY" || timeoutMs === 0) throw error;
+      const remaining = deadline - now();
+      if (remaining <= 0) throw new Error("timed out waiting for the shared gate; its owner and evidence remain unchanged", { cause: error });
+      if (!notified) { onWait(error.message); notified = true; }
+      await wait(Math.min(1000, remaining), undefined, { signal });
+    }
+  }
+}
+export function gateOptions(args) {
+  let waitMs = 0;
+  const flags = new Set();
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--wait-lock" && !flags.has(arg)) {
+      const seconds = args[++index];
+      if (!/^(0|[1-9][0-9]*)$/.test(seconds ?? "") || Number(seconds) > 3600) throw new Error("--wait-lock requires 0 to 3600 seconds");
+      waitMs = Number(seconds) * 1000;
+    } else if (!["--ci", "--fresh", "--preflight", "--resources"].includes(arg) || flags.has(arg)) throw new Error("unknown or repeated gate argument: " + arg);
+    flags.add(arg);
+  }
+  return { waitMs, flags };
+}
 async function main() {
   const args = process.argv.slice(2);
-  if (args.some((arg) => !["--ci", "--fresh", "--preflight", "--resources"].includes(arg))) throw new Error("unknown gate argument");
+  const { waitMs } = gateOptions(args);
   const environment = executionEnvironment(process.env);
   for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key];
   Object.assign(process.env, environment);
@@ -224,7 +255,17 @@ async function main() {
   if (args.includes("--preflight")) return;
   if (args.includes("--resources")) { await prepareResources(repository); return; }
   const cache = join(command(repository, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "redevplugin-gate");
-  const unlock = acquireLock(cache);
+  const waiting = new AbortController();
+  const cancelWait = () => waiting.abort(new Error("gate lock wait interrupted"));
+  process.once("SIGINT", cancelWait);
+  process.once("SIGTERM", cancelWait);
+  let unlock;
+  try {
+    unlock = await waitForLock(cache, { timeoutMs: waitMs, signal: waiting.signal, onWait: message => console.log(message + "; waiting up to " + waitMs / 1000 + " seconds") });
+  } finally {
+    process.removeListener("SIGINT", cancelWait);
+    process.removeListener("SIGTERM", cancelWait);
+  }
   try {
     rmSync(join(cache, "last-complete.json"), { force: true });
     const initial = sourceState(repository);

@@ -408,6 +408,11 @@ the sole orchestration authority; neither a caller nor a receipt may select a
 smaller acceptance set. Development uses focused checks. A stable clean
 candidate runs the complete gate before integration, and the exact-main hook
 runs the same gate after integration.
+Use `./scripts/check_redevplugin_pre_push.sh --wait-lock 3600` when another
+worktree holds the shared gate. Waiting is bounded and cancellable, does not
+stop the owner or replace its evidence, and acquires the same exclusive lock
+before checking the source again and running the full stage plan. Stale,
+foreign-host and malformed locks still fail closed for explicit inspection.
 
 - Check toolchains, the exact historical performance tag and probe hashes,
   script syntax, hook behavior, dependency availability, current vulnerability

@@ -1088,6 +1088,11 @@ The complete main-push gate is:
 ./scripts/check_redevplugin_pre_push.sh
 ```
 
+When another worktree holds the shared gate, use
+`./scripts/check_redevplugin_pre_push.sh --wait-lock 3600` for a bounded,
+cancellable wait. This never stops the owner or replaces its evidence. Stale,
+foreign-host and malformed locks still require explicit inspection.
+
 Dependency-boundary checks must prove that the repository builds without sibling
 workspace wiring:
 

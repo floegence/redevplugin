@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { acquireLock, digest, evidenceKey, execute, executionEnvironment, failureKind, normalizedGoConfiguration, runStage, sourceFingerprint, stages, verifyBaselines } from "./redevplugin_gate.mjs";
+import { acquireLock, digest, evidenceKey, execute, executionEnvironment, failureKind, gateOptions, normalizedGoConfiguration, runStage, sourceFingerprint, stages, verifyBaselines, waitForLock } from "./redevplugin_gate.mjs";
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "redevplugin-gate-test-"));
@@ -24,6 +24,68 @@ function fixture(t) {
   const stage = { id: "fixture", command: "test", outputs: [] };
   return { root, cache, git, stage, run, environment: { toolchain: "fixed", host: "local" }, count: () => executions };
 }
+
+test("shared gate waiter acquires only after the live owner releases", async (t) => {
+  const f = fixture(t);
+  const releaseOwner = acquireLock(f.cache);
+  const owner = readFileSync(join(f.cache, "running.json"), "utf8");
+  let notices = 0;
+  let waits = 0;
+  const releaseWaiter = await waitForLock(f.cache, {
+    timeoutMs: 2000,
+    onWait: () => { notices += 1; },
+    wait: async () => {
+      waits += 1;
+      assert.equal(readFileSync(join(f.cache, "running.json"), "utf8"), owner);
+      releaseOwner();
+    },
+  });
+  assert.equal(waits, 1);
+  assert.equal(notices, 1);
+  assert.throws(() => acquireLock(f.cache), /another gate/);
+  releaseWaiter();
+  assert.throws(() => readFileSync(join(f.cache, "running.json")), { code: "ENOENT" });
+});
+
+test("shared gate timeout and cancellation preserve the owner's exact lock", async (t) => {
+  const f = fixture(t);
+  const release = acquireLock(f.cache);
+  t.after(release);
+  const path = join(f.cache, "running.json");
+  const owner = readFileSync(path, "utf8");
+  let elapsed = 0;
+  await assert.rejects(waitForLock(f.cache, { timeoutMs: 50, now: () => elapsed, wait: async ms => { elapsed += ms; } }), /timed out/);
+  assert.equal(elapsed, 50);
+  assert.equal(readFileSync(path, "utf8"), owner);
+  const controller = new AbortController();
+  await assert.rejects(waitForLock(f.cache, { timeoutMs: 2000, signal: controller.signal, wait: async () => { controller.abort(new Error("cancelled by caller")); } }), /cancelled by caller/);
+  assert.equal(readFileSync(path, "utf8"), owner);
+});
+
+test("gate waiter never repairs stale, foreign or malformed locks", async (t) => {
+  const f = fixture(t);
+  mkdirSync(f.cache, { recursive: true });
+  const path = join(f.cache, "running.json");
+  for (const owner of [
+    JSON.stringify({ pid: 2147483647, host: hostname() }),
+    JSON.stringify({ pid: process.pid, host: "other-host.invalid" }),
+    JSON.stringify({ pid: 0, host: hostname() }),
+    "{incomplete",
+  ]) {
+    writeFileSync(path, owner);
+    await assert.rejects(waitForLock(f.cache, { timeoutMs: 2000, wait: async () => assert.fail("must not wait for invalid ownership") }));
+    assert.equal(readFileSync(path, "utf8"), owner);
+  }
+});
+
+test("gate lock wait arguments are explicit and bounded", () => {
+  assert.equal(gateOptions([]).waitMs, 0);
+  assert.equal(gateOptions(["--wait-lock", "3600", "--fresh"]).waitMs, 3600000);
+  assert.equal(gateOptions(["--wait-lock", "0"]).waitMs, 0);
+  for (const args of [["--wait-lock"], ["--wait-lock", "-1"], ["--wait-lock", "1.5"], ["--wait-lock", "3601"], ["--wait-lock", "1", "--wait-lock", "1"], ["--skip", "performance"]]) {
+    assert.throws(() => gateOptions(args));
+  }
+});
 
 test("identical stage inputs survive an unrelated commit identity and branch fast-forward", async (t) => {
   const f = fixture(t);

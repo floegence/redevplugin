@@ -6,7 +6,7 @@ ARGS=()
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/check_redevplugin_pre_push.sh [--ci] [--fresh]
+Usage: scripts/check_redevplugin_pre_push.sh [--ci] [--fresh] [--wait-lock <seconds>]
 
 Runs every non-GitHub-infrastructure gate required before updating main.
 The --ci mode selects hosted Linux browser dependency installation for manual
@@ -14,6 +14,8 @@ runner reproduction. Ordinary push, pull-request, and tag workflows never
 invoke this complete gate.
 Successful stages may reuse verified input-bound evidence. --fresh recomputes
 every stage. Audits and dependency preparation always run.
+--wait-lock waits up to 3600 seconds for an active shared gate without changing
+its process or evidence. Stale or malformed locks still require inspection.
 USAGE
 }
 
@@ -26,6 +28,11 @@ while [[ $# -gt 0 ]]; do
     --fresh)
       ARGS+=(--fresh)
       shift
+      ;;
+    --wait-lock)
+      [[ $# -ge 2 && "$2" =~ ^(0|[1-9][0-9]*)$ && ${#2} -le 4 ]] && (( 10#$2 <= 3600 )) || { echo "--wait-lock requires 0 to 3600 seconds" >&2; exit 2; }
+      ARGS+=(--wait-lock "$2")
+      shift 2
       ;;
     -h|--help)
       usage
