@@ -1,5 +1,5 @@
 package version
 
 const (
-	TargetClassifierVersion       = "target-classifier-v2"
+	TargetClassifierVersion = "target-classifier-v2"
 )
