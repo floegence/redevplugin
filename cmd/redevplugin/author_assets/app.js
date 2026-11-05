@@ -1533,12 +1533,12 @@ var PluginSurfaceHostImplementation = class {
       return this.#revokeSurface(false).then((revocation) => ({ ...result, revocation }));
     }
     if (this.#closePromise) return this.#closePromise;
-    const closing = this.#closeSurface();
-    this.#closePromise = closing;
-    void closing.catch(() => {
-      if (this.#closePromise === closing) this.#closePromise = void 0;
+    const closing2 = this.#closeSurface();
+    this.#closePromise = closing2;
+    void closing2.catch(() => {
+      if (this.#closePromise === closing2) this.#closePromise = void 0;
     });
-    return closing;
+    return closing2;
   }
   dispose() {
     if (this.#disposed) return this.#revokeSurface(true).then(() => void 0);
@@ -2636,16 +2636,16 @@ var PluginSurfaceSlot = class _PluginSurfaceSlot {
     this.#transitionController?.abort();
     this.#transitionController = void 0;
     this.#setState("empty");
-    const closing = this.#tail.then(
+    const closing2 = this.#tail.then(
       () => this.#closeCurrentSurface(),
       () => this.#closeCurrentSurface()
     );
-    this.#tail = closing.then(
+    this.#tail = closing2.then(
       () => void 0,
       () => void 0
     );
     void this.#tail.catch(() => void 0);
-    return this.#unwrapCleanupError(closing);
+    return this.#unwrapCleanupError(closing2);
   }
   dispose() {
     if (this.#disposePromise) return this.#disposePromise;
@@ -2695,7 +2695,7 @@ var PluginSurfaceSlot = class _PluginSurfaceSlot {
     if (existing) return existing;
     this.#pendingRetirements.add(host);
     setSurfacePresentation(host.element, "retiring");
-    const closing = Promise.resolve().then(async () => {
+    const closing2 = Promise.resolve().then(async () => {
       try {
         const result = await host.close();
         try {
@@ -2707,17 +2707,17 @@ var PluginSurfaceSlot = class _PluginSurfaceSlot {
         host.element.remove();
       }
     });
-    this.#retired.set(host, closing);
-    void closing.then(
+    this.#retired.set(host, closing2);
+    void closing2.then(
       () => {
         this.#pendingRetirements.delete(host);
-        if (this.#retired.get(host) === closing) this.#retired.delete(host);
+        if (this.#retired.get(host) === closing2) this.#retired.delete(host);
       },
       () => {
-        if (this.#retired.get(host) === closing) this.#retired.delete(host);
+        if (this.#retired.get(host) === closing2) this.#retired.delete(host);
       }
     );
-    return closing;
+    return closing2;
   }
   async #awaitRetirement(host) {
     try {
@@ -3790,16 +3790,27 @@ var reload = element("reload");
 var apply = element("apply");
 var applying = false;
 var candidateSource = "";
-var scope = createPluginSurfaceScope();
-var slot = PluginSurfaceSlot.create({ stage: element("stage") });
 var csrf = "";
 var generation = 0;
 var record;
 var opening = false;
+var closing = false;
 var stopped = false;
 var buildError = "";
 var surfaceError = "";
 var activeSurface = "";
+var activeSurfaceId = "";
+var actionUncertain = false;
+var scope = createPluginSurfaceScope();
+var slot = PluginSurfaceSlot.create({ stage: element("stage"), onStateChange: (state) => {
+  element("stage").setAttribute("aria-busy", String(state === "opening"));
+  if (state !== "ready") {
+    activeSurface = "";
+    activeSurfaceId = "";
+    delete element("stage").dataset.surfaceInstance;
+  }
+  element("surface-status").textContent = state === "ready" ? "Application connected" : state === "opening" ? "Opening application\u2026" : "Preview closed. Reopen when ready.";
+} });
 var authenticatedFetch = (input, init) => fetch(input, { ...init, headers: { ...init.headers, "X-ReDevPlugin-CSRF": csrf } });
 var client = new PluginPlatformClient({ fetch: authenticatedFetch, surfaceScope: scope, surfaceTransport: createReDevPluginSurfaceTransport({ fetch: authenticatedFetch }) });
 apply.onclick = () => {
@@ -3830,16 +3841,61 @@ reset.onclick = () => {
   });
 };
 reload.onclick = () => {
-  void refreshCatalog(true).catch(showError);
+  void (async () => {
+    if (activeSurface && !await requestClose()) return;
+    await refreshCatalog(true);
+  })().catch(showError);
+};
+element("close-preview").onclick = () => {
+  void requestClose().catch(showError);
+};
+element("refresh-state").onclick = () => {
+  void (async () => {
+    const selectedAction = element("actions").value;
+    const params = element("action-params").value;
+    await refreshCatalog(false);
+    if (Array.from(element("actions").options).some((option) => option.value === selectedAction)) {
+      element("actions").value = selectedAction;
+      element("action-params").value = params;
+    }
+    actionUncertain = false;
+    element("action-run").disabled = !element("actions").options.length;
+  })().catch(showError);
 };
 surfaces.onchange = () => {
-  void openSelected().catch(showError);
+  void (async () => {
+    const selected = surfaces.value;
+    if (activeSurface && !await requestClose()) {
+      if (record) {
+        const current = record.manifest.surfaces.find((surface) => surface.surface_id === activeSurfaceId);
+        if (current) surfaces.value = current.surface_id;
+      }
+      return;
+    }
+    surfaces.value = selected;
+    await openSelected();
+  })().catch(showError);
 };
 addEventListener("beforeunload", () => {
   stopped = true;
   void slot.dispose();
 });
 void initialize().catch(showError);
+async function requestClose() {
+  if (closing) return false;
+  closing = true;
+  reload.disabled = true;
+  surfaces.disabled = true;
+  element("close-preview").disabled = true;
+  try {
+    return Boolean(await slot.requestClose());
+  } finally {
+    closing = false;
+    reload.disabled = false;
+    surfaces.disabled = false;
+    element("close-preview").disabled = false;
+  }
+}
 async function initialize() {
   const token = location.hash.slice(1);
   history.replaceState(null, "", location.pathname);
@@ -3852,8 +3908,19 @@ async function initialize() {
 function renderError() {
   error.textContent = [buildError, surfaceError].filter(Boolean).join("\n\n");
 }
+function failureMessage(value) {
+  const message = value instanceof Error ? value.message : String(value);
+  const code = value instanceof PluginBridgeError || value instanceof PluginPlatformRequestError ? value.errorCode : "";
+  if (pluginMutationOutcome(value) === "unknown") return message + "\nThe result is unknown. Keep your input, refresh observations and inspect the application before deciding whether to run it again.";
+  if (code === "PLUGIN_PERMISSION_DENIED") return message + "\nReview the permissions below, then reopen the preview after approval.";
+  if (code === "PLUGIN_CONNECTION_UNAVAILABLE") return message + "\nOpen Resources and connections to review and approve the destination.";
+  if (code === "PLUGIN_RUNTIME_UNAVAILABLE") return message + "\nPrepare the verified runtime and restart dev with the runtime evidence shown by runtime prepare.";
+  if (code === "PLUGIN_SESSION_REVOKED") return message + "\nRestart dev and open the new preview URL to establish a new session.";
+  if (code.endsWith("_REVISION_MISMATCH") || code.endsWith("_CONFLICT")) return message + "\nRefresh state and review the current version before submitting another change. Your input has been kept.";
+  return message;
+}
 function showError(value) {
-  surfaceError = value instanceof Error ? value.message : String(value);
+  surfaceError = failureMessage(value);
   renderError();
 }
 async function poll() {
@@ -3957,8 +4024,17 @@ async function openSelected() {
   surfaceError = "";
   renderError();
   try {
-    const opened = await client.openSurfaceInSlot(slot, { plugin_instance_id: record.plugin_instance_id, surface_id: surfaces.value, expected_management_revision: record.management_revision }, { confirm: confirmAction, onError: showError });
+    const opened = await client.openSurfaceInSlot(slot, { plugin_instance_id: record.plugin_instance_id, surface_id: surfaces.value, expected_management_revision: record.management_revision }, {
+      confirm: confirmAction,
+      onError: showError,
+      confirmClose: ({ reason, signal }) => confirmReview("Close preview", { effect: reason === "unsaved" ? "Discard unsaved application changes." : "The application is not responding. Closing may discard unsaved changes." }, signal),
+      onOpeningProgress: (progress) => {
+        const labels = { preparing: "Preparing isolated application", connecting: "Connecting application", authorizing: "Authorizing application", initializing: "Waiting for application readiness" };
+        element("surface-status").textContent = labels[progress.stage] + " \xB7 " + (progress.elapsedMs / 1e3).toFixed(1) + " s";
+      }
+    });
     activeSurface = opened.surfaceInstanceId;
+    activeSurfaceId = surfaces.value;
     element("stage").dataset.surfaceInstance = activeSurface;
   } finally {
     opening = false;
@@ -4035,7 +4111,7 @@ function renderInspector(current) {
   actions.onchange = renderFields;
   renderFields();
   const button = element("action-run");
-  button.disabled = !actions.options.length;
+  button.disabled = actionUncertain || !actions.options.length;
   button.onclick = () => {
     void (async () => {
       button.disabled = true;
@@ -4054,9 +4130,10 @@ function renderInspector(current) {
         const result = await client.invokeIntent(request);
         element("action-result").textContent = JSON.stringify(result, null, 2);
       } catch (error2) {
-        element("action-result").textContent = error2 instanceof Error ? error2.message : String(error2);
+        actionUncertain = pluginMutationOutcome(error2) === "unknown";
+        element("action-result").textContent = failureMessage(error2);
       } finally {
-        button.disabled = !actions.options.length;
+        button.disabled = actionUncertain || !actions.options.length;
       }
     })();
   };
