@@ -37,7 +37,8 @@ cd "$ROOT_DIR"
 
 GO_FUZZ_PACKAGES=(
   ./pkg/pluginpkg
-  ./pkg/releasecontract
+  ./pkg/repositoryindex
+  ./internal/canonicaljson
   ./pkg/manifest
   ./pkg/capability
   ./internal/runtimeclient
@@ -45,7 +46,8 @@ GO_FUZZ_PACKAGES=(
 )
 GO_FUZZ_TARGETS=(
   FuzzReadPackageZip
-  FuzzDecodeReleaseContracts
+  FuzzDecodeRepositoryIndex
+  FuzzCanonicalJSON
   FuzzDecode
   FuzzPrepareResponseData
   FuzzReadIPCFrame
