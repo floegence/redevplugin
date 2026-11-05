@@ -21,8 +21,10 @@ npm install
 redevplugin dev . --state ../notes-development --manual
 ```
 
-`dev` runs the declared checks and builds the first candidate before opening the
-preview. Use `redevplugin doctor .` when diagnosing a tool or dependency issue,
+`dev` checks the tools and dependencies used for its build and reports actionable
+readiness diagnostics before opening its development environment. It then runs
+the declared checks and builds the first candidate. Use `redevplugin doctor .`
+when diagnosing a tool or dependency issue,
 and `redevplugin check .` before sharing or publishing a package.
 
 Open the local URL printed by the command. Edit the application, save the source,
@@ -217,6 +219,17 @@ The CLI dev/test commands reuse this harness. CLI retains source builds,
 watching, listener ownership, preview UI, and verified runtime admission; the
 shared package owns their test-session and HTTP assembly. The defaults remain
 deny-by-default when the package is imported independently.
+
+`examples/embedding/lifecycle_test.go` is an executable reference for an
+explicit persistent root, narrowly allowed management actions, authenticated
+catalog HTTP, package installation, Surface preparation and disposal, and
+inventory reconciliation after restart. Run it with
+`GOWORK=off go test ./examples/embedding -run '^Example_referenceLifecycle$'`.
+The test harness supplies fake product adapters; a production host replaces
+those session, authorization, origin, and observability integrations. For a live
+browser, use the slot-based parent in `examples/showcase/app.ts` with the
+`examples-server` command. Worker execution additionally requires the verified
+runtime preparation described above.
 
 ## Inspecting a running application
 
