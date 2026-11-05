@@ -7,7 +7,7 @@
 - Route author Web Surfaces through the normal dedicated-origin sandbox, HTTP guard and Surface SDK; do not introduce an alternate renderer or implicit permission grants.
 - Add durable inspected-package installation requests and generated HTTP/TypeScript clients with exact request replay, concurrent inspection claims and restart outcome reconciliation.
 - Migrate control schemas 1–5 transactionally to schema 6 without changing installed data. Introduce the separately selected author-store schema 1 with initialization and deletion recovery.
-- Remove the unreleased, unused candidate DTO prototype in favor of platform-owned artifact references. Plugin API and internal wire remain unchanged.
+- Deprecate the candidate DTO prototype in favor of platform-owned artifact references while retaining its public source and schema compatibility. Plugin API and internal wire remain unchanged.
 
 ## v3.16.0
 
