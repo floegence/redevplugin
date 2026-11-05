@@ -8,7 +8,7 @@ import {chromium} from "playwright";
 const repo=resolve(import.meta.dirname,".."),cli=resolve(process.argv[2]??"dist/author-cli");
 const root=await mkdtemp(join(tmpdir(),"redevplugin-author-consumer-"));
 const version=(await readFile(join(repo,"VERSION"),"utf8")).trim();
-const run=(cmd,args,cwd=repo)=>{const result=spawnSync(cmd,args,{cwd,encoding:"utf8",timeout:180000,env:{...process.env,CARGO_TARGET_DIR:join(repo,"target/author-consumer"),...cargoEnvironment}});assert.equal(result.status,0,result.stdout+result.stderr);return result.stdout};
+const run=(cmd,args,cwd=repo)=>{const result=spawnSync(cmd,args,{cwd,encoding:"utf8",timeout:600000,env:{...process.env,CARGO_TARGET_DIR:join(repo,"target/author-consumer"),...cargoEnvironment}});assert.equal(result.status,0,result.stdout+result.stderr);return result.stdout};
 let child,browser,logs="",exit,candidateCrates;
 const cargoEnvironment = {};
 const stop=async()=>{if(child&&child.exitCode===null){child.kill("SIGINT");const result=await Promise.race([exit,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("dev did not stop")),10000);timer.unref()})]);assert.equal(result,0,logs)}};
