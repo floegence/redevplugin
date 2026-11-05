@@ -17,7 +17,7 @@ browsers, run Docker, build packages, or execute the complete tests.
 
 Example and scaffold worker binaries use Linux/amd64 as the canonical Rust
 build host. The committed `examples/plugins/worker-artifacts.lock.json` and
-`cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json` bind the exact WASM
+`pkg/authoring/scaffold_assets/worker-artifacts.lock.json` bind the exact WASM
 bytes to the root workspace, pinned Rust toolchain, Worker SDK, generation
 scripts, and the recursive local Cargo dependency source trees discovered from
 Cargo metadata. Both generators share `scripts/canonical_wasm_builder.mjs`,

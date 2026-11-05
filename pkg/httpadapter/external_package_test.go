@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/host"
@@ -366,4 +367,42 @@ func assertExternalPackageJSONHasNoOwnerHashes(t *testing.T, raw []byte) {
 			t.Fatalf("public external package JSON contains private owner material %q: %s", forbidden, raw)
 		}
 	}
+}
+
+func TestInspectedInstallOperationHTTPRecoversSameRequest(t *testing.T) {
+	module := newHTTPExternalPackageModule(t, registry.SignatureAbsent)
+	platform := newHTTPTestHostWithOptions(t, httpTestHostOptions{external: module})
+	handler := mustNewHandler(t, platform, allowHTTPTestGuard())
+	raw := buildHTTPFixturePackage(t)
+	inspectRaw := externalPackageUploadRequest(t, handler, http.MethodPost, "/_redevplugin/api/plugins/external-packages/upload/inspect", raw, nil, int64(len(raw)), http.StatusOK)
+	var inspection host.ExternalPackageInspection
+	decodeExternalPackageData(t, inspectRaw, &inspection)
+	request := map[string]any{"request_id": "reviewed-preview", "inspection_id": inspection.InspectionID, "expected_package_sha256": inspection.InspectedHashes.PackageSHA256}
+	started := externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations", request, http.StatusOK)
+	var first host.InspectedInstallOperation
+	decodeExternalPackageData(t, started, &first)
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		queried := externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations/query", map[string]any{"request_id": "reviewed-preview"}, http.StatusOK)
+		var current host.InspectedInstallOperation
+		decodeExternalPackageData(t, queried, &current)
+		if current.Execution.ID != first.Execution.ID {
+			t.Fatal("receipt identity changed")
+		}
+		if strings.Contains(string(queried), "owner_user_hash") || strings.Contains(string(queried), "owner_session_hash") {
+			t.Fatal("owner authority leaked")
+		}
+		if current.Execution.Status == "completed" {
+			if current.MutationOutcome != "committed" {
+				t.Fatal("false success")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("install did not complete: %+v", current)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations", request, http.StatusOK)
+	request["expected_package_sha256"] = "sha256:" + strings.Repeat("a", 64)
+	externalPackageRequest(t, handler, "/_redevplugin/api/plugins/external-packages/install-operations", request, http.StatusBadRequest)
 }

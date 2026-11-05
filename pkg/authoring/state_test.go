@@ -1,4 +1,4 @@
-package main
+package authoring
 
 import (
 	"context"
@@ -9,6 +9,10 @@ import (
 	"testing"
 
 	"github.com/floegence/redevplugin/v3/pkg/authorproject"
+	"github.com/floegence/redevplugin/v3/pkg/connectivity"
+	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/registry"
+	"github.com/floegence/redevplugin/v3/pkg/secrets"
 	"github.com/floegence/redevplugin/v3/pkg/testhost"
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
@@ -16,7 +20,7 @@ import (
 func authorTestProject(t *testing.T) *authorproject.Project {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "source")
-	if _, err := createPluginTemplate("dev.example.state", "State", root, "web"); err != nil {
+	if _, err := Init("dev.example.state", "State", root, "web"); err != nil {
 		t.Fatal(err)
 	}
 	p, err := authorproject.Load(root)
@@ -42,30 +46,30 @@ func TestAuthorStateRetainsOwnerAndRotatesSession(t *testing.T) {
 	}
 	p := authorTestProject(t)
 	root := filepath.Join(t.TempDir(), "state")
-	first, err := openAuthorState(p, root)
+	first, err := OpenState(p, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	original := first.record
-	if second, err := openAuthorState(p, root); err == nil {
-		second.close()
+	if second, err := OpenState(p, root); err == nil {
+		second.Close()
 		t.Fatal("concurrent owner admitted")
 	}
-	fresh := first.renew()
+	fresh := first.Renew()
 	if fresh.OwnerUserHash != original.User || fresh.OwnerEnvHash != original.Environment || fresh.OwnerSessionHash == original.Session || fresh.SessionChannelIDHash == original.Channel {
 		t.Fatal("session renewal changed owner or retained authority")
 	}
-	if err := first.save(); err != nil {
+	if err := first.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.close(); err != nil {
+	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := openAuthorState(p, root)
+	second, err := OpenState(p, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.close()
+	defer second.Close()
 	if second.record.session() != fresh {
 		t.Fatal("saved generation was lost")
 	}
@@ -80,7 +84,7 @@ func TestAuthorStateRejectsForeignAndUnknownStateWithoutMutation(t *testing.T) {
 	if err := os.WriteFile(path, []byte("retain"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openAuthorState(p, root); err == nil {
+	if _, err := OpenState(p, root); err == nil {
 		t.Fatal("unknown state admitted")
 	}
 	entries, _ := os.ReadDir(root)
@@ -88,18 +92,18 @@ func TestAuthorStateRejectsForeignAndUnknownStateWithoutMutation(t *testing.T) {
 	if len(entries) != 1 || string(raw) != "retain" {
 		t.Fatal("unknown state changed")
 	}
-	if _, err := openAuthorState(p, filepath.Join(p.Root, "state")); err == nil {
+	if _, err := OpenState(p, filepath.Join(p.Root, "state")); err == nil {
 		t.Fatal("source state admitted")
 	}
 	root = filepath.Join(t.TempDir(), "known")
-	state, err := openAuthorState(p, root)
+	state, err := OpenState(p, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.close()
+	state.Close()
 	before, _ := os.ReadFile(filepath.Join(root, "author-state.json"))
 	other := authorTestProject(t)
-	if _, err := openAuthorState(other, root); err == nil {
+	if _, err := OpenState(other, root); err == nil {
 		t.Fatal("foreign project admitted")
 	}
 	after, _ := os.ReadFile(filepath.Join(root, "author-state.json"))
@@ -115,30 +119,30 @@ func TestAuthorCandidateAppliesOnceAndRejectsStaleSource(t *testing.T) {
 	}
 	defer h.Close()
 	ctx := h.Context(context.Background())
-	s := &authorBuilds{state: authorBuildState{Mode: "web", Manual: true}}
-	s.build(ctx, p, h.Host())
-	initial := s.snapshot()
+	s := &Preview{state: PreviewState{Mode: "web", Manual: true}}
+	s.Build(ctx, p, h.Host())
+	initial := s.Snapshot()
 	if initial.Error != "" || initial.Generation != 1 {
 		t.Fatalf("initial build: %+v", initial)
 	}
-	s.build(ctx, p, h.Host())
-	if !s.snapshot().Candidate || s.snapshot().Generation != 1 {
+	s.Build(ctx, p, h.Host())
+	if !s.Snapshot().Candidate || s.Snapshot().Generation != 1 {
 		t.Fatal("manual update replaced preview")
 	}
-	if err := s.apply(ctx, p, h.Host()); err != nil {
+	if err := s.Apply(ctx, p, h.Host()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.apply(ctx, p, h.Host()); err == nil {
+	if err := s.Apply(ctx, p, h.Host()); err == nil {
 		t.Fatal("candidate replay admitted")
 	}
-	s.build(ctx, p, h.Host())
+	s.Build(ctx, p, h.Host())
 	if err := os.WriteFile(filepath.Join(p.Root, "ui/src/application.ts"), []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.apply(ctx, p, h.Host()); err == nil {
+	if err := s.Apply(ctx, p, h.Host()); err == nil {
 		t.Fatal("stale candidate admitted")
 	}
-	if s.snapshot().Generation != 2 || s.snapshot().RestartRequired {
+	if s.Snapshot().Generation != 2 || s.Snapshot().RestartRequired {
 		t.Fatal("stale source damaged active preview")
 	}
 }
@@ -147,11 +151,11 @@ func TestAuthorSessionCleanupIsRepeatableAcrossRestart(t *testing.T) {
 		t.Skip("persistent state platform")
 	}
 	p := authorTestProject(t)
-	state, err := openAuthorState(p, filepath.Join(t.TempDir(), "state"))
+	state, err := OpenState(p, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.close()
+	defer state.Close()
 	options := authorHostOptions(state.root, "http://localhost:12345", nil)
 	session := state.record.session()
 	options.Session = &session
@@ -159,23 +163,23 @@ func TestAuthorSessionCleanupIsRepeatableAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := closeAuthorSession(context.Background(), h.Host(), session); err != nil {
+	if err := CloseSession(context.Background(), h.Host(), session); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
 	}
-	fresh := state.renew()
+	fresh := state.Renew()
 	options.Session = &fresh
 	h, err = testhost.Open(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Close()
-	if err := closeAuthorSession(context.Background(), h.Host(), session); err != nil {
+	if err := CloseSession(context.Background(), h.Host(), session); err != nil {
 		t.Fatal(err)
 	}
-	if err := closeAuthorSession(context.Background(), h.Host(), fresh); err != nil {
+	if err := CloseSession(context.Background(), h.Host(), fresh); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -186,20 +190,20 @@ func TestAuthorStateRecoversCompleteStagedMarker(t *testing.T) {
 	}
 	p := authorTestProject(t)
 	root := filepath.Join(t.TempDir(), "state")
-	state, err := openAuthorState(p, root)
+	state, err := OpenState(p, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := state.record
-	state.close()
+	state.Close()
 	if err := os.Rename(filepath.Join(root, "author-state.json"), filepath.Join(root, ".author-state-interrupted")); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := openAuthorState(p, root)
+	reopened, err := OpenState(p, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.close()
+	defer reopened.Close()
 	if reopened.record != record {
 		t.Fatal("staged identity changed")
 	}
@@ -212,20 +216,20 @@ func TestAuthorResetCreatesFreshInstance(t *testing.T) {
 	}
 	defer h.Close()
 	ctx := h.Context(context.Background())
-	builds := &authorBuilds{state: authorBuildState{Mode: "web"}}
-	builds.build(ctx, p, h.Host())
-	before := builds.snapshot()
+	builds := &Preview{state: PreviewState{Mode: "web"}}
+	builds.Build(ctx, p, h.Host())
+	before := builds.Snapshot()
 	if before.Error != "" {
 		t.Fatal(before.Error)
 	}
-	if err := builds.reset(ctx, h.Host(), before.Generation+1); err == nil {
+	if err := builds.Reset(ctx, h.Host(), before.Generation+1); err == nil {
 		t.Fatal("stale reset review accepted")
 	}
-	if err := builds.reset(ctx, h.Host(), before.Generation); err != nil {
+	if err := builds.Reset(ctx, h.Host(), before.Generation); err != nil {
 		t.Fatal(err)
 	}
-	builds.build(ctx, p, h.Host())
-	after := builds.snapshot()
+	builds.Build(ctx, p, h.Host())
+	after := builds.Snapshot()
 	if after.Error != "" || after.PluginInstanceID == before.PluginInstanceID || after.Generation != before.Generation+1 {
 		t.Fatalf("reset: %+v", after)
 	}
@@ -278,5 +282,23 @@ func TestAuthorStateCanonicalSchemaAndStrictParser(t *testing.T) {
 		if decodeAuthorState(bad, p.Root, new(authorStateRecord)) == nil {
 			t.Fatal("ambiguous marker admitted")
 		}
+	}
+}
+
+func authorHostOptions(root, origin string, _ *host.RuntimeModule) testhost.Options {
+	return testhost.Options{Secrets: &host.SecretsModule{Store: secrets.NewMemoryStore()}, Connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})}, StateRoot: root, ParentOrigin: origin, AllowLocalPackages: true, Actions: []host.ManagementAction{host.ManagementActionListPlugins, host.ManagementActionImportLocalPackage, host.ManagementActionUpdateLocalPackage, host.ManagementActionUninstallPlugin}}
+}
+
+func TestAuthorBuildFailureRetainsPreview(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "fail.mjs"), []byte("process.exit(7)"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := &authorproject.Project{Root: root, Config: authorproject.Config{Build: []string{"node", "fail.mjs"}}}
+	builds := &Preview{state: PreviewState{Generation: 4, PluginInstanceID: "existing"}, record: registry.PluginRecord{PluginInstanceID: "existing"}}
+	builds.Build(context.Background(), p, nil)
+	state := builds.Snapshot()
+	if state.Generation != 4 || state.PluginInstanceID != "existing" || state.Error == "" || state.Building {
+		t.Fatalf("failed build damaged active preview: %#v", state)
 	}
 }

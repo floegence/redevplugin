@@ -48,7 +48,7 @@ for (const relativePath of pluginSourceFiles) {
 const scannedPluginFiles = [
   ...pluginSourceFiles,
   ...walkFiles(path.join(rootDir, "examples/plugins")),
-  ...walkFiles(path.join(rootDir, "cmd/redevplugin/scaffold_assets")),
+  ...walkFiles(path.join(rootDir, "pkg/authoring/scaffold_assets")),
   ...walkFiles(path.join(rootDir, "testdata/browser-harness")),
   ...walkFiles(path.join(rootDir, "testdata/generated_plugins")),
 ].map((entry) => path.isAbsolute(entry) ? entry : path.join(rootDir, entry));

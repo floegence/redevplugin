@@ -1,4 +1,4 @@
-package main
+package authoring
 
 import (
 	"bytes"
@@ -25,15 +25,15 @@ type authorStateRecord struct {
 	Session     string `json:"session"`
 	Channel     string `json:"channel"`
 }
-type authorState struct {
+type State struct {
 	root       string
 	persistent bool
 	record     authorStateRecord
 	lock       *os.File
 }
 
-func openAuthorState(project *authorproject.Project, path string) (_ *authorState, err error) {
-	state := &authorState{}
+func OpenState(project *authorproject.Project, path string) (_ *State, err error) {
+	state := &State{}
 	if path == "" {
 		state.root, err = os.MkdirTemp("", "redevplugin-author-")
 		return state, err
@@ -71,7 +71,7 @@ func openAuthorState(project *authorproject.Project, path string) (_ *authorStat
 	}
 	defer func() {
 		if err != nil {
-			_ = state.close()
+			_ = state.Close()
 		}
 	}()
 	entries, err := os.ReadDir(root)
@@ -108,7 +108,7 @@ func openAuthorState(project *authorproject.Project, path string) (_ *authorStat
 	}
 	if readErr != nil {
 		state.record = authorStateRecord{Schema: "redevplugin.author-state.v1", Project: project.Root, User: rand.Text(), Environment: rand.Text(), Session: rand.Text(), Channel: rand.Text()}
-		if err = state.save(); err != nil {
+		if err = state.Save(); err != nil {
 			return nil, err
 		}
 	}
@@ -121,7 +121,7 @@ func withinAuthorPath(parent, child string) bool {
 func (r authorStateRecord) session() sessionctx.Context {
 	return sessionctx.Context{OwnerUserHash: r.User, OwnerEnvHash: r.Environment, OwnerSessionHash: r.Session, SessionChannelIDHash: r.Channel, CanRead: true, CanWrite: true}
 }
-func (s *authorState) save() error {
+func (s *State) Save() error {
 	raw, err := json.Marshal(s.record)
 	if err != nil {
 		return err
@@ -142,12 +142,12 @@ func (s *authorState) save() error {
 	}
 	return s.lock.Sync()
 }
-func (s *authorState) renew() sessionctx.Context {
+func (s *State) Renew() sessionctx.Context {
 	s.record.Session = rand.Text()
 	s.record.Channel = rand.Text()
 	return s.record.session()
 }
-func (s *authorState) close() error {
+func (s *State) Close() error {
 	if !s.persistent {
 		return os.RemoveAll(s.root)
 	}
@@ -156,7 +156,7 @@ func (s *authorState) close() error {
 	}
 	return nil
 }
-func closeAuthorSession(ctx context.Context, h *host.Host, session sessionctx.Context) error {
+func CloseSession(ctx context.Context, h *host.Host, session sessionctx.Context) error {
 	result, err := h.CloseAuthenticatedSessionScope(ctx, host.CloseAuthenticatedSessionScopeRequest{Session: session})
 	if err != nil {
 		return err
@@ -229,3 +229,7 @@ func decodeAuthorState(raw []byte, project string, record *authorStateRecord) er
 	}
 	return nil
 }
+
+func (s *State) Root() string                { return s.root }
+func (s *State) Persistent() bool            { return s.persistent }
+func (s *State) Session() sessionctx.Context { return s.record.session() }

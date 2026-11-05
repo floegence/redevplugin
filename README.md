@@ -64,6 +64,7 @@ Choose `--template data` for persistent documents, `files` for streaming imports
 Save drafts before choosing **Apply update**. The preview provides explicit
 permissions, connection review, action forms, task inspection, and data reset.
 See the [complete author workflow](docs/authoring/local-workflow.md),
+[embedded author environments](docs/authoring/embedded-workflow.md),
 [resource semantics](docs/authoring/resources.md), and
 [data upgrades](docs/authoring/data-upgrades.md).
 
@@ -558,7 +559,7 @@ an English fallback or mix locales within one resolved presentation.
   uses an immutable Rust Docker image digest on non-canonical hosts, while
   `npm run examples:check:canonical` reproduces the exact canonical byte check. The
   CLI scaffold uses the same shared builder and records its backend worker in
-  `cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json`; use
+  `pkg/authoring/scaffold_assets/worker-artifacts.lock.json`; use
   `npm run scaffold:generate` and `npm run scaffold:check:canonical` for that
   artifact. Linux native checks use the exact pinned Rust release, a clean
   target directory, isolated Cargo home, and an environment allowlist; external

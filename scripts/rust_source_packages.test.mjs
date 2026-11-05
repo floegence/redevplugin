@@ -115,7 +115,7 @@ test("crate-local fixtures remain exact copies of their canonical repository inp
     ["testdata/contracts/wasm/table-maximum-exceeds-limit.hex", "crates/redevplugin-runtime/testdata/wasm/table-maximum-exceeds-limit.hex"],
     ["testdata/contracts/runtime-lease-signature-v2-invocation.json", "crates/redevplugin-runtime/testdata/runtime-lease-signature-v2-invocation.json"],
     ["spec/internal/runtime-wire-fixtures.json", "crates/redevplugin-runtime/testdata/runtime-wire-fixtures.json"],
-    ["cmd/redevplugin/scaffold_assets/backend.wasm", "crates/redevplugin-runtime/testdata/scaffold-backend.wasm"],
+    ["pkg/authoring/scaffold_assets/backend.wasm", "crates/redevplugin-runtime/testdata/scaffold-backend.wasm"],
   ]) {
     assert.equal(readFileSync(canonical).compare(readFileSync(local)), 0, local);
   }

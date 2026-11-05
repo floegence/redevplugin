@@ -40,7 +40,7 @@ test("local gates and author scaffolds name the Node 26 authority", () => {
   assert.match(gate, /Node\.js \$\{REQUIRED_NODE_VERSION\} is required/);
   assert.doesNotMatch(gate, /Node\.js 24|!= "24"/);
 
-  const scaffold = source("cmd/redevplugin/main.go");
+  const scaffold = source("pkg/authoring/templates.go");
   assert.match(scaffold, /Requirements: Node\.js 26, npm, Rust/);
   assert.doesNotMatch(scaffold, /Node\.js 24/);
 });

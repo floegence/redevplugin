@@ -12,7 +12,7 @@ Templates use exact published SDK dependencies; install them before building.
 Install the CLI for the platform release used by your host:
 
 ```bash
-go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.15.2
+go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.16.0
 redevplugin init dev.example.notes "Notes" notes --template data
 cd notes
 npm install

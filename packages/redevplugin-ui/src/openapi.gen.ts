@@ -280,6 +280,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/_redevplugin/api/plugins/external-packages/install-operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Accept one exact reviewed package using a stable user/environment-scoped request ID. Repeated requests return the original durable outcome and never replay an uncertain effect. */
+        post: operations["startInspectedInstall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/external-packages/install-operations/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["getInspectedInstall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_redevplugin/api/plugins/external-packages/install": {
         parameters: {
             query?: never;
@@ -2520,6 +2553,21 @@ export interface components {
             cursor?: number;
             limit?: number;
         };
+        StartInspectedInstallRequest: {
+            request_id: string;
+            inspection_id: string;
+            expected_package_sha256: string;
+        };
+        InspectedInstallOperation: {
+            execution: components["schemas"]["Execution"];
+            request_id: string;
+            inspection_id: string;
+            package_sha256: string;
+            plugin_id: string;
+            version: string;
+            /** @enum {string} */
+            mutation_outcome: "committed" | "not_committed" | "unknown";
+        };
         StartReleaseInstallExecutionRequest: {
             request_id: string;
             plugin_instance_id: string;
@@ -4254,6 +4302,21 @@ export interface components {
                 "application/json": components["schemas"]["ExternalPackageInspectionSuccessResponse"];
             };
         };
+        /** @description Durable exact-package install execution and its authoritative mutation outcome. */
+        InspectedInstallOperationResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    /** @constant */
+                    ok: true;
+                    /** @enum {string} */
+                    mutation_outcome?: "committed" | "not_committed" | "unknown";
+                    data: components["schemas"]["InspectedInstallOperation"];
+                };
+            };
+        };
         /** @description Installed external package with explicit trust, approval, provenance, and update facts. */
         InstalledExternalPackageResponse: {
             headers: {
@@ -5162,6 +5225,42 @@ export interface operations {
         responses: {
             200: components["responses"]["ExternalPackageInspectionResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    startInspectedInstall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartInspectedInstallRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["InspectedInstallOperationResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    getInspectedInstall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    request_id: string;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["InspectedInstallOperationResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
         };
     };
     installInspectedPackage: {

@@ -84,6 +84,8 @@ export type PluginUpdateReleaseRefRequest = PlatformSchemas["UpdateReleaseRefReq
 export type PluginInspectExternalPackageRequest = PlatformSchemas["InspectExternalPackageRequest"];
 export type PluginUploadedExternalPackageIntent = PlatformSchemas["ExternalPackageIntentRequest"];
 export type PluginExternalPackageInspection = PlatformSchemas["ExternalPackageInspection"];
+export type PluginStartInspectedInstallRequest = PlatformSchemas["StartInspectedInstallRequest"];
+export type PluginInspectedInstallOperation = PlatformSchemas["InspectedInstallOperation"];
 export type PluginInstallInspectedPackageRequest = PlatformSchemas["InstallInspectedPackageRequest"];
 export type PluginInstalledExternalPackage = PlatformSchemas["InstalledExternalPackage"];
 export type PluginDowngradeRequest = PlatformSchemas["DowngradeRequest"];
@@ -329,6 +331,22 @@ export class PluginPlatformClient {
       update ? canonicalIntent.plugin_instance_id : "",
     );
     return inspection;
+  }
+  async startInspectedInstall(request: PluginStartInspectedInstallRequest, options: PluginRequestOptions = {}): Promise<PluginInspectedInstallOperation> {
+    const target = this.#externalInspectionTargets.get(request.inspection_id);
+    try {
+      const operation = await this.#requestMutation<PluginInspectedInstallOperation>("POST", "/_redevplugin/api/plugins/external-packages/install-operations", request, options);
+      // Accepted updates may revoke the old generation before completion is
+      // observed. Close only that exact known target; receipt queries stay reads.
+      if (target && operation.execution.status === "running") await disposePluginSurfaceScope(this.#surfaceScope, target);
+      return operation;
+    } catch (error) {
+      if (target) await this.#handleMutationFailure(error, target, "Inspected install admission and local surface teardown failed");
+      throw error;
+    }
+  }
+  getInspectedInstall(requestID: string, options: PluginRequestOptions = {}): Promise<PluginInspectedInstallOperation> {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/query", { request_id: requestID }, options);
   }
   async installInspectedPackage(request: PluginInstallInspectedPackageRequest, options: PluginRequestOptions = {}): Promise<PluginInstalledExternalPackage> {
     const target = this.#externalInspectionTargets.get(request.inspection_id);

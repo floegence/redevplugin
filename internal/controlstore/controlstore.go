@@ -19,7 +19,7 @@ import (
 
 const (
 	schemaKind    = "redevplugin_control_v3"
-	schemaVersion = 5
+	schemaVersion = 6
 )
 
 var (
@@ -129,6 +129,12 @@ func (s *Store) initialize(ctx context.Context) error {
 			if err := migrateBackgroundIntervals(ctx, tx); err != nil {
 				return err
 			}
+			version = 5
+		}
+		if version == 5 {
+			if err := migrateInspectedInstalls(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if err := validateSchema(ctx, tx); err != nil {
 			return err
@@ -225,7 +231,10 @@ func createSchema(ctx context.Context, q dataHistoryMigrator) error {
 	if err := migratePluginDataHistory(ctx, q); err != nil {
 		return err
 	}
-	return migrateBackgroundIntervals(ctx, q)
+	if err := migrateBackgroundIntervals(ctx, q); err != nil {
+		return err
+	}
+	return migrateInspectedInstalls(ctx, q)
 }
 func validateSchema(ctx context.Context, db schemaReader) error {
 	var kind string
@@ -296,6 +305,11 @@ func expectedSchemaShapeVersion(ctx context.Context, version int) ([]schemaObjec
 	}
 	if version >= 5 {
 		if err := migrateBackgroundIntervals(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if version >= 6 {
+		if err := migrateInspectedInstalls(ctx, db); err != nil {
 			return nil, err
 		}
 	}

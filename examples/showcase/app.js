@@ -4608,6 +4608,20 @@ var PluginPlatformClient = class {
     );
     return inspection;
   }
+  async startInspectedInstall(request2, options = {}) {
+    const target = this.#externalInspectionTargets.get(request2.inspection_id);
+    try {
+      const operation = await this.#requestMutation("POST", "/_redevplugin/api/plugins/external-packages/install-operations", request2, options);
+      if (target && operation.execution.status === "running") await disposePluginSurfaceScope(this.#surfaceScope, target);
+      return operation;
+    } catch (error) {
+      if (target) await this.#handleMutationFailure(error, target, "Inspected install admission and local surface teardown failed");
+      throw error;
+    }
+  }
+  getInspectedInstall(requestID, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/install-operations/query", { request_id: requestID }, options);
+  }
   async installInspectedPackage(request2, options = {}) {
     const target = this.#externalInspectionTargets.get(request2.inspection_id);
     let result;

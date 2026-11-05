@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/floegence/redevplugin/v3/pkg/authoring"
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
@@ -97,7 +98,7 @@ func TestAuthorMonitorBrowser(t *testing.T) {
 			w.WriteHeader(403)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(authorBuildState{Generation: 1, PluginInstanceID: record.PluginInstanceID, CSRF: harness.CSRFToken(), Mode: "web"})
+		_ = json.NewEncoder(w).Encode(authoring.PreviewState{Generation: 1, PluginInstanceID: record.PluginInstanceID, CSRF: harness.CSRFToken(), Mode: "web"})
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

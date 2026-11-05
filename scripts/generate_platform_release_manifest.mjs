@@ -4,7 +4,6 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 
 const root = resolve(import.meta.dirname, "..");
 const canonicalContractPaths = Object.freeze([
-  "author/author-candidate.schema.json",
   "internal/release-document-cache.sql",
   "internal/runtime-wire-fixtures.json",
   "internal/runtime-wire.schema.json",
@@ -14,6 +13,8 @@ const canonicalContractPaths = Object.freeze([
   "plugin/author-development.schema.json",
   "plugin/author-project-v1.schema.json",
   "plugin/author-test-v1.schema.json",
+  "plugin/author-workspace-fixtures.json",
+  "plugin/author-workspace.schema.json",
   "plugin/bridge.schema.json",
   "plugin/connections.schema.json",
   "plugin/data-upgrade-fixtures.json",

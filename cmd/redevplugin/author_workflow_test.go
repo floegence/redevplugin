@@ -8,7 +8,6 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/authorproject"
 	"github.com/floegence/redevplugin/v3/pkg/host"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/v3/pkg/testhost"
 	"os"
@@ -196,20 +195,6 @@ func TestAuthorWatchCoalescesEditsDuringBuild(t *testing.T) {
 	case <-finished:
 	case <-time.After(3 * time.Second):
 		t.Fatal("watcher did not stop")
-	}
-}
-
-func TestAuthorBuildFailureRetainsPreview(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "fail.mjs"), []byte("process.exit(7)"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	p := &authorproject.Project{Root: root, Config: authorproject.Config{Build: []string{"node", "fail.mjs"}}}
-	builds := &authorBuilds{state: authorBuildState{Generation: 4, PluginInstanceID: "existing"}, record: registry.PluginRecord{PluginInstanceID: "existing"}}
-	builds.build(context.Background(), p, nil)
-	state := builds.snapshot()
-	if state.Generation != 4 || state.PluginInstanceID != "existing" || state.Error == "" || state.Building {
-		t.Fatalf("failed build damaged active preview: %#v", state)
 	}
 }
 

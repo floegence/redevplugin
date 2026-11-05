@@ -99,6 +99,7 @@ type InspectUploadedExternalPackageRequest struct {
 }
 
 type InstallInspectedPackageRequest struct {
+	operationEvidence     string
 	InspectionID          string    `json:"inspection_id"`
 	ExpectedPackageSHA256 string    `json:"expected_package_sha256"`
 	Now                   time.Time `json:"-"`
@@ -534,6 +535,7 @@ func (h *Host) InstallInspectedPackage(ctx context.Context, req InstallInspected
 	}
 	record := pending.Record
 	record.ExecutionApproval.Status = registry.ExecutionApprovalUserApproved
+	record.ExecutionApproval.EvidenceReference = req.operationEvidence
 	record.ExecutionApproval.ReasonCodes = []string{"explicit_user_confirmation"}
 	record.ExecutionApproval.ApprovedAt = now
 	record.ExecutionApproval.AssessedAt = now

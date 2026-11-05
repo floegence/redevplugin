@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.16.0
+  version: 3.17.0
   description: Host-agnostic plugin management, bridge, execution, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package flows use process-local inspection followed by exact-digest confirmed installation; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -289,6 +289,36 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ExternalPackageInspectionResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/install-operations:
+    post:
+      operationId: startInspectedInstall
+      x-redevplugin-route-effect: mutation
+      description: Accept one exact reviewed package using a stable user/environment-scoped request ID. Repeated requests return the original durable outcome and never replay an uncertain effect.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartInspectedInstallRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/InspectedInstallOperationResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/install-operations/query:
+    post:
+      operationId: getInspectedInstall
+      x-redevplugin-route-effect: query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_id]
+              additionalProperties: false
+              properties:
+                request_id: { type: string, minLength: 1, maxLength: 160 }
+      responses:
+        "200": { $ref: "#/components/responses/InspectedInstallOperationResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/external-packages/install:
     post:
       operationId: installInspectedPackage
@@ -950,6 +980,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ExternalPackageInspectionSuccessResponse"
+    InspectedInstallOperationResponse:
+      description: Durable exact-package install execution and its authoritative mutation outcome.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok, data]
+            additionalProperties: false
+            properties:
+              ok: { type: boolean, const: true }
+              mutation_outcome: { type: string, enum: [committed, not_committed, unknown] }
+              data: { $ref: "#/components/schemas/InspectedInstallOperation" }
     InstalledExternalPackageResponse:
       description: Installed external package with explicit trust, approval, provenance, and update facts.
       content:
@@ -3587,6 +3629,26 @@ components:
         operation_scope: { type: string, enum: [release_install] }
         cursor: { type: integer, minimum: 0, maximum: 9007199254740991 }
         limit: { type: integer, minimum: 1, maximum: 500 }
+    StartInspectedInstallRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id, inspection_id, expected_package_sha256]
+      properties:
+        request_id: { type: string, minLength: 1, maxLength: 160 }
+        inspection_id: { type: string, minLength: 1 }
+        expected_package_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    InspectedInstallOperation:
+      type: object
+      additionalProperties: false
+      required: [execution, request_id, inspection_id, package_sha256, plugin_id, version, mutation_outcome]
+      properties:
+        execution: { $ref: "#/components/schemas/Execution" }
+        request_id: { type: string }
+        inspection_id: { type: string }
+        package_sha256: { type: string }
+        plugin_id: { type: string }
+        version: { type: string }
+        mutation_outcome: { type: string, enum: [committed, not_committed, unknown] }
     StartReleaseInstallExecutionRequest:
       type: object
       required: [request_id, plugin_instance_id, release_ref, release_identity_digest, manifest_sha256, contract_set_sha256, summary_sha256]

@@ -18,7 +18,7 @@ import {
 } from "./canonical_wasm_builder.mjs";
 
 test("generated workers import only the current redevplugin.io functions", async () => {
-  const artifact = await readFile(resolve(import.meta.dirname, "../cmd/redevplugin/scaffold_assets/backend.wasm"));
+  const artifact = await readFile(resolve(import.meta.dirname, "../pkg/authoring/scaffold_assets/backend.wasm"));
   assert.doesNotThrow(() => assertCurrentWorkerImports(artifact, "scaffold worker"));
 
   const unsupported = Buffer.from(artifact);

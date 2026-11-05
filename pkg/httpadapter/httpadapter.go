@@ -909,6 +909,8 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectExternalPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackage }),
 	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackageUpdate }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/install-operations", websecurity.RouteActionInstallInspectedPackage, func(h *Handler) http.HandlerFunc { return h.handleStartInspectedInstall }),
+	queryRoute("/_redevplugin/api/plugins/external-packages/install-operations/query", websecurity.RouteActionGetExecution, func(h *Handler) http.HandlerFunc { return h.handleGetInspectedInstall }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/install", websecurity.RouteActionInstallInspectedPackage, func(h *Handler) http.HandlerFunc { return h.handleInstallInspectedPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/disable", websecurity.RouteActionDisablePlugin, func(h *Handler) http.HandlerFunc { return h.handleDisable }),
@@ -4213,4 +4215,35 @@ func httpStatusForDataLifecycleError(err error) int {
 	default:
 		return http.StatusForbidden
 	}
+}
+
+func (h Handler) handleStartInspectedInstall(w http.ResponseWriter, r *http.Request) {
+	var req host.StartInspectedInstallRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.StartInspectedInstall(r.Context(), req)
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.install-operation", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, result)
+}
+func (h Handler) handleGetInspectedInstall(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.GetInspectedInstall(r.Context(), req.RequestID)
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.install-operation.query", code, err), errorDetailsForManagementError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
 }

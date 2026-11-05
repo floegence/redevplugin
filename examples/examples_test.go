@@ -29,8 +29,8 @@ func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {
 		"internal/scaffoldtemplate/app.ts",
 		"testdata/browser-harness/web-application/app.ts",
 		"pkg/httpadapter/web_surface_browser_test.go",
-		"cmd/redevplugin/scaffold_assets/app.js",
-		"cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json",
+		"pkg/authoring/scaffold_assets/app.js",
+		"pkg/authoring/scaffold_assets/worker-artifacts.lock.json",
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
 			t.Fatalf("required consolidated path %s is unavailable: %v", path, err)
@@ -175,7 +175,7 @@ func TestScaffoldWorkerArtifactsUseCanonicalBuilderAndSourceLock(t *testing.T) {
 	script := string(scriptRaw)
 	for _, required := range []string{
 		`parseCanonicalWasmGeneratorArgs`,
-		`const workerArtifactLockPath = "cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json";`,
+		`const workerArtifactLockPath = "pkg/authoring/scaffold_assets/worker-artifacts.lock.json";`,
 		`buildCanonicalWasmArtifacts`,
 		`snapshotCanonicalCargoSources`,
 		`assertSourceSnapshotUnchanged`,
@@ -201,7 +201,7 @@ func TestScaffoldWorkerArtifactsUseCanonicalBuilderAndSourceLock(t *testing.T) {
 		t.Fatal("normal package build must verify, not regenerate, committed scaffold assets")
 	}
 
-	lockRaw, err := os.ReadFile(filepath.Join(root, "cmd", "redevplugin", "scaffold_assets", "worker-artifacts.lock.json"))
+	lockRaw, err := os.ReadFile(filepath.Join(root, "pkg", "authoring", "scaffold_assets", "worker-artifacts.lock.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestScaffoldWorkerArtifactsUseCanonicalBuilderAndSourceLock(t *testing.T) {
 			t.Fatalf("scaffold source %s digest = %q", path, digest)
 		}
 	}
-	if digest := lock.Artifacts["cmd/redevplugin/scaffold_assets/backend.wasm"]; len(lock.Artifacts) != 2 || len(digest) != 64 {
+	if digest := lock.Artifacts["pkg/authoring/scaffold_assets/backend.wasm"]; len(lock.Artifacts) != 2 || len(digest) != 64 {
 		t.Fatalf("scaffold artifact lock = %v", lock.Artifacts)
 	}
 	assertLockedDigests(t, root, lock.SourceFiles)

@@ -573,6 +573,9 @@ func (h *Host) reconcileDurableExecutionStates(ctx context.Context) error {
 	if h.controlStore == nil {
 		return ErrControlStoreRequired
 	}
+	if err := h.reconcileInspectedInstalls(ctx); err != nil {
+		return err
+	}
 	if err := h.reconcileCommittedReleaseInstalls(ctx); err != nil {
 		return err
 	}

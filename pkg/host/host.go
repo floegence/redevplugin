@@ -608,6 +608,7 @@ type Host struct {
 	closeErr             error
 	runtimeModule        *RuntimeModule
 	externalInspections  *externalPackageInspectionStore
+	inspectedInstallMu   sync.Mutex
 	externalStage        *externalsource.StageStore
 	refreshPluginTimeout time.Duration
 	recoveryMu           sync.Mutex

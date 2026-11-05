@@ -1336,7 +1336,7 @@ func (v ExecutionView) PruneTerminal(ctx context.Context, req ExecutionPruneRequ
 			SELECT execution_id,terminal_at,
 				ROW_NUMBER() OVER (PARTITION BY owner_env_hash,plugin_instance_id ORDER BY terminal_at DESC,execution_id DESC) AS ordinal
 			FROM execution
-			WHERE terminal_at IS NOT NULL AND status IN (?,?,?,?)
+			WHERE terminal_at IS NOT NULL AND status IN (?,?,?,?) AND COALESCE(json_extract(operation_json,'$.kind'),'') != 'inspected_install_v1'
 		)
 		WHERE terminal_at < ? OR ordinal > ?
 		ORDER BY terminal_at,execution_id

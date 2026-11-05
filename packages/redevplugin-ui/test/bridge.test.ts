@@ -2134,3 +2134,18 @@ test("recovery observations bind the exact installation and management revision"
     { deleted_at: "2026-11-01T00:00:01Z" },
   ]) assert.equal(isPluginRecoveryCurrent(observation, { ...current, ...change }), false);
 });
+
+test("inspected installs retain a stable request and query through POST", async () => {
+  const fetch = new FakeFetch();
+  const operation = { request_id: "create-install", inspection_id: "inspection-1", package_sha256: `sha256:${"a".repeat(64)}`, plugin_id: "dev.example.created", version: "1.0.0", mutation_outcome: "unknown", execution: { execution_id: "inspected-install-1", status: "running" } };
+  fetch.push({ ok: true, data: operation });
+  fetch.push({ ok: true, data: operation });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const request = { request_id: operation.request_id, inspection_id: operation.inspection_id, expected_package_sha256: operation.package_sha256 };
+  assert.deepEqual(await client.startInspectedInstall(request), operation);
+  assert.deepEqual(await client.getInspectedInstall(request.request_id), operation);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/external-packages/install-operations");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), request);
+  assert.equal(fetch.calls[1]?.init.method, "POST");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { request_id: request.request_id });
+});

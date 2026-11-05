@@ -106,6 +106,16 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/external-packages/install-operations",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/external-packages/install-operations/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/external-packages/upload/inspect",
     "effect": "mutation"
   },

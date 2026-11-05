@@ -158,3 +158,8 @@ func watchAuthorProject(ctx context.Context, p *authorproject.Project, build fun
 		}
 	}
 }
+
+func withinAuthorPath(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != "." && filepath.IsLocal(relative)
+}

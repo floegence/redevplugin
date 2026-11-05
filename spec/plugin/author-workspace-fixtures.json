@@ -1,0 +1,24 @@
+{
+  "workspace": {
+    "workspace_id": "author_AAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "source_directory": "/managed/projects/author_AAAAAAAAAAAAAAAAAAAAAAAAAA/source",
+    "development_directory": "/managed/projects/author_AAAAAAAAAAAAAAAAAAAAAAAAAA/development",
+    "created_at": "2026-11-05T00:00:00Z"
+  },
+  "artifact": {
+    "artifact_id": "artifact_BBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "workspace_id": "author_AAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "package_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "plugin_id": "dev.example.author",
+    "version": "1.0.0",
+    "created_at": "2026-11-05T00:00:00Z",
+    "stages": [
+      {
+        "name": "package",
+        "status": "passed",
+        "duration_ms": 0
+      }
+    ]
+  }
+}
