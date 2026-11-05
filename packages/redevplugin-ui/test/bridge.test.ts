@@ -810,6 +810,27 @@ test("uploaded external package inspection rejects aborted dispatch and invalid 
   assert.equal(fetch.calls.length, 0);
 });
 
+test("automatic-update preferences preserve live surfaces for successful and uncertain writes", async () => {
+  for (const success of [true, false]) {
+    const fetch = new FakeFetch();
+    fetch.push(success
+      ? { ok: true, data: { plugin_instance_id: "plugin_instance_target", automatic_updates: true } }
+      : { ok: false, error: { code: "PLUGIN_ADAPTER_FAILURE", message: "Preference persistence outcome is unknown", details: {}, mutation_outcome: "unknown" } }, success ? 200 : 503);
+    const scope = createPluginSurfaceScope();
+    let disposed = 0;
+    let invalidated = 0;
+    const unregister = registerPluginSurface(scope, "plugin_instance_target", () => { disposed += 1; }, () => { invalidated += 1; });
+    const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+    const result = client.setAutomaticUpdates({ plugin_instance_id: "plugin_instance_target", expected_management_revision: 7, enabled: true });
+    if (success) await result;
+    else await assert.rejects(result, (error: unknown) => error instanceof PluginPlatformRequestError && error.mutationOutcome === "unknown");
+    assert.equal(disposed, 0);
+    assert.equal(invalidated, 0);
+    assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/updates/preferences");
+    unregister();
+  }
+});
+
 test("installing an inspected external package binds the exact package hash and disposes only its plugin scope", async () => {
   const fetch = new FakeFetch();
   const inspection = externalPackageInspectionResult("inspection_install", "plugin_instance_target");

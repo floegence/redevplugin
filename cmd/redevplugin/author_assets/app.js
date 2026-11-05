@@ -3330,7 +3330,7 @@ var PluginPlatformClient = class {
     return this.#requestQuery("/_redevplugin/api/plugins/repository/plugins/query", request, options);
   }
   setAutomaticUpdates(request, options = {}) {
-    return this.#mutatePlugin("/_redevplugin/api/plugins/updates/preferences", request, options);
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/updates/preferences", request, options);
   }
   async inspectPluginUpdate(request, options = {}) {
     const result = await this.#requestMutation("POST", "/_redevplugin/api/plugins/updates/inspect", request, options);

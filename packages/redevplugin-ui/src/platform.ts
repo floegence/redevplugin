@@ -327,7 +327,9 @@ export class PluginPlatformClient {
     return this.#requestQuery("/_redevplugin/api/plugins/repository/plugins/query", request, options);
   }
   setAutomaticUpdates(request: PlatformSchemas["SetAutomaticUpdatesRequest"], options: PluginRequestOptions = {}): Promise<PluginRecord> {
-    return this.#mutatePlugin("/_redevplugin/api/plugins/updates/preferences", request, options);
+    // A preference write cannot change execution authority. Unknown persistence
+    // is reconciled through inventory without revoking the current Surface.
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/updates/preferences", request, options);
   }
   async inspectPluginUpdate(request: PlatformSchemas["InspectPluginUpdateRequest"], options: PluginRequestOptions = {}): Promise<PluginExternalPackageInspection> {
     const result = await this.#requestMutation<PluginExternalPackageInspection>("POST", "/_redevplugin/api/plugins/updates/inspect", request, options);
