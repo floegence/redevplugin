@@ -812,6 +812,9 @@ func (s *WorkspaceStore) Remove(ctx context.Context, owner Owner, id string) err
 	if _, err = tx.ExecContext(ctx, "DELETE FROM preview_selection WHERE workspace_id=?", id); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM build_reports WHERE workspace_id=?", id); err != nil {
+		return err
+	}
 	// Retain the create receipt so a delayed retry cannot resurrect deleted source.
 	return tx.Commit()
 }

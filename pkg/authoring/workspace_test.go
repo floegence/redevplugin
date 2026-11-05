@@ -347,6 +347,14 @@ func TestWorkspaceBuildFailureSurvivesRestart(t *testing.T) {
 	if _, err = s.BuildReport(ctx, Owner{"other", "env"}, w.ID); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatal(err)
 	}
+	if err = s.Remove(ctx, owner, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = s.db.QueryRow("SELECT count(*) FROM build_reports WHERE workspace_id=?", w.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("retained deleted output: %d, %v", count, err)
+	}
+
 }
 
 func TestWorkspaceRecoversInterruptedBuildReport(t *testing.T) {
