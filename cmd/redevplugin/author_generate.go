@@ -21,14 +21,14 @@ func generateAuthorAPI(input, output string, check bool) error {
 	return writeJSON(map[string]any{"ok": true, "checked": check, "files": []string{"actions.rs", "actions.ts", "manifest.json", "source-map.json"}})
 }
 
-func authorPublication(ctx context.Context, root, repository string, release bool) (pluginidentity.Identity, error) {
+func authorPublication(ctx context.Context, input, repository string, release bool) (pluginidentity.Identity, error) {
 	if !release {
 		if repository != "" {
 			return pluginidentity.Identity{}, errors.New("--repository requires --release")
 		}
 		return pluginidentity.Identity{}, nil
 	}
-	raw, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	raw, err := os.ReadFile(input)
 	if err != nil {
 		return pluginidentity.Identity{}, err
 	}
@@ -36,7 +36,7 @@ func authorPublication(ctx context.Context, root, repository string, release boo
 	if err != nil {
 		return pluginidentity.Identity{}, err
 	}
-	return resolvePublicationIdentity(ctx, root, repository, m.PluginID())
+	return resolvePublicationIdentity(ctx, filepath.Dir(input), repository, m.PluginID())
 }
 
 func runAuthorGenerate(ctx context.Context, args []string) error {
@@ -53,7 +53,7 @@ func runAuthorGenerate(ctx context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return errors.New("unexpected generate arguments")
 	}
-	identity, err := authorPublication(ctx, filepath.Dir(args[0]), *repository, *release)
+	identity, err := authorPublication(ctx, args[0], *repository, *release)
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func runAuthorBuild(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	identity, err := authorPublication(ctx, project.Root, *repository, *release)
+	identity, err := authorPublication(ctx, filepath.Join(project.Root, "manifest.json"), *repository, *release)
 	if err != nil {
 		return err
 	}

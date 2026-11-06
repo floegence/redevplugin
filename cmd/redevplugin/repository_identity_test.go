@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/floegence/redevplugin/v3/pkg/authorapi"
@@ -63,16 +64,34 @@ func TestPublicationRequiresRepositoryOnlyForRelease(t *testing.T) {
 	if _, err := createPluginTemplate("example", "Example", root, "web"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := authorPublication(context.Background(), root, "", false); err != nil {
+	input := filepath.Join(root, "manifest.json")
+	if _, err := authorPublication(context.Background(), input, "", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := authorPublication(context.Background(), root, "", true); err == nil {
+	if _, err := authorPublication(context.Background(), input, "", true); err == nil {
 		t.Fatal("release accepted without repository")
 	}
-	if _, err := authorPublication(context.Background(), root, "https://github.com/example/plugin", false); err == nil {
+	if _, err := authorPublication(context.Background(), input, "https://github.com/example/plugin", false); err == nil {
 		t.Fatal("ignored repository without release")
 	}
 	if err := run(context.Background(), []string{"repository", "identity", root, "example"}); err == nil {
 		t.Fatal("retired source-mutating identity command accepted")
+	}
+}
+
+func TestPublicationGenerationReadsTheRequestedManifest(t *testing.T) {
+	root := t.TempDir()
+	if _, err := createPluginTemplate("example", "Example", root, "web"); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(root, "custom-source.json")
+	if err := os.Rename(filepath.Join(root, "manifest.json"), input); err != nil {
+		t.Fatal(err)
+	}
+	// A malformed repository is rejected locally after reading the explicit input,
+	// so this regression requires neither Git nor a network connection.
+	err := runAuthorGenerate(context.Background(), []string{input, filepath.Join(root, "generated"), "--release", "--repository", "invalid"})
+	if err == nil || os.IsNotExist(err) || !strings.Contains(err.Error(), "github") {
+		t.Fatalf("expected repository validation after reading custom source, got %v", err)
 	}
 }
