@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.23.1
+
+- Open persistent author-state and managed-workspace directory locks with atomic close-on-exec semantics. Long-lived terminal and service children no longer keep a stopped host's author store locked.
+- Verify exclusive ownership while the host is alive and successful reopening after the owner closes while an executed child remains alive on Darwin and Linux.
+- Preserve author databases, package data, session authority and all existing schemas; plugin API and internal wire remain unchanged.
+
 ## v3.23.0
 
 - Start author templates with an unboxed content surface, compact typography, distinct primary and secondary actions, responsive spacing and touch-sized controls. Apply host light/dark context consistently across all five templates.

@@ -9,7 +9,9 @@ import (
 )
 
 func lockAuthorState(path string) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	// Hosts can launch long-lived terminals and services. Their exec must not
+	// inherit this lock and keep author state unavailable after the host exits.
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}

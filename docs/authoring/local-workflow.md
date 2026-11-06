@@ -18,7 +18,7 @@ Install the CLI for the platform release used by your host, then start the
 default Web preview:
 
 ```bash
-go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.23.0
+go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.23.1
 redevplugin init dev.example.notes "Notes" notes
 cd notes
 npm install
@@ -41,7 +41,9 @@ each successful build. There is no transparent preservation of arbitrary DOM
 state. Reload and update are deliberate frame-lifetime boundaries.
 
 The persistent directory is explicitly chosen, exclusively locked, and bound to
-one canonical project path. It must be outside the source directory. Restart
+one canonical project path. The lock belongs only to the owning process; executed
+children do not retain it after that owner exits. It must be outside the source
+directory. Restart
 preserves data and owner-scoped grants, rotates session/channel authority, and
 closes the exact previous session through the Host maintenance APIs. Unknown,
 foreign, corrupt, and future state are rejected without replacing their bytes.

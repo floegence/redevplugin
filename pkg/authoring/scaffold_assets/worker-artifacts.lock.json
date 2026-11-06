@@ -5,11 +5,11 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.98.0-bookworm@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f",
   "source_files": {
-    "Cargo.lock": "e4f670e428e989c7219044680648144cab8806d4332dd4cf64f63ff85db08c19",
-    "Cargo.toml": "14626faa58aebe04ed2d5798d8bb55aea9657e536a172e0011e68ead6afabc25",
+    "Cargo.lock": "feadf8ac7d73137391602869d491f00cc78b7858abd89c40149e542c50ee5f81",
+    "Cargo.toml": "66cc486902f98ec5313e2c395a7f7cf5bf0e653af327c932e072da1b1ae5150d",
     "crates/redevplugin-worker-sdk/Cargo.toml": "2b658c690b4e39b72b12308afd590a04a52b864500ee9fecdb8b8cffdccfd749",
     "crates/redevplugin-worker-sdk/LICENSE": "c2ef56768227918d97d210272f390b19cda62865ff23829278f5c0a7cba5051b",
-    "crates/redevplugin-worker-sdk/README.md": "36543d162ddb343590211edc25be03ab3b9ce8efd3b296ddc99d3c84d2619113",
+    "crates/redevplugin-worker-sdk/README.md": "9f42b5f6f76674663412e4bd73989e967e2ba4c9ef059fa270d31db47f2c5295",
     "crates/redevplugin-worker-sdk/src/api.rs": "56ad7a588d552b7a0653e89486e7e6864a435fe2956e069b725a89306836b669",
     "crates/redevplugin-worker-sdk/src/broker.rs": "456fd1db55ee92c08db0059dbc5bebed63a5d6ade878fdb228a02a5bb4460e84",
     "crates/redevplugin-worker-sdk/src/data_upgrade.rs": "5b53a2a48a81b95aee2b2fc01c12a2854770a0de66d9e958c458e21d162f57e2",
@@ -35,7 +35,7 @@
     "scripts/canonical_wasm_builder.mjs": "5a71f33f75cb42fbae5781af058177b30d3fccfea4df00392e6d86480d569a98"
   },
   "artifacts": {
-    "crates/redevplugin-runtime/testdata/workload-backend.wasm": "1724c5c126025fcf934f90d2a885e44652fe7c559ba1f2fcd0b3a0e69bf41c3c",
-    "pkg/authoring/scaffold_assets/backend.wasm": "e86eb8cdb355116446a1d6ea137e61b607f5f457471b34d9cbae3da78586f483"
+    "crates/redevplugin-runtime/testdata/workload-backend.wasm": "a0db589a69f1d046d7680d8abab540cdbabbf8608451f3d51144ba18390db5ee",
+    "pkg/authoring/scaffold_assets/backend.wasm": "43c3eff8ccd22dcf351f755e3f37e1c6628f3fad8970ed119261c7393aa490ce"
   }
 }
