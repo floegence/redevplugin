@@ -1011,6 +1011,24 @@ export type PluginSurfaceInteractionEvent = {
   selectionActive: boolean;
 };
 
+/** Untrusted visual context, never a permission, identity, or executable selector. */
+export type PluginSurfaceContextMenuEvent = Readonly<{
+  /** Local freshness check only; cannot authorize an action. False after navigation or retirement. */
+  isCurrent: () => boolean;
+  sequence: number;
+  frameGenerationId: string;
+  surfaceHandle: string;
+  point: Readonly<{ x: number; y: number }>;
+  viewport: Readonly<{ width: number; height: number }>;
+  target: Readonly<{
+    tag: string;
+    role: string;
+    text: string;
+    selector: string;
+    bounds: Readonly<{ x: number; y: number; width: number; height: number }>;
+  }>;
+}>;
+
 export type PluginSurfaceHost = {
   readonly element: HTMLIFrameElement;
   readonly surfaceInstanceId: string;
@@ -1055,6 +1073,8 @@ export type PluginSurfaceHostOptions = {
   prepareWebOrigin?: PluginWebOriginPreparationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
+  /** Opt in to host context menus; ordinary application menus remain unchanged by default. */
+  onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
   onFileExport?: PluginSurfaceFileExportHandler;
   confirmClose?: (request: { reason: "unsaved" | "unresponsive"; signal: AbortSignal }) => boolean | Promise<boolean>;
   onError?: (error: PluginBridgeError) => void;
@@ -1265,6 +1285,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #prepareWebOrigin?: PluginWebOriginPreparationHandler;
   #onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   #onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
+  #onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
   #onFileExport?: PluginSurfaceFileExportHandler;
   #confirmClose?: PluginSurfaceHostOptions["confirmClose"];
   #closeDecision?: { id: string; result: Deferred<boolean>; controller: AbortController };
@@ -1352,6 +1373,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#prepareWebOrigin = options.prepareWebOrigin;
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
+    this.#onContextMenu = options.onContextMenu;
     this.#onFileExport = options.onFileExport;
     this.#confirmClose = options.confirmClose;
     this.#onError = options.onError;
@@ -1481,6 +1503,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       frame_generation_id: this.frameGenerationId,
       surface_handle: this.surfaceHandle,
       entry_path: entryPath,
+      context_menu: this.#onContextMenu ? true : undefined,
       context: this.#surfaceContext,
     }));
     this.#applicationInitialized = true;
@@ -1742,6 +1765,16 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         this.#closeDecision?.result.resolve(data.allow);
         return;
       }
+      if (isSurfaceContextMenuMessage(data)) {
+        if (this.#onContextMenu && this.#acceptInteraction(data)) {
+          try {
+            this.#onContextMenu({ isCurrent: () => !this.#disposed && this.#ready && !this.#navigationPending && data.frame_generation_id === this.frameGenerationId && data.surface_handle === this.surfaceHandle,
+              sequence: data.sequence, frameGenerationId: data.frame_generation_id,
+              surfaceHandle: data.surface_handle, point: data.point, viewport: data.viewport, target: data.target });
+          } catch { /* Observers cannot alter the surface lifecycle. */ }
+        }
+        return;
+      }
       if (isSurfaceInteractionMessage(data)) {
         this.#handleInteraction(data);
         return;
@@ -1826,17 +1859,20 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     }
   }
 
-  #handleInteraction(message: SurfaceInteractionMessage): void {
-    if (!this.#ready || message.frame_generation_id !== this.frameGenerationId || message.surface_handle !== this.surfaceHandle) return;
-    if (message.sequence <= this.#lastInteractionSequence) return;
+  #acceptInteraction(message: { frame_generation_id: string; surface_handle: string; sequence: number }): boolean {
+    if (!this.#ready || message.frame_generation_id !== this.frameGenerationId || message.surface_handle !== this.surfaceHandle) return false;
+    if (message.sequence <= this.#lastInteractionSequence) return false;
     this.#lastInteractionSequence = message.sequence;
     const now = performance.now();
     if (now - this.#interactionWindowStartedAt >= 1000) {
       this.#interactionWindowStartedAt = now;
       this.#interactionWindowCount = 0;
     }
-    this.#interactionWindowCount += 1;
-    if (this.#interactionWindowCount > maxSurfaceInteractionEventsPerSecond) return;
+    return ++this.#interactionWindowCount <= maxSurfaceInteractionEventsPerSecond;
+  }
+
+  #handleInteraction(message: SurfaceInteractionMessage): void {
+    if (!this.#acceptInteraction(message)) return;
     const interaction: PluginSurfaceInteractionEvent = {
       kind: message.kind,
       sequence: message.sequence,
@@ -3024,6 +3060,29 @@ type SurfaceInteractionMessage = {
   local_scroll: boolean;
   selection_active: boolean;
 };
+
+type SurfaceContextMenuMessage = Pick<PluginSurfaceContextMenuEvent, "sequence" | "point" | "viewport" | "target"> & {
+  type: "redevplugin.surface.context_menu";
+  frame_generation_id: string;
+  surface_handle: string;
+};
+
+function isSurfaceContextMenuMessage(value: unknown): value is SurfaceContextMenuMessage {
+  if (!hasExactKeys(value, ["type", "frame_generation_id", "surface_handle", "sequence", "point", "viewport", "target"])) return false;
+  const unit = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
+  const dimension = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n > 0 && n <= 100000;
+  const text = (v: unknown, max: number) => typeof v === "string" && v.length <= max;
+  return value.type === "redevplugin.surface.context_menu" &&
+    validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") &&
+    typeof value.sequence === "number" && Number.isSafeInteger(value.sequence) && value.sequence > 0 &&
+    hasExactKeys(value.point, ["x", "y"]) && unit(value.point.x) && unit(value.point.y) &&
+    hasExactKeys(value.viewport, ["width", "height"]) && dimension(value.viewport.width) && dimension(value.viewport.height) &&
+    hasExactKeys(value.target, ["tag", "role", "text", "selector", "bounds"]) &&
+    typeof value.target.tag === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value.target.tag) &&
+    text(value.target.role, 64) && text(value.target.text, 240) && text(value.target.selector, 1024) &&
+    hasExactKeys(value.target.bounds, ["x", "y", "width", "height"]) &&
+    Object.values(value.target.bounds).every(unit);
+}
 
 type SurfaceFileExportCandidate = Record<string, unknown> & {
   type: "redevplugin.surface.file.export";

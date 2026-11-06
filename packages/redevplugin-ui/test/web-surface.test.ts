@@ -1793,6 +1793,55 @@ test("trusted parent accepts only current port-bound interaction ownership signa
   assert.equal(interactions.length, 121);
 });
 
+test("context menus require opt-in and exact live surface authority with bounded element context", async () => {
+  for (const enabled of [false, true]) {
+    const frame = new FakeFrame();
+    const fetch = new FakeFetch();
+    const channel = fakeChannel();
+    const observed: unknown[] = [];
+    fetch.push(preparation()); fetch.push(gatewayLease());
+    const host = createSurfaceHost(frame, {
+      bootstrap: hostBootstrap, testMessageChannel: channel,
+      hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+      ...(enabled ? { onContextMenu: (event: unknown) => observed.push(event) } : {}),
+    });
+    const opening = host.open(); frame.load();
+    await waitFor(() => frame.transferred.length === 1);
+    channel.port2.applicationReady(); await opening;
+    const initialize = channel.port1.sent.find(value => isMessageType(value, "redevplugin.surface.initialize")) as Record<string, unknown>;
+    assert.equal(initialize.context_menu, enabled ? true : undefined);
+    const message = {
+      type: "redevplugin.surface.context_menu", frame_generation_id: host.frameGenerationId,
+      surface_handle: host.surfaceHandle, sequence: 1,
+      point: { x: 0.5, y: 0.5 }, viewport: { width: 800, height: 600 },
+      target: { tag: "button", role: "", text: "Save", selector: "html > body > button:nth-of-type(1)",
+        bounds: { x: 0.1, y: 0.1, width: 0.3, height: 0.2 } },
+    };
+    for (const invalid of [
+      { ...message, frame_generation_id: "frame_stale123" },
+      { ...message, surface_handle: "surface_stale123" },
+      { ...message, unexpected: true },
+      { ...message, point: { x: NaN, y: 0 } },
+      { ...message, target: { ...message.target, text: "x".repeat(241) } },
+      { ...message, target: { ...message.target, value: "private" } },
+    ]) channel.port2.postMessage(invalid);
+    channel.port2.postMessage(message); channel.port2.postMessage(message);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(observed.length, enabled ? 1 : 0);
+    if (enabled) assert.deepEqual(observed[0], {
+      isCurrent: (observed[0] as { isCurrent: () => boolean }).isCurrent,
+      sequence: 1, frameGenerationId: host.frameGenerationId, surfaceHandle: host.surfaceHandle,
+      point: message.point, viewport: message.viewport, target: message.target,
+    });
+    fetch.push({ disposed: true, state: "closed", previous_state: "active", revoked: true });
+    if (enabled) assert.equal((observed[0] as { isCurrent: () => boolean }).isCurrent(), true);
+    await host.dispose();
+    if (enabled) assert.equal((observed[0] as { isCurrent: () => boolean }).isCurrent(), false);
+    channel.port2.emit({ ...message, sequence: 2 });
+    assert.equal(observed.length, enabled ? 1 : 0);
+  }
+});
+
 test("trusted parent asks the host to authorize every file export", async () => {
   const frame = new FakeFrame();
   const fetch = new FakeFetch();

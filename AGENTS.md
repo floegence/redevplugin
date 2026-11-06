@@ -296,7 +296,10 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   wheel/local-scroll, text-selection, and action intent for host placement and
   chrome behavior only. Action names and target keys remain plugin-controlled
   semantic metadata and must never become permission, route-authorization,
-  identity, or privilege inputs.
+  identity, or privilege inputs. Opt-in context menus use the same channel and
+  return only bounded visual target hints and normalized viewport geometry.
+  Hosts bind comments to their reviewed artifact and own stale-comment handling;
+  visual text and selectors are untrusted context, never executable authority.
 - Saved host layout and live surface authority are separate lifetimes. Hosts may
   retain a product container while its SDK slot is closed or invalidated, then
   open a fresh slot after authoritative session, inventory, and permission

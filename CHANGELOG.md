@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.23.0
+
+- Add explicit trusted-parent context-menu observation for authoring and review surfaces through the existing dedicated-origin, source-bound MessageChannel. Ordinary surfaces preserve their native menus.
+- Bind observations to the current frame generation, opaque surface handle, monotonic sequence and bounded event budget; reject stale, malformed and unsolicited messages. Provide normalized click/element geometry and bounded visual target hints without exporting form values or HTML.
+- Keep visual text and selectors untrusted and non-authoritative. Hosts own comment presentation, artifact binding, stale-comment review and agent orchestration; no new runtime execution or permission path is introduced.
+- Qualify opt-in menus, real and synthetic browser gestures, input-value exclusion and independent surface cleanup in the native Web acceptance harness. Plugin API, internal wire and durable schemas remain unchanged.
+
 ## v3.22.0
 
 - Reject foreign repository namespaces in GitHub index choices and before package downloads.

@@ -6,7 +6,7 @@
   const controller = new AbortController();
   let parentOrigin, port, frameGeneration, surfaceHandle, context;
   let initialized = false, stopped = false, ready = false, claimed = false;
-  let appPeer, appPort, sequence = 0;
+  let appPeer, appPort, sequence = 0, contextMenu = false;
   const send = (message, transfer) => { if (!stopped) port?.postMessage(message, transfer); };
   const fetchResource = (path, init = {}) => nativeFetch(path, { ...init, credentials: "include", cache: "no-store", signal: controller.signal });
   const fail = (error) => {
@@ -28,7 +28,36 @@
       sequence: ++sequence, kind, target_key: null, action: kind === "action" ? "application.action" : null,
       local_scroll: false, selection_active: false, ...extra });
   };
+  const visualTarget = element => {
+    const width = Math.max(1, innerWidth), height = Math.max(1, innerHeight);
+    const unit = n => Math.max(0, Math.min(1, n));
+    const rect = element.getBoundingClientRect();
+    const path = [];
+    for (let node = element; node instanceof Element && path.length < 12; node = node.parentElement) {
+      let position = 1;
+      for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) if (sibling.localName === node.localName) position++;
+      path.unshift(node.localName + ":nth-of-type(" + position + ")");
+    }
+    // Never copy form values, editable text, HTML, attributes, URLs, or document-wide state.
+    let text = "", visited = 0;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && text.length < 240 && visited++ < 128; node = walker.nextNode()) {
+      if (!node.parentElement?.closest("input,textarea,select,[contenteditable],script,style,[hidden]")) text += " " + node.textContent.slice(0, 240);
+    }
+    const x = unit(rect.left / width), y = unit(rect.top / height);
+    return { tag: element.localName.slice(0, 64), role: (element.getAttribute("role") || "").slice(0, 64),
+      text: text.replace(/\s+/g, " ").trim().slice(0, 240), selector: path.join(" > ").slice(0, 1024),
+      bounds: { x, y, width: Math.max(0, unit(rect.right / width) - x), height: Math.max(0, unit(rect.bottom / height) - y) } };
+  };
   const observe = () => {
+    document.addEventListener("contextmenu", e => {
+      if (!contextMenu || !ready || !e.isTrusted || !(e.target instanceof Element)) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      const target = visualTarget(e.target);
+      send({ type: "redevplugin.surface.context_menu", frame_generation_id: frameGeneration, surface_handle: surfaceHandle,
+        sequence: ++sequence, point: { x: Math.max(0, Math.min(1, e.clientX / Math.max(1, innerWidth))), y: Math.max(0, Math.min(1, e.clientY / Math.max(1, innerHeight))) },
+        viewport: { width: innerWidth, height: innerHeight }, target });
+    }, true);
     document.addEventListener("pointerdown", e => { if (e.isTrusted) interaction("activation"); }, true);
     document.addEventListener("focusin", e => { if (e.isTrusted) interaction("focus"); }, true);
     document.addEventListener("click", e => { if (e.isTrusted) interaction("action"); }, true);
@@ -56,7 +85,7 @@
   ]);
   const start = async message => {
     if (stopped || initialized || message.frame_generation_id !== frameGeneration) return;
-    initialized = true; surfaceHandle = message.surface_handle; context = message.context;
+    initialized = true; surfaceHandle = message.surface_handle; context = message.context; contextMenu = message.context_menu === true;
     const channel = new MessageChannel(); appPeer = channel.port1; appPort = channel.port2;
     appPeer.onmessage = e => {
       const value = e.data;

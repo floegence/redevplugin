@@ -2460,6 +2460,7 @@ var PluginSurfaceHostImplementation = class {
   #prepareWebOrigin;
   #onOpeningProgress;
   #onInteraction;
+  #onContextMenu;
   #onFileExport;
   #confirmClose;
   #closeDecision;
@@ -2545,6 +2546,7 @@ var PluginSurfaceHostImplementation = class {
     this.#prepareWebOrigin = options.prepareWebOrigin;
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
+    this.#onContextMenu = options.onContextMenu;
     this.#onFileExport = options.onFileExport;
     this.#confirmClose = options.confirmClose;
     this.#onError = options.onError;
@@ -2670,6 +2672,7 @@ var PluginSurfaceHostImplementation = class {
       frame_generation_id: this.frameGenerationId,
       surface_handle: this.surfaceHandle,
       entry_path: entryPath,
+      context_menu: this.#onContextMenu ? true : void 0,
       context: this.#surfaceContext
     }));
     this.#applicationInitialized = true;
@@ -2925,6 +2928,23 @@ var PluginSurfaceHostImplementation = class {
         this.#closeDecision?.result.resolve(data.allow);
         return;
       }
+      if (isSurfaceContextMenuMessage(data)) {
+        if (this.#onContextMenu && this.#acceptInteraction(data)) {
+          try {
+            this.#onContextMenu({
+              isCurrent: () => !this.#disposed && this.#ready && !this.#navigationPending && data.frame_generation_id === this.frameGenerationId && data.surface_handle === this.surfaceHandle,
+              sequence: data.sequence,
+              frameGenerationId: data.frame_generation_id,
+              surfaceHandle: data.surface_handle,
+              point: data.point,
+              viewport: data.viewport,
+              target: data.target
+            });
+          } catch {
+          }
+        }
+        return;
+      }
       if (isSurfaceInteractionMessage(data)) {
         this.#handleInteraction(data);
         return;
@@ -3008,17 +3028,19 @@ var PluginSurfaceHostImplementation = class {
       await this.#failSurface(toBridgeError(error, "PLUGIN_CONTRACT_MISMATCH"));
     }
   }
-  #handleInteraction(message) {
-    if (!this.#ready || message.frame_generation_id !== this.frameGenerationId || message.surface_handle !== this.surfaceHandle) return;
-    if (message.sequence <= this.#lastInteractionSequence) return;
+  #acceptInteraction(message) {
+    if (!this.#ready || message.frame_generation_id !== this.frameGenerationId || message.surface_handle !== this.surfaceHandle) return false;
+    if (message.sequence <= this.#lastInteractionSequence) return false;
     this.#lastInteractionSequence = message.sequence;
     const now = performance.now();
     if (now - this.#interactionWindowStartedAt >= 1e3) {
       this.#interactionWindowStartedAt = now;
       this.#interactionWindowCount = 0;
     }
-    this.#interactionWindowCount += 1;
-    if (this.#interactionWindowCount > maxSurfaceInteractionEventsPerSecond) return;
+    return ++this.#interactionWindowCount <= maxSurfaceInteractionEventsPerSecond;
+  }
+  #handleInteraction(message) {
+    if (!this.#acceptInteraction(message)) return;
     const interaction = {
       kind: message.kind,
       sequence: message.sequence,
@@ -4068,6 +4090,13 @@ function setSurfacePresentation(element, state) {
   element.style.visibility = "";
   element.style.opacity = state === "opening" ? "0" : "";
   element.style.pointerEvents = ready ? "" : "none";
+}
+function isSurfaceContextMenuMessage(value) {
+  if (!hasExactKeys(value, ["type", "frame_generation_id", "surface_handle", "sequence", "point", "viewport", "target"])) return false;
+  const unit = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
+  const dimension = (n) => typeof n === "number" && Number.isInteger(n) && n > 0 && n <= 1e5;
+  const text = (v2, max) => typeof v2 === "string" && v2.length <= max;
+  return value.type === "redevplugin.surface.context_menu" && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") && typeof value.sequence === "number" && Number.isSafeInteger(value.sequence) && value.sequence > 0 && hasExactKeys(value.point, ["x", "y"]) && unit(value.point.x) && unit(value.point.y) && hasExactKeys(value.viewport, ["width", "height"]) && dimension(value.viewport.width) && dimension(value.viewport.height) && hasExactKeys(value.target, ["tag", "role", "text", "selector", "bounds"]) && typeof value.target.tag === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value.target.tag) && text(value.target.role, 64) && text(value.target.text, 240) && text(value.target.selector, 1024) && hasExactKeys(value.target.bounds, ["x", "y", "width", "height"]) && Object.values(value.target.bounds).every(unit);
 }
 function isSurfaceFileExportCandidate(value) {
   return isRecord(value) && value.type === "redevplugin.surface.file.export" && typeof value.id === "string";

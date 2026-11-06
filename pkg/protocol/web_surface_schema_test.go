@@ -24,7 +24,7 @@ func TestWebSurfaceDocumentIsOneClosedOriginBinding(t *testing.T) {
 
 func TestWebSurfaceTransportIsClosedAndSecretFree(t *testing.T) {
 	schema := readPluginSchema(t, "web-surface-transport.schema.json")
-	names := []string{"port_envelope", "port_ack", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response"}
+	names := []string{"port_envelope", "port_ack", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response", "context_menu"}
 	refs := requireObjectArray(t, schema["oneOf"], "transport variants")
 	var got []string
 	for _, ref := range refs {
@@ -98,6 +98,47 @@ func TestWebSurfaceTransportRejectsRetiredAndAuthorityBearingMessages(t *testing
 		if err = schema.Validate(invalid); err == nil {
 			t.Fatalf("accepted invalid interaction %s", key)
 		}
+	}
+}
+
+func TestContextMenuVisualContextIsClosedAndBounded(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec/plugin/web-surface-transport.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	addFileResourcesSchema(t, compiler)
+	if err := compiler.AddResource("urn:web", bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("urn:web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(filepath.Join(repoRoot(t), "testdata/contracts/web-surface-context-menu.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var message map[string]any
+	if err := json.Unmarshal(raw, &message); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(message); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]any{"sequence": 0, "unexpected": true, "point": map[string]any{"x": -1, "y": 0}} {
+		invalid := cloneWebObject(message)
+		invalid[key] = value
+		if err := schema.Validate(invalid); err == nil {
+			t.Fatalf("accepted invalid context menu %s", key)
+		}
+	}
+	target := cloneWebObject(message["target"].(map[string]any))
+	target["value"] = "private input"
+	message["target"] = target
+	if err := schema.Validate(message); err == nil {
+		t.Fatal("accepted form value")
 	}
 }
 

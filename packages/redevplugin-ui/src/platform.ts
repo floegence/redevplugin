@@ -26,6 +26,7 @@ import {
   type PluginSurfaceContext,
   type PluginSurfaceOpeningProgress,
   type PluginSurfaceInteractionEvent,
+  type PluginSurfaceContextMenuEvent,
   type PluginSurfaceFileExportHandler,
   type PluginSurfaceReloadLimiter,
   type PluginSurfaceSlot,
@@ -98,6 +99,7 @@ export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
   prepareWebOrigin?: PluginWebOriginPreparationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
+  onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
   onFileExport?: PluginSurfaceFileExportHandler;
   confirmClose?: (request: { reason: "unsaved" | "unresponsive"; signal: AbortSignal }) => boolean | Promise<boolean>;
   onError?: (error: import("./errors.js").PluginBridgeError) => void;

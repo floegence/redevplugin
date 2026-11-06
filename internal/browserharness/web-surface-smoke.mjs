@@ -127,6 +127,28 @@ if (process.argv[2] === "--build") {
       assert.equal(close.quiesce.outcome, "acknowledged");
       await plain.evaluate(() => globalThis.testSlots[1].close());
     } finally { await plain.close(); }
+    const comments = await browser.newPage();
+    try {
+      await comments.goto(process.argv[3] + "?mode=context-menu");
+      await comments.waitForFunction(() => globalThis.testState?.ready || globalThis.testState?.error);
+      assert.equal(await comments.evaluate(() => globalThis.testState.error), "");
+      const application = comments.frames().find(frame => frame !== comments.mainFrame());
+      const target = application.getByRole("button", { name: "Apply", exact: true });
+      await target.dispatchEvent("contextmenu", { bubbles: true });
+      assert.equal(await comments.evaluate(() => globalThis.testState.contextMenus.length), 0, "synthetic events are ignored");
+      await target.click({ button: "right" });
+      await comments.waitForFunction(() => globalThis.testState.contextMenus.length === 1);
+      const context = await comments.evaluate(() => globalThis.testState.contextMenus[0]);
+      assert.equal(context.target.tag, "button"); assert.equal(context.target.text, "Apply");
+      assert.ok(context.target.selector.includes("button:nth-of-type("));
+      assert.ok(context.target.bounds.width > 0); assert.ok(context.point.x >= 0 && context.point.x <= 1);
+      await application.locator("input").first().fill("private form value");
+      await application.locator("input").first().click({ button: "right" });
+      await comments.waitForFunction(() => globalThis.testState.contextMenus.length === 2);
+      assert.equal(await comments.evaluate(() => globalThis.testState.contextMenus[1].target.text), "");
+      assert.equal(await comments.evaluate(() => JSON.stringify(globalThis.testState.contextMenus).includes("private form value")), false);
+      await comments.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
+    } finally { await comments.close(); }
     const unsupported = await browser.newPage();
     try {
       let applicationRequests = 0;

@@ -14,7 +14,7 @@ Install the CLI for the platform release used by your host, then start the
 default Web preview:
 
 ```bash
-go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.20.0
+go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.23.0
 redevplugin init dev.example.notes "Notes" notes
 cd notes
 npm install
@@ -285,3 +285,19 @@ Local preview updates explicitly apply edited package bytes while the project
 version remains unchanged. This behavior is confined to `local_package`
 installations and is never an automatic or remote update. Published version
 content remains immutable; editing a distributed release requires a new version.
+
+## Embedded visual review
+
+A trusted parent may pass `onContextMenu` to `openSurfaceInSlot`. This opts the
+exact live surface into host context menus. The SDK returns bounded target text,
+tag, role, a structural selector hint, normalized viewport geometry, and the
+current frame generation and surface handle. Its local `isCurrent()` check becomes
+false after navigation or retirement; it is a freshness hint, not authorization. It never exports HTML or form values.
+Without the callback, native application menus are unchanged.
+
+The host owns comment UI, the artifact/version binding, user submission and
+agent orchestration. A new preview generation invalidates prior targeting; retain
+unsent text and require reselection instead of silently targeting the replacement.
+Treat all visual metadata as untrusted quotation. A selector is a source-finding
+hint, not authorization or an instruction to evaluate in a document. Comments do
+not bypass the normal permission, confirmation, build or installation lifecycle.

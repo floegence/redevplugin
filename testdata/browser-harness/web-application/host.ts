@@ -4,7 +4,7 @@ const fixture = await response.json();
 const mode = new URL(location.href).searchParams.get("mode");
 const slots = [0, 1].map(() => PluginSurfaceSlot.create({ stage: document.createElement("section") }));
 const client = new PluginPlatformClient();
-const state = { ready: false, error: "", interactions: [] as string[], prepared: [] as string[], targets: [] as string[], released: [] as string[] };
+const state = { contextMenus: [] as unknown[], ready: false, error: "", interactions: [] as string[], prepared: [] as string[], targets: [] as string[], released: [] as string[] };
 Object.assign(globalThis, { testState: state, testSlots: slots });
 for (const slot of slots) {
   document.body.append(slot.element);
@@ -24,7 +24,7 @@ try {
       .then(response => { if (response.ok) state.released.push(route.origin); }).catch(() => undefined); };
     signal.addEventListener("abort", release, { once: true });
     if (signal.aborted) release();
-  }, confirmFileAccess: async review => review.name === "selected.txt" && review.writable, onInteraction: event => state.interactions.push(event.kind), onError: error => { state.error = error.message; } });
+  }, ...(mode === "context-menu" ? { onContextMenu: ({ isCurrent: _isCurrent, ...event }) => state.contextMenus.push(event) } : {}), confirmFileAccess: async review => review.name === "selected.txt" && review.writable, onInteraction: event => state.interactions.push(event.kind), onError: error => { state.error = error.message; } });
   state.ready = true;
 } catch (error) { state.error = String(error); }
 
