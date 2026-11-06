@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"io"
 	"net/url"
 	"strconv"
@@ -376,6 +377,15 @@ func (h *Host) inspectStagedExternalPackage(
 	pkg, err := h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, artifact, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return ExternalPackageInspection{}, err
+	}
+	if provenance.Kind == registry.PackageSourceGitHubRepository {
+		repositoryID, parseErr := strconv.ParseInt(provenance.GitHubRepositoryID, 10, 64)
+		if parseErr != nil || strconv.FormatInt(repositoryID, 10) != provenance.GitHubRepositoryID {
+			return ExternalPackageInspection{}, fmt.Errorf("%w: invalid observed repository identity", ErrExternalPackageConfirmation)
+		}
+		if err := pluginidentity.ValidateGitHub(repositoryID, pkg.Manifest.Publisher.PublisherID, pkg.Manifest.PluginID()); err != nil {
+			return ExternalPackageInspection{}, fmt.Errorf("%w: %v", ErrExternalPackageConfirmation, err)
+		}
 	}
 	current, instanceID, err := h.resolveExternalPackageIntent(ctx, intent, pkg)
 	if err != nil {

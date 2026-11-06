@@ -1,0 +1,53 @@
+{
+  "valid": [
+    {
+      "repository_id": 42,
+      "slug": "mind-map",
+      "publisher_id": "github.repo.42",
+      "plugin_id": "github.repo.42.mind-map"
+    },
+    {
+      "repository_id": 1289352675,
+      "slug": "weather",
+      "publisher_id": "github.repo.1289352675",
+      "plugin_id": "github.repo.1289352675.weather"
+    }
+  ],
+  "invalid": [
+    {
+      "repository_id": 43,
+      "publisher_id": "github.repo.42",
+      "plugin_id": "github.repo.42.mind-map"
+    },
+    {
+      "repository_id": 42,
+      "publisher_id": "com.redeven.official",
+      "plugin_id": "github.repo.42.mind-map"
+    },
+    {
+      "repository_id": 42,
+      "publisher_id": "github.repo.42",
+      "plugin_id": "github.repo.420.mind-map"
+    },
+    {
+      "repository_id": 42,
+      "publisher_id": "github.repo.42",
+      "plugin_id": "github.repo.42.foo.bar"
+    },
+    {
+      "repository_id": 42,
+      "publisher_id": "github.repo.042",
+      "plugin_id": "github.repo.042.mind-map"
+    },
+    {
+      "repository_id": 42,
+      "publisher_id": "github.repo.42",
+      "plugin_id": "github.repo.42.Mind-Map"
+    },
+    {
+      "repository_id": 42,
+      "publisher_id": "github.repo.42",
+      "plugin_id": "github.repo.42.example\n"
+    }
+  ]
+}

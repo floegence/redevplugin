@@ -52,6 +52,8 @@ const expectedCanonicalContracts = [
   "contract:plugin/presentation-locale-fixtures-v1.json",
   "contract:plugin/process-containment-v1.schema.json",
   "contract:plugin/quarantine-cleanup-v1.schema.json",
+  "contract:plugin/repository-identity-fixtures.json",
+  "contract:plugin/repository-identity.schema.json",
   "contract:plugin/repository-index-fixtures.json",
   "contract:plugin/repository-index-v1.schema.json",
   "contract:plugin/resource-scope-v1.schema.json",

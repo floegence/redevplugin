@@ -75,11 +75,11 @@ func Upsert(root, host, project, manifestName string, release Release, replace b
 		foundTarget = true
 		for pi := range target.Plugins {
 			old := target.Plugins[pi]
-			if old.PluginID != entry.PluginID {
+			if old.PluginID != entry.PluginID && !(replace && old.Path == entry.Path && old.Manifest == entry.Manifest) {
 				continue
 			}
 			foundEntry = true
-			if old.Path == entry.Path && old.Manifest == entry.Manifest && old.Release != nil && *old.Release == release {
+			if old.PluginID == entry.PluginID && old.Path == entry.Path && old.Manifest == entry.Manifest && old.Release != nil && *old.Release == release {
 				_, err := ValidateRepository(absolute)
 				return false, err
 			}

@@ -32,6 +32,8 @@ const canonicalContractPaths = Object.freeze([
   "plugin/presentation-locale-fixtures-v1.json",
   "plugin/process-containment-v1.schema.json",
   "plugin/quarantine-cleanup-v1.schema.json",
+  "plugin/repository-identity-fixtures.json",
+  "plugin/repository-identity.schema.json",
   "plugin/repository-index-fixtures.json",
   "plugin/repository-index-v1.schema.json",
   "plugin/resource-scope-v1.schema.json",

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 )
 
 const (
@@ -388,4 +390,21 @@ func validateGitHubAPIJSONValue(decoder *json.Decoder, depth int) error {
 
 func githubAPIError(operation string, cause error) error {
 	return externalError(ErrorGitHubRelease, operation, githubAPIOrigin, cause)
+}
+
+// RepositoryID resolves the numeric identity from the public GitHub API. Names
+// and author-provided manifest fields are never treated as ownership evidence.
+func (client *GitHubRESTReleaseClient) RepositoryID(ctx context.Context, repositoryURL string) (int64, error) {
+	owner, repository, _, err := parseGitHubRepositoryURL(repositoryURL)
+	if err != nil {
+		return 0, err
+	}
+	var response githubAPIRepository
+	if err := client.getJSON(ctx, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repository), &response); err != nil {
+		return 0, err
+	}
+	if response.ID <= 0 || response.ID > pluginidentity.MaxRepositoryID || !strings.EqualFold(response.Owner.Login, owner) || !strings.EqualFold(response.Name, repository) {
+		return 0, githubAPIError("github_repository", errors.New("GitHub repository identity is invalid"))
+	}
+	return response.ID, nil
 }

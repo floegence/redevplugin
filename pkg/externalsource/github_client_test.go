@@ -36,6 +36,39 @@ func githubJSONResponse(body string) *http.Response {
 	}
 }
 
+func TestGitHubRepositoryIdentityUsesObservedRepository(t *testing.T) {
+	for _, item := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"valid", `{"id":42,"name":"Plugin","owner":{"login":"Example"}}`, true},
+		{"missing", `{"name":"plugin","owner":{"login":"example"}}`, false},
+		{"unsafe", `{"id":9007199254740992,"name":"plugin","owner":{"login":"example"}}`, false},
+		{"owner", `{"id":42,"name":"plugin","owner":{"login":"impostor"}}`, false},
+		{"repository", `{"id":42,"name":"other","owner":{"login":"example"}}`, false},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			client, err := NewGitHubRESTReleaseClient(GitHubRESTReleaseClientOptions{Transport: githubRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if request.URL.String() != "https://api.github.com/repos/example/plugin" {
+					t.Fatalf("unexpected endpoint: %s", request.URL)
+				}
+				return githubJSONResponse(item.body), nil
+			})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := client.RepositoryID(context.Background(), "https://github.com/example/plugin")
+			if item.valid {
+				if err != nil || id != 42 {
+					t.Fatalf("identity: %d %v", id, err)
+				}
+			} else if err == nil {
+				t.Fatal("accepted invalid repository response")
+			}
+		})
+	}
+}
+
 func TestGitHubRESTReleaseClientResolvesTaggedReleaseAndStableIdentity(t *testing.T) {
 	const resolvedSHA = "0123456789abcdef0123456789abcdef01234567"
 	var mu sync.Mutex

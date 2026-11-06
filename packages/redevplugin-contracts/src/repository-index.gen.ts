@@ -129,3 +129,39 @@ export const repositoryIndexJSONSchema = {
     }
   }
 } as const;
+
+export const repositoryIdentityJSONSchema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin-api/1/repository-identity.schema.json",
+  "title": "Repository-derived plugin identity",
+  "description": "For GitHub distribution the platform generates github.repo.<repository_id> and github.repo.<repository_id>.<slug>. Repository ID is independently resolved from GitHub, never accepted as author evidence. Local or uploaded declarations do not prove repository ownership. Cross-field equality must additionally be enforced by validateGitHubPluginIdentity/ValidateGitHub.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repository_id",
+    "slug",
+    "publisher_id",
+    "plugin_id"
+  ],
+  "properties": {
+    "repository_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "slug": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "publisher_id": {
+      "type": "string",
+      "pattern": "^github\\.repo\\.[1-9][0-9]{0,15}$"
+    },
+    "plugin_id": {
+      "type": "string",
+      "maxLength": 109,
+      "pattern": "^github\\.repo\\.[1-9][0-9]{0,15}\\.[a-z0-9]+(?:-[a-z0-9]+)*$"
+    }
+  }
+} as const;

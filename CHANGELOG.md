@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.22.0
+
+- Generate GitHub plugin identity from the observed numeric repository ID and an
+  author-selected slug through `redevplugin repository identity`. Authors do not
+  register publishers or manage signing keys.
+- Reject GitHub installs and updates whose publisher or plugin identity does not
+  belong to the resolved repository, independently of market or index claims.
+  Local, uploaded and direct-URL packages retain their actual source provenance.
+- Publish matching Go/TypeScript identity helpers, schema and shared fixtures;
+  preserve explicit index replacement when generated identity changes.
+
 ## v3.20.0
 
 - Wake the exact Surface receiver when an invocation is canceled instead of delaying application notification until the idle claim timer; preserve claimed-call unknown outcomes and existing execution authority.

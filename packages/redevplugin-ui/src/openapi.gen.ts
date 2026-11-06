@@ -3893,10 +3893,12 @@ export interface components {
             /** @constant */
             schema_version: "redevplugin.manifest.v9";
             publisher: {
+                /** @description For GitHub distribution, generated as github.repo.<observed-repository-id>. A declaration alone never proves source ownership. */
                 publisher_id: string;
                 display_name?: string;
             };
             plugin: {
+                /** @description For GitHub distribution, generated as <publisher_id>.<slug>; slug is 1–80 lowercase ASCII letters, digits and single separating hyphens. Hosts independently validate against the observed repository. */
                 plugin_id: string;
                 display_name: string;
                 version: components["schemas"]["StoredManifestSemver"];

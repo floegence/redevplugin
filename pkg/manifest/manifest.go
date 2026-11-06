@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
@@ -340,6 +341,9 @@ func validate(m Manifest, retainedPreWeb bool) error {
 	}
 	if strings.TrimSpace(m.Plugin.PluginID) == "" {
 		return ValidationError{Field: "plugin.plugin_id", Message: "is required"}
+	}
+	if err := pluginidentity.ValidateDeclaration(m.Publisher.PublisherID, m.Plugin.PluginID); err != nil {
+		return ValidationError{Field: "plugin.plugin_id", Message: err.Error()}
 	}
 	if strings.TrimSpace(m.Plugin.DisplayName) == "" {
 		return ValidationError{Field: "plugin.display_name", Message: "is required"}

@@ -12,7 +12,7 @@ release-reference attachment, or publisher verification.
     "ecosystem": "redevplugin",
     "host": "redeven",
     "plugins": [{
-      "plugin_id": "github.alice.weather-tools.weather",
+      "plugin_id": "github.repo.123456.weather",
       "path": "plugins/weather",
       "manifest": "manifest.json",
       "release": {
@@ -37,11 +37,13 @@ come from validated package bytes. Official and community are presentation
 categories and share the same installation and update contracts.
 
 ```sh
+redevplugin repository identity plugins/weather weather
 redevplugin scaffold repository-index . redeven \
   --project plugins/weather --manifest manifest.json \
   --tag-template 'weather-v{version}' \
   --package-asset-template plugin.redevplugin
 redevplugin repository validate .
+npm --prefix plugins/weather run build
 redevplugin package plugins/weather/dist plugin.redevplugin
 redevplugin release inspect plugin.redevplugin
 ```
@@ -59,3 +61,29 @@ plugin, release, asset, content digest, and owner. The downloader rechecks the
 selected repository, tag commit, release and asset after downloading; developers
 do not need to enable immutable GitHub Releases. Repository identity prevents
 a different source with the same plugin ID from silently taking over updates.
+
+## Repository-derived identity
+
+For GitHub distribution, authors choose only a plugin slug (1–80 lowercase ASCII
+letters, digits, and single separating hyphens). `repository identity` obtains the
+numeric repository ID from GitHub using the enclosing Git origin, or an explicit
+`--repository https://github.com/owner/repo`. `GITHUB_TOKEN` is optional for public
+repositories. Neither publisher registration nor a signing key is involved.
+
+The tool writes `publisher_id = github.repo.<repository-id>` and
+`plugin_id = github.repo.<repository-id>.<slug>` to the source manifest. Run it
+before building and packaging, then generate the index. Existing index entries can
+be replaced explicitly with `scaffold repository-index ... --replace`. Never
+rewrite identities in packaged bytes or in a market's package projection.
+
+The market and Host each validate both IDs against the independently observed
+repository ID. An author-supplied prefix alone proves nothing. Forks and new
+repositories get their own namespace; renaming or transferring the same repository
+preserves its numeric identity. This identifies a repository, not a person or a
+promise about its contents. Official and community repositories use identical
+rules, while official presentation is selected by the configured source repository.
+
+Local, uploaded, and direct HTTPS packages retain their actual source category,
+even if their manifest declares a GitHub-shaped ID. Those declarations never turn
+into verified GitHub provenance. Existing source-change confirmation, immutable
+same-version content checks, sandboxing, and runtime permissions still apply.

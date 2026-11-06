@@ -233,7 +233,13 @@ Plugin distribution is open. Authors publish ordinary `.redevplugin` packages
 and a repository index. Plugin signatures, trust evidence, publisher registration,
 review admission, release references and external signer exchanges are disabled
 and absent from public contracts. Official/community classification is display
-metadata and never changes installation or update authority.
+metadata and never changes installation or update authority. GitHub-distributed
+packages use `github.repo.<numeric-repository-id>` as their publisher and that
+prefix plus one author-selected slug as their plugin ID. The released author CLI
+resolves and writes these values before packaging; markets and Hosts validate
+against independently observed repository IDs. Local declarations never acquire
+GitHub source authority. Repository rename/transfer preserves identity; a fork
+or replacement repository receives a different namespace.
 
 The platform owns source resolution, package inspection, exact content and owner
 binding, one durable inspected-install Execution, progress and retry recovery.

@@ -85,6 +85,26 @@ func TestUpsertReplacesMovedProject(t *testing.T) {
 	}
 }
 
+func TestUpsertReplacesGeneratedIdentityWithoutDuplicateEntry(t *testing.T) {
+	root := t.TempDir()
+	writeIndexProject(t, root, "alpha", "example.alpha")
+	release := Release{TagTemplate: "alpha-v{version}", PackageAssetTemplate: "plugin.redevplugin"}
+	if _, err := Upsert(root, "redeven", "alpha", "manifest.json", release, false); err != nil {
+		t.Fatal(err)
+	}
+	writeIndexProject(t, root, "alpha", "example.renamed")
+	if _, err := Upsert(root, "redeven", "alpha", "manifest.json", release, false); err == nil {
+		t.Fatal("identity replacement did not require --replace")
+	}
+	if changed, err := Upsert(root, "redeven", "alpha", "manifest.json", release, true); err != nil || !changed {
+		t.Fatalf("replace: %v %v", changed, err)
+	}
+	repo, err := ValidateRepository(root)
+	if err != nil || len(repo.Entries) != 1 || repo.Entries[0].Plugin.PluginID != "example.renamed" {
+		t.Fatalf("replacement: %+v %v", repo, err)
+	}
+}
+
 func TestUpsertConcurrentWritersPreserveBothEntries(t *testing.T) {
 	root := t.TempDir()
 	writeIndexProject(t, root, "alpha", "example.alpha")

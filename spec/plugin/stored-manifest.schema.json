@@ -29,7 +29,8 @@
         "publisher_id": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 255
+          "maxLength": 255,
+          "description": "For GitHub distribution, generated as github.repo.<observed-repository-id>. A declaration alone never proves source ownership."
         },
         "display_name": {
           "type": "string",
@@ -50,7 +51,8 @@
         "plugin_id": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 255
+          "maxLength": 255,
+          "description": "For GitHub distribution, generated as <publisher_id>.<slug>; slug is 1–80 lowercase ASCII letters, digits and single separating hyphens. Hosts independently validate against the observed repository."
         },
         "display_name": {
           "type": "string",
