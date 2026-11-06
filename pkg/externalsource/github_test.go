@@ -3,6 +3,7 @@ package externalsource
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
@@ -14,12 +15,13 @@ import (
 )
 
 type fakeGitHubClient struct {
-	release      GitHubRelease
-	afterRelease *GitHubRelease
-	afterError   error
-	latestCalls  int
-	byTagCalls   int
-	requestedTag string
+	indexPluginID string
+	release       GitHubRelease
+	afterRelease  *GitHubRelease
+	afterError    error
+	latestCalls   int
+	byTagCalls    int
+	requestedTag  string
 }
 
 func (client *fakeGitHubClient) LatestRelease(context.Context, string, string) (GitHubRelease, error) {
@@ -188,7 +190,11 @@ func TestGitHubReleaseResolverRemovesSizeMismatch(t *testing.T) {
 }
 
 func (client *fakeGitHubClient) RepositoryIndex(context.Context, string, string) (repositoryindex.Index, error) {
-	return repositoryindex.Index{SchemaVersion: repositoryindex.SchemaVersion, Targets: []repositoryindex.Target{{Ecosystem: "redevplugin", Host: "example", Plugins: []repositoryindex.Plugin{{PluginID: "example.plugin", Path: ".", Manifest: "manifest.json", Release: &repositoryindex.Release{TagTemplate: "plugin-v{version}", PackageAssetTemplate: "plugin.redevplugin"}}}}}}, nil
+	id := client.indexPluginID
+	if id == "" {
+		id = fmt.Sprintf("github.repo.%d.plugin", max(client.release.RepositoryID, 1))
+	}
+	return repositoryindex.Index{SchemaVersion: repositoryindex.SchemaVersion, Targets: []repositoryindex.Target{{Ecosystem: "redevplugin", Host: "example", Plugins: []repositoryindex.Plugin{{PluginID: id, Path: ".", Manifest: "manifest.json", Release: &repositoryindex.Release{TagTemplate: "plugin-v{version}", PackageAssetTemplate: "plugin.redevplugin"}}}}}}, nil
 }
 func (client *fakeGitHubClient) ReleaseTags(context.Context, string, string) ([]GitHubReleaseTag, error) {
 	return []GitHubReleaseTag{{Tag: client.release.Tag}}, nil
@@ -213,5 +219,26 @@ func TestRepositoryPluginSelectionIsUnambiguousAndVersionOrdered(t *testing.T) {
 	selected, err := selectRepositoryPlugin(index, "example", "example.second")
 	if err != nil || selected.PluginID != other.PluginID {
 		t.Fatalf("explicit selection: %+v %v", selected, err)
+	}
+}
+
+func TestGitHubReleaseResolverRejectsForeignNamespaceBeforeDownload(t *testing.T) {
+	fetcher, directory := newTestFetcher(t, staticResolver{"objects.githubusercontent.com": {netip.MustParseAddr("1.1.1.1")}})
+	fetcher.roundTrip = func(_ context.Context, _ PackageURL, _ []netip.Addr, _ http.Header) (*http.Response, error) {
+		t.Error("foreign namespace reached the artifact downloader")
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("package")), ContentLength: 7}, nil
+	}
+	client := &fakeGitHubClient{indexPluginID: "github.repo.2.plugin", release: GitHubRelease{RepositoryID: 1, ReleaseID: 2, Tag: "plugin-v1.0.0", ResolvedCommitSHA: strings.Repeat("a", 40), Assets: []GitHubReleaseAsset{{AssetID: 3, Name: "plugin.redevplugin", DownloadURL: "https://objects.githubusercontent.com/plugin", Size: 7}}}}
+	resolver, err := NewGitHubReleaseResolver(client, fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolver.ResolvePackage(context.Background(), GitHubRepositorySource{RepositoryURL: "https://github.com/example/plugin"})
+	if CodeOf(err) != ErrorInvalidSource {
+		t.Fatalf("foreign namespace accepted: %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("unexpected staging mutation: %v %v", entries, err)
 	}
 }

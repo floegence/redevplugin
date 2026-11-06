@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 	"github.com/floegence/redevplugin/v3/pkg/version"
 )
@@ -27,7 +28,7 @@ func (client *GitHubRESTReleaseClient) RepositoryIndex(ctx context.Context, owne
 	if err = client.getJSON(ctx, base, &repo); err != nil {
 		return repositoryindex.Index{}, err
 	}
-	if repo.ID <= 0 || !strings.EqualFold(repo.Owner.Login, owner) || !strings.EqualFold(repo.Name, repository) || repo.DefaultBranch == "" || len(repo.DefaultBranch) > 255 {
+	if repo.ID <= 0 || repo.ID > pluginidentity.MaxRepositoryID || !strings.EqualFold(repo.Owner.Login, owner) || !strings.EqualFold(repo.Name, repository) || repo.DefaultBranch == "" || len(repo.DefaultBranch) > 255 {
 		return repositoryindex.Index{}, invalidSource("github_index", "repository identity is invalid")
 	}
 	var commit githubAPICommit
@@ -54,7 +55,22 @@ func (client *GitHubRESTReleaseClient) RepositoryIndex(ctx context.Context, owne
 	if err != nil || len(raw) != file.Size {
 		return repositoryindex.Index{}, invalidSource("github_index", "repository index content is invalid")
 	}
-	return repositoryindex.Decode(raw)
+	index, err := repositoryindex.Decode(raw)
+	if err != nil {
+		return repositoryindex.Index{}, err
+	}
+	identity, err := pluginidentity.GitHub(repo.ID, "plugin")
+	if err != nil {
+		return repositoryindex.Index{}, invalidSource("github_index", "repository identity is invalid")
+	}
+	for _, target := range index.Targets {
+		for _, plugin := range target.Plugins {
+			if err := pluginidentity.ValidateGitHub(repo.ID, identity.PublisherID, plugin.PluginID); err != nil {
+				return repositoryindex.Index{}, invalidSource("github_index", "%v", err)
+			}
+		}
+	}
+	return index, nil
 }
 
 type GitHubReleaseTag struct {

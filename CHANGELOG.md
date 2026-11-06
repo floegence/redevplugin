@@ -2,6 +2,7 @@
 
 ## v3.22.0
 
+- Reject foreign repository namespaces in GitHub index choices and before package downloads.
 - Generate GitHub plugin identity from the observed numeric repository ID and an
   author-selected slug through `redevplugin repository identity`. Authors do not
   register publishers or manage signing keys.

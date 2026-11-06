@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"github.com/floegence/redevplugin/v3/pkg/repositoryindex"
 )
 
@@ -141,6 +142,14 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 	}
 	if release.RepositoryID <= 0 || release.ReleaseID <= 0 || release.Tag == "" || strings.TrimSpace(release.Tag) != release.Tag || containsControl(release.Tag) || len(release.Tag) > 255 || (tag != "" && release.Tag != tag) || !isGitCommitSHA(release.ResolvedCommitSHA) {
 		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, fmt.Errorf("release identity is invalid"))
+	}
+
+	identity, err := pluginidentity.GitHub(release.RepositoryID, "plugin")
+	if err != nil {
+		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "%v", err)
+	}
+	if err := pluginidentity.ValidateGitHub(release.RepositoryID, identity.PublisherID, plugin.PluginID); err != nil {
+		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "%v", err)
 	}
 
 	assetName, err := repositoryindex.Render(plugin.Release.PackageAssetTemplate, selectedVersion)

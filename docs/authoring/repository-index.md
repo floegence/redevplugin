@@ -77,7 +77,9 @@ be replaced explicitly with `scaffold repository-index ... --replace`. Never
 rewrite identities in packaged bytes or in a market's package projection.
 
 The market and Host each validate both IDs against the independently observed
-repository ID. An author-supplied prefix alone proves nothing. Forks and new
+repository ID. Repository choices and release downloads also reject foreign
+namespaces before offering or fetching a package. An author-supplied prefix
+alone proves nothing. Forks and new
 repositories get their own namespace; renaming or transferring the same repository
 preserves its numeric identity. This identifies a repository, not a person or a
 promise about its contents. Official and community repositories use identical
