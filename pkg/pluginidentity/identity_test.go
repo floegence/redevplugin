@@ -70,16 +70,3 @@ func TestCrossLanguageFixtures(t *testing.T) {
 		}
 	}
 }
-
-func TestDeclarationNeverProvesSourceOwnership(t *testing.T) {
-	for _, pair := range [][2]string{{"local.generated", "local.example"}, {"github.repo.42", "github.repo.42.example"}} {
-		if err := ValidateDeclaration(pair[0], pair[1]); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, pair := range [][2]string{{"github.repo.042", "github.repo.042.example"}, {"github.repo.42", "github.repo.43.example"}, {"local.generated", "github.repo.42.example"}, {"github.repo.42", "local.example"}} {
-		if ValidateDeclaration(pair[0], pair[1]) == nil {
-			t.Fatalf("accepted inconsistent declaration: %v", pair)
-		}
-	}
-}

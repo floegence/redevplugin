@@ -68,6 +68,19 @@ func TestRepositoryIdentityAdmissionAndLocalProvenance(t *testing.T) {
 				if installed.Plugin.EnableState != registry.EnableEnabled || string(installed.Plugin.PackageSourceProvenance.Kind) != kind {
 					t.Fatalf("installed provenance: %+v", installed.Plugin)
 				}
+				if kind == "github_repository" {
+					before := stage.removedCount()
+					resolver := h.adapters.ExternalPackageGitHubResolver.(identityGitHubResolver)
+					resolver.resolved.RepositoryID = 43
+					h.adapters.ExternalPackageGitHubResolver = resolver
+					_, err = h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+						Intent: ExternalPackageIntent{Action: "update", PluginInstanceID: installed.Plugin.PluginInstanceID, ExpectedManagementRevision: installed.Plugin.ManagementRevision, AllowSourceChange: true},
+						Source: ExternalPackageSource{Kind: kind, URL: resolver.resolved.RepositoryURL},
+					})
+					if !errors.Is(err, ErrExternalPackageConfirmation) || stage.removedCount() != before+1 {
+						t.Fatalf("explicit source change bypassed repository identity: %v", err)
+					}
+				}
 			})
 		}
 	}

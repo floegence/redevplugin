@@ -4,7 +4,6 @@ package pluginidentity
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,21 +46,4 @@ func ValidateGitHub(repositoryID int64, publisherID, pluginID string) error {
 		return errors.New("publisher and plugin identity do not match the observed GitHub repository")
 	}
 	return nil
-}
-
-// ValidateDeclaration checks only shape and internal consistency. It never
-// authenticates a repository or upgrades a local/upload source into GitHub.
-func ValidateDeclaration(publisherID, pluginID string) error {
-	if !strings.HasPrefix(publisherID, "github.repo.") && !strings.HasPrefix(pluginID, "github.repo.") {
-		return nil
-	}
-	suffix, ok := strings.CutPrefix(publisherID, "github.repo.")
-	if !ok {
-		return errors.New("GitHub plugin identity requires its repository-derived publisher")
-	}
-	id, err := strconv.ParseInt(suffix, 10, 64)
-	if err != nil || strconv.FormatInt(id, 10) != suffix {
-		return fmt.Errorf("invalid repository-derived publisher ID %q", publisherID)
-	}
-	return ValidateGitHub(id, publisherID, pluginID)
 }

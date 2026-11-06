@@ -1222,16 +1222,3 @@ func validCapabilityPinJSON() string {
 	}
 	return string(raw)
 }
-
-func TestRepositoryDerivedIdentityDeclaration(t *testing.T) {
-	candidate := validManifest()
-	candidate.Publisher.PublisherID = "github.repo.42"
-	candidate.Plugin.PluginID = "github.repo.42.example"
-	if err := Validate(candidate); err != nil {
-		t.Fatal(err)
-	}
-	candidate.Plugin.PluginID = "github.repo.43.example"
-	if err := Validate(candidate); err == nil {
-		t.Fatal("accepted different repository namespace")
-	}
-}
