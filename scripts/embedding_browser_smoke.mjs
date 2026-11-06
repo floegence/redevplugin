@@ -27,7 +27,7 @@ try{
  run('npm',['install','--ignore-scripts','--no-audit','--no-fund',...dependencies]);
  await copyFile(join(repo,'examples/embedding/browser/parent.ts'),join(root,'parent.ts'));
  await build({entryPoints:[join(root,'parent.ts')],outfile:join(root,'host.js'),bundle:true,format:'esm',platform:'browser',target:'es2022'});
- const project=join(root,'plugin');run(cli,['init','dev.example.reference','Reference document',project,'--template','data']);
+ const project=join(root,'plugin');run(cli,['init','dev-example-reference','Reference document',project,'--template','data']);
  const start=async()=>{
   logs='';child=spawn(host,[join(project,'dist'),join(root,'host.js'),join(root,'state')],{cwd:root,env,stdio:['ignore','pipe','pipe']});
   child.stdout.on('data',data=>logs+=data);child.stderr.on('data',data=>logs+=data);exit=new Promise(done=>child.once('exit',done));
