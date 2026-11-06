@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.24.1
+
+- Validate complete author initialization inputs before reserving a managed draft.
+  Rejected slugs, names and templates leave no durable claim or partial source,
+  so a corrected request works immediately and after restart.
+- Reuse the same template preparation for standalone and managed initialization;
+  preserve existing crash recovery, owner binding and all durable schemas.
+
 ## v3.24.0
 
 - Keep author manifests and repository indexes slug-only. Compile repository-derived

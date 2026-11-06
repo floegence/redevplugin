@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.24.0
+  version: 3.24.1
   description: Host-neutral plugin lifecycle, inspection, execution, data, and sandbox routes. All distributed plugins use ordinary packages and one exact-digest inspected-install Execution. Installation never grants runtime permissions. Automatic updates require the saved user preference, original source, a newer immutable version, and unchanged capabilities.
 x-redevplugin-query-policy:
   reject_url_query_strings: true

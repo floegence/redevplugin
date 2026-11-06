@@ -86,20 +86,32 @@ var scaffoldWorkerWASM []byte
 var scaffoldWorkerRust []byte
 
 func Init(pluginID string, displayName string, outDir string, template string) (TemplateResult, error) {
-	if template != "web" && template != "data" && template != "worker" && template != "monitor" && template != "files" {
-		return TemplateResult{}, fmt.Errorf("unknown template %q; choose web, data, worker, monitor or files", template)
-	}
 	pluginID = strings.TrimSpace(pluginID)
 	displayName = strings.TrimSpace(displayName)
 	outDir = strings.TrimSpace(outDir)
-	if err := pluginidentity.ValidateSlug(pluginID); err != nil {
-		return TemplateResult{}, err
-	}
-	if displayName == "" {
-		return TemplateResult{}, fmt.Errorf("display_name is required")
-	}
 	if outDir == "" {
 		return TemplateResult{}, fmt.Errorf("output directory is required")
+	}
+	files, err := templateFiles(pluginID, displayName, template)
+	if err != nil {
+		return TemplateResult{}, err
+	}
+	return writeTemplateFiles(pluginID, outDir, files)
+}
+
+// templateFiles validates the complete author input before any filesystem or
+// durable initialization claim is created.
+func templateFiles(pluginID, displayName, template string) (map[string][]byte, error) {
+	if template != "web" && template != "data" && template != "worker" && template != "monitor" && template != "files" {
+		return nil, fmt.Errorf("unknown template %q; choose web, data, worker, monitor or files", template)
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	displayName = strings.TrimSpace(displayName)
+	if err := pluginidentity.ValidateSlug(pluginID); err != nil {
+		return nil, err
+	}
+	if displayName == "" {
+		return nil, fmt.Errorf("display_name is required")
 	}
 	platformVersion := version.CurrentPlatformVersion()
 	manifestDoc := scaffoldManifestV9{
@@ -169,16 +181,16 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 	}
 	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
 	if err != nil {
-		return TemplateResult{}, err
+		return nil, err
 	}
 	manifestBytes := append(append([]byte(nil), rawManifest...), '\n')
 	sourceBytes, err := manifest.AuthorSource(manifestBytes, pluginID)
 	if err != nil {
-		return TemplateResult{}, err
+		return nil, err
 	}
 	var formattedSource bytes.Buffer
 	if err := json.Indent(&formattedSource, sourceBytes, "", "  "); err != nil {
-		return TemplateResult{}, err
+		return nil, err
 	}
 	sourceBytes = formattedSource.Bytes()
 	files := map[string][]byte{
@@ -201,7 +213,7 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 		"dist/workers/backend.wasm": append([]byte(nil), scaffoldWorkerWASM...),
 	}
 	if _, err := manifest.Decode(bytes.NewReader(manifestBytes)); err != nil {
-		return TemplateResult{}, err
+		return nil, err
 	}
 	if template != "worker" {
 		configureWebTemplate(files, displayName, platformVersion, template)
@@ -215,7 +227,7 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 	configureAuthorProject(files, template)
 	bindings, err := authorapi.Generate(manifestBytes)
 	if err != nil {
-		return TemplateResult{}, err
+		return nil, err
 	}
 	for name, data := range bindings {
 		files["generated/"+name] = data
@@ -226,6 +238,10 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 ` + strings.ReplaceAll(strings.ReplaceAll(source, `bridge.registerMethod("application.read",`, `registerAction(bridge, "application.read",`), `bridge.registerMethod("document.replace",`, `registerAction(bridge, "document.replace",`)
 		files["ui/src/app.ts"] = []byte(source)
 	}
+	return files, nil
+}
+
+func writeTemplateFiles(pluginID, outDir string, files map[string][]byte) (TemplateResult, error) {
 	if _, err := os.Stat(outDir); err == nil {
 		entries, err := os.ReadDir(outDir)
 		if err != nil {
@@ -250,7 +266,7 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 		OK:        true,
 		Kind:      "plugin_scaffold",
 		PluginID:  pluginID,
-		Version:   manifestDoc.Plugin.Version,
+		Version:   "0.1.0",
 		OutputDir: outDir,
 		Files:     created,
 	}, nil

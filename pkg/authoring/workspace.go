@@ -385,11 +385,18 @@ func (s *WorkspaceStore) Initialize(ctx context.Context, owner Owner, id, plugin
 	if err := s.db.QueryRowContext(ctx, "SELECT created_at FROM workspaces WHERE id=? AND owner_user=? AND owner_env=? AND deleting=0", id, owner.User, owner.Environment).Scan(&created); err != nil {
 		return TemplateResult{}, ErrWorkspaceNotFound
 	}
+	// Reject malformed input before reserving the durable initialization identity.
+	// The same complete template preparation is used by the standalone initializer.
+	pluginID, name = strings.TrimSpace(pluginID), strings.TrimSpace(name)
+	files, err := templateFiles(pluginID, name, template)
+	if err != nil {
+		return TemplateResult{}, err
+	}
 	w := s.workspace(id, created)
 	staged := filepath.Join("projects", id, "initializing")
 	source := filepath.Join("projects", id, "source")
 	var savedID, savedName, savedTemplate, stage string
-	err := s.db.QueryRowContext(ctx, "SELECT plugin_id,display_name,template,stage FROM initializations WHERE workspace_id=?", id).Scan(&savedID, &savedName, &savedTemplate, &stage)
+	err = s.db.QueryRowContext(ctx, "SELECT plugin_id,display_name,template,stage FROM initializations WHERE workspace_id=?", id).Scan(&savedID, &savedName, &savedTemplate, &stage)
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, err = s.get(ctx, owner, id); err != nil {
 			return TemplateResult{}, err
@@ -418,7 +425,7 @@ func (s *WorkspaceStore) Initialize(ctx context.Context, owner Owner, id, plugin
 		if err = s.files.RemoveAll(staged); err != nil {
 			return result, err
 		}
-		result, err = Init(pluginID, name, filepath.Join(s.root, staged), template)
+		result, err = writeTemplateFiles(pluginID, filepath.Join(s.root, staged), files)
 		if err != nil {
 			return result, err
 		}

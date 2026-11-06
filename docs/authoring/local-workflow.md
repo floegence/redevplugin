@@ -321,3 +321,7 @@ pipeline recursively. `npm run build:release` resolves the Git origin through
 GitHub before generating bindings and building. Local builds and previews remain
 offline. Use `redevplugin build . --release --repository https://github.com/owner/repo`
 only when source has no Git origin. See [repository discovery](repository-index.md).
+
+Managed initialization validates the complete slug, display name, template and generated
+manifest before reserving the draft. Rejected input leaves the empty draft unchanged,
+and a corrected request can initialize it immediately or after a Host restart.

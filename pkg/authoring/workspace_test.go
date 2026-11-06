@@ -9,11 +9,66 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
+
+func TestWorkspaceInvalidInitializationDoesNotClaimDraft(t *testing.T) {
+	for _, input := range []struct{ label, slug, name, template string }{
+		{"missing-slug", "", "Created", "web"},
+		{"generated-id", "github.repo.42.created", "Created", "web"},
+		{"missing-name", "created", "", "web"},
+		{"oversized-name", "created", strings.Repeat("x", 1025), "web"},
+		{"unknown-template", "created", "Created", "unknown"},
+	} {
+		t.Run(input.label, func(t *testing.T) {
+			ctx := context.Background()
+			root := filepath.Join(t.TempDir(), "authors")
+			store, err := OpenWorkspaceStore(ctx, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if store != nil {
+					store.Close()
+				}
+			}()
+			owner := Owner{User: "user", Environment: "environment"}
+			workspace, err := store.Create(ctx, owner, "invalid-then-valid")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = store.Initialize(ctx, owner, workspace.ID, input.slug, input.name, input.template); err == nil {
+				t.Fatal("invalid initialization accepted")
+			}
+			var claims int
+			if err = store.db.QueryRow("SELECT count(*) FROM initializations WHERE workspace_id=?", workspace.ID).Scan(&claims); err != nil || claims != 0 {
+				t.Fatalf("invalid input persisted an initialization claim: %d %v", claims, err)
+			}
+			entries, err := os.ReadDir(workspace.SourceDirectory)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("invalid input changed source: %v %v", entries, err)
+			}
+			if _, err = os.Stat(filepath.Join(root, "projects", workspace.ID, "initializing")); !os.IsNotExist(err) {
+				t.Fatal("invalid input created staging", err)
+			}
+			if err = store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store = nil
+			store, err = OpenWorkspaceStore(ctx, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = store.Initialize(ctx, owner, workspace.ID, "created", "Created", "web"); err != nil {
+				t.Fatal("valid initialization after rejection and restart failed", err)
+			}
+		})
+	}
+}
 
 func TestWorkspaceArtifactsSurviveRestartAndRejectTampering(t *testing.T) {
 	ctx := context.Background()
