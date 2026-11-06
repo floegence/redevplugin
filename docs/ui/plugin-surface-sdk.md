@@ -269,7 +269,13 @@ Service Worker requests are rejected.
 loadTimeoutMs is one aggregate deadline for preparation, entry admission, port
 acknowledgement, lease issuance, and app_ready. Opening does not depend on a
 paint, visible dimensions, or requestAnimationFrame. onOpeningProgress reports
-bounded stage names, pending milestones, and monotonic elapsed times; errors
+bounded stage names, pending milestones, and monotonic elapsed times. The bootstrap
+subscribes to the replacement document's DOMContentLoaded event before writing
+it; the previous document's readyState is not readiness evidence. A bridge
+claimed by that document receives its initial host context before app_ready, so
+synchronous context-driven mounting precedes reveal. SDK-free documents need no
+bridge acknowledgement. This does not wait for business data, images or fonts,
+inspect application DOM, or introduce a second rendering/lifecycle owner. Errors
 never include authority tokens or plugin document contents.
 
 Lease renewal atomically rotates the parent gateway and asset session while

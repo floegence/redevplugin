@@ -87,10 +87,24 @@
     if (stopped || initialized || message.frame_generation_id !== frameGeneration) return;
     initialized = true; surfaceHandle = message.surface_handle; context = message.context; contextMenu = message.context_menu === true;
     const channel = new MessageChannel(); appPeer = channel.port1; appPort = channel.port2;
+    let contextDelivered;
+    const initialContext = new Promise(resolve => { contextDelivered = resolve; });
     appPeer.onmessage = e => {
       const value = e.data;
       if (value?.type === "redevplugin.bridge.client_ready") {
-        if (context) appPeer.postMessage({ type: "redevplugin.bridge.context", context });
+        if (context) {
+          // The SDK has registered its listener before client_ready. Observe the
+          // same delivery after it, so synchronous context-driven mounting runs
+          // before the parent reveals this document. No paint or RAF is needed.
+          const revision = context.revision;
+          const delivered = event => {
+            if (event.data?.type !== "redevplugin.bridge.context" || !(event.data.context?.revision >= revision)) return;
+            appPort.removeEventListener("message", delivered);
+            contextDelivered();
+          };
+          appPort.addEventListener("message", delivered, { signal: controller.signal });
+          appPeer.postMessage({ type: "redevplugin.bridge.context", context });
+        }
         if (ready) appPeer.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
       } else if (value?.type === "redevplugin.ui.file.export") {
         send({ ...value, type: "redevplugin.surface.file.export", frame_generation_id: frameGeneration, surface_handle: surfaceHandle }, [value.content]);
@@ -109,9 +123,15 @@
     const html = await response.text();
     if (stopped) return;
     history.replaceState(null, "", message.entry_path);
-    document.open(); document.write(html); document.close();
+    document.open();
+    // document.write may leave readyState at the old document's complete value
+    // while external modules are pending. Subscribe to this parser's event
+    // before writing; inspecting readyState can expose an uninitialized page.
+    const loaded = new Promise(resolve => document.addEventListener("DOMContentLoaded", resolve, { once: true, signal: controller.signal }));
+    document.write(html); document.close();
     observe();
-    if (document.readyState === "loading") await new Promise(resolve => document.addEventListener("DOMContentLoaded", resolve, { once: true }));
+    await loaded;
+    if (claimed && context) await initialContext;
     if (stopped) return;
     clearTimeout(deadline);
     send({ type: "redevplugin.surface.app_ready", frame_generation_id: frameGeneration });

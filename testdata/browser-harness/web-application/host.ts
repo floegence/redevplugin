@@ -16,7 +16,13 @@ for (const slot of slots) {
 try {
   for (const slot of slots) await client.openSurfaceInSlot(slot, {
     plugin_instance_id: fixture.plugin_instance_id, surface_id: mode === "plain" ? "plain.view" : "http.view", expected_management_revision: fixture.management_revision,
-  }, { prepareWebOrigin: async ({ signal, ...route }) => {
+  }, { surfaceContext: {
+    schema_version: "redevplugin.surface_context.v1", revision: 1,
+    appearance: { color_scheme: "dark", colors: {
+      canvas: "#101010", surface: "#181818", surface_elevated: "#202020", text: "#ffffff", text_muted: "#aaaaaa", border: "#444444",
+      accent: "#66aaff", accent_text: "#000000", success: "#44cc88", warning: "#ffcc44", danger: "#ff6677", focus: "#88bbff",
+    } }, locale: { language_tag: "en-US", direction: "ltr" },
+  }, prepareWebOrigin: async ({ signal, ...route }) => {
     const response = await fetch("/fixture/routes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(route), signal });
     if (!response.ok) throw new Error("Application route preparation failed");
     state.prepared.push(route.origin); state.targets.push(route.surfaceInstanceId);

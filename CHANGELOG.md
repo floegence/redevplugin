@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.23.2
+
+- Keep cold Web surfaces concealed until the replacement document finishes parsing and loading its original module graph. Subscribe before document replacement instead of trusting the previous document's ready state.
+- Deliver the initial host appearance and locale context to a claimed SDK bridge before revealing its document, preserving context-driven application mounting without timers, animation frames or visible geometry requirements.
+- Qualify delayed modules and delayed bridge context alongside hidden, offscreen, zero-size, blocked-animation-frame and SDK-free applications. Plugin API, internal wire and durable schemas remain unchanged.
+
 ## v3.23.1
 
 - Open persistent author-state and managed-workspace directory locks with atomic close-on-exec semantics. Long-lived terminal and service children no longer keep a stopped host's author store locked.

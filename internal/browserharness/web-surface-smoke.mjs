@@ -29,6 +29,37 @@ if (process.argv[2] === "--build") {
   page.on("console", m => { if (m.type() === "error") console.error(m.text()); });
   page.on("response", r => { if (r.status() >= 400) console.error("HTTP", r.status(), r.url()); });
   try {
+    // Hold the actual application module after document replacement. The old
+    // bootstrap document can still report complete while the new parser starts.
+    const cold = await browser.newPage();
+    await cold.addInitScript(() => {
+      if (window === top) return;
+      const post = MessagePort.prototype.postMessage;
+      MessagePort.prototype.postMessage = function(message, ...rest) {
+        if (message?.type === "redevplugin.bridge.client_ready") {
+          setTimeout(() => post.call(this, message, ...rest), 200);
+        } else post.call(this, message, ...rest);
+      };
+    });
+    let releaseModule;
+    let moduleRequested;
+    const requested = new Promise(resolve => { moduleRequested = resolve; });
+    const released = new Promise(resolve => { releaseModule = resolve; });
+    await cold.route("**/app.js", async route => { moduleRequested(); await released; await route.continue(); });
+    try {
+      await cold.goto(process.argv[3]);
+      await requested;
+      await cold.waitForTimeout(100);
+      const opening = await cold.locator("iframe").first().evaluate(frame => ({ opacity: frame.style.opacity, inert: frame.inert }));
+      assert.deepEqual(opening, { opacity: "0", inert: true }, "cold application stays concealed until its original module graph loads");
+      releaseModule();
+      await cold.waitForFunction(() => globalThis.testState?.ready || globalThis.testState?.error);
+      assert.equal(await cold.evaluate(() => globalThis.testState.error), "");
+      for (const frame of cold.frames().filter(frame => frame !== cold.mainFrame())) {
+        assert.equal(await frame.evaluate(() => document.documentElement.dataset.contextColorScheme), "dark", "initial context reaches the SDK before reveal");
+      }
+      await cold.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
+    } finally { releaseModule(); await cold.close(); }
     await page.goto(process.argv[3]);
     await page.waitForFunction(() => globalThis.testState?.ready || globalThis.testState?.error);
     assert.equal(await page.evaluate(() => globalThis.testState.error), "");

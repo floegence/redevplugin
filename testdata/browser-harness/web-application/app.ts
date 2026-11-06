@@ -1,5 +1,6 @@
 import { PluginBridgeClient, openPluginConnection, pluginKV } from "../../../packages/redevplugin-ui/src/plugin.js";
 const bridge = new PluginBridgeClient();
+bridge.onContext(context => { document.documentElement.dataset.contextColorScheme = context.appearance.color_scheme; });
 await bridge.ready();
 const connection = await openPluginConnection("api");
 const nativeResponse = await fetch(connection.baseURL + "signed%2fpath?q=%2f");
