@@ -5,11 +5,11 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.98.0-bookworm@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f",
   "source_files": {
-    "Cargo.lock": "feadf8ac7d73137391602869d491f00cc78b7858abd89c40149e542c50ee5f81",
-    "Cargo.toml": "66cc486902f98ec5313e2c395a7f7cf5bf0e653af327c932e072da1b1ae5150d",
+    "Cargo.lock": "d5578f1a12221e5fccbd3efd4ac562ce970fd3af7236befd1e1870f54b3fa3c6",
+    "Cargo.toml": "7fffb4133bf86b629f172970358795ab63a49f9cb02d45787d110353ed0d4a9f",
     "crates/redevplugin-worker-sdk/Cargo.toml": "2b658c690b4e39b72b12308afd590a04a52b864500ee9fecdb8b8cffdccfd749",
     "crates/redevplugin-worker-sdk/LICENSE": "c2ef56768227918d97d210272f390b19cda62865ff23829278f5c0a7cba5051b",
-    "crates/redevplugin-worker-sdk/README.md": "9f42b5f6f76674663412e4bd73989e967e2ba4c9ef059fa270d31db47f2c5295",
+    "crates/redevplugin-worker-sdk/README.md": "d7dd99360a07114437f1e0f8879d4f26f0a8a07579cbf89bd81ac8d8f901c937",
     "crates/redevplugin-worker-sdk/src/api.rs": "56ad7a588d552b7a0653e89486e7e6864a435fe2956e069b725a89306836b669",
     "crates/redevplugin-worker-sdk/src/broker.rs": "456fd1db55ee92c08db0059dbc5bebed63a5d6ade878fdb228a02a5bb4460e84",
     "crates/redevplugin-worker-sdk/src/data_upgrade.rs": "5b53a2a48a81b95aee2b2fc01c12a2854770a0de66d9e958c458e21d162f57e2",
@@ -35,7 +35,7 @@
     "scripts/canonical_wasm_builder.mjs": "5a71f33f75cb42fbae5781af058177b30d3fccfea4df00392e6d86480d569a98"
   },
   "artifacts": {
-    "crates/redevplugin-runtime/testdata/workload-backend.wasm": "a0db589a69f1d046d7680d8abab540cdbabbf8608451f3d51144ba18390db5ee",
-    "pkg/authoring/scaffold_assets/backend.wasm": "43c3eff8ccd22dcf351f755e3f37e1c6628f3fad8970ed119261c7393aa490ce"
+    "crates/redevplugin-runtime/testdata/workload-backend.wasm": "3fb234cc8df18415a420e33f0bbe0ffab9ade04ea18d1986f0e20239bc00c52c",
+    "pkg/authoring/scaffold_assets/backend.wasm": "a4c49c62c88b05a646490f54d60920301efd35ac958eb49052156462a97d24ca"
   }
 }
