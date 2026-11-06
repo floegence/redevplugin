@@ -45,6 +45,25 @@ try{
   return {page,frames};
  };
  let {page,frames}=await open();
+ for (const frame of frames) {
+  const viewport = await frame.evaluate(() => ({width: innerWidth, height: innerHeight}));
+  assert.ok(viewport.width >= 500 && viewport.height === 600, 'reference applications must fill their host stage');
+ }
+ const initialFrames = frames.map(frame => frame.url());
+ for (const scheme of ['dark', 'light']) {
+  await page.evaluate(scheme => globalThis.referenceAppearance(scheme), scheme);
+  for (const frame of frames) {
+   await frame.waitForFunction(scheme => document.documentElement.classList.contains(scheme), scheme);
+   assert.equal(await frame.locator('body').evaluate(element => getComputedStyle(element).backgroundColor), scheme === 'dark' ? 'rgb(17, 19, 21)' : 'rgb(250, 249, 246)');
+  }
+  assert.deepEqual(frames.map(frame => frame.url()), initialFrames, 'theme updates must retain both live frames');
+  await page.locator('#surfaces > section').first().screenshot({path:join(repo,'dist',`author-template-${scheme}.png`)});
+ }
+ await page.setViewportSize({width:720,height:800});
+ for (const frame of frames) {
+  assert.equal(await frame.locator('main').evaluate(element => ({radius:getComputedStyle(element).borderRadius,overflow:document.documentElement.scrollWidth > innerWidth})).then(value => value.radius === '0px' && !value.overflow),true);
+ }
+ await page.setViewportSize({width:1280,height:800});
  await frames[0].getByLabel('Document',{exact:true}).fill('persistent independent host');await frames[0].getByRole('button',{name:'Save',exact:true}).click();await frames[0].getByText('Saved',{exact:true}).waitFor();
  const read=await page.evaluate(()=>globalThis.referenceInvoke(1,'application.read',{}));
  const write=await page.evaluate(revision=>globalThis.referenceInvoke(1,'document.replace',{expected_revision:revision,message:'targeted sibling draft'}),read.data.revision);

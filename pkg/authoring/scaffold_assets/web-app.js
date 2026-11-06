@@ -1155,17 +1155,20 @@ bridge.onContext((context) => {
   root2.classList.toggle("dark", context.appearance.color_scheme === "dark");
   root2.classList.toggle("light", context.appearance.color_scheme === "light");
   root2.style.colorScheme = context.appearance.color_scheme;
+  const colors = { canvas: "background", surface: "card", surface_elevated: "popover", text: "foreground", text_muted: "muted-foreground", border: "border", accent: "primary", accent_text: "primary-foreground", success: "success", warning: "warning", danger: "error", focus: "ring" };
+  for (const [name, token] of Object.entries(colors)) {
+    root2.style.setProperty(`--${token}`, context.appearance.colors[name]);
+  }
   root2.lang = context.locale.language_tag;
   root2.dir = context.locale.direction;
 });
 var root = document.createElement("main");
 root.className = "plugin-surface";
-root.dataset.floeSurface = "raised";
-root.innerHTML = `<p class="eyebrow">Your application</p><h1></h1>
+root.innerHTML = `<h1></h1>
 <p class="intro">Build your application with ordinary Web code.</p>
 <form class="echo-form"><label for="message">Message</label>
 <input data-floe-surface="inset" id="message" name="message" maxlength="4096" autocomplete="off" value="Hello from your application">
-<button data-floe-surface="raised" type="submit">Preview</button></form>
+<button class="primary" type="submit">Preview</button></form>
 <p class="status" role="status">Connecting...</p>
 <section class="response" aria-label="Preview"><span>Preview</span><strong>Your message will appear here.</strong></section>`;
 root.querySelector("h1").textContent = "__REDEVPLUGIN_DISPLAY_NAME__";

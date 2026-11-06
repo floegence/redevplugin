@@ -7,17 +7,20 @@ bridge.onContext((context) => {
   root.classList.toggle("dark", context.appearance.color_scheme === "dark");
   root.classList.toggle("light", context.appearance.color_scheme === "light");
   root.style.colorScheme = context.appearance.color_scheme;
+  const colors = { canvas: "background", surface: "card", surface_elevated: "popover", text: "foreground", text_muted: "muted-foreground", border: "border", accent: "primary", accent_text: "primary-foreground", success: "success", warning: "warning", danger: "error", focus: "ring" } as const;
+  for (const [name, token] of Object.entries(colors)) {
+    root.style.setProperty(`--${token}`, context.appearance.colors[name as keyof typeof colors]);
+  }
   root.lang = context.locale.language_tag;
   root.dir = context.locale.direction;
 });
 const root = document.createElement("main");
 root.className = "plugin-surface";
-root.dataset.floeSurface = "raised";
-root.innerHTML = `<p class="eyebrow">Your application</p><h1></h1>
+root.innerHTML = `<h1></h1>
 <p class="intro">A regular Web application with a sandboxed Rust worker.</p>
 <form class="echo-form"><label for="message">Message</label>
 <input data-floe-surface="inset" id="message" name="message" maxlength="4096" autocomplete="off" value="Hello from the generated plugin">
-<button data-floe-surface="raised" type="submit" disabled>Send to worker</button></form>
+<button class="primary" type="submit" disabled>Send to worker</button></form>
 <p class="status" role="status">Connecting...</p>
 <section class="response" aria-label="Worker response"><span>Response</span><strong>Your worker response will appear here.</strong></section>`;
 root.querySelector("h1")!.textContent = "__REDEVPLUGIN_DISPLAY_NAME__";

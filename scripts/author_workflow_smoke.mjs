@@ -45,6 +45,13 @@ try{
  assert.equal((await fetch(origin+"/manifest.json")).status,404);
  page=await browser.newPage();await page.goto(preview);
  const frame=page.frameLocator("#stage > iframe");await frame.getByRole("heading",{name:"Author Preview"}).waitFor({timeout:30000});
+ const appearance = await frame.locator("main").evaluate(element => ({
+  bodyFont: getComputedStyle(document.body).fontSize,
+  titleFont: getComputedStyle(element.querySelector("h1")).fontSize,
+  radius: getComputedStyle(element).borderRadius,
+  shadow: getComputedStyle(element).boxShadow,
+ }));
+ assert.deepEqual(appearance, { bodyFont: "13px", titleFont: "16px", radius: "0px", shadow: "none" }, "author templates must begin with a compact, unboxed application surface");
  await frame.getByLabel("Message",{exact:true}).fill("Browser worker acceptance");await frame.getByRole("button",{name:"Send to worker"}).click();await frame.getByText("Browser worker acceptance",{exact:true}).waitFor({timeout:15000});
  const application = await page.evaluate(async () => {
   const state = await (await fetch("/dev/status")).json();

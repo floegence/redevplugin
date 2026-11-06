@@ -7,6 +7,10 @@ The default is a pure Web Surface with no declared host actions. Choose
 The older scaffold command retains its Worker starter. Only Workers need the
 pinned Rust 1.98.0 toolchain.
 Templates use exact published SDK dependencies; install them before building.
+They begin with a flat content surface, 13px body text, 16px headings and compact
+desktop controls. Touch input retains 44px targets. Adapt spacing and hierarchy to
+the application's purpose rather than wrapping the entire view in another card.
+All templates apply the current host color scheme through the surface context.
 
 ## First working preview
 

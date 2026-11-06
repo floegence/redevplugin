@@ -1,8 +1,7 @@
 import { PluginBridgeClient, PluginResourceError, pluginFiles } from "@floegence/redevplugin-ui/plugin";
 
 const bridge = new PluginBridgeClient(); const files = pluginFiles("imports");
-const root = document.createElement("main"); root.className = "plugin-surface"; root.dataset.floeSurface = "raised";
-root.innerHTML = `<p class="eyebrow">File workspace</p><h1></h1><p class="intro">Import files into private plugin storage. Completed files remain available if you cancel.</p><label for="files">Choose files</label><input id="files" type="file" multiple><div><button id="start" disabled>Import and verify</button> <button id="cancel" disabled>Cancel</button></div><progress max="1" value="0" aria-label="Import progress"></progress><p class="status" role="status" aria-live="polite">Connecting…</p><ul aria-label="File results"></ul>`;
+const root = document.createElement("main"); root.className = "plugin-surface"; root.innerHTML = `<h1></h1><p class="intro">Import files into private plugin storage. Completed files remain available if you cancel.</p><label for="files">Choose files</label><input id="files" type="file" multiple><div class="actions"><button class="primary" id="start" disabled>Import and verify</button> <button id="cancel" disabled>Cancel</button></div><progress max="1" value="0" aria-label="Import progress"></progress><p class="status" role="status" aria-live="polite">Connecting…</p><ul aria-label="File results"></ul>`;
 root.querySelector("h1")!.textContent = "__REDEVPLUGIN_DISPLAY_NAME__"; document.body.replaceChildren(root);
 const input = root.querySelector<HTMLInputElement>("input")!; const start = root.querySelector<HTMLButtonElement>("#start")!; const cancel = root.querySelector<HTMLButtonElement>("#cancel")!;
 const progress = root.querySelector("progress")!; const status = root.querySelector(".status")!; const results = root.querySelector("ul")!;
@@ -33,6 +32,12 @@ start.onclick = () => { void (async () => {
     summary = completed + " files verified. " + (signal.aborted ? "Canceled. Completed files are kept." : error instanceof Error ? error.message : "Import stopped"); status.textContent = summary;
   } finally { task = undefined; controls(); }
 })(); };
-bridge.onContext(context => { document.documentElement.style.colorScheme = context.appearance.color_scheme; document.documentElement.lang = context.locale.language_tag; document.documentElement.dir = context.locale.direction; });
+bridge.onContext(context => { document.documentElement.classList.toggle("dark", context.appearance.color_scheme === "dark");
+  document.documentElement.classList.toggle("light", context.appearance.color_scheme === "light");
+  document.documentElement.style.colorScheme = context.appearance.color_scheme;
+  const colors = { canvas: "background", surface: "card", surface_elevated: "popover", text: "foreground", text_muted: "muted-foreground", border: "border", accent: "primary", accent_text: "primary-foreground", success: "success", warning: "warning", danger: "error", focus: "ring" } as const;
+  for (const [name, token] of Object.entries(colors)) {
+    document.documentElement.style.setProperty(`--${token}`, context.appearance.colors[name as keyof typeof colors]);
+  } document.documentElement.lang = context.locale.language_tag; document.documentElement.dir = context.locale.direction; });
 bridge.onLifecycle(event => { if (event.type === "dispose") { lifetime.abort(); task?.abort(); controls(); } });
 void bridge.registerMethod("application.read", () => ({ message: summary })).then(() => { ready = true; status.textContent = "Ready. Choose files to begin."; controls(); });

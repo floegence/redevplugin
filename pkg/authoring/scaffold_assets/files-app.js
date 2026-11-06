@@ -1309,8 +1309,7 @@ var bridge = new PluginBridgeClient();
 var files = pluginFiles("imports");
 var root = document.createElement("main");
 root.className = "plugin-surface";
-root.dataset.floeSurface = "raised";
-root.innerHTML = `<p class="eyebrow">File workspace</p><h1></h1><p class="intro">Import files into private plugin storage. Completed files remain available if you cancel.</p><label for="files">Choose files</label><input id="files" type="file" multiple><div><button id="start" disabled>Import and verify</button> <button id="cancel" disabled>Cancel</button></div><progress max="1" value="0" aria-label="Import progress"></progress><p class="status" role="status" aria-live="polite">Connecting\u2026</p><ul aria-label="File results"></ul>`;
+root.innerHTML = `<h1></h1><p class="intro">Import files into private plugin storage. Completed files remain available if you cancel.</p><label for="files">Choose files</label><input id="files" type="file" multiple><div class="actions"><button class="primary" id="start" disabled>Import and verify</button> <button id="cancel" disabled>Cancel</button></div><progress max="1" value="0" aria-label="Import progress"></progress><p class="status" role="status" aria-live="polite">Connecting\u2026</p><ul aria-label="File results"></ul>`;
 root.querySelector("h1").textContent = "__REDEVPLUGIN_DISPLAY_NAME__";
 document.body.replaceChildren(root);
 var input = root.querySelector("input");
@@ -1388,7 +1387,13 @@ start.onclick = () => {
   })();
 };
 bridge.onContext((context) => {
+  document.documentElement.classList.toggle("dark", context.appearance.color_scheme === "dark");
+  document.documentElement.classList.toggle("light", context.appearance.color_scheme === "light");
   document.documentElement.style.colorScheme = context.appearance.color_scheme;
+  const colors = { canvas: "background", surface: "card", surface_elevated: "popover", text: "foreground", text_muted: "muted-foreground", border: "border", accent: "primary", accent_text: "primary-foreground", success: "success", warning: "warning", danger: "error", focus: "ring" };
+  for (const [name, token] of Object.entries(colors)) {
+    document.documentElement.style.setProperty(`--${token}`, context.appearance.colors[name]);
+  }
   document.documentElement.lang = context.locale.language_tag;
   document.documentElement.dir = context.locale.direction;
 });

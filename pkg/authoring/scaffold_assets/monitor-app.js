@@ -1281,8 +1281,7 @@ async function openPluginWebSocket(connectorId, path = "/", options = {}) {
 var bridge = new PluginBridgeClient();
 var root = document.createElement("main");
 root.className = "plugin-surface";
-root.dataset.floeSurface = "raised";
-root.innerHTML = `<p class="eyebrow">Live workspace</p><h1></h1><p class="intro">Connect to your configured events service. Each message replaces the current snapshot.</p><div><button id="connect" disabled>Connect</button> <button id="disconnect" disabled>Disconnect</button></div><p class="status" role="status" aria-live="polite">Connecting to host\u2026</p><pre aria-label="Current snapshot">No snapshot yet</pre>`;
+root.innerHTML = `<h1></h1><p class="intro">Connect to your configured events service. Each message replaces the current snapshot.</p><div class="actions"><button class="primary" id="connect" disabled>Connect</button> <button id="disconnect" disabled>Disconnect</button></div><p class="status" role="status" aria-live="polite">Connecting to host\u2026</p><pre aria-label="Current snapshot">No snapshot yet</pre>`;
 root.querySelector("h1").textContent = "__REDEVPLUGIN_DISPLAY_NAME__";
 document.body.replaceChildren(root);
 var connect = root.querySelector("#connect");
@@ -1327,7 +1326,13 @@ connect.onclick = () => {
 };
 disconnect.onclick = stop;
 bridge.onContext((context) => {
+  document.documentElement.classList.toggle("dark", context.appearance.color_scheme === "dark");
+  document.documentElement.classList.toggle("light", context.appearance.color_scheme === "light");
   document.documentElement.style.colorScheme = context.appearance.color_scheme;
+  const colors = { canvas: "background", surface: "card", surface_elevated: "popover", text: "foreground", text_muted: "muted-foreground", border: "border", accent: "primary", accent_text: "primary-foreground", success: "success", warning: "warning", danger: "error", focus: "ring" };
+  for (const [name, token] of Object.entries(colors)) {
+    document.documentElement.style.setProperty(`--${token}`, context.appearance.colors[name]);
+  }
   document.documentElement.lang = context.locale.language_tag;
   document.documentElement.dir = context.locale.direction;
 });

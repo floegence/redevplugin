@@ -2929,33 +2929,27 @@
 }
 body {
   margin: 0;
-  padding: 24px;
-  font: 14px/1.5 system-ui, sans-serif;
+  padding: clamp(16px, 3vw, 32px);
+  font: 13px/1.6 system-ui, sans-serif;
   background: var(--background);
   color: var(--foreground);
 }
 .plugin-surface {
-  max-width: 640px;
-  margin: auto;
-  padding: 24px;
-  border-radius: 16px;
-  background: var(--card);
+  max-width: 720px;
+  margin-inline: auto;
+  min-width: 0;
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 h1,
 p {
   margin: 0;
 }
 h1 {
-  font-size: 24px;
-  letter-spacing: -.03em;
-}
-.eyebrow {
-  font-size: 11px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  line-height: 1.4;
 }
 .intro,
 .response > span {
@@ -2963,16 +2957,18 @@ h1 {
 }
 .echo-form {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  margin-top: 4px;
 }
 input,
 button,
 textarea {
   font: inherit;
-  min-height: 40px;
-  padding: 8px 12px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 5px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 input,
 textarea {
@@ -2986,20 +2982,38 @@ textarea {
   line-height: 1.6;
 }
 button {
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+}
+button.primary {
   background: var(--primary);
   color: var(--primary-foreground);
-  cursor: pointer;
+  border-color: transparent;
+}
+button:hover:not(:disabled) {
+  filter: brightness(.95);
+}
+.echo-form > button {
+  justify-self: start;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 button:disabled {
   opacity: .5;
   cursor: default;
 }
+input:focus-visible,
+textarea:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 .status {
-  min-height: 22px;
+  min-height: 20px;
   font-size: 12px;
   color: var(--muted-foreground);
 }
@@ -3009,15 +3023,27 @@ button:focus-visible {
 .response {
   display: grid;
   gap: 6px;
-  padding-top: 16px;
+  padding-top: 12px;
   border-top: 1px solid var(--border);
   overflow-wrap: anywhere;
 }
-@media (max-width: 480px) {
-  body {
-    padding: 16px;
+pre {
+  max-width: 100%;
+  overflow: auto;
+  font-size: 12px;
+}
+progress {
+  width: 100%;
+  accent-color: var(--primary);
+}
+@media (pointer: coarse) {
+  input,
+  button,
+  textarea {
+    min-height: 44px;
   }
-  .plugin-surface {
-    padding: 20px;
+  input,
+  textarea {
+    font-size: 16px;
   }
 }
