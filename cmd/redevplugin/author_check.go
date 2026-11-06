@@ -38,7 +38,7 @@ func runAuthorCheck(ctx context.Context, root string, doctor bool) error {
 	if err != nil {
 		add("MANIFEST_UNAVAILABLE", "manifest.json", err.Error())
 	} else {
-		m, _, err = manifest.DecodeCanonical(bytes.NewReader(raw))
+		m, _, err = manifest.DecodeAuthorCanonical(bytes.NewReader(raw))
 		if err != nil {
 			add("MANIFEST_INVALID", "manifest.json", err.Error())
 		}

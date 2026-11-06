@@ -19,13 +19,13 @@ let exited;
 let page;
 try {
 const project = join(directory, "source");
-const initialized = spawnSync(cli, ["init", "dev.example.author", "Author Preview", project, "--template", "worker"], { encoding: "utf8" });
+const initialized = spawnSync(cli, ["init", "dev-example-author", "Author Preview", project, "--template", "worker"], { encoding: "utf8" });
 assert.equal(initialized.status, 0, initialized.stderr);
 await copyFile(join(project, "dist/ui/assets/app.js"), join(project, "ui/source.js"));
 await writeFile(join(project, "scripts/smoke-build.mjs"), 'import {copyFile,readFile} from "node:fs/promises";\nawait copyFile("ui/source.js","dist/ui/assets/app.js");\n');
 await writeFile(join(project, "scripts/smoke-test.mjs"), 'import assert from "node:assert/strict"; import {readFile} from "node:fs/promises"; assert.match(await readFile("ui/source.js","utf8"),/worker.echo/u);\n');
 await writeFile(join(project, "redevplugin.project.json"), JSON.stringify({schema_version:"redevplugin.project.v1",output:"dist",build:["node","scripts/smoke-build.mjs"],test:["node","scripts/smoke-test.mjs"],watch:["ui","scripts","manifest.json"]}));
-const test = spawnSync(cli, ["test",project,"--runtime",runtime,"--runtime-sha256",digest,"--surface","dev.example.author.view","--method","worker.echo","--params",JSON.stringify({message:"author-real-runtime"})],{encoding:"utf8",timeout:45000});
+const test = spawnSync(cli, ["test",project,"--runtime",runtime,"--runtime-sha256",digest,"--surface","dev-example-author.view","--method","worker.echo","--params",JSON.stringify({message:"author-real-runtime"})],{encoding:"utf8",timeout:45000});
 assert.equal(test.status,0,test.stdout+test.stderr);
 const report=JSON.parse(test.stdout);
 const validate = new Ajv2020().compile(JSON.parse(await readFile(join(root,"spec/plugin/author-test-v1.schema.json"),"utf8")));

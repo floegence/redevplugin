@@ -55,7 +55,7 @@ func TestAuthorCLIInvokesRealRuntime(t *testing.T) {
 	runtimePath := buildExamplesRuntime(t, repo)
 	root := t.TempDir()
 	project := filepath.Join(root, "source")
-	if _, err := createPluginScaffold("dev.example.author", "Author Preview", project); err != nil {
+	if _, err := createPluginScaffold("dev-example-author", "Author Preview", project); err != nil {
 		t.Fatal(err)
 	}
 	p, err := authorproject.Load(project)
@@ -78,7 +78,7 @@ func TestAuthorCLIInvokesRealRuntime(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
 	identity := mustInspectCommandRuntimeArtifact(t, runtimePath)
-	command := exec.Command(cli, "test", project, "--runtime", runtimePath, "--runtime-sha256", identity.BinarySHA256().String(), "--surface", "dev.example.author.view", "--method", "worker.echo", "--params", `{"message":"author-cli-runtime"}`)
+	command := exec.Command(cli, "test", project, "--runtime", runtimePath, "--runtime-sha256", identity.BinarySHA256().String(), "--surface", "dev-example-author.view", "--method", "worker.echo", "--params", `{"message":"author-cli-runtime"}`)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("CLI runtime: %v\n%s", err, output)
 	}

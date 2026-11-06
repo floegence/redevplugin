@@ -13,7 +13,7 @@ import (
 
 func TestAuthorDoctorReportsMissingInstalledDependencies(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "app")
-	if _, err := createPluginTemplate("example.readiness", "Readiness", root, "web"); err != nil {
+	if _, err := createPluginTemplate("example-readiness", "Readiness", root, "web"); err != nil {
 		t.Fatal(err)
 	}
 	output, err := captureCLIOutput(t, "doctor", root)
@@ -24,7 +24,7 @@ func TestAuthorDoctorReportsMissingInstalledDependencies(t *testing.T) {
 
 func TestAuthorDevReportsMissingDependenciesBeforeCreatingState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "app")
-	if _, err := createPluginTemplate("example.devreadiness", "Readiness", root, "web"); err != nil {
+	if _, err := createPluginTemplate("example-devreadiness", "Readiness", root, "web"); err != nil {
 		t.Fatal(err)
 	}
 	state := filepath.Join(t.TempDir(), "state")
@@ -53,7 +53,7 @@ func TestAuthorDevReadinessDoesNotRequireTestOnlyTool(t *testing.T) {
 
 func TestGeneratedToolchainChecksDoNotConstrainCustomProjects(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "app")
-	if _, err := createPluginTemplate("example.toolchain", "Toolchain", root, "worker"); err != nil {
+	if _, err := createPluginTemplate("example-toolchain", "Toolchain", root, "worker"); err != nil {
 		t.Fatal(err)
 	}
 	if !authorUsesGeneratedNodeToolchain(root) || !authorUsesGeneratedRustToolchain(root) {
@@ -87,7 +87,7 @@ func TestAuthorReadinessAllowsPreparationToInstallDependencies(t *testing.T) {
 
 func TestAuthorWebTemplateRunsBusinessTestsAndChecksTypesDuringBuild(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "app")
-	if _, err := createPluginTemplate("example.business", "Business", root, "web"); err != nil {
+	if _, err := createPluginTemplate("example-business", "Business", root, "web"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(root, "package.json"))

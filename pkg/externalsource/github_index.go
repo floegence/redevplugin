@@ -57,20 +57,9 @@ func (client *GitHubRESTReleaseClient) RepositoryIndex(ctx context.Context, owne
 	}
 	index, err := repositoryindex.Decode(raw)
 	if err != nil {
-		return repositoryindex.Index{}, err
+		return repositoryindex.Index{}, invalidSource("github_index", "%v", err)
 	}
-	identity, err := pluginidentity.GitHub(repo.ID, "plugin")
-	if err != nil {
-		return repositoryindex.Index{}, invalidSource("github_index", "repository identity is invalid")
-	}
-	for _, target := range index.Targets {
-		for _, plugin := range target.Plugins {
-			if err := pluginidentity.ValidateGitHub(repo.ID, identity.PublisherID, plugin.PluginID); err != nil {
-				return repositoryindex.Index{}, invalidSource("github_index", "%v", err)
-			}
-		}
-	}
-	return index, nil
+	return repositoryindex.ResolveGitHub(index, repo.ID)
 }
 
 type GitHubReleaseTag struct {
@@ -113,7 +102,7 @@ func (client *GitHubRESTReleaseClient) ReleaseTags(ctx context.Context, owner, r
 
 func selectRepositoryPlugin(index repositoryindex.Index, host, pluginID string) (repositoryindex.Plugin, error) {
 	if err := repositoryindex.Validate(index); err != nil {
-		return repositoryindex.Plugin{}, err
+		return repositoryindex.Plugin{}, invalidSource("github_index", "%v", err)
 	}
 	found := map[string]repositoryindex.Plugin{}
 	for _, target := range index.Targets {

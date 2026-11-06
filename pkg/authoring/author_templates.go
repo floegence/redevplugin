@@ -39,7 +39,7 @@ func configureWebTemplate(files map[string][]byte, displayName, platformVersion,
 	files["redevplugin.project.json"] = []byte(`{
   "schema_version": "redevplugin.project.v1",
   "output": "dist",
-  "build": ["npm", "run", "build"],
+  "build": ["node", "scripts/build.mjs"],
   "test": ["npm", "test"],
   "watch": ["manifest.json", "ui", "scripts", "tests", "package.json"],
   "typecheck": ["npm", "run", "typecheck"],
@@ -54,7 +54,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const built = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build:ui"], { cwd: root, stdio: "inherit" });
 if (built.status !== 0) process.exit(built.status ?? 1);
 await mkdir(resolve(root, "dist/ui/assets"), { recursive: true });
-await copyFile(resolve(root, "manifest.json"), resolve(root, "dist/manifest.json"));
+await copyFile(resolve(root, "generated/manifest.json"), resolve(root, "dist/manifest.json"));
 await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html"));
 `)
 	actions := "This basic Web template declares no host actions; add a method and intent only when another trusted surface must invoke the application."

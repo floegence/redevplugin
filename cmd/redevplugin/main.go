@@ -97,9 +97,6 @@ func run(ctx context.Context, args []string) error {
 	}
 	switch args[0] {
 	case "repository":
-		if len(args) > 1 && args[1] == "identity" {
-			return runRepositoryIdentity(ctx, args[2:])
-		}
 		return runRepositoryIndex(args[1:])
 	case "runtime":
 		return runAuthorRuntimePrepare(ctx, args[1:])
@@ -109,10 +106,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		return runAuthorCheck(ctx, args[1], args[0] == "doctor")
 	case "generate":
-		if len(args) != 3 && (len(args) != 4 || args[3] != "--check") {
-			return usage()
-		}
-		return generateAuthorAPI(args[1], args[2], len(args) == 4)
+		return runAuthorGenerate(ctx, args[1:])
+	case "build":
+		return runAuthorBuild(ctx, args[1:])
 	case "validate":
 		if len(args) != 2 {
 			return usage()
@@ -411,7 +407,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin repository identity <project-root> <slug> [--repository <url>] | redevplugin repository inspect|validate <repository-root> | redevplugin scaffold repository-index <repository-root> <host> | redevplugin check <source-dir> | redevplugin doctor <source-dir> | redevplugin init <plugin-id> <display-name> <out-dir> [--template web|data|worker|monitor|files] | redevplugin generate <manifest.json> <output-dir> [--check] | redevplugin runtime prepare <new-directory> | redevplugin dev <source-dir> [--state <directory>] [--manual] [--runtime <path> --runtime-sha256 <digest>] | redevplugin test <source-dir> [--runtime <path> --runtime-sha256 <digest> --surface <id> --method <name> --params <json>] | redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin>| redevplugin release inspect <package.redevplugin> [capability-contract.json ...] | redevplugin release extract-presentation-icon <package.redevplugin> <out-file> [capability-contract.json ...] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package>| redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
+	return fmt.Errorf("usage: redevplugin build <project-root> [--release] [--repository <url>] | redevplugin repository inspect|validate <repository-root> | redevplugin scaffold repository-index <repository-root> <host> | redevplugin check <source-dir> | redevplugin doctor <source-dir> | redevplugin init <slug> <display-name> <out-dir> [--template web|data|worker|monitor|files] | redevplugin generate <manifest.json> <output-dir> [--check] [--release] [--repository <url>] | redevplugin runtime prepare <new-directory> | redevplugin dev <source-dir> [--state <directory>] [--manual] [--runtime <path> --runtime-sha256 <digest>] | redevplugin test <source-dir> [--runtime <path> --runtime-sha256 <digest> --surface <id> --method <name> --params <json>] | redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <slug> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin>| redevplugin release inspect <package.redevplugin> [capability-contract.json ...] | redevplugin release extract-presentation-icon <package.redevplugin> <out-file> [capability-contract.json ...] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package>| redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {

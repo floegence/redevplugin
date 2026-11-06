@@ -1,9 +1,14 @@
 package authorproject
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +104,64 @@ func TestLoadRejectsConfigurationSymlinkAndCaseAliases(t *testing.T) {
 	}
 	if _, err := Load(root); err == nil {
 		t.Fatal("accepted case alias outside canonical schema")
+	}
+}
+
+func TestPublicationBuildUsesCompiledIdentityBeforeCommands(t *testing.T) {
+	root := t.TempDir()
+	source, err := os.ReadFile("../../examples/plugins/weather/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err = manifest.AuthorSource(source, "weather")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "manifest.json"), source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"schema_version":"redevplugin.project.v1","output":"dist","build":["node","build.mjs"],"test":["node","build.mjs"],"watch":["build.mjs"],"bindings":"generated"}`
+	if err = os.WriteFile(filepath.Join(root, ConfigFile), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// No plugin code is needed to prove ordering: the declared build observes the
+	// generated identity, then copies real package assets and that exact manifest.
+	fixture, err := filepath.Abs("../../examples/plugins/weather")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(fixture)
+	script := `const fs=require('node:fs');const assert=require('node:assert/strict');const manifest=JSON.parse(fs.readFileSync('generated/manifest.json'));assert.equal(manifest.plugin.plugin_id,process.env.TEST_EXPECTED_PLUGIN);fs.cpSync(` + string(encoded) + `, 'dist',{recursive:true});fs.copyFileSync('generated/manifest.json','dist/manifest.json');`
+	script = "import {createRequire} from 'node:module';\n" + strings.ReplaceAll(script, "require(", "createRequire(import.meta.url)(")
+	if err = os.WriteFile(filepath.Join(root, "build.mjs"), []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	project, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := pluginidentity.GitHub(42, "weather")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_EXPECTED_PLUGIN", identity.PluginID)
+	result, err := project.Build(context.Background(), PipelineOptions{Generate: true, Identity: identity})
+	if err != nil {
+		t.Fatal(err, result.Commands)
+	}
+	if result.Package.Manifest.PluginID() != identity.PluginID {
+		t.Fatal("wrong package identity")
+	}
+	after, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if err != nil || !bytes.Equal(source, after) {
+		t.Fatal("source changed", err)
+	}
+	t.Setenv("TEST_EXPECTED_PLUGIN", "weather")
+	local, err := project.Build(context.Background(), PipelineOptions{Generate: true})
+	if err != nil {
+		t.Fatal(err, local.Commands)
+	}
+	if local.Package.Manifest.PluginID() != "weather" {
+		t.Fatal("release identity leaked to local build")
 	}
 }

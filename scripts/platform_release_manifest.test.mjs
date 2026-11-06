@@ -44,6 +44,7 @@ const expectedCanonicalContracts = [
   "contract:plugin/host-capability-contract-v1.schema.json",
   "contract:plugin/host-capability-pin-v1.schema.json",
   "contract:plugin/manifest-v9.schema.json",
+  "contract:plugin/source-manifest.schema.json",
   "contract:plugin/network-control.schema.json",
   "contract:plugin/network-grant-v2.schema.json",
   "contract:plugin/plugin-api.json",

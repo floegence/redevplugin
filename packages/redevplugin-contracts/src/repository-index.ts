@@ -1,4 +1,4 @@
-export { repositoryIndexJSONSchema } from "./repository-index.gen.js";
+export { repositoryIndexJSONSchema, sourceManifestJSONSchema } from "./repository-index.gen.js";
 
 export const repositoryIndexSchemaVersion = "redevplugin.repository-index.v1" as const;
 
@@ -8,7 +8,7 @@ export type RepositoryIndexRelease = {
 };
 
 export type RepositoryIndexPlugin = {
-  plugin_id: string;
+  slug: string;
   path: string;
   manifest: string;
   release: RepositoryIndexRelease;
@@ -45,3 +45,6 @@ export function repositoryIndexRenderTemplate(template: string, version: string)
   if (result.length > 255) throw new Error("Rendered repository release name exceeds 255 bytes");
   return result;
 }
+
+/** Resolved runtime selection, generated from an observed source repository. */
+export type ResolvedRepositoryPlugin = RepositoryIndexPlugin & { plugin_id: string };

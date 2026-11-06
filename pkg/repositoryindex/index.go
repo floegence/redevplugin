@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
@@ -38,6 +39,7 @@ var (
 )
 
 type Index struct {
+	RepositoryID  int64    `json:"-"`
 	Schema        string   `json:"$schema,omitempty"`
 	SchemaVersion string   `json:"schema_version"`
 	Targets       []Target `json:"targets"`
@@ -50,7 +52,8 @@ type Target struct {
 }
 
 type Plugin struct {
-	PluginID string   `json:"plugin_id"`
+	Slug     string   `json:"slug"`
+	PluginID string   `json:"plugin_id,omitempty"`
 	Path     string   `json:"path"`
 	Manifest string   `json:"manifest"`
 	Release  *Release `json:"release,omitempty"`
@@ -172,13 +175,23 @@ func Validate(value Index) error {
 			if pluginCount > MaxPlugins {
 				return fmt.Errorf("repository index contains more than %d plugins", MaxPlugins)
 			}
-			if !identifierPattern.MatchString(plugin.PluginID) {
-				return fmt.Errorf("targets[%d].plugins[%d].plugin_id is invalid", targetIndex, pluginIndex)
+			if pluginidentity.ValidateSlug(plugin.Slug) != nil {
+				return fmt.Errorf("targets[%d].plugins[%d].slug is invalid", targetIndex, pluginIndex)
 			}
-			if _, ok := seenIDs[plugin.PluginID]; ok {
-				return fmt.Errorf("targets[%d] duplicates plugin_id %q", targetIndex, plugin.PluginID)
+			if value.RepositoryID == 0 {
+				if plugin.PluginID != "" {
+					return errors.New("repository index declares slug only; plugin_id is generated")
+				}
+			} else {
+				identity, err := pluginidentity.GitHub(value.RepositoryID, plugin.Slug)
+				if err != nil || identity.PluginID != plugin.PluginID {
+					return errors.New("resolved plugin identity does not match repository")
+				}
 			}
-			seenIDs[plugin.PluginID] = struct{}{}
+			if _, ok := seenIDs[plugin.Slug]; ok {
+				return fmt.Errorf("targets[%d] duplicates slug %q", targetIndex, plugin.Slug)
+			}
+			seenIDs[plugin.Slug] = struct{}{}
 			if !safeRelativePath(plugin.Path) || plugin.Manifest == "." || !safeRelativePath(plugin.Manifest) {
 				return fmt.Errorf("targets[%d].plugins[%d] contains an unsafe path", targetIndex, pluginIndex)
 			}
@@ -188,14 +201,14 @@ func Validate(value Index) error {
 			if err := validateRelease(*plugin.Release); err != nil {
 				return fmt.Errorf("targets[%d].plugins[%d].release: %w", targetIndex, pluginIndex, err)
 			}
-			if previous, exists := byTag[plugin.Release.TagTemplate]; exists && previous != plugin.PluginID {
-				return fmt.Errorf("plugins %q and %q share a release namespace", previous, plugin.PluginID)
+			if previous, exists := byTag[plugin.Release.TagTemplate]; exists && previous != plugin.Slug {
+				return fmt.Errorf("plugins %q and %q share a release namespace", previous, plugin.Slug)
 			}
-			if previous, exists := byID[plugin.PluginID]; exists && (previous.Path != plugin.Path || previous.Manifest != plugin.Manifest || *previous.Release != *plugin.Release) {
-				return fmt.Errorf("plugin %q has inconsistent declarations across targets", plugin.PluginID)
+			if previous, exists := byID[plugin.Slug]; exists && (previous.Path != plugin.Path || previous.Manifest != plugin.Manifest || *previous.Release != *plugin.Release) {
+				return fmt.Errorf("plugin %q has inconsistent declarations across targets", plugin.Slug)
 			}
-			byTag[plugin.Release.TagTemplate] = plugin.PluginID
-			byID[plugin.PluginID] = plugin
+			byTag[plugin.Release.TagTemplate] = plugin.Slug
+			byID[plugin.Slug] = plugin
 		}
 	}
 	return nil
@@ -252,15 +265,17 @@ func validatePluginManifest(root string, plugin Plugin) error {
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("plugin %q manifest: %w", plugin.PluginID, err)
+		return fmt.Errorf("plugin %q manifest: %w", plugin.Slug, err)
 	}
-	decoded, _, decodeErr := manifest.DecodeCanonical(file)
+	raw, readErr := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	decoded, _, decodeErr := manifest.CompileSource(raw, pluginidentity.Identity{})
+	decodeErr = errors.Join(readErr, decodeErr)
 	closeErr := file.Close()
 	if err := errors.Join(decodeErr, closeErr); err != nil {
 		return err
 	}
-	if decoded.PluginID() != plugin.PluginID {
-		return fmt.Errorf("plugin %q does not match manifest plugin_id %q", plugin.PluginID, decoded.PluginID())
+	if decoded.PluginID() != plugin.Slug {
+		return fmt.Errorf("plugin %q does not match manifest slug %q", plugin.Slug, decoded.PluginID())
 	}
 	return nil
 }
@@ -485,11 +500,11 @@ func validateJSONShape(raw []byte) error {
 			return errors.New("plugins must be an array")
 		}
 		for _, item := range plugins {
-			plugin, err := object(item, []string{"plugin_id", "path", "manifest", "release"}, nil)
+			plugin, err := object(item, []string{"slug", "path", "manifest", "release"}, nil)
 			if err != nil {
 				return err
 			}
-			for _, key := range []string{"plugin_id", "path", "manifest"} {
+			for _, key := range []string{"slug", "path", "manifest"} {
 				if err := stringField(plugin, key); err != nil {
 					return err
 				}
@@ -510,6 +525,31 @@ func validateJSONShape(raw []byte) error {
 
 func SortedEntries(repo Repository) []Entry {
 	entries := append([]Entry(nil), repo.Entries...)
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Plugin.PluginID < entries[j].Plugin.PluginID })
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Plugin.Slug < entries[j].Plugin.Slug })
 	return entries
+}
+
+// ResolveGitHub binds raw author entries to an independently observed repository.
+// The raw index remains slug-only and is never rewritten in the source repository.
+func ResolveGitHub(index Index, repositoryID int64) (Index, error) {
+	if err := Validate(index); err != nil {
+		return Index{}, err
+	}
+	if index.RepositoryID != 0 {
+		return Index{}, errors.New("repository index is already resolved")
+	}
+	resolved := index
+	resolved.RepositoryID = repositoryID
+	resolved.Targets = append([]Target(nil), index.Targets...)
+	for i, target := range index.Targets {
+		resolved.Targets[i].Plugins = append([]Plugin(nil), target.Plugins...)
+		for j, p := range target.Plugins {
+			identity, err := pluginidentity.GitHub(repositoryID, p.Slug)
+			if err != nil {
+				return Index{}, err
+			}
+			resolved.Targets[i].Plugins[j].PluginID = identity.PluginID
+		}
+	}
+	return resolved, Validate(resolved)
 }

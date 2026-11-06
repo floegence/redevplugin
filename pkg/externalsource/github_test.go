@@ -194,7 +194,7 @@ func (client *fakeGitHubClient) RepositoryIndex(context.Context, string, string)
 	if id == "" {
 		id = fmt.Sprintf("github.repo.%d.plugin", max(client.release.RepositoryID, 1))
 	}
-	return repositoryindex.Index{SchemaVersion: repositoryindex.SchemaVersion, Targets: []repositoryindex.Target{{Ecosystem: "redevplugin", Host: "example", Plugins: []repositoryindex.Plugin{{PluginID: id, Path: ".", Manifest: "manifest.json", Release: &repositoryindex.Release{TagTemplate: "plugin-v{version}", PackageAssetTemplate: "plugin.redevplugin"}}}}}}, nil
+	return repositoryindex.Index{RepositoryID: max(client.release.RepositoryID, 1), SchemaVersion: repositoryindex.SchemaVersion, Targets: []repositoryindex.Target{{Ecosystem: "redevplugin", Host: "example", Plugins: []repositoryindex.Plugin{{Slug: "plugin", PluginID: id, Path: ".", Manifest: "manifest.json", Release: &repositoryindex.Release{TagTemplate: "plugin-v{version}", PackageAssetTemplate: "plugin.redevplugin"}}}}}}, nil
 }
 func (client *fakeGitHubClient) ReleaseTags(context.Context, string, string) ([]GitHubReleaseTag, error) {
 	return []GitHubReleaseTag{{Tag: client.release.Tag}}, nil
@@ -209,14 +209,15 @@ func TestRepositoryPluginSelectionIsUnambiguousAndVersionOrdered(t *testing.T) {
 		t.Fatalf("selection: %s %v", tag, err)
 	}
 	other := plugin
-	other.PluginID = "example.second"
+	other.Slug = "second"
+	other.PluginID = "github.repo.1.second"
 	other.Path = "second"
 	other.Release = &repositoryindex.Release{TagTemplate: "second-v{version}", PackageAssetTemplate: "plugin.redevplugin"}
 	index.Targets[0].Plugins = append(index.Targets[0].Plugins, other)
 	if _, err := selectRepositoryPlugin(index, "example", ""); err == nil {
 		t.Fatal("ambiguous repository selected arbitrary plugin")
 	}
-	selected, err := selectRepositoryPlugin(index, "example", "example.second")
+	selected, err := selectRepositoryPlugin(index, "example", "github.repo.1.second")
 	if err != nil || selected.PluginID != other.PluginID {
 		t.Fatalf("explicit selection: %+v %v", selected, err)
 	}

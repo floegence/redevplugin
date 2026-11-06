@@ -614,7 +614,7 @@ func (s *WorkspaceStore) Capture(ctx context.Context, owner Owner, id string) (A
 	if err != nil {
 		return Artifact{}, err
 	}
-	_, canonical, err := manifest.DecodeCanonical(bytes.NewReader(source))
+	_, canonical, err := manifest.DecodeAuthorCanonical(bytes.NewReader(source))
 	if err != nil {
 		return Artifact{}, err
 	}

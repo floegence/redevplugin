@@ -9,7 +9,7 @@ import (
 )
 
 func validIndex() Index {
-	return Index{SchemaVersion: SchemaVersion, Targets: []Target{{Ecosystem: "redevplugin", Host: "redeven", Plugins: []Plugin{{PluginID: "github.alice.weather-tools.weather", Path: "plugins/weather", Manifest: "manifest.json", Release: &Release{TagTemplate: "weather-v{version}", PackageAssetTemplate: "weather-{version}.redevplugin"}}}}}}
+	return Index{SchemaVersion: SchemaVersion, Targets: []Target{{Ecosystem: "redevplugin", Host: "redeven", Plugins: []Plugin{{Slug: "weather", Path: "plugins/weather", Manifest: "manifest.json", Release: &Release{TagTemplate: "weather-v{version}", PackageAssetTemplate: "weather-{version}.redevplugin"}}}}}}
 }
 
 func TestDecodeAndRender(t *testing.T) {
@@ -21,7 +21,7 @@ func TestDecodeAndRender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Targets[0].Plugins[0].PluginID != "github.alice.weather-tools.weather" {
+	if got.Targets[0].Plugins[0].Slug != "weather" {
 		t.Fatalf("unexpected plugin: %#v", got)
 	}
 	if value, err := Render("redeven-weather-v{version}", "1.2.3"); err != nil || value != "redeven-weather-v1.2.3" {
@@ -30,7 +30,7 @@ func TestDecodeAndRender(t *testing.T) {
 }
 
 func TestIndependentReleaseAssetsAndPackageOnlyIndex(t *testing.T) {
-	raw := []byte(`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin-{version}.redevplugin"}},{"plugin_id":"beta","path":"beta","manifest":"manifest.json","release":{"tag_template":"beta-v{version}","package_asset_template":"plugin-{version}.redevplugin"}}]}]}`)
+	raw := []byte(`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"slug":"alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin-{version}.redevplugin"}},{"slug":"beta","path":"beta","manifest":"manifest.json","release":{"tag_template":"beta-v{version}","package_asset_template":"plugin-{version}.redevplugin"}}]}]}`)
 	index, err := Decode(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +45,7 @@ func TestDecodeRejectsAmbiguousOrUnsafeInput(t *testing.T) {
 	cases := []string{
 		`{"schema_version":"redevplugin.repository-index.v1","schema_version":"redevplugin.repository-index.v1","targets":[]}`,
 		`{"schema_version":"redevplugin.repository-index.v2","targets":[]}`,
-		`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"x","path":"../outside","manifest":"manifest.json","release":{"tag_template":"v{version}","package_asset_template":"x-{version}.redevplugin"}}]}]}`,
+		`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"slug":"x","path":"../outside","manifest":"manifest.json","release":{"tag_template":"v{version}","package_asset_template":"x-{version}.redevplugin"}}]}]}`,
 	}
 	for _, raw := range cases {
 		if _, err := Decode([]byte(raw)); err == nil {
@@ -86,7 +86,7 @@ func TestEntryDigestIndependentOfSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	index.Targets[0].Plugins = append(index.Targets[0].Plugins, Plugin{PluginID: "other"})
+	index.Targets[0].Plugins = append(index.Targets[0].Plugins, Plugin{Slug: "other"})
 	second, err := EntryDigest("redeven", index.Targets[0].Plugins[0])
 	if err != nil || first != second {
 		t.Fatalf("digest changed: %q %q %v", first, second, err)
@@ -101,7 +101,7 @@ func TestEntryDigestIndependentOfSiblings(t *testing.T) {
 func TestRejectCollidingReleaseNamespaces(t *testing.T) {
 	index := validIndex()
 	other := index.Targets[0].Plugins[0]
-	other.PluginID = "github.alice.weather-tools.other"
+	other.Slug = "other"
 	index.Targets[0].Plugins = append(index.Targets[0].Plugins, other)
 	if err := Validate(index); err == nil {
 		t.Fatal("accepted colliding release assets")
@@ -173,18 +173,43 @@ func TestValidateRepositoryChecksManifestIdentity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, IndexPath), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"schema_version":"redevplugin.manifest.v9","publisher":{"publisher_id":"example"},"plugin":{"plugin_id":"github.alice.weather-tools.weather","display_name":"Weather","version":"1.0.0"},"api":{"major":1,"optional_features":[]},"permissions":[],"presentation":{"locales":{"default":"en-US"}},"surfaces":[],"workers":[],"methods":[]}`
+	manifest := `{"schema_version":"redevplugin.source.v1","publisher":{"display_name":"Example"},"plugin":{"slug":"weather","display_name":"Weather","version":"1.0.0"},"api":{"major":1,"optional_features":[]},"permissions":[],"presentation":{"locales":{"default":"en-US"}},"surfaces":[],"workers":[],"methods":[]}`
 	if err := os.WriteFile(filepath.Join(root, "plugins/weather/manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ValidateRepository(root); err != nil {
 		t.Fatal(err)
 	}
-	bad := strings.Replace(manifest, "github.alice.weather-tools.weather", "github.alice.weather-tools.other", 1)
+	bad := strings.Replace(manifest, "weather", "other", 1)
 	if err := os.WriteFile(filepath.Join(root, "plugins/weather/manifest.json"), []byte(bad), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ValidateRepository(root); err == nil {
 		t.Fatal("accepted mismatched manifest identity")
+	}
+}
+
+func TestResolveGitHubIdentityDoesNotMutateAuthorIndex(t *testing.T) {
+	raw := validIndex()
+	for _, id := range []int64{42, 43} {
+		resolved, err := ResolveGitHub(raw, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.RepositoryID != id || resolved.Targets[0].Plugins[0].PluginID == "" {
+			t.Fatal(resolved)
+		}
+		if raw.Targets[0].Plugins[0].PluginID != "" || raw.RepositoryID != 0 {
+			t.Fatal("source index changed")
+		}
+		resolved.Targets[0].Plugins[0].PluginID = "github.repo.99.weather"
+		if err := Validate(resolved); err == nil {
+			t.Fatal("foreign generated identity accepted")
+		}
+	}
+	source, _ := json.Marshal(raw)
+	malicious := strings.Replace(string(source), `"slug":"weather"`, `"slug":"weather","plugin_id":"github.repo.42.weather"`, 1)
+	if _, err := Decode([]byte(malicious)); err == nil {
+		t.Fatal("author supplied identity accepted")
 	}
 }

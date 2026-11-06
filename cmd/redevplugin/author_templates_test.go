@@ -12,7 +12,7 @@ import (
 
 func TestInitDefaultsToPackageableWebApplication(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "app")
-	if _, err := captureCLIOutput(t, "init", "example.web", "Web Application", root); err != nil {
+	if _, err := captureCLIOutput(t, "init", "example-web", "Web Application", root); err != nil {
 		t.Fatal(err)
 	}
 	project, err := authorproject.Load(root)
@@ -57,7 +57,7 @@ func TestResourceTemplatesRetainTheirDeclaredSurfaceAction(t *testing.T) {
 	for _, template := range []string{"data", "monitor", "files"} {
 		t.Run(template, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), template)
-			if _, err := createPluginTemplate("example."+template, "Resource Application", root, template); err != nil {
+			if _, err := createPluginTemplate("example-"+template, "Resource Application", root, template); err != nil {
 				t.Fatal(err)
 			}
 			project, err := authorproject.Load(root)
@@ -84,7 +84,7 @@ func TestResourceTemplatesRetainTheirDeclaredSurfaceAction(t *testing.T) {
 
 func TestInitRejectsUnknownTemplateWithoutWriting(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "app")
-	if _, err := captureCLIOutput(t, "init", "example.web", "Web Application", root, "--template", "unknown"); err == nil {
+	if _, err := captureCLIOutput(t, "init", "example-web", "Web Application", root, "--template", "unknown"); err == nil {
 		t.Fatal("unknown template accepted")
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -94,7 +94,7 @@ func TestInitRejectsUnknownTemplateWithoutWriting(t *testing.T) {
 
 func TestDataTemplateDeclaresDirectPrivateStorage(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "data")
-	if _, err := createPluginTemplate("example.data", "Data Application", root, "data"); err != nil {
+	if _, err := createPluginTemplate("example-data", "Data Application", root, "data"); err != nil {
 		t.Fatal(err)
 	}
 	p, err := authorproject.Load(root)
@@ -117,7 +117,7 @@ func TestResourceTemplatesPackageWithoutWorkers(t *testing.T) {
 	for _, template := range []string{"monitor", "files"} {
 		t.Run(template, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), template)
-			if _, err := createPluginTemplate("example."+template, "Resource Application", root, template); err != nil {
+			if _, err := createPluginTemplate("example-"+template, "Resource Application", root, template); err != nil {
 				t.Fatal(err)
 			}
 			p, err := authorproject.Load(root)

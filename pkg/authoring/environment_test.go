@@ -71,7 +71,7 @@ func TestEnvironmentRecoversExactArtifactAndPreservesIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.Initialize(ctx, owner, workspace.ID, "dev.example.author", "Author", "web"); err != nil {
+	if _, err = store.Initialize(ctx, owner, workspace.ID, "dev-example-author", "Author", "web"); err != nil {
 		t.Fatal(err)
 	}
 	artifact, err := store.Capture(ctx, owner, workspace.ID)
@@ -94,7 +94,7 @@ func TestEnvironmentRecoversExactArtifactAndPreservesIsolation(t *testing.T) {
 	if err != nil || len(records) != 1 {
 		t.Fatal("preview inventory", err)
 	}
-	opened, err := env.Host().OpenSurface(ctx, host.OpenSurfaceRequest{PluginInstanceID: original.PluginInstanceID, ExpectedManagementRevision: records[0].ManagementRevision, SurfaceID: "dev.example.author.view"})
+	opened, err := env.Host().OpenSurface(ctx, host.OpenSurfaceRequest{PluginInstanceID: original.PluginInstanceID, ExpectedManagementRevision: records[0].ManagementRevision, SurfaceID: "dev-example-author.view"})
 	if err != nil {
 		t.Fatal(err)
 	}

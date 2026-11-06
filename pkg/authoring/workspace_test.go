@@ -1,10 +1,12 @@
 package authoring
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"github.com/floegence/redevplugin/v3/pkg/authorproject"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,7 +34,7 @@ func TestWorkspaceArtifactsSurviveRestartAndRejectTampering(t *testing.T) {
 	if _, err = store.Get(ctx, Owner{User: "other", Environment: owner.Environment}, w.ID); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatal("foreign workspace readable", err)
 	}
-	if _, err = store.Initialize(ctx, owner, w.ID, "dev.example.created", "Created", "web"); err != nil {
+	if _, err = store.Initialize(ctx, owner, w.ID, "dev-example-created", "Created", "web"); err != nil {
 		t.Fatal(err)
 	}
 	a, err := store.Capture(ctx, owner, w.ID)
@@ -142,7 +144,7 @@ func TestWorkspaceCannotFollowManagedSymlinkOutsideRoot(t *testing.T) {
 	if err = os.Symlink(outside, w.SourceDirectory); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Initialize(ctx, owner, w.ID, "dev.example.symlink", "Symlink", "web"); err == nil {
+	if _, err = s.Initialize(ctx, owner, w.ID, "dev-example-symlink", "Symlink", "web"); err == nil {
 		t.Fatal("symlink initialized")
 	}
 	if err = s.Remove(ctx, owner, w.ID); err != nil {
@@ -225,7 +227,7 @@ func TestWorkspaceCanonicalFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Initialize(ctx, owner, w.ID, "dev.example.contract", "Contract", "web"); err != nil {
+	if _, err = s.Initialize(ctx, owner, w.ID, "dev-example-contract", "Contract", "web"); err != nil {
 		t.Fatal(err)
 	}
 	artifact, err := s.Capture(ctx, owner, w.ID)
@@ -262,7 +264,7 @@ func TestWorkspaceInitializationRecoversEveryPersistedStage(t *testing.T) {
 			if stage == "renamed" {
 				dbStage = "prepared"
 			}
-			if _, err = s.db.Exec("INSERT INTO initializations VALUES(?,?,?,?,?)", w.ID, "dev.example.initialize", "Initialize", "web", dbStage); err != nil {
+			if _, err = s.db.Exec("INSERT INTO initializations VALUES(?,?,?,?,?)", w.ID, "dev-example-initialize", "Initialize", "web", dbStage); err != nil {
 				t.Fatal(err)
 			}
 			staging := filepath.Join(root, "projects", w.ID, "initializing")
@@ -274,7 +276,7 @@ func TestWorkspaceInitializationRecoversEveryPersistedStage(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				if _, err = Init("dev.example.initialize", "Initialize", staging, "web"); err != nil {
+				if _, err = Init("dev-example-initialize", "Initialize", staging, "web"); err != nil {
 					t.Fatal(err)
 				}
 				if err = os.Remove(w.SourceDirectory); err != nil {
@@ -298,10 +300,10 @@ func TestWorkspaceInitializationRecoversEveryPersistedStage(t *testing.T) {
 			if _, err = s.Capture(ctx, owner, w.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = s.Initialize(ctx, owner, w.ID, "dev.example.initialize", "Initialize", "web"); err != nil {
+			if _, err = s.Initialize(ctx, owner, w.ID, "dev-example-initialize", "Initialize", "web"); err != nil {
 				t.Fatal("idempotent init", err)
 			}
-			if _, err = s.Initialize(ctx, owner, w.ID, "dev.example.foreign", "Foreign", "web"); !errors.Is(err, ErrWorkspaceConflict) {
+			if _, err = s.Initialize(ctx, owner, w.ID, "dev-example-foreign", "Foreign", "web"); !errors.Is(err, ErrWorkspaceConflict) {
 				t.Fatal("rebound initialization", err)
 			}
 		})
@@ -320,7 +322,7 @@ func TestWorkspaceBuildFailureSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Initialize(ctx, owner, w.ID, "dev.example.failed", "Failed", "web"); err != nil {
+	if _, err = s.Initialize(ctx, owner, w.ID, "dev-example-failed", "Failed", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if err = os.WriteFile(filepath.Join(w.SourceDirectory, "manifest.json"), []byte("invalid"), 0600); err != nil {
@@ -400,7 +402,7 @@ func TestWorkspaceCaptureBindsExactVerifiedManifest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = store.Initialize(ctx, owner, workspace.ID, "dev.example.capture", "Capture", "web"); err != nil {
+			if _, err = store.Initialize(ctx, owner, workspace.ID, "dev-example-capture", "Capture", "web"); err != nil {
 				t.Fatal(err)
 			}
 			source := filepath.Join(workspace.SourceDirectory, "manifest.json")
@@ -422,10 +424,15 @@ func TestWorkspaceCaptureBindsExactVerifiedManifest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, path := range []string{source, filepath.Join(workspace.SourceDirectory, "dist", "manifest.json")} {
-				if err = os.WriteFile(path, raw, 0600); err != nil {
-					t.Fatal(err)
-				}
+			if err = os.WriteFile(source, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, compiled, compileErr := manifest.DecodeAuthorCanonical(bytes.NewReader(raw))
+			if compileErr != nil {
+				t.Fatal(compileErr)
+			}
+			if err = os.WriteFile(filepath.Join(workspace.SourceDirectory, "dist", "manifest.json"), compiled, 0600); err != nil {
+				t.Fatal(err)
 			}
 			if _, err = store.Capture(ctx, owner, workspace.ID); err != nil {
 				t.Fatalf("exact package rejected: %v", err)

@@ -7,8 +7,8 @@ import {chromium} from "playwright";
 const cli=resolve(process.argv[2]??"dist/author-cli");
 const root=await mkdtemp(join(tmpdir(),"redevplugin-data-"));let child,browser;let logs="";
 try{
- const app=join(root,"app");let result=spawnSync(cli,["init","dev.example.data","Document Workspace",app,"--template","data"],{encoding:"utf8"});assert.equal(result.status,0,result.stderr);
- for(const name of ["manifest.json","dist/manifest.json"]){const path=join(app,name),manifest=JSON.parse(await readFile(path,"utf8"));manifest.surfaces.push({...manifest.surfaces[0],surface_id:"dev.example.data.other",label:"Other window"});await writeFile(path,JSON.stringify(manifest));}
+ const app=join(root,"app");let result=spawnSync(cli,["init","dev-example-data","Document Workspace",app,"--template","data"],{encoding:"utf8"});assert.equal(result.status,0,result.stderr);
+ for(const name of ["manifest.json","dist/manifest.json"]){const path=join(app,name),manifest=JSON.parse(await readFile(path,"utf8"));manifest.surfaces.push({...manifest.surfaces[0],surface_id:"dev-example-data.other",label:"Other window"});await writeFile(path,JSON.stringify(manifest));}
  result=spawnSync(cli,["generate",join(app,"manifest.json"),join(app,"generated")],{encoding:"utf8"});assert.equal(result.status,0,result.stdout+result.stderr);
  // Use the generated packaged assets; dependency/build compilation has its own gate.
  await writeFile(join(app,"scripts/smoke.mjs"),'process.exit(0);\n');
@@ -24,10 +24,10 @@ try{
  await second.getByRole("button",{name:"Cancel",exact:true}).click();
  assert.equal(await b.getByLabel("Document",{exact:true}).inputValue(),"unsaved second window");
  await second.getByLabel("Preview surface").waitFor({state:"visible"});await second.waitForFunction(()=>!document.querySelector("#surfaces").disabled);
- await second.getByLabel("Preview surface").selectOption("dev.example.data.other");
+ await second.getByLabel("Preview surface").selectOption("dev-example-data.other");
  await second.getByRole("button",{name:"Cancel",exact:true}).click();
  await second.waitForFunction(()=>!document.querySelector("#surfaces").disabled);
- assert.equal(await second.getByLabel("Preview surface").inputValue(),"dev.example.data.view");
+ assert.equal(await second.getByLabel("Preview surface").inputValue(),"dev-example-data.view");
  assert.equal(await b.getByLabel("Document",{exact:true}).inputValue(),"unsaved second window");
  await a.getByLabel("Document",{exact:true}).fill("saved first window");await a.getByRole("button",{name:"Save",exact:true}).click();await a.getByText("Saved",{exact:true}).waitFor();
  await b.getByText("A newer saved version is available. Your unsaved changes are kept here.",{exact:true}).waitFor({timeout:10000});

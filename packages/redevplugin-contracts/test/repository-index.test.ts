@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { repositoryIndexJSONSchema, repositoryIndexSchemaVersion, repositoryIndexRenderTemplate, repositoryIndexVersionFromTag } from "../src/repository-index.js";
+import { sourceManifestJSONSchema, repositoryIndexJSONSchema, repositoryIndexSchemaVersion, repositoryIndexRenderTemplate, repositoryIndexVersionFromTag } from "../src/repository-index.js";
 
 test("repository index contract has a closed versioned identity", () => {
   assert.equal(repositoryIndexSchemaVersion, "redevplugin.repository-index.v1");
@@ -28,4 +28,13 @@ test("release templates match the shared platform fixtures", () => {
     assert.equal(repositoryIndexVersionFromTag(item.template, item.tag), item.version);
   }
   for (const version of fixture.invalid_versions) assert.throws(() => repositoryIndexRenderTemplate("v{version}", version));
+});
+
+test("author schemas contain short slugs and exclude generated identity", () => {
+ assert.deepEqual(repositoryIndexJSONSchema.$defs.plugin.required, ["slug", "path", "manifest", "release"]);
+ assert.equal("plugin_id" in repositoryIndexJSONSchema.$defs.plugin.properties, false);
+ assert.equal(sourceManifestJSONSchema.properties.schema_version.const, "redevplugin.source.v1");
+ assert.equal("publisher_id" in sourceManifestJSONSchema.properties.publisher.properties, false);
+ assert.equal("plugin_id" in sourceManifestJSONSchema.properties.plugin.properties, false);
+ assert.ok(sourceManifestJSONSchema.properties.plugin.required.includes("slug"));
 });

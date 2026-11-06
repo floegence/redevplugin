@@ -20,7 +20,7 @@ import (
 func authorTestProject(t *testing.T) *authorproject.Project {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "source")
-	if _, err := Init("dev.example.state", "State", root, "web"); err != nil {
+	if _, err := Init("dev-example-state", "State", root, "web"); err != nil {
 		t.Fatal(err)
 	}
 	p, err := authorproject.Load(root)

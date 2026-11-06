@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -29,12 +31,14 @@ func Upsert(root, host, project, manifestName string, release Release, replace b
 	if err != nil {
 		return false, err
 	}
-	decoded, _, decodeErr := manifest.DecodeCanonical(file)
+	rawSource, readErr := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	decoded, _, decodeErr := manifest.CompileSource(rawSource, pluginidentity.Identity{})
+	decodeErr = errors.Join(readErr, decodeErr)
 	closeErr := file.Close()
 	if err := errors.Join(decodeErr, closeErr); err != nil {
 		return false, err
 	}
-	entry := Plugin{PluginID: decoded.PluginID(), Path: project, Manifest: manifestName, Release: &release}
+	entry := Plugin{Slug: decoded.PluginID(), Path: project, Manifest: manifestName, Release: &release}
 	indexPath := filepath.Join(absolute, IndexPath)
 	directory := filepath.Dir(indexPath)
 	if err := os.MkdirAll(directory, 0755); err != nil {
@@ -75,16 +79,16 @@ func Upsert(root, host, project, manifestName string, release Release, replace b
 		foundTarget = true
 		for pi := range target.Plugins {
 			old := target.Plugins[pi]
-			if old.PluginID != entry.PluginID && (!replace || old.Path != entry.Path || old.Manifest != entry.Manifest) {
+			if old.Slug != entry.Slug && (!replace || old.Path != entry.Path || old.Manifest != entry.Manifest) {
 				continue
 			}
 			foundEntry = true
-			if old.PluginID == entry.PluginID && old.Path == entry.Path && old.Manifest == entry.Manifest && old.Release != nil && *old.Release == release {
+			if old.Slug == entry.Slug && old.Path == entry.Path && old.Manifest == entry.Manifest && old.Release != nil && *old.Release == release {
 				_, err := ValidateRepository(absolute)
 				return false, err
 			}
 			if !replace {
-				return false, fmt.Errorf("plugin %q already has a different declaration; use --replace to update it", entry.PluginID)
+				return false, fmt.Errorf("plugin %q already has a different declaration; use --replace to update it", entry.Slug)
 			}
 			target.Plugins[pi] = entry
 		}

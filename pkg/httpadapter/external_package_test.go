@@ -337,7 +337,7 @@ type repositoryQueryTransport func(*http.Request) (*http.Response, error)
 func (f repositoryQueryTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestRepositoryPluginQueryUsesPlatformIndexAndHostSelection(t *testing.T) {
-	index := `{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"github.repo.1.zulu","path":"zulu","manifest":"manifest.json","release":{"tag_template":"zulu-v{version}","package_asset_template":"plugin.redevplugin"}},{"plugin_id":"github.repo.1.alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin.redevplugin"}}]}]}`
+	index := `{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"slug":"zulu","path":"zulu","manifest":"manifest.json","release":{"tag_template":"zulu-v{version}","package_asset_template":"plugin.redevplugin"}},{"slug":"alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin.redevplugin"}}]}]}`
 	sha := strings.Repeat("a", 40)
 	calls := 0
 	module := newHTTPExternalPackageModule(t)
@@ -376,7 +376,7 @@ func TestRepositoryPluginQueryUsesPlatformIndexAndHostSelection(t *testing.T) {
 	if len(result) != 0 {
 		t.Fatal("returned plugins for another host")
 	}
-	index = strings.ReplaceAll(index, "github.repo.1.alpha", "github.repo.2.alpha")
+	index = strings.ReplaceAll(index, `"slug":"alpha"`, `"slug":"alpha","plugin_id":"github.repo.2.alpha"`)
 	externalPackageRequest(t, handler, path, map[string]any{"url": "https://github.com/example/plugins", "host": "redeven"}, http.StatusBadRequest)
 	before := calls
 	externalPackageRequest(t, handler, path, map[string]any{"url": "https://example.com/example/plugins"}, http.StatusBadRequest)

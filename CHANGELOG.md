@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.24.0
+
+- Keep author manifests and repository indexes slug-only. Compile repository-derived
+  publication identity before bindings, build and hashing without changing source.
+- Add offline local source compilation and `build --release`; remove the source-mutating
+  repository identity command. Templates, source schemas and SDK selections share the
+  same compiler and independently observed GitHub repository binding.
+
 ## v3.23.2
 
 - Keep cold Web surfaces concealed until the replacement document finishes parsing and loading its original module graph. Subscribe before document replacement instead of trusting the previous document's ready state.

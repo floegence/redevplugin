@@ -2912,7 +2912,13 @@ export interface components {
             url: string;
             host?: string;
         };
-        RepositoryPlugin: components["schemas"]["RepositoryIndexV1Plugin"];
+        RepositoryPlugin: {
+            slug: string;
+            plugin_id: string;
+            path: string;
+            manifest: string;
+            release: components["schemas"]["RepositoryIndexV1Release"];
+        };
         ListRepositoryPluginsSuccessResponse: {
             /** @constant */
             ok: true;
@@ -4202,10 +4208,10 @@ export interface components {
             package_asset_template: string;
         };
         RepositoryIndexV1Plugin: {
-            plugin_id: components["schemas"]["RepositoryIndexV1Identifier"];
             path: components["schemas"]["RepositoryIndexV1RelativePath"];
             manifest: components["schemas"]["RepositoryIndexV1RelativePath"] & unknown;
             release: components["schemas"]["RepositoryIndexV1Release"];
+            slug: string;
         };
         RepositoryIndexV1Target: {
             /** @constant */

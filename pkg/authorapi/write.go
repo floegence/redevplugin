@@ -7,10 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 )
 
 // Write replaces generated files without executing author code.
 func Write(input, output string, check bool) error {
+	return WriteIdentity(input, output, check, pluginidentity.Identity{})
+}
+
+// WriteIdentity compiles a source manifest with the independently resolved publication context.
+func WriteIdentity(input, output string, check bool, identity pluginidentity.Identity) error {
 	inputPath, err := filepath.EvalSymlinks(input)
 	if err != nil {
 		return err
@@ -31,6 +39,12 @@ func Write(input, output string, check bool) error {
 	raw, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
 	if err != nil {
 		return err
+	}
+	if identity.PluginID != "" || identity.PublisherID != "" {
+		_, raw, err = manifest.CompileSource(raw, identity)
+		if err != nil {
+			return err
+		}
 	}
 	files, err := Generate(raw)
 	if err != nil {

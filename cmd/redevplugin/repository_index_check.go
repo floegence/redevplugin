@@ -29,11 +29,11 @@ func checkEnclosingRepositoryIndex(projectRoot, pluginID string) error {
 				return err
 			}
 			for _, entry := range repo.Entries {
-				if entry.Plugin.PluginID == pluginID && entry.Plugin.Path == filepath.ToSlash(rel) {
+				if entry.Plugin.Slug == pluginID && entry.Plugin.Path == filepath.ToSlash(rel) {
 					return nil
 				}
 			}
-			return fmt.Errorf("project %q with plugin_id %q is not listed", filepath.ToSlash(rel), pluginID)
+			return fmt.Errorf("project %q with slug %q is not listed", filepath.ToSlash(rel), pluginID)
 		}
 		if !os.IsNotExist(err) {
 			return err

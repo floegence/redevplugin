@@ -2,91 +2,77 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
+	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
+	"github.com/floegence/redevplugin/v3/pkg/authorapi"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 )
 
-func TestRepositoryIdentityGenerationAndIdempotence(t *testing.T) {
+func TestPublicationGenerationPreservesSourceAndSeparatesForks(t *testing.T) {
 	root := t.TempDir()
 	if _, err := createPluginTemplate("mind-map", "Mind Map", root, "web"); err != nil {
 		t.Fatal(err)
 	}
-	id, err := writeRepositoryIdentity(root, 42, "mind-map")
+	source := filepath.Join(root, "manifest.json")
+	before, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.PublisherID != "github.repo.42" || id.PluginID != "github.repo.42.mind-map" {
-		t.Fatal(id)
+	for _, id := range []int64{42, 43} {
+		identity, err := pluginidentity.GitHub(id, "mind-map")
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := filepath.Join(root, "generated")
+		if err = authorapi.WriteIdentity(source, output, false, identity); err != nil {
+			t.Fatal(err)
+		}
+		if err = authorapi.WriteIdentity(source, output, true, identity); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(filepath.Join(output, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _, err := manifest.DecodeCanonical(bytes.NewReader(raw))
+		if err != nil || m.PluginID() != identity.PluginID || m.Publisher.PublisherID != identity.PublisherID {
+			t.Fatal(m, err)
+		}
+		after, _ := os.ReadFile(source)
+		if !bytes.Equal(before, after) {
+			t.Fatal("publication changed author input")
+		}
 	}
-	raw, err := os.ReadFile(filepath.Join(root, "manifest.json"))
-	if err != nil {
+	// Local generation is offline and clears any previously generated release identity.
+	if err = generateAuthorAPI(source, filepath.Join(root, "generated"), false); err != nil {
 		t.Fatal(err)
 	}
-	m, err := manifest.Decode(bytes.NewReader(raw))
-	if err != nil || m.Publisher.PublisherID != id.PublisherID {
+	raw, _ := os.ReadFile(filepath.Join(root, "generated/manifest.json"))
+	m, _, err := manifest.DecodeCanonical(bytes.NewReader(raw))
+	if err != nil || m.PluginID() != "mind-map" || m.Publisher.PublisherID != "local.generated" {
 		t.Fatal(m, err)
-	}
-	if _, err := writeRepositoryIdentity(root, 42, "mind-map"); err != nil {
-		t.Fatal(err)
-	}
-	next, _ := os.ReadFile(filepath.Join(root, "manifest.json"))
-	if !bytes.Equal(raw, next) {
-		t.Fatal("non-idempotent generation")
-	}
-	if _, err := writeRepositoryIdentity(root, 0, "mind-map"); err == nil {
-		t.Fatal("invalid source accepted")
 	}
 }
 
-func TestRepositoryIdentityRejectsSymlinkAndPreservesOtherFields(t *testing.T) {
+func TestPublicationRequiresRepositoryOnlyForRelease(t *testing.T) {
 	root := t.TempDir()
-	if _, err := createPluginTemplate("example", "Original Name", root, "web"); err != nil {
+	if _, err := createPluginTemplate("example", "Example", root, "web"); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, "manifest.json")
-	original, err := os.ReadFile(path)
-	if err != nil {
+	if _, err := authorPublication(context.Background(), root, "", false); err != nil {
 		t.Fatal(err)
 	}
-	outside := filepath.Join(t.TempDir(), "manifest.json")
-	if err := os.Rename(path, outside); err != nil {
-		t.Fatal(err)
+	if _, err := authorPublication(context.Background(), root, "", true); err == nil {
+		t.Fatal("release accepted without repository")
 	}
-	if err := os.Symlink(outside, path); err != nil {
-		t.Fatal(err)
+	if _, err := authorPublication(context.Background(), root, "https://github.com/example/plugin", false); err == nil {
+		t.Fatal("ignored repository without release")
 	}
-	if _, err := writeRepositoryIdentity(root, 42, "example"); err == nil {
-		t.Fatal("accepted symlink manifest")
-	}
-	after, _ := os.ReadFile(outside)
-	if !bytes.Equal(original, after) {
-		t.Fatal("modified symlink target")
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(outside, path); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := writeRepositoryIdentity(root, 42, "example"); err != nil {
-		t.Fatal(err)
-	}
-	after, _ = os.ReadFile(path)
-	var beforeDoc, afterDoc map[string]any
-	if err := json.Unmarshal(original, &beforeDoc); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(after, &afterDoc); err != nil {
-		t.Fatal(err)
-	}
-	beforeDoc["publisher"].(map[string]any)["publisher_id"] = "github.repo.42"
-	beforeDoc["plugin"].(map[string]any)["plugin_id"] = "github.repo.42.example"
-	if !reflect.DeepEqual(beforeDoc, afterDoc) {
-		t.Fatal("identity generation modified unrelated fields")
+	if err := run(context.Background(), []string{"repository", "identity", root, "example"}); err == nil {
+		t.Fatal("retired source-mutating identity command accepted")
 	}
 }

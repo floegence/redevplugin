@@ -33,6 +33,7 @@ catch (error) {
 	}
 	files["redevplugin.project.json"], _ = json.MarshalIndent(config, "", "  ")
 	files[".gitignore"] = []byte(`node_modules/
+generated/
 dist/
 worker/target/
 `)

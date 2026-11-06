@@ -144,7 +144,10 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, fmt.Errorf("release identity is invalid"))
 	}
 
-	identity, err := pluginidentity.GitHub(release.RepositoryID, "plugin")
+	if index.RepositoryID != release.RepositoryID {
+		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "repository identity changed since index resolution")
+	}
+	identity, err := pluginidentity.GitHub(release.RepositoryID, plugin.Slug)
 	if err != nil {
 		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "%v", err)
 	}

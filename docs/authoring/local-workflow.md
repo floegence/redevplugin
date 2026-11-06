@@ -1,6 +1,6 @@
 # Local author workflow
 
-Create a project with `redevplugin init <plugin-id> <display-name> <directory>`.
+Create a project with `redevplugin init <slug> <display-name> <directory>`.
 The default is a pure Web Surface with no declared host actions. Choose
 `--template data` for a multi-window editor, `files` for streaming imports,
 `monitor` for a controlled WebSocket dashboard, or `worker` for a WASM job.
@@ -18,8 +18,8 @@ Install the CLI for the platform release used by your host, then start the
 default Web preview:
 
 ```bash
-go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.23.2
-redevplugin init dev.example.notes "Notes" notes
+go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.24.0
+redevplugin init notes "Notes" notes
 cd notes
 npm install
 redevplugin dev . --state ../notes-development --manual
@@ -69,7 +69,7 @@ generated template toolchain requirements, and existing bindings without
 running author commands. Generation is optional for existing projects; an
 existing generated directory must match. New templates declare a tool-owned bindings directory. Dev regenerates it;
 check and test reject drift rather than modifying it. `redevplugin check .` also runs the selected
-build/tests, compares source and packaged manifests, and validates the package.
+build/tests, compiles author identity and compares the resulting canonical package manifest, and validates the package.
 Both commands emit structured diagnostics with codes and source paths. For npm
 projects without a preparation command, installed exact dependency versions must
 match the declaration. A preparation command can install dependencies before the
@@ -307,3 +307,17 @@ unsent text and require reselection instead of silently targeting the replacemen
 Treat all visual metadata as untrusted quotation. A selector is a source-finding
 hint, not authorization or an instruction to evaluate in a document. Comments do
 not bypass the normal permission, confirmation, build or installation lifecycle.
+
+## Author and publication identity
+
+`manifest.json` is editable `redevplugin.source.v1` input with a short
+`plugin.slug`. Authors never configure numeric repository IDs or publisher IDs.
+The generated `manifest.json` is an installable v9 document; generated bindings,
+source maps and build output all use that exact compiled identity.
+
+`npm run build` invokes the platform build pipeline. Project build commands only
+build assets and copy `generated/manifest.json`; they must not invoke the platform
+pipeline recursively. `npm run build:release` resolves the Git origin through
+GitHub before generating bindings and building. Local builds and previews remain
+offline. Use `redevplugin build . --release --repository https://github.com/owner/repo`
+only when source has no Git origin. See [repository discovery](repository-index.md).

@@ -16,6 +16,7 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
 	"github.com/floegence/redevplugin/v3/pkg/host"
+	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
@@ -32,7 +33,7 @@ import (
 func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")
-	output, err := captureCLIOutput(t, "scaffold", "com.example.generated", "Generated Plugin", scaffoldDir)
+	output, err := captureCLIOutput(t, "scaffold", "com-example-generated", "Generated Plugin", scaffoldDir)
 	if err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
@@ -40,7 +41,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err := json.Unmarshal(output, &summary); err != nil {
 		t.Fatalf("scaffold output decode error = %v: %s", err, output)
 	}
-	if summary.PluginID != "com.example.generated" || len(summary.Files) != 23 {
+	if summary.PluginID != "com-example-generated" || len(summary.Files) != 23 {
 		t.Fatalf("scaffold summary mismatch: %#v", summary)
 	}
 
@@ -51,7 +52,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"schema_version": "redevplugin.manifest.v9"`, `"api": {`, `"presentation": {`} {
+	for _, want := range []string{`"schema_version": "redevplugin.source.v1"`, `"api": {`, `"presentation": {`} {
 		if !bytes.Contains(manifestRaw, []byte(want)) {
 			t.Fatalf("scaffold manifest missing current protocol %q: %s", want, manifestRaw)
 		}
@@ -70,8 +71,16 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(manifestRaw, distManifestRaw) {
-		t.Fatal("editable and distributable scaffold manifests differ")
+	_, compiledSource, err := manifest.DecodeAuthorCanonical(bytes.NewReader(manifestRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, compiledOutput, err := manifest.DecodeCanonical(bytes.NewReader(distManifestRaw))
+	if err != nil || !bytes.Equal(compiledSource, compiledOutput) {
+		t.Fatal("distributable manifest differs from compiled author source", err)
+	}
+	if bytes.Contains(manifestRaw, []byte(`"plugin_id"`)) || bytes.Contains(manifestRaw, []byte(`"publisher_id"`)) {
+		t.Fatal("source contains generated identity")
 	}
 	indexRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "dist", "ui", "index.html"))
 	if err != nil {
@@ -150,7 +159,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 		}
 	}
 
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated", "Generated Plugin", scaffoldDir); err == nil || !strings.Contains(err.Error(), "not empty") {
+	if _, err := captureCLIOutput(t, "scaffold", "com-example-generated", "Generated Plugin", scaffoldDir); err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Fatalf("scaffold non-empty dir error = %v, want not empty", err)
 	}
 }
@@ -162,7 +171,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated-runtime")
 	packageFile := filepath.Join(dir, "generated-runtime.redevplugin")
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.runtime", "Generated Runtime Plugin", scaffoldDir); err != nil {
+	if _, err := captureCLIOutput(t, "scaffold", "com-example-generated-runtime", "Generated Runtime Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
@@ -225,7 +234,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	bootstrap, err := h.OpenSurface(ctx, host.OpenSurfaceRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
 		ExpectedManagementRevision: installed.ManagementRevision,
-		SurfaceID:                  "com.example.generated.runtime.view",
+		SurfaceID:                  "com-example-generated-runtime.view",
 		SurfaceInstanceID:          "surface_generated_runtime",
 
 		Now: now.Add(time.Second),
@@ -394,7 +403,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
 	packageFile := filepath.Join(dir, "generated.redevplugin")
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.lifecycle", "Generated Lifecycle Plugin", scaffoldDir); err != nil {
+	if _, err := captureCLIOutput(t, "scaffold", "com-example-generated-lifecycle", "Generated Lifecycle Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
 	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
@@ -439,7 +448,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	openOutput, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view")
+	openOutput, err := captureCLIOutput(t, "dev-open", stateRoot, "com-example-generated-lifecycle.view")
 	if err != nil {
 		t.Fatalf("dev-open error = %v", err)
 	}
@@ -492,7 +501,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
 	packageFile := filepath.Join(dir, "generated.redevplugin")
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.settings", "Generated Settings Plugin", scaffoldDir); err != nil {
+	if _, err := captureCLIOutput(t, "scaffold", "com-example-generated-settings", "Generated Settings Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
 	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
@@ -594,7 +603,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
 	packageFile := filepath.Join(dir, "generated.redevplugin")
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.data", "Generated Data Plugin", scaffoldDir); err != nil {
+	if _, err := captureCLIOutput(t, "scaffold", "com-example-generated-data", "Generated Data Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
 	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
@@ -782,7 +791,7 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
 	packageFile := filepath.Join(dir, "generated.redevplugin")
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.permissions", "Generated Permissions Plugin", scaffoldDir); err != nil {
+	if _, err := captureCLIOutput(t, "scaffold", "com-example-generated-permissions", "Generated Permissions Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
 	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
@@ -960,7 +969,7 @@ func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
 	packageFile := filepath.Join(dir, "generated.redevplugin")
-	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.inspect", "Generated Inspect Plugin", scaffoldDir); err != nil {
+	if _, err := captureCLIOutput(t, "scaffold", "com-example-generated-inspect", "Generated Inspect Plugin", scaffoldDir); err != nil {
 		t.Fatal(err)
 	}
 	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
@@ -1208,7 +1217,7 @@ func prefixLen(length int, maxLength int) int {
 
 func TestAuthorTemplatePinsConsumerToolchainAndAuditedOverrides(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "author")
-	if _, err := createPluginScaffold("example.author.inputs", "Author Inputs", dir); err != nil {
+	if _, err := createPluginScaffold("example-author-inputs", "Author Inputs", dir); err != nil {
 		t.Fatal(err)
 	}
 	toolchain, err := os.ReadFile(filepath.Join(dir, "rust-toolchain.toml"))
@@ -1236,7 +1245,7 @@ func TestAuthorTemplatePinsConsumerToolchainAndAuditedOverrides(t *testing.T) {
 func TestCLIOrdinaryPackageInspectionNeedsNoSigningInputs(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "plugin")
-	if _, err := captureCLIOutput(t, "scaffold", "example.open", "Open", project); err != nil {
+	if _, err := captureCLIOutput(t, "scaffold", "example-open", "Open", project); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(root, "plugin.redevplugin")
@@ -1251,7 +1260,7 @@ func TestCLIOrdinaryPackageInspectionNeedsNoSigningInputs(t *testing.T) {
 	if err = json.Unmarshal(raw, &inspected); err != nil {
 		t.Fatal(err)
 	}
-	if inspected.PluginID != "example.open" || inspected.PackageSHA256 == "" || inspected.SecuritySummary.SummarySHA256 == "" {
+	if inspected.PluginID != "example-open" || inspected.PackageSHA256 == "" || inspected.SecuritySummary.SummarySHA256 == "" {
 		t.Fatalf("inspection: %s", raw)
 	}
 	for _, retired := range []string{"keygen", "sign", "install-verified"} {

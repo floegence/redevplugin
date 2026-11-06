@@ -6,7 +6,7 @@ import (
 )
 
 func FuzzDecodeRepositoryIndex(f *testing.F) {
-	f.Add([]byte(`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"example","plugins":[{"plugin_id":"example.plugin","path":".","manifest":"manifest.json","release":{"tag_template":"plugin-v{version}","package_asset_template":"plugin.redevplugin"}}]}]}`))
+	f.Add([]byte(`{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"example","plugins":[{"slug":"example-plugin","path":".","manifest":"manifest.json","release":{"tag_template":"plugin-v{version}","package_asset_template":"plugin.redevplugin"}}]}]}`))
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`{"schema_version":"unknown"} true`))
 	f.Add([]byte{0xff})

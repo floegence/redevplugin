@@ -6,7 +6,7 @@ import {spawn,spawnSync} from "node:child_process";
 import {chromium} from "playwright";
 const cli=resolve(process.argv[2]);const root=await mkdtemp(join(tmpdir(),"redevplugin-file-author-"));let child,browser,logs="";
 try{
- const project=join(root,"app");const init=spawnSync(cli,["init","dev.example.files","File Workspace",project,"--template","files"],{encoding:"utf8"});assert.equal(init.status,0,init.stderr);
+ const project=join(root,"app");const init=spawnSync(cli,["init","dev-example-files","File Workspace",project,"--template","files"],{encoding:"utf8"});assert.equal(init.status,0,init.stderr);
  await writeFile(join(project,"scripts/smoke.mjs"),"process.exit(0);\n");
  await writeFile(join(project,"redevplugin.project.json"),JSON.stringify({schema_version:"redevplugin.project.v1",output:"dist",build:["node","scripts/smoke.mjs"],test:["node","scripts/smoke.mjs"],watch:["ui","manifest.json","scripts"]}));
  child=spawn(cli,["dev",project],{stdio:["ignore","pipe","pipe"]});child.stdout.on("data",d=>logs+=d);child.stderr.on("data",d=>logs+=d);

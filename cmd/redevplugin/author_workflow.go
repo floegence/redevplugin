@@ -101,7 +101,7 @@ func runAuthorDev(ctx context.Context, args []string) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("manifest.json: %w", err)
 	}
-	manifestDoc, _, err := manifest.DecodeCanonical(bytes.NewReader(rawManifest))
+	manifestDoc, _, err := manifest.DecodeAuthorCanonical(bytes.NewReader(rawManifest))
 	if err != nil {
 		return fmt.Errorf("manifest.json: %w", err)
 	}

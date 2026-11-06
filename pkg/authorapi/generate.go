@@ -23,7 +23,7 @@ type Source struct {
 // Generate never executes author code or infers resource permissions.
 // Manifest remains the single authority; output files can be checked for drift.
 func Generate(raw []byte) (map[string][]byte, error) {
-	m, canonical, err := manifest.DecodeCanonical(bytes.NewReader(raw))
+	m, canonical, err := manifest.DecodeAuthorCanonical(bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}

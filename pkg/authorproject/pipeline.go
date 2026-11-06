@@ -11,6 +11,7 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/authorapi"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 )
 
@@ -21,6 +22,7 @@ type Stage struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 type PipelineOptions struct {
+	Identity pluginidentity.Identity
 	Generate bool
 	Test     bool
 }
@@ -79,7 +81,11 @@ func (p *Project) Build(ctx context.Context, options PipelineOptions) (result Pi
 		if failure != nil {
 			return failure
 		}
-		_, _, failure = manifest.DecodeCanonical(bytes.NewReader(source))
+		if options.Identity.PluginID != "" || options.Identity.PublisherID != "" {
+			_, source, failure = manifest.CompileSource(source, options.Identity)
+		} else {
+			_, source, failure = manifest.DecodeAuthorCanonical(bytes.NewReader(source))
+		}
 		return failure
 	}); err != nil {
 		return
@@ -92,7 +98,7 @@ func (p *Project) Build(ctx context.Context, options PipelineOptions) (result Pi
 	}
 	if directory != "" {
 		if err = run("bindings", func() error {
-			return authorapi.Write(filepath.Join(p.Root, "manifest.json"), filepath.Join(p.Root, directory), !options.Generate || p.Config.Bindings == "")
+			return authorapi.WriteIdentity(filepath.Join(p.Root, "manifest.json"), filepath.Join(p.Root, directory), !options.Generate || p.Config.Bindings == "", options.Identity)
 		}); err != nil {
 			return
 		}
@@ -119,7 +125,7 @@ func (p *Project) Build(ctx context.Context, options PipelineOptions) (result Pi
 		if failure != nil {
 			return failure
 		}
-		_, a, failure := manifest.DecodeCanonical(bytes.NewReader(source))
+		_, a, failure := manifest.DecodeAuthorCanonical(bytes.NewReader(source))
 		if failure != nil {
 			return failure
 		}
@@ -145,7 +151,7 @@ func (p *Project) Build(ctx context.Context, options PipelineOptions) (result Pi
 			return errors.New("source changed during build; waiting for the next complete build")
 		}
 		if directory != "" {
-			return authorapi.Write(filepath.Join(p.Root, "manifest.json"), filepath.Join(p.Root, directory), true)
+			return authorapi.WriteIdentity(filepath.Join(p.Root, "manifest.json"), filepath.Join(p.Root, directory), true, options.Identity)
 		}
 		return nil
 	})

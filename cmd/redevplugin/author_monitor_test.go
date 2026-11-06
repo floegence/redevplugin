@@ -60,7 +60,7 @@ func TestAuthorMonitorBrowser(t *testing.T) {
 	}
 	defer harness.Close()
 	project := filepath.Join(t.TempDir(), "monitor")
-	if _, err := createPluginTemplate("dev.example.monitor", "Live Monitor", project, "monitor"); err != nil {
+	if _, err := createPluginTemplate("dev-example-monitor", "Live Monitor", project, "monitor"); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(project, "dist/manifest.json")

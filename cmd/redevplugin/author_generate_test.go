@@ -9,7 +9,7 @@ import (
 
 func TestGenerateAuthorContractAndCheckDrift(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "source")
-	if _, err := createPluginScaffold("example.contract", "Contract", root); err != nil {
+	if _, err := createPluginScaffold("example-contract", "Contract", root); err != nil {
 		t.Fatal(err)
 	}
 	input := filepath.Join(root, "manifest.json")
@@ -17,7 +17,7 @@ func TestGenerateAuthorContractAndCheckDrift(t *testing.T) {
 	if _, err := captureCLIOutput(t, "generate", input, output); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{"actions.ts": "worker.echo", "actions.rs": "pub trait WorkerActions", "manifest.json": "example.contract", "source-map.json": "/methods/0"} {
+	for name, want := range map[string]string{"actions.ts": "worker.echo", "actions.rs": "pub trait WorkerActions", "manifest.json": "example-contract", "source-map.json": "/methods/0"} {
 		raw, err := os.ReadFile(filepath.Join(output, name))
 		if err != nil {
 			t.Fatal(err)
@@ -43,7 +43,7 @@ func TestGenerateAuthorContractAndCheckDrift(t *testing.T) {
 
 func TestGenerateRejectsSourceDirectoryAndSymlinkOutput(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "source")
-	if _, err := createPluginScaffold("example.contract", "Contract", root); err != nil {
+	if _, err := createPluginScaffold("example-contract", "Contract", root); err != nil {
 		t.Fatal(err)
 	}
 	input := filepath.Join(root, "manifest.json")

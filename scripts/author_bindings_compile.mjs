@@ -7,7 +7,7 @@ const root=resolve(import.meta.dirname,"..");const cli=resolve(process.argv[2]??
 const temp=await mkdtemp(join(tmpdir(),"redevplugin-bindings-"));
 function run(command,args,cwd){const result=spawnSync(command,args,{cwd,encoding:"utf8",timeout:120000});assert.equal(result.status,0,result.stdout+result.stderr);return result.stdout}
 try{
- for(const template of ["web","data","worker","monitor","files"]){const project=join(temp,template);run(cli,["init","dev.example."+template,"Typed Application",project,"--template",template],root);
+ for(const template of ["web","data","worker","monitor","files"]){const project=join(temp,template);run(cli,["init","dev-example-"+template,"Typed Application",project,"--template",template],root);
  const config=JSON.parse(await readFile(join(project,"tsconfig.json"),"utf8"));config.compilerOptions.paths={"@floegence/redevplugin-ui/plugin":[join(root,"packages/redevplugin-ui/src/plugin.ts")]};await writeFile(join(project,"tsconfig.json"),JSON.stringify(config));run(process.execPath,[join(root,"node_modules/typescript/bin/tsc"),"-p",join(project,"tsconfig.json")],root);
  if(template==="worker"){
   const cargo=join(temp,"rust");await mkdir(join(cargo,"src"),{recursive:true});await copyFile(join(project,"generated/actions.rs"),join(cargo,"src/lib.rs"));

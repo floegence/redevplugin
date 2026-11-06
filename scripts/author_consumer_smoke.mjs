@@ -20,7 +20,7 @@ try{
  Object.assign(cargoEnvironment,{CARGO_HOME:candidateCrates.cargoHome,CARGO_NET_OFFLINE:"true"});
  for(const template of ["web","data","files","monitor","worker"]){
   const project=join(root,template),begin=performance.now();
-  run(cli,["init","dev.example."+template,"Consumer "+template,project,"--template",template]);
+  run(cli,["init","dev-example-"+template,"Consumer "+template,project,"--template",template]);
   // Consume actual package archives through npm; never add source aliases.
   run("npm",["install","--no-save","--no-audit","--no-fund",...tarballs],project);
   run(cli,["doctor",project]);

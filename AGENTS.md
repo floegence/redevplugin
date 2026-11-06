@@ -496,6 +496,17 @@ layout is separate from control and application-authored schema versions.
 
 ## Local Author Workflow Ownership
 
+Author input declares a repository-local `plugin.slug` in `redevplugin.source.v1`;
+repository indexes declare the same slug and never numeric IDs or full package
+identities. ReDevPlugin compiles the canonical v9 package identity and bindings
+before build, package hashing and publication without modifying source files.
+Local author operations require no GitHub lookup. GitHub release preparation,
+market discovery and Host admission independently resolve actual repository
+identity. A source document cannot be admitted as a package. No publisher
+registration, signing requirement, compatibility alias or host-local parser is
+introduced by this separation.
+
+
 ReDevPlugin owns the source-project pipeline, generated bindings, readiness
 checks, persistent developer environments, candidate application, connection
 review tooling, and verified published-source runtime preparation. Hosts and

@@ -334,7 +334,7 @@ func TestGitHubRESTReleaseClientPreservesHostProxyAndProvidesResolverConstructor
 }
 
 func TestGitHubRESTIndexPinsContentsToResolvedCommit(t *testing.T) {
-	raw := `{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"plugin_id":"github.repo.1.alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin.redevplugin"}}]}]}`
+	raw := `{"schema_version":"redevplugin.repository-index.v1","targets":[{"ecosystem":"redevplugin","host":"redeven","plugins":[{"slug":"alpha","path":"alpha","manifest":"manifest.json","release":{"tag_template":"alpha-v{version}","package_asset_template":"plugin.redevplugin"}}]}]}`
 	sha := strings.Repeat("a", 40)
 	transport := githubRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.EscapedPath() {
@@ -360,7 +360,7 @@ func TestGitHubRESTIndexPinsContentsToResolvedCommit(t *testing.T) {
 	if err != nil || len(index.Targets) != 1 || index.Targets[0].Plugins[0].PluginID != "github.repo.1.alpha" {
 		t.Fatalf("index: %+v %v", index, err)
 	}
-	raw = strings.ReplaceAll(raw, "github.repo.1.alpha", "github.repo.2.alpha")
+	raw = strings.ReplaceAll(raw, `"slug":"alpha"`, `"slug":"alpha","plugin_id":"github.repo.2.alpha"`)
 	if _, err := client.RepositoryIndex(context.Background(), "example", "plugin"); err == nil {
 		t.Fatal("foreign repository namespace was exposed as a selectable plugin")
 	}

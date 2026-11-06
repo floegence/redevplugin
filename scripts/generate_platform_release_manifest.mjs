@@ -24,6 +24,7 @@ const canonicalContractPaths = Object.freeze([
   "plugin/host-capability-contract-v1.schema.json",
   "plugin/host-capability-pin-v1.schema.json",
   "plugin/manifest-v9.schema.json",
+  "plugin/source-manifest.schema.json",
   "plugin/network-control.schema.json",
   "plugin/network-grant-v2.schema.json",
   "plugin/plugin-api.json",

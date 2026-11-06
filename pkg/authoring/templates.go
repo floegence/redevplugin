@@ -12,6 +12,7 @@ import (
 
 	"github.com/floegence/redevplugin/v3/pkg/authorapi"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"github.com/floegence/redevplugin/v3/pkg/version"
 )
 
@@ -91,8 +92,8 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 	pluginID = strings.TrimSpace(pluginID)
 	displayName = strings.TrimSpace(displayName)
 	outDir = strings.TrimSpace(outDir)
-	if pluginID == "" {
-		return TemplateResult{}, fmt.Errorf("plugin_id is required")
+	if err := pluginidentity.ValidateSlug(pluginID); err != nil {
+		return TemplateResult{}, err
 	}
 	if displayName == "" {
 		return TemplateResult{}, fmt.Errorf("display_name is required")
@@ -171,10 +172,19 @@ func Init(pluginID string, displayName string, outDir string, template string) (
 		return TemplateResult{}, err
 	}
 	manifestBytes := append(append([]byte(nil), rawManifest...), '\n')
+	sourceBytes, err := manifest.AuthorSource(manifestBytes, pluginID)
+	if err != nil {
+		return TemplateResult{}, err
+	}
+	var formattedSource bytes.Buffer
+	if err := json.Indent(&formattedSource, sourceBytes, "", "  "); err != nil {
+		return TemplateResult{}, err
+	}
+	sourceBytes = formattedSource.Bytes()
 	files := map[string][]byte{
 		"README.md":                 []byte(scaffoldReadme(displayName, platformVersion)),
 		"redevplugin.project.json":  []byte(scaffoldProjectConfig()),
-		"manifest.json":             append([]byte(nil), manifestBytes...),
+		"manifest.json":             append(sourceBytes, '\n'),
 		"package.json":              []byte(scaffoldPackageJSON(platformVersion)),
 		"tsconfig.json":             []byte(scaffoldTSConfig()),
 		"scripts/build.mjs":         []byte(scaffoldBuildScript()),
@@ -286,7 +296,8 @@ func scaffoldPackageJSON(platformVersion string) string {
   "type": "module",
   "scripts": {
     "check": "npm run typecheck && npm run build",
-    "build": "node scripts/build.mjs",
+    "build": "redevplugin build .",
+    "build:release": "redevplugin build . --release",
     "build:ui": "esbuild ui/src/app.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/ui/assets/app.js && esbuild ui/styles.css --bundle --outfile=dist/ui/assets/styles.css",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "cargo test --manifest-path worker/Cargo.toml"
@@ -360,7 +371,7 @@ try {
 run(cargo, ["build", "--locked", "--release", "--target", "wasm32-unknown-unknown", "--manifest-path", "worker/Cargo.toml"]);
 await mkdir(resolve(root, "dist/ui/assets"), { recursive: true });
 await mkdir(resolve(root, "dist/workers"), { recursive: true });
-await copyFile(resolve(root, "manifest.json"), resolve(root, "dist/manifest.json"));
+await copyFile(resolve(root, "generated/manifest.json"), resolve(root, "dist/manifest.json"));
 await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html"));
 await copyFile(
   resolve(process.env.CARGO_TARGET_DIR || resolve(root, "worker/target"), "wasm32-unknown-unknown/release/redevplugin_generated_worker.wasm"),
@@ -398,7 +409,7 @@ hashing an arbitrary executable does not establish trust.
 The test command reports business/package checks separately from real runtime
 execution. To exercise the generated worker with the real runtime:
 
-    redevplugin test . --runtime /path/to/verified-runtime --runtime-sha256 <verified-build-sha256> --surface <plugin-id>.view --method worker.echo --params '{"message":"hello"}'
+    redevplugin test . --runtime /path/to/verified-runtime --runtime-sha256 <verified-build-sha256> --surface <slug>.view --method worker.echo --params '{"message":"hello"}'
 
 Build/test argv and watched inputs live in redevplugin.project.json. These
 commands run only for explicitly selected local source; installed packages do
@@ -471,7 +482,7 @@ func scaffoldProjectConfig() string {
 	return `{
   "schema_version": "redevplugin.project.v1",
   "output": "dist",
-  "build": ["npm", "run", "build"],
+  "build": ["node", "scripts/build.mjs"],
   "test": ["npm", "test"],
   "watch": ["manifest.json", "ui", "worker/src", "worker/Cargo.toml", "scripts", "package.json"]
 }

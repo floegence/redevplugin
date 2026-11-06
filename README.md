@@ -41,7 +41,7 @@ Start with a pure Web application; no Worker or runtime is required:
 
 ```bash
 go install github.com/floegence/redevplugin/v3/cmd/redevplugin@v3.14.0
-redevplugin init dev.example.notes "Notes" notes
+redevplugin init notes "Notes" notes
 cd notes
 npm install
 redevplugin doctor .

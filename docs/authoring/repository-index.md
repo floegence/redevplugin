@@ -3,7 +3,7 @@
 Add the GitHub topic `redevplugin` and a `.redevplugin/index.json` on the default
 branch. `redeven-plugin` is an optional additional topic. A host target is a
 routing declaration. Authors need no registration, approval, signing key,
-release-reference attachment, or publisher verification.
+release-reference attachment, publisher verification, or numeric repository ID.
 
 ```json
 {
@@ -12,7 +12,7 @@ release-reference attachment, or publisher verification.
     "ecosystem": "redevplugin",
     "host": "redeven",
     "plugins": [{
-      "plugin_id": "github.repo.123456.weather",
+      "slug": "weather",
       "path": "plugins/weather",
       "manifest": "manifest.json",
       "release": {
@@ -24,68 +24,76 @@ release-reference attachment, or publisher verification.
 }
 ```
 
+The editable `manifest.json` uses `redevplugin.source.v1` and `plugin.slug`.
+It has no `plugin_id`, `publisher_id`, or repository ID. An optional publisher
+object contains only an author-owned display name. The remaining declarations
+use the package manifest contract; the platform validates them with the same
+parser when compiling the source. Source documents are never installable.
+
 Each plugin owns a distinct `<release-key>-v{version}` namespace. Versions are
 strict stable SemVer. Drafts and prereleases are excluded. Version comparison
 uses SemVer, never publication time or the repository-wide latest Release.
 Every Release contains one matching ordinary `.redevplugin` package. Asset names
-can contain one `{version}` or be fixed; separate Releases can reuse the same
-asset name. Never replace a published version's package with different content.
+can contain one `{version}` or be fixed; separate Releases can reuse an asset
+name. Never replace a published version's package with different content.
 
 Use `.` for a root project. Paths are repository-relative and cannot traverse
-or contain symbolic links. Plugin identity, author presentation, and capabilities
-come from validated package bytes. Official and community are presentation
-categories and share the same installation and update contracts.
+or contain symbolic links. Official and community are presentation categories
+and share the same installation and update contracts.
 
 ```sh
-redevplugin repository identity plugins/weather weather
 redevplugin scaffold repository-index . redeven \
   --project plugins/weather --manifest manifest.json \
   --tag-template 'weather-v{version}' \
   --package-asset-template plugin.redevplugin
 redevplugin repository validate .
-npm --prefix plugins/weather run build
+redevplugin build plugins/weather --release
 redevplugin package plugins/weather/dist plugin.redevplugin
 redevplugin release inspect plugin.redevplugin
 ```
 
 Scaffolding appends to the existing index under an operating-system file lock.
 Identical calls are no-ops; changing an existing entry requires `--replace`.
-The complete proposed index and all declared manifests are validated before
-atomic replacement. Moving a project can be repaired with `--replace`.
+The complete proposed index and all declared source manifests are validated
+before atomic replacement. Moving a project can be repaired with `--replace`.
 `repository inspect` emits per-entry content digests; unrelated entries do not
 change an existing entry's digest. `check` and `doctor` validate an enclosing index.
 
-A repository can contain multiple projects and ecosystems. Hosts must select an
-explicit plugin when more than one matches. Installation binds the chosen
-plugin, release, asset, content digest, and owner. The downloader rechecks the
-selected repository, tag commit, release and asset after downloading; developers
-do not need to enable immutable GitHub Releases. Repository identity prevents
-a different source with the same plugin ID from silently taking over updates.
+## Generated publication identity
 
-## Repository-derived identity
+Authors choose only a repository-local slug (1–80 lowercase ASCII letters,
+digits, and single separating hyphens). `build --release` resolves the real
+GitHub repository through the enclosing Git origin. An explicit
+`--repository https://github.com/owner/repo` supports exported source directories.
+`GITHUB_TOKEN` is optional for public repositories. A supplied numeric ID or an
+identity in source is never accepted as provenance.
 
-For GitHub distribution, authors choose only a plugin slug (1–80 lowercase ASCII
-letters, digits, and single separating hyphens). `repository identity` obtains the
-numeric repository ID from GitHub using the enclosing Git origin, or an explicit
-`--repository https://github.com/owner/repo`. `GITHUB_TOKEN` is optional for public
-repositories. Neither publisher registration nor a signing key is involved.
+Before bindings and build commands run, the platform compiles a canonical v9
+package manifest with `publisher_id = github.repo.<repository-id>` and
+`plugin_id = github.repo.<repository-id>.<slug>`. Generated bindings and the
+compiled manifest share one identity. Build scripts copy `generated/manifest.json`
+to their output; the pipeline checks exact canonical equality before packaging.
+Hashing and package construction happen only after that check. The editable
+source and index are never rewritten. `generate manifest.json generated --release`
+provides the same preparation for custom build systems.
 
-The tool writes `publisher_id = github.repo.<repository-id>` and
-`plugin_id = github.repo.<repository-id>.<slug>` to the source manifest. Run it
-before building and packaging, then generate the index. Existing index entries can
-be replaced explicitly with `scaffold repository-index ... --replace`. Never
-rewrite identities in packaged bytes or in a market's package projection.
+Local `generate`, `build`, `check`, `test`, and `dev` do not query GitHub. They
+compile the slug as a local package identity under `local.generated` in the
+explicit project/environment scope. A release build never changes local source
+identity; a subsequent local build regenerates its own local bindings. Generated
+files and build outputs are ignored source artifacts, not author inputs.
 
-The market and Host each validate both IDs against the independently observed
-repository ID. Repository choices and release downloads also reject foreign
-namespaces before offering or fetching a package. An author-supplied prefix
-alone proves nothing. Forks and new
-repositories get their own namespace; renaming or transferring the same repository
-preserves its numeric identity. This identifies a repository, not a person or a
-promise about its contents. Official and community repositories use identical
-rules, while official presentation is selected by the configured source repository.
+The market resolves each index slug using the independently observed repository
+ID. The Host does the same for repository selection and downloads, and validates
+the exact package identity against the observed source. Neither trusts a prefix
+from the author or from a market listing alone. Forks and new repositories receive
+their own namespace; a rename or transfer of the same repository retains its
+numeric identity. This identifies a repository, not a person or trustworthy code.
 
+A repository may contain multiple projects and ecosystems. Hosts must select one
+plugin when multiple entries match. Downloads bind the selected plugin, release,
+asset, content digest, and owner. The downloader rechecks repository, commit,
+release and asset after downloading. Immutable GitHub Releases are not required.
 Local, uploaded, and direct HTTPS packages retain their actual source category,
-even if their manifest declares a GitHub-shaped ID. Those declarations never turn
-into verified GitHub provenance. Existing source-change confirmation, immutable
-same-version content checks, sandboxing, and runtime permissions still apply.
+even if a package contains a GitHub-shaped ID. Source-change confirmation,
+same-version content checks, sandboxing, and runtime permissions remain separate.
