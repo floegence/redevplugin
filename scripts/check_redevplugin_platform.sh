@@ -68,8 +68,8 @@ export GOWORK=off
     echo "missing malicious generated plugin fixtures" >&2
     exit 1
   fi
-  go run ./cmd/redevplugin scaffold com.example.smoke "Smoke Plugin" "$tmp_scaffold_dir" >/dev/null
-  go run ./cmd/redevplugin validate "$tmp_scaffold_dir/manifest.json" >/dev/null
+  go run ./cmd/redevplugin scaffold smoke "Smoke Plugin" "$tmp_scaffold_dir" >/dev/null
+  go run ./cmd/redevplugin validate "$tmp_scaffold_dir/dist/manifest.json" >/dev/null
   go run ./cmd/redevplugin package "$tmp_scaffold_dir/dist" "$tmp_package" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_package" >/dev/null
   rm -f "$tmp_fixture_package"
