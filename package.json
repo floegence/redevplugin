@@ -51,7 +51,7 @@
     "test:contracts": "node --test scripts/clean_typescript_test_output.test.mjs && npm run contracts-package:test && node --test scripts/security_summary_schema.test.mjs",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",
     "test:browser-harness": "node --test internal/browserharness/*.test.mjs",
-    "test:browser-harness:smoke": "npm run build && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./pkg/httpadapter -run '^TestNativeWebApplicationBrowser$' -count=1 && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^(TestExamplesServerBrowserSmoke|TestAuthorBrowserWorkflow)$' -count=1",
+    "test:browser-harness:smoke": "npm run build && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./pkg/httpadapter -run '^TestNativeWebApplicationBrowser$' -count=1 && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^TestAuthorBrowserWorkflow$' -count=1 -timeout=10m && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^TestExamplesServerBrowserSmoke$' -count=1 -timeout=10m",
     "performance:fast": "./scripts/check_redevplugin_performance.sh --fast",
     "performance-contract:test": "node --test scripts/performance_contract.test.mjs scripts/performance_evidence_source_state.test.mjs scripts/measure_http_route_authorization_performance.test.mjs scripts/runtime_performance_platform_policy.test.mjs",
     "performance:full": "./scripts/check_redevplugin_performance.sh --full",

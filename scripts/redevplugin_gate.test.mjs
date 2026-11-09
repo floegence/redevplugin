@@ -276,3 +276,15 @@ test("Go temporary work directory identity is normalized without discarding comp
   assert.deepEqual(normalizedGoConfiguration(a), normalizedGoConfiguration(b));
   assert.notDeepEqual(normalizedGoConfiguration(a), normalizedGoConfiguration({ ...b, GOGCCFLAGS: b.GOGCCFLAGS + " -O3" }));
 });
+
+
+test("browser smoke workloads each own the existing bounded Go test deadline", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const commands = pkg.scripts["test:browser-harness:smoke"].split(" && ");
+  for (const name of ["TestAuthorBrowserWorkflow", "TestExamplesServerBrowserSmoke"]) {
+    const matching = commands.filter(command => command.includes(name));
+    assert.equal(matching.length, 1);
+    assert.ok(matching[0].includes("-run '^" + name + "$'"));
+    assert.ok(matching[0].includes("-timeout=10m"));
+  }
+});

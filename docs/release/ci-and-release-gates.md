@@ -88,6 +88,10 @@ Worker SDK version, and canonical manifest-path drift.
 `--ci` flag is an explicit no-op so documentation, local runs, and CI can share
 the same command shape.
 
+The author workflow and examples browser smoke run in separate Go test processes,
+each with the existing ten-minute deadline. One completed workload cannot consume
+the next workload's deadline. The complete gate still requires both outcomes.
+
 ## Contract Gates
 
 `scripts/check_redevplugin_runtime_contract.sh --ci` validates:
