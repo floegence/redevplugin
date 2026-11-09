@@ -595,3 +595,17 @@ that local summary as release evidence for host-neutral broker/backpressure,
 execution cancellation, runtime-control, storage, and
 sandbox telemetry behavior. Non-Linux hosts require Docker so the Linux-only
 runtime revoke evidence is collected instead of skipped.
+
+### Host audit evidence
+
+External package completion exports `plugin.external_package.installed` with
+`installation_action` (`install` or `update`), the verified `package_source_kind`
+(`github_repository`, `package_url`, `package_upload`, or `local_package`),
+`mutation_outcome`, and journal-owned `completed_at_unix_ms`. `OccurredAt` remains
+the mutation start. A failure detail or unknown outcome is never success evidence.
+These closed Go audit details do not add a plugin, HTTP, TypeScript or runtime
+wire API. `SQLiteStore.ListPluginAudits` returns owned validated snapshots ordered
+by a local sequence, optionally filtered by type, in pages of at most 1,000.
+Existing retention applies; sequence gaps are valid and this is not an unbounded
+delivery subscription. Optional product analytics can read this evidence in the
+background without making an analytics failure part of the installation result.

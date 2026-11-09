@@ -107,7 +107,7 @@ func (externalPackageTestGitHubResolver) ResolvePackage(context.Context, externa
 }
 
 func TestExternalPackageUnsignedInspectInstallEnablesWithoutGrants(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{})
 	pkg := readTestPackage(t, buildFixturePackage(t))
 	stage := &externalPackageTestStage{pkg: pkg}
 	configureExternalPackageTestModule(h, stage)
@@ -136,6 +136,7 @@ func TestExternalPackageUnsignedInspectInstallEnablesWithoutGrants(t *testing.T)
 	if err != nil {
 		t.Fatalf("installInspectedPackage() error = %v", err)
 	}
+	assertExternalPackageAudit(t, audits, "install", "package_url")
 	if committed.Plugin == nil || committed.Plugin.EnableState != registry.EnableEnabled {
 		t.Fatalf("commit result = %#v", committed)
 	}
@@ -739,6 +740,7 @@ func TestExternalPackageUpdatePreservesEnabledIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertExternalPackageAudit(t, audits, "update", "package_url")
 	if updated.Plugin == nil || updated.Plugin.Version != "2.0.0" || updated.Plugin.EnableState != registry.EnableEnabled || updated.Plugin.UpdateEligibility != registry.UpdateManualOnly {
 		t.Fatalf("updated plugin = %#v", updated.Plugin)
 	}
@@ -852,4 +854,16 @@ func newReleaseInstallCapabilityFixture(t *testing.T) (pluginpkg.Package, capabi
 
 func (externalPackageTestGitHubResolver) ListPlugins(context.Context, string, string) ([]repositoryindex.Plugin, error) {
 	return nil, errors.New("unexpected repository listing")
+}
+
+func assertExternalPackageAudit(t *testing.T, audits *auditSink, action, source string) {
+	t.Helper()
+	event, ok := audits.lastEvent("plugin.external_package.installed")
+	if !ok || event.Details["installation_action"] != action || event.Details["package_source_kind"] != source {
+		t.Fatalf("external package audit lacks authoritative action/source: %#v", event)
+	}
+	completed, ok := event.Details["completed_at_unix_ms"].(int64)
+	if !ok || completed < event.OccurredAt.UnixMilli() {
+		t.Fatalf("invalid completion time: %#v", event)
+	}
 }

@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -719,4 +720,26 @@ func (j *failFirstMarkSecurityAuditJournal) MarkSecurityAuditExported(ctx contex
 		return errors.New("injected mark failure")
 	}
 	return j.SecurityAuditJournal.MarkSecurityAuditExported(ctx, eventID)
+}
+
+func TestExternalPackageAuditDetailsAreClosed(t *testing.T) {
+	for _, tc := range []struct {
+		key   string
+		value any
+		valid bool
+	}{
+		{"installation_action", "install", true}, {"installation_action", "update", true},
+		{"installation_action", "reinstall", false}, {"installation_action", 1, false},
+		{"package_source_kind", "github_repository", true}, {"package_source_kind", "package_url", true},
+		{"package_source_kind", "package_upload", true}, {"package_source_kind", "local_package", true},
+		{"package_source_kind", "https://private.example", false},
+		{"completed_at_unix_ms", int64(1794220000000), true}, {"completed_at_unix_ms", -1, false},
+	} {
+		t.Run(tc.key+"_"+fmt.Sprint(tc.value), func(t *testing.T) {
+			_, err := normalizeAuditEvent(AuditEvent{Type: "plugin.external_package.installed", Details: map[string]any{tc.key: tc.value}}, time.Now)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v error=%v", tc.valid, err)
+			}
+		})
+	}
 }

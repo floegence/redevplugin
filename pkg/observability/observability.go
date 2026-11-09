@@ -625,6 +625,21 @@ func validAuditDetails(details map[string]any) bool {
 			if !ok || !validStableValue(text) {
 				return false
 			}
+		case "installation_action":
+			text, ok := auditString(value)
+			if !ok || (text != "install" && text != "update") {
+				return false
+			}
+		case "package_source_kind":
+			text, ok := auditString(value)
+			if !ok {
+				return false
+			}
+			switch text {
+			case "github_repository", "package_url", "package_upload", "local_package":
+			default:
+				return false
+			}
 		case "session_scope_state":
 			text, ok := auditString(value)
 			if !ok || !validSessionScopeState(text) {
@@ -652,7 +667,7 @@ func validAuditDetails(details map[string]any) bool {
 			}
 		case "active_network_request_count", "asset_session_count", "asset_ticket_count",
 			"closed_socket_count", "closed_storage_handle_count", "closed_stream_count", "confirmation_count",
-			"confirmation_token_count", "execution_count", "expires_at_unix_ms", "gateway_token_count",
+			"confirmation_token_count", "completed_at_unix_ms", "execution_count", "expires_at_unix_ms", "gateway_token_count",
 			"handle_grant_count", "management_revision", "network_stream_count", "operation_count",
 			"policy_revision", "revoke_epoch", "revoked_surface_count", "runtime_execution_count",
 			"socket_count", "storage_hostcall_count", "stream_count", "stream_ticket_count", "surface_count",

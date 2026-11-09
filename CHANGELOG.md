@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.25.2
+
+- Export validated external-package installation action, verified source kind and durable completion time in host audit evidence.
+- Add bounded, ordered access to retained audit events through the host-only Go API; hosts never inspect platform database layouts.
+- Keep plugin permissions, runtime wire and durable schemas unchanged.
+
 ## v3.25.1
 
 - Select immutable local author revisions independently of package release SemVer,

@@ -612,7 +612,11 @@ func (h *Host) installInspectedPackage(ctx context.Context, req installInspected
 	if err != nil {
 		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
 	}
-	auditDetails := map[string]any{"status": "installing"}
+	auditDetails := map[string]any{
+		"status":              "installing",
+		"installation_action": pending.Inspection.Intent.Action,
+		"package_source_kind": record.PackageSourceProvenance.Kind,
+	}
 	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
 	finishAssets, err := h.preparePackageAssets(ctx, &pkg)
 	if err != nil {

@@ -311,6 +311,10 @@ func (e *SecurityAuditExporter) Export(ctx context.Context) error {
 			event.Details[key] = value
 		}
 		event.Details["mutation_outcome"] = string(record.Outcome)
+		if record.CompletedAt == nil || record.CompletedAt.IsZero() {
+			return ErrInvalidEvent
+		}
+		event.Details["completed_at_unix_ms"] = record.CompletedAt.UnixMilli()
 		if err := e.sink.AppendPluginAudit(ctx, event); err != nil {
 			return err
 		}
@@ -415,7 +419,7 @@ func cloneAuditDetail(key string, value any) (any, error) {
 	case "audit_correlation_id", "effect", "execution", "execution_id", "intent_id", "invocation_id", "method",
 		"plan_hash", "preflight_method", "route_kind", "runtime_generation_id", "runtime_instance_id",
 		"source_plugin_instance_id", "status", "stream_id", "target_descriptor_sha256", "capability_contract_artifact",
-		"reason", "mutation_outcome", "session_scope_state":
+		"reason", "mutation_outcome", "session_scope_state", "installation_action", "package_source_kind":
 		text, ok := auditString(value)
 		if !ok {
 			return nil, ErrInvalidAuditDetails
@@ -430,7 +434,7 @@ func cloneAuditDetail(key string, value any) (any, error) {
 		return flag, nil
 	case "active_network_request_count", "asset_session_count", "asset_ticket_count",
 		"closed_socket_count", "closed_storage_handle_count", "closed_stream_count", "confirmation_count",
-		"confirmation_token_count", "execution_count", "expires_at_unix_ms", "gateway_token_count",
+		"confirmation_token_count", "completed_at_unix_ms", "execution_count", "expires_at_unix_ms", "gateway_token_count",
 		"handle_grant_count", "management_revision", "network_stream_count", "operation_count",
 		"policy_revision", "revoke_epoch", "revoked_surface_count", "runtime_execution_count",
 		"socket_count", "storage_hostcall_count", "stream_count", "stream_ticket_count", "surface_count",
