@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.25.1
+
+- Select immutable local author revisions independently of package release SemVer,
+  including earlier builds and multiple edits with the same version.
+- Restore exact retained preview package/data generations through the existing
+  lifecycle, preserving source files, owner binding, revocation and restart recovery.
+- Keep external installation/update version rules, plugin API, internal wire and
+  durable schemas unchanged.
+
 ## v3.25.0
 
 - Add host-neutral durable schedules with owner-bound revisions, stable dispatch

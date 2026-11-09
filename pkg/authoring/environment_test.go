@@ -2,6 +2,7 @@ package authoring
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -164,5 +165,95 @@ func TestEnvironmentRecoversExactArtifactAndPreservesIsolation(t *testing.T) {
 	}
 	if err = store.Remove(ctx, owner, workspace.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEnvironmentSelectsImmutableHistoryAndRecoversPinnedRevision(t *testing.T) {
+	session := sessionctx.Context{OwnerUserHash: "author", OwnerEnvHash: "environment", OwnerSessionHash: "session", SessionChannelIDHash: "channel", CanRead: true, CanWrite: true}
+	ctx := sessionctx.WithContext(context.Background(), session)
+	owner, _ := OwnerFromContext(ctx)
+	store, err := OpenWorkspaceStore(ctx, filepath.Join(t.TempDir(), "authors"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	workspace, err := store.Create(ctx, owner, "revision-history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Initialize(ctx, owner, workspace.ID, "history", "History", "web"); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(version, title string) Artifact {
+		t.Helper()
+		for _, dir := range []string{workspace.SourceDirectory, filepath.Join(workspace.SourceDirectory, "dist")} {
+			path := filepath.Join(dir, "manifest.json")
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(raw, &document); err != nil {
+				t.Fatal(err)
+			}
+			plugin := document["plugin"].(map[string]any)
+			plugin["version"], plugin["display_name"] = version, title
+			raw, _ = json.Marshal(document)
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		artifact, err := store.Capture(ctx, owner, workspace.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return artifact
+	}
+	first := capture("1.0.0", "First")
+	second := capture("2.0.0", "Second")
+	sameVersion := capture("2.0.0", "Same version revision")
+	unvisited := capture("0.5.0", "Unvisited historical build")
+	options := environmentOptions(t, session)
+	env, err := store.OpenEnvironment(ctx, owner, workspace.ID, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBefore, err := os.ReadFile(filepath.Join(workspace.SourceDirectory, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var instance string
+	var generation uint64
+	for _, artifact := range []Artifact{first, second, sameVersion, first, sameVersion, unvisited, second} {
+		if err = env.Apply(ctx, artifact.ID); err != nil {
+			t.Fatalf("select %s: %v", artifact.ID, err)
+		}
+		state := env.Snapshot()
+		if state.ArtifactID != artifact.ID || state.PackageHash != artifact.PackageSHA256 || state.Generation <= generation {
+			t.Fatalf("wrong selected revision: %+v", state)
+		}
+		if instance != "" && instance != state.PluginInstanceID {
+			t.Fatal("selection replaced the owned instance")
+		}
+		instance, generation = state.PluginInstanceID, state.Generation
+	}
+	if err = env.Close(); err != nil {
+		t.Fatal(err)
+	}
+	env, err = store.OpenEnvironment(ctx, owner, workspace.ID, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Close()
+	if state := env.Snapshot(); state.ArtifactID != second.ID || state.PackageHash != second.PackageSHA256 {
+		t.Fatalf("restart lost selected revision: %+v", state)
+	}
+	sourceAfter, err := os.ReadFile(filepath.Join(workspace.SourceDirectory, "manifest.json"))
+	if err != nil || string(sourceBefore) != string(sourceAfter) {
+		t.Fatal("preview selection rewrote source", err)
+	}
+	artifacts, err := store.ListArtifacts(ctx, owner, workspace.ID)
+	if err != nil || len(artifacts) != 4 || artifacts[0].ID != unvisited.ID {
+		t.Fatal("preview selection changed immutable history", err)
 	}
 }

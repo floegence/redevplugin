@@ -287,10 +287,20 @@ retention, failed-typecheck retention, a fresh Surface after apply, persistent
 restart, explicit reset, and configurable live monitor connections. Timings are
 machine observations, not a claim that a human usability study has been completed.
 
-Local preview updates explicitly apply edited package bytes while the project
-version remains unchanged. This behavior is confined to `local_package`
-installations and is never an automatic or remote update. Published version
-content remains immutable; editing a distributed release requires a new version.
+Local preview selection binds immutable artifact IDs and exact package hashes,
+independently of release SemVer. An author can select an earlier artifact, a
+same-version edit, or an unvisited build. Exact retained packages use the existing
+version-switch lifecycle to restore their verified data generation; other candidates
+still require the normal compatible data shape or declared migration. Selection
+never rewrites project source or a package manifest. Each successful apply advances
+the preview generation, including identical bytes. Restart recovers the selected
+artifact rather than guessing from the newest build or the version string.
+
+This behavior is confined to `local_package` installations. A host authoring UI
+may follow successful builds or pin a historical artifact, while respecting live
+Surface closure and pending review. It does not enable production automatic
+updates. External inspection/installation retains immutable release versions,
+source confirmation, explicit downgrade and data-retention rules.
 
 ## Embedded visual review
 

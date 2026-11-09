@@ -424,3 +424,24 @@ func TestOpenDistributionRejectedInspectionCannotCommitAfterCleanupFailure(t *te
 		})
 	}
 }
+
+func TestLocalPreviewSelectsExactPackageRevisionsIndependentlyOfReleaseVersion(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
+	ctx := hostTestContext()
+	first := buildVersionedLifecyclePackage(t, "1.0.0", "First revision")
+	record, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{PluginInstanceID: nextTestPluginInstanceID(t), PackageReader: bytes.NewReader(first), PackageSize: int64(len(first))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []struct{ version, name string }{{"2.0.0", "Second revision"}, {"1.0.0", "First revision"}, {"1.0.0", "Third revision"}, {"2.0.0", "Fourth revision"}, {"0.5.0", "Unvisited historical revision"}} {
+		raw := buildVersionedLifecyclePackage(t, candidate.version, candidate.name)
+		previous := record
+		record, err = h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{PluginInstanceID: previous.PluginInstanceID, ExpectedManagementRevision: previous.ManagementRevision, PackageReader: bytes.NewReader(raw), PackageSize: int64(len(raw))})
+		if err != nil {
+			t.Fatalf("select %s %s: %v", candidate.version, candidate.name, err)
+		}
+		if record.Version != candidate.version || record.Manifest.Plugin.DisplayName != candidate.name || record.ManagementRevision <= previous.ManagementRevision || record.PluginInstanceID != previous.PluginInstanceID {
+			t.Fatalf("wrong local revision selected: %+v", record)
+		}
+	}
+}

@@ -221,6 +221,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        /** @description Select exact local author package bytes independently of release SemVer for an existing local_package installation. Plugin identity, data-shape transitions, management revisions and revocation remain enforced. External installations retain ordinary release update policy. */
         put: operations["updateLocalPackage"];
         post: operations["importLocalPackage"];
         delete?: never;

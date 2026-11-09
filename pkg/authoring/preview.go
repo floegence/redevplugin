@@ -150,7 +150,20 @@ func (s *Preview) applyLocked(ctx context.Context, p *authorproject.Project, h *
 			next = current
 		default:
 			mutationAttempted = true
-			next, err = h.UpdateLocalPackage(ctx, host.UpdateLocalPackageRequest{PluginInstanceID: current.PluginInstanceID, ExpectedManagementRevision: current.ManagementRevision, PackageReader: bytes.NewReader(candidate.Bytes), PackageSize: int64(len(candidate.Bytes))})
+			retained := false
+			for _, prior := range current.VersionHistory {
+				if prior.PackageHash == candidate.Package.PackageHash {
+					retained = true
+					break
+				}
+			}
+			if retained {
+				// Exact retained data generations must follow their package, even
+				// when several author revisions share one release version.
+				next, err = h.DowngradePlugin(ctx, host.DowngradeRequest{PluginInstanceID: current.PluginInstanceID, ExpectedManagementRevision: current.ManagementRevision, PackageHash: candidate.Package.PackageHash})
+			} else {
+				next, err = h.UpdateLocalPackage(ctx, host.UpdateLocalPackageRequest{PluginInstanceID: current.PluginInstanceID, ExpectedManagementRevision: current.ManagementRevision, PackageReader: bytes.NewReader(candidate.Bytes), PackageSize: int64(len(candidate.Bytes))})
+			}
 		}
 	}
 	s.mu.Lock()

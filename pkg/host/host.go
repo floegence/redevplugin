@@ -3079,9 +3079,10 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	metadata := cloneStringMap(baseMetadata)
 	provenance := registry.PackageSourceProvenance{Kind: registry.PackageSourceLocalPackage, PackageSHA256: pkg.PackageHash, SourceReference: "local_import"}
 	next := packageRecord(pkg, current.PluginInstanceID, metadata, provenance, capabilityPins)
-	// Local previews explicitly apply content edits without publishing a release.
-	// This path cannot replace a remotely installed source or run automatically.
-	if current.PackageSourceProvenance.Kind == registry.PackageSourceLocalPackage && current.Version == next.Version {
+	// Local author revisions select exact bytes independently of release SemVer.
+	// Identity, data-shape transitions, authorization and revocation remain strict;
+	// externally installed packages retain immutable release update rules.
+	if current.PackageSourceProvenance.Kind == registry.PackageSourceLocalPackage {
 		if err := validateSamePluginIdentity(current, next); err != nil {
 			return registry.PluginRecord{}, err
 		}
