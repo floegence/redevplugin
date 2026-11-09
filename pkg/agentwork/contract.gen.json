@@ -1,0 +1,415 @@
+{
+  "schema_version": "redevplugin.host_capability_contract.v1",
+  "contract_id": "redevplugin.agent.work",
+  "contract_version": "1.0.0",
+  "publisher_id": "redevplugin",
+  "capability_id": "agent.work",
+  "capability_version": "1.0.0",
+  "client_name": "AgentWorkClient",
+  "methods": [
+    {
+      "name": "agent.work.submit",
+      "client_method": "submit",
+      "effect": "execute",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.work.execute"
+      ],
+      "target_fields": [
+        "work_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentWorkSubmitRequest",
+      "response_type_name": "AgentWorkSubmitResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "instruction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          },
+          "context_json": {
+            "type": "string",
+            "maxLength": 64000
+          }
+        },
+        "required": [
+          "work_id",
+          "request_id",
+          "instruction"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "cancelling",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "execution_ref": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "result_json": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "result_valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "request_id",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 4,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.work.get",
+      "client_method": "get",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.work.read"
+      ],
+      "target_fields": [
+        "work_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentWorkGetRequest",
+      "response_type_name": "AgentWorkGetResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "work_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "cancelling",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "execution_ref": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "result_json": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "result_valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "request_id",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 4,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.work.input",
+      "client_method": "submitInput",
+      "effect": "execute",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.work.execute"
+      ],
+      "target_fields": [
+        "work_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentWorkInputRequest",
+      "response_type_name": "AgentWorkInputResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "input_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "instruction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": [
+          "work_id",
+          "request_id",
+          "input_id",
+          "instruction"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "cancelling",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "execution_ref": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "result_json": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "result_valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "request_id",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 4,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.work.cancel",
+      "client_method": "cancel",
+      "effect": "execute",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.work.execute"
+      ],
+      "target_fields": [
+        "work_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentWorkCancelRequest",
+      "response_type_name": "AgentWorkCancelResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "work_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "cancelling",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "execution_ref": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "result_json": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "result_valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "request_id",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 4,
+        "max_duration_ms": 30000
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": "WORK_UNAVAILABLE",
+      "message": "Work is unavailable"
+    },
+    {
+      "code": "WORK_CONFLICT",
+      "message": "Work revision or request conflicts"
+    },
+    {
+      "code": "WORK_AUTHORIZATION_REQUIRED",
+      "message": "Work requires authorization"
+    },
+    {
+      "code": "WORK_OUTCOME_UNKNOWN",
+      "message": "The original work outcome is unknown"
+    }
+  ]
+}

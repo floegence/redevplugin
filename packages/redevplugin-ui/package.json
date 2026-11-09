@@ -1,6 +1,6 @@
 {
   "name": "@floegence/redevplugin-ui",
-  "version": "3.24.1",
+  "version": "3.25.0",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -30,13 +30,17 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "default": "./dist/testing.js"
+    },
+    "./agent-work": {
+      "types": "./dist/agent-work.gen.d.ts",
+      "default": "./dist/agent-work.gen.js"
     }
   },
   "files": [
     "dist"
   ],
   "dependencies": {
-    "@floegence/redevplugin-contracts": "3.24.1",
+    "@floegence/redevplugin-contracts": "3.25.0",
     "@noble/hashes": "2.4.0"
   },
   "publishConfig": {

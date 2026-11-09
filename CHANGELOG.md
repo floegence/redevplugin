@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.25.0
+
+- Add host-neutral durable schedules with owner-bound revisions, stable dispatch
+  identities, bounded overlap, local daily calendars and unknown-effect recovery.
+- Publish the Agent work capability and generated plugin client through the
+  existing permission and capability bridge; hosts retain Agent runtime ownership.
+- Preserve plugin interval, control, author and application data lineages. The new
+  schedule store initializes atomically and rejects unknown or drifted schemas.
+
 ## v3.24.1
 
 - Validate complete author initialization inputs before reserving a managed draft.

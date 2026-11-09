@@ -493,6 +493,15 @@ an English fallback or mix locales within one resolved presentation.
 ReDevPlugin intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
 
+## Scheduled work and Agent integration
+
+Hosts can use `pkg/schedule` for durable versioned schedules and admission
+receipts, and `pkg/agentwork` for the published Agent work capability. Both keep
+resource authorization and the actual business executor in the host. Plugins use
+the generated `@floegence/redevplugin-ui/agent-work` client through the existing
+bridge. See [host scheduled work](docs/host-scheduled-work.md) for recovery,
+calendar behavior and ownership.
+
 ## Documentation
 
 - [Runtime architecture](docs/architecture/plugin-platform-runtime.md)

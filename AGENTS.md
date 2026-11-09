@@ -483,6 +483,15 @@ kind or silently importing an older lineage.
   machine contracts and fixtures when observable, release notes, and the exact
   `PlatformReleaseManifest` artifact set together before a host consumes it.
 
+## Host-Owned Scheduled Work
+
+`pkg/schedule` owns neutral durable cadence, dispatch intentions and receipts for
+verified built-in or extension work. Hosts own business graphs, target admission
+and current authorization; unknown dispatches are reconciled, never replayed.
+This separate store does not alter plugin interval or control-store semantics.
+The published `agent.work` capability uses the existing capability bridge and
+permission lifecycle; host adapters own Agent engines and business results.
+
 ## Author Resource Boundary
 
 Manifest-derived bindings never infer permissions. Pure Web Surfaces may access
