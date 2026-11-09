@@ -105,7 +105,7 @@
       },
       "quota": {
         "max_concurrent": 4,
-        "max_duration_ms": 30000
+        "max_duration_ms": 3600000
       }
     },
     {

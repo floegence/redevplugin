@@ -20,10 +20,11 @@ import (
 // Store is an exclusively owned local scheduler. It stores dispatch intentions
 // and receipts, never an Agent journal or a copy of plugin execution authority.
 type Store struct {
-	db     *sql.DB
-	lock   *os.File
-	mu     sync.Mutex
-	closed bool
+	db            *sql.DB
+	lock          *os.File
+	mu            sync.Mutex
+	observeCursor string
+	closed        bool
 }
 
 const schema = `CREATE TABLE schedule_plans (id TEXT PRIMARY KEY, owner TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL);

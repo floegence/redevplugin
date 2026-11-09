@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -345,5 +346,38 @@ func TestRunnerReconcilesRatherThanResubmitting(t *testing.T) {
 	}
 	if !found {
 		t.Fatal(claims)
+	}
+}
+
+type fairDispatcher struct{ seen map[string]bool }
+
+func (d *fairDispatcher) Submit(context.Context, Claim) (Receipt, error) {
+	return Receipt{Outcome: "unknown"}, nil
+}
+func (d *fairDispatcher) Inspect(_ context.Context, c Claim) (Receipt, error) {
+	d.seen[c.ID] = true
+	return Receipt{}, errors.New("temporarily unavailable")
+}
+func TestRunnerRotatesUnresolvedObservationsWithoutStarvation(t *testing.T) {
+	s, p, now := fixture(t)
+	p.Enabled = false
+	for i := 0; i < 125; i++ {
+		p.ID = fmt.Sprintf("plan-%03d", i)
+		if _, err := s.Put(t.Context(), p, 0, now); err != nil {
+			t.Fatal(err)
+		}
+		_, err := s.db.Exec("INSERT INTO schedule_claims(id,plan_id,owner,revision,due,state,payload,reference,outcome) VALUES(?,?,?,?,?,?,?,?,?)", fmt.Sprintf("claim-%03d", i), p.ID, ownerKey(p.Owner), 1, now.UnixMilli(), "unknown", string(p.Payload), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := &fairDispatcher{seen: map[string]bool{}}
+	for i := 0; i < 2; i++ {
+		if err := s.step(t.Context(), d, now, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(d.seen) != 125 {
+		t.Fatal("later claims starved", len(d.seen))
 	}
 }

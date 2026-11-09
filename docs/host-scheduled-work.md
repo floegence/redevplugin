@@ -47,3 +47,14 @@ The Agent contract and generated client are produced from
 verified by its public contract tests. The platform release manifest includes
 that exact artifact. No runtime wire or WASM ABI change is required: invocation
 uses the already released capability adapter mechanism.
+
+## Retained capability work
+
+A trusted adapter may retain the exact platform-issued `ExecutionBinding` and
+call `Host.ValidateCapabilityContinuation` before continuing or exposing work.
+The Host rechecks instance, fingerprint, policy/management/revoke revisions,
+permissions and quota expiry. This is observation of the original authority,
+not a new execution or an extension of its duration. Plugin arguments must
+never provide this binding. Product-owned longer-lived delegation requires its
+own explicit authorization and must not reinterpret a synchronous capability
+invocation as an unlimited background grant.

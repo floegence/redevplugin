@@ -49,7 +49,10 @@ func (s *Store) Run(ctx context.Context, d Dispatcher, report func(error)) error
 	}
 }
 func (s *Store) step(ctx context.Context, d Dispatcher, now time.Time, startup bool) error {
-	rows, err := s.db.QueryContext(ctx, "SELECT "+claimColumns+" FROM schedule_claims WHERE state IN ('accepted','unknown') ORDER BY due,id LIMIT 100")
+	s.mu.Lock()
+	cursor := s.observeCursor
+	s.mu.Unlock()
+	rows, err := s.db.QueryContext(ctx, "SELECT "+claimColumns+" FROM schedule_claims WHERE state IN ('accepted','unknown') AND id>? ORDER BY id LIMIT 100", cursor)
 	if err != nil {
 		return err
 	}
@@ -66,6 +69,12 @@ func (s *Store) step(ctx context.Context, d Dispatcher, now time.Time, startup b
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.observeCursor = ""
+	if len(active) == 100 {
+		s.observeCursor = active[len(active)-1].ID
+	}
+	s.mu.Unlock()
 	for _, c := range active {
 		observeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		receipt, e := d.Inspect(observeCtx, c)
