@@ -138,7 +138,7 @@ func testNativeWebApplicationBrowser(t *testing.T, parentHostname string) {
 	surfaces[0].(map[string]any)["entry"] = "ui/文档.html"
 	surfaces[0].(map[string]any)["web"].(map[string]any)["spa"] = true
 	surfaces[0].(map[string]any)["web"].(map[string]any)["network"] = []any{map[string]any{"connector_id": "api", "transport": "http", "operations": []string{"http"}, "http_methods": []string{"GET"}}}
-	surfaces[0].(map[string]any)["web"].(map[string]any)["storage"] = []any{map[string]any{"store_id": "performance", "operations": []string{"get", "put"}}}
+	surfaces[0].(map[string]any)["web"].(map[string]any)["storage"] = []any{map[string]any{"store_id": "performance", "operations": []string{"get", "put", "list"}}}
 	document["surfaces"] = append(surfaces, map[string]any{
 		"surface_id": "plain.view", "kind": "view", "label": "Existing application", "entry": "ui/plain.html",
 		"web": map[string]any{"root": "ui", "spa": false},

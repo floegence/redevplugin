@@ -1203,6 +1203,9 @@ function object(value) {
 function safeCount(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
+function validStorageUsage(value) {
+  return object(value) && safeCount(value.usage_bytes) && safeCount(value.quota_bytes) && safeCount(value.usage_files) && safeCount(value.quota_files);
+}
 function validData(resource, args, value) {
   if (!object(value)) return false;
   const operation = args.operation;
@@ -1213,7 +1216,7 @@ function validData(resource, args, value) {
     if (operation === "batch") return object(value.etags) && Object.values(value.etags).every((item) => typeof item === "string");
   }
   if (resource === "storage.files" && operation === "read") return typeof value.data_base64 === "string";
-  if (operation === "list") return Array.isArray(value.entries) && value.entries.length <= 100 && value.entries.every(object) && object(value.usage) && Object.values(value.usage).every(safeCount) && (value.next_cursor === void 0 || typeof value.next_cursor === "string");
+  if (operation === "list") return Array.isArray(value.entries) && value.entries.length <= 100 && value.entries.every(object) && validStorageUsage(value.usage) && (value.next_cursor === void 0 || typeof value.next_cursor === "string");
   if (resource === "settings") return object(value.values) && safeCount(value.values_revision) && safeCount(value.schema_version) && (value.scope === "user" || value.scope === "environment");
   if (resource === "storage.sqlite") {
     if (operation === "query") return Array.isArray(value.columns) && value.columns.every((item) => typeof item === "string") && Array.isArray(value.rows) && value.rows.length <= 100 && value.rows.every((row) => Array.isArray(row) && row.length === value.columns.length && row.every(object));

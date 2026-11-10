@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.26.1
+
+- Accept private storage list responses containing the broker's plugin and store identities while validating every required usage counter.
+- Qualify empty and populated KV lists through the real browser SDK and HTTP storage broker, including discovery from an independent Surface.
+- Preserve storage data, runtime wire contracts and permission checks.
+
 ## v3.26.0
 
 - Add author-selected primary plugin categories to package manifests, inspection, installed inventory, and localized presentation contracts.

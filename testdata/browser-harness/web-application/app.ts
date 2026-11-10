@@ -94,6 +94,13 @@ await bridge.registerMethod("document.wait", (_params, { signal }) => new Promis
 }));
 Object.assign(state, { methodsReady: true });
 const performanceStore = pluginKV<{ index: number }>("performance");
+Object.assign(globalThis, { storageListProbe: async (write: boolean) => {
+  const before = await performanceStore.list({ prefix: "persisted:" });
+  if (write) await performanceStore.put("persisted:habit", { index: 7 });
+  const page = await performanceStore.list({ prefix: "persisted:" });
+  const value = await performanceStore.read("persisted:habit");
+  return { before: before.entries.length, keys: page.entries.map(entry => entry.key), value: value?.value, usage: page.usage };
+} });
 Object.assign(globalThis, { performanceResource: async (index: number) => {
   const saved = await performanceStore.put("sample", { index });
   const read = await performanceStore.read("sample");

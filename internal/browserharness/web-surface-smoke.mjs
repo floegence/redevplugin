@@ -95,6 +95,15 @@ if (process.argv[2] === "--build") {
     assert.equal(await frames[1].getByLabel("Selected document").inputValue(), "");
 
     for (const frame of frames) await frame.waitForFunction(() => globalThis.appState?.methodsReady);
+    const saved = await frames[0].evaluate(() => globalThis.storageListProbe(true));
+    assert.equal(saved.before, 0, "empty private storage must list successfully");
+    assert.deepEqual(saved.keys, ["persisted:habit"]);
+    assert.deepEqual(saved.value, { index: 7 });
+    assert.equal(typeof saved.usage.usage_bytes, "number");
+    const reopened = await frames[1].evaluate(() => globalThis.storageListProbe(false));
+    assert.equal(reopened.before, 1, "another independent Surface must discover the saved record");
+    assert.deepEqual(reopened.keys, saved.keys);
+    assert.deepEqual(reopened.value, saved.value);
     const documentState = await page.evaluate(() => globalThis.invokeDocument(0, "document.read"));
     assert.equal(documentState.data.text, "Saved 中文 document");
     const changed = await page.evaluate(revision => globalThis.invokeDocument(0, "document.apply", { expected_revision: revision, text: "Agent 中文 change" }), documentState.data.revision);
