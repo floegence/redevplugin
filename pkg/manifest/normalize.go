@@ -83,6 +83,7 @@ func MarshalCanonical(current Manifest) ([]byte, error) {
 		Settings:           current.Settings,
 		Intents:            append([]IntentSpec(nil), current.Intents...),
 	}
+	document.Presentation.Category = current.Presentation.Category
 	document.Presentation.Icon = current.Presentation.Icon
 	document.Presentation.Locales.Default = current.Presentation.DefaultLocale
 	for _, worker := range current.Workers {
@@ -122,8 +123,9 @@ type v9Plugin struct {
 }
 
 type v9Presentation struct {
-	Icon    *PresentationIconSpec `json:"icon,omitempty"`
-	Locales struct {
+	Category PluginCategory        `json:"category,omitempty"`
+	Icon     *PresentationIconSpec `json:"icon,omitempty"`
+	Locales  struct {
 		Default string `json:"default"`
 	} `json:"locales"`
 }
@@ -181,7 +183,7 @@ func decodeV9(raw []byte, stored bool) (Manifest, error) {
 		Plugin:             Plugin{PluginID: document.Plugin.PluginID, DisplayName: document.Plugin.DisplayName, Version: document.Plugin.Version},
 		API:                normalizedAPI,
 		Permissions:        permissions,
-		Presentation:       PresentationSpec{DefaultLocale: document.Presentation.Locales.Default, Summary: document.Plugin.DisplayName, Description: []string{document.Plugin.DisplayName}, Highlights: []string{}, Keywords: []string{document.Plugin.DisplayName}, Localizations: []PresentationLocalizationSpec{}, Icon: document.Presentation.Icon},
+		Presentation:       PresentationSpec{Category: document.Presentation.Category, DefaultLocale: document.Presentation.Locales.Default, Summary: document.Plugin.DisplayName, Description: []string{document.Plugin.DisplayName}, Highlights: []string{}, Keywords: []string{document.Plugin.DisplayName}, Localizations: []PresentationLocalizationSpec{}, Icon: document.Presentation.Icon},
 		Surfaces:           document.Surfaces,
 		CapabilityBindings: document.CapabilityBindings,
 		Methods:            document.Methods,

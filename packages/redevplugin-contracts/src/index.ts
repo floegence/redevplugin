@@ -1,3 +1,4 @@
+export * from "./category.js";
 export * from "./presentation.js";
 export type { PresentationCatalog, PresentationLocale, ResolvedSettingPresentation, ResolvedSurfacePresentation, SettingOptionPresentation } from "./presentation.js";
 export * from "./security-summary.js";

@@ -2354,7 +2354,10 @@ export interface components {
             surfaces: components["schemas"]["ResolvedSurfacePresentation"][];
             settings: components["schemas"]["ResolvedSettingPresentation"][];
         };
+        /** @enum {string} */
+        PluginCategory: "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "other";
         PresentationCatalog: {
+            category?: components["schemas"]["PluginCategory"];
             default_locale: string;
             icon?: components["schemas"]["PresentationIcon"];
             locales: components["schemas"]["PresentationLocale"][];
@@ -3917,6 +3920,11 @@ export interface components {
                 icon?: {
                     path: string;
                 };
+                /**
+                 * @description Author-selected primary discovery category. Omission means other; explicit unknown, empty or null values are invalid.
+                 * @enum {string}
+                 */
+                category?: "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "other";
             };
             surfaces: {
                 surface_id: string;

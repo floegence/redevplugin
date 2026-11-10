@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.26.0
+
+- Add author-selected primary plugin categories to package manifests, inspection, installed inventory, and localized presentation contracts.
+- Publish one fixed category vocabulary; omitted values mean other, while explicit invalid values fail validation.
+- Preserve canonical bytes and presentation digests for packages without categories; keep runtime and durable schemas unchanged.
+
 ## v3.25.2
 
 - Export validated external-package installation action, verified source kind and durable completion time in host audit evidence.

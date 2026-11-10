@@ -1,3 +1,5 @@
+import { resolvePluginCategory, type PluginCategory } from "./category.js";
+
 export type SettingOptionPresentation = Readonly<{
   value: string;
   label: string;
@@ -27,11 +29,13 @@ export type PresentationLocale = Readonly<{
 }>;
 
 export type PresentationCatalog = Readonly<{
+  category?: PluginCategory;
   default_locale: string;
   locales: readonly PresentationLocale[];
 }>;
 
 export type ResolvedPresentation = Readonly<{
+  category: PluginCategory;
   requested_locale?: string;
   resolved_locale: string;
   default_locale: string;
@@ -62,7 +66,7 @@ export function resolvePresentation(
       }
     }
   }
-  return deepClonePresentation(resolved, catalog.default_locale, requested);
+  return { ...deepClonePresentation(resolved, catalog.default_locale, requested), category: resolvePluginCategory(catalog.category) };
 }
 
 function canonicalLocale(value: string): string | undefined {
@@ -90,7 +94,7 @@ function deepClonePresentation(
   locale: PresentationLocale,
   defaultLocale: string,
   requestedLocale: string | undefined,
-): ResolvedPresentation {
+): Omit<ResolvedPresentation, "category"> {
   return {
     ...(requestedLocale === undefined ? {} : { requested_locale: requestedLocale }),
     resolved_locale: locale.locale,

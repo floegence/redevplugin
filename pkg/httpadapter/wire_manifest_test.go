@@ -75,3 +75,22 @@ func TestPublicPresentationWireUsesEmptyArrays(t *testing.T) {
 		})
 	}
 }
+
+func TestPublicPresentationPreservesAuthorCategory(t *testing.T) {
+	for _, value := range []any{
+		publicManifestPresentation(manifest.PresentationSpec{Category: "data"}),
+		publicPresentationCatalog(manifest.PresentationCatalog{Category: "data"}),
+	} {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if fields["category"] != "data" {
+			t.Fatalf("category missing: %s", raw)
+		}
+	}
+}

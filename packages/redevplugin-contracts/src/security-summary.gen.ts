@@ -205,10 +205,13 @@ export type PackageInspection = {
 };
 
 export type PresentationCatalog = {
+  category?: PluginCategory;
   default_locale: string;
   icon?: PresentationIcon;
   locales: Array<PresentationLocale>;
 };
+
+export type PluginCategory = "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "other";
 
 export type PresentationIcon = {
   path: string;
@@ -1272,6 +1275,9 @@ export const securitySummarySchemas = {
     ],
     "additionalProperties": false,
     "properties": {
+      "category": {
+        "ref": "PluginCategory"
+      },
       "default_locale": {
         "type": "string",
         "minLength": 2,
@@ -1289,6 +1295,18 @@ export const securitySummarySchemas = {
         }
       }
     }
+  },
+  "PluginCategory": {
+    "type": "string",
+    "enum": [
+      "development",
+      "infrastructure",
+      "utilities",
+      "data",
+      "collaboration",
+      "productivity",
+      "other"
+    ]
   },
   "PresentationIcon": {
     "type": "object",
@@ -2519,6 +2537,9 @@ export const securitySummaryJSONSchema = {
       ],
       "additionalProperties": false,
       "properties": {
+        "category": {
+          "$ref": "#/$defs/PluginCategory"
+        },
         "default_locale": {
           "type": "string",
           "minLength": 2,
@@ -2536,6 +2557,18 @@ export const securitySummaryJSONSchema = {
           }
         }
       }
+    },
+    "PluginCategory": {
+      "type": "string",
+      "enum": [
+        "development",
+        "infrastructure",
+        "utilities",
+        "data",
+        "collaboration",
+        "productivity",
+        "other"
+      ]
     },
     "PresentationIcon": {
       "type": "object",

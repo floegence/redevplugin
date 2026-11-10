@@ -22,6 +22,7 @@ const (
 )
 
 type PresentationSpec struct {
+	Category      PluginCategory                 `json:"category,omitempty"`
 	DefaultLocale string                         `json:"default_locale"`
 	Summary       string                         `json:"summary"`
 	Description   []string                       `json:"description"`
@@ -59,6 +60,7 @@ type LocalizedSettingPresentation struct {
 }
 
 type PresentationCatalog struct {
+	Category      PluginCategory        `json:"category,omitempty"`
 	DefaultLocale string                `json:"default_locale"`
 	Locales       []PresentationLocale  `json:"locales"`
 	Icon          *PresentationIconSpec `json:"icon,omitempty"`
@@ -88,6 +90,7 @@ type ResolvedSettingPresentation struct {
 }
 
 type ResolvedPresentation struct {
+	Category        PluginCategory                `json:"category"`
 	RequestedLocale string                        `json:"requested_locale,omitempty"`
 	ResolvedLocale  string                        `json:"resolved_locale"`
 	DefaultLocale   string                        `json:"default_locale"`
@@ -169,7 +172,7 @@ func (m Manifest) PresentationCatalog() PresentationCatalog {
 		}
 		locales = append(locales, locale)
 	}
-	return PresentationCatalog{DefaultLocale: m.Presentation.DefaultLocale, Locales: locales, Icon: clonePresentationIcon(m.Presentation.Icon)}
+	return PresentationCatalog{Category: m.Presentation.Category, DefaultLocale: m.Presentation.DefaultLocale, Locales: locales, Icon: clonePresentationIcon(m.Presentation.Icon)}
 }
 
 func PresentationCatalogSHA256(catalog PresentationCatalog) (string, error) {
@@ -197,6 +200,7 @@ func ResolvePresentation(catalog PresentationCatalog, requestedLocale string) Re
 		}
 	}
 	return ResolvedPresentation{
+		Category:        catalog.Category.Effective(),
 		RequestedLocale: requestedCanonical,
 		ResolvedLocale:  resolved.Locale,
 		DefaultLocale:   catalog.DefaultLocale,
@@ -221,6 +225,9 @@ func clonePresentationIcon(icon *PresentationIconSpec) *PresentationIconSpec {
 }
 
 func validatePresentation(m Manifest) error {
+	if m.Presentation.Category != "" && !m.Presentation.Category.Valid() {
+		return ValidationError{Field: "presentation.category", Message: "must be a predefined plugin category"}
+	}
 	if m.Presentation.Icon != nil {
 		if err := validatePresentationIconPath(m.Presentation.Icon.Path); err != nil {
 			return ValidationError{Field: "presentation.icon.path", Message: err.Error()}

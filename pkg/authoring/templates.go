@@ -47,7 +47,8 @@ type scaffoldPluginV9 struct {
 }
 
 type scaffoldPresentationV9 struct {
-	Locales map[string]string `json:"locales"`
+	Category manifest.PluginCategory `json:"category"`
+	Locales  map[string]string       `json:"locales"`
 }
 
 type scaffoldWorkerV9 struct {
@@ -123,7 +124,7 @@ func templateFiles(pluginID, displayName, template string) (map[string][]byte, e
 		Plugin:       scaffoldPluginV9{PluginID: pluginID, DisplayName: displayName, Version: "0.1.0"},
 		API:          manifest.PublicAPIRequirement{Major: 1, OptionalFeatures: []manifest.FeatureID{manifest.FeatureIOStream}},
 		Permissions:  []manifest.PermissionID{},
-		Presentation: scaffoldPresentationV9{Locales: map[string]string{"default": "en-US"}},
+		Presentation: scaffoldPresentationV9{Category: "other", Locales: map[string]string{"default": "en-US"}},
 		Surfaces: []manifest.SurfaceSpec{{
 			SurfaceID: pluginID + ".view",
 			Kind:      manifest.SurfaceView,
@@ -449,6 +450,10 @@ The application.read intent reads the current native input through an awaited
 bridge.registerMethod handler. A trusted host invokes it against the exact open
 surface; it cannot run when the page is closed. Add document revisions and use
 your existing undo transaction when exposing application write operations.
+
+Set presentation.category in manifest.json to development, infrastructure,
+utilities, data, collaboration, productivity, or other. Omission means other;
+unknown values are rejected. Categories describe the plugin and grant no permissions.
 
 Edit ui/src/app.ts for the surface and worker/src/lib.rs for the WASM backend.
 Add permissions to manifest.json only when the plugin

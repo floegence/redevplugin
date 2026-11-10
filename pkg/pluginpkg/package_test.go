@@ -37,6 +37,38 @@ func TestBuildAndReadPackage(t *testing.T) {
 	}
 }
 
+func TestPackageRetainsAuthorCategory(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	filename := filepath.Join(dir, "manifest.json")
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["presentation"].(map[string]any)["category"] = "collaboration"
+	raw, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	read, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Manifest.PresentationCatalog().Category != "collaboration" {
+		t.Fatal("package lost category")
+	}
+}
+
 func TestPackageFromOwnedFilesTakesOwnership(t *testing.T) {
 	files, err := collectFiles(writeFixturePackageDir(t), DefaultReadLimits())
 	if err != nil {

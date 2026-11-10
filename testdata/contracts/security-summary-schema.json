@@ -1018,6 +1018,9 @@
     ],
     "additionalProperties": false,
     "properties": {
+      "category": {
+        "ref": "PluginCategory"
+      },
       "default_locale": {
         "type": "string",
         "minLength": 2,
@@ -1035,6 +1038,18 @@
         }
       }
     }
+  },
+  "PluginCategory": {
+    "type": "string",
+    "enum": [
+      "development",
+      "infrastructure",
+      "utilities",
+      "data",
+      "collaboration",
+      "productivity",
+      "other"
+    ]
   },
   "PresentationIcon": {
     "type": "object",

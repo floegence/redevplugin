@@ -88,6 +88,7 @@ type manifestPresentationLocalizationResponse struct {
 }
 
 type manifestPresentationResponse struct {
+	Category      manifest.PluginCategory                    `json:"category,omitempty"`
 	DefaultLocale string                                     `json:"default_locale"`
 	Summary       string                                     `json:"summary"`
 	Description   []string                                   `json:"description"`
@@ -114,6 +115,7 @@ type presentationLocaleResponse struct {
 }
 
 type presentationCatalogResponse struct {
+	Category      manifest.PluginCategory           `json:"category,omitempty"`
 	DefaultLocale string                            `json:"default_locale"`
 	Locales       []presentationLocaleResponse      `json:"locales"`
 	Icon          *manifestPresentationIconResponse `json:"icon,omitempty"`
@@ -520,7 +522,7 @@ func publicManifestPresentation(source manifest.PresentationSpec) manifestPresen
 		}
 	}
 	return manifestPresentationResponse{
-		DefaultLocale: source.DefaultLocale, Summary: source.Summary,
+		Category: source.Category, DefaultLocale: source.DefaultLocale, Summary: source.Summary,
 		Description: cloneRequiredWireArray(source.Description), Highlights: cloneRequiredWireArray(source.Highlights),
 		Keywords: cloneRequiredWireArray(source.Keywords), Icon: publicPresentationIcon(source.Icon), Localizations: localizations,
 	}
@@ -553,7 +555,7 @@ func publicPresentationCatalog(source manifest.PresentationCatalog) presentation
 			Surfaces: surfaces, Settings: settings,
 		}
 	}
-	return presentationCatalogResponse{DefaultLocale: source.DefaultLocale, Locales: locales, Icon: publicPresentationIcon(source.Icon)}
+	return presentationCatalogResponse{Category: source.Category, DefaultLocale: source.DefaultLocale, Locales: locales, Icon: publicPresentationIcon(source.Icon)}
 }
 
 func cloneRequiredWireArray[T any](source []T) []T {

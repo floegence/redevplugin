@@ -335,3 +335,18 @@ only when source has no Git origin. See [repository discovery](repository-index.
 Managed initialization validates the complete slug, display name, template and generated
 manifest before reserving the draft. Rejected input leaves the empty draft unchanged,
 and a corrected request can initialize it immediately or after a Host restart.
+
+## Discovery category
+
+Set `presentation.category` in `manifest.json` to one primary category: `development`,
+`infrastructure`, `utilities`, `data`, `collaboration`, `productivity`, or `other`.
+New scaffolds explicitly start with `other`. Omission also means `other`; empty,
+null, unknown, and non-string values are invalid. Categories are not localized
+identifiers and confer no permissions or official status. Labels belong to the host.
+
+The source compiler preserves this field in the package manifest. Verified package
+inspection and installed presentation expose the same value; changing it requires
+a new package release. Neither repository names nor keywords infer categories.
+Omitted category fields remain omitted in canonical bytes and hashed presentation
+evidence. Consumers use the released `resolvePluginCategory` helper (or Go
+`PluginCategory.Effective`) to display `other`.

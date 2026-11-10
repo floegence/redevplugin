@@ -258,6 +258,19 @@ export const sourceManifestJSONSchema = {
               "maxLength": 512
             }
           }
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "development",
+            "infrastructure",
+            "utilities",
+            "data",
+            "collaboration",
+            "productivity",
+            "other"
+          ],
+          "description": "Author-selected primary discovery category. Omission means other; explicit unknown, empty or null values are invalid."
         }
       }
     },
