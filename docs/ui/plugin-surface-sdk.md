@@ -47,7 +47,7 @@ NewWebSurfaceHandler only on dedicated application origins.
 Never mount authenticated management routes on a child origin.
 
 The frame starts as a restricted blank document. The allocated application
-navigation enables allow-scripts, allow-same-origin, and allow-forms inside a
+navigation enables allow-scripts, allow-same-origin, allow-forms, and allow-pointer-lock inside a
 sandbox with a Permissions Policy deny-list and no-referrer. Same-origin here
 means the application's own isolated origin; it never grants parent DOM access.
 The bootstrap exchanges a single-use fragment token for a Secure, HttpOnly,
@@ -526,3 +526,21 @@ render its inspection for user confirmation. Same-version changed bytes fail.
 Source replacement uses `allow_source_change` only on an explicit update and resets
 automatic updates. Installed grants, user-disable state, and sandbox boundaries
 remain authoritative. Official and community entries use this identical flow.
+
+
+## Pointer lock
+
+Application documents may request browser pointer lock after a real pointer or
+keyboard activation. The platform bootstrap releases lock on document blur,
+visibility loss, hidden lifecycle, close or disposal. It requires a fresh user
+activation after release; visible lifecycle and host enablement never acquire it.
+Opaque bootstrap and teardown documents do not gain pointer-lock capability.
+
+Hosts set `pointerLockEnabled` when opening and call
+`host.setPointerLockEnabled(enabled)` when input ownership changes, independently
+of visibility. An unselected retained surface remains alive without owning the
+mouse. `onPointerLockChange` reports only the current private-port and generation
+bound document's lock state for localized presentation, never host authorization.
+Hosts should show a brief overlay explaining that Escape releases the mouse,
+without moving the document or closing its containing window on that Escape.
+Native desktop blur/minimize behavior must be qualified by the consuming host.

@@ -891,7 +891,7 @@ test("surface host transfers one secret-free origin-bound port and waits for app
   frame.load();
   await waitFor(() => frame.transferred.length === 1 && fetch.calls.length === 2);
   assert.equal(settled, false);
-  assert.equal(frame.attributes.get("sandbox"), "allow-scripts allow-same-origin allow-forms");
+  assert.equal(frame.attributes.get("sandbox"), "allow-scripts allow-same-origin allow-forms allow-pointer-lock");
   assert.equal(frame.attributes.get("allow"), deniedPermissionsPolicy);
   assert.equal(frame.attributes.get("referrerpolicy"), "no-referrer");
   assert.equal(frame.credentialless, false);
@@ -3650,4 +3650,28 @@ test("application method registration shares the bounded parent request budget",
     assert.equal(channel.port1.closed, true, "request overflow must fence the exact surface");
     assert.equal(registrations <= 1, true, "queued registrations cannot continue after invalidation");
   } finally { await host.dispose(); }
+});
+
+
+test("pointer lock state is generation-bound and released by host lifecycle", async () => {
+  const frame = new FakeFrame(), fetch = new FakeFetch(), channel = fakeChannel();
+  const changes: boolean[] = [];
+  fetch.push(preparation()); fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }), onPointerLockChange: locked => changes.push(locked) });
+  const opening = host.open(); frame.load();
+  await waitFor(() => channel.port1.sent.some(message => isMessageType(message, "redevplugin.surface.initialize")));
+  channel.port2.applicationReady(); await opening;
+  const observation = { type: "redevplugin.surface.pointer_lock_state", frame_generation_id: host.frameGenerationId, surface_handle: host.surfaceHandle, locked: true };
+  channel.port2.postMessage({ ...observation, frame_generation_id: "frame_obsolete" });
+  channel.port2.postMessage({ ...observation, surface_handle: "surface_obsolete" });
+  await new Promise(resolve => setTimeout(resolve, 0)); assert.deepEqual(changes, []);
+  channel.port2.postMessage(observation); await waitFor(() => changes.length === 1);
+  host.sendLifecycle({ type: "hidden" }); assert.deepEqual(changes, [true, false]);
+  channel.port2.postMessage(observation); await new Promise(resolve => setTimeout(resolve, 0)); assert.deepEqual(changes, [true, false]);
+  host.sendLifecycle({ type: "visible" }); host.setPointerLockEnabled(false);
+  channel.port2.postMessage(observation); await new Promise(resolve => setTimeout(resolve, 0)); assert.deepEqual(changes, [true, false]);
+  host.setPointerLockEnabled(true); assert.deepEqual(changes, [true, false]);
+  channel.port2.postMessage(observation); await waitFor(() => changes.length === 3);
+  fetch.push(surfaceRevocation()); await host.dispose(); assert.deepEqual(changes, [true, false, true, false]);
 });

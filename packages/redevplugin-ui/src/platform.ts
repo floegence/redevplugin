@@ -99,6 +99,8 @@ export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
   prepareWebOrigin?: PluginWebOriginPreparationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
+  pointerLockEnabled?: boolean;
+  onPointerLockChange?: (locked: boolean) => void;
   onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
   onFileExport?: PluginSurfaceFileExportHandler;
   confirmClose?: (request: { reason: "unsaved" | "unresponsive"; signal: AbortSignal }) => boolean | Promise<boolean>;

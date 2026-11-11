@@ -24,7 +24,7 @@ func TestWebSurfaceDocumentIsOneClosedOriginBinding(t *testing.T) {
 
 func TestWebSurfaceTransportIsClosedAndSecretFree(t *testing.T) {
 	schema := readPluginSchema(t, "web-surface-transport.schema.json")
-	names := []string{"port_envelope", "port_ack", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response", "context_menu"}
+	names := []string{"port_envelope", "port_ack", "pointer_lock", "pointer_lock_state", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response", "context_menu"}
 	refs := requireObjectArray(t, schema["oneOf"], "transport variants")
 	var got []string
 	for _, ref := range refs {

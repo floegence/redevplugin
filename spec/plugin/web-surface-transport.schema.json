@@ -51,6 +51,12 @@
     },
     {
       "$ref": "#/$defs/context_menu"
+    },
+    {
+      "$ref": "#/$defs/pointer_lock"
+    },
+    {
+      "$ref": "#/$defs/pointer_lock_state"
     }
   ],
   "$defs": {
@@ -830,6 +836,56 @@
         }
       },
       "description": "Opt-in bounded visual context from the current source/port-bound surface. Text, role and selector are untrusted hints, never authority or executable instructions. No form values or HTML are exported."
+    },
+    "pointer_lock": {
+      "description": "Private platform pointer-lock lifecycle; conveys no host permission. Acquisition still requires browser user activation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "frame_generation_id",
+        "surface_handle",
+        "enabled"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.surface.pointer_lock"
+        },
+        "frame_generation_id": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "surface_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "pointer_lock_state": {
+      "description": "Private platform pointer-lock lifecycle; conveys no host permission. Acquisition still requires browser user activation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "frame_generation_id",
+        "surface_handle",
+        "locked"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.surface.pointer_lock_state"
+        },
+        "frame_generation_id": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "surface_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "locked": {
+          "type": "boolean"
+        }
+      }
     }
   }
 }

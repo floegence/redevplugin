@@ -1,7 +1,9 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Existing application</title></head>
 <body><label>Name <input name="name" value="Existing application"></label><output></output>
+<button id="lock">Lock mouse</button>
 <script type="module">
+document.querySelector("#lock").onclick = () => document.body.requestPointerLock().catch(error => { globalThis.lockError = error.name; });
 const input = document.querySelector('input');
 const output = document.querySelector('output');
 input.addEventListener('input', () => { output.textContent = input.value; });

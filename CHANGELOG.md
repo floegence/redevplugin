@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.28.1
+
+- Enable user-activated pointer lock for native Web applications while preserving independent origins and existing sandbox restrictions.
+- Release lock on hidden, blur, close and disposal; require another user activation after returning.
+- Expose host input-ownership control and private, generation-bound lock observations for localized Escape guidance.
+
 ## v3.28.0
 
 - Extend primary plugin categories with games, lifestyle, health, education, finance, and media.

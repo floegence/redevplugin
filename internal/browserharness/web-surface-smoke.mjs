@@ -155,7 +155,9 @@ if (process.argv[2] === "--build") {
         await check.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
       } finally { await check.close(); }
     }
-    const plain = await browser.newPage();
+    // Full Chromium supports native pointer lock; headless-shell does not.
+    const pointerBrowser = await chromium.launch({ channel: "chromium", headless: true });
+    const plain = await pointerBrowser.newPage();
     try {
       await plain.goto(process.argv[3] + "?mode=plain");
       await plain.waitForFunction(() => globalThis.testState?.ready || globalThis.testState?.error);
@@ -163,10 +165,39 @@ if (process.argv[2] === "--build") {
       const application = plain.frames().find(frame => frame !== plain.mainFrame());
       await application.locator("input").fill("No application SDK required");
       assert.equal(await application.locator("output").textContent(), "No application SDK required");
+      const lock = async () => {
+        await application.getByRole("button", { name: "Lock mouse" }).click();
+        await application.waitForFunction(() => !!document.pointerLockElement);
+        await plain.waitForFunction(() => globalThis.testState.pointerLocks.at(-1) === true);
+      };
+      const released = async () => {
+        await application.waitForFunction(() => !document.pointerLockElement);
+        await plain.waitForFunction(() => globalThis.testState.pointerLocks.at(-1) === false);
+      };
+      const retryWithoutGesture = () => application.evaluate(async () => {
+        await document.body.requestPointerLock().catch(() => {});
+        await new Promise(resolve => setTimeout(resolve, 100));
+      });
+      await lock();
+      await plain.evaluate(() => globalThis.testHosts[0].sendLifecycle({ type: "hidden" }));
+      await released();
+      await plain.evaluate(() => globalThis.testHosts[0].sendLifecycle({ type: "visible" }));
+      await retryWithoutGesture(); await released();
+      await lock();
+      await plain.evaluate(() => globalThis.testHosts[0].setPointerLockEnabled(false));
+      await released();
+      await retryWithoutGesture(); await released();
+      await plain.evaluate(() => globalThis.testHosts[0].setPointerLockEnabled(true));
+      await retryWithoutGesture(); await released();
+      await lock();
+      await plain.keyboard.press("Escape");
+      await released();
+      assert.equal(await application.locator("input").inputValue(), "No application SDK required");
+      await lock();
       const close = await plain.evaluate(() => globalThis.testSlots[0].requestClose());
       assert.equal(close.quiesce.outcome, "acknowledged");
       await plain.evaluate(() => globalThis.testSlots[1].close());
-    } finally { await plain.close(); }
+    } finally { await pointerBrowser.close(); }
     const comments = await browser.newPage();
     try {
       await comments.goto(process.argv[3] + "?mode=context-menu");

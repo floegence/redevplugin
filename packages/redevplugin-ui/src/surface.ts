@@ -1034,6 +1034,8 @@ export type PluginSurfaceHost = {
   readonly surfaceInstanceId: string;
   sendLifecycle(event: Exclude<BridgeLifecycleEvent, { type: "ready" | "dispose" }>): void;
   updateContext(context: PluginSurfaceContext): void;
+  /** Release or permit pointer lock without reloading the application. */
+  setPointerLockEnabled(enabled: boolean): void;
   requestClose(): Promise<PluginSurfaceCloseResult | undefined>;
   close(): Promise<PluginSurfaceCloseResult>;
   dispose(): Promise<void>;
@@ -1072,6 +1074,9 @@ export type PluginSurfaceHostOptions = {
   confirm?: PluginConfirmationHandler;
   prepareWebOrigin?: PluginWebOriginPreparationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
+  pointerLockEnabled?: boolean;
+  /** Presentation only; never grants host authority. */
+  onPointerLockChange?: (locked: boolean) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
   /** Opt in to host context menus; ordinary application menus remain unchanged by default. */
   onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
@@ -1285,6 +1290,10 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #prepareWebOrigin?: PluginWebOriginPreparationHandler;
   #onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   #onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
+  #pointerLockEnabled = true;
+  #visible = true;
+  #pointerLocked = false;
+  #onPointerLockChange?: (locked: boolean) => void;
   #onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
   #onFileExport?: PluginSurfaceFileExportHandler;
   #confirmClose?: PluginSurfaceHostOptions["confirmClose"];
@@ -1374,6 +1383,8 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
     this.#onContextMenu = options.onContextMenu;
+    this.#pointerLockEnabled = options.pointerLockEnabled !== false;
+    this.#onPointerLockChange = options.onPointerLockChange;
     this.#onFileExport = options.onFileExport;
     this.#confirmClose = options.confirmClose;
     this.#onError = options.onError;
@@ -1461,7 +1472,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       this.#assertActive();
     }
     this.#setOpeningStage("connecting", ["entry_ready"]);
-    this.#iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
+    this.#iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-pointer-lock");
     this.#iframe.src = preparation.document.bootstrap_url;
     await signals.entryReady.promise;
     this.#assertActive();
@@ -1516,6 +1527,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#ready = true;
     this.#scheduleLeaseRenewal();
     this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+    this.#publishPointerLock();
     this.#reloadLimiter.recordHealthyLoad();
   }
 
@@ -1525,6 +1537,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       void this.#failSurface(new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Application navigated before its connection completed; reopen the application"));
       return;
     }
+    this.#setPointerLocked(false);
     this.#navigationPending = true;
     this.#receiverHasMethods = false;
     this.#receiverController?.abort();
@@ -1571,7 +1584,30 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
 
   sendLifecycle(event: Exclude<BridgeLifecycleEvent, { type: "ready" | "dispose" }>): void {
     this.#assertReady();
+    if (event.type === "visible" || event.type === "hidden") {
+      this.#visible = event.type === "visible";
+      this.#publishPointerLock();
+    }
     this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event });
+  }
+
+  setPointerLockEnabled(enabled: boolean): void {
+    this.#assertActive();
+    this.#pointerLockEnabled = enabled;
+    this.#publishPointerLock();
+  }
+
+  #publishPointerLock(): void {
+    if (!this.#ready || this.#navigationPending) return;
+    const enabled = this.#pointerLockEnabled && this.#visible && !this.#closeDecision;
+    this.#postToApplication({ type: "redevplugin.surface.pointer_lock", frame_generation_id: this.frameGenerationId, surface_handle: this.surfaceHandle, enabled });
+    if (!enabled) this.#setPointerLocked(false);
+  }
+
+  #setPointerLocked(locked: boolean): void {
+    if (this.#pointerLocked === locked) return;
+    this.#pointerLocked = locked;
+    try { this.#onPointerLockChange?.(locked); } catch { /* Presentation cannot alter lifecycle. */ }
   }
 
   updateContext(context: PluginSurfaceContext): void {
@@ -1601,6 +1637,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     const generation = this.#frameGenerationId;
     const decision = { id: randomOpaqueHandle("close"), result: deferred<boolean>(), controller: new AbortController() };
     this.#closeDecision = decision;
+    this.#publishPointerLock();
     try {
       let allow = false;
       let reason: "unsaved" | "unresponsive" = "unsaved";
@@ -1616,7 +1653,10 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       if (!allow || decision.controller.signal.aborted || generation !== this.#frameGenerationId) return undefined;
       return this.close();
     } finally {
-      if (this.#closeDecision === decision) this.#closeDecision = undefined;
+      if (this.#closeDecision === decision) {
+        this.#closeDecision = undefined;
+        if (!this.#disposed) this.#publishPointerLock();
+      }
     }
   }
 
@@ -1685,6 +1725,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
 
   #disposeLocal(): void {
     if (this.#disposed) return;
+    this.#setPointerLocked(false);
     this.#disposed = true;
     this.#receiverHasMethods = false;
     this.#receiverController?.abort();
@@ -1741,6 +1782,11 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     if (this.#disposed) return;
     const data = event.data;
     try {
+      if (hasExactKeys(data, ["type", "frame_generation_id", "surface_handle", "locked"]) && data.type === "redevplugin.surface.pointer_lock_state"
+        && data.frame_generation_id === this.frameGenerationId && data.surface_handle === this.surfaceHandle && typeof data.locked === "boolean") {
+        this.#setPointerLocked(data.locked && this.#ready && !this.#navigationPending && this.#visible && this.#pointerLockEnabled && !this.#closeDecision);
+        return;
+      }
       if (isSurfaceFileExportCandidate(data)) {
         await this.#handleFileExport(data);
         return;

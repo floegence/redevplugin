@@ -7,6 +7,12 @@
   let parentOrigin, port, frameGeneration, surfaceHandle, context;
   let initialized = false, stopped = false, ready = false, claimed = false;
   let appPeer, appPort, sequence = 0, contextMenu = false;
+  const lockGetter = Object.getOwnPropertyDescriptor(Document.prototype, "pointerLockElement")?.get;
+  const locked = lockGetter ? Function.call.bind(lockGetter, document) : () => null;
+  const exitLock = document.exitPointerLock?.bind(document);
+  const hasFocus = document.hasFocus.bind(document);
+  let pointerLockAllowed = false, pointerGesture = false;
+  const releaseLock = () => { pointerGesture = false; if (locked()) exitLock(); };
   const send = (message, transfer) => { if (!stopped) port?.postMessage(message, transfer); };
   const fetchResource = (path, init = {}) => nativeFetch(path, { ...init, credentials: "include", cache: "no-store", signal: controller.signal });
   const fail = (error) => {
@@ -14,6 +20,7 @@
     const message = String(error.message || error).slice(0, 2048);
     send({ type: "redevplugin.surface.error", error: message });
     if (parentOrigin) parent.postMessage({ type: "redevplugin.surface.entry_error", error: message }, parentOrigin);
+    releaseLock();
     stopped = true;
     controller.abort();
     port?.close();
@@ -50,6 +57,20 @@
       bounds: { x, y, width: Math.max(0, unit(rect.right / width) - x), height: Math.max(0, unit(rect.bottom / height) - y) } };
   };
   const observe = () => {
+    addEventListener("blur", releaseLock);
+    document.addEventListener("visibilitychange", () => { if (document.hidden) releaseLock(); });
+    const gesture = e => { if (e.isTrusted && pointerLockAllowed) pointerGesture = true; };
+    document.addEventListener("pointerdown", gesture, true);
+    document.addEventListener("keydown", e => {
+      if (e.isTrusted && e.key === "Escape" && locked()) { e.preventDefault(); e.stopImmediatePropagation(); releaseLock(); return; }
+      if (e.key === "Enter" || e.key === " ") gesture(e);
+    }, true);
+    document.addEventListener("pointerlockchange", () => {
+      const value = !!locked();
+      if (value && (!pointerLockAllowed || !pointerGesture || !hasFocus() || document.hidden)) { releaseLock(); return; }
+      pointerGesture = false;
+      send({ type: "redevplugin.surface.pointer_lock_state", frame_generation_id: frameGeneration, surface_handle: surfaceHandle, locked: value });
+    });
     document.addEventListener("contextmenu", e => {
       if (!contextMenu || !ready || !e.isTrusted || !(e.target instanceof Element)) return;
       e.preventDefault(); e.stopImmediatePropagation();
@@ -142,6 +163,14 @@
     removeEventListener("message", connect);
     port.onmessage = e => {
       const m = e.data;
+      if (m?.type === "redevplugin.surface.pointer_lock" && m.frame_generation_id === frameGeneration && m.surface_handle === surfaceHandle) {
+        pointerLockAllowed = m.enabled === true;
+        if (!pointerLockAllowed) releaseLock();
+        return;
+      }
+      if (m?.type === "redevplugin.bridge.lifecycle" && (m.event?.type === "hidden" || m.event?.type === "dispose")) {
+        pointerLockAllowed = false; releaseLock();
+      }
       if (m?.type === "redevplugin.surface.initialize") { void start(m).catch(fail); return; }
       if (m?.type === "redevplugin.surface.context") { context = m.context; appPeer?.postMessage({ type: "redevplugin.bridge.context", context }); return; }
       if (m?.type === "redevplugin.bridge.lifecycle" && m.event?.type === "ready") ready = true;

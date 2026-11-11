@@ -1,11 +1,12 @@
-import { PluginPlatformClient, PluginSurfaceSlot } from "../../../packages/redevplugin-ui/src/trusted-parent.js";
+import { PluginPlatformClient, PluginSurfaceSlot, type PluginSurfaceHost } from "../../../packages/redevplugin-ui/src/trusted-parent.js";
 const response = await fetch("/fixture");
 const fixture = await response.json();
 const mode = new URL(location.href).searchParams.get("mode");
 const slots = [0, 1].map(() => PluginSurfaceSlot.create({ stage: document.createElement("section") }));
+const hosts: PluginSurfaceHost[] = [];
 const client = new PluginPlatformClient();
-const state = { contextMenus: [] as unknown[], ready: false, error: "", interactions: [] as string[], prepared: [] as string[], targets: [] as string[], released: [] as string[] };
-Object.assign(globalThis, { testState: state, testSlots: slots });
+const state = { pointerLocks: [] as boolean[], contextMenus: [] as unknown[], ready: false, error: "", interactions: [] as string[], prepared: [] as string[], targets: [] as string[], released: [] as string[] };
+Object.assign(globalThis, { testState: state, testSlots: slots, testHosts: hosts });
 for (const slot of slots) {
   document.body.append(slot.element);
   slot.element.style.cssText = "display:block;width:500px;height:400px";
@@ -14,7 +15,7 @@ for (const slot of slots) {
   if (mode === "offscreen") slot.element.style.transform = "translateY(5000px)";
 }
 try {
-  for (const slot of slots) await client.openSurfaceInSlot(slot, {
+  for (const slot of slots) hosts.push(await client.openSurfaceInSlot(slot, {
     plugin_instance_id: fixture.plugin_instance_id, surface_id: mode === "plain" ? "plain.view" : "http.view", expected_management_revision: fixture.management_revision,
   }, { surfaceContext: {
     schema_version: "redevplugin.surface_context.v1", revision: 1,
@@ -22,7 +23,7 @@ try {
       canvas: "#101010", surface: "#181818", surface_elevated: "#202020", text: "#ffffff", text_muted: "#aaaaaa", border: "#444444",
       accent: "#66aaff", accent_text: "#000000", success: "#44cc88", warning: "#ffcc44", danger: "#ff6677", focus: "#88bbff",
     } }, locale: { language_tag: "en-US", direction: "ltr" },
-  }, prepareWebOrigin: async ({ signal, ...route }) => {
+  }, onPointerLockChange: locked => state.pointerLocks.push(locked), prepareWebOrigin: async ({ signal, ...route }) => {
     const response = await fetch("/fixture/routes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(route), signal });
     if (!response.ok) throw new Error("Application route preparation failed");
     state.prepared.push(route.origin); state.targets.push(route.surfaceInstanceId);
@@ -30,7 +31,7 @@ try {
       .then(response => { if (response.ok) state.released.push(route.origin); }).catch(() => undefined); };
     signal.addEventListener("abort", release, { once: true });
     if (signal.aborted) release();
-  }, ...(mode === "context-menu" ? { onContextMenu: ({ isCurrent: _isCurrent, ...event }) => state.contextMenus.push(event) } : {}), confirmFileAccess: async review => review.name === "selected.txt" && review.writable, onInteraction: event => state.interactions.push(event.kind), onError: error => { state.error = error.message; } });
+  }, ...(mode === "context-menu" ? { onContextMenu: ({ isCurrent: _isCurrent, ...event }) => state.contextMenus.push(event) } : {}), confirmFileAccess: async review => review.name === "selected.txt" && review.writable, onInteraction: event => state.interactions.push(event.kind), onError: error => { state.error = error.message; } }));
   state.ready = true;
 } catch (error) { state.error = String(error); }
 
