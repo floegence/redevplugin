@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.27.0
+
+- Add bounded concurrent host schedule claims with capacity shared by active and unknown dispatches, FIFO queues, and explicit skip-at-capacity behavior.
+- Atomically migrate the verified schedule schema 1 to schema 2 while preserving all plans and admission receipts; completion cadence remains a single chain.
+- Preserve plugin intervals, Agent execution ownership, runtime wire and capability permissions.
+
 ## v3.26.1
 
 - Accept private storage list responses containing the broker's plugin and store identities while validating every required usage counter.

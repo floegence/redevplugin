@@ -381,3 +381,140 @@ func TestRunnerRotatesUnresolvedObservationsWithoutStarvation(t *testing.T) {
 		t.Fatal("later claims starved", len(d.seen))
 	}
 }
+
+func TestBoundedConcurrentClaimsRetainUnknownSlotsAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	_, p, now := fixture(t)
+	p.Overlap = "allow"
+	raw, _ := json.Marshal(p)
+	var fields map[string]any
+	_ = json.Unmarshal(raw, &fields)
+	fields["max_concurrent"] = 2
+	raw, _ = json.Marshal(fields)
+	_ = json.Unmarshal(raw, &p)
+	p, err = s.Put(t.Context(), p, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Tick(t.Context(), now.Add(time.Minute), false, 10)
+	if err != nil || len(first) != 1 {
+		t.Fatal(first, err)
+	}
+	second, err := s.Tick(t.Context(), now.Add(2*time.Minute), false, 10)
+	if err != nil || len(second) != 1 {
+		t.Fatal(second, err)
+	}
+	if err = s.Accept(t.Context(), p.Owner, first[0].ID, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims, err := s.Tick(t.Context(), now.Add(3*time.Minute), false, 10); err != nil || len(claims) != 0 {
+		t.Fatal(claims, err)
+	}
+	if err = s.Resolve(t.Context(), p.Owner, first[0].ID, "completed", now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// At capacity, allow skips that occurrence instead of secretly queueing it.
+	if claims, err := s.Tick(t.Context(), now.Add(3*time.Minute), false, 10); err != nil || len(claims) != 0 {
+		t.Fatal(claims, err)
+	}
+	claims, err := s.Tick(t.Context(), now.Add(4*time.Minute), false, 10)
+	if err != nil || len(claims) != 1 || !claims[0].ScheduledAt.Equal(now.Add(4*time.Minute)) {
+		t.Fatal(claims, err)
+	}
+}
+
+func TestConcurrentQueueCapacityAndValidation(t *testing.T) {
+	s, p, now := fixture(t)
+	p.Overlap = "queue"
+	p.MaxConcurrent = 2
+	p.QueueLimit = 4
+	p, err := s.Put(t.Context(), p, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := s.Tick(t.Context(), now.Add(4*time.Minute), false, 10)
+	if err != nil || len(claims) != 2 || !claims[0].ScheduledAt.Before(claims[1].ScheduledAt) {
+		t.Fatal(claims, err)
+	}
+	if next, err := s.Tick(t.Context(), now.Add(4*time.Minute), false, 10); err != nil || len(next) != 0 {
+		t.Fatal(next, err)
+	}
+	if err := s.Resolve(t.Context(), p.Owner, claims[0].ID, "failed", now); err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.Tick(t.Context(), now.Add(4*time.Minute), false, 1)
+	if err != nil || len(next) != 1 || !next[0].ScheduledAt.Equal(now.Add(3*time.Minute)) {
+		t.Fatal(next, err)
+	}
+	for _, capacity := range []int{-1, 17} {
+		p.MaxConcurrent = capacity
+		if p.validate() == nil {
+			t.Fatal(capacity)
+		}
+	}
+	p.MaxConcurrent = 2
+	p.Cadence.Kind = "completion"
+	if p.validate() == nil {
+		t.Fatal("parallel completion chain accepted")
+	}
+}
+
+func TestReleasedScheduleMigrationRetainsPlanAndClaims(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, p, now := fixture(t)
+	p, err = s.Put(t.Context(), p, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := s.Tick(t.Context(), now.Add(time.Minute), false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Accept(t.Context(), p.Owner, claims[0].ID, "retained-run"); err != nil {
+		t.Fatal(err)
+	}
+	p, err = s.Get(t.Context(), p.Owner, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec("PRAGMA user_version=1"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var version int
+	if err = s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 2 {
+		t.Fatal(version, err)
+	}
+	got, err := s.Get(t.Context(), p.Owner, p.ID)
+	if err != nil || jsonTextForTest(got) != jsonTextForTest(p) {
+		t.Fatal(got, err)
+	}
+	retained, err := s.Claims(t.Context(), p.Owner, p.ID)
+	if err != nil || len(retained) != 1 || retained[0].Reference != "retained-run" || retained[0].State != "accepted" {
+		t.Fatal(retained, err)
+	}
+}
+func jsonTextForTest(v any) string { raw, _ := json.Marshal(v); return string(raw) }

@@ -31,7 +31,7 @@ const schema = `CREATE TABLE schedule_plans (id TEXT PRIMARY KEY, owner TEXT NOT
 CREATE TABLE schedule_claims (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, owner TEXT NOT NULL, revision INTEGER NOT NULL, due INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('queued','dispatching','accepted','completed','unknown','discarded')), payload TEXT NOT NULL, reference TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '', UNIQUE(plan_id,revision,due));
 CREATE INDEX schedule_claims_plan ON schedule_claims(plan_id,state,due);
 PRAGMA application_id=1380201288;
-PRAGMA user_version=1;`
+PRAGMA user_version=2;`
 
 func Open(path string) (*Store, error) {
 	if !filepath.IsAbs(path) {
@@ -78,11 +78,26 @@ func Open(path string) (*Store, error) {
 		if e = tx.Commit(); e != nil {
 			return fail(e)
 		}
-	} else if version != 1 {
+	} else if version != 1 && version != 2 {
 		return fail(fmt.Errorf("%w: unsupported schema %d", ErrInvalid, version))
 	}
 	if err = verifyStore(db); err != nil {
 		return fail(err)
+	}
+	if version == 1 {
+		// Version 2 adds bounded concurrent admission. Preserve all plan and
+		// claim bytes; old readers must reject the new admission semantics.
+		tx, e := db.Begin()
+		if e != nil {
+			return fail(e)
+		}
+		if _, e = tx.Exec("PRAGMA user_version=2"); e != nil {
+			_ = tx.Rollback()
+			return fail(e)
+		}
+		if e = tx.Commit(); e != nil {
+			return fail(e)
+		}
 	}
 	if _, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"); err != nil {
 		return fail(err)
@@ -95,7 +110,10 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db, lock: lock}, nil
 }
 func verifyStore(db *sql.DB) error {
-	var appID int
+	var appID, version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
 	if err := db.QueryRow("PRAGMA application_id").Scan(&appID); err != nil {
 		return err
 	}
@@ -152,7 +170,7 @@ func verifyStore(db *sql.DB) error {
 		if err = json.Unmarshal([]byte(body), &p); err != nil {
 			break
 		}
-		if p.validate() != nil || p.ID != id || ownerKey(p.Owner) != owner || p.Revision != revision || revision < 1 {
+		if (version == 1 && (p.MaxConcurrent != 0 || p.Overlap == "allow")) || p.validate() != nil || p.ID != id || ownerKey(p.Owner) != owner || p.Revision != revision || revision < 1 {
 			err = fmt.Errorf("%w: inconsistent plan", ErrInvalid)
 			break
 		}
@@ -333,7 +351,7 @@ func (s *Store) Tick(ctx context.Context, now time.Time, startup bool, limit int
 			if startup && p.Missed == "skip" {
 				due = nil
 			}
-			if active > 0 && p.Overlap == "skip" {
+			if active >= p.capacity() && (p.Overlap == "skip" || p.Overlap == "allow") {
 				due = nil
 			}
 			if p.Overlap == "latest" && len(due) > 0 {
@@ -361,10 +379,10 @@ func (s *Store) Tick(ctx context.Context, now time.Time, startup bool, limit int
 				return nil, err
 			}
 		}
-		if active == 0 && len(out) < limit {
+		for active < p.capacity() && len(out) < limit {
 			c, e := scanClaim(tx.QueryRowContext(ctx, "SELECT "+claimColumns+" FROM schedule_claims WHERE plan_id=? AND state='queued' ORDER BY due,id LIMIT 1", p.ID))
 			if errors.Is(e, ErrNotFound) {
-				continue
+				break
 			}
 			if e != nil {
 				return nil, e
@@ -374,6 +392,7 @@ func (s *Store) Tick(ctx context.Context, now time.Time, startup bool, limit int
 			}
 			c.State = "dispatching"
 			out = append(out, c)
+			active++
 		}
 	}
 	if err = tx.Commit(); err != nil {
