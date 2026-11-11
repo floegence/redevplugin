@@ -7,7 +7,7 @@ type PluginCategory string
 
 func (category PluginCategory) Valid() bool {
 	switch category {
-	case "development", "infrastructure", "utilities", "data", "collaboration", "productivity", "other":
+	case "development", "infrastructure", "utilities", "data", "collaboration", "productivity", "games", "lifestyle", "health", "education", "finance", "media", "other":
 		return true
 	default:
 		return false

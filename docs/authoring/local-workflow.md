@@ -339,7 +339,11 @@ and a corrected request can initialize it immediately or after a Host restart.
 ## Discovery category
 
 Set `presentation.category` in `manifest.json` to one primary category: `development`,
-`infrastructure`, `utilities`, `data`, `collaboration`, `productivity`, or `other`.
+`infrastructure`, `utilities`, `data`, `collaboration`, `productivity`, `games`,
+`lifestyle`, `health`, `education`, `finance`, `media`, or `other`.
+Use `games` for games and gaming tools, `lifestyle` for everyday activities such as
+travel, cooking, and home planning, `health` for wellness and fitness, `education`
+for learning, `finance` for budgeting and money, and `media` for audio and video.
 New scaffolds explicitly start with `other`. Omission also means `other`; empty,
 null, unknown, and non-string values are invalid. Categories are not localized
 identifiers and confer no permissions or official status. Labels belong to the host.

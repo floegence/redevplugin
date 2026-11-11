@@ -7,7 +7,7 @@ import (
 )
 
 func TestPresentationCategoryContract(t *testing.T) {
-	for _, category := range []string{"development", "infrastructure", "utilities", "data", "collaboration", "productivity", "other", ""} {
+	for _, category := range []string{"development", "infrastructure", "utilities", "data", "collaboration", "productivity", "games", "lifestyle", "health", "education", "finance", "media", "other", ""} {
 		t.Run(category, func(t *testing.T) {
 			raw := v9TestManifest("")
 			if category != "" {

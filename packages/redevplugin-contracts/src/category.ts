@@ -1,7 +1,8 @@
 /** Author-owned discovery categories. Omission means other; unknown values are invalid. */
 export const pluginCategories = [
   "development", "infrastructure", "utilities", "data",
-  "collaboration", "productivity", "other",
+  "collaboration", "productivity", "games", "lifestyle",
+  "health", "education", "finance", "media", "other",
 ] as const;
 
 import type { PluginCategory } from "./security-summary.gen.js";

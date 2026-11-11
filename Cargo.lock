@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-runtime"
-version = "3.27.0"
+version = "3.28.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-worker-sdk"
-version = "3.27.0"
+version = "3.28.0"
 dependencies = [
  "base64",
  "serde",

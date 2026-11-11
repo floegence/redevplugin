@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.28.0
+
+- Extend primary plugin categories with games, lifestyle, health, education, finance, and media.
+- Keep source, package, inspection, and installed presentation contracts aligned across Go and TypeScript.
+- Preserve existing categories and the omitted-category default without rewriting canonical package evidence.
+
 ## v3.27.0
 
 - Require Go 1.27.4 to resolve GO-2026-6859 in the HTTP server.

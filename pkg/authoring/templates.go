@@ -452,7 +452,8 @@ surface; it cannot run when the page is closed. Add document revisions and use
 your existing undo transaction when exposing application write operations.
 
 Set presentation.category in manifest.json to development, infrastructure,
-utilities, data, collaboration, productivity, or other. Omission means other;
+utilities, data, collaboration, productivity, games, lifestyle, health, education,
+finance, media, or other. Omission means other;
 unknown values are rejected. Categories describe the plugin and grant no permissions.
 
 Edit ui/src/app.ts for the surface and worker/src/lib.rs for the WASM backend.

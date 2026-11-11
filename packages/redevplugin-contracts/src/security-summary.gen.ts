@@ -211,7 +211,7 @@ export type PresentationCatalog = {
   locales: Array<PresentationLocale>;
 };
 
-export type PluginCategory = "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "other";
+export type PluginCategory = "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "games" | "lifestyle" | "health" | "education" | "finance" | "media" | "other";
 
 export type PresentationIcon = {
   path: string;
@@ -1305,6 +1305,12 @@ export const securitySummarySchemas = {
       "data",
       "collaboration",
       "productivity",
+      "games",
+      "lifestyle",
+      "health",
+      "education",
+      "finance",
+      "media",
       "other"
     ]
   },
@@ -2567,6 +2573,12 @@ export const securitySummaryJSONSchema = {
         "data",
         "collaboration",
         "productivity",
+        "games",
+        "lifestyle",
+        "health",
+        "education",
+        "finance",
+        "media",
         "other"
       ]
     },

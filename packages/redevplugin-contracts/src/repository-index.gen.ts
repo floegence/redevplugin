@@ -268,6 +268,12 @@ export const sourceManifestJSONSchema = {
             "data",
             "collaboration",
             "productivity",
+            "games",
+            "lifestyle",
+            "health",
+            "education",
+            "finance",
+            "media",
             "other"
           ],
           "description": "Author-selected primary discovery category. Omission means other; explicit unknown, empty or null values are invalid."

@@ -14,3 +14,10 @@ test("categories match package and author schemas with an explicit default", () 
     assert.throws(() => resolvePluginCategory(invalid), TypeError);
   }
 });
+
+test("includes everyday categories and keeps other last", () => {
+  for (const category of ["games", "lifestyle", "health", "education", "finance", "media"]) {
+    assert.equal(resolvePluginCategory(category), category);
+  }
+  assert.equal(pluginCategories.at(-1), "other");
+});

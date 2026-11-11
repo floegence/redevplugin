@@ -2355,7 +2355,7 @@ export interface components {
             settings: components["schemas"]["ResolvedSettingPresentation"][];
         };
         /** @enum {string} */
-        PluginCategory: "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "other";
+        PluginCategory: "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "games" | "lifestyle" | "health" | "education" | "finance" | "media" | "other";
         PresentationCatalog: {
             category?: components["schemas"]["PluginCategory"];
             default_locale: string;
@@ -3924,7 +3924,7 @@ export interface components {
                  * @description Author-selected primary discovery category. Omission means other; explicit unknown, empty or null values are invalid.
                  * @enum {string}
                  */
-                category?: "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "other";
+                category?: "development" | "infrastructure" | "utilities" | "data" | "collaboration" | "productivity" | "games" | "lifestyle" | "health" | "education" | "finance" | "media" | "other";
             };
             surfaces: {
                 surface_id: string;
