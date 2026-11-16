@@ -192,8 +192,10 @@ export type AgentConversationContextResponse = {
 };
 
 export type AgentConversationConfigureRequest = {
-  area: "models" | "tools" | "skills" | "mcp";
+  area: "models" | "tools" | "skills" | "mcp" | "permissions" | "computer";
   binding_id: string;
+  conversation_id?: string;
+  proposal_json?: string;
   slot: string;
 };
 
@@ -434,7 +436,7 @@ const configureContract = Object.freeze({
   method: "agent.conversation.configure",
   effect: "write",
   execution: "sync",
-  requestSchema: {"additionalProperties":false,"properties":{"area":{"enum":["models","tools","skills","mcp"],"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"slot":{"maxLength":128,"minLength":0,"type":"string"}},"required":["binding_id","area","slot"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"area":{"enum":["models","tools","skills","mcp","permissions","computer"],"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"proposal_json":{"maxLength":64000,"minLength":1,"type":"string"},"slot":{"maxLength":128,"minLength":0,"type":"string"}},"required":["binding_id","area","slot"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"available":{"type":"boolean"},"revision":{"minimum":1,"type":"integer"},"unavailable_reasons":{"items":{"maxLength":1024,"minLength":1,"type":"string"},"maxItems":128,"type":"array","uniqueItems":true}},"required":["revision","available","unavailable_reasons"],"type":"object"},
 } as const);
 

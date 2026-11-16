@@ -104,6 +104,13 @@ change account settings. Configuration cancellation preserves the original
 selection and draft. Hosts must publish and test their complete view feature
 matrix; empty stubs do not constitute support.
 
+Configuration may identify a conversation within the same binding and include
+a host-protocol JSON proposal. This lets an embedded view open the exact model,
+permission or computer-control editor without losing its draft. The proposal
+is untrusted initial form data, not a grant or approved configuration. Both
+optional fields participate in the confirmation hash; the host revalidates the
+conversation's ownership and presents the actual choices before committing.
+
 ## Calling back into native plugin methods
 
 A trusted capability adapter retains the exact platform-issued

@@ -55,8 +55,11 @@ export class BoundAgent {
     },
   });
 
-  async configure(input: { area: "models" | "tools" | "skills" | "mcp"; slot?: string }, options?: PluginBridgeRequestOptions): Promise<void> {
-    const result = await this.#client.configure({ binding_id: this.#binding.binding_id, area: input.area, slot: input.slot ?? "" }, options);
+  async configure(input: { area: "models" | "tools" | "skills" | "mcp" | "permissions" | "computer"; slot?: string; conversation?: AgentConversation; proposal?: unknown }, options?: PluginBridgeRequestOptions): Promise<void> {
+    if (input.conversation && input.conversation.agent !== this) throw new Error("Conversation belongs to another Agent binding");
+    const proposal = input.proposal === undefined ? undefined : JSON.stringify(input.proposal);
+    if (input.proposal !== undefined && proposal === undefined) throw new TypeError("Configuration proposal must be JSON");
+    const result = await this.#client.configure({ binding_id: this.#binding.binding_id, area: input.area, slot: input.slot ?? "", ...(input.conversation ? { conversation_id: input.conversation.id } : {}), ...(proposal === undefined ? {} : { proposal_json: proposal }) }, options);
     this.#binding = { ...this.#binding, ...result };
   }
 

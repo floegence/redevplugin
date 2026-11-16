@@ -1323,13 +1323,25 @@
               "models",
               "tools",
               "skills",
-              "mcp"
+              "mcp",
+              "permissions",
+              "computer"
             ]
           },
           "slot": {
             "type": "string",
             "minLength": 0,
             "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "proposal_json": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64000
           }
         },
         "required": [
@@ -1376,7 +1388,9 @@
         "request_hash_fields": [
           "binding_id",
           "area",
-          "slot"
+          "slot",
+          "conversation_id",
+          "proposal_json"
         ]
       }
     },

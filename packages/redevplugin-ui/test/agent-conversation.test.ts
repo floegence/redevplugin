@@ -50,3 +50,23 @@ test("conversation revisions are not silently retried or refreshed after a confl
     assert.equal(fixture.calls[2]!.input!.revision, 3);
   } finally { fixture.dispose(); }
 });
+
+test("configuration proposals retain conversation ownership without granting authority", async () => {
+  const fixture = createPluginTestHarness({ call(method, input) {
+    if (method === "agent.conversation.bind") return { data: { binding_id: input!.object_key, revision: 1, client_protocol: "test.agent.v1", available: true, unavailable_reasons: [] } };
+    if (method === "agent.conversation.open") return { data: { conversation_id: "conversation-1", key: "main", title: "Original", archived: false, revision: 1, state: "idle" } };
+    if (method === "agent.conversation.configure") return { data: { revision: 2, available: true, unavailable_reasons: [] } };
+    throw new Error("Unexpected call " + method);
+  } });
+  try {
+    const client = createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "agent" });
+    const profile = { id: "helper", instructions: "", methods: [] };
+    const agent = await client.bindAgent({ objectKey: "object-1", profile });
+    const conversation = await agent.conversations.open({ key: "main" });
+    const other = await client.bindAgent({ objectKey: "object-2", profile });
+    await assert.rejects(other.configure({ area: "permissions", conversation }), error => error instanceof Error && error.message.includes("another Agent"));
+    assert.equal(fixture.calls.filter(call => call.method === "agent.conversation.configure").length, 0);
+    await agent.configure({ area: "permissions", conversation, proposal: { mode: "approval_required" } });
+    assert.deepEqual(fixture.calls.at(-1)!.input, { binding_id: "object-1", area: "permissions", slot: "", conversation_id: "conversation-1", proposal_json: '{"mode":"approval_required"}' });
+  } finally { fixture.dispose(); }
+});
