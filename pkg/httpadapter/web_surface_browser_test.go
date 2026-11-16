@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/connectivity"
 
 	"github.com/floegence/redevplugin/v3/pkg/host"
@@ -125,11 +126,29 @@ func testNativeWebApplicationBrowser(t *testing.T, parentHostname string) {
 	defer receiver.Close()
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{}), PrivateNetwork: browserPrivateNetworkPolicy{}}, webOrigins: origins, files: &host.FilesModule{Picker: browserFilePicker{path: selectedPath}}})
 	defer h.Close()
+	viewContract := httpVerifiedCapabilityContract(t)
+	viewAdapter := &httpRecordingCapabilityAdapter{}
+	view, err := capability.NewViewBundle("view.js", []string{"view.css"}, map[string]capability.ViewAsset{
+		"view.js": {ContentType: "text/javascript", Content: []byte(`export function mount({container, bridge, input}) {
+			const button = document.createElement('button'); button.textContent = 'Read from host view';
+			button.onclick = async () => { const result = await bridge.call('document.read', {}); button.dataset.result = result.data.text; };
+			container.append(button);
+			return new Promise(resolve => setTimeout(() => resolve({dispose() { button.remove(); }}), input.delay || 0));
+		}`)},
+		"view.css": {ContentType: "text/css", Content: []byte("button { color: rgb(12, 34, 56); }")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.Capabilities().Register(capability.Registration{Contract: viewContract, TargetProjector: viewAdapter, Adapter: viewAdapter, View: view}); err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	var document map[string]any
 	if err := json.Unmarshal([]byte(httpFixtureManifestJSON()), &document); err != nil {
 		t.Fatal(err)
 	}
+	document["capability_bindings"] = []any{map[string]any{"binding_id": "host-view", "contract": viewContract.Pin}}
 	document["permissions"] = append(document["permissions"].([]any), "fs.selected.read", "fs.selected.write", "network.client")
 	document["network_access"] = map[string]any{"connectors": []any{map[string]any{"connector_id": "api", "transport": "http", "scope": "user", "configurable": true}}}
 	document["api"].(map[string]any)["required_features"] = []string{"surface.resources.v1"}

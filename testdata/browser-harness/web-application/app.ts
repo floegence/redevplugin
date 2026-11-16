@@ -1,4 +1,4 @@
-import { PluginBridgeClient, openPluginConnection, pluginKV } from "../../../packages/redevplugin-ui/src/plugin.js";
+import { PluginBridgeClient, openPluginConnection, pluginKV, mountCapabilityView } from "../../../packages/redevplugin-ui/src/plugin.js";
 const bridge = new PluginBridgeClient({ presentation: "explicit" });
 bridge.onContext(context => { document.documentElement.dataset.contextColorScheme = context.appearance.color_scheme; });
 await bridge.ready();
@@ -93,6 +93,20 @@ await bridge.registerMethod("document.wait", (_params, { signal }) => new Promis
   if (signal.aborted) cancel();
 }));
 Object.assign(state, { methodsReady: true });
+const viewContainer = document.createElement("section");
+viewContainer.setAttribute("aria-label", "Host capability view");
+document.body.append(viewContainer);
+const view = await mountCapabilityView(viewContainer, { bindingID: "host-view", bridge, input: {} });
+Object.assign(globalThis, {
+  detachHostView: () => view.dispose(),
+  abortHostView: async () => {
+    const abortedMount = new AbortController();
+    const mounting = mountCapabilityView(viewContainer, { bindingID: "host-view", bridge, input: { delay: 100 }, signal: abortedMount.signal });
+    setTimeout(() => abortedMount.abort(), 30);
+    try { await mounting; return false; } catch { return viewContainer.childElementCount === 0; }
+  },
+});
+Object.assign(state, { hostViewReady: true });
 const performanceStore = pluginKV<{ index: number }>("performance");
 Object.assign(globalThis, { storageListProbe: async (write: boolean) => {
   const before = await performanceStore.list({ prefix: "persisted:" });

@@ -73,7 +73,7 @@
     "data-upgrade:check": "node scripts/generate_data_upgrade_contract.mjs --check",
     "stored-manifest:generate": "node scripts/generate_stored_manifest.mjs",
     "stored-manifest:check": "node scripts/generate_stored_manifest.mjs --check && node --test scripts/stored_manifest_contract.test.mjs",
-    "agent-work:check": "go run ./pkg/agentwork/internal/generate --check"
+    "agent-work:check": "go run ./internal/agentcontractgenerate --check"
   },
   "devDependencies": {
     "@babel/core": "7.29.7",

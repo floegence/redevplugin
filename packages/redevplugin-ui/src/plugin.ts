@@ -1,4 +1,6 @@
 export { PluginBridgeClient } from "./surface.js";
+export { mountCapabilityView } from "./capability-view.js";
+export type { CapabilityView, CapabilityViewModule, CapabilityViewMount, MountCapabilityViewOptions } from "./capability-view.js";
 export { PluginFilesClient, PluginFileHandle, PluginFileWriteError } from "./files.js";
 export type { PluginFileResource, PluginFileSelectionOptions, PluginFileOpenOptions, PluginFileStat, PluginDirectoryEntry } from "./files.js";
 export { PluginBridgeError } from "./errors.js";

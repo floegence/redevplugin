@@ -71,6 +71,12 @@ revision, and revoke epoch. It never relies on an origin check alone.
 
 ## Bridge Contract
 
+Host capabilities can provide an official view through `mountCapabilityView`.
+It loads immutable same-origin modules and styles under the admitted asset
+session, mounts them in a ShadowRoot, and gives them the existing plugin bridge.
+See [scoped Agent conversations](../host-agent-conversations.md) for the
+versioned manifest, host registration and framework-neutral author API.
+
 PluginBridgeClient from @floegence/redevplugin-ui/plugin claims one private
 application port. It provides ready, call, execution observation/cancellation,
 context, lifecycle, and file export. Request IDs are monotonically increasing;

@@ -502,6 +502,13 @@ the generated `@floegence/redevplugin-ui/agent-work` client through the existing
 bridge. See [host scheduled work](docs/host-scheduled-work.md) for recovery,
 calendar behavior and ownership.
 
+For continuous, business-owned conversations, `pkg/agentconversation` and the
+`@floegence/redevplugin-ui/agent-conversation` client provide scoped binding,
+conversation lifecycle, public observation and official host-view mounting.
+Trusted capability adapters can invoke selected native plugin methods through
+the existing authorization and confirmation pipeline. See
+[scoped Agent conversations](docs/host-agent-conversations.md).
+
 ## Documentation
 
 - [Runtime architecture](docs/architecture/plugin-platform-runtime.md)

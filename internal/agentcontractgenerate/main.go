@@ -24,7 +24,13 @@ func main() {
 		}
 		root = parent
 	}
-	raw, err := os.ReadFile(filepath.Join(root, "spec/plugin/agent-work-contract.json"))
+	for _, artifact := range []struct{ name, directory string }{{"agent-work", "agentwork"}, {"agent-conversation", "agentconversation"}} {
+		generate(root, artifact.name, artifact.directory)
+	}
+}
+
+func generate(root, name, directory string) {
+	raw, err := os.ReadFile(filepath.Join(root, "spec/plugin/"+name+"-contract.json"))
 	if err != nil {
 		panic(err)
 	}
@@ -37,7 +43,7 @@ func main() {
 		panic(err)
 	}
 	client = []byte(strings.Replace(string(client), "\"@floegence/redevplugin-ui/plugin\"", "\"./plugin.js\"", 1))
-	outputs := map[string][]byte{"pkg/agentwork/contract.gen.json": raw, "packages/redevplugin-ui/src/agent-work.gen.ts": client}
+	outputs := map[string][]byte{"pkg/" + directory + "/contract.gen.json": raw, "packages/redevplugin-ui/src/" + name + ".gen.ts": client}
 	for path, content := range outputs {
 		path = filepath.Join(root, path)
 		if len(os.Args) > 1 && os.Args[1] == "--check" {

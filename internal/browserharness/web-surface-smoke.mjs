@@ -127,6 +127,22 @@ if (process.argv[2] === "--build") {
     await frames[0].getByRole("status").filter({ hasText: /^Saved$/ }).waitFor();
     assert.equal(await frames[1].getByLabel("Selected document").inputValue(), "");
 
+    for (const frame of frames) await frame.waitForFunction(() => globalThis.appState?.hostViewReady);
+    const viewButton = frames[0].getByRole("button", { name: "Read from host view", exact: true });
+    assert.equal(await viewButton.evaluate(button => getComputedStyle(button).color), "rgb(12, 34, 56)");
+    await viewButton.click();
+    await viewButton.evaluate(button => new Promise(resolve => {
+      if (button.dataset.result) return resolve();
+      const observer = new MutationObserver(() => { if (button.dataset.result) { observer.disconnect(); resolve(); } });
+      observer.observe(button, { attributes: true });
+    }));
+    assert.equal(await viewButton.getAttribute("data-result"), "Saved 中文 document");
+    assert.notEqual(await frames[0].getByRole("button", { name: "Apply", exact: true }).evaluate(button => getComputedStyle(button).color), "rgb(12, 34, 56)", "host styles remain inside their own view");
+    await frames[0].evaluate(() => globalThis.detachHostView());
+    assert.equal(await viewButton.count(), 0);
+    assert.equal(await frames[0].evaluate(() => globalThis.abortHostView()), true, "aborting a slow mount disposes its late result");
+    assert.equal(await frames[0].getByLabel("Selected document").inputValue(), "Saved 中文 document", "detaching the view keeps the application state");
+
     for (const frame of frames) await frame.waitForFunction(() => globalThis.appState?.methodsReady);
     const saved = await frames[0].evaluate(() => globalThis.storageListProbe(true));
     assert.equal(saved.before, 0, "empty private storage must list successfully");

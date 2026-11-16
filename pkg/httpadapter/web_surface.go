@@ -103,6 +103,27 @@ func serveWebSurface(platform *host.Host, resolve WebSurfaceOrigin, w http.Respo
 		return
 	}
 	w.Header().Set("Content-Security-Policy", webSurfaceCSP+"; frame-ancestors "+session.ParentOrigin)
+	if internal && strings.HasPrefix(route, "capability-views/") {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		binding, assetPath, ok := strings.Cut(strings.TrimPrefix(route, "capability-views/"), "/")
+		if !ok || binding == "" || r.URL.RawQuery != "" {
+			http.NotFound(w, r)
+			return
+		}
+		asset, err := platform.ReadCapabilityView(r.Context(), host.ReadCapabilityViewRequest{WebSurfaceRequest: request, BindingID: binding, Path: assetPath})
+		if err != nil {
+			http.Error(w, "Capability view unavailable", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", asset.ContentType)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(asset.Content)
+		}
+		return
+	}
 	if internal && (route == "websocket" || route == "websocket/connect") {
 		serveWebSocket(platform, w, r, request, route)
 		return

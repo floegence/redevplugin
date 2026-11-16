@@ -9,13 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/v3/pkg/execution"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 )
 
-func surfaceMethodsFixture(t *testing.T) []byte {
+func surfaceMethodsFixture(t *testing.T, contracts ...capabilitycontract.KnownContract) []byte {
 	t.Helper()
 	var m map[string]any
 	if err := json.Unmarshal([]byte(fixtureManifestJSON()), &m); err != nil {
@@ -29,6 +30,12 @@ func surfaceMethodsFixture(t *testing.T) []byte {
 	}
 	m["methods"] = append(m["methods"].([]any), map[string]any{"method": "document.operation", "effect": "write", "execution": "operation", "cancel_policy": map[string]any{"cancelable": true, "disable_behavior": "cancel", "uninstall_behavior": "cancel_then_block_delete", "ack_timeout_ms": 2000}, "route": map[string]any{"kind": "surface", "surface_id": "lifecycle.view"}, "request_schema": empty, "response_schema": empty})
 	m["intents"] = []any{map[string]any{"intent_id": "document.operation", "method": "document.operation"}, map[string]any{"intent_id": "document.read", "method": "document.read"}, map[string]any{"intent_id": "document.apply", "method": "document.apply"}, map[string]any{"intent_id": "document.confirm", "method": "document.confirm"}}
+	for _, contract := range contracts {
+		m["capability_bindings"] = []any{map[string]any{"binding_id": "agent", "contract": contract.Pin}}
+		for _, method := range contract.Contract.Methods {
+			m["methods"] = append(m["methods"].([]any), map[string]any{"method": method.Name, "route": map[string]any{"kind": "capability", "binding_id": "agent", "target_method": method.Name}})
+		}
+	}
 	root := t.TempDir()
 	raw, err := json.Marshal(m)
 	if err != nil {

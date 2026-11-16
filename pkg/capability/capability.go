@@ -308,6 +308,7 @@ type Registration struct {
 	Contract        capabilitycontract.KnownContract
 	TargetProjector TargetProjector
 	Adapter         Adapter
+	View            *ViewBundle
 }
 
 type Registry struct {

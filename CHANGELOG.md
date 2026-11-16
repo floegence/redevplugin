@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.30.0
+
+- Publish scoped Agent conversation binding, lifecycle, public observation and generated author SDK contracts without introducing another Agent runtime.
+- Serve immutable official capability views inside admitted plugin origins with isolated styles and existing bridge authority.
+- Allow trusted capability adapters to invoke native plugin methods through the existing permission, confirmation, target and execution pipeline.
+- Qualify view mounting, exact receiver dispatch, request uncertainty, revision conflicts, confirmation replay and revocation through contract, SDK and real-browser tests.
+
 ## v3.29.0
 
 - Add explicit application first-presentation commitment without blocking authorized bridge initialization; `surface.presentation.v1` lets older Hosts reject incompatible packages before installation.

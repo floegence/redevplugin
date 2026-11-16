@@ -7,7 +7,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/capabilitycontract"
 )
 
-//go:generate go run ./internal/generate
+//go:generate go run ../../internal/agentcontractgenerate
 
 //go:embed contract.gen.json
 var contractArtifact []byte

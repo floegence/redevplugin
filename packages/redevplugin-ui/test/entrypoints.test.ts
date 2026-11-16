@@ -111,6 +111,7 @@ test("Web application entrypoint exposes bounded author APIs without host manage
     "callCapabilitySync",
     "createPluginProcessClient",
     "isCapabilityBusinessError",
+    "mountCapabilityView",
     "openPluginConnection",
     "PluginResourceError",
     "callPluginActionOperation",

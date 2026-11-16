@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/capability-view.schema.json",
+  "title": "Capability view manifest",
+  "description": "Immutable host-owned presentation assets served within an admitted plugin origin at /_redevplugin_web/capability-views/{binding_id}/. The binding must resolve to the exact declared installed capability pin. A view receives only the plugin bridge. Disposing a view never cancels accepted capability work.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "module", "styles"],
+  "properties": {
+    "schema_version": { "const": "redevplugin.capability_view.v1" },
+    "module": { "$ref": "#/$defs/path" },
+    "styles": { "type": "array", "maxItems": 1024, "uniqueItems": true, "items": { "$ref": "#/$defs/path" } }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*$"
+    }
+  }
+}
