@@ -363,3 +363,5 @@ layout-affecting local state, then call `bridge.present()` after `bridge.ready()
 Long external requests may continue inside a stable skeleton. Keep initial
 unknown data separate from a confirmed empty result, preserve successful content
 during refresh, and never reset an already presented surface for ordinary updates.
+
+Explicit-presentation applications declare `surface.presentation.v1` in `api.required_features`; older Hosts reject that requirement before installation.

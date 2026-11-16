@@ -180,6 +180,7 @@ func templateFiles(pluginID, displayName, template string) (map[string][]byte, e
 		manifestDoc.Storage = &manifest.StorageSpec{Stores: []manifest.StoreSpec{{StoreID: "imports", Kind: "files", Scope: "user", QuotaBytes: 128 << 20, SchemaVersion: 1}}}
 		manifestDoc.Surfaces[0].Web.Storage = []manifest.StorageBrokerAccessSpec{{StoreID: "imports", Operations: []string{"read", "write", "list", "delete"}}}
 	}
+	manifestDoc.API.RequiredFeatures = append(manifestDoc.API.RequiredFeatures, manifest.FeatureSurfacePresentation)
 	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
 	if err != nil {
 		return nil, err

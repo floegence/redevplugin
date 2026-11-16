@@ -12,7 +12,8 @@
   "api": {
     "major": 1,
     "required_features": [
-      "storage.transactions.v1"
+      "storage.transactions.v1",
+      "surface.presentation.v1"
     ],
     "optional_features": []
   },

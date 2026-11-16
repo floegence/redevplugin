@@ -4171,7 +4171,7 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        StoredManifestRequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1" | "background.interval.v1" | "surface.resources.v1" | "storage.transactions.v1")[];
+        StoredManifestRequiredFeatures: ("io.stream.v1" | "fs.workspace.v1" | "fs.home.v1" | "fs.environment.v1" | "fs.watch.v1" | "net.http.v1" | "net.websocket.v1" | "net.tcp.v1" | "net.udp.v1" | "process.local.v1" | "authorization.scoped.v1" | "background.method.v1" | "fs.selected.v1" | "data.upgrade.v1" | "background.interval.v1" | "surface.resources.v1" | "storage.transactions.v1" | "surface.presentation.v1")[];
         StoredManifestOptionalFeatures: string[];
         StoredManifestNetworkAccess: {
             connector_id: string;

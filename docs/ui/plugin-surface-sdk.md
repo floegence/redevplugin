@@ -549,6 +549,11 @@ Native desktop blur/minimize behavior must be qualified by the consuming host.
 
 ## First presentation
 
+Declare `surface.presentation.v1` in `api.required_features` so older Hosts
+reject incompatible packages during inspection instead of installing an
+application they cannot present. This is a platform feature, not a permission.
+Generated templates and examples declare it.
+
 `PluginBridgeClient({ presentation: "explicit" })` claims first-presentation
 ownership synchronously from the entry module, before document readiness.
 `await bridge.ready()` enables ordinary authorized initialization calls without

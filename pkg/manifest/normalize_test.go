@@ -81,3 +81,17 @@ func TestDecodeCanonicalNeverReturnsBytesForInvalidManifest(t *testing.T) {
 		})
 	}
 }
+
+func TestFirstPresentationFeatureIsExplicitAndClosed(t *testing.T) {
+	for _, feature := range []string{"surface.presentation.v1", "surface.presentation.v2"} {
+		raw := bytes.Replace(v9TestManifest(""), []byte(`"optional_features":[]`), []byte(`"required_features":["`+feature+`"]`), 1)
+		decoded, err := Decode(bytes.NewReader(raw))
+		if feature == "surface.presentation.v1" {
+			if err != nil || len(decoded.RequiredFeatureIDs()) != 1 || string(decoded.RequiredFeatureIDs()[0]) != feature {
+				t.Fatalf("explicit first presentation requirement = %#v, %v", decoded, err)
+			}
+		} else if err == nil {
+			t.Fatal("unknown first presentation feature was accepted")
+		}
+	}
+}

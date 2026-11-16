@@ -10,6 +10,7 @@ type PermissionID string
 const (
 	FeatureStorageTransactions FeatureID = "storage.transactions.v1"
 	FeatureSurfaceResources    FeatureID = "surface.resources.v1"
+	FeatureSurfacePresentation FeatureID = "surface.presentation.v1"
 	FeatureIOStream            FeatureID = "io.stream.v1"
 	FeatureFSWorkspace         FeatureID = "fs.workspace.v1"
 	FeatureFSHome              FeatureID = "fs.home.v1"

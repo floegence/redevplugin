@@ -52,7 +52,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 255,
-          "description": "For GitHub distribution, generated as <publisher_id>.<slug>; slug is 1\u201380 lowercase ASCII letters, digits and single separating hyphens. Hosts independently validate against the observed repository."
+          "description": "For GitHub distribution, generated as <publisher_id>.<slug>; slug is 1–80 lowercase ASCII letters, digits and single separating hyphens. Hosts independently validate against the observed repository."
         },
         "display_name": {
           "type": "string",
@@ -1942,7 +1942,8 @@
           "data.upgrade.v1",
           "background.interval.v1",
           "surface.resources.v1",
-          "storage.transactions.v1"
+          "storage.transactions.v1",
+          "surface.presentation.v1"
         ]
       }
     },

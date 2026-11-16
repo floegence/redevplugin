@@ -2104,7 +2104,8 @@ export const sourceManifestJSONSchema = {
           "data.upgrade.v1",
           "background.interval.v1",
           "surface.resources.v1",
-          "storage.transactions.v1"
+          "storage.transactions.v1",
+          "surface.presentation.v1"
         ]
       }
     },
