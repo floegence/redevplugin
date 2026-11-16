@@ -497,7 +497,7 @@ jobs:
                   raise SystemExit(f"Rust publication dependency metadata mismatch for {name}")
           print("verified immutable Rust package bytes")
           PY
-      - uses: rust-lang/crates-io-auth-action@d6b091a10d7f9b30e4c05478289e94fb309882c5 # main
+      - uses: rust-lang/crates-io-auth-action@dc10531605597d48d51c6d1005a2b3861698940b # main
         id: crates-auth
       - name: Publish exact crate graph in dependency order
         env:
