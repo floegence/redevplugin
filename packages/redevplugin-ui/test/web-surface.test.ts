@@ -735,13 +735,21 @@ test("plugin bridge exports one bounded file as transferred bytes", async () => 
 
   for (const invalid of [
     { fileName: "../diagram.png", mediaType: "image/png", bytes: source },
-    { fileName: "diagram.exe", mediaType: "application/octet-stream", bytes: source },
-    { fileName: "diagram.png", mediaType: "image/png", bytes: new Uint8Array() },
+    { fileName: "diagram.png", mediaType: "invalid/media-type", bytes: source },
+    { fileName: "large.bin", mediaType: "application/octet-stream", bytes: new Uint8Array(16 * 1024 * 1024 + 1) },
   ]) {
     assert.throws(
       () => client.exportFile(invalid as Parameters<PluginBridgeClient["exportFile"]>[0]),
       (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
     );
+  }
+  for (const [index, mediaType] of ["application/pdf", "application/zip", "application/octet-stream"].entries()) {
+    const saved = client.exportFile({ fileName: `export-${index}.bin`, mediaType: mediaType as "application/pdf" | "application/zip" | "application/octet-stream", bytes: new Uint8Array(index) });
+    const frame = pluginPort.sent.at(-1) as { id: string; media_type: string; content: ArrayBuffer };
+    assert.equal(frame.media_type, mediaType);
+    assert.equal(frame.content.byteLength, index);
+    rendererPort.postMessage({ type: "redevplugin.bridge.response", id: frame.id, ok: true });
+    await saved;
   }
   client.dispose();
 });

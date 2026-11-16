@@ -297,11 +297,21 @@
             "image/jpeg",
             "image/webp",
             "image/svg+xml",
-            "text/plain"
+            "text/plain",
+            "application/pdf",
+            "application/zip",
+            "application/octet-stream",
+            "application/json",
+            "text/markdown",
+            "text/csv",
+            "text/html",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
           ]
         },
         "content": {
-          "description": "One transferred ArrayBuffer containing 1-16777216 file bytes. The runtime validates the structured-clone object outside JSON Schema."
+          "description": "One transferred ArrayBuffer containing 0-16777216 file bytes. The host saves bytes only after explicit destination authorization; media type never authorizes execution or inline rendering."
         }
       },
       "x-redevplugin-transfer": [

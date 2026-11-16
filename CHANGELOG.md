@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.31.0
+
+- Expose current-authority process byte streams for trusted capability adapters, with independent process grants, bounded leases, exact source ownership and automatic cleanup.
+- Route trusted capability HTTP requests through declared connectors, current connection grants and host-owned credential injection; retain source expiry and close idle streams on authority loss.
+- Let Agent component profiles explicitly select an installed network connector without granting it.
+- Extend host-authorized file export to ordinary document, archive and binary media, preserving transferred-byte limits and explicit destination approval.
+- Verify process and HTTP expiry, cancellation, Host shutdown, missing grants, exact targets, redirects, duplicate leases and document exports.
+
 ## v3.30.0
 
 - Publish scoped Agent conversation binding, lifecycle, public observation and generated author SDK contracts without introducing another Agent runtime.

@@ -143,7 +143,7 @@ function validateFileExportSchema(schema) {
       properties?.type?.const !== "redevplugin.ui.file.export" ||
       properties?.id?.$ref !== "#/$defs/request_id" ||
       properties?.file_name?.type !== "string" || properties.file_name.minLength !== 1 || properties.file_name.maxLength !== 128 ||
-      JSON.stringify(properties?.media_type?.enum) !== JSON.stringify(["image/png", "image/jpeg", "image/webp", "image/svg+xml", "text/plain"]) ||
+      JSON.stringify(properties?.media_type?.enum) !== JSON.stringify(["image/png", "image/jpeg", "image/webp", "image/svg+xml", "text/plain", "application/pdf", "application/zip", "application/octet-stream", "application/json", "text/markdown", "text/csv", "text/html", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.presentationml.presentation"]) ||
       !isRecord(properties?.content) ||
       JSON.stringify(fileExport["x-redevplugin-transfer"]) !== JSON.stringify(["content"]) ||
       fileExport["x-redevplugin-host-authorization"] !== "The host explicitly authorizes every export; interaction metadata grants no authority.") {

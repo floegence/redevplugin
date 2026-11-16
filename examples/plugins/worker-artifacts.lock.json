@@ -5,8 +5,8 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.98.0-bookworm@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f",
   "source_files": {
-    "Cargo.lock": "efd6ee36eab5f1f8bf903b776842b8173e5e29e4d335be59a7ff444d42d016b6",
-    "Cargo.toml": "9569f40d47dacfe58d14f4033ccecd0bff49e4d764db639e7c5e5cf0d658d1e6",
+    "Cargo.lock": "3127b32b0b40ddda8d2a504ea2d7295c633b37582cc5800388dda27fb948ce49",
+    "Cargo.toml": "572b390903e77dde853e9d187fb03836473c1881438ad9cf3a2d61dd5fccb1e8",
     "crates/redevplugin-worker-sdk/Cargo.toml": "2b658c690b4e39b72b12308afd590a04a52b864500ee9fecdb8b8cffdccfd749",
     "crates/redevplugin-worker-sdk/LICENSE": "c2ef56768227918d97d210272f390b19cda62865ff23829278f5c0a7cba5051b",
     "crates/redevplugin-worker-sdk/README.md": "6c9037ad2371106e86a9e0c13ff9834a5d80b2774f89d32a039bf33cbab394d0",
@@ -35,8 +35,8 @@
     "scripts/canonical_wasm_builder.mjs": "5a71f33f75cb42fbae5781af058177b30d3fccfea4df00392e6d86480d569a98"
   },
   "artifacts": {
-    "examples/plugins/memos/workers/memos.wasm": "1c0c038a4bf242ff588002c76474ae56091928361de3b1b73d4266d8de0df92f",
-    "examples/plugins/sky-strike/workers/sky-strike.wasm": "878f4339c61282f8fdb16764784d812f741af988e7488bdec10b6acd368bd666",
-    "examples/plugins/weather/workers/weather.wasm": "a512d927f2b43b83ed62248635877aba61288236bec50d57e90aa979d867ba70"
+    "examples/plugins/memos/workers/memos.wasm": "a8032dc3f2309a22e2e8def03fa7b539b40549a04ed37d36951f10e2f5ea7a5a",
+    "examples/plugins/sky-strike/workers/sky-strike.wasm": "dae45d74f353c35763697a7b6d372269489779f1d651d288156fd15723e8b723",
+    "examples/plugins/weather/workers/weather.wasm": "a4940ef84803eee76f9984491f73a81988eb8d9448703c555ffc50aec6b76a23"
   }
 }

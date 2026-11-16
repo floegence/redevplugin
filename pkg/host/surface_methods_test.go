@@ -17,6 +17,9 @@ import (
 )
 
 func surfaceMethodsFixture(t *testing.T, contracts ...capabilitycontract.KnownContract) []byte {
+	return surfaceMethodsFixtureWith(t, nil, contracts...)
+}
+func surfaceMethodsFixtureWith(t *testing.T, edit func(map[string]any), contracts ...capabilitycontract.KnownContract) []byte {
 	t.Helper()
 	var m map[string]any
 	if err := json.Unmarshal([]byte(fixtureManifestJSON()), &m); err != nil {
@@ -35,6 +38,9 @@ func surfaceMethodsFixture(t *testing.T, contracts ...capabilitycontract.KnownCo
 		for _, method := range contract.Contract.Methods {
 			m["methods"] = append(m["methods"].([]any), map[string]any{"method": method.Name, "route": map[string]any{"kind": "capability", "binding_id": "agent", "target_method": method.Name}})
 		}
+	}
+	if edit != nil {
+		edit(m)
 	}
 	root := t.TempDir()
 	raw, err := json.Marshal(m)

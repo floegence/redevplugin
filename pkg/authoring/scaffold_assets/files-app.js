@@ -438,7 +438,17 @@ var pluginSurfaceFileExportMediaTypes = [
   "image/jpeg",
   "image/webp",
   "image/svg+xml",
-  "text/plain"
+  "text/plain",
+  "application/pdf",
+  "application/zip",
+  "application/octet-stream",
+  "application/json",
+  "text/markdown",
+  "text/csv",
+  "text/html",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 ];
 var nativeBridgeClock = {
   schedule(callback, delayMs) {
@@ -646,7 +656,7 @@ var PluginBridgeClient = class {
   }
   exportFile(request2, options = {}) {
     this.#assertActive();
-    if (!validFileExportName(request2?.fileName) || !validFileExportMediaType(request2?.mediaType) || !(request2?.bytes instanceof Uint8Array) || request2.bytes.byteLength === 0 || request2.bytes.byteLength > pluginSurfaceFileExportMaxBytes) {
+    if (!validFileExportName(request2?.fileName) || !validFileExportMediaType(request2?.mediaType) || !(request2?.bytes instanceof Uint8Array) || request2.bytes.byteLength > pluginSurfaceFileExportMaxBytes) {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin file export request is invalid");
     }
     const id = this.#requestID("file");

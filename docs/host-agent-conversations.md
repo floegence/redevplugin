@@ -132,3 +132,36 @@ gateway tokens or auto-approve the method because an Agent requested it. Worker
 methods use their published runtime; surface methods require their exact live
 receiver and never substitute another window after closure. Dispatched effects
 with an uncertain result retain the existing `mutation.OutcomeUnknown` contract.
+
+## External protocol processes
+
+A trusted capability adapter can call `Host.OpenCapabilityProcess` with its
+original `ExecutionBinding` and `process.StartRequest`. Admission requires an
+execute source, the current authenticated owner, an installed `process`
+declaration, an explicit `process.local` grant and current local policy. The
+adapter must first validate its selected component; component text is not a grant.
+The returned stdin/stdout/stderr streams use the existing process supervisor,
+secret resolver and resource ceilings. A byte-stream gap is an error, never
+silently dropped protocol data. The platform caps live streams at four per
+installation and 32 per Host, namespaces launch keys, retains original expiry,
+rechecks authority before reads/writes, and closes processes on cancellation,
+source-surface closure, revocation, expiry and Host shutdown. Closing is idempotent;
+a lost launch response never authorizes an automatic replacement process.
+This Go-only API adds no plugin HTTP route, native backend or Rust hostcall.
+
+For remote components, `Host.OpenCapabilityHTTP` sends a single request through
+an explicit installed connector. Agent component profiles can name that connector
+with `connector_id`; a URL alone cannot select another plugin's network authority.
+The trusted adapter enforces its reviewed component and operation before calling
+this API. Admission independently requires `network.client`, the original execute
+source and current owner. Fixed destinations and reviewed configurable targets,
+HTTP methods, private-network admission, credentials and TLS stay under the existing
+connection broker. Redirects are rejected without replay. Idle response bodies
+close on source expiry, cancellation, revocation, surface closure and Host shutdown.
+No process or network API treats component credentials or a profile declaration
+as permission, or places credentials into the plugin's browser context.
+
+`PluginBridgeClient.exportFile` also supports PDF, ZIP, JSON, CSV, Markdown,
+HTML, Office files and opaque binary bytes, including empty files, within its
+16 MiB transfer limit. Every export still requires a host-selected destination.
+The host saves the bytes; a media label never permits execution or inline loading.

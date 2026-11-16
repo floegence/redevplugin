@@ -123,6 +123,16 @@ export const pluginSurfaceFileExportMediaTypes = [
   "image/webp",
   "image/svg+xml",
   "text/plain",
+  "application/pdf",
+  "application/zip",
+  "application/octet-stream",
+  "application/json",
+  "text/markdown",
+  "text/csv",
+  "text/html",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 ] as const;
 
 export type PluginSurfaceFileExportMediaType = (typeof pluginSurfaceFileExportMediaTypes)[number];
@@ -587,8 +597,7 @@ export class PluginBridgeClient {
   exportFile(request: PluginFileExportRequest, options: PluginBridgeRequestOptions = {}): Promise<void> {
     this.#assertActive();
     if (!validFileExportName(request?.fileName) || !validFileExportMediaType(request?.mediaType) ||
-        !(request?.bytes instanceof Uint8Array) || request.bytes.byteLength === 0 ||
-        request.bytes.byteLength > pluginSurfaceFileExportMaxBytes) {
+        !(request?.bytes instanceof Uint8Array) || request.bytes.byteLength > pluginSurfaceFileExportMaxBytes) {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin file export request is invalid");
     }
     const id = this.#requestID("file");
@@ -3184,7 +3193,7 @@ function isSurfaceFileExportMessage(value: SurfaceFileExportCandidate): value is
   ]) && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") &&
     validBridgeRequestID(value.id, "file") && validFileExportName(value.file_name) &&
     validFileExportMediaType(value.media_type) && value.content instanceof ArrayBuffer &&
-    value.content.byteLength > 0 && value.content.byteLength <= pluginSurfaceFileExportMaxBytes;
+    value.content.byteLength <= pluginSurfaceFileExportMaxBytes;
 }
 
 function isSurfaceInteractionMessage(value: unknown): value is SurfaceInteractionMessage {

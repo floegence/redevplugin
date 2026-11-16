@@ -991,7 +991,17 @@ var pluginSurfaceFileExportMediaTypes = [
   "image/jpeg",
   "image/webp",
   "image/svg+xml",
-  "text/plain"
+  "text/plain",
+  "application/pdf",
+  "application/zip",
+  "application/octet-stream",
+  "application/json",
+  "text/markdown",
+  "text/csv",
+  "text/html",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 ];
 var maxPendingPluginBridgeRequests = 256;
 var maxPluginBridgeMessageBytes = 1024 * 1024;
@@ -2889,7 +2899,7 @@ function isSurfaceFileExportMessage(value) {
     "file_name",
     "media_type",
     "content"
-  ]) && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") && validBridgeRequestID(value.id, "file") && validFileExportName(value.file_name) && validFileExportMediaType(value.media_type) && value.content instanceof ArrayBuffer && value.content.byteLength > 0 && value.content.byteLength <= pluginSurfaceFileExportMaxBytes;
+  ]) && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") && validBridgeRequestID(value.id, "file") && validFileExportName(value.file_name) && validFileExportMediaType(value.media_type) && value.content instanceof ArrayBuffer && value.content.byteLength <= pluginSurfaceFileExportMaxBytes;
 }
 function isSurfaceInteractionMessage(value) {
   if (!hasExactKeys(value, [
