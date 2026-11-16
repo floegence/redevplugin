@@ -1,5 +1,5 @@
 import { PluginBridgeClient, openPluginConnection, pluginKV } from "../../../packages/redevplugin-ui/src/plugin.js";
-const bridge = new PluginBridgeClient();
+const bridge = new PluginBridgeClient({ presentation: "explicit" });
 bridge.onContext(context => { document.documentElement.dataset.contextColorScheme = context.appearance.color_scheme; });
 await bridge.ready();
 const connection = await openPluginConnection("api");
@@ -106,3 +106,6 @@ Object.assign(globalThis, { performanceResource: async (index: number) => {
   const read = await performanceStore.read("sample");
   if (read?.value.index !== index || read.etag !== saved.etag) throw new Error("Resource roundtrip lost data");
 } });
+
+await (globalThis as { firstPresentationGate?: Promise<void> }).firstPresentationGate;
+bridge.present();

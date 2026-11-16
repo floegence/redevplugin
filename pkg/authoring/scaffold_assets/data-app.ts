@@ -1,6 +1,6 @@
 import { PluginBridgeClient, pluginKV, PluginResourceError } from "@floegence/redevplugin-ui/plugin";
 
-const bridge = new PluginBridgeClient();
+const bridge = new PluginBridgeClient({ presentation: "explicit" });
 const notes = pluginKV<{ message: string }>("documents");
 const root = document.createElement("main");
 root.className = "plugin-surface";
@@ -88,7 +88,8 @@ async function watch() {
     }
   } catch (error) { failure(error); }
 }
-void Promise.all([
+void bridge.ready().then(async () => {
+  await Promise.all([
   bridge.registerMethod("application.read", (_params, { signal }) => { signal.throwIfAborted(); return { message: editor.value, revision }; }),
   bridge.registerMethod("document.replace", (params, { signal }) => {
     signal.throwIfAborted();
@@ -98,4 +99,6 @@ void Promise.all([
     status.textContent = "Action applied to your draft. Review, undo, or save."; controls();
     return { applied: true, revision };
   }),
-]).then(async () => { await load(); void watch(); }).catch(failure);
+]).then(load).catch(failure);
+  if (!lifetime.signal.aborted) { bridge.present(); void watch(); }
+}).catch(failure);

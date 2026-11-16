@@ -60,6 +60,39 @@ if (process.argv[2] === "--build") {
       }
       await cold.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
     } finally { releaseModule(); await cold.close(); }
+    for (const cancel of [false, true]) {
+      const delayed = await browser.newPage();
+      try {
+        await delayed.addInitScript(() => {
+          if (window !== top) globalThis.firstPresentationGate = new Promise(resolve => { globalThis.commitFirstPresentation = resolve; });
+        });
+        await delayed.goto(process.argv[3] + "?mode=presentation");
+        await delayed.waitForFunction(() => document.querySelector("iframe")?.src.includes(".localhost"));
+        const child = delayed.frames().find(frame => frame !== delayed.mainFrame());
+        await child.waitForFunction(() => globalThis.appState?.methodsReady);
+        assert.equal(await delayed.evaluate(() => testState.ready), false, "bridge calls complete before presentation");
+        assert.equal(await delayed.locator("iframe").evaluate(node => node.style.opacity), "0");
+        await delayed.evaluate(() => testSlots[0].updateContext({
+          schema_version: "redevplugin.surface_context.v1", revision: 2,
+          appearance: { color_scheme: "light", colors: {
+            canvas: "#ffffff", surface: "#ffffff", surface_elevated: "#ffffff", text: "#000000", text_muted: "#444444", border: "#888888",
+            accent: "#0066aa", accent_text: "#ffffff", success: "#008844", warning: "#886600", danger: "#cc0000", focus: "#0066aa",
+          } }, locale: { language_tag: "en-US", direction: "ltr" },
+        }));
+        await child.waitForFunction(() => document.documentElement.dataset.contextColorScheme === "light");
+        if (cancel) {
+          await delayed.evaluate(() => testSlots[0].dispose());
+          assert.equal(await delayed.locator("iframe").count(), 0, "retirement prevents a delayed reveal");
+        } else {
+          await child.evaluate(() => commitFirstPresentation());
+          await delayed.waitForFunction(() => testState.ready || testState.error);
+          assert.equal(await delayed.evaluate(() => testState.error), "");
+          assert.equal(await child.evaluate(() => document.documentElement.dataset.contextColorScheme), "light");
+          assert.equal(await delayed.locator("iframe").evaluate(node => node.style.opacity), "");
+          await delayed.evaluate(() => testSlots[0].close());
+        }
+      } finally { await delayed.close(); }
+    }
     await page.goto(process.argv[3]);
     await page.waitForFunction(() => globalThis.testState?.ready || globalThis.testState?.error);
     assert.equal(await page.evaluate(() => globalThis.testState.error), "");

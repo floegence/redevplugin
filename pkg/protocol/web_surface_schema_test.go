@@ -63,7 +63,7 @@ func TestWebSurfaceTransportRejectsRetiredAndAuthorityBearingMessages(t *testing
 	}
 	for _, message := range []map[string]any{
 		{"type": "redevplugin.surface.entry_ready", "entry_path": "/index.html", "document_id": "document_12345678"},
-		{"type": "redevplugin.surface.app_ready", "frame_generation_id": "frame_12345678"},
+		{"type": "redevplugin.surface.app_ready", "frame_generation_id": "frame_12345678", "context_revision": 1},
 		{"type": "redevplugin.surface.initialize", "frame_generation_id": "frame_12345678", "surface_handle": "surface_12345678", "entry_path": "/index.html"},
 	} {
 		if err := schema.Validate(message); err != nil {

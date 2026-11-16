@@ -7,6 +7,18 @@
   let parentOrigin, port, frameGeneration, surfaceHandle, context;
   let initialized = false, stopped = false, ready = false, claimed = false;
   let appPeer, appPort, sequence = 0, contextMenu = false;
+  let clientReady = false, explicitPresentation = false, presented = false, parsed = false, deliveredRevision = 0, reportedRevision = -1;
+  const present = () => {
+    const revision = context?.revision ?? 0;
+    if (stopped || !parsed || (explicitPresentation && !presented) || (claimed && deliveredRevision < revision) || reportedRevision === revision) return;
+    reportedRevision = revision;
+    clearTimeout(deadline);
+    send({ type: "redevplugin.surface.app_ready", frame_generation_id: frameGeneration, context_revision: revision });
+  };
+  const deliverContext = () => {
+    if (!context || !clientReady) return;
+    appPeer.postMessage({ type: "redevplugin.bridge.context", context });
+  };
   const lockGetter = Object.getOwnPropertyDescriptor(Document.prototype, "pointerLockElement")?.get;
   const locked = lockGetter ? Function.call.bind(lockGetter, document) : () => null;
   const exitLock = document.exitPointerLock?.bind(document);
@@ -108,25 +120,26 @@
     if (stopped || initialized || message.frame_generation_id !== frameGeneration) return;
     initialized = true; surfaceHandle = message.surface_handle; context = message.context; contextMenu = message.context_menu === true;
     const channel = new MessageChannel(); appPeer = channel.port1; appPort = channel.port2;
-    let contextDelivered;
-    const initialContext = new Promise(resolve => { contextDelivered = resolve; });
+    // Registered after the SDK listener: synchronous context subscribers commit
+    // theme changes before the platform acknowledges this exact revision.
+    let observingContext = false;
     appPeer.onmessage = e => {
       const value = e.data;
       if (value?.type === "redevplugin.bridge.client_ready") {
-        if (context) {
-          // The SDK has registered its listener before client_ready. Observe the
-          // same delivery after it, so synchronous context-driven mounting runs
-          // before the parent reveals this document. No paint or RAF is needed.
-          const revision = context.revision;
-          const delivered = event => {
-            if (event.data?.type !== "redevplugin.bridge.context" || !(event.data.context?.revision >= revision)) return;
-            appPort.removeEventListener("message", delivered);
-            contextDelivered();
-          };
-          appPort.addEventListener("message", delivered, { signal: controller.signal });
-          appPeer.postMessage({ type: "redevplugin.bridge.context", context });
+        if (!observingContext) {
+          observingContext = true;
+          appPort.addEventListener("message", event => {
+            if (event.data?.type !== "redevplugin.bridge.context") return;
+            deliveredRevision = Math.max(deliveredRevision, event.data.context.revision);
+            present();
+          }, { signal: controller.signal });
         }
+        clientReady = true;
+        deliverContext();
         if (ready) appPeer.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+      } else if (value?.type === "redevplugin.bridge.present" && Object.keys(value).length === 1 && explicitPresentation) {
+        presented = true;
+        present();
       } else if (value?.type === "redevplugin.ui.file.export") {
         send({ ...value, type: "redevplugin.surface.file.export", frame_generation_id: frameGeneration, surface_handle: surfaceHandle }, [value.content]);
       } else if (value?.type === "redevplugin.bridge.file_io") {
@@ -136,7 +149,13 @@
       } else if (applicationMessages.has(value?.type)) send(value);
     };
     Object.defineProperty(globalThis, "__redevpluginWebBridge", {
-      value: Object.freeze({ claim() { if (claimed) return; claimed = true; return { surfaceHandle, port: appPort }; } }),
+      value: Object.freeze({ claim(options) {
+        if (claimed) return;
+        if (options !== undefined && (options?.presentation !== "explicit" || Object.keys(options).length !== 1)) throw new Error("Invalid presentation options");
+        if (options && reportedRevision >= 0) throw new Error("Explicit presentation must be claimed before document readiness");
+        claimed = true; explicitPresentation = options?.presentation === "explicit";
+        return { surfaceHandle, port: appPort, presentation: true };
+      } }),
       writable: false, configurable: false,
     });
     const response = await fetchResource(prefix + "document?path=" + encodeURIComponent(new URL(message.entry_path, location.origin).pathname));
@@ -152,10 +171,8 @@
     document.write(html); document.close();
     observe();
     await loaded;
-    if (claimed && context) await initialContext;
-    if (stopped) return;
-    clearTimeout(deadline);
-    send({ type: "redevplugin.surface.app_ready", frame_generation_id: frameGeneration });
+    parsed = true;
+    present();
   };
   const connect = event => {
     if (stopped || port || event.source !== parent || event.origin !== parentOrigin || event.data?.type !== "redevplugin.surface.port" || event.data.document_id !== documentID || event.ports.length !== 1) return;
@@ -172,7 +189,7 @@
         pointerLockAllowed = false; releaseLock();
       }
       if (m?.type === "redevplugin.surface.initialize") { void start(m).catch(fail); return; }
-      if (m?.type === "redevplugin.surface.context") { context = m.context; appPeer?.postMessage({ type: "redevplugin.bridge.context", context }); return; }
+      if (m?.type === "redevplugin.surface.context") { if (!context || m.context.revision > context.revision) { context = m.context; deliverContext(); present(); } return; }
       if (m?.type === "redevplugin.bridge.lifecycle" && m.event?.type === "ready") ready = true;
       if (m?.type === "redevplugin.bridge.lifecycle" && m.quiesce_id && !claimed) {
         send({ type: "redevplugin.surface.quiesce_ack", quiesce_id: m.quiesce_id }); return;

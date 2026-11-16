@@ -1712,6 +1712,8 @@ var PluginBridgeClient = class {
   #contextHandlers = /* @__PURE__ */ new Set();
   #context;
   #ready = false;
+  #explicitPresentation = false;
+  #presented = false;
   #readyPromise;
   #resolveReady;
   #rejectReady;
@@ -1721,7 +1723,8 @@ var PluginBridgeClient = class {
     void this.#handleMessage(event);
   };
   constructor(options = {}) {
-    const claimed = options.port ? { port: options.port, surfaceHandle: normalizeSurfaceHandle(options.surfaceHandle) } : claimWebPluginBridge();
+    const claimed = options.port ? { port: options.port, surfaceHandle: normalizeSurfaceHandle(options.surfaceHandle) } : claimWebPluginBridge(options.presentation);
+    this.#explicitPresentation = options.presentation === "explicit";
     this.surfaceHandle = claimed.surfaceHandle;
     this.timeoutMs = normalizeTimeout(options.timeoutMs);
     this.#clock = options.clock ?? nativeBridgeClock;
@@ -1738,6 +1741,16 @@ var PluginBridgeClient = class {
   ready() {
     this.#assertActive();
     return this.#ready ? Promise.resolve() : this.#readyPromise;
+  }
+  /** Commit the first stable UI after initial context, layout and local state restoration. */
+  present() {
+    this.#assertActive();
+    if (!this.#explicitPresentation || !this.#ready) {
+      throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Explicit presentation requires a ready application bridge");
+    }
+    if (this.#presented) return;
+    this.#port.postMessage({ type: "redevplugin.bridge.present" });
+    this.#presented = true;
   }
   call(method, params, options = {}) {
     const effect = options[pluginBridgeCapabilityEffect];
@@ -2092,14 +2105,18 @@ var PluginBridgeClient = class {
     return this.#lifecycleState === "active" || this.#lifecycleState === "quiescing" && this.#handlingLifecycle;
   }
 };
-function claimWebPluginBridge() {
+function claimWebPluginBridge(presentation) {
   const value = globalThis[webPluginBridgeGlobalKey];
   if (!isRecord(value) || typeof value.claim !== "function") {
     throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge is unavailable");
   }
-  const claimed = value.claim();
+  const claimed = value.claim(presentation ? { presentation } : void 0);
   if (!claimed || !isMessagePortLike(claimed.port) || !validOpaqueHandle(claimed.surfaceHandle, "surface")) {
     throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge was already claimed");
+  }
+  if (presentation && claimed.presentation !== true) {
+    claimed.port.close();
+    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "This platform does not support explicit first presentation");
   }
   return claimed;
 }
@@ -2872,7 +2889,8 @@ var EDIT_DELAY_MS = 700;
 var SEARCH_DELAY_MS = 250;
 var MAX_CONTENT_CHARS = 2e4;
 var bridge = new PluginBridgeClient({
-  timeoutMs: 2e4
+  timeoutMs: 2e4,
+  presentation: "explicit"
 });
 var utcOffsetMinutes = -(/* @__PURE__ */ new Date()).getTimezoneOffset();
 var state = createMutable({
@@ -2885,7 +2903,7 @@ var state = createMutable({
     view: "all",
     tag: "",
     date: "",
-    loading: false,
+    loading: true,
     errorMessage: ""
   },
   composer: {
@@ -2988,7 +3006,9 @@ async function initialize() {
     state.feed.errorMessage = readableError(error, "Memos is temporarily unavailable");
   } finally {
     state.ui.busy = false;
+    state.feed.loading = false;
     await render2();
+    if (!disposed) bridge.present();
   }
 }
 async function refreshFeed(advance, sequence = ++feedSequence) {

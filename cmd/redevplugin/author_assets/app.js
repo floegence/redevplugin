@@ -1680,7 +1680,7 @@ var PluginSurfaceHostImplementation = class {
         this.#openSignals?.portAcknowledged.resolve();
         return;
       }
-      if (hasExactKeys(data, ["type", "frame_generation_id"]) && data.type === "redevplugin.surface.app_ready" && data.frame_generation_id === this.frameGenerationId) {
+      if (hasExactKeys(data, ["type", "frame_generation_id", "context_revision"]) && data.type === "redevplugin.surface.app_ready" && data.frame_generation_id === this.frameGenerationId && data.context_revision === (this.#surfaceContext?.revision ?? 0)) {
         this.#openingPending.delete("app_ready");
         this.#openSignals?.appReady.resolve();
         return;
@@ -2532,6 +2532,7 @@ var PluginSurfaceSlot = class _PluginSurfaceSlot {
   element;
   #onStateChange;
   #onSurfaceClosed;
+  #context;
   #active;
   #opening;
   #transitionController;
@@ -2558,6 +2559,16 @@ var PluginSurfaceSlot = class _PluginSurfaceSlot {
       openPrepared: (preparedOptions) => this.#queueOpening(Promise.resolve(preparedOptions))
     });
     this.#setState("empty");
+  }
+  /** Publish the current host context without waiting for first presentation. */
+  updateContext(context) {
+    this.#assertActive();
+    const normalized = normalizePluginSurfaceContext(context);
+    if (this.#context && normalized.revision <= this.#context.revision) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context revision must increase monotonically");
+    }
+    (this.#opening ?? this.#active)?.updateContext(normalized);
+    this.#context = normalized;
   }
   #openLease(lease) {
     return this.#queueOpening(lease.options, lease);
@@ -2632,7 +2643,10 @@ var PluginSurfaceSlot = class _PluginSurfaceSlot {
     }
     let host;
     try {
-      host = createPluginSurfaceHostImplementation(resolvedOptions);
+      if (resolvedOptions.surfaceContext && (!this.#context || resolvedOptions.surfaceContext.revision > this.#context.revision)) {
+        this.#context = normalizePluginSurfaceContext(resolvedOptions.surfaceContext);
+      }
+      host = createPluginSurfaceHostImplementation(this.#context ? { ...resolvedOptions, surfaceContext: this.#context } : resolvedOptions);
     } catch (error2) {
       await this.#revokeOpening(lease);
       if (!this.#disposed && this.#transitionController === controller) {

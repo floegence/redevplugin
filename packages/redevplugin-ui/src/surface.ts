@@ -306,6 +306,8 @@ const nativeBridgeClock: PluginBridgeClock = {
 };
 
 export type PluginBridgeClientOptions = {
+  /** Keep the first document concealed until present() commits a stable view. */
+  presentation?: "explicit";
   timeoutMs?: number;
   clock?: PluginBridgeClock;
   port?: MessagePortLike;
@@ -340,10 +342,10 @@ type PendingCallOptions = {
 
 type PluginBridgeLifecycleState = "active" | "quiescing" | "quiesced" | "disposed";
 
-type WebBridgeClaim = { surfaceHandle: string; port: MessagePortLike };
+type WebBridgeClaim = { surfaceHandle: string; port: MessagePortLike; presentation?: boolean };
 
 type WebBridgeGlobal = {
-  claim(): WebBridgeClaim | undefined;
+  claim(options?: { presentation: "explicit" }): WebBridgeClaim | undefined;
 };
 
 const webPluginBridgeGlobalKey = "__redevpluginWebBridge";
@@ -373,6 +375,8 @@ export class PluginBridgeClient {
   #contextHandlers = new Set<(context: PluginSurfaceContext) => void>();
   #context?: PluginSurfaceContext;
   #ready = false;
+  #explicitPresentation = false;
+  #presented = false;
   #readyPromise: Promise<void>;
   #resolveReady!: () => void;
   #rejectReady!: (reason: unknown) => void;
@@ -385,7 +389,8 @@ export class PluginBridgeClient {
   constructor(options: PluginBridgeClientOptions = {}) {
     const claimed = options.port
       ? { port: options.port, surfaceHandle: normalizeSurfaceHandle(options.surfaceHandle) }
-      : claimWebPluginBridge();
+      : claimWebPluginBridge(options.presentation);
+    this.#explicitPresentation = options.presentation === "explicit";
     this.surfaceHandle = claimed.surfaceHandle;
     this.timeoutMs = normalizeTimeout(options.timeoutMs);
     this.#clock = options.clock ?? nativeBridgeClock;
@@ -403,6 +408,17 @@ export class PluginBridgeClient {
   ready(): Promise<void> {
     this.#assertActive();
     return this.#ready ? Promise.resolve() : this.#readyPromise;
+  }
+
+  /** Commit the first stable UI after initial context, layout and local state restoration. */
+  present(): void {
+    this.#assertActive();
+    if (!this.#explicitPresentation || !this.#ready) {
+      throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Explicit presentation requires a ready application bridge");
+    }
+    if (this.#presented) return;
+    this.#port.postMessage({ type: "redevplugin.bridge.present" });
+    this.#presented = true;
   }
 
   call<T = unknown>(
@@ -1798,7 +1814,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         this.#openSignals?.portAcknowledged.resolve();
         return;
       }
-      if (hasExactKeys(data, ["type", "frame_generation_id"]) && data.type === "redevplugin.surface.app_ready" && data.frame_generation_id === this.frameGenerationId) {
+      if (hasExactKeys(data, ["type", "frame_generation_id", "context_revision"]) && data.type === "redevplugin.surface.app_ready" && data.frame_generation_id === this.frameGenerationId && data.context_revision === (this.#surfaceContext?.revision ?? 0)) {
         this.#openingPending.delete("app_ready");
         this.#openSignals?.appReady.resolve();
         return;
@@ -2730,6 +2746,7 @@ export class PluginSurfaceSlot {
   readonly element: HTMLElement;
   #onStateChange?: PluginSurfaceSlotOptions["onStateChange"];
   #onSurfaceClosed?: PluginSurfaceSlotOptions["onSurfaceClosed"];
+  #context?: PluginSurfaceContext;
   #active?: PluginSurfaceHostImplementation;
   #opening?: PluginSurfaceHostImplementation;
   #transitionController?: AbortController;
@@ -2758,6 +2775,17 @@ export class PluginSurfaceSlot {
       openPrepared: (preparedOptions) => this.#queueOpening(Promise.resolve(preparedOptions)),
     });
     this.#setState("empty");
+  }
+
+  /** Publish the current host context without waiting for first presentation. */
+  updateContext(context: PluginSurfaceContext): void {
+    this.#assertActive();
+    const normalized = normalizePluginSurfaceContext(context);
+    if (this.#context && normalized.revision <= this.#context.revision) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context revision must increase monotonically");
+    }
+    (this.#opening ?? this.#active)?.updateContext(normalized);
+    this.#context = normalized;
   }
 
   #openLease(lease: PluginSurfaceOpeningLease): Promise<PluginSurfaceHost> {
@@ -2847,7 +2875,10 @@ export class PluginSurfaceSlot {
 
     let host: PluginSurfaceHostImplementation;
     try {
-      host = createPluginSurfaceHostImplementation(resolvedOptions);
+      if (resolvedOptions.surfaceContext && (!this.#context || resolvedOptions.surfaceContext.revision > this.#context.revision)) {
+        this.#context = normalizePluginSurfaceContext(resolvedOptions.surfaceContext);
+      }
+      host = createPluginSurfaceHostImplementation(this.#context ? { ...resolvedOptions, surfaceContext: this.#context } : resolvedOptions);
     } catch (error) {
       await this.#revokeOpening(lease);
       if (!this.#disposed && this.#transitionController === controller) {
@@ -3181,14 +3212,18 @@ function isSurfaceRevocationReconciliation(value: unknown): value is PluginSurfa
     (value.revoked ? value.state === "closed" && value.previous_state === "active" : true);
 }
 
-function claimWebPluginBridge(): { surfaceHandle: string; port: MessagePortLike } {
+function claimWebPluginBridge(presentation?: "explicit"): WebBridgeClaim {
   const value = (globalThis as Record<string, unknown>)[webPluginBridgeGlobalKey];
   if (!isRecord(value) || typeof value.claim !== "function") {
     throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge is unavailable");
   }
-  const claimed = (value as unknown as WebBridgeGlobal).claim();
+  const claimed = (value as unknown as WebBridgeGlobal).claim(presentation ? { presentation } : undefined);
   if (!claimed || !isMessagePortLike(claimed.port) || !validOpaqueHandle(claimed.surfaceHandle, "surface")) {
     throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge was already claimed");
+  }
+  if (presentation && claimed.presentation !== true) {
+    claimed.port.close();
+    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "This platform does not support explicit first presentation");
   }
   return claimed;
 }

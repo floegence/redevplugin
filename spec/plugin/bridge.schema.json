@@ -57,6 +57,9 @@
     },
     {
       "$ref": "#/$defs/method_cancel"
+    },
+    {
+      "$ref": "#/$defs/present"
     }
   ],
   "$defs": {
@@ -410,15 +413,15 @@
                 "PLUGIN_JSON_LIMIT_EXCEEDED",
                 "PLUGIN_CAPABILITY_ERROR",
                 "PLUGIN_WORKER_ERROR",
-        "PLUGIN_WORKER_BUDGET_EXCEEDED",
-        "PLUGIN_WORKER_MEMORY_LIMIT",
-        "PLUGIN_WORKER_TIMEOUT",
+                "PLUGIN_WORKER_BUDGET_EXCEEDED",
+                "PLUGIN_WORKER_MEMORY_LIMIT",
+                "PLUGIN_WORKER_TIMEOUT",
                 "PLUGIN_FILE_OPERATION_FAILED",
                 "PLUGIN_CONTRACT_MISMATCH",
                 "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
                 "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
                 "PLUGIN_RETAINED_RECOVERY_CONFLICT",
-        "PLUGIN_BINDING_REVISION_MISMATCH",
+                "PLUGIN_BINDING_REVISION_MISMATCH",
                 "PLUGIN_VALUES_REVISION_MISMATCH",
                 "PLUGIN_CSRF_REQUIRED",
                 "PLUGIN_CSRF_INVALID",
@@ -738,6 +741,19 @@
         },
         "invocation_id": {
           "type": "string"
+        }
+      }
+    },
+    "present": {
+      "description": "Explicit first presentation after the application has committed its stable initial view. Presentation grants no authority.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.bridge.present"
         }
       }
     }

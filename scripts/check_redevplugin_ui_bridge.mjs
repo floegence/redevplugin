@@ -30,6 +30,7 @@ const commonFrames = [
   "redevplugin.bridge.cancel",
   "redevplugin.bridge.response",
   "redevplugin.bridge.lifecycle",
+  "redevplugin.bridge.present",
 ];
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -77,6 +78,15 @@ export function validateUIBridgeInputs({
 
   validateExecutionSchemas(activeSchema);
   validateFileExportSchema(activeSchema);
+  const present = activeSchema.$defs?.present;
+  if (present?.additionalProperties !== false || JSON.stringify(present.required) !== '["type"]' ||
+      !hasExactKeys(present.properties, ["type"]) || present.properties.type.const !== "redevplugin.bridge.present") {
+    throw new Error("first presentation must remain a closed authority-free application message");
+  }
+  const ready = activeTransportSchema.$defs?.app_ready;
+  if (!ready?.required.includes("context_revision") || ready.properties.context_revision.minimum !== 0) {
+    throw new Error("first presentation must acknowledge the current context revision");
+  }
   const routing = activeTransportSchema.$defs?.origin_preparation;
   const routingKeys = ["origin", "parentOrigin", "pluginInstanceId", "surfaceInstanceId", "signal"];
   if (routing?.type !== "object" || routing.additionalProperties !== false ||

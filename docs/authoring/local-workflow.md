@@ -354,3 +354,12 @@ a new package release. Neither repository names nor keywords infer categories.
 Omitted category fields remain omitted in canonical bytes and hashed presentation
 evidence. Consumers use the released `resolvePluginCategory` helper (or Go
 `PluginCategory.Effective`) to display `other`.
+
+### Stable first presentation
+
+Generated templates claim explicit first presentation through the SDK. Preserve
+that claim when replacing their UI: apply initial context synchronously, restore
+layout-affecting local state, then call `bridge.present()` after `bridge.ready()`.
+Long external requests may continue inside a stable skeleton. Keep initial
+unknown data separate from a confirmed empty result, preserve successful content
+during refresh, and never reset an already presented surface for ordinary updates.

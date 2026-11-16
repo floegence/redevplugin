@@ -1,7 +1,7 @@
 import { PluginBridgeClient, type PluginMethodResult } from "@floegence/redevplugin-ui/plugin";
 
 type EchoResult = { worker_id: string; message: string };
-const bridge = new PluginBridgeClient({ timeoutMs: 20_000 });
+const bridge = new PluginBridgeClient({ timeoutMs: 20_000, presentation: "explicit" });
 bridge.onContext((context) => {
   const root = document.documentElement;
   root.classList.toggle("dark", context.appearance.color_scheme === "dark");
@@ -34,7 +34,13 @@ let busy = false;
 let disposed = false;
 bridge.onLifecycle((event) => { if (event.type === "dispose") { disposed = true; button.disabled = true; } });
 form.addEventListener("submit", (event) => { event.preventDefault(); void echo(); });
-void bridge.registerMethod("application.read", (_params, { signal }) => { signal.throwIfAborted(); return { message: input.value }; }).then(() => { if (!disposed) { status.textContent = "Ready"; button.disabled = false; } }).catch(reportError);
+void bridge.ready().then(async () => {
+  try {
+    await bridge.registerMethod("application.read", (_params, { signal }) => { signal.throwIfAborted(); return { message: input.value }; });
+    if (!disposed) { status.textContent = "Ready"; button.disabled = false; }
+  } catch (error) { reportError(error); }
+  if (!disposed) bridge.present();
+}).catch(reportError);
 
 async function echo(): Promise<void> {
   if (busy || disposed) return;

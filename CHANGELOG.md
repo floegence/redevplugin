@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.29.0
+
+- Add explicit application first-presentation commitment without blocking authorized bridge initialization.
+- Bind first reveal to the latest applied context revision and allow slot context updates throughout opening.
+- Restore Memos data and drafts before reveal, present a stable Weather loading structure, and draw the game before its first reveal.
+- Adopt the same first-presentation contract in generated templates while preserving ordinary document compatibility, cancellation, and isolated surface authority.
+
 ## v3.28.1
 
 - Enable user-activated pointer lock for native Web applications while preserving independent origins and existing sandbox restrictions.

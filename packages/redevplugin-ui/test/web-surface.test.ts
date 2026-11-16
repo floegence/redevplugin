@@ -69,8 +69,9 @@ class FakePort implements MessagePortLike {
   closed = false;
   autoAppReady = false;
   frameGeneration = "";
+  contextRevision = 0;
   applicationReady(): void { if (this.autoAppReady) this.completeApplication(); }
-  completeApplication(): void { this.postMessage({ type: "redevplugin.surface.app_ready", frame_generation_id: this.frameGeneration }); }
+  completeApplication(contextRevision = this.contextRevision): void { this.postMessage({ type: "redevplugin.surface.app_ready", frame_generation_id: this.frameGeneration, context_revision: contextRevision }); }
 
   postMessage(message: unknown, _transfer?: readonly unknown[]): void {
     if (this.postError) throw this.postError;
@@ -96,6 +97,9 @@ class FakePort implements MessagePortLike {
   }
 
   emit(data: unknown): void {
+    if (isMessageType(data, "redevplugin.surface.initialize") || isMessageType(data, "redevplugin.surface.context")) {
+      this.contextRevision = (data as { context?: { revision: number } }).context?.revision ?? 0;
+    }
     for (const listener of this.#listeners) listener({ origin: "null", data });
   }
 }
@@ -2489,7 +2493,8 @@ test("surface host applies and updates context without replacing the iframe", as
   });
   const originalElement = host.element;
 
-  const opening = host.open();
+  let revealed = false;
+  const opening = host.open().then(() => { revealed = true; });
   frame.load();
   await waitFor(() => channel.port1.sent.some((message) => isMessageType(message, "redevplugin.surface.initialize")));
   const originalSource = frame.srcdoc;
@@ -2513,6 +2518,9 @@ test("surface host applies and updates context without replacing the iframe", as
   assert.equal(frame.srcdoc, originalSource);
   assert.equal(frame.transferred.length, 1);
 
+  channel.port2.completeApplication(1);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(revealed, false, "a stale theme acknowledgement cannot reveal the frame");
   channel.port2.applicationReady();
   await opening;
   const readyContext = { ...openingContext, revision: 3 };
@@ -3674,4 +3682,73 @@ test("pointer lock state is generation-bound and released by host lifecycle", as
   host.setPointerLockEnabled(true); assert.deepEqual(changes, [true, false]);
   channel.port2.postMessage(observation); await waitFor(() => changes.length === 3);
   fetch.push(surfaceRevocation()); await host.dispose(); assert.deepEqual(changes, [true, false, true, false]);
+});
+
+
+test("explicit first presentation requires bridge readiness, commits once and rejects disposed clients", async () => {
+  const channel = fakeChannel();
+  const client = new PluginBridgeClient({ port: channel.port1, surfaceHandle: "surface_12345678", presentation: "explicit" });
+  assert.throws(() => client.present(), /ready application bridge/);
+  channel.port2.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+  assert.equal(channel.port1.sent.some(message => isMessageType(message, "redevplugin.bridge.present")), false);
+  client.present(); client.present();
+  assert.equal(channel.port1.sent.filter(message => isMessageType(message, "redevplugin.bridge.present")).length, 1);
+  client.dispose();
+  assert.throws(() => client.present(), /disposed/);
+});
+
+test("surface slot retains the latest context before host construction and delivers updates while opening", async () => {
+  const frame = new FakeFrame(); const channel = fakeChannel();
+  const restore = installSurfaceSlotDOM([frame], [channel]);
+  const fetch = new FakeFetch(); fetch.push(preparation()); fetch.push(gatewayLease());
+  const stage = new FakeStage(); const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const initialContext = {
+    schema_version: "redevplugin.surface_context.v1",
+    revision: 1,
+    appearance: {
+      color_scheme: "dark",
+      colors: {
+        canvas: "#101010", surface: "#181818", surface_elevated: "#202020", text: "#ffffff", text_muted: "#aaaaaa", border: "#444444",
+        accent: "#66aaff", accent_text: "#000000", success: "#44cc88", warning: "#ffcc44", danger: "#ff6677", focus: "#88bbff",
+      },
+    },
+    locale: { language_tag: "zh-CN", direction: "ltr" },
+  } as const;
+  try {
+    slot.updateContext({ ...initialContext, revision: 2 });
+    const opening = openPreparedPluginSurfaceInSlot(slot, {
+      bootstrap: hostBootstrap, surfaceContext: initialContext,
+      hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+    });
+    await waitFor(() => stage.children.length === 1); frame.load();
+    await waitFor(() => channel.port1.sent.some(message => isMessageType(message, "redevplugin.surface.initialize")));
+    const initialize = channel.port1.sent.find(message => isMessageType(message, "redevplugin.surface.initialize")) as { context: { revision: number } };
+    assert.equal(initialize.context.revision, 2);
+    slot.updateContext({ ...initialContext, revision: 3 });
+    assert.throws(() => slot.updateContext({ ...initialContext, revision: 2 }), /increase monotonically/);
+    channel.port2.completeApplication(2);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(stage.dataset.redevpluginSurfaceState, "opening");
+    channel.port2.applicationReady(); await opening;
+    assert.equal(stage.dataset.redevpluginSurfaceState, "ready");
+    assert.equal(stage.children.length, 1);
+    fetch.push(surfaceRevocation());
+  } finally { await slot.dispose(); restore(); }
+  assert.throws(() => slot.updateContext({ ...initialContext, revision: 4 }), /disposed/);
+});
+
+test("explicit presentation rejects unsupported bootstraps instead of exposing an unfinished application", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "__redevpluginWebBridge");
+  const channel = fakeChannel();
+  Object.defineProperty(globalThis, "__redevpluginWebBridge", { configurable: true, value: {
+    claim: () => ({ surfaceHandle: "surface_12345678", port: channel.port1 }),
+  } });
+  try {
+    assert.throws(() => new PluginBridgeClient({ presentation: "explicit" }), (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH");
+    assert.equal(channel.port1.closed, true);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "__redevpluginWebBridge", previous);
+    else Reflect.deleteProperty(globalThis, "__redevpluginWebBridge");
+  }
 });

@@ -62,3 +62,18 @@ test("fixture clock orders equal deadlines and cancels completed calls", async (
   assert.equal(time.pending, 0); fixture.dispose();
   await assert.rejects(time.advanceBy(-1));
 });
+
+
+test("author fixtures observe the production first-presentation commit after restored state", async () => {
+  const fixture = createPluginTestHarness();
+  const client = new fixture.BridgeClient({ presentation: "explicit" });
+  await client.ready();
+  const pending = client.call("notes.load", {});
+  await Promise.resolve();
+  assert.equal(fixture.presented, false);
+  fixture.calls[0].resolve({ title: "Saved title" });
+  assert.deepEqual(await pending, { title: "Saved title" });
+  client.present(); await Promise.resolve();
+  assert.equal(fixture.presented, true);
+  fixture.dispose();
+});

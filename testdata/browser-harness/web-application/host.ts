@@ -2,7 +2,7 @@ import { PluginPlatformClient, PluginSurfaceSlot, type PluginSurfaceHost } from 
 const response = await fetch("/fixture");
 const fixture = await response.json();
 const mode = new URL(location.href).searchParams.get("mode");
-const slots = [0, 1].map(() => PluginSurfaceSlot.create({ stage: document.createElement("section") }));
+const slots = (mode === "presentation" ? [0] : [0, 1]).map(() => PluginSurfaceSlot.create({ stage: document.createElement("section") }));
 const hosts: PluginSurfaceHost[] = [];
 const client = new PluginPlatformClient();
 const state = { pointerLocks: [] as boolean[], contextMenus: [] as unknown[], ready: false, error: "", interactions: [] as string[], prepared: [] as string[], targets: [] as string[], released: [] as string[] };

@@ -471,6 +471,8 @@ var PluginBridgeClient = class {
   #contextHandlers = /* @__PURE__ */ new Set();
   #context;
   #ready = false;
+  #explicitPresentation = false;
+  #presented = false;
   #readyPromise;
   #resolveReady;
   #rejectReady;
@@ -480,7 +482,8 @@ var PluginBridgeClient = class {
     void this.#handleMessage(event);
   };
   constructor(options = {}) {
-    const claimed = options.port ? { port: options.port, surfaceHandle: normalizeSurfaceHandle(options.surfaceHandle) } : claimWebPluginBridge();
+    const claimed = options.port ? { port: options.port, surfaceHandle: normalizeSurfaceHandle(options.surfaceHandle) } : claimWebPluginBridge(options.presentation);
+    this.#explicitPresentation = options.presentation === "explicit";
     this.surfaceHandle = claimed.surfaceHandle;
     this.timeoutMs = normalizeTimeout(options.timeoutMs);
     this.#clock = options.clock ?? nativeBridgeClock;
@@ -497,6 +500,16 @@ var PluginBridgeClient = class {
   ready() {
     this.#assertActive();
     return this.#ready ? Promise.resolve() : this.#readyPromise;
+  }
+  /** Commit the first stable UI after initial context, layout and local state restoration. */
+  present() {
+    this.#assertActive();
+    if (!this.#explicitPresentation || !this.#ready) {
+      throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Explicit presentation requires a ready application bridge");
+    }
+    if (this.#presented) return;
+    this.#port.postMessage({ type: "redevplugin.bridge.present" });
+    this.#presented = true;
   }
   call(method, params, options = {}) {
     const effect = options[pluginBridgeCapabilityEffect];
@@ -851,14 +864,18 @@ var PluginBridgeClient = class {
     return this.#lifecycleState === "active" || this.#lifecycleState === "quiescing" && this.#handlingLifecycle;
   }
 };
-function claimWebPluginBridge() {
+function claimWebPluginBridge(presentation) {
   const value = globalThis[webPluginBridgeGlobalKey];
   if (!isRecord(value) || typeof value.claim !== "function") {
     throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge is unavailable");
   }
-  const claimed = value.claim();
+  const claimed = value.claim(presentation ? { presentation } : void 0);
   if (!claimed || !isMessagePortLike(claimed.port) || !validOpaqueHandle(claimed.surfaceHandle, "surface")) {
     throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge was already claimed");
+  }
+  if (presentation && claimed.presentation !== true) {
+    claimed.port.close();
+    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "This platform does not support explicit first presentation");
   }
   return claimed;
 }
@@ -1308,7 +1325,7 @@ function fileEndpoint(store, path, direction) {
 }
 
 // internal/scaffoldtemplate/files-app.ts
-var bridge = new PluginBridgeClient();
+var bridge = new PluginBridgeClient({ presentation: "explicit" });
 var files = pluginFiles("imports");
 var root = document.createElement("main");
 root.className = "plugin-surface";
@@ -1407,8 +1424,18 @@ bridge.onLifecycle((event) => {
     controls();
   }
 });
-void bridge.registerMethod("application.read", () => ({ message: summary })).then(() => {
-  ready = true;
-  status.textContent = "Ready. Choose files to begin.";
-  controls();
+void bridge.ready().then(async () => {
+  try {
+    await bridge.registerMethod("application.read", () => ({ message: summary }));
+    if (!lifetime.signal.aborted) {
+      ready = true;
+      status.textContent = "Ready. Choose files to begin.";
+      controls();
+    }
+  } catch (error) {
+    status.textContent = String(error);
+  }
+  if (!lifetime.signal.aborted) bridge.present();
+}).catch((error) => {
+  if (!lifetime.signal.aborted) status.textContent = String(error);
 });

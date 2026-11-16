@@ -1,6 +1,6 @@
 import { PluginBridgeClient, openPluginWebSocket, type PluginSocket } from "@floegence/redevplugin-ui/plugin";
 
-const bridge = new PluginBridgeClient();
+const bridge = new PluginBridgeClient({ presentation: "explicit" });
 const root = document.createElement("main"); root.className = "plugin-surface"; root.innerHTML = `<h1></h1><p class="intro">Connect to your configured events service. Each message replaces the current snapshot.</p><div class="actions"><button class="primary" id="connect" disabled>Connect</button> <button id="disconnect" disabled>Disconnect</button></div><p class="status" role="status" aria-live="polite">Connecting to host…</p><pre aria-label="Current snapshot">No snapshot yet</pre>`;
 root.querySelector("h1")!.textContent = "__REDEVPLUGIN_DISPLAY_NAME__"; document.body.replaceChildren(root);
 const connect = root.querySelector<HTMLButtonElement>("#connect")!; const disconnect = root.querySelector<HTMLButtonElement>("#disconnect")!;
@@ -31,4 +31,10 @@ bridge.onContext(context => { document.documentElement.classList.toggle("dark", 
     document.documentElement.style.setProperty(`--${token}`, context.appearance.colors[name as keyof typeof colors]);
   } document.documentElement.lang = context.locale.language_tag; document.documentElement.dir = context.locale.direction; });
 bridge.onLifecycle(event => { if (event.type === "dispose") { lifetime.abort(); stop(); connect.disabled = true; disconnect.disabled = true; } });
-void bridge.registerMethod("application.read", () => ({ message: snapshot })).then(() => { connect.disabled = false; status.textContent = "Ready. Configure the events connection in your host, then connect."; });
+void bridge.ready().then(async () => {
+  try {
+    await bridge.registerMethod("application.read", () => ({ message: snapshot }));
+    if (!lifetime.signal.aborted) { connect.disabled = false; status.textContent = "Ready. Configure the events connection in your host, then connect."; }
+  } catch (error) { status.textContent = String(error); }
+  if (!lifetime.signal.aborted) bridge.present();
+}).catch(error => { if (!lifetime.signal.aborted) status.textContent = String(error); });

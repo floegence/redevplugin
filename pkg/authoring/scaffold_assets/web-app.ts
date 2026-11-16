@@ -1,6 +1,6 @@
 import { PluginBridgeClient } from "@floegence/redevplugin-ui/plugin";
 
-const bridge = new PluginBridgeClient();
+const bridge = new PluginBridgeClient({ presentation: "explicit" });
 bridge.onContext((context) => {
   const root = document.documentElement;
   root.classList.toggle("dark", context.appearance.color_scheme === "dark");
@@ -35,7 +35,7 @@ root.querySelector("form")!.addEventListener("submit", (event) => {
 bridge.onLifecycle((event) => {
   if (event.type === "dispose") { disposed = true; root.querySelector("button")!.disabled = true; }
 });
-void bridge.ready().then(() => { if (!disposed) status.textContent = "Ready"; }).catch((error: unknown) => {
+void bridge.ready().then(() => { if (!disposed) { status.textContent = "Ready"; bridge.present(); } }).catch((error: unknown) => {
   if (disposed) return;
   status.classList.add("error");
   status.textContent = error instanceof Error ? error.message : "Application connection unavailable";

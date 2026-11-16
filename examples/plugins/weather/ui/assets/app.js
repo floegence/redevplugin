@@ -1676,6 +1676,8 @@ var PluginBridgeClient = class {
   #contextHandlers = /* @__PURE__ */ new Set();
   #context;
   #ready = false;
+  #explicitPresentation = false;
+  #presented = false;
   #readyPromise;
   #resolveReady;
   #rejectReady;
@@ -1685,7 +1687,8 @@ var PluginBridgeClient = class {
     void this.#handleMessage(event);
   };
   constructor(options = {}) {
-    const claimed = options.port ? { port: options.port, surfaceHandle: normalizeSurfaceHandle(options.surfaceHandle) } : claimWebPluginBridge();
+    const claimed = options.port ? { port: options.port, surfaceHandle: normalizeSurfaceHandle(options.surfaceHandle) } : claimWebPluginBridge(options.presentation);
+    this.#explicitPresentation = options.presentation === "explicit";
     this.surfaceHandle = claimed.surfaceHandle;
     this.timeoutMs = normalizeTimeout(options.timeoutMs);
     this.#clock = options.clock ?? nativeBridgeClock;
@@ -1702,6 +1705,16 @@ var PluginBridgeClient = class {
   ready() {
     this.#assertActive();
     return this.#ready ? Promise.resolve() : this.#readyPromise;
+  }
+  /** Commit the first stable UI after initial context, layout and local state restoration. */
+  present() {
+    this.#assertActive();
+    if (!this.#explicitPresentation || !this.#ready) {
+      throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Explicit presentation requires a ready application bridge");
+    }
+    if (this.#presented) return;
+    this.#port.postMessage({ type: "redevplugin.bridge.present" });
+    this.#presented = true;
   }
   call(method, params, options = {}) {
     const effect = options[pluginBridgeCapabilityEffect];
@@ -2056,14 +2069,18 @@ var PluginBridgeClient = class {
     return this.#lifecycleState === "active" || this.#lifecycleState === "quiescing" && this.#handlingLifecycle;
   }
 };
-function claimWebPluginBridge() {
+function claimWebPluginBridge(presentation) {
   const value = globalThis[webPluginBridgeGlobalKey];
   if (!isRecord(value) || typeof value.claim !== "function") {
     throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge is unavailable");
   }
-  const claimed = value.claim();
+  const claimed = value.claim(presentation ? { presentation } : void 0);
   if (!claimed || !isMessagePortLike(claimed.port) || !validOpaqueHandle(claimed.surfaceHandle, "surface")) {
     throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Web application bridge was already claimed");
+  }
+  if (presentation && claimed.presentation !== true) {
+    claimed.port.close();
+    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "This platform does not support explicit first presentation");
   }
   return claimed;
 }
@@ -2359,13 +2376,15 @@ var _tmpl$2 = /* @__PURE__ */ template(`<section class=search-results data-floe-
 var _tmpl$3 = /* @__PURE__ */ template(`<main class=weather-app><header class=weather-topbar><div><p class=eyebrow>Live local outlook</p><h1>Weather</h1></div><form class=location-search><input type=search name=query placeholder="Search city or place"autocomplete=off aria-label="Search city or place"><button type=submit aria-label="Search weather">Search</button></form></header><section class=weather-main><div class=forecast-toolbar><nav class=saved-strip aria-label="Saved places"></nav><button>Refresh</button></div><p class=weather-status role=status><span>`);
 var _tmpl$4 = /* @__PURE__ */ template(`<div class=search-result><button><strong></strong><span></span></button><button>`);
 var _tmpl$5 = /* @__PURE__ */ template(`<button>`);
-var _tmpl$6 = /* @__PURE__ */ template(`<section class=weather-empty data-floe-surface=raised><h2></h2><p></p><button>Try again`);
+var _tmpl$6 = /* @__PURE__ */ template(`<section class=weather-empty data-floe-surface=raised><h2>Live weather is unavailable</h2><p></p><button>Try again`);
 var _tmpl$7 = /* @__PURE__ */ template(`<span>Saved place`);
 var _tmpl$8 = /* @__PURE__ */ template(`<button>Remove`);
 var _tmpl$9 = /* @__PURE__ */ template(`<article class=forecast-view><section class=weather-hero data-floe-surface=raised><div class=current-summary><div><p class=eyebrow></p><h2></h2><p class=hero-meta> \xB7 <!> \xB7 </p><p class=weather-story></p></div><div class=temperature><strong class=temperature-value>\xB0</strong><span>Feels like <!>\xB0</span></div></div><div class=hero-actions></div><div class=weather-metrics></div></section><section class=forecast-section><header><div><p class=eyebrow>The week ahead</p><h3>Seven day forecast</h3></div><span></span></header><ol class=forecast-grid aria-label="Seven day forecast">`);
 var _tmpl$0 = /* @__PURE__ */ template(`<button>Save place`);
 var _tmpl$1 = /* @__PURE__ */ template(`<li class=forecast-day data-floe-surface=raised><strong></strong><span></span><span aria-hidden=true></span><span></span><strong>\xB0 <small>\xB0</small></strong><span>% rain`);
-var _tmpl$10 = /* @__PURE__ */ template(`<div class=weather-metric><span></span><strong>`);
+var _tmpl$10 = /* @__PURE__ */ template(`<article class="forecast-view forecast-placeholder"aria-busy=true aria-label="Loading live weather"><section class=weather-hero data-floe-surface=raised aria-hidden=true><div class=current-summary><div><p class=eyebrow>&nbsp;</p><h2></h2><p class=hero-meta></p><p class=weather-story>&nbsp;</p></div><div class=temperature><strong>\u2014\xB0</strong><span>&nbsp;</span></div></div><div class=hero-actions><button disabled>Save place</button></div><div class=weather-metrics></div></section><section class=forecast-section aria-hidden=true><header><div><p class=eyebrow>The week ahead</p><h3>Seven day forecast</h3></div></header><ol class=forecast-grid>`);
+var _tmpl$11 = /* @__PURE__ */ template(`<li class=forecast-day data-floe-surface=raised><strong>&nbsp;</strong><span>&nbsp;</span><span class=condition-mark>&nbsp;</span><span>&nbsp;</span><strong>\u2014\xB0</strong><span>&nbsp;`);
+var _tmpl$12 = /* @__PURE__ */ template(`<div class=weather-metric><span></span><strong>`);
 var DEFAULT_LOCATION = {
   id: "location_2950159",
   name: "Berlin",
@@ -2376,14 +2395,15 @@ var DEFAULT_LOCATION = {
   timezone: "Europe/Berlin"
 };
 var bridge = new PluginBridgeClient({
-  timeoutMs: 25e3
+  timeoutMs: 25e3,
+  presentation: "explicit"
 });
 var state = createMutable({
   saved: [],
   results: [],
   selected: DEFAULT_LOCATION,
   query: "",
-  busy: false,
+  busy: true,
   status: "Preparing live conditions...",
   error: false,
   errorMessage: "",
@@ -2404,13 +2424,23 @@ bridge.onLifecycle(async (event) => {
 void initialization.catch(reportUnhandledFailure);
 async function initialize() {
   await bridge.ready();
-  await run(async () => {
+  try {
     await bridge.call("weather.initialize", {});
     const response = await bridge.call("weather.locations.list", {});
     state.saved = response.data.locations;
     state.selected = state.saved[0] ?? DEFAULT_LOCATION;
-    await loadForecast(state.selected);
-  }, "Live weather could not be loaded");
+  } catch (error) {
+    if (disposed) return;
+    state.busy = false;
+    state.status = "Live weather could not be loaded";
+    reportUnhandledFailure(error);
+    bridge.present();
+    return;
+  }
+  if (disposed) return;
+  bridge.present();
+  state.busy = false;
+  await run(() => loadForecast(state.selected), "Live weather could not be loaded");
 }
 async function search() {
   const query = state.query.trim();
@@ -2649,14 +2679,20 @@ function WeatherApp() {
         return state.forecast;
       },
       get fallback() {
-        return (() => {
-          var _el$22 = _tmpl$6(), _el$23 = _el$22.firstChild, _el$24 = _el$23.nextSibling, _el$25 = _el$24.nextSibling;
-          insert(_el$23, () => state.busy ? "Loading live weather" : "Live weather is unavailable");
-          insert(_el$24, () => state.errorMessage || "Bringing in live conditions for your place...");
-          _el$25.$$click = () => void retryWeather();
-          createRenderEffect(() => _el$25.disabled = state.busy);
-          return _el$22;
-        })();
+        return createComponent(Show, {
+          get when() {
+            return memo(() => !!!state.busy)() && state.error;
+          },
+          get fallback() {
+            return createComponent(ForecastPlaceholder, {});
+          },
+          get children() {
+            var _el$22 = _tmpl$6(), _el$23 = _el$22.firstChild, _el$24 = _el$23.nextSibling, _el$25 = _el$24.nextSibling;
+            insert(_el$24, () => state.errorMessage);
+            _el$25.$$click = () => void retryWeather();
+            return _el$22;
+          }
+        });
       },
       children: (forecast) => (() => {
         var _el$26 = _tmpl$9(), _el$27 = _el$26.firstChild, _el$28 = _el$27.firstChild, _el$29 = _el$28.firstChild, _el$30 = _el$29.firstChild, _el$31 = _el$30.nextSibling, _el$32 = _el$31.nextSibling, _el$33 = _el$32.firstChild, _el$35 = _el$33.nextSibling, _el$34 = _el$35.nextSibling, _el$36 = _el$32.nextSibling, _el$37 = _el$29.nextSibling, _el$38 = _el$37.firstChild, _el$39 = _el$38.firstChild, _el$40 = _el$38.nextSibling, _el$41 = _el$40.firstChild, _el$43 = _el$41.nextSibling, _el$42 = _el$43.nextSibling, _el$44 = _el$28.nextSibling, _el$47 = _el$44.nextSibling, _el$48 = _el$27.nextSibling, _el$49 = _el$48.firstChild, _el$50 = _el$49.firstChild, _el$51 = _el$50.nextSibling, _el$52 = _el$49.nextSibling;
@@ -2753,12 +2789,35 @@ function WeatherApp() {
     return _el$;
   })();
 }
+function ForecastPlaceholder() {
+  return (() => {
+    var _el$65 = _tmpl$10(), _el$66 = _el$65.firstChild, _el$67 = _el$66.firstChild, _el$68 = _el$67.firstChild, _el$69 = _el$68.firstChild, _el$70 = _el$69.nextSibling, _el$71 = _el$70.nextSibling, _el$72 = _el$67.nextSibling, _el$73 = _el$72.nextSibling, _el$74 = _el$66.nextSibling, _el$75 = _el$74.firstChild, _el$76 = _el$75.nextSibling;
+    insert(_el$70, () => state.selected.name);
+    insert(_el$71, () => placeSubtitle(state.selected));
+    insert(_el$73, createComponent(For, {
+      each: ["Humidity", "Wind", "Sunrise", "Sunset"],
+      children: (label) => createComponent(Metric, {
+        label,
+        value: "\u2014"
+      })
+    }));
+    insert(_el$76, createComponent(For, {
+      get each() {
+        return Array.from({
+          length: 7
+        });
+      },
+      children: () => _tmpl$11()
+    }));
+    return _el$65;
+  })();
+}
 function Metric(props) {
   return (() => {
-    var _el$65 = _tmpl$10(), _el$66 = _el$65.firstChild, _el$67 = _el$66.nextSibling;
-    insert(_el$66, () => props.label);
-    insert(_el$67, () => props.value);
-    return _el$65;
+    var _el$78 = _tmpl$12(), _el$79 = _el$78.firstChild, _el$80 = _el$79.nextSibling;
+    insert(_el$79, () => props.label);
+    insert(_el$80, () => props.value);
+    return _el$78;
   })();
 }
 function weatherStory(current, today) {

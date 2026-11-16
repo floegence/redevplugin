@@ -100,10 +100,10 @@ const DRAFT_DELAY_MS = 500;
 const EDIT_DELAY_MS = 700;
 const SEARCH_DELAY_MS = 250;
 const MAX_CONTENT_CHARS = 20_000;
-const bridge = new PluginBridgeClient({ timeoutMs: 20_000 });
+const bridge = new PluginBridgeClient({ timeoutMs: 20_000, presentation: "explicit" });
 const utcOffsetMinutes = -new Date().getTimezoneOffset();
 const state = createMutable<MemosState>({
-  feed: { memos: [], hasMore: false, nextCursor: null, windowed: false, query: "", view: "all", tag: "", date: "", loading: false, errorMessage: "" },
+  feed: { memos: [], hasMore: false, nextCursor: null, windowed: false, query: "", view: "all", tag: "", date: "", loading: true, errorMessage: "" },
   composer: { content: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false },
   facets: { month: currentMonth(), tags: [], days: [], allTotal: 0, pinnedTotal: 0, archivedTotal: 0, loading: false, errorMessage: "" },
   editing: { id: "", content: "", originalContent: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "" },
@@ -170,7 +170,9 @@ async function initialize(): Promise<void> {
     state.feed.errorMessage = readableError(error, "Memos is temporarily unavailable");
   } finally {
     state.ui.busy = false;
+    state.feed.loading = false;
     await render();
+    if (!disposed) bridge.present();
   }
 }
 

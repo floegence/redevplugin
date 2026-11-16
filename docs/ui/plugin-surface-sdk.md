@@ -274,8 +274,10 @@ subscribes to the replacement document's DOMContentLoaded event before writing
 it; the previous document's readyState is not readiness evidence. A bridge
 claimed by that document receives its initial host context before app_ready, so
 synchronous context-driven mounting precedes reveal. SDK-free documents need no
-bridge acknowledgement. This does not wait for business data, images or fonts,
-inspect application DOM, or introduce a second rendering/lifecycle owner. Errors
+bridge acknowledgement. Explicit-presentation applications additionally commit
+their stable initial view with `present()` (see First presentation below). The
+platform does not inspect application DOM or infer readiness from business data,
+images, fonts, paints, or timers. Errors
 never include authority tokens or plugin document contents.
 
 Lease renewal atomically rotates the parent gateway and asset session while
@@ -544,3 +546,32 @@ bound document's lock state for localized presentation, never host authorization
 Hosts should show a brief overlay explaining that Escape releases the mouse,
 without moving the document or closing its containing window on that Escape.
 Native desktop blur/minimize behavior must be qualified by the consuming host.
+
+## First presentation
+
+`PluginBridgeClient({ presentation: "explicit" })` claims first-presentation
+ownership synchronously from the entry module, before document readiness.
+`await bridge.ready()` enables ordinary authorized initialization calls without
+revealing the document. Call `bridge.present()` once the root UI, initial theme,
+and geometry-affecting local restoration have committed. The call is idempotent;
+calling before bridge readiness or after disposal rejects. The platform waits for
+the parser and the latest synchronously applied context revision before revealing
+the slot. This is a UI commitment, not proof of rasterization or new authority.
+No animation frame, DOM polling, network-idle heuristic or fixed delay is required.
+Hidden, zero-size and offscreen admitted surfaces can complete normally.
+
+Restore drafts before presentation when restoration changes the layout. Slow
+external data should fill a stable application skeleton after presentation; never
+show an empty result or zero count before the first authoritative result. A useful
+initial error view can also be presented. The existing bounded opening deadline
+still applies when a plugin never commits. Plain documents and SDK clients without
+explicit presentation keep parser/context readiness. Their existing bundled code
+is not rewritten; they do not receive the stronger application-restoration guarantee.
+An explicit client on an older bootstrap fails clearly rather than silently
+weakening its contract. Claiming explicit presentation after reveal is rejected.
+
+Hosts publish theme/locale changes through `PluginSurfaceSlot.updateContext`,
+including while opening. The slot keeps the latest revision before construction
+and delivers changes to the current opening/active host. A stale `app_ready`
+acknowledgement cannot reveal a document. Hosts do not inspect plugin DOM or add a
+second readiness gate. Retirement cancels the same slot and fences late commits.

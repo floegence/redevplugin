@@ -14,7 +14,7 @@ const PORTRAIT_WIDTH = 540;
 const PORTRAIT_HEIGHT = 1080;
 let WIDTH = LANDSCAPE_WIDTH;
 let HEIGHT = LANDSCAPE_HEIGHT;
-const bridge = new PluginBridgeClient({ timeoutMs: 20_000 });
+const bridge = new PluginBridgeClient({ timeoutMs: 20_000, presentation: "explicit" });
 connectTheme(bridge);
 const keys = new Set<string>();
 const images = new Map<string, ImageBitmap>();
@@ -114,6 +114,8 @@ async function initialize(): Promise<void> {
   gameReady = true;
   lastFrame = performance.now();
   syncCanvasAccessibility(true);
+  draw(lastFrame / 1000);
+  bridge.present();
   scheduleFrame();
 }
 
@@ -131,6 +133,7 @@ async function showFatalError(_error: unknown): Promise<void> {
   document.querySelector(".game-shell")?.classList.add("game-failed");
   const error = document.querySelector<HTMLElement>(".game-error");
   if (error) error.hidden = false;
+  await bridge.ready().then(() => { if (!disposed) bridge.present(); }, () => undefined);
 }
 
 function mountGame(): void {

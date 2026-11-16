@@ -109,3 +109,13 @@ test("origin preparation is host-local and exposes only exact routing metadata",
   invalid.activeTransportSchema.oneOf.push({ $ref: "#/$defs/origin_preparation" });
   assert.throws(() => validateUIBridgeInputs(invalid), /secret-free host-local/);
 });
+
+
+test("first presentation has no authority payload and acknowledges host context", () => {
+  const extra = structuredClone(baseline);
+  extra.activeSchema.$defs.present.properties.surface_handle = { type: "string" };
+  assert.throws(() => validateUIBridgeInputs(extra), /closed authority-free/);
+  const missing = structuredClone(baseline);
+  missing.activeTransportSchema.$defs.app_ready.required = missing.activeTransportSchema.$defs.app_ready.required.filter(key => key !== "context_revision");
+  assert.throws(() => validateUIBridgeInputs(missing), /current context revision/);
+});

@@ -20,7 +20,7 @@ const DEFAULT_LOCATION: Location = {
   timezone: "Europe/Berlin",
 };
 
-const bridge = new PluginBridgeClient({ timeoutMs: 25_000 });
+const bridge = new PluginBridgeClient({ timeoutMs: 25_000, presentation: "explicit" });
 const state = createMutable<{
   saved: Location[];
   results: Location[];
@@ -37,7 +37,7 @@ const state = createMutable<{
   results: [],
   selected: DEFAULT_LOCATION,
   query: "",
-  busy: false,
+  busy: true,
   status: "Preparing live conditions...",
   error: false,
   errorMessage: "",
@@ -61,13 +61,24 @@ void initialization.catch(reportUnhandledFailure);
 
 async function initialize(): Promise<void> {
   await bridge.ready();
-  await run(async () => {
+  try {
     await bridge.call("weather.initialize", {});
     const response = await bridge.call<PluginMethodResult<{ locations: Location[] }>>("weather.locations.list", {});
     state.saved = response.data.locations;
     state.selected = state.saved[0] ?? DEFAULT_LOCATION;
-    await loadForecast(state.selected);
-  }, "Live weather could not be loaded");
+  } catch (error) {
+    if (disposed) return;
+    state.busy = false;
+    state.status = "Live weather could not be loaded";
+    reportUnhandledFailure(error);
+    bridge.present();
+    return;
+  }
+  if (disposed) return;
+  // Restore local places before presenting the stable external-data placeholder.
+  bridge.present();
+  state.busy = false;
+  await run(() => loadForecast(state.selected), "Live weather could not be loaded");
 }
 
 async function search(): Promise<void> {
@@ -247,7 +258,7 @@ function WeatherApp() {
       <div class="forecast-toolbar"><nav class="saved-strip" aria-label="Saved places"><For each={state.saved}>{(location) => <button aria-pressed={state.selected.id === location.id} onClick={() => void openLocation(location.id)} disabled={state.busy}>{location.name}</button>}</For></nav>
         <button onClick={() => void retryWeather()} disabled={state.busy}>Refresh</button></div>
       <p class="weather-status" role="status"><span>{state.status}</span><Show when={state.error}> · {state.errorMessage}</Show></p>
-      <Show when={state.forecast} fallback={<section class="weather-empty" data-floe-surface="raised"><h2>{state.busy ? "Loading live weather" : "Live weather is unavailable"}</h2><p>{state.errorMessage || "Bringing in live conditions for your place..."}</p><button disabled={state.busy} onClick={() => void retryWeather()}>Try again</button></section>}>{(forecast) => <article class="forecast-view">
+      <Show when={state.forecast} fallback={<Show when={!state.busy && state.error} fallback={<ForecastPlaceholder />}><section class="weather-empty" data-floe-surface="raised"><h2>Live weather is unavailable</h2><p>{state.errorMessage}</p><button onClick={() => void retryWeather()}>Try again</button></section></Show>}>{(forecast) => <article class="forecast-view">
         <section class="weather-hero" data-floe-surface="raised">
           <div class="current-summary"><div><p class="eyebrow">{condition(forecast().current.weather_code)}</p><h2>{state.selected.name}</h2><p class="hero-meta">{placeSubtitle(state.selected)} · {forecast().timezone_abbreviation || forecast().timezone} · {formatTime(forecast().current.time)}</p><p class="weather-story">{weatherStory(forecast().current, forecast().days[0])}</p></div>
             <div class="temperature"><strong class="temperature-value">{round(forecast().current.temperature)}°</strong><span>Feels like {round(forecast().current.apparent_temperature)}°</span></div></div>
@@ -260,6 +271,19 @@ function WeatherApp() {
       </article>}</Show>
     </section>
   </main>;
+}
+function ForecastPlaceholder() {
+  return <article class="forecast-view forecast-placeholder" aria-busy="true" aria-label="Loading live weather">
+    <section class="weather-hero" data-floe-surface="raised" aria-hidden="true">
+      <div class="current-summary"><div><p class="eyebrow">&nbsp;</p><h2>{state.selected.name}</h2><p class="hero-meta">{placeSubtitle(state.selected)}</p><p class="weather-story">&nbsp;</p></div>
+        <div class="temperature"><strong>—°</strong><span>&nbsp;</span></div></div>
+      <div class="hero-actions"><button disabled>Save place</button></div>
+      <div class="weather-metrics"><For each={["Humidity", "Wind", "Sunrise", "Sunset"]}>{label => <Metric label={label} value="—" />}</For></div>
+    </section>
+    <section class="forecast-section" aria-hidden="true"><header><div><p class="eyebrow">The week ahead</p><h3>Seven day forecast</h3></div></header>
+      <ol class="forecast-grid"><For each={Array.from({ length: 7 })}>{() => <li class="forecast-day" data-floe-surface="raised"><strong>&nbsp;</strong><span>&nbsp;</span><span class="condition-mark">&nbsp;</span><span>&nbsp;</span><strong>—°</strong><span>&nbsp;</span></li>}</For></ol>
+    </section>
+  </article>;
 }
 function Metric(props: { label: string; value: string }) { return <div class="weather-metric"><span>{props.label}</span><strong>{props.value}</strong></div>; }
 

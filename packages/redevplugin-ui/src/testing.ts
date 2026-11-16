@@ -37,10 +37,11 @@ export function createPluginTestContext(languageTag = "en-US", revision = 1): Pl
 export function createPluginTestHarness(options: PluginTestHarnessOptions = {}) {
   const calls: PluginTestCall[] = [], pending = new Map<string, PluginTestCall>();
   const clients = new Set<PluginBridgeClient>();
-  let disposed = false;
+  let disposed = false, presented = false;
   let context = options.context ?? createPluginTestContext();
   const port = new FixturePort(message => {
     const value = message as { type: string; id?: string; request?: { id: string; method: string; params?: PluginJSONObject } };
+    if (value.type === "redevplugin.bridge.present") { presented = true; return; }
     if (value.type === "redevplugin.bridge.cancel") { const call = pending.get(value.id!); if (call) call.cancelled = true; pending.delete(value.id!); return; }
     if (value.type !== "redevplugin.bridge.call" || !value.request) return;
     const request = value.request;
@@ -62,6 +63,8 @@ export function createPluginTestHarness(options: PluginTestHarnessOptions = {}) 
   }
   return {
     mode: "fixture" as const, BridgeClient, calls,
+    /** Observes the application commit; does not simulate Host reveal or containment. */
+    get presented(): boolean { return presented; },
     context(next: PluginSurfaceContext): void { context = next; port.emit({ type: "redevplugin.bridge.context", context }); },
     dispose(): void { disposed = true; for (const client of clients) client.dispose(); clients.clear(); port.close(); pending.clear(); },
   };
