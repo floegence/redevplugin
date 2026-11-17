@@ -2475,6 +2475,9 @@ var PluginSurfaceHostImplementation = class {
   #pointerLocked = false;
   #onPointerLockChange;
   #onContextMenu;
+  #onSelection;
+  #selectionEnabled = false;
+  #selectionRevision = 0;
   #onFileExport;
   #confirmClose;
   #closeDecision;
@@ -2561,6 +2564,7 @@ var PluginSurfaceHostImplementation = class {
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
     this.#onContextMenu = options.onContextMenu;
+    this.#onSelection = options.onSelection;
     this.#pointerLockEnabled = options.pointerLockEnabled !== false;
     this.#onPointerLockChange = options.onPointerLockChange;
     this.#onFileExport = options.onFileExport;
@@ -2701,6 +2705,7 @@ var PluginSurfaceHostImplementation = class {
     this.#scheduleLeaseRenewal();
     this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
     this.#publishPointerLock();
+    if (this.#selectionEnabled) this.setSelectionEnabled(true);
     this.#reloadLimiter.recordHealthyLoad();
   }
   #beginNavigation() {
@@ -2762,6 +2767,7 @@ var PluginSurfaceHostImplementation = class {
     if (event.type === "visible" || event.type === "hidden") {
       this.#visible = event.type === "visible";
       this.#publishPointerLock();
+      if (!this.#visible) this.setSelectionEnabled(false);
     }
     this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event });
   }
@@ -2770,9 +2776,22 @@ var PluginSurfaceHostImplementation = class {
     this.#pointerLockEnabled = enabled;
     this.#publishPointerLock();
   }
+  setSelectionEnabled(enabled) {
+    this.#assertReady();
+    this.#selectionEnabled = enabled && Boolean(this.#onSelection) && this.#visible;
+    this.#selectionRevision++;
+    this.#postToApplication({
+      type: "redevplugin.surface.selection_mode",
+      frame_generation_id: this.frameGenerationId,
+      surface_handle: this.surfaceHandle,
+      enabled: this.#selectionEnabled,
+      revision: this.#selectionRevision
+    });
+    this.#publishPointerLock();
+  }
   #publishPointerLock() {
     if (!this.#ready || this.#navigationPending) return;
-    const enabled = this.#pointerLockEnabled && this.#visible && !this.#closeDecision;
+    const enabled = this.#pointerLockEnabled && this.#visible && !this.#closeDecision && !this.#selectionEnabled;
     this.#postToApplication({ type: "redevplugin.surface.pointer_lock", frame_generation_id: this.frameGenerationId, surface_handle: this.surfaceHandle, enabled });
     if (!enabled) this.#setPointerLocked(false);
   }
@@ -2981,6 +3000,26 @@ var PluginSurfaceHostImplementation = class {
       }
       if (hasExactKeys(data, ["type", "close_id", "allow"]) && data.type === "redevplugin.bridge.close_response" && typeof data.allow === "boolean" && data.close_id === this.#closeDecision?.id) {
         this.#closeDecision?.result.resolve(data.allow);
+        return;
+      }
+      if (isSurfaceSelectionMessage(data)) {
+        if (this.#selectionEnabled && data.revision === this.#selectionRevision && this.#acceptInteraction(data)) {
+          const current = () => !this.#disposed && this.#ready && !this.#navigationPending && data.frame_generation_id === this.frameGenerationId && data.surface_handle === this.surfaceHandle;
+          try {
+            this.#onSelection?.({
+              isCurrent: current,
+              sequence: data.sequence,
+              frameGenerationId: data.frame_generation_id,
+              surfaceHandle: data.surface_handle,
+              phase: data.phase,
+              point: data.point,
+              viewport: data.viewport,
+              target: data.target,
+              bounds: data.bounds
+            });
+          } catch {
+          }
+        }
         return;
       }
       if (isSurfaceContextMenuMessage(data)) {
@@ -4166,6 +4205,23 @@ function isSurfaceContextMenuMessage(value) {
   const dimension = (n) => typeof n === "number" && Number.isInteger(n) && n > 0 && n <= 1e5;
   const text = (v2, max) => typeof v2 === "string" && v2.length <= max;
   return value.type === "redevplugin.surface.context_menu" && validOpaqueHandle(value.frame_generation_id, "frame") && validOpaqueHandle(value.surface_handle, "surface") && typeof value.sequence === "number" && Number.isSafeInteger(value.sequence) && value.sequence > 0 && hasExactKeys(value.point, ["x", "y"]) && unit(value.point.x) && unit(value.point.y) && hasExactKeys(value.viewport, ["width", "height"]) && dimension(value.viewport.width) && dimension(value.viewport.height) && hasExactKeys(value.target, ["tag", "role", "text", "selector", "bounds"]) && typeof value.target.tag === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value.target.tag) && text(value.target.role, 64) && text(value.target.text, 240) && text(value.target.selector, 1024) && hasExactKeys(value.target.bounds, ["x", "y", "width", "height"]) && Object.values(value.target.bounds).every(unit);
+}
+function isSurfaceSelectionMessage(value) {
+  if (!hasExactKeys(value, ["type", "frame_generation_id", "surface_handle", "sequence", "revision", "phase", "point", "viewport", "target", "bounds"]) || value.type !== "redevplugin.surface.selection" || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || !["hover", "select", "cancel"].includes(String(value.phase))) return false;
+  const bounds = value.bounds;
+  if (bounds !== null && (!hasExactKeys(bounds, ["x", "y", "width", "height"]) || !Object.values(bounds).every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1) || Number(bounds.x) + Number(bounds.width) > 1.00000001 || Number(bounds.y) + Number(bounds.height) > 1.00000001)) return false;
+  if (value.phase === "select" && (!bounds || Number(bounds.width) <= 0 || Number(bounds.height) <= 0)) return false;
+  if (value.target !== null && (!bounds || !isRecord(value.target) || !isRecord(value.target.bounds) || !["x", "y", "width", "height"].every((key) => value.target.bounds && value.target.bounds[key] === bounds[key]))) return false;
+  if (value.phase === "cancel" && (value.target !== null || bounds !== null)) return false;
+  return isSurfaceContextMenuMessage({
+    type: "redevplugin.surface.context_menu",
+    frame_generation_id: value.frame_generation_id,
+    surface_handle: value.surface_handle,
+    sequence: value.sequence,
+    point: value.point,
+    viewport: value.viewport,
+    target: value.target ?? { tag: "div", role: "", text: "", selector: "", bounds: bounds ?? { x: 0, y: 0, width: 0, height: 0 } }
+  });
 }
 function isSurfaceFileExportCandidate(value) {
   return isRecord(value) && value.type === "redevplugin.surface.file.export" && typeof value.id === "string";
