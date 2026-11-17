@@ -2,6 +2,8 @@ package agentconversation
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -50,5 +52,33 @@ func TestPublishedConversationAuthorityAndSDK(t *testing.T) {
 		if method.Execution == "subscription" && (method.Effect != "read" || method.CancelPolicy == nil || method.CancelPolicy.DisableBehavior != "cancel") {
 			t.Errorf("observation grants execution: %s", method.Name)
 		}
+	}
+}
+
+func TestConversationContractRetainsPublishedClientIdentity(t *testing.T) {
+	contracts, err := SupportedContracts()
+	if err != nil || len(contracts) != 2 {
+		t.Fatalf("supported contracts: %v", err)
+	}
+	registry := capabilitycontract.NewRegistry()
+	for _, known := range contracts {
+		if err := registry.Add(known); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, known := range contracts {
+		if _, err := registry.Require(known.Pin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile("../../spec/plugin/agent-conversation-1.0.0-contract.json")
+	if err != nil || !bytes.Equal(raw, contractV1Artifact) {
+		t.Fatal("retained artifact changed", err)
+	}
+	if contracts[0].Pin.ContractVersion != "1.1.0" || contracts[1].Pin.ContractVersion != "1.0.0" || contracts[1].Pin.ArtifactSHA256 != fmt.Sprintf("%x", sha256.Sum256(raw)) {
+		t.Fatal("contract versions lost their exact identity")
+	}
+	if contracts[1].Pin.ArtifactSHA256 != "2f48e3fc1bf580893a4a6bd9694cb0b95480c366d4968776c41a2924440e1d26" {
+		t.Fatal("the immutable 3.30 conversation contract was rewritten")
 	}
 }

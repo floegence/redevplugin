@@ -133,7 +133,23 @@ methods use their published runtime; surface methods require their exact live
 receiver and never substitute another window after closure. Dispatched effects
 with an uncertain result retain the existing `mutation.OutcomeUnknown` contract.
 
+## Contract compatibility
+
+New clients use Agent conversation contract 1.1.0. Hosts register every result of
+`agentconversation.SupportedContracts()` with their same adapter and official view.
+The 1.0.0 artifact remains byte-identical to its 3.30 release; an installed client
+never adopts a different hash under its existing contract version. The new schema
+adds `connector_id` to a component declaration without changing existing operations.
+
 ## External protocol processes
+
+Trusted host configuration can use `Host.CallInstalledCapability` to dispatch an
+exact installed capability method under the current session. The platform derives
+its fresh source binding, target, quotas and grants; the product does not synthesize
+an `ExecutionBinding` or borrow browser credentials to inspect a component. This
+Go-only entry point rejects native routes and mandatory-confirmation methods. Host
+products authorize their concrete settings action before using it and never expose
+it to plugin JavaScript as an alternate bridge or background-authorization path.
 
 A trusted capability adapter can call `Host.OpenCapabilityProcess` with its
 original `ExecutionBinding` and `process.StartRequest`. Admission requires an

@@ -1,10 +1,10 @@
 {
   "schema_version": "redevplugin.host_capability_contract.v1",
   "contract_id": "redevplugin.agent.conversation",
-  "contract_version": "1.0.0",
+  "contract_version": "1.1.0",
   "publisher_id": "redevplugin",
   "capability_id": "agent.conversation",
-  "capability_version": "1.0.0",
+  "capability_version": "1.1.0",
   "client_name": "AgentConversationClient",
   "methods": [
     {

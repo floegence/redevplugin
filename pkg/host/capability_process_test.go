@@ -105,14 +105,15 @@ func TestCapabilityProcessCancelAndHostCloseDrainExactLease(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "cancel" {
+			switch mode {
+			case "cancel":
 				cancel()
-			} else if mode == "revoke" {
+			case "revoke":
 				rev := mustAuthorizationRevisions(t, h, source.PluginInstanceID)
 				if _, err := h.RevokePermission(surfaceMethodTestContext(), RevokePermissionRequest{PluginInstanceID: source.PluginInstanceID, PermissionID: "process.local", ExpectedPolicyRevision: rev.PolicyRevision, ExpectedManagementRevision: rev.ManagementRevision, ExpectedRevokeEpoch: rev.RevokeEpoch}); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			case "host-close":
 				if err := h.Close(); err != nil {
 					t.Fatal(err)
 				}

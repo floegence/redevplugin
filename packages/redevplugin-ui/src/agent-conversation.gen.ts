@@ -306,37 +306,37 @@ export type AgentConversationBusinessErrorCode = "CONVERSATION_AUTHORIZATION_REQ
 export type AgentConversationBusinessErrorDetails =
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.0.0";
+    capability_version: "1.1.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_UNAVAILABLE";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.0.0";
+    capability_version: "1.1.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_CONFLICT";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.0.0";
+    capability_version: "1.1.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_AUTHORIZATION_REQUIRED";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.0.0";
+    capability_version: "1.1.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_OUTCOME_UNKNOWN";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.0.0";
+    capability_version: "1.1.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_PROTOCOL_UNSUPPORTED";
   };
 
 export function isAgentConversationBusinessError(error: unknown): error is PluginBridgeError & { readonly details: AgentConversationBusinessErrorDetails } {
-  return isCapabilityBusinessError(error, "agent.conversation", "1.0.0", {
+  return isCapabilityBusinessError(error, "agent.conversation", "1.1.0", {
     "CONVERSATION_UNAVAILABLE": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_CONFLICT": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_AUTHORIZATION_REQUIRED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },

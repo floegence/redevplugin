@@ -144,7 +144,7 @@ func (h *Host) OpenCapabilityProcess(ctx context.Context, source capability.Exec
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
-		defer close()
+		defer func() { _ = close() }()
 		for {
 			select {
 			case <-lifetime.Done():

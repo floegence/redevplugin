@@ -5,6 +5,8 @@
 - Expose current-authority process byte streams for trusted capability adapters, with independent process grants, bounded leases, exact source ownership and automatic cleanup.
 - Route trusted capability HTTP requests through declared connectors, current connection grants and host-owned credential injection; retain source expiry and close idle streams on authority loss.
 - Let Agent component profiles explicitly select an installed network connector without granting it.
+- Publish conversation contract 1.1.0 and retain the exact 1.0.0 artifact for existing installed clients through `SupportedContracts`.
+- Admit host-initiated calls to exact installed capability methods through current session, contract, policy and execution checks without synthesizing browser authority.
 - Extend host-authorized file export to ordinary document, archive and binary media, preserving transferred-byte limits and explicit destination approval.
 - Verify process and HTTP expiry, cancellation, Host shutdown, missing grants, exact targets, redirects, duplicate leases and document exports.
 
