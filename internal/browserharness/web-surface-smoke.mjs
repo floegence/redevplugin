@@ -270,6 +270,9 @@ if (process.argv[2] === "--build") {
       await comments.evaluate(() => globalThis.testHosts[0].setSelectionEnabled(true));
       await target.hover();
       await comments.waitForFunction(() => globalThis.testState.selections.some(event => event.phase === "hover" && event.target?.text === "Apply"));
+      const input = application.locator("input").first();
+      await input.hover(); await target.hover();
+      await comments.waitForFunction(() => globalThis.testState.selections.at(-1)?.target?.text === "Apply");
       await target.click();
       await comments.waitForFunction(() => globalThis.testState.selections.some(event => event.phase === "select" && event.target?.text === "Apply"));
       assert.equal(await comments.evaluate(() => globalThis.testState.interactions.includes("action")), false, "selection never activates the application");

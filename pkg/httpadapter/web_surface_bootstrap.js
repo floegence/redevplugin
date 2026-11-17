@@ -106,16 +106,19 @@
   };
   const observeSelection = () => {
     const stop = e => { e.preventDefault(); e.stopImmediatePropagation(); };
+    const flushHover = now => {
+      hoverFrame = 0;
+      if (!selecting || !hoverEvent) return;
+      // Keep the final pointer position when limiting high-refresh displays.
+      if (now - lastHover < 32) { hoverFrame = requestAnimationFrame(flushHover); return; }
+      lastHover = now;
+      const value = selectionAt(hoverEvent); hoverEvent = undefined;
+      selectionEvent("hover", value.point, value.target, value.bounds);
+    };
     addEventListener("pointermove", e => {
       if (!selecting || !ready || !e.isTrusted) return;
       stop(e); hoverEvent = e;
-      if (!hoverFrame) hoverFrame = requestAnimationFrame(now => {
-        hoverFrame = 0;
-        if (now - lastHover < 32) return;
-        lastHover = now;
-        if (!selecting || !hoverEvent) return;
-        const value = selectionAt(hoverEvent); selectionEvent("hover", value.point, value.target, value.bounds);
-      });
+      if (!hoverFrame) hoverFrame = requestAnimationFrame(flushHover);
     }, true);
     addEventListener("pointerdown", e => {
       if (!selecting || !ready || !e.isTrusted) return;

@@ -3771,10 +3771,11 @@ test("visual selection requires the current mode revision and keeps region selec
   fetch.push(preparation()); fetch.push(gatewayLease());
   const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel,
     hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }), onSelection: event => events.push(event) });
+  host.setSelectionEnabled(false); // Opening and navigation transitions can retain host mode intent.
   const opening = host.open(); frame.load(); await waitFor(() => frame.transferred.length === 1);
   channel.port2.applicationReady(); await opening;
   const message = { type: "redevplugin.surface.selection", frame_generation_id: host.frameGenerationId,
-    surface_handle: host.surfaceHandle, sequence: 1, revision: 1, phase: "select", point: { x: .4, y: .5 },
+    surface_handle: host.surfaceHandle, sequence: 1, revision: 2, phase: "select", point: { x: .4, y: .5 },
     viewport: { width: 800, height: 600 }, target: null, bounds: { x: .2, y: .3, width: .2, height: .2 } };
   channel.port2.postMessage(message); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(events.length, 0);
   host.setSelectionEnabled(true);
@@ -3786,9 +3787,9 @@ test("visual selection requires the current mode revision and keeps region selec
   await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(events.length, 1); assert.equal(events[0]?.target, null);
   host.setSelectionEnabled(false); host.setSelectionEnabled(true);
   channel.port2.postMessage({ ...message, sequence: 2 });
-  channel.port2.postMessage({ ...message, sequence: 3, revision: 3, phase: "hover" });
+  channel.port2.postMessage({ ...message, sequence: 3, revision: 4, phase: "hover" });
   await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(events.length, 2);
-  host.sendLifecycle({ type: "hidden" }); channel.port2.postMessage({ ...message, sequence: 4, revision: 3 });
+  host.sendLifecycle({ type: "hidden" }); channel.port2.postMessage({ ...message, sequence: 4, revision: 4 });
   await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(events.length, 2);
   fetch.push({ disposed: true, state: "closed", previous_state: "active", revoked: true });
   await host.dispose(); assert.equal(events[0]?.isCurrent(), false);

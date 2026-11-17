@@ -1646,9 +1646,10 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   }
 
   setSelectionEnabled(enabled: boolean): void {
-    this.#assertReady();
+    this.#assertActive();
     this.#selectionEnabled = enabled && Boolean(this.#onSelection) && this.#visible;
     this.#selectionRevision++;
+    if (!this.#ready || this.#navigationPending) return;
     this.#postToApplication({ type: "redevplugin.surface.selection_mode", frame_generation_id: this.frameGenerationId,
       surface_handle: this.surfaceHandle, enabled: this.#selectionEnabled, revision: this.#selectionRevision });
     this.#publishPointerLock();

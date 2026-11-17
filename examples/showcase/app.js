@@ -2777,9 +2777,10 @@ var PluginSurfaceHostImplementation = class {
     this.#publishPointerLock();
   }
   setSelectionEnabled(enabled) {
-    this.#assertReady();
+    this.#assertActive();
     this.#selectionEnabled = enabled && Boolean(this.#onSelection) && this.#visible;
     this.#selectionRevision++;
+    if (!this.#ready || this.#navigationPending) return;
     this.#postToApplication({
       type: "redevplugin.surface.selection_mode",
       frame_generation_id: this.frameGenerationId,
