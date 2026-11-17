@@ -64,7 +64,13 @@ try{
  assert.equal(await oldFrame.evaluate(frame=>frame.isConnected),true);
  assert.equal(await frame.getByLabel("Document",{exact:true}).inputValue(),"unsaved draft survives candidate");
  await page.getByRole("button",{name:"Apply update",exact:true}).click();
- await page.getByRole("button",{name:"Cancel",exact:true}).click();
+ // Native dialog cancellation queues its close event and focus restoration.
+ // Finish that boundary before dispatching the next action behind the dialog.
+ await Promise.all([
+  page.locator("#confirmation").evaluate(dialog=>new Promise(resolve=>dialog.addEventListener("close",()=>resolve(),{once:true}))),
+  page.getByRole("button",{name:"Cancel",exact:true}).click(),
+ ]);
+ assert.equal(await page.locator("#confirmation").evaluate(dialog=>dialog.open),false);
  assert.equal(await frame.getByLabel("Document",{exact:true}).inputValue(),"unsaved draft survives candidate");
  await page.getByRole("button",{name:"Apply update",exact:true}).click();await page.getByRole("button",{name:"Approve action",exact:true}).click();
  await frame.getByRole("heading",{name:"Updated consumer"}).waitFor({timeout:30000});await frame.getByText("Ready",{exact:true}).waitFor();
@@ -93,5 +99,8 @@ try{
  assert.equal(current.persistent,true);
  await page.screenshot({path:join(repo,"dist/author-consumer-preview.png"),fullPage:true});
  console.log(JSON.stringify({schema_version:"redevplugin.author-consumer-evidence.v1",platform_version:version,evidence,acceptance:["five original template builds and tests","action-free pure Web preview without Worker runtime or idle method receiver","packed npm consumer","manual draft preservation","cancel application","fresh authority after apply","typecheck failure retention","data after process restart"]},null,2));
-} catch(error){throw new Error(String(error)+"\n"+logs,{cause:error})}
+} catch(error){
+ const diagnostics=await browser?.contexts()[0]?.pages()[0]?.evaluate(()=>({confirmation:document.querySelector("#confirmation")?.textContent,open:document.querySelector("#confirmation")?.open,active:document.activeElement?.id})).catch(()=>undefined);
+ throw new Error(String(error)+"\n"+JSON.stringify(diagnostics)+"\n"+logs,{cause:error});
+}
 finally{if(browser)await browser.close();try{await stop()}finally{if(child&&child.exitCode===null)child.kill("SIGKILL");candidateCrates?.cleanup();await rm(root,{recursive:true,force:true})}}
