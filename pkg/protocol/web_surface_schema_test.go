@@ -24,7 +24,7 @@ func TestWebSurfaceDocumentIsOneClosedOriginBinding(t *testing.T) {
 
 func TestWebSurfaceTransportIsClosedAndSecretFree(t *testing.T) {
 	schema := readPluginSchema(t, "web-surface-transport.schema.json")
-	names := []string{"port_envelope", "port_ack", "pointer_lock", "pointer_lock_state", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response", "context_menu"}
+	names := []string{"port_envelope", "port_ack", "pointer_lock", "pointer_lock_state", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "presented", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response", "context_menu"}
 	refs := requireObjectArray(t, schema["oneOf"], "transport variants")
 	var got []string
 	for _, ref := range refs {
@@ -64,6 +64,7 @@ func TestWebSurfaceTransportRejectsRetiredAndAuthorityBearingMessages(t *testing
 	for _, message := range []map[string]any{
 		{"type": "redevplugin.surface.entry_ready", "entry_path": "/index.html", "document_id": "document_12345678"},
 		{"type": "redevplugin.surface.app_ready", "frame_generation_id": "frame_12345678", "context_revision": 1},
+		{"type": "redevplugin.surface.presented", "frame_generation_id": "frame_12345678", "context_revision": 1},
 		{"type": "redevplugin.surface.initialize", "frame_generation_id": "frame_12345678", "surface_handle": "surface_12345678", "entry_path": "/index.html"},
 	} {
 		if err := schema.Validate(message); err != nil {
@@ -75,6 +76,8 @@ func TestWebSurfaceTransportRejectsRetiredAndAuthorityBearingMessages(t *testing
 		{"type": "redevplugin.surface.first_commit"},
 		{"type": "redevplugin.surface.entry_ready", "asset_ticket": "secret"},
 		{"type": "redevplugin.surface.app_ready"},
+		{"type": "redevplugin.surface.presented", "frame_generation_id": "frame_12345678", "context_revision": -1},
+		{"type": "redevplugin.surface.presented", "frame_generation_id": "frame_12345678", "context_revision": 1, "token": "secret"},
 		{"type": "redevplugin.surface.initialize", "frame_generation_id": "frame_12345678", "surface_handle": "surface_12345678", "entry_path": "https://remote.example/"},
 	} {
 		if err := schema.Validate(message); err == nil {

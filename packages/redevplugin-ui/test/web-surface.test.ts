@@ -2529,8 +2529,12 @@ test("surface host applies and updates context without replacing the iframe", as
   channel.port2.completeApplication(1);
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(revealed, false, "a stale theme acknowledgement cannot reveal the frame");
+  assert.equal(channel.port1.sent.some(message => isMessageType(message, "redevplugin.surface.presented")), false);
   channel.port2.applicationReady();
   await opening;
+  assert.deepEqual(channel.port1.sent.find(message => isMessageType(message, "redevplugin.surface.presented")), {
+    type: "redevplugin.surface.presented", frame_generation_id: host.frameGenerationId, context_revision: 2,
+  });
   const readyContext = { ...openingContext, revision: 3 };
   host.updateContext(readyContext);
   assert.deepEqual((channel.port1.sent.at(-1) as { context?: unknown }).context, readyContext);

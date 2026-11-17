@@ -8,9 +8,23 @@
   let initialized = false, stopped = false, ready = false, claimed = false;
   let appPeer, appPort, sequence = 0, contextMenu = false;
   let clientReady = false, explicitPresentation = false, presented = false, parsed = false, deliveredRevision = 0, reportedRevision = -1;
+  let presentationAccepted = false;
+  const settleInitialMotion = () => {
+    // A context subscriber can commit dark tokens while CSS still interpolates
+    // from white. Resolve the browser's pending styles once at this boundary;
+    // finish only finite, running CSS motion, including delayed pseudo-elements.
+    // Script-controlled, paused and infinite animations retain their lifecycle.
+    for (const animation of document.getAnimations()) {
+      if (!(animation instanceof CSSAnimation || animation instanceof CSSTransition)
+        || animation.playState !== "running" || animation.playbackRate === 0
+        || !Number.isFinite(animation.effect?.getComputedTiming().endTime)) continue;
+      animation.finish();
+    }
+  };
   const present = () => {
     const revision = context?.revision ?? 0;
     if (stopped || !parsed || (explicitPresentation && !presented) || (claimed && deliveredRevision < revision) || reportedRevision === revision) return;
+    if (!presentationAccepted) settleInitialMotion();
     reportedRevision = revision;
     clearTimeout(deadline);
     send({ type: "redevplugin.surface.app_ready", frame_generation_id: frameGeneration, context_revision: revision });
@@ -180,6 +194,12 @@
     removeEventListener("message", connect);
     port.onmessage = e => {
       const m = e.data;
+      if (m?.type === "redevplugin.surface.presented" && Object.keys(m).length === 3
+        && m.frame_generation_id === frameGeneration && Number.isSafeInteger(m.context_revision)
+        && m.context_revision >= 0 && m.context_revision <= reportedRevision) {
+        presentationAccepted = true;
+        return;
+      }
       if (m?.type === "redevplugin.surface.pointer_lock" && m.frame_generation_id === frameGeneration && m.surface_handle === surfaceHandle) {
         pointerLockAllowed = m.enabled === true;
         if (!pointerLockAllowed) releaseLock();

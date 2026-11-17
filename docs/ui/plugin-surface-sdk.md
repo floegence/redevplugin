@@ -281,8 +281,19 @@ it; the previous document's readyState is not readiness evidence. A bridge
 claimed by that document receives its initial host context before app_ready, so
 synchronous context-driven mounting precedes reveal. SDK-free documents need no
 bridge acknowledgement. Explicit-presentation applications additionally commit
-their stable initial view with `present()` (see First presentation below). The
-platform does not inspect application DOM or infer readiness from business data,
+their stable initial view with `present()` (see First presentation below). Before reporting first readiness, the bootstrap synchronously resolves the browser's
+pending styles and finishes running finite CSS transitions and CSS animations,
+including delayed and pseudo-element motion. This prevents correct theme tokens
+from revealing interpolated light colors or an entrance opacity of zero. It does
+not wait for animation frames, durations, or animation events. Script-controlled,
+paused and infinite animations remain application-owned. The exact source-bound
+Host acknowledges the accepted frame and context with `redevplugin.surface.presented`;
+until that acknowledgement, a newer initialization context is settled again.
+After acknowledgement, context changes and interaction animations are untouched.
+This applies to existing SDK and SDK-free documents without rewriting packages.
+Authors must still commit restored data and final styles before `present()`;
+styles or business mutations scheduled after commitment are not readiness evidence.
+The platform does not inspect application content or infer readiness from business data,
 images, fonts, paints, or timers. Errors
 never include authority tokens or plugin document contents.
 

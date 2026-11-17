@@ -1824,6 +1824,9 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         return;
       }
       if (hasExactKeys(data, ["type", "frame_generation_id", "context_revision"]) && data.type === "redevplugin.surface.app_ready" && data.frame_generation_id === this.frameGenerationId && data.context_revision === (this.#surfaceContext?.revision ?? 0)) {
+        if (!this.#ready) this.#postToApplication({
+          type: "redevplugin.surface.presented", frame_generation_id: this.frameGenerationId, context_revision: data.context_revision,
+        });
         this.#openingPending.delete("app_ready");
         this.#openSignals?.appReady.resolve();
         return;

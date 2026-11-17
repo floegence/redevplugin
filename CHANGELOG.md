@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.31.1
+
+- Finish running finite CSS transitions and entrance animations at the first-presentation boundary, so initial theme changes cannot reveal white controls or transparent content.
+- Acknowledge the exact accepted document/context before retiring initialization settlement; preserve infinite, paused, script-controlled and subsequent interaction animations.
+- Cover implicit and explicit SDKs, SDK-free documents, delayed pseudo-elements, current-context acceptance and post-reveal motion with real-browser regression tests.
+
 ## v3.31.0
 
 - Expose current-authority process byte streams for trusted capability adapters, with independent process grants, bounded leases, exact source ownership and automatic cleanup.
