@@ -267,6 +267,20 @@ if (process.argv[2] === "--build") {
       await comments.waitForFunction(() => globalThis.testState.contextMenus.length === 2);
       assert.equal(await comments.evaluate(() => globalThis.testState.contextMenus[1].target.text), "");
       assert.equal(await comments.evaluate(() => JSON.stringify(globalThis.testState.contextMenus).includes("private form value")), false);
+      await comments.evaluate(() => globalThis.testHosts[0].setSelectionEnabled(true));
+      await target.hover();
+      await comments.waitForFunction(() => globalThis.testState.selections.some(event => event.phase === "hover" && event.target?.text === "Apply"));
+      await target.click();
+      await comments.waitForFunction(() => globalThis.testState.selections.some(event => event.phase === "select" && event.target?.text === "Apply"));
+      assert.equal(await comments.evaluate(() => globalThis.testState.interactions.includes("action")), false, "selection never activates the application");
+      const targetBox = await target.boundingBox();
+      await comments.mouse.move(targetBox.x + 2, targetBox.y + 2); await comments.mouse.down();
+      await comments.mouse.move(targetBox.x + targetBox.width * .7, targetBox.y + targetBox.height * .8, { steps: 5 }); await comments.mouse.up();
+      await comments.waitForFunction(() => globalThis.testState.selections.some(event => event.phase === "select" && event.target === null && event.bounds?.width > 0));
+      await comments.keyboard.press("Escape");
+      await comments.waitForFunction(() => globalThis.testState.selections.some(event => event.phase === "cancel"));
+      await target.click();
+      await comments.waitForFunction(() => globalThis.testState.interactions.includes("action"));
       await comments.evaluate(async () => { for (const slot of globalThis.testSlots) await slot.close(); });
     } finally { await comments.close(); }
     const unsupported = await browser.newPage();

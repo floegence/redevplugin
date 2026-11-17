@@ -1054,6 +1054,20 @@ export type PluginSurfaceContextMenuEvent = Readonly<{
   }>;
 }>;
 
+/** Host-requested visual inspection; metadata is untrusted, never executable DOM. */
+export type PluginSurfaceSelectionEvent = Readonly<{
+  isCurrent: () => boolean;
+  sequence: number;
+  frameGenerationId: string;
+  surfaceHandle: string;
+  phase: "hover" | "select" | "cancel";
+  point: PluginSurfaceContextMenuEvent["point"];
+  viewport: PluginSurfaceContextMenuEvent["viewport"];
+  /** Null for a dragged image region or cleared hover. */
+  target: PluginSurfaceContextMenuEvent["target"] | null;
+  bounds: PluginSurfaceContextMenuEvent["target"]["bounds"] | null;
+}>;
+
 export type PluginSurfaceHost = {
   readonly element: HTMLIFrameElement;
   readonly surfaceInstanceId: string;
@@ -1061,6 +1075,8 @@ export type PluginSurfaceHost = {
   updateContext(context: PluginSurfaceContext): void;
   /** Release or permit pointer lock without reloading the application. */
   setPointerLockEnabled(enabled: boolean): void;
+  /** Intercept input for visual selection without activating application controls. */
+  setSelectionEnabled(enabled: boolean): void;
   requestClose(): Promise<PluginSurfaceCloseResult | undefined>;
   close(): Promise<PluginSurfaceCloseResult>;
   dispose(): Promise<void>;
@@ -1105,6 +1121,7 @@ export type PluginSurfaceHostOptions = {
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
   /** Opt in to host context menus; ordinary application menus remain unchanged by default. */
   onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
+  onSelection?: (event: PluginSurfaceSelectionEvent) => void;
   onFileExport?: PluginSurfaceFileExportHandler;
   confirmClose?: (request: { reason: "unsaved" | "unresponsive"; signal: AbortSignal }) => boolean | Promise<boolean>;
   onError?: (error: PluginBridgeError) => void;
@@ -1320,6 +1337,9 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #pointerLocked = false;
   #onPointerLockChange?: (locked: boolean) => void;
   #onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
+  #onSelection?: (event: PluginSurfaceSelectionEvent) => void;
+  #selectionEnabled = false;
+  #selectionRevision = 0;
   #onFileExport?: PluginSurfaceFileExportHandler;
   #confirmClose?: PluginSurfaceHostOptions["confirmClose"];
   #closeDecision?: { id: string; result: Deferred<boolean>; controller: AbortController };
@@ -1408,6 +1428,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
     this.#onContextMenu = options.onContextMenu;
+    this.#onSelection = options.onSelection;
     this.#pointerLockEnabled = options.pointerLockEnabled !== false;
     this.#onPointerLockChange = options.onPointerLockChange;
     this.#onFileExport = options.onFileExport;
@@ -1553,6 +1574,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#scheduleLeaseRenewal();
     this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
     this.#publishPointerLock();
+    if (this.#selectionEnabled) this.setSelectionEnabled(true);
     this.#reloadLimiter.recordHealthyLoad();
   }
 
@@ -1612,6 +1634,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     if (event.type === "visible" || event.type === "hidden") {
       this.#visible = event.type === "visible";
       this.#publishPointerLock();
+      if (!this.#visible) this.setSelectionEnabled(false);
     }
     this.#postToApplication({ type: "redevplugin.bridge.lifecycle", event });
   }
@@ -1622,9 +1645,18 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#publishPointerLock();
   }
 
+  setSelectionEnabled(enabled: boolean): void {
+    this.#assertReady();
+    this.#selectionEnabled = enabled && Boolean(this.#onSelection) && this.#visible;
+    this.#selectionRevision++;
+    this.#postToApplication({ type: "redevplugin.surface.selection_mode", frame_generation_id: this.frameGenerationId,
+      surface_handle: this.surfaceHandle, enabled: this.#selectionEnabled, revision: this.#selectionRevision });
+    this.#publishPointerLock();
+  }
+
   #publishPointerLock(): void {
     if (!this.#ready || this.#navigationPending) return;
-    const enabled = this.#pointerLockEnabled && this.#visible && !this.#closeDecision;
+    const enabled = this.#pointerLockEnabled && this.#visible && !this.#closeDecision && !this.#selectionEnabled;
     this.#postToApplication({ type: "redevplugin.surface.pointer_lock", frame_generation_id: this.frameGenerationId, surface_handle: this.surfaceHandle, enabled });
     if (!enabled) this.#setPointerLocked(false);
   }
@@ -1837,6 +1869,16 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       }
       if (hasExactKeys(data, ["type", "close_id", "allow"]) && data.type === "redevplugin.bridge.close_response" && typeof data.allow === "boolean" && data.close_id === this.#closeDecision?.id) {
         this.#closeDecision?.result.resolve(data.allow);
+        return;
+      }
+      if (isSurfaceSelectionMessage(data)) {
+        if (this.#selectionEnabled && data.revision === this.#selectionRevision && this.#acceptInteraction(data)) {
+          const current = () => !this.#disposed && this.#ready && !this.#navigationPending &&
+            data.frame_generation_id === this.frameGenerationId && data.surface_handle === this.surfaceHandle;
+          try { this.#onSelection?.({ isCurrent: current, sequence: data.sequence, frameGenerationId: data.frame_generation_id,
+            surfaceHandle: data.surface_handle, phase: data.phase, point: data.point, viewport: data.viewport,
+            target: data.target, bounds: data.bounds }); } catch { /* Observers cannot alter lifecycle. */ }
+        }
         return;
       }
       if (isSurfaceContextMenuMessage(data)) {
@@ -3171,6 +3213,29 @@ function isSurfaceContextMenuMessage(value: unknown): value is SurfaceContextMen
     text(value.target.role, 64) && text(value.target.text, 240) && text(value.target.selector, 1024) &&
     hasExactKeys(value.target.bounds, ["x", "y", "width", "height"]) &&
     Object.values(value.target.bounds).every(unit);
+}
+
+type SurfaceSelectionMessage = Omit<SurfaceContextMenuMessage, "type" | "target"> & {
+  type: "redevplugin.surface.selection";
+  revision: number;
+  phase: PluginSurfaceSelectionEvent["phase"];
+  target: PluginSurfaceSelectionEvent["target"];
+  bounds: PluginSurfaceSelectionEvent["bounds"];
+};
+function isSurfaceSelectionMessage(value: unknown): value is SurfaceSelectionMessage {
+  if (!hasExactKeys(value, ["type", "frame_generation_id", "surface_handle", "sequence", "revision", "phase", "point", "viewport", "target", "bounds"]) ||
+    value.type !== "redevplugin.surface.selection" || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 ||
+    !["hover", "select", "cancel"].includes(String(value.phase))) return false;
+  const bounds = value.bounds;
+  if (bounds !== null && (!hasExactKeys(bounds, ["x", "y", "width", "height"]) ||
+    !Object.values(bounds).every(n => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1) ||
+    Number(bounds.x) + Number(bounds.width) > 1.00000001 || Number(bounds.y) + Number(bounds.height) > 1.00000001)) return false;
+  if (value.phase === "select" && (!bounds || Number(bounds.width) <= 0 || Number(bounds.height) <= 0)) return false;
+  if (value.target !== null && (!bounds || !isRecord(value.target) || !isRecord(value.target.bounds) || !["x", "y", "width", "height"].every(key => (value.target as Record<string, unknown>).bounds && ((value.target as Record<string, unknown>).bounds as Record<string, unknown>)[key] === bounds[key]))) return false;
+  if (value.phase === "cancel" && (value.target !== null || bounds !== null)) return false;
+  return isSurfaceContextMenuMessage({ type: "redevplugin.surface.context_menu", frame_generation_id: value.frame_generation_id,
+    surface_handle: value.surface_handle, sequence: value.sequence, point: value.point, viewport: value.viewport,
+    target: value.target ?? { tag: "div", role: "", text: "", selector: "", bounds: bounds ?? { x: 0, y: 0, width: 0, height: 0 } } });
 }
 
 type SurfaceFileExportCandidate = Record<string, unknown> & {

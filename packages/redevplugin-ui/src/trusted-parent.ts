@@ -41,6 +41,7 @@ export type {
   PluginSurfaceOpeningMilestone,
   PluginSurfaceInteractionEvent,
   PluginSurfaceContextMenuEvent,
+  PluginSurfaceSelectionEvent,
   PluginSurfaceInteractionKind,
   PluginSurfaceFileExport,
   PluginSurfaceFileExportHandler,

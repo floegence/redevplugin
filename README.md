@@ -616,3 +616,15 @@ by a local sequence, optionally filtered by type, in pages of at most 1,000.
 Existing retention applies; sequence gaps are valid and this is not an unbounded
 delivery subscription. Optional product analytics can read this evidence in the
 background without making an analytics failure part of the installation result.
+
+### Visual selection
+
+Trusted hosts may register `onSelection` and call `setSelectionEnabled(true)` on
+a ready surface. The platform intercepts primary pointer gestures and reports
+frame-bound `hover`, `select`, and `cancel` observations. Clicks return bounded
+tag/role/text/selector hints and normalized viewport bounds; dragging returns
+only an image region with `target: null`. Escape exits, hidden surfaces disable
+selection, and mode revisions reject late observations. Hosts render highlights,
+capture exact screenshots, and own comments. Metadata is untrusted visual
+context, never an executable selector or permission. No HTML or form values
+leave the document. Existing context menus remain opt-in and unchanged.

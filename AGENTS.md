@@ -298,6 +298,8 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   semantic metadata and must never become permission, route-authorization,
   identity, or privilege inputs. Opt-in context menus use the same channel and
   return only bounded visual target hints and normalized viewport geometry.
+  Opt-in visual selection uses mode revisions on that same channel, intercepts
+  clicks and drags, and reports hover/selection/cancel with DOM-free regions.
   Hosts bind comments to their reviewed artifact and own stale-comment handling;
   visual text and selectors are untrusted context, never executable authority.
 - Saved host layout and live surface authority are separate lifetimes. Hosts may

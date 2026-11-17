@@ -82,7 +82,74 @@
       text: text.replace(/\s+/g, " ").trim().slice(0, 240), selector: path.join(" > ").slice(0, 1024),
       bounds: { x, y, width: Math.max(0, unit(rect.right / width) - x), height: Math.max(0, unit(rect.bottom / height) - y) } };
   };
+  let selecting = false, selectionRevision = 0, selectionGesture, hoverFrame = 0, hoverEvent, lastHover = 0;
+  const unit = n => Math.max(0, Math.min(1, n));
+  const selectionPoint = e => ({ x: unit(e.clientX / Math.max(1, innerWidth)), y: unit(e.clientY / Math.max(1, innerHeight)) });
+  const selectionEvent = (phase, point, target, bounds) => {
+    if (!ready || !selecting) return;
+    send({ type: "redevplugin.surface.selection", frame_generation_id: frameGeneration, surface_handle: surfaceHandle,
+      sequence: ++sequence, revision: selectionRevision, phase, point, viewport: { width: innerWidth, height: innerHeight }, target, bounds });
+  };
+  const resetSelection = () => {
+    cancelAnimationFrame(hoverFrame); hoverFrame = 0; hoverEvent = undefined;
+    const gesture = selectionGesture; selectionGesture = undefined;
+    if (gesture && document.documentElement.hasPointerCapture(gesture.id)) document.documentElement.releasePointerCapture(gesture.id);
+  };
+  const selectionAt = e => {
+    const point = selectionPoint(e), gesture = selectionGesture;
+    if (gesture && Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) >= 5) gesture.dragged = true;
+    if (gesture?.dragged) return { point, target: null, bounds: { x: Math.min(point.x, gesture.point.x), y: Math.min(point.y, gesture.point.y),
+      width: Math.abs(point.x - gesture.point.x), height: Math.abs(point.y - gesture.point.y) } };
+    const element = gesture?.element ?? document.elementFromPoint(e.clientX, e.clientY);
+    const target = element instanceof Element ? visualTarget(element) : null;
+    return { point, target, bounds: target?.bounds ?? null };
+  };
+  const observeSelection = () => {
+    const stop = e => { e.preventDefault(); e.stopImmediatePropagation(); };
+    addEventListener("pointermove", e => {
+      if (!selecting || !ready || !e.isTrusted) return;
+      stop(e); hoverEvent = e;
+      if (!hoverFrame) hoverFrame = requestAnimationFrame(now => {
+        hoverFrame = 0;
+        if (now - lastHover < 32) return;
+        lastHover = now;
+        if (!selecting || !hoverEvent) return;
+        const value = selectionAt(hoverEvent); selectionEvent("hover", value.point, value.target, value.bounds);
+      });
+    }, true);
+    addEventListener("pointerdown", e => {
+      if (!selecting || !ready || !e.isTrusted) return;
+      stop(e);
+      if (e.button !== 0 || selectionGesture) return;
+      const element = document.elementFromPoint(e.clientX, e.clientY);
+      selectionGesture = { id: e.pointerId, x: e.clientX, y: e.clientY, point: selectionPoint(e), element, dragged: false };
+      document.documentElement.setPointerCapture(e.pointerId);
+    }, true);
+    addEventListener("pointerup", e => {
+      if (!selecting || !ready || !e.isTrusted) return;
+      stop(e);
+      if (selectionGesture?.id !== e.pointerId) return;
+      const value = selectionAt(e); resetSelection();
+      if (value.bounds?.width > 0 && value.bounds.height > 0) selectionEvent("select", value.point, value.target, value.bounds);
+    }, true);
+    const clear = () => { resetSelection(); selectionEvent("hover", { x: 0, y: 0 }, null, null); };
+    addEventListener("pointercancel", clear, true);
+    addEventListener("blur", clear);
+    addEventListener("pointerout", e => { if (!e.relatedTarget) clear(); }, true);
+    addEventListener("scroll", clear, true);
+    addEventListener("resize", clear);
+    for (const name of ["mousedown", "mouseup", "click", "dblclick", "contextmenu", "dragstart"]) {
+      addEventListener(name, e => { if (selecting && ready) stop(e); }, true);
+    }
+    addEventListener("keydown", e => {
+      if (!selecting || !ready) return;
+      if (e.key === "Tab") return;
+      stop(e);
+      if (e.key === "Escape") { resetSelection(); selectionEvent("cancel", { x: 0, y: 0 }, null, null); selecting = false; }
+    }, true);
+  };
   const observe = () => {
+    observeSelection();
     addEventListener("blur", releaseLock);
     document.addEventListener("visibilitychange", () => { if (document.hidden) releaseLock(); });
     const gesture = e => { if (e.isTrusted && pointerLockAllowed) pointerGesture = true; };
@@ -200,13 +267,19 @@
         presentationAccepted = true;
         return;
       }
+      if (m?.type === "redevplugin.surface.selection_mode" && m.frame_generation_id === frameGeneration && m.surface_handle === surfaceHandle &&
+        Number.isSafeInteger(m.revision) && m.revision > selectionRevision && typeof m.enabled === "boolean") {
+        resetSelection(); selectionRevision = m.revision; selecting = m.enabled;
+        if (selecting) releaseLock();
+        return;
+      }
       if (m?.type === "redevplugin.surface.pointer_lock" && m.frame_generation_id === frameGeneration && m.surface_handle === surfaceHandle) {
         pointerLockAllowed = m.enabled === true;
         if (!pointerLockAllowed) releaseLock();
         return;
       }
       if (m?.type === "redevplugin.bridge.lifecycle" && (m.event?.type === "hidden" || m.event?.type === "dispose")) {
-        pointerLockAllowed = false; releaseLock();
+        pointerLockAllowed = false; releaseLock(); selecting = false; resetSelection();
       }
       if (m?.type === "redevplugin.surface.initialize") { void start(m).catch(fail); return; }
       if (m?.type === "redevplugin.surface.context") { if (!context || m.context.revision > context.revision) { context = m.context; deliverContext(); present(); } return; }

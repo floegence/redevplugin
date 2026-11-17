@@ -3764,3 +3764,32 @@ test("explicit presentation rejects unsupported bootstraps instead of exposing a
     else Reflect.deleteProperty(globalThis, "__redevpluginWebBridge");
   }
 });
+
+test("visual selection requires the current mode revision and keeps region selections DOM-free", async () => {
+  const frame = new FakeFrame(), fetch = new FakeFetch(), channel = fakeChannel();
+  const events: import("../src/surface.js").PluginSurfaceSelectionEvent[] = [];
+  fetch.push(preparation()); fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, { bootstrap: hostBootstrap, testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }), onSelection: event => events.push(event) });
+  const opening = host.open(); frame.load(); await waitFor(() => frame.transferred.length === 1);
+  channel.port2.applicationReady(); await opening;
+  const message = { type: "redevplugin.surface.selection", frame_generation_id: host.frameGenerationId,
+    surface_handle: host.surfaceHandle, sequence: 1, revision: 1, phase: "select", point: { x: .4, y: .5 },
+    viewport: { width: 800, height: 600 }, target: null, bounds: { x: .2, y: .3, width: .2, height: .2 } };
+  channel.port2.postMessage(message); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(events.length, 0);
+  host.setSelectionEnabled(true);
+  for (const invalid of [ { ...message, revision: 0 }, { ...message, frame_generation_id: "frame_stale123" },
+    { ...message, surface_handle: "surface_stale123" }, { ...message, bounds: { x: .9, y: .1, width: .2, height: .1 } },
+    { ...message, bounds: null }, { ...message, target: { tag: "button", role: "", text: "secret", selector: "button", bounds: message.bounds, value: "private" } },
+    { ...message, phase: "cancel" }, { ...message, unexpected: true } ]) channel.port2.postMessage(invalid);
+  channel.port2.postMessage(message); channel.port2.postMessage(message);
+  await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(events.length, 1); assert.equal(events[0]?.target, null);
+  host.setSelectionEnabled(false); host.setSelectionEnabled(true);
+  channel.port2.postMessage({ ...message, sequence: 2 });
+  channel.port2.postMessage({ ...message, sequence: 3, revision: 3, phase: "hover" });
+  await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(events.length, 2);
+  host.sendLifecycle({ type: "hidden" }); channel.port2.postMessage({ ...message, sequence: 4, revision: 3 });
+  await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(events.length, 2);
+  fetch.push({ disposed: true, state: "closed", previous_state: "active", revoked: true });
+  await host.dispose(); assert.equal(events[0]?.isCurrent(), false);
+});

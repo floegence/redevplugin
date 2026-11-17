@@ -27,6 +27,7 @@ import {
   type PluginSurfaceOpeningProgress,
   type PluginSurfaceInteractionEvent,
   type PluginSurfaceContextMenuEvent,
+  type PluginSurfaceSelectionEvent,
   type PluginSurfaceFileExportHandler,
   type PluginSurfaceReloadLimiter,
   type PluginSurfaceSlot,
@@ -102,6 +103,7 @@ export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
   pointerLockEnabled?: boolean;
   onPointerLockChange?: (locked: boolean) => void;
   onContextMenu?: (event: PluginSurfaceContextMenuEvent) => void;
+  onSelection?: (event: PluginSurfaceSelectionEvent) => void;
   onFileExport?: PluginSurfaceFileExportHandler;
   confirmClose?: (request: { reason: "unsaved" | "unresponsive"; signal: AbortSignal }) => boolean | Promise<boolean>;
   onError?: (error: import("./errors.js").PluginBridgeError) => void;

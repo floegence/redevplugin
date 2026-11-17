@@ -24,7 +24,7 @@ func TestWebSurfaceDocumentIsOneClosedOriginBinding(t *testing.T) {
 
 func TestWebSurfaceTransportIsClosedAndSecretFree(t *testing.T) {
 	schema := readPluginSchema(t, "web-surface-transport.schema.json")
-	names := []string{"port_envelope", "port_ack", "pointer_lock", "pointer_lock_state", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "presented", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response", "context_menu"}
+	names := []string{"port_envelope", "port_ack", "pointer_lock", "pointer_lock_state", "initialize", "context", "surface_error", "interaction", "entry_ready", "entry_error", "app_ready", "presented", "navigation", "quiesce_ack", "file_export", "file_io", "close_request", "close_response", "context_menu", "selection_mode", "selection"}
 	refs := requireObjectArray(t, schema["oneOf"], "transport variants")
 	var got []string
 	for _, ref := range refs {
@@ -137,6 +137,26 @@ func TestContextMenuVisualContextIsClosedAndBounded(t *testing.T) {
 			t.Fatalf("accepted invalid context menu %s", key)
 		}
 	}
+	selectionRaw, err := os.ReadFile(filepath.Join(repoRoot(t), "testdata/contracts/web-surface-selection.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selection map[string]any
+	if err := json.Unmarshal(selectionRaw, &selection); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(selection); err != nil {
+		t.Fatal(err)
+	}
+	selection["target"] = nil
+	if err := schema.Validate(selection); err != nil {
+		t.Fatal(err)
+	}
+	selection["revision"] = 0
+	if err := schema.Validate(selection); err == nil {
+		t.Fatal("accepted invalid selection revision")
+	}
+
 	target := cloneWebObject(message["target"].(map[string]any))
 	target["value"] = "private input"
 	message["target"] = target

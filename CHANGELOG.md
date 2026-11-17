@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.32.0
+
+- Add opt-in visual selection on the authenticated surface channel: bounded DOM hover/click hints, DOM-free dragged regions, mode revision validation, and input interception with Escape cancellation. Hosts retain screenshot and comment presentation ownership.
+
 ## v3.31.1
 
 - Finish running finite CSS transitions and entrance animations at the first-presentation boundary, so initial theme changes cannot reveal white controls or transparent content.

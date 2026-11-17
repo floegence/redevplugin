@@ -60,6 +60,12 @@
     },
     {
       "$ref": "#/$defs/pointer_lock_state"
+    },
+    {
+      "$ref": "#/$defs/selection_mode"
+    },
+    {
+      "$ref": "#/$defs/selection"
     }
   ],
   "$defs": {
@@ -920,6 +926,227 @@
           "maximum": 9007199254740991
         }
       }
+    },
+    "selection_mode": {
+      "description": "Host-controlled visual selection mode. Each transition increments revision; no application authority is granted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "frame_generation_id",
+        "surface_handle",
+        "enabled",
+        "revision"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.surface.selection_mode"
+        },
+        "frame_generation_id": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "surface_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "frame_generation_id",
+        "surface_handle",
+        "sequence",
+        "point",
+        "viewport",
+        "target",
+        "revision",
+        "phase",
+        "bounds"
+      ],
+      "properties": {
+        "type": {
+          "const": "redevplugin.surface.selection"
+        },
+        "frame_generation_id": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "surface_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "point": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "y": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "viewport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "width",
+            "height"
+          ],
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            }
+          }
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag",
+                "role",
+                "text",
+                "selector",
+                "bounds"
+              ],
+              "properties": {
+                "tag": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                },
+                "role": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "selector": {
+                  "type": "string",
+                  "maxLength": 1024
+                },
+                "bounds": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "x",
+                    "y",
+                    "width",
+                    "height"
+                  ],
+                  "properties": {
+                    "x": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "y": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "width": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "height": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "phase": {
+          "enum": [
+            "hover",
+            "select",
+            "cancel"
+          ]
+        },
+        "bounds": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "x",
+                "y",
+                "width",
+                "height"
+              ],
+              "properties": {
+                "x": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "width": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "height": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "Visual inspection observation for the exact active mode revision. Hover previews a target, select commits a click or drag, cancel exits. Region selections contain null target, never DOM metadata."
     }
   }
 }
