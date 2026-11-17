@@ -41,7 +41,7 @@
     "canonical-wasm:test": "node --test scripts/canonical_wasm_builder.test.mjs",
     "memos-markdown:test": "node --test scripts/memos_markdown_identity.test.mjs",
     "scaffold:typecheck": "tsc -p internal/scaffoldtemplate/tsconfig.json --noEmit",
-    "lint": "eslint packages/redevplugin-contracts/src packages/redevplugin-contracts/test packages/redevplugin-ui/src packages/redevplugin-ui/test examples/plugin-ui examples/showcase/app.ts internal/scaffoldtemplate testdata/browser-harness/web-application/*.ts internal/authorpreview",
+    "lint": "node --test scripts/lint_contract.test.mjs && oxlint --deny-warnings --format=json packages/redevplugin-contracts/src packages/redevplugin-contracts/test packages/redevplugin-ui/src packages/redevplugin-ui/test examples/plugin-ui examples/showcase/app.ts internal/scaffoldtemplate testdata/browser-harness/web-application/*.ts internal/authorpreview",
     "typecheck": "npm run contracts-package:typecheck && tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
     "examples:generate": "node scripts/build_example_plugins.mjs",
     "examples:check": "node scripts/build_example_plugins.mjs --check",
@@ -81,12 +81,11 @@
     "ajv": "8.20.0",
     "babel-preset-solid": "1.9.16",
     "esbuild": "^0.28.2",
-    "eslint": "10.13.0",
     "openapi-typescript": "7.13.0",
+    "oxlint": "1.94.0",
     "playwright": "^1.64.1",
     "solid-js": "1.9.17",
     "typescript": "^5.9.3",
-    "typescript-eslint": "8.72.0",
     "yaml": "^2.9.1"
   },
   "overrides": {

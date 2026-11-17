@@ -6,6 +6,7 @@
 - Classify surface-open permission, policy, disabled, declaration, package and unexpected failures accurately instead of reporting every failure as permission denial.
 - Document independent local rendering, scoped startup requirements and exact-instance first-use permission recovery in version-bound author guides.
 - Keep developer-preview confirmation clicks out of the underlying plugin frame while preserving its unsaved content on cancellation.
+- Remove the unpatched Picomatch dependency from repository lint tooling; retain all 24 existing lint rules and scoped allowances through Oxlint and behavioral contract fixtures.
 
 ## v3.33.0
 
