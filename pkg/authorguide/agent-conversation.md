@@ -51,6 +51,13 @@ bootstrap missing plugin grants: binding and configuration themselves require
 their declared routes and current permissions. Use the host's instance permission
 review first when those permissions are missing.
 
+Render independent local content before binding or opening a conversation.
+For example, a local game board can remain usable before the Agent is available.
+Use scoped surface startup requirements as described in `capabilities`; keep
+Agent actions in an explicit setup state until the host's permission review is
+complete. Do not make a top-level rejected `bindAgent` promise erase the whole
+interface or remove the requested model-configuration control.
+
 `agent.binding.available` reports binding availability, not universal model
 readiness or proof of a successful response. Model selection and credentials
 belong to the host; never place credentials in plugin code or persistent context.

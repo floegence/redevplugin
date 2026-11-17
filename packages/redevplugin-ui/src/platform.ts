@@ -69,7 +69,7 @@ export function getPluginSurfaceActionState(
     return state.surfaces.find((surface) => surface.surface_id === surfaceId)
       ?? { surface_id: surfaceId, can_open: false, blocked_reason: "incompatible" };
   }
-  return { surface_id: surfaceId, can_open: state.can_open, ...(state.blocked_reason ? { blocked_reason: state.blocked_reason } : {}) };
+  return { surface_id: surfaceId, can_open: state.can_open, ...(state.blocked_reason ? { blocked_reason: state.blocked_reason } : {}), ...(state.missing_permissions ? { missing_permissions: [...state.missing_permissions] } : {}) };
 }
 export type PluginFeatures = PlatformSchemas["PluginFeaturesSuccessResponse"]["data"];
 export type PluginPackageContentHashes = PlatformSchemas["PackageContentHashes"];

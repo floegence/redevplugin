@@ -27,6 +27,27 @@ substitute the newest build or the installed copy. Hosts own navigation and
 review UI. Use their exact-instance settings action rather than inventing a
 product menu path. Query failures are unknown state, not empty grants.
 
+## Keep first use accessible
+
+Declare `authorization.scoped.v1` in `api.required_features` to give each surface
+an explicit `required_methods` list. These are startup dependencies, not callable
+method declarations. Omission keeps aggregate plugin authorization: a missing
+grant for any declared method can prevent the entire interface from opening.
+
+A surface that renders its local content and setup controls independently may
+use `"required_methods": []`. A surface that must read protected data before it
+can render lists those exact methods instead. Every subsequent capability call
+still needs its declaration, permissions, policy admission and confirmation.
+Do not set an empty list just to suppress a failure: first make initialization
+tolerate unavailable capabilities and preserve local content and setup controls.
+
+Hosts read `getPluginSurfaceActionState(record, surfaceId)` from the current
+catalog. `permission_required` includes `missing_permissions` for that surface's
+startup requirements. A policy restriction takes precedence over missing grants.
+Present review for the exact instance, then refresh the authoritative catalog
+before opening a fresh surface. Do not request every plugin permission, treat
+unknown read failures as permission requests, or replay business operations.
+
 Build/package checks, install eligibility, preview admission and business
 verification are distinct evidence. Report only checks actually performed.
 Exercise first use with no grants, refusal, explicit authorization, configured

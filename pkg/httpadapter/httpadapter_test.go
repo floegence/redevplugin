@@ -33,6 +33,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
 	"github.com/floegence/redevplugin/v3/pkg/observability"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
@@ -1762,7 +1763,12 @@ func TestOpenSurfaceErrorsUseStableRecoverySemantics(t *testing.T) {
 	}{
 		{name: "session limit", err: bridge.ErrSurfaceSessionLimitReached, wantStatus: http.StatusServiceUnavailable, wantCode: security.ErrRuntimeUnavailable},
 		{name: "duplicate session", err: bridge.ErrSurfaceSessionAlreadyExists, wantStatus: http.StatusConflict, wantCode: security.ErrContractMismatch},
-		{name: "policy denial", err: errors.New("denied"), wantStatus: http.StatusForbidden, wantCode: security.ErrPermissionDenied},
+		{name: "policy denial", err: security.ErrPolicyDenied, wantStatus: http.StatusForbidden, wantCode: security.ErrExecutionBlocked},
+		{name: "unknown failure", err: errors.New("storage read failed"), wantStatus: http.StatusInternalServerError, wantCode: security.ErrInternalFailure},
+		{name: "missing grant", err: permissions.ErrPermissionDenied, wantStatus: http.StatusForbidden, wantCode: security.ErrPermissionDenied},
+		{name: "disabled", err: host.ErrPluginDisabled, wantStatus: http.StatusForbidden, wantCode: security.ErrDisabled},
+		{name: "undeclared surface", err: host.ErrSurfaceNotDeclared, wantStatus: http.StatusConflict, wantCode: security.ErrContractMismatch},
+		{name: "missing entry", err: pluginpkg.ErrPackageAssetNotFound, wantStatus: http.StatusConflict, wantCode: security.ErrPackageInvalid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2293,6 +2299,14 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	}, http.StatusForbidden)
 	if missingGrant.Code != string(security.ErrPermissionDenied) {
 		t.Fatalf("open without grant error = %#v", missingGrant)
+	}
+	catalog := postJSON[struct {
+		Plugins []struct {
+			ActionState host.PluginActionState `json:"action_state"`
+		} `json:"plugins"`
+	}](t, handler, "/_redevplugin/api/plugins/catalog/query", map[string]any{})
+	if len(catalog.Plugins) != 1 || catalog.Plugins[0].ActionState.BlockedReason != host.PluginActionBlockedPermission || !slices.Equal(catalog.Plugins[0].ActionState.MissingPermissions, []string{"read"}) || catalog.Plugins[0].ActionState.RecoveryAction != "" {
+		t.Fatalf("catalog must explain the exact missing grant without recommending retry: %+v", catalog)
 	}
 	records, err := h.ListPlugins(httpTestContext())
 	if err != nil {

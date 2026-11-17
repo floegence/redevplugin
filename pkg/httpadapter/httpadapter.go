@@ -3057,6 +3057,16 @@ func errorCodeForBridgeTokenError(err error, renewal bool) security.ErrorCode {
 
 func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrPluginDisabled):
+		return security.ErrDisabled
+	case errors.Is(err, host.ErrSurfaceNotDeclared):
+		return security.ErrContractMismatch
+	case errors.Is(err, pluginpkg.ErrPackageAssetNotFound):
+		return security.ErrPackageInvalid
+	case errors.Is(err, security.ErrPolicyDenied):
+		return security.ErrExecutionBlocked
+	case errors.Is(err, permissions.ErrPermissionDenied):
+		return security.ErrPermissionDenied
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
@@ -3072,12 +3082,16 @@ func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 	case errors.Is(err, bridge.ErrSurfaceSessionAlreadyExists):
 		return security.ErrContractMismatch
 	default:
-		return security.ErrPermissionDenied
+		return security.ErrInternalFailure
 	}
 }
 
 func httpStatusForOpenSurfaceError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrActionDenied), errors.Is(err, security.ErrPolicyDenied), errors.Is(err, permissions.ErrPermissionDenied), errors.Is(err, host.ErrPluginDisabled):
+		return http.StatusForbidden
+	case errors.Is(err, host.ErrSurfaceNotDeclared), errors.Is(err, pluginpkg.ErrPackageAssetNotFound):
+		return http.StatusConflict
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
@@ -3091,7 +3105,7 @@ func httpStatusForOpenSurfaceError(err error) int {
 	case errors.Is(err, bridge.ErrSurfaceSessionAlreadyExists):
 		return http.StatusConflict
 	default:
-		return http.StatusForbidden
+		return http.StatusInternalServerError
 	}
 }
 

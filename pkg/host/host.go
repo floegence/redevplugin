@@ -117,6 +117,8 @@ type ListDiagnosticEventsRequest struct {
 }
 
 var (
+	ErrPluginDisabled                = errors.New("plugin is not enabled")
+	ErrSurfaceNotDeclared            = errors.New("plugin surface is not declared")
 	ErrPluginDataNotDeclared         = errors.New("plugin does not declare exportable data")
 	ErrPluginStorageNotDeclared      = errors.New("target plugin does not declare storage")
 	ErrPluginSettingsNotDeclared     = errors.New("target plugin does not declare settings")
@@ -1708,14 +1710,14 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 		return bridge.SurfaceBootstrap{}, err
 	}
 	if record.EnableState != registry.EnableEnabled {
-		return bridge.SurfaceBootstrap{}, errors.New("plugin is not enabled")
+		return bridge.SurfaceBootstrap{}, ErrPluginDisabled
 	}
 	if err := h.canRun(ctx, record); err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
 	surface, ok := manifestSurfaceByID(record.Manifest, req.SurfaceID)
 	if !ok {
-		return bridge.SurfaceBootstrap{}, fmt.Errorf("surface %q is not declared", req.SurfaceID)
+		return bridge.SurfaceBootstrap{}, fmt.Errorf("%w: %q", ErrSurfaceNotDeclared, req.SurfaceID)
 	}
 	if err := h.surfaceAuthorizationError(ctx, record, surface); err != nil {
 		return bridge.SurfaceBootstrap{}, err
@@ -1727,7 +1729,7 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	}
 	entry, ok := packageEntryByPath(record.PackageEntries, surface.Entry)
 	if !ok || strings.TrimSpace(entry.SHA256) == "" {
-		return bridge.SurfaceBootstrap{}, fmt.Errorf("surface %q entry metadata is unavailable", req.SurfaceID)
+		return bridge.SurfaceBootstrap{}, fmt.Errorf("%w: surface %q entry metadata is unavailable", pluginpkg.ErrPackageAssetNotFound, req.SurfaceID)
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.surface.opened", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if err != nil {

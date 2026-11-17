@@ -1685,8 +1685,11 @@ export interface components {
             surface_id: string;
             can_open: boolean;
             blocked_reason?: components["schemas"]["PluginActionState"]["blocked_reason"];
+            missing_permissions?: components["schemas"]["PluginActionState"]["missing_permissions"];
         };
         PluginActionState: {
+            /** @description Current missing startup grants from Host admission; omitted for policy denial or an available surface. Observation only, never authority to invoke a method. */
+            missing_permissions?: string[];
             surfaces?: components["schemas"]["PluginSurfaceActionState"][];
             can_open: boolean;
             can_enable: boolean;

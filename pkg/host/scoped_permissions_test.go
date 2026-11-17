@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/v3/pkg/security"
 )
 
 func TestScopedWorkerPermissionsReachRuntimeBroker(t *testing.T) {
@@ -91,7 +92,7 @@ func TestScopedSurfaceOpensWithoutUnrelatedPermissions(t *testing.T) {
 	if len(inventory) != 1 || !inventory[0].ActionState.CanOpen {
 		t.Fatalf("inventory = %#v", inventory)
 	}
-	want := []PluginSurfaceActionState{{SurfaceID: "worker.view", CanOpen: true}, {SurfaceID: "worker.protected", BlockedReason: PluginActionBlockedPermission}}
+	want := []PluginSurfaceActionState{{SurfaceID: "worker.view", CanOpen: true}, {SurfaceID: "worker.protected", BlockedReason: PluginActionBlockedPermission, MissingPermissions: []string{"fs.environment.write"}}}
 	if !reflect.DeepEqual(inventory[0].ActionState.Surfaces, want) {
 		t.Fatalf("surface projection = %#v", inventory[0].ActionState.Surfaces)
 	}
@@ -106,6 +107,66 @@ func TestScopedSurfaceOpensWithoutUnrelatedPermissions(t *testing.T) {
 	revisions := mustAuthorizationRevisions(t, h, record.PluginInstanceID)
 	if _, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{PluginInstanceID: record.PluginInstanceID, SurfaceID: "worker.protected", ExpectedManagementRevision: revisions.ManagementRevision}); !errors.Is(err, permissions.ErrPermissionDenied) {
 		t.Fatalf("protected surface without grant: %v", err)
+	}
+}
+
+func TestSurfaceInventoryExplainsOnlyItsMissingStartupPermissions(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
+	record := installAndEnablePlugin(t, h, buildScopedWorkerFixturePackage(t))
+	inventory, err := h.ListPluginInventory(hostTestContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(inventory[0].ActionState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Surfaces []struct {
+			SurfaceID string   `json:"surface_id"`
+			Missing   []string `json:"missing_permissions"`
+		} `json:"surfaces"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Surfaces) != 2 || len(state.Surfaces[0].Missing) != 0 || !reflect.DeepEqual(state.Surfaces[1].Missing, []string{"fs.environment.write"}) {
+		t.Fatalf("startup permission evidence = %s", raw)
+	}
+	revisions := mustAuthorizationRevisions(t, h, record.PluginInstanceID)
+	if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{PluginInstanceID: record.PluginInstanceID, PermissionID: "fs.environment.write", ExpectedPolicyRevision: revisions.PolicyRevision, ExpectedManagementRevision: revisions.ManagementRevision, ExpectedRevokeEpoch: revisions.RevokeEpoch}); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err = h.ListPluginInventory(hostTestContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inventory[0].ActionState.Surfaces[1].CanOpen {
+		t.Fatalf("grant did not release exact surface: %+v", inventory)
+	}
+	if len(inventory[0].ActionState.Surfaces[1].MissingPermissions) != 0 {
+		t.Fatal("stale permission evidence after grant")
+	}
+}
+
+func TestSurfacePolicyBlockDoesNotRequestConsent(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{})
+	record := installAndEnablePlugin(t, h, buildScopedWorkerFixturePackage(t))
+	revisions := mustAuthorizationRevisions(t, h, record.PluginInstanceID)
+	if _, err := h.PutSecurityPolicy(hostTestContext(), PutSecurityPolicyRequest{PluginInstanceID: record.PluginInstanceID, ExpectedPolicyRevision: revisions.PolicyRevision, ExpectedManagementRevision: revisions.ManagementRevision, ExpectedRevokeEpoch: revisions.RevokeEpoch, DeniedMethods: []string{"worker.write"}}); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := h.ListPluginInventory(hostTestContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := inventory[0].ActionState.Surfaces[1]
+	if state.CanOpen || state.BlockedReason != PluginActionBlockedPolicy || len(state.MissingPermissions) != 0 {
+		t.Fatalf("policy must precede missing grants: %+v", state)
+	}
+	_, err = h.OpenSurface(hostTestContext(), OpenSurfaceRequest{PluginInstanceID: record.PluginInstanceID, SurfaceID: "worker.protected", ExpectedManagementRevision: inventory[0].Plugin.ManagementRevision})
+	if !errors.Is(err, security.ErrPolicyDenied) {
+		t.Fatalf("OpenSurface disagrees with inventory: %v", err)
 	}
 }
 

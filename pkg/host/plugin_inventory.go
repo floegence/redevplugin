@@ -31,21 +31,23 @@ const (
 // PluginActionState is the only Host-owned action projection consumed by host
 // products. UI clients may present it, but must not recompute it.
 type PluginActionState struct {
-	Surfaces       []PluginSurfaceActionState `json:"surfaces,omitempty"`
-	CanOpen        bool                       `json:"can_open"`
-	CanEnable      bool                       `json:"can_enable"`
-	CanDisable     bool                       `json:"can_disable"`
-	CanUninstall   bool                       `json:"can_uninstall"`
-	BlockedReason  PluginActionBlockedReason  `json:"blocked_reason,omitempty"`
-	RecoveryAction string                     `json:"recovery_action,omitempty"`
+	Surfaces           []PluginSurfaceActionState `json:"surfaces,omitempty"`
+	CanOpen            bool                       `json:"can_open"`
+	CanEnable          bool                       `json:"can_enable"`
+	CanDisable         bool                       `json:"can_disable"`
+	CanUninstall       bool                       `json:"can_uninstall"`
+	BlockedReason      PluginActionBlockedReason  `json:"blocked_reason,omitempty"`
+	MissingPermissions []string                   `json:"missing_permissions,omitempty"`
+	RecoveryAction     string                     `json:"recovery_action,omitempty"`
 }
 
 // PluginSurfaceActionState projects startup requirements, not a method allowlist.
 // Every invocation still authorizes the exact method independently.
 type PluginSurfaceActionState struct {
-	SurfaceID     string                    `json:"surface_id"`
-	CanOpen       bool                      `json:"can_open"`
-	BlockedReason PluginActionBlockedReason `json:"blocked_reason,omitempty"`
+	SurfaceID          string                    `json:"surface_id"`
+	CanOpen            bool                      `json:"can_open"`
+	BlockedReason      PluginActionBlockedReason `json:"blocked_reason,omitempty"`
+	MissingPermissions []string                  `json:"missing_permissions,omitempty"`
 }
 
 type PluginInventoryRecord struct {
@@ -177,13 +179,14 @@ func (h *Host) pluginActionState(ctx context.Context, record registry.PluginReco
 	canOpen := false
 	for _, surface := range record.Manifest.Surfaces {
 		surfaceState := h.pluginActionStateWithAuthorization(record, func() error { return h.surfaceAuthorizationError(ctx, record, surface) })
-		state.Surfaces = append(state.Surfaces, PluginSurfaceActionState{SurfaceID: surface.SurfaceID, CanOpen: surfaceState.CanOpen, BlockedReason: surfaceState.BlockedReason})
+		state.Surfaces = append(state.Surfaces, PluginSurfaceActionState{SurfaceID: surface.SurfaceID, CanOpen: surfaceState.CanOpen, BlockedReason: surfaceState.BlockedReason, MissingPermissions: surfaceState.MissingPermissions})
 		canOpen = canOpen || surfaceState.CanOpen
 	}
 	state.CanOpen = canOpen
 	if canOpen {
 		state.BlockedReason = ""
 		state.RecoveryAction = ""
+		state.MissingPermissions = nil
 	}
 	return state
 }
@@ -202,7 +205,12 @@ func (h *Host) pluginActionStateWithAuthorization(record registry.PluginRecord, 
 		state.BlockedReason = PluginActionBlockedIncompatible
 	}
 	if state.BlockedReason == "" && record.EnableState == registry.EnableEnabled {
-		state.BlockedReason = authorizationBlockedReason(authorize())
+		err := authorize()
+		state.BlockedReason = authorizationBlockedReason(err)
+		var missing *missingPermissionGrantsError
+		if errors.As(err, &missing) {
+			state.MissingPermissions = append([]string(nil), missing.permissions...)
+		}
 	}
 	if state.BlockedReason == "" && record.EnableState == registry.EnableEnabled {
 		state.CanOpen = true
@@ -211,7 +219,6 @@ func (h *Host) pluginActionStateWithAuthorization(record registry.PluginRecord, 
 	}
 	if record.EnableState == registry.EnableEnabled {
 		state.CanDisable = true
-		state.RecoveryAction = "retry"
 	} else {
 		if state.BlockedReason == "" {
 			state.BlockedReason = PluginActionBlockedDisabled
@@ -275,16 +282,8 @@ func (h *Host) authorizePermissionRequirements(ctx context.Context, record regis
 	if err != nil {
 		return err
 	}
-	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		PermissionIDs:    permissions.MethodGrantIDs(requirements.requiredPermissions),
-	})
-	if err != nil {
-		return err
-	}
-	if !granted {
-		return fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
-	}
+	// A policy denial cannot be repaired by consent. Evaluate it before grants
+	// so inventory never invites users to grant an already prohibited action.
 	for _, method := range requirements.methods {
 		evaluation, err := security.Evaluate(snapshot.Policy, security.EvaluatePolicyRequest{
 			PluginInstanceID:    record.PluginInstanceID,
@@ -298,8 +297,27 @@ func (h *Host) authorizePermissionRequirements(ctx context.Context, record regis
 			return fmt.Errorf("%w: method %q", security.ErrPolicyDenied, method.method)
 		}
 	}
+	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		PermissionIDs:    permissions.MethodGrantIDs(requirements.requiredPermissions),
+	})
+	if err != nil {
+		return err
+	}
+	if !granted {
+		return &missingPermissionGrantsError{permissions: missing}
+	}
 	return nil
 }
+
+// The same admission result supplies inventory evidence and the OpenSurface
+// error classification. Permission IDs are never recovered from error text.
+type missingPermissionGrantsError struct{ permissions []string }
+
+func (e *missingPermissionGrantsError) Error() string {
+	return fmt.Sprintf("%s: %s", permissions.ErrPermissionDenied, strings.Join(e.permissions, ", "))
+}
+func (e *missingPermissionGrantsError) Unwrap() error { return permissions.ErrPermissionDenied }
 
 // RecoverEnabled reconciles enabled plugin runtime state once per Host startup
 // revision. Repeated calls project that observation onto the current inventory

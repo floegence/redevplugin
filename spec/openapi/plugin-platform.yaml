@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.33.0
+  version: 3.34.0
   description: Host-neutral plugin lifecycle, inspection, execution, data, and sandbox routes. All distributed plugins use ordinary packages and one exact-digest inspected-install Execution. Installation never grants runtime permissions. Automatic updates require the saved user preference, original source, a newer immutable version, and unchanged capabilities.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -2283,11 +2283,17 @@ components:
         surface_id: { type: string, minLength: 1 }
         can_open: { type: boolean }
         blocked_reason: { $ref: "#/components/schemas/PluginActionState/properties/blocked_reason" }
+        missing_permissions: { $ref: "#/components/schemas/PluginActionState/properties/missing_permissions" }
     PluginActionState:
       type: object
       required: [can_open, can_enable, can_disable, can_uninstall]
       additionalProperties: false
       properties:
+        missing_permissions:
+          type: array
+          description: Current missing startup grants from Host admission; omitted for policy denial or an available surface. Observation only, never authority to invoke a method.
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
         surfaces:
           type: array
           items: { $ref: "#/components/schemas/PluginSurfaceActionState" }

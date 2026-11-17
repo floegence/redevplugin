@@ -519,6 +519,12 @@ no work and do not certify business execution. These Go-only host APIs introduce
 no alternate plugin RPC or automatic grants; products own their trusted author
 tool/UI presentation and settings navigation.
 
+Surface availability comes from the canonical catalog action state and the SDK's
+`getPluginSurfaceActionState`. Missing startup grants are distinct from policy
+restrictions and include exact permission IDs for review. Author guides explain
+how scoped startup requirements keep independent local content accessible before
+capability setup. See [scoped authorization](docs/security/scoped-authorization.md).
+
 ## Documentation
 
 - [Runtime architecture](docs/architecture/plugin-platform-runtime.md)

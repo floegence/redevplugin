@@ -3431,7 +3431,7 @@ function getPluginSurfaceActionState(record2, surfaceId) {
   if (state.surfaces !== void 0) {
     return state.surfaces.find((surface) => surface.surface_id === surfaceId) ?? { surface_id: surfaceId, can_open: false, blocked_reason: "incompatible" };
   }
-  return { surface_id: surfaceId, can_open: state.can_open, ...state.blocked_reason ? { blocked_reason: state.blocked_reason } : {} };
+  return { surface_id: surfaceId, can_open: state.can_open, ...state.blocked_reason ? { blocked_reason: state.blocked_reason } : {}, ...state.missing_permissions ? { missing_permissions: [...state.missing_permissions] } : {} };
 }
 function toPluginSurfaceHostBootstrap(value) {
   return {

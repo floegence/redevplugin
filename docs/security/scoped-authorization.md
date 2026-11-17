@@ -31,6 +31,17 @@ must use the selected surface state rather than recomputing permission rules.
 Permission requirements additionally expose the effective method mapping, bound
 to the plugin instance, active fingerprint, version, and management revision.
 
+The action projection includes `missing_permissions` only for a missing-grant
+block. Scoped surfaces report their own startup grants; unscoped packages report
+aggregate missing grants. Policy restrictions take precedence, so granting access
+is never suggested as a remedy for a known policy prohibition. These are observed
+facts, not authorization: open and method dispatch recheck current state.
+Open failures distinguish `PLUGIN_PERMISSION_DENIED`, `PLUGIN_EXECUTION_BLOCKED`,
+`PLUGIN_DISABLED`, declaration/package failures and `PLUGIN_INTERNAL_FAILURE`.
+Unexpected failures are never converted to a request for consent. Hosts retain
+their placement, refresh the catalog after exact-instance permission review, and
+open a fresh surface only when the selected current surface becomes available.
+
 Original canonical manifest bytes remain the package identity authority. Optional
 fields are not inserted into existing manifests, and existing package hashes
 and capability pins remain unchanged. Revoking a grant invalidates existing

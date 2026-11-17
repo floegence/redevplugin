@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.34.0
+
+- Expose exact missing surface-startup grants in the canonical action projection and SDK, with policy restrictions taking precedence over consent requests.
+- Classify surface-open permission, policy, disabled, declaration, package and unexpected failures accurately instead of reporting every failure as permission denial.
+- Document independent local rendering, scoped startup requirements and exact-instance first-use permission recovery in version-bound author guides.
+
 ## v3.33.0
 
 - Publish version-bound author guides with contract-derived Agent method declarations, permission requirements and trusted configuration semantics.
