@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.32.1
+
+- Keep the arrow cursor throughout visual inspection, including buttons, inputs and interactive canvases; restore application cursors on Escape, host disable, hidden, disposal or failure without rewriting application styles.
+
 ## v3.32.0
 
 - Add opt-in visual selection on the authenticated surface channel: bounded DOM hover/click hints, DOM-free dragged regions, mode revision validation, and input interception with Escape cancellation. Hosts retain screenshot and comment presentation ownership.

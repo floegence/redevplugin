@@ -1,2 +1,4 @@
 body { font-family: system-ui; display: grid; gap: 12px; padding: 20px; background: #f4f4f5; color: #151518; }
 input { border: 1px solid #aaa; padding: 8px; } button { padding: 8px; }
+
+button { cursor: pointer; } canvas { cursor: grab; }

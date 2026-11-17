@@ -47,6 +47,7 @@
     send({ type: "redevplugin.surface.error", error: message });
     if (parentOrigin) parent.postMessage({ type: "redevplugin.surface.entry_error", error: message }, parentOrigin);
     releaseLock();
+    setSelecting(false);
     stopped = true;
     controller.abort();
     port?.close();
@@ -83,6 +84,20 @@
       bounds: { x, y, width: Math.max(0, unit(rect.right / width) - x), height: Math.max(0, unit(rect.bottom / height) - y) } };
   };
   let selecting = false, selectionRevision = 0, selectionGesture, hoverFrame = 0, hoverEvent, lastHover = 0;
+  let selectionCursor;
+  const setSelecting = enabled => {
+    selecting = enabled;
+    // Inspection owns the pointer while application input is intercepted.
+    // Keep application styles intact so leaving inspection restores them.
+    if (enabled && !selectionCursor) {
+      selectionCursor = new CSSStyleSheet();
+      selectionCursor.replaceSync(":root, :root *, :root *::before, :root *::after { cursor: default !important; }");
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, selectionCursor];
+    } else if (!enabled && selectionCursor) {
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== selectionCursor);
+      selectionCursor = undefined;
+    }
+  };
   const unit = n => Math.max(0, Math.min(1, n));
   const selectionPoint = e => ({ x: unit(e.clientX / Math.max(1, innerWidth)), y: unit(e.clientY / Math.max(1, innerHeight)) });
   const selectionEvent = (phase, point, target, bounds) => {
@@ -148,7 +163,7 @@
       if (!selecting || !ready) return;
       if (e.key === "Tab") return;
       stop(e);
-      if (e.key === "Escape") { resetSelection(); selectionEvent("cancel", { x: 0, y: 0 }, null, null); selecting = false; }
+      if (e.key === "Escape") { resetSelection(); selectionEvent("cancel", { x: 0, y: 0 }, null, null); setSelecting(false); }
     }, true);
   };
   const observe = () => {
@@ -272,7 +287,7 @@
       }
       if (m?.type === "redevplugin.surface.selection_mode" && m.frame_generation_id === frameGeneration && m.surface_handle === surfaceHandle &&
         Number.isSafeInteger(m.revision) && m.revision > selectionRevision && typeof m.enabled === "boolean") {
-        resetSelection(); selectionRevision = m.revision; selecting = m.enabled;
+        resetSelection(); selectionRevision = m.revision; setSelecting(m.enabled);
         if (selecting) releaseLock();
         return;
       }
@@ -282,7 +297,7 @@
         return;
       }
       if (m?.type === "redevplugin.bridge.lifecycle" && (m.event?.type === "hidden" || m.event?.type === "dispose")) {
-        pointerLockAllowed = false; releaseLock(); selecting = false; resetSelection();
+        pointerLockAllowed = false; releaseLock(); setSelecting(false); resetSelection();
       }
       if (m?.type === "redevplugin.surface.initialize") { void start(m).catch(fail); return; }
       if (m?.type === "redevplugin.surface.context") { if (!context || m.context.revision > context.revision) { context = m.context; deliverContext(); present(); } return; }

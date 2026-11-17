@@ -623,7 +623,9 @@ Trusted hosts may register `onSelection` and call `setSelectionEnabled(true)` on
 a ready surface. The platform intercepts primary pointer gestures and reports
 frame-bound `hover`, `select`, and `cancel` observations. Clicks return bounded
 tag/role/text/selector hints and normalized viewport bounds; dragging returns
-only an image region with `target: null`. Escape exits, hidden surfaces disable
+only an image region with `target: null`. Inspection uses the arrow cursor across
+application content without rewriting its styles; disabling inspection restores
+application cursors. Escape exits, hidden surfaces disable
 selection, and mode revisions reject late observations. Hosts render highlights,
 capture exact screenshots, and own comments. Metadata is untrusted visual
 context, never an executable selector or permission. No HTML or form values
