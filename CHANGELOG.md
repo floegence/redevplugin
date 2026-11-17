@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.33.0
+
+- Publish version-bound author guides with contract-derived Agent method declarations, permission requirements and trusted configuration semantics.
+- Add read-only Host capability and author preview inspection that separates undeclared methods, missing grants, policy denials and unavailable adapters without executing plugin work or changing state.
+
 ## v3.32.1
 
 - Keep the arrow cursor throughout visual inspection, including buttons, inputs and interactive canvases; restore application cursors on Escape, host disable, hidden, disposal or failure without rewriting application styles.

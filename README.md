@@ -509,6 +509,16 @@ Trusted capability adapters can invoke selected native plugin methods through
 the existing authorization and confirmation pipeline. See
 [scoped Agent conversations](docs/host-agent-conversations.md).
 
+Embedded author tools can discover version-bound documentation through
+`authorguide.Catalog` and `authorguide.Read`. The Agent conversation guide derives
+its binding, method declarations and permissions from the published contract.
+Bindings alone never declare methods. `Host.InspectPluginCapabilities` and
+`authoring.Environment.Inspect` provide read-only, exact-instance declaration,
+adapter and authorization facts, including binding-only packages. They dispatch
+no work and do not certify business execution. These Go-only host APIs introduce
+no alternate plugin RPC or automatic grants; products own their trusted author
+tool/UI presentation and settings navigation.
+
 ## Documentation
 
 - [Runtime architecture](docs/architecture/plugin-platform-runtime.md)

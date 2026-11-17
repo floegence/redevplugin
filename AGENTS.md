@@ -522,6 +522,11 @@ ReDevPlugin owns the source-project pipeline, generated bindings, readiness
 checks, persistent developer environments, candidate application, connection
 review tooling, and verified published-source runtime preparation. Hosts and
 Flower orchestration invoke these released tools rather than rebuilding them.
+Version-bound author guides and read-only capability/permission inspection also
+belong to ReDevPlugin. Hosts expose them through owned author contexts, supply
+product capability notes and exact-instance settings navigation, and preserve
+unknown read outcomes. A binding does not declare methods; inspection never
+dispatches adapters, grants authority or certifies business execution.
 Developer state is explicitly selected and project-bound; stable data ownership
 never preserves prior session or Surface authority. Preview writes use the normal
 Host lifecycle, permission, confirmation and Execution APIs. Local runtime build

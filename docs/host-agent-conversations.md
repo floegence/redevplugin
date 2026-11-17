@@ -12,6 +12,20 @@ This capability does not depend on a particular model provider or Agent engine.
 Declare the exact published contract pin and its methods in the plugin manifest,
 then use the existing `PluginBridgeClient`:
 
+`pkg/authorguide.Read("agent-conversation")` provides the version-bound guide,
+exact binding and generated declaration for every published method. Add the
+selected declarations to manifest `methods`; a capability binding, SDK import
+or profile alone does not make any method callable. Profile `methods` selects
+native Agent callbacks and is separate from manifest capability routes.
+
+Trusted author tools can use `Host.InspectPluginCapabilities` to distinguish
+`method_not_declared` from `permission_required`, policy denial and unavailable
+adapters. It checks the installation's current canonical authorization snapshot
+without creating conversations, dispatching adapters, or mutating grants.
+`authoring.Environment.Inspect` binds the result to the exact applied artifact
+and serializes it with Apply/Close. Do not turn a failed query into empty grants
+or describe no admission blockers as a model/business verification result.
+
 ```ts
 import { createAgentClient, defineAgentProfile } from "@floegence/redevplugin-ui/agent-conversation";
 

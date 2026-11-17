@@ -91,6 +91,14 @@ func TestEnvironmentRecoversExactArtifactAndPreservesIsolation(t *testing.T) {
 	if original.ArtifactID != artifact.ID || original.PluginInstanceID == "" {
 		t.Fatalf("preview not applied: %+v", original)
 	}
+	inspection, err := env.Inspect(ctx)
+	if err != nil || inspection.ArtifactID != artifact.ID || inspection.Capabilities == nil || inspection.Capabilities.PluginInstanceID != original.PluginInstanceID || inspection.Capabilities.PackageSHA256 != artifact.PackageSHA256 {
+		t.Fatalf("inspection lost exact preview identity: %+v %v", inspection, err)
+	}
+	encodedInspection, err := json.Marshal(inspection)
+	if err != nil || strings.Contains(string(encodedInspection), "csrf") || strings.Contains(string(encodedInspection), "gateway") {
+		t.Fatal("inspection disclosed browser authority", err)
+	}
 	records, err := env.Host().ListPlugins(ctx)
 	if err != nil || len(records) != 1 {
 		t.Fatal("preview inventory", err)
@@ -127,6 +135,9 @@ func TestEnvironmentRecoversExactArtifactAndPreservesIsolation(t *testing.T) {
 	}
 	foreign := session
 	foreign.OwnerUserHash = "other"
+	if _, err := env.Inspect(sessionctx.WithContext(context.Background(), foreign)); !errors.Is(err, ErrWorkspaceNotFound) {
+		t.Fatalf("foreign inspection admitted: %v", err)
+	}
 	if err = env.Apply(sessionctx.WithContext(context.Background(), foreign), artifact.ID); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatalf("foreign apply admitted: %v", err)
 	}
@@ -148,6 +159,9 @@ func TestEnvironmentRecoversExactArtifactAndPreservesIsolation(t *testing.T) {
 	}
 	if err = env.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := env.Inspect(ctx); !errors.Is(err, host.ErrHostClosed) {
+		t.Fatalf("closed inspection returned stale state: %v", err)
 	}
 	session.OwnerSessionHash = "renewed"
 	session.SessionChannelIDHash = "renewed-channel"
