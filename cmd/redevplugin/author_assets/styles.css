@@ -5,4 +5,6 @@ aside details{padding:14px 0;border-top:1px solid #2b3446}aside label{display:bl
 
 [hidden]{display:none!important}.muted{color:#aebed4;font-size:12px;line-height:1.6}.resource-card{padding:12px 0;border-bottom:1px solid #2b3446}.resource-card button{margin:8px 8px 0 0}aside input{box-sizing:border-box;display:block;width:100%;margin-top:6px;padding:9px;border:1px solid #45536c;border-radius:6px;background:#10141d;color:inherit;font:inherit}aside input[type=checkbox]{width:auto}#build-stages{padding-left:20px;font-size:12px;line-height:1.8}header select{max-width:32vw}
 
+body:has(#confirmation[open]) #stage>iframe{pointer-events:none}
+
 @media(max-width:800px){header{height:auto;min-height:64px;flex-wrap:wrap;padding-block:10px}header select{max-width:100%}}
