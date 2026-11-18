@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -97,7 +98,7 @@ SELECT owner_env_hash,plugin_instance_id,generation_id,'',0,'',retained_at,NULL,
 	return result, "", nil
 }
 
-func (s *Store) InstallCommit(ctx context.Context, record registry.PluginRecord, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) (registry.PluginRecord, error) {
+func (s *Store) InstallCommit(ctx context.Context, record registry.PluginRecord, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time, grants ...permissions.Record) (registry.PluginRecord, error) {
 	owner, err := pluginDataEnvironmentOwner(ctx)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -191,7 +192,7 @@ func (s *Store) InstallCommit(ctx context.Context, record registry.PluginRecord,
 			}
 		}
 		stored = prepared
-		return nil
+		return insertInstallGrants(ctx, tx, stored, grants)
 	})
 	if err != nil {
 		return registry.PluginRecord{}, err

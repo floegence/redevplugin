@@ -214,10 +214,10 @@ type PluginSnapshot struct {
 }
 
 // UpdateExternalPackage commits an update to an existing active record and
-// clears its grants and policy in the same control-DB transaction. Fresh and
+// preserves existing grants and policy in the same control-DB transaction. Fresh and
 // reinstalled packages use Store.InstallCommit so every installation shares
 // the plugin-data binding and tombstone revoke-floor transaction.
-func (v RegistryView) UpdateExternalPackage(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
+func (v RegistryView) UpdateExternalPackage(ctx context.Context, ownerEnvHash string, req registry.InstallExternalPackageRequest, grants ...permissions.Record) (registry.PluginRecord, error) {
 	if err := v.ready(); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -256,10 +256,7 @@ func (v RegistryView) UpdateExternalPackage(ctx context.Context, ownerEnvHash st
 	if err := upsertControlPlugin(ctx, tx, controlRecord); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM permission_grants WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM security_policies WHERE owner_env_hash=? AND plugin_instance_id=?`, ownerEnvHash, record.PluginInstanceID); err != nil {
+	if err := insertInstallGrants(ctx, tx, record, grants); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if err := tx.Commit(); err != nil {

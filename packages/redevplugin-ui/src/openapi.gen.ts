@@ -2365,7 +2365,7 @@ export interface components {
             icon?: components["schemas"]["PresentationIcon"];
             locales: components["schemas"]["PresentationLocale"][];
         };
-        /** @description Exact package inspection bound to the requesting session. Installation does not grant runtime permissions. */
+        /** @description Exact package inspection bound to the requesting session. Only explicitly approved grantable_permissions may be granted atomically with installation. */
         ExternalPackageInspection: {
             inspection_id: string;
             /** Format: date-time */
@@ -2381,6 +2381,8 @@ export interface components {
             execution_approval: components["schemas"]["ExternalPackageExecutionApproval"];
             update_eligibility: components["schemas"]["ExternalPackageUpdateEligibility"];
             security_summary: components["schemas"]["ExternalPackageSecuritySummary"];
+            /** @description Verified declared method permissions currently eligible for explicit installation consent. Excludes exact-resource ceilings. Observation only; submission rechecks management authority. */
+            grantable_permissions?: string[];
         };
         PluginVersion: {
             /** @description Opaque Host-owned identity of the data generation last used by this historical package. Not caller-supplied authority. */
@@ -2509,6 +2511,8 @@ export interface components {
             request_id: string;
             inspection_id: string;
             expected_package_sha256: string;
+            /** @description Explicitly reviewed subset of this inspection's grantable_permissions, committed atomically with the exact package. Omitted or empty grants nothing. Forbidden for automatic updates. The immutable request identity includes this choice. */
+            approved_permissions?: string[];
             /** @description Uses the saved automatic-update preference. Requires original source, a newer version, and unchanged capabilities; never grants permissions. */
             automatic?: boolean;
         };
@@ -2521,6 +2525,8 @@ export interface components {
             version: string;
             /** @enum {string} */
             mutation_outcome: "committed" | "not_committed" | "unknown";
+            /** @description The immutable permission choice accepted for this installation; never evidence of current grants after later changes. */
+            approved_permissions?: string[];
         };
         ListRetainedDataQueryRequest: {
             plugin_instance_id?: string;

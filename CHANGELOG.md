@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.35.0
+
+- Expose verified grantable permissions in installation review and accept explicit exact-package consent in the durable installation request.
+- Commit reviewed permissions atomically with package and data identity, reject changed request choices and resource ceilings, and recheck current management authority.
+- Preserve existing grants, revocations and security policy across manual and automatic package updates, including data conversion.
+- Migrate control schema 7 to 8 without rewriting historical receipts or grants; older writers cannot ignore newly recorded consent.
+- Teach authors to use trusted installation permission review, keep model/application configuration separate, and qualify opening the installed instance.
+
 ## v3.34.0
 
 - Expose exact missing surface-startup grants in the canonical action projection and SDK, with policy restrictions taking precedence over consent requests.

@@ -27,6 +27,15 @@ substitute the newest build or the installed copy. Hosts own navigation and
 review UI. Use their exact-instance settings action rather than inventing a
 product menu path. Query failures are unknown state, not empty grants.
 
+For installation, the trusted Host review may offer explicit consent to the
+verified `grantable_permissions`. The platform commits the selected grants with
+the exact inspected package; installation without that consent grants nothing.
+Do not create a second plugin-owned "enable capability" permission switch or
+instruct users to install first and search settings for essential access. Keep
+application configuration (model choice, object/profile setup and preferences)
+separate from Host permission consent. Already installed missing access uses
+the Host's exact-instance review. Preview grants never transfer to installation.
+
 ## Keep first use accessible
 
 Declare `authorization.scoped.v1` in `api.required_features` to give each surface
@@ -51,7 +60,8 @@ unknown read failures as permission requests, or replay business operations.
 Build/package checks, install eligibility, preview admission and business
 verification are distinct evidence. Report only checks actually performed.
 Exercise first use with no grants, refusal, explicit authorization, configured
-operation, revocation and reopen through the actual host boundary. Deterministic
+operation, installation consent, opening the installed instance, revocation and
+reopen through the actual host boundary. Deterministic
 providers can verify integration; they do not establish real-model quality.
 
 The host may expose `Host.InspectPluginCapabilities` through trusted author tools.

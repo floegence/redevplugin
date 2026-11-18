@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/externalsource"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/pluginidentity"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
@@ -82,6 +84,7 @@ type InspectUploadedExternalPackageRequest struct {
 }
 
 type installInspectedPackageRequest struct {
+	ApprovedPermissions   []string `json:"approved_permissions,omitempty"`
 	claimed               bool
 	automatic             bool
 	operationEvidence     string
@@ -118,6 +121,7 @@ func newExternalPackageInspectionStore() *externalPackageInspectionStore {
 }
 
 func (s *externalPackageInspectionStore) put(record externalPackagePendingInspection) {
+	record.Inspection.GrantablePermissions = slices.Clone(record.Inspection.GrantablePermissions)
 	s.mu.Lock()
 	s.records[record.Inspection.InspectionID] = record
 	s.mu.Unlock()
@@ -374,6 +378,10 @@ func (h *Host) inspectStagedExternalPackage(
 			retErr = errors.Join(retErr, h.adapters.ExternalPackageStageStore.Remove(artifact))
 		}
 	}()
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
 	pkg, err := h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, artifact, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return ExternalPackageInspection{}, err
@@ -468,8 +476,13 @@ func (h *Host) inspectStagedExternalPackage(
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
+	grantable, err := h.inspectGrantablePermissions(ctx, session, instanceID, securitySummary)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
 	inspection := ExternalPackageInspection{
-		InspectionID: inspectionID, ExpiresAt: now.Add(externalPackageInspectionTTL), Intent: intent,
+		GrantablePermissions: grantable,
+		InspectionID:         inspectionID, ExpiresAt: now.Add(externalPackageInspectionTTL), Intent: intent,
 		PublisherID: record.PublisherID, PluginID: record.PluginID, Version: record.Version,
 		Presentation: presentation, PresentationSHA256: presentationSHA256,
 		InspectedHashes:   packageHashSetForPackage(pkg),
@@ -582,6 +595,10 @@ func (h *Host) installInspectedPackage(ctx context.Context, req installInspected
 		}
 	}
 	record := pending.Record
+	grants, err := h.reviewedInstallGrants(ctx, session, pending.Inspection, req.ApprovedPermissions, now)
+	if err != nil {
+		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
+	}
 	// Preferences may change after inspection without revoking live Surfaces.
 	// Preserve the current choice at commit; a source switch always resets it.
 	if previous != nil {
@@ -624,13 +641,13 @@ func (h *Host) installInspectedPackage(ctx context.Context, req installInspected
 	}
 	var stored registry.PluginRecord
 	if previous == nil {
-		stored, err = h.commitInstall(ctx, record, now)
+		stored, err = h.commitInstall(ctx, record, now, grants...)
 	} else {
 		stored, err = h.updateExternalPackageRecord(ctx, session, registry.InstallExternalPackageRequest{
 			Intent:                     registry.ExternalPackageUpdate,
 			ExpectedManagementRevision: pending.Inspection.Intent.ExpectedManagementRevision,
 			Record:                     record, Now: now,
-		})
+		}, grants...)
 	}
 	err = errors.Join(err, finishAssets(err == nil || mutation.ForError(err) != mutation.OutcomeNotCommitted))
 	if err != nil {
@@ -673,7 +690,7 @@ func (h *Host) installInspectedPackage(ctx context.Context, req installInspected
 	return result, nil
 }
 
-func (h *Host) updateExternalPackageRecord(ctx context.Context, session sessionctx.Context, req registry.InstallExternalPackageRequest) (registry.PluginRecord, error) {
+func (h *Host) updateExternalPackageRecord(ctx context.Context, session sessionctx.Context, req registry.InstallExternalPackageRequest, grants ...permissions.Record) (registry.PluginRecord, error) {
 	if h.controlStore == nil {
 		return registry.PluginRecord{}, ErrControlStoreRequired
 	}
@@ -690,7 +707,7 @@ func (h *Host) updateExternalPackageRecord(ctx context.Context, session sessionc
 		return registry.PluginRecord{}, err
 	}
 	if upgrade {
-		stored, err := h.commitPluginDataUpgrade(ctx, current, next, req.Now, true)
+		stored, err := h.commitPluginDataUpgrade(ctx, current, next, req.Now, true, grants...)
 		if err != nil && mutation.ForError(err) == mutation.OutcomeNotCommitted {
 			if refreshErr := h.refreshEnabledRuntimeState(context.WithoutCancel(ctx), current); refreshErr != nil {
 				err = &mutation.Error{Outcome: mutation.OutcomeNotCommitted, Err: errors.Join(err, fmt.Errorf("restore predecessor runtime: %w", refreshErr))}
@@ -698,7 +715,7 @@ func (h *Host) updateExternalPackageRecord(ctx context.Context, session sessionc
 		}
 		return stored, err
 	}
-	return h.controlStore.Registry().UpdateExternalPackage(ctx, session.OwnerEnvHash, req)
+	return h.controlStore.Registry().UpdateExternalPackage(ctx, session.OwnerEnvHash, req, grants...)
 }
 
 func installedExternalPackage(record registry.PluginRecord, now time.Time) installedExternalPackageResult {

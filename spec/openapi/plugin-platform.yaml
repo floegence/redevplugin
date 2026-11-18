@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.34.0
-  description: Host-neutral plugin lifecycle, inspection, execution, data, and sandbox routes. All distributed plugins use ordinary packages and one exact-digest inspected-install Execution. Installation never grants runtime permissions. Automatic updates require the saved user preference, original source, a newer immutable version, and unchanged capabilities.
+  version: 3.35.0
+  description: Host-neutral plugin lifecycle, inspection, execution, data, and sandbox routes. All distributed plugins use ordinary packages and one exact-digest inspected-install Execution. Explicit reviewed method permissions may commit atomically with installation; omission grants nothing. Automatic updates require the saved user preference, original source, a newer immutable version, and unchanged capabilities, and grant nothing new.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
   require_closed_json_bodies: true
@@ -3378,7 +3378,7 @@ components:
           items: { $ref: "#/components/schemas/PresentationLocale" }
     ExternalPackageInspection:
       type: object
-      description: Exact package inspection bound to the requesting session. Installation does not grant runtime permissions.
+      description: Exact package inspection bound to the requesting session. Only explicitly approved grantable_permissions may be granted atomically with installation.
       required:
         - inspection_id
         - expires_at
@@ -3408,6 +3408,12 @@ components:
         execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
         update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
         security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
+        grantable_permissions:
+          type: array
+          uniqueItems: true
+          maxItems: 128
+          items: { type: string, minLength: 1, maxLength: 256 }
+          description: Verified declared method permissions currently eligible for explicit installation consent. Excludes exact-resource ceilings. Observation only; submission rechecks management authority.
     PluginVersion:
       type: object
       required:
@@ -3634,6 +3640,12 @@ components:
         request_id: { type: string, minLength: 1, maxLength: 160 }
         inspection_id: { type: string, minLength: 1 }
         expected_package_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        approved_permissions:
+          type: array
+          uniqueItems: true
+          maxItems: 128
+          items: { type: string, minLength: 1, maxLength: 256 }
+          description: Explicitly reviewed subset of this inspection's grantable_permissions, committed atomically with the exact package. Omitted or empty grants nothing. Forbidden for automatic updates. The immutable request identity includes this choice.
         automatic:
           type: boolean
           description: Uses the saved automatic-update preference. Requires original source, a newer version, and unchanged capabilities; never grants permissions.
@@ -3649,6 +3661,12 @@ components:
         plugin_id: { type: string }
         version: { type: string }
         mutation_outcome: { type: string, enum: [committed, not_committed, unknown] }
+        approved_permissions:
+          type: array
+          uniqueItems: true
+          maxItems: 128
+          items: { type: string, minLength: 1, maxLength: 256 }
+          description: The immutable permission choice accepted for this installation; never evidence of current grants after later changes.
     ListRetainedDataQueryRequest:
       type: object
       additionalProperties: false

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,15 +23,16 @@ const inspectedInstallKind = "inspected_install_v1"
 // InspectedInstall is a payload of the existing Execution authority. Session
 // identity is retained for audit; outcome recovery uses stable user/environment.
 type InspectedInstall struct {
-	Automatic     bool                `json:"automatic,omitempty"`
-	Kind          string              `json:"kind"`
-	Execution     execution.Execution `json:"-"`
-	RequestID     string              `json:"request_id"`
-	InspectionID  string              `json:"inspection_id"`
-	PackageSHA256 string              `json:"package_sha256"`
-	PluginID      string              `json:"plugin_id"`
-	Version       string              `json:"version"`
-	Outcome       mutation.Outcome    `json:"mutation_outcome"`
+	ApprovedPermissions []string            `json:"approved_permissions,omitempty"`
+	Automatic           bool                `json:"automatic,omitempty"`
+	Kind                string              `json:"kind"`
+	Execution           execution.Execution `json:"-"`
+	RequestID           string              `json:"request_id"`
+	InspectionID        string              `json:"inspection_id"`
+	PackageSHA256       string              `json:"package_sha256"`
+	PluginID            string              `json:"plugin_id"`
+	Version             string              `json:"version"`
+	Outcome             mutation.Outcome    `json:"mutation_outcome"`
 }
 type InspectedInstallRecovery struct {
 	Owner     ExecutionOwner
@@ -84,6 +86,9 @@ func (v ExecutionView) GetInspectedInstall(ctx context.Context, owner ExecutionO
 	if e.Validate() != nil || e.Kind != execution.KindOperation || e.Cancelable {
 		return op, ErrIncompatible
 	}
+	if !validInstallPermissionChoice(op.ApprovedPermissions, op.Automatic) {
+		return op, ErrIncompatible
+	}
 	if op.Outcome != mutation.OutcomeCommitted && op.Outcome != mutation.OutcomeNotCommitted && op.Outcome != mutation.OutcomeUnknown {
 		return op, ErrIncompatible
 	}
@@ -126,6 +131,10 @@ func (v ExecutionView) StartInspectedInstall(ctx context.Context, owner Executio
 		return op, false, ErrRecordNotFound
 	}
 	op.Kind = inspectedInstallKind
+	if !validInstallPermissionChoice(op.ApprovedPermissions, op.Automatic) {
+		return op, false, ErrStateConflict
+	}
+	op.ApprovedPermissions = slices.Clone(op.ApprovedPermissions)
 	op.Execution.ID = InspectedInstallID(owner, op.RequestID)
 	op.Outcome = mutation.OutcomeUnknown
 	if op.RequestID == "" || len(op.RequestID) > 160 || strings.TrimSpace(op.RequestID) != op.RequestID || op.InspectionID == "" || !inspectedHashPattern.MatchString(op.PackageSHA256) || op.Execution.PluginInstanceID == "" || op.PluginID == "" || op.Version == "" {
@@ -156,7 +165,7 @@ func (v ExecutionView) StartInspectedInstall(ctx context.Context, owner Executio
 		return op, true, nil
 	}
 	old, err := v.GetInspectedInstall(ctx, owner, op.RequestID)
-	if err == nil && (old.InspectionID != op.InspectionID || old.PackageSHA256 != op.PackageSHA256 || old.Automatic != op.Automatic) {
+	if err == nil && (old.InspectionID != op.InspectionID || old.PackageSHA256 != op.PackageSHA256 || old.Automatic != op.Automatic || !slices.Equal(old.ApprovedPermissions, op.ApprovedPermissions)) {
 		return old, false, ErrStateConflict
 	}
 	return old, false, err

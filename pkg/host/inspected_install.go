@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,19 +20,21 @@ import (
 var ErrInspectedInstallNotFound = errors.New("inspected installation operation not found")
 
 type StartInspectedInstallRequest struct {
-	Automatic             bool   `json:"automatic,omitempty"`
-	RequestID             string `json:"request_id"`
-	InspectionID          string `json:"inspection_id"`
-	ExpectedPackageSHA256 string `json:"expected_package_sha256"`
+	ApprovedPermissions   []string `json:"approved_permissions,omitempty"`
+	Automatic             bool     `json:"automatic,omitempty"`
+	RequestID             string   `json:"request_id"`
+	InspectionID          string   `json:"inspection_id"`
+	ExpectedPackageSHA256 string   `json:"expected_package_sha256"`
 }
 type InspectedInstallOperation struct {
-	Execution       execution.Execution `json:"execution"`
-	RequestID       string              `json:"request_id"`
-	InspectionID    string              `json:"inspection_id"`
-	PackageSHA256   string              `json:"package_sha256"`
-	PluginID        string              `json:"plugin_id"`
-	Version         string              `json:"version"`
-	MutationOutcome mutation.Outcome    `json:"mutation_outcome"`
+	ApprovedPermissions []string            `json:"approved_permissions,omitempty"`
+	Execution           execution.Execution `json:"execution"`
+	RequestID           string              `json:"request_id"`
+	InspectionID        string              `json:"inspection_id"`
+	PackageSHA256       string              `json:"package_sha256"`
+	PluginID            string              `json:"plugin_id"`
+	Version             string              `json:"version"`
+	MutationOutcome     mutation.Outcome    `json:"mutation_outcome"`
 }
 type ListInspectedInstallsRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
@@ -73,7 +76,7 @@ func (h *Host) ListInspectedInstalls(ctx context.Context, req ListInspectedInsta
 }
 
 func inspectedInstallProjection(op controlstore.InspectedInstall) InspectedInstallOperation {
-	return InspectedInstallOperation{Execution: op.Execution, RequestID: op.RequestID, InspectionID: op.InspectionID, PackageSHA256: op.PackageSHA256, PluginID: op.PluginID, Version: op.Version, MutationOutcome: op.Outcome}
+	return InspectedInstallOperation{ApprovedPermissions: slices.Clone(op.ApprovedPermissions), Execution: op.Execution, RequestID: op.RequestID, InspectionID: op.InspectionID, PackageSHA256: op.PackageSHA256, PluginID: op.PluginID, Version: op.Version, MutationOutcome: op.Outcome}
 }
 
 // StartInspectedInstall accepts the exact reviewed bytes once. A repeated request
@@ -95,6 +98,10 @@ func (h *Host) StartInspectedInstall(ctx context.Context, req StartInspectedInst
 	h.inspectedInstallMu.Lock()
 	defer h.inspectedInstallMu.Unlock()
 	owner := executionOwner(session)
+	req.ApprovedPermissions, err = normalizeInstallPermissions(req.ApprovedPermissions)
+	if err != nil || req.Automatic && len(req.ApprovedPermissions) != 0 {
+		return InspectedInstallOperation{}, ErrExternalPackageRequestInvalid
+	}
 	if strings.TrimSpace(req.RequestID) != req.RequestID || req.RequestID == "" || len(req.RequestID) > 160 {
 		return InspectedInstallOperation{}, ErrExternalPackageRequestInvalid
 	}
@@ -103,7 +110,7 @@ func (h *Host) StartInspectedInstall(ctx context.Context, req StartInspectedInst
 		if _, err = h.authorizeManagementSession(ctx, session, ManagementActionInstallInspectedPackage, scopedAuthorizationTarget(ResourcePlugin, old.Execution.PluginInstanceID, sessionctx.ScopeEnvironment)); err != nil {
 			return InspectedInstallOperation{}, err
 		}
-		if old.InspectionID != req.InspectionID || old.PackageSHA256 != req.ExpectedPackageSHA256 || old.Automatic != req.Automatic {
+		if old.InspectionID != req.InspectionID || old.PackageSHA256 != req.ExpectedPackageSHA256 || old.Automatic != req.Automatic || !slices.Equal(old.ApprovedPermissions, req.ApprovedPermissions) {
 			return InspectedInstallOperation{}, ErrExternalPackageConfirmation
 		}
 		return inspectedInstallProjection(old), nil
@@ -131,6 +138,9 @@ func (h *Host) StartInspectedInstall(ctx context.Context, req StartInspectedInst
 	if !time.Now().Before(pending.Inspection.ExpiresAt) {
 		return InspectedInstallOperation{}, ErrExternalPackageInspectionExpired
 	}
+	if _, err = h.reviewedInstallGrants(ctx, session, pending.Inspection, req.ApprovedPermissions, time.Now().UTC()); err != nil {
+		return InspectedInstallOperation{}, err
+	}
 	if req.Automatic {
 		if pending.Inspection.Intent.Action != "update" || pending.Inspection.Intent.AllowSourceChange {
 			return InspectedInstallOperation{}, ErrExternalPackageRequestInvalid
@@ -152,7 +162,7 @@ func (h *Host) StartInspectedInstall(ctx context.Context, req StartInspectedInst
 			h.externalInspections.finish(req.InspectionID, externalPackagePending)
 		}
 	}()
-	op, created, err := h.controlStore.Executions().StartInspectedInstall(ctx, owner, controlstore.InspectedInstall{Automatic: req.Automatic, RequestID: req.RequestID, InspectionID: req.InspectionID, PackageSHA256: req.ExpectedPackageSHA256, PluginID: pending.Record.PluginID, Version: pending.Record.Version, Execution: execution.Execution{PluginInstanceID: pending.Record.PluginInstanceID, Kind: execution.KindOperation}})
+	op, created, err := h.controlStore.Executions().StartInspectedInstall(ctx, owner, controlstore.InspectedInstall{ApprovedPermissions: req.ApprovedPermissions, Automatic: req.Automatic, RequestID: req.RequestID, InspectionID: req.InspectionID, PackageSHA256: req.ExpectedPackageSHA256, PluginID: pending.Record.PluginID, Version: pending.Record.Version, Execution: execution.Execution{PluginInstanceID: pending.Record.PluginInstanceID, Kind: execution.KindOperation}})
 	if errors.Is(err, controlstore.ErrStateConflict) {
 		return InspectedInstallOperation{}, ErrExternalPackageInstallInProgress
 	}
@@ -172,7 +182,7 @@ func (h *Host) StartInspectedInstall(ctx context.Context, req StartInspectedInst
 			stage = next
 			return h.reportInstallProgress(job, owner, req.RequestID, next, status, "")
 		}
-		_, failure := h.installInspectedPackage(job, installInspectedPackageRequest{InspectionID: req.InspectionID, ExpectedPackageSHA256: req.ExpectedPackageSHA256, operationEvidence: op.Execution.ID, progress: progress, automatic: req.Automatic, claimed: true})
+		_, failure := h.installInspectedPackage(job, installInspectedPackageRequest{ApprovedPermissions: req.ApprovedPermissions, InspectionID: req.InspectionID, ExpectedPackageSHA256: req.ExpectedPackageSHA256, operationEvidence: op.Execution.ID, progress: progress, automatic: req.Automatic, claimed: true})
 		outcome := mutation.OutcomeCommitted
 		code := ""
 		if failure != nil {

@@ -3010,7 +3010,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	return stored, nil
 }
 
-func (h *Host) commitInstall(ctx context.Context, record registry.PluginRecord, now time.Time) (registry.PluginRecord, error) {
+func (h *Host) commitInstall(ctx context.Context, record registry.PluginRecord, now time.Time, grants ...permissions.Record) (registry.PluginRecord, error) {
 	shape, err := plugindata.ShapeFromManifest(record.Manifest)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -3022,7 +3022,7 @@ func (h *Host) commitInstall(ctx context.Context, record registry.PluginRecord, 
 		Now:              now,
 	}, func(ctx context.Context, expected *plugindata.Binding, binding plugindata.Binding, committedShape plugindata.Shape, commitTime time.Time) error {
 		var commitErr error
-		stored, commitErr = h.controlStore.InstallCommit(ctx, record, expected, binding, committedShape, commitTime)
+		stored, commitErr = h.controlStore.InstallCommit(ctx, record, expected, binding, committedShape, commitTime, grants...)
 		return commitErr
 	})
 	if err != nil {

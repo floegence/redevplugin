@@ -291,6 +291,15 @@ instance preserves the tombstone's revoke epoch as the new credential floor.
 New surface credentials can therefore be minted without lowering the floor or
 reviving credentials that uninstall already revoked.
 
+Trusted installation review may submit an explicit `approved_permissions` subset
+of the inspection's verified `grantable_permissions`. The Host rechecks management
+authority, rejects undeclared or resource-scoped grants, and commits package/data
+identity and the approved grants in the same control-store transaction. The
+durable request binds this choice across response loss and restart. Omission
+grants nothing; automatic updates cannot supply new grants. Existing grants,
+revocations and security policy survive updates, including data conversion.
+Configuration and mandatory operation confirmation remain separate boundaries.
+
 ## Local Process Launch Identity
 
 The process supervisor binds client-key reuse to an independent snapshot of the

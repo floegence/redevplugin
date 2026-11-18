@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -115,7 +116,7 @@ func pluginDataUpgradeRequired(current, next manifest.Manifest) (bool, error) {
 	return false, nil
 }
 
-func (h *Host) commitPluginDataUpgrade(ctx context.Context, current, next registry.PluginRecord, now time.Time, external bool) (result registry.PluginRecord, retErr error) {
+func (h *Host) commitPluginDataUpgrade(ctx context.Context, current, next registry.PluginRecord, now time.Time, external bool, grants ...permissions.Record) (result registry.PluginRecord, retErr error) {
 	commitStarted := false
 	defer func() {
 		if retErr != nil && !commitStarted {
@@ -205,7 +206,7 @@ func (h *Host) commitPluginDataUpgrade(ctx context.Context, current, next regist
 	}, func(ctx context.Context, previous, active plugindata.Binding) error {
 		commitStarted = true
 		var err error
-		stored, err = h.controlStore.CommitPluginDataUpgrade(ctx, current, next, previous, active, now, external)
+		stored, err = h.controlStore.CommitPluginDataUpgrade(ctx, current, next, previous, active, now, external, grants...)
 		return err
 	})
 	return stored, err

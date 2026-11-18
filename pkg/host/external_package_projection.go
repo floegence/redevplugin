@@ -16,19 +16,20 @@ type ExternalPackageSourceProvenance = releaseprojection.ExternalPackageSourcePr
 type ExternalPackageExecutionApproval = releaseprojection.ExternalPackageExecutionApproval
 type ExternalPackageUpdateEligibility = releaseprojection.ExternalPackageUpdateEligibility
 type ExternalPackageInspection struct {
-	InspectionID       string                           `json:"inspection_id"`
-	ExpiresAt          time.Time                        `json:"expires_at"`
-	Intent             ExternalPackageIntent            `json:"intent"`
-	PublisherID        string                           `json:"publisher_id"`
-	PluginID           string                           `json:"plugin_id"`
-	Version            string                           `json:"version"`
-	Presentation       manifest.PresentationCatalog     `json:"presentation"`
-	PresentationSHA256 string                           `json:"presentation_sha256"`
-	InspectedHashes    PackageHashSet                   `json:"inspected_hashes"`
-	SourceProvenance   ExternalPackageSourceProvenance  `json:"source_provenance"`
-	ExecutionApproval  ExternalPackageExecutionApproval `json:"execution_approval"`
-	UpdateEligibility  ExternalPackageUpdateEligibility `json:"update_eligibility"`
-	SecuritySummary    ExternalPackageSecuritySummary   `json:"security_summary"`
+	GrantablePermissions []string                         `json:"grantable_permissions,omitempty"`
+	InspectionID         string                           `json:"inspection_id"`
+	ExpiresAt            time.Time                        `json:"expires_at"`
+	Intent               ExternalPackageIntent            `json:"intent"`
+	PublisherID          string                           `json:"publisher_id"`
+	PluginID             string                           `json:"plugin_id"`
+	Version              string                           `json:"version"`
+	Presentation         manifest.PresentationCatalog     `json:"presentation"`
+	PresentationSHA256   string                           `json:"presentation_sha256"`
+	InspectedHashes      PackageHashSet                   `json:"inspected_hashes"`
+	SourceProvenance     ExternalPackageSourceProvenance  `json:"source_provenance"`
+	ExecutionApproval    ExternalPackageExecutionApproval `json:"execution_approval"`
+	UpdateEligibility    ExternalPackageUpdateEligibility `json:"update_eligibility"`
+	SecuritySummary      ExternalPackageSecuritySummary   `json:"security_summary"`
 }
 
 type installedExternalPackageResult struct {

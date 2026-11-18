@@ -51,4 +51,13 @@ func TestPublishedGuidesBindExactContractAndIndependentCopies(t *testing.T) {
 			t.Fatal("author boundary is missing", text)
 		}
 	}
+	capabilities, err := Read("capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"grantable_permissions", "installation consent", "opening the installed instance", "Preview grants never transfer"} {
+		if !strings.Contains(capabilities.Content, text) {
+			t.Fatal("installation author guidance missing", text)
+		}
+	}
 }

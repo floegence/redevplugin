@@ -243,7 +243,9 @@ or replacement repository receives a different namespace.
 
 The platform owns source resolution, package inspection, exact content and owner
 binding, one durable inspected-install Execution, progress and retry recovery.
-Installing enables the plugin without granting runtime permissions. Automatic
+Installing enables the plugin. Runtime permissions require explicit exact-package
+consent through `approved_permissions`; omitted consent grants nothing. Manual
+installation commits the reviewed grants and package atomically. Automatic
 updates require a saved user preference, the original source, a higher stable
 version and unchanged capabilities. Source changes require explicit confirmation;
 same-version content replacement is rejected. Hosts provide source selection,
@@ -422,7 +424,7 @@ only the published versioned evidence and extracted bytes; they must not parse a
 identity. A market may retain only the current evidence-bound derived image and
 must not treat it as package or installation authority.
 
-The control database kind is `redevplugin_control_v3` at schema version 7.
+The control database kind is `redevplugin_control_v3` at schema version 8.
 Schema 2 transactionally migrates the exact released schema 1 and adds selected-file
 resource authority without changing existing registry, grants, or settings.
 Schema 3 adds owner-scoped controlled connections through the same atomic migration
@@ -438,7 +440,9 @@ existing Execution authority, preserving request receipts across restart.
 Schema 7 removes retired plugin admission fields from existing records and
 retained generations transactionally, preserving package identity, grants, data
 and execution receipts. It does not infer new execution permission or update
-sources. The Host accepts only an explicit state root and never discovers or imports a
+sources. Schema 8 fences the explicit permission-choice field in inspected-install
+receipts without rewriting released receipts, grants, packages or data. Repeated
+requests must retain the original reviewed permission set. The Host accepts only an explicit state root and never discovers or imports a
 2.x sibling root. A wrong, legacy, drifted, or future root fails closed without
 changing its bytes. The v3 kind is the permanent lineage once 3.0 is released;
 future supported changes append contiguous migrations instead of resetting the
@@ -980,8 +984,11 @@ Core invariants:
 - download transport construction is local and must not probe connectivity or
   block host startup. Network failures affect only the attempted operation and
   remain distinguishable from package integrity failures;
-- external package installation reopens and re-verifies exact staged bytes, binds
-  acceptance to the authenticated owner, and never grants runtime permissions;
+- external package installation reopens and re-verifies exact staged bytes and
+  binds acceptance and explicit permission choices to the authenticated owner.
+  Only reviewed declared method grants may commit with installation; resource
+  ceilings retain their separate exact-resource review. Updates preserve existing
+  grants, revocations and security policy; automatic updates grant nothing new;
 - no plugin-signature or publisher-trust policy participates in admission.
   Missing grants affect only the relevant open/capability action. Explicit user
   disable remains the only user-disabled lifecycle state; runtime or permission

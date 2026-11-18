@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
@@ -396,12 +397,16 @@ func TestPluginDataUpgradeExternalAuthorizationTransaction(t *testing.T) {
 			active.GenerationID = "external-upgraded"
 			active.Revision++
 			if fail {
-				if _, err := store.db.Exec("CREATE TRIGGER reject_policy_clear BEFORE DELETE ON security_policies BEGIN SELECT RAISE(ABORT, 'injected policy clear failure'); END"); err != nil {
+				if _, err := store.db.Exec("CREATE TRIGGER reject_reviewed_grant BEFORE INSERT ON permission_grants BEGIN SELECT RAISE(ABORT, 'injected reviewed grant failure'); END"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			result, err := store.CommitPluginDataUpgrade(ctx, old, next, before, active, time.Now().UTC(), true)
-			if fail && (err == nil || !strings.Contains(err.Error(), "injected policy clear failure")) {
+			grant, err := permissions.NewGrant(permissions.GrantRequest{PluginInstanceID: old.PluginInstanceID, PermissionID: "reviewed", GrantedBy: "user"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := store.CommitPluginDataUpgrade(ctx, old, next, before, active, time.Now().UTC(), true, grant)
+			if fail && (err == nil || !strings.Contains(err.Error(), "injected reviewed grant failure")) {
 				t.Fatalf("wrong rollback: %v", err)
 			}
 			if !fail && (err != nil || result.EnableState != registry.EnableEnabled) {
@@ -412,9 +417,9 @@ func TestPluginDataUpgradeExternalAuthorizationTransaction(t *testing.T) {
 				if err := store.db.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
-				want := 0
-				if fail {
-					want = 1
+				want := 1
+				if !fail && table == "permission_grants" {
+					want = 2
 				}
 				if count != want {
 					t.Fatalf("%s count %d want %d", table, count, want)
@@ -429,7 +434,7 @@ func TestPluginDataUpgradeExternalAuthorizationTransaction(t *testing.T) {
 				want = before
 			}
 			if !plugindata.SameBinding(binding, want) {
-				t.Fatal("authorization cleanup and binding were not atomic")
+				t.Fatal("reviewed authorization and binding were not atomic")
 			}
 		})
 	}

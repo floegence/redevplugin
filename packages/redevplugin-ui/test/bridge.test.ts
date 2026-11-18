@@ -2088,7 +2088,7 @@ test("inspected installs retain a stable request and query through POST", async 
   fetch.push({ ok: true, data: operation });
   fetch.push({ ok: true, data: operation });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
-  const request = { request_id: operation.request_id, inspection_id: operation.inspection_id, expected_package_sha256: operation.package_sha256 };
+  const request = { request_id: operation.request_id, inspection_id: operation.inspection_id, expected_package_sha256: operation.package_sha256, approved_permissions: ["agent.conversation.read", "agent.conversation.manage"] };
   assert.deepEqual(await client.startInspectedInstall(request), operation);
   assert.deepEqual(await client.getInspectedInstall(request.request_id), operation);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/external-packages/install-operations");

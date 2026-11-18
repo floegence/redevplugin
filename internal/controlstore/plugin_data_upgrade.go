@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/v3/pkg/mutation"
+	"github.com/floegence/redevplugin/v3/pkg/permissions"
 	"github.com/floegence/redevplugin/v3/pkg/plugindata"
 	"github.com/floegence/redevplugin/v3/pkg/registry"
 )
@@ -127,8 +128,8 @@ func legacyVersionDataBindings(ctx context.Context, q schemaReader) ([]legacyVer
 
 // CommitPluginDataUpgrade moves package identity and the active binding at one
 // commit point. Before it commits, both readers and restart see the old package.
-func (s *Store) CommitPluginDataUpgrade(ctx context.Context, expected, next registry.PluginRecord, previous, active plugindata.Binding, now time.Time, external bool) (registry.PluginRecord, error) {
-	return s.commitPluginDataVersion(ctx, expected, next, previous, active, nil, now, external)
+func (s *Store) CommitPluginDataUpgrade(ctx context.Context, expected, next registry.PluginRecord, previous, active plugindata.Binding, now time.Time, external bool, grants ...permissions.Record) (registry.PluginRecord, error) {
+	return s.commitPluginDataVersion(ctx, expected, next, previous, active, nil, now, external, grants...)
 }
 
 // CommitPluginDataRestore exchanges a verified historical generation with the
@@ -137,7 +138,7 @@ func (s *Store) CommitPluginDataRestore(ctx context.Context, expected, next regi
 	return s.commitPluginDataVersion(ctx, expected, next, previous, active, &retained, now, false)
 }
 
-func (s *Store) commitPluginDataVersion(ctx context.Context, expected, next registry.PluginRecord, previous, active plugindata.Binding, retained *plugindata.Binding, now time.Time, external bool) (registry.PluginRecord, error) {
+func (s *Store) commitPluginDataVersion(ctx context.Context, expected, next registry.PluginRecord, previous, active plugindata.Binding, retained *plugindata.Binding, now time.Time, external bool, grants ...permissions.Record) (registry.PluginRecord, error) {
 	owner, err := pluginDataEnvironmentOwner(ctx)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -252,12 +253,8 @@ func (s *Store) commitPluginDataVersion(ctx context.Context, expected, next regi
 		if err := persistControlPluginRecord(ctx, tx, stored); err != nil {
 			return err
 		}
-		if external {
-			for _, table := range []string{"permission_grants", "security_policies"} {
-				if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE owner_env_hash=? AND plugin_instance_id=?", owner, current.PluginInstanceID); err != nil {
-					return err
-				}
-			}
+		if err := insertInstallGrants(ctx, tx, stored, grants); err != nil {
+			return err
 		}
 		readyToCommit = true
 		return nil

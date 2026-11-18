@@ -146,8 +146,12 @@ an English fallback or mix locales within one resolved presentation.
   package and creates a session-bound inspection. One durable installation
   Execution commits the exact accepted bytes and exposes progress and outcome
   recovery. Signature and publisher trust systems are not enabled.
-- An installed package starts enabled. Runtime permissions require separate
-  grants. User-enabled updates resolve the original source and require a newer
+- An installed package starts enabled. Installation review exposes verified
+  `grantable_permissions`; explicit `approved_permissions` commit with the exact
+  package in one transaction. Omitted consent grants nothing, selected resources
+  retain separate review, and repeated requests cannot change the accepted set.
+  Updates preserve existing grants, revocations and security policy. User-enabled
+  automatic updates grant nothing new, resolve the original source and require a newer
   version without capability changes; changed sources require explicit review.
 - `release inspect` and `release extract-presentation-icon` provide package
   summaries and validated images. Neither command requires signing inputs.
