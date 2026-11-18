@@ -4,6 +4,23 @@ import { createAgentClient, defineAgentProfile } from "../src/agent-conversation
 import { createPluginTestHarness } from "../src/testing.js";
 import { PluginBridgeError } from "../src/plugin.js";
 
+test("opening a packaged role and asking for temporary text never opens a saved conversation", async () => {
+  const fixture = createPluginTestHarness({ call(method, input) {
+    if (method === "agent.conversation.role.open") {
+      assert.deepEqual(input, { role_id: "opponent" });
+      return { data: { binding_id: "board", revision: 4, available: true, client_protocol: "test.v1", unavailable_reasons: [] } };
+    }
+    assert.equal(method, "agent.conversation.client.execute");
+    assert.deepEqual(input, { binding_id: "board", protocol: "test.v1", operation: "temporary.reply", input_json: '{"text":"next move"}' });
+    return { data: { output_json: '{"text":"D4"}' } };
+  } });
+  try {
+    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "flower" }).openAgent("opponent");
+    assert.deepEqual(await agent.temporary.reply({ text: "next move" }), { text: "D4" });
+    assert.equal(fixture.calls.length, 2);
+  } finally { fixture.dispose(); }
+});
+
 test("binding and opening never launch work; uncertain sends retain their original request identity", async () => {
   const snapshot = { conversation_id: "conversation-1", key: "main", title: "Assistant", archived: false, revision: 1, state: "idle" };
   const fixture = createPluginTestHarness({ call(method, input) {

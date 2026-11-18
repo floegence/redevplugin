@@ -46,7 +46,7 @@ func configureWebTemplate(files map[string][]byte, displayName, platformVersion,
   "bindings": "generated"
 }
 `)
-	files["scripts/build.mjs"] = []byte(`import { copyFile, mkdir } from "node:fs/promises";
+	files["scripts/build.mjs"] = []byte(`import { copyFile, mkdir, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +56,7 @@ if (built.status !== 0) process.exit(built.status ?? 1);
 await mkdir(resolve(root, "dist/ui/assets"), { recursive: true });
 await copyFile(resolve(root, "generated/manifest.json"), resolve(root, "dist/manifest.json"));
 await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html"));
+` + copyAgentDeclarations + `
 `)
 	actions := "This basic Web template declares no host actions; add a method and intent only when another trusted surface must invoke the application."
 	if template != "web" {

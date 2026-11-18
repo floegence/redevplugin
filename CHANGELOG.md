@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.37.0
+
+- Open a packaged Agent role by ID, with optional explicit adoption of its existing object key. The 1.2 conversation contract retains the exact 1.0 and 1.1 pins for existing plugins.
+- Add typed temporary text replies to bound Agents. Opening a role does not start a conversation or grant permissions.
+- Include the latest scoped method rejection and validated business error code in preview inspection without recording request or response content.
+
 ## v3.36.0
 
 - Separate time spent in trusted method confirmation from bridge transport timeouts. The prepared confirmation still expires and cancellation never replays the call.

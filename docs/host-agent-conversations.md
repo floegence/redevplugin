@@ -149,11 +149,14 @@ with an uncertain result retain the existing `mutation.OutcomeUnknown` contract.
 
 ## Contract compatibility
 
-New clients use Agent conversation contract 1.1.0. Hosts register every result of
+New clients use Agent conversation contract 1.2.0. Hosts register every result of
 `agentconversation.SupportedContracts()` with their same adapter and official view.
-The 1.0.0 artifact remains byte-identical to its 3.30 release; an installed client
-never adopts a different hash under its existing contract version. The new schema
-adds `connector_id` to a component declaration without changing existing operations.
+The 1.0.0 and 1.1.0 artifacts retain their exact published pins. For `agent.conversation.role.open`,
+use `Host.ResolveDeclaredAgent` with the admitted Source. Package validation checks the
+`agents.json` profiles against the existing profile schema. The role ID and optional
+`object_key` identify the existing host binding. Revalidate the source when applying
+the declaration; do not allow a retired package to overwrite current state. The host
+owns user preferences, scoped permissions and conversation data independently of the package.
 
 ## External protocol processes
 

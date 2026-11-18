@@ -1890,16 +1890,24 @@ func (h *Host) validateSurfaceAssetSession(ctx context.Context, req surfaceAsset
 }
 
 func (h *Host) readValidatedSurfaceAsset(ctx context.Context, validation bridge.AssetSessionValidation, record registry.PluginRecord, assetPath string, expectedSHA256 string) (WebSurfaceAsset, error) {
+	asset, err := h.readPackageAsset(ctx, record, assetPath, expectedSHA256)
+	if err != nil {
+		return WebSurfaceAsset{}, err
+	}
+	return WebSurfaceAsset{Entry: asset.Entry, Content: asset.Content, Session: validation.Session}, nil
+}
+
+func (h *Host) readPackageAsset(ctx context.Context, record registry.PluginRecord, assetPath string, expectedSHA256 string) (pluginpkg.Asset, error) {
 	expectedEntry, ok := packageEntryByPath(record.PackageEntries, assetPath)
 	if !ok || strings.TrimSpace(expectedEntry.SHA256) == "" || expectedEntry.Size < 0 {
-		return WebSurfaceAsset{}, bridge.ErrTokenAudience
+		return pluginpkg.Asset{}, bridge.ErrTokenAudience
 	}
 	if expectedSHA256 != "" && expectedEntry.SHA256 != expectedSHA256 {
-		return WebSurfaceAsset{}, bridge.ErrTokenAudience
+		return pluginpkg.Asset{}, bridge.ErrTokenAudience
 	}
 	asset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, assetPath)
 	if err != nil {
-		return WebSurfaceAsset{}, err
+		return pluginpkg.Asset{}, err
 	}
 	actualSHA256 := sha256.Sum256(asset.Content)
 	if asset.Entry.Path != expectedEntry.Path ||
@@ -1908,13 +1916,9 @@ func (h *Host) readValidatedSurfaceAsset(ctx context.Context, validation bridge.
 		asset.Entry.ContentType != expectedEntry.ContentType ||
 		int64(len(asset.Content)) != expectedEntry.Size ||
 		"sha256:"+hex.EncodeToString(actualSHA256[:]) != expectedEntry.SHA256 {
-		return WebSurfaceAsset{}, bridge.ErrTokenAudience
+		return pluginpkg.Asset{}, bridge.ErrTokenAudience
 	}
-	return WebSurfaceAsset{
-		Entry:   asset.Entry,
-		Content: asset.Content,
-		Session: validation.Session,
-	}, nil
+	return asset, nil
 }
 
 func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) error {
@@ -7458,6 +7462,10 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 	}
 	err = finalizeRPCError(ctx, err)
 	reason := methodRejectionReason(err)
+	var businessCode string
+	if business, ok := AsValidatedCapabilityBusinessError(err); ok {
+		businessCode = business.Code
+	}
 	var persistenceErr error
 	if auditErr := h.recordSecurityEvent(ctx, AuditEvent{
 		Type:              "plugin.method.rejected",
@@ -7484,6 +7492,7 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 			Details: observability.DiagnosticDetails{
 				Method:            method,
 				Reason:            reason,
+				Code:              businessCode,
 				SurfaceInstanceID: surfaceInstanceID,
 			},
 			Failure: observability.FailureFromError(

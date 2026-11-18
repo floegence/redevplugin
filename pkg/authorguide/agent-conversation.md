@@ -7,26 +7,30 @@ published contract: copy the needed `declaration` entries into manifest `methods
 If changing `binding_id`, change both the method routes and `capabilityBinding`.
 Do not add every method or grant every permission without considering usage.
 
+For a role shipped by the plugin, declare `agent.conversation.role.open` and include
+`agents.json` at the root of the built package (current templates copy `ui/agents.json` there).
+It is an array of ordinary profiles, e.g. `[{"id":"assistant","instructions":"Help with this object.","methods":[]}]`.
+Keep the ID stable. When adopting an existing dynamic binding use its original profile ID
+and add its exact `object_key` to this declaration. Never infer or replace a user's binding.
+
 ```ts
-import { createAgentClient, defineAgentProfile } from
+import { createAgentClient } from
   "@floegence/redevplugin-ui/agent-conversation";
 
 const client = createAgentClient(bridge, { capabilityBinding: "agent" });
-const agent = await client.bindAgent({
-  objectKey: "stable-business-object",
-  profile: defineAgentProfile({
-    id: "assistant",
-    instructions: "Help with this business object.",
-    methods: [],
-  }),
-});
+const agent = await client.openAgent("assistant");
+// For a single ephemeral text exchange, declare client.execute and use
+// agent.temporary.reply({ text }, { signal }). Use a saved conversation for history:
 const conversation = await agent.conversations.open({ key: "main" });
 // From a user settings action, using the trusted host configuration panel:
 const outcome = await agent.reviewConfiguration({ area: "models", conversation });
 // "cancelled" is a normal return to the plugin. Only "saved" confirms completion.
 ```
 
-The example needs manifest routes for `agent.conversation.bind`, `.open` and
+Use `bindAgent` for runtime-edited profiles. Editing one requires its known revision.
+Never guess the revision, create another key on conflict, or match English exception text.
+
+The example needs manifest routes for `agent.conversation.role.open`, `.open` and
 `.configure`. Profile `methods` has a different meaning: it selects native plugin
 methods the Agent may call back into. It may be empty for a text-only Agent;
 manifest capability routes still must be declared.

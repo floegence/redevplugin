@@ -20,6 +20,10 @@ export interface AgentClientOptions {
 export function createAgentClient(bridge: PluginBridgeClient, options: AgentClientOptions) {
   const client = new AgentConversationClient(bridge);
   return Object.freeze({
+    async openAgent(roleID: string, requestOptions?: PluginBridgeRequestOptions): Promise<BoundAgent> {
+      const binding = await client.openRole({ role_id: roleID }, requestOptions);
+      return new BoundAgent(bridge, client, options.capabilityBinding, binding);
+    },
     async bindAgent(input: { objectKey: string; profile: AgentProfile; expectedRevision?: number }, requestOptions?: PluginBridgeRequestOptions): Promise<BoundAgent> {
       const binding = await client.bind({ object_key: input.objectKey, profile: input.profile, ...(input.expectedRevision === undefined ? {} : { expected_revision: input.expectedRevision }) }, requestOptions);
       return new BoundAgent(bridge, client, options.capabilityBinding, binding);
@@ -41,6 +45,15 @@ export class BoundAgent {
   }
 
   get binding(): Readonly<AgentConversationBindResponse> { return structuredClone(this.#binding); }
+
+  readonly temporary = Object.freeze({
+    reply: async (input: { text: string; history?: readonly { user: string; assistant: string }[] }, options?: PluginBridgeRequestOptions): Promise<{ text: string }> => {
+      const result = await this.#client.clientExecute({ binding_id: this.#binding.binding_id, protocol: this.#binding.client_protocol, operation: "temporary.reply", input_json: JSON.stringify(input) }, options);
+      const reply: unknown = JSON.parse(result.output_json);
+      if (!reply || typeof reply !== "object" || !("text" in reply) || typeof reply.text !== "string") throw new TypeError("Invalid temporary reply");
+      return { text: reply.text };
+    },
+  });
 
   readonly conversations = Object.freeze({
     open: async (input: { key: string; title?: string }, options?: PluginBridgeRequestOptions): Promise<AgentConversation> => {

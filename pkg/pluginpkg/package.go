@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/floegence/redevplugin/v3/pkg/agentconversation"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/tetratelabs/wazero"
 	_ "golang.org/x/image/webp"
@@ -589,6 +590,14 @@ func jsonPointerFromManifestField(field string) string {
 }
 
 func validateManifestArtifacts(ctx context.Context, m manifest.Manifest, files map[string][]byte) error {
+	for _, method := range m.Methods {
+		if data, present := files[agentconversation.RolesPath]; present && method.Route.Kind == manifest.MethodRouteCapability && method.Route.TargetMethod == agentconversation.OpenRoleMethod {
+			if _, err := agentconversation.ParseRoles(data); err != nil {
+				return validationErrorf(ValidationCodePackageInvalid, "agent_roles_invalid", agentconversation.RolesPath, "", "%v", err)
+			}
+			break
+		}
+	}
 	for i, worker := range m.Workers {
 		artifact, err := validateEntryPath(worker.Artifact)
 		if err != nil {

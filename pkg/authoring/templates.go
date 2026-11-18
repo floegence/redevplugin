@@ -371,7 +371,7 @@ serde_json = "1.0"
 }
 
 func scaffoldBuildScript() string {
-	return `import { access, copyFile, mkdir } from "node:fs/promises";
+	return `import { access, copyFile, mkdir, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -391,6 +391,7 @@ await mkdir(resolve(root, "dist/ui/assets"), { recursive: true });
 await mkdir(resolve(root, "dist/workers"), { recursive: true });
 await copyFile(resolve(root, "generated/manifest.json"), resolve(root, "dist/manifest.json"));
 await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html"));
+` + copyAgentDeclarations + `
 await copyFile(
   resolve(process.env.CARGO_TARGET_DIR || resolve(root, "worker/target"), "wasm32-unknown-unknown/release/redevplugin_generated_worker.wasm"),
   resolve(root, "dist/workers/backend.wasm"),
@@ -402,6 +403,14 @@ function run(command, args) {
 }
 `
 }
+
+// The existing ui/ watch input includes editable role declarations.
+const copyAgentDeclarations = `try {
+  await copyFile(resolve(root, "ui/agents.json"), resolve(root, "dist/agents.json"));
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+  await rm(resolve(root, "dist/agents.json"), { force: true });
+}`
 
 func scaffoldReadme(displayName string, platformVersion string) string {
 	return fmt.Sprintf(`# %s

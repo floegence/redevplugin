@@ -55,6 +55,18 @@ export type AgentConversationBindResponse = {
   unavailable_reasons: Array<string>;
 };
 
+export type AgentConversationOpenRoleRequest = {
+  role_id: string;
+};
+
+export type AgentConversationOpenRoleResponse = {
+  available: boolean;
+  binding_id: string;
+  client_protocol: string;
+  revision: number;
+  unavailable_reasons: Array<string>;
+};
+
 export type AgentConversationOpenRequest = {
   binding_id: string;
   key: string;
@@ -301,47 +313,54 @@ export type AgentConversationClientObserveEvent = {
   data_json: string;
 };
 
-export type AgentConversationBusinessErrorCode = "CONVERSATION_AUTHORIZATION_REQUIRED" | "CONVERSATION_CONFLICT" | "CONVERSATION_OUTCOME_UNKNOWN" | "CONVERSATION_PROTOCOL_UNSUPPORTED" | "CONVERSATION_UNAVAILABLE";
+export type AgentConversationBusinessErrorCode = "AGENT_ROLE_NOT_DECLARED" | "CONVERSATION_AUTHORIZATION_REQUIRED" | "CONVERSATION_CONFLICT" | "CONVERSATION_OUTCOME_UNKNOWN" | "CONVERSATION_PROTOCOL_UNSUPPORTED" | "CONVERSATION_UNAVAILABLE";
 
 export type AgentConversationBusinessErrorDetails =
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.1.0";
+    capability_version: "1.2.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_UNAVAILABLE";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.1.0";
+    capability_version: "1.2.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_CONFLICT";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.1.0";
+    capability_version: "1.2.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_AUTHORIZATION_REQUIRED";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.1.0";
+    capability_version: "1.2.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_OUTCOME_UNKNOWN";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.1.0";
+    capability_version: "1.2.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_PROTOCOL_UNSUPPORTED";
+  }
+  | {
+    capability_id: "agent.conversation";
+    capability_version: "1.2.0";
+    detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
+    business_error_code: "AGENT_ROLE_NOT_DECLARED";
   };
 
 export function isAgentConversationBusinessError(error: unknown): error is PluginBridgeError & { readonly details: AgentConversationBusinessErrorDetails } {
-  return isCapabilityBusinessError(error, "agent.conversation", "1.1.0", {
+  return isCapabilityBusinessError(error, "agent.conversation", "1.2.0", {
     "CONVERSATION_UNAVAILABLE": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_CONFLICT": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_AUTHORIZATION_REQUIRED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_OUTCOME_UNKNOWN": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_PROTOCOL_UNSUPPORTED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
+    "AGENT_ROLE_NOT_DECLARED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
   });
 }
 
@@ -350,6 +369,14 @@ const bindContract = Object.freeze({
   effect: "write",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"object_key":{"maxLength":512,"minLength":1,"type":"string"},"profile":{"additionalProperties":false,"properties":{"context_methods":{"items":{"maxLength":128,"minLength":1,"type":"string"},"maxItems":128,"type":"array","uniqueItems":true},"host_tools":{"items":{"maxLength":128,"minLength":1,"type":"string"},"maxItems":128,"type":"array","uniqueItems":true},"id":{"maxLength":128,"minLength":1,"type":"string"},"instructions":{"maxLength":64000,"minLength":0,"type":"string"},"mcp_components":{"items":{"additionalProperties":false,"properties":{"args":{"items":{"maxLength":4096,"minLength":1,"type":"string"},"maxItems":64,"type":"array"},"command":{"maxLength":4096,"minLength":1,"type":"string"},"connector_id":{"maxLength":128,"minLength":1,"type":"string"},"credentials":{"items":{"additionalProperties":false,"properties":{"name":{"maxLength":128,"minLength":1,"type":"string"},"secret_ref":{"maxLength":512,"minLength":1,"type":"string"}},"required":["name","secret_ref"],"type":"object"},"maxItems":64,"type":"array"},"id":{"maxLength":128,"minLength":1,"type":"string"},"slot":{"maxLength":128,"minLength":1,"type":"string"},"transport":{"enum":["stdio","streamable_http"],"type":"string"},"url":{"maxLength":8192,"minLength":1,"type":"string"}},"required":["id","slot","transport"],"type":"object"},"maxItems":32,"type":"array"},"mcp_slots":{"items":{"additionalProperties":false,"properties":{"description":{"maxLength":4096,"minLength":0,"type":"string"},"id":{"maxLength":128,"minLength":1,"type":"string"},"required":{"type":"boolean"}},"required":["id","required","description"],"type":"object"},"maxItems":32,"type":"array","uniqueItems":true},"methods":{"items":{"maxLength":128,"minLength":1,"type":"string"},"maxItems":128,"type":"array","uniqueItems":true},"skills":{"items":{"additionalProperties":false,"properties":{"content":{"maxLength":64000,"minLength":1,"type":"string"},"description":{"maxLength":4096,"minLength":0,"type":"string"},"name":{"maxLength":128,"minLength":1,"type":"string"}},"required":["name","description","content"],"type":"object"},"maxItems":32,"type":"array","uniqueItems":true},"title":{"maxLength":256,"minLength":1,"type":"string"}},"required":["id","instructions","methods"],"type":"object"}},"required":["object_key","profile"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"available":{"type":"boolean"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"client_protocol":{"maxLength":128,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"unavailable_reasons":{"items":{"maxLength":1024,"minLength":1,"type":"string"},"maxItems":128,"type":"array","uniqueItems":true}},"required":["binding_id","revision","client_protocol","available","unavailable_reasons"],"type":"object"},
+} as const);
+
+const openRoleContract = Object.freeze({
+  method: "agent.conversation.role.open",
+  effect: "write",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"role_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["role_id"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"available":{"type":"boolean"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"client_protocol":{"maxLength":128,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"unavailable_reasons":{"items":{"maxLength":1024,"minLength":1,"type":"string"},"maxItems":128,"type":"array","uniqueItems":true}},"required":["binding_id","revision","client_protocol","available","unavailable_reasons"],"type":"object"},
 } as const);
 
@@ -520,6 +547,15 @@ export class AgentConversationClient {
     return callCapabilitySync<AgentConversationBindRequest, AgentConversationBindResponse>(
       this.#bridge,
       bindContract,
+      request,
+      options,
+    );
+  }
+
+  async openRole(request: AgentConversationOpenRoleRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationOpenRoleResponse> {
+    return callCapabilitySync<AgentConversationOpenRoleRequest, AgentConversationOpenRoleResponse>(
+      this.#bridge,
+      openRoleContract,
       request,
       options,
     );

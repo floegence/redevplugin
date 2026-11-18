@@ -1,10 +1,10 @@
 {
   "schema_version": "redevplugin.host_capability_contract.v1",
   "contract_id": "redevplugin.agent.conversation",
-  "contract_version": "1.1.0",
+  "contract_version": "1.2.0",
   "publisher_id": "redevplugin",
   "capability_id": "agent.conversation",
-  "capability_version": "1.1.0",
+  "capability_version": "1.2.0",
   "client_name": "AgentConversationClient",
   "methods": [
     {
@@ -246,6 +246,92 @@
         "required": [
           "object_key",
           "profile"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "client_protocol": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "unavailable_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "maxItems": 128,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "binding_id",
+          "revision",
+          "client_protocol",
+          "available",
+          "unavailable_reasons"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.role.open",
+      "client_method": "openRole",
+      "effect": "write",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.manage"
+      ],
+      "target_fields": [
+        "role_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "role_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "role_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationOpenRoleRequest",
+      "response_type_name": "AgentConversationOpenRoleResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "role_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "role_id"
         ],
         "additionalProperties": false
       },
@@ -2101,6 +2187,10 @@
     {
       "code": "CONVERSATION_PROTOCOL_UNSUPPORTED",
       "message": "Conversation client protocol is unsupported"
+    },
+    {
+      "code": "AGENT_ROLE_NOT_DECLARED",
+      "message": "Agent role is not declared in this package"
     }
   ]
 }
