@@ -101,7 +101,7 @@ func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 		properties []string
 	}{
 		{schema: "InspectExternalPackageRequest", properties: []string{"expected_contract_set_sha256", "expected_package_sha256", "expected_plugin_id", "expected_publisher_id", "expected_security_summary_sha256", "expected_version", "intent", "source"}},
-		{schema: "StartInspectedInstallRequest", properties: []string{"automatic", "expected_package_sha256", "inspection_id", "request_id"}},
+		{schema: "StartInspectedInstallRequest", properties: []string{"approved_permissions", "automatic", "expected_package_sha256", "inspection_id", "request_id"}},
 	}
 	for _, tt := range tests {
 		block := openAPISchemaBlock(t, source, tt.schema)
