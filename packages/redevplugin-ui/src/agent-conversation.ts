@@ -1,9 +1,11 @@
 import { AgentConversationClient, type AgentConversationBindRequest, type AgentConversationBindResponse, type AgentConversationOpenResponse, type AgentConversationObserveEvent } from "./agent-conversation.gen.js";
 import { mountCapabilityView, type CapabilityView } from "./capability-view.js";
 import type { PluginBridgeClient, PluginBridgeRequestOptions } from "./plugin.js";
+import { PluginBridgeError } from "./errors.js";
 
 export * from "./agent-conversation.gen.js";
 export type AgentProfile = AgentConversationBindRequest["profile"];
+export type AgentConfigurationInput = { area: "models" | "tools" | "skills" | "mcp" | "permissions" | "computer"; slot?: string; conversation?: AgentConversation; proposal?: unknown };
 
 /** Defines behavior and requested resources. This is never an authority grant. */
 export function defineAgentProfile(profile: AgentProfile): AgentProfile {
@@ -55,7 +57,16 @@ export class BoundAgent {
     },
   });
 
-  async configure(input: { area: "models" | "tools" | "skills" | "mcp" | "permissions" | "computer"; slot?: string; conversation?: AgentConversation; proposal?: unknown }, options?: PluginBridgeRequestOptions): Promise<void> {
+  async reviewConfiguration(input: AgentConfigurationInput, options?: PluginBridgeRequestOptions): Promise<"saved" | "cancelled"> {
+    try { await this.configure(input, options); return "saved"; }
+    catch (error) {
+      if (error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONFIRMATION_REJECTED" &&
+          typeof error.details === "object" && error.details !== null && "review" in error.details && error.details.review === "dismissed") return "cancelled";
+      throw error;
+    }
+  }
+
+  async configure(input: AgentConfigurationInput, options?: PluginBridgeRequestOptions): Promise<void> {
     if (input.conversation && input.conversation.agent !== this) throw new Error("Conversation belongs to another Agent binding");
     const proposal = input.proposal === undefined ? undefined : JSON.stringify(input.proposal);
     if (input.proposal !== undefined && proposal === undefined) throw new TypeError("Configuration proposal must be JSON");

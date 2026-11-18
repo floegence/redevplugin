@@ -22,7 +22,8 @@ const agent = await client.bindAgent({
 });
 const conversation = await agent.conversations.open({ key: "main" });
 // From a user settings action, using the trusted host configuration panel:
-await agent.configure({ area: "models", conversation });
+const outcome = await agent.reviewConfiguration({ area: "models", conversation });
+// "cancelled" is a normal return to the plugin. Only "saved" confirms completion.
 ```
 
 The example needs manifest routes for `agent.conversation.bind`, `.open` and

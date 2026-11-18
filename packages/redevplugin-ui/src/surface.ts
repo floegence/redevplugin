@@ -271,7 +271,7 @@ export type PluginConfirmationIntent = {
   signal: AbortSignal;
 };
 
-export type PluginConfirmationDecision = boolean | { confirmed: boolean };
+export type PluginConfirmationDecision = boolean | { confirmed: boolean; dismissed?: false } | { confirmed: false; dismissed: true };
 export type PluginConfirmationHandler = (intent: PluginConfirmationIntent) => Promise<PluginConfirmationDecision> | PluginConfirmationDecision;
 
 export type MessageEventLike = {
@@ -337,6 +337,7 @@ type PendingCall = {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   cancelTimer: () => void;
+  reviewPhase?: (phase: "waiting" | "settling", remaining: number) => void;
   abortCleanup?: () => void;
   kind: "json";
   identifier?: string;
@@ -676,7 +677,7 @@ export class PluginBridgeClient {
     if (options.signal?.aborted) return Promise.reject(requestCancelledError(options, false));
     let posted = false;
     const result = new Promise<T>((resolve, reject) => {
-      const cancelTimer = this.#clock.schedule(() => {
+      const expire = () => {
         const pending = this.#takePending(id);
         if (!pending) return;
         try {
@@ -691,7 +692,9 @@ export class PluginBridgeClient {
           undefined,
           mutationOutcome(options, posted),
         ));
-      }, this.timeoutMs);
+      };
+      let cancelTimer = this.#clock.schedule(expire, this.timeoutMs);
+      let phase: "transport" | "waiting" | "settling" = "transport";
       const onAbort = (): void => {
         const pending = this.#takePending(id);
         if (!pending) return;
@@ -707,7 +710,13 @@ export class PluginBridgeClient {
       this.#pending.set(id, {
         resolve: (value: unknown) => resolve(value as T),
         reject,
-        cancelTimer,
+        cancelTimer: () => cancelTimer(),
+        reviewPhase: (next, remaining) => {
+          if ((next === "waiting" && phase !== "transport") || (next === "settling" && phase !== "waiting")) return;
+          phase = next;
+          cancelTimer();
+          cancelTimer = this.#clock.schedule(expire, this.timeoutMs + remaining);
+        },
         abortCleanup: options.signal ? () => options.signal?.removeEventListener("abort", onAbort) : undefined,
         kind: options.kind ?? "json",
         identifier: options.identifier,
@@ -747,6 +756,12 @@ export class PluginBridgeClient {
     if (this.#lifecycleState === "disposed") return;
     const data = event.data;
     if (!messageWithinLimit(data)) return;
+    if (hasExactKeys(data, ["type", "id", "phase", "remaining_ms"]) && data.type === "redevplugin.bridge.review" && typeof data.id === "string" &&
+        typeof data.remaining_ms === "number" && Number.isSafeInteger(data.remaining_ms) &&
+        ((data.phase === "waiting" && data.remaining_ms > 0 && data.remaining_ms <= 300_000) || (data.phase === "settling" && data.remaining_ms === 0))) {
+      this.#pending.get(data.id)?.reviewPhase?.(data.phase, data.remaining_ms);
+      return;
+    }
     if (hasExactKeys(data, ["type", "invocation"]) && data.type === "redevplugin.bridge.method_invoke" && isSurfaceMethodDelivery(data.invocation)) {
       void this.#invokeRegisteredMethod(data.invocation);
       return;
@@ -2105,21 +2120,41 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     }
     try {
       const confirmation = await this.#preparePluginMethodConfirmation(request, signal);
-      const decision = await abortableConfirmationDecision(this.#confirm({
-        requestId: request.id,
-        method: request.method,
-        params: request.params,
-        requestHash: confirmation.request_hash,
-        planHash: confirmation.plan_hash,
-        plan: confirmation.plan,
-        confirmationTokenId: confirmation.confirmation_token_id,
-        signal,
-      }), signal);
+      const remaining = Date.parse(confirmation.expires_at ?? "") - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) throw new PluginBridgeError("PLUGIN_TOKEN_EXPIRED", "Confirmation is no longer available");
+      const waitMs = Math.min(remaining, 300_000);
+      const review = new AbortController();
+      const abort = () => review.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      const deadline = setTimeout(abort, waitMs);
+      let decision: PluginConfirmationDecision;
+      try {
+        this.#postToApplication({ type: "redevplugin.bridge.review", id: request.id, phase: "waiting", remaining_ms: waitMs });
+        decision = await abortableConfirmationDecision(this.#confirm({
+          requestId: request.id,
+          method: request.method,
+          params: request.params,
+          requestHash: confirmation.request_hash,
+          planHash: confirmation.plan_hash,
+          plan: confirmation.plan,
+          confirmationTokenId: confirmation.confirmation_token_id,
+          signal: review.signal,
+        }), review.signal);
+        if (review.signal.aborted) throw new PluginBridgeError("PLUGIN_TOKEN_EXPIRED", "Confirmation expired");
+      } catch (error) {
+        if (review.signal.aborted && !signal.aborted) throw new PluginBridgeError("PLUGIN_TOKEN_EXPIRED", "Confirmation expired");
+        throw error;
+      } finally {
+        clearTimeout(deadline);
+        signal.removeEventListener("abort", abort);
+      }
       if (signal.aborted || this.#disposed) return;
+      this.#postToApplication({ type: "redevplugin.bridge.review", id: request.id, phase: "settling", remaining_ms: 0 });
       if (!confirmationDecisionAccepted(decision)) {
         await this.#rejectConfirmation(confirmation.confirmation_id, signal);
         if (signal.aborted || this.#disposed) return;
-        this.#postError(request.id, "PLUGIN_CONFIRMATION_REJECTED", "Plugin method confirmation was rejected");
+        this.#postError(request.id, "PLUGIN_CONFIRMATION_REJECTED", "Plugin method confirmation was rejected", typeof decision === "object" && decision.dismissed === true ? { review: "dismissed" } : undefined);
         return;
       }
       const result = await this.#callRPC(request, confirmation.confirmation_id, signal);

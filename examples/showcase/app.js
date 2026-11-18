@@ -3255,21 +3255,41 @@ var PluginSurfaceHostImplementation = class {
     }
     try {
       const confirmation = await this.#preparePluginMethodConfirmation(request2, signal);
-      const decision = await abortableConfirmationDecision(this.#confirm({
-        requestId: request2.id,
-        method: request2.method,
-        params: request2.params,
-        requestHash: confirmation.request_hash,
-        planHash: confirmation.plan_hash,
-        plan: confirmation.plan,
-        confirmationTokenId: confirmation.confirmation_token_id,
-        signal
-      }), signal);
+      const remaining = Date.parse(confirmation.expires_at ?? "") - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) throw new PluginBridgeError("PLUGIN_TOKEN_EXPIRED", "Confirmation is no longer available");
+      const waitMs = Math.min(remaining, 3e5);
+      const review = new AbortController();
+      const abort = () => review.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      const deadline = setTimeout(abort, waitMs);
+      let decision;
+      try {
+        this.#postToApplication({ type: "redevplugin.bridge.review", id: request2.id, phase: "waiting", remaining_ms: waitMs });
+        decision = await abortableConfirmationDecision(this.#confirm({
+          requestId: request2.id,
+          method: request2.method,
+          params: request2.params,
+          requestHash: confirmation.request_hash,
+          planHash: confirmation.plan_hash,
+          plan: confirmation.plan,
+          confirmationTokenId: confirmation.confirmation_token_id,
+          signal: review.signal
+        }), review.signal);
+        if (review.signal.aborted) throw new PluginBridgeError("PLUGIN_TOKEN_EXPIRED", "Confirmation expired");
+      } catch (error) {
+        if (review.signal.aborted && !signal.aborted) throw new PluginBridgeError("PLUGIN_TOKEN_EXPIRED", "Confirmation expired");
+        throw error;
+      } finally {
+        clearTimeout(deadline);
+        signal.removeEventListener("abort", abort);
+      }
       if (signal.aborted || this.#disposed) return;
+      this.#postToApplication({ type: "redevplugin.bridge.review", id: request2.id, phase: "settling", remaining_ms: 0 });
       if (!confirmationDecisionAccepted(decision)) {
         await this.#rejectConfirmation(confirmation.confirmation_id, signal);
         if (signal.aborted || this.#disposed) return;
-        this.#postError(request2.id, "PLUGIN_CONFIRMATION_REJECTED", "Plugin method confirmation was rejected");
+        this.#postError(request2.id, "PLUGIN_CONFIRMATION_REJECTED", "Plugin method confirmation was rejected", typeof decision === "object" && decision.dismissed === true ? { review: "dismissed" } : void 0);
         return;
       }
       const result = await this.#callRPC(request2, confirmation.confirmation_id, signal);

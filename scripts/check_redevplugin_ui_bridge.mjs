@@ -29,6 +29,7 @@ const commonFrames = [
   "redevplugin.ui.file.export",
   "redevplugin.bridge.cancel",
   "redevplugin.bridge.response",
+  "redevplugin.bridge.review",
   "redevplugin.bridge.lifecycle",
   "redevplugin.bridge.present",
 ];

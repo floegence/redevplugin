@@ -185,6 +185,7 @@ an English fallback or mix locales within one resolved presentation.
   network/file/service operations use declared platform methods and brokers.
   Unsupported browser confinement fails before application execution. No VNode,
   dedicated JSX runtime, or legacy rendering path remains.
+- While a method is in trusted confirmation, its ordinary bridge timeout applies to transport, not the time spent reviewing. Review is bounded by the server's expiring intent. Return `{ confirmed: false, dismissed: true }` only for an explicit user dismissal without a configuration write; owner loss or denial is not a dismissal. Agent plugins can use `reviewConfiguration()` for typed `saved` and `cancelled` results.
 - A trusted parent that rejects a dangerous-method confirmation first calls the
   surface-scoped rejection route. The Host validates the current gateway token,
   session, bridge channel, active fingerprint, policy/management revisions, and

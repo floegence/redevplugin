@@ -1966,7 +1966,7 @@ var PluginBridgeClient = class {
     if (options.signal?.aborted) return Promise.reject(requestCancelledError(options, false));
     let posted = false;
     const result = new Promise((resolve, reject) => {
-      const cancelTimer = this.#clock.schedule(() => {
+      const expire = () => {
         const pending = this.#takePending(id);
         if (!pending) return;
         try {
@@ -1980,7 +1980,9 @@ var PluginBridgeClient = class {
           void 0,
           mutationOutcome(options, posted)
         ));
-      }, this.timeoutMs);
+      };
+      let cancelTimer = this.#clock.schedule(expire, this.timeoutMs);
+      let phase = "transport";
       const onAbort = () => {
         const pending = this.#takePending(id);
         if (!pending) return;
@@ -1995,7 +1997,13 @@ var PluginBridgeClient = class {
       this.#pending.set(id, {
         resolve: (value) => resolve(value),
         reject,
-        cancelTimer,
+        cancelTimer: () => cancelTimer(),
+        reviewPhase: (next, remaining) => {
+          if (next === "waiting" && phase !== "transport" || next === "settling" && phase !== "waiting") return;
+          phase = next;
+          cancelTimer();
+          cancelTimer = this.#clock.schedule(expire, this.timeoutMs + remaining);
+        },
         abortCleanup: options.signal ? () => options.signal?.removeEventListener("abort", onAbort) : void 0,
         kind: options.kind ?? "json",
         identifier: options.identifier
@@ -2033,6 +2041,10 @@ var PluginBridgeClient = class {
     if (this.#lifecycleState === "disposed") return;
     const data = event.data;
     if (!messageWithinLimit(data)) return;
+    if (hasExactKeys(data, ["type", "id", "phase", "remaining_ms"]) && data.type === "redevplugin.bridge.review" && typeof data.id === "string" && typeof data.remaining_ms === "number" && Number.isSafeInteger(data.remaining_ms) && (data.phase === "waiting" && data.remaining_ms > 0 && data.remaining_ms <= 3e5 || data.phase === "settling" && data.remaining_ms === 0)) {
+      this.#pending.get(data.id)?.reviewPhase?.(data.phase, data.remaining_ms);
+      return;
+    }
     if (hasExactKeys(data, ["type", "invocation"]) && data.type === "redevplugin.bridge.method_invoke" && isSurfaceMethodDelivery(data.invocation)) {
       void this.#invokeRegisteredMethod(data.invocation);
       return;

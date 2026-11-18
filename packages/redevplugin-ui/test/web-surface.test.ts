@@ -20,6 +20,9 @@ import {
   type PluginWebOriginPreparation,
 } from "../src/trusted-parent.js";
 import { PluginBridgeClient, callCapabilitySync } from "../src/plugin.js";
+import { createPluginTestClock } from "../src/testing.js";
+import { BoundAgent } from "../src/agent-conversation.js";
+import { AgentConversationClient } from "../src/agent-conversation.gen.js";
 import {
   createPreparedPluginSurfaceHost,
   openPreparedPluginSurfaceInSlot,
@@ -575,6 +578,34 @@ test("plugin bridge client retains and fences host appearance and locale context
   client.dispose();
 });
 
+
+test("configuration waits for user review, times out stalled transport and distinguishes dismissal from denial", async () => {
+  const { port1, port2 } = fakeChannel();
+  const time = createPluginTestClock();
+  const client = new PluginBridgeClient({ port: port2, surfaceHandle: "surface_12345678", clock: time.clock });
+  const agent = new BoundAgent(client, new AgentConversationClient(client), "agent", {binding_id:"binding-1", revision:1, client_protocol:"test", available:true, unavailable_reasons:[]});
+  for (const result of ["saved", "cancelled", "denied", "timeout"] as const) {
+    const pending = agent.reviewConfiguration({ area: "models" });
+    await Promise.resolve();
+    const id = (port2.sent.at(-1) as {request:{id:string}}).request.id;
+    port1.postMessage({type:"redevplugin.bridge.review", id, phase:"waiting", remaining_ms:120_000});
+    await time.advanceBy(40_000);
+    assert.equal(port2.sent.some(value => (value as {type:string;id:string}).type === "redevplugin.bridge.cancel" && (value as {id:string}).id === id),false);
+    port1.postMessage({type:"redevplugin.bridge.review",id,phase:"settling",remaining_ms:0});
+    if (result === "timeout") {
+      const rejected = assert.rejects(pending, error => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_TIMEOUT");
+      await time.advanceBy(30_001); await rejected;
+    } else if (result === "saved") {
+      port1.postMessage({type:"redevplugin.bridge.response",id,ok:true,data:{data:{revision:2,available:true,unavailable_reasons:[]}}});
+      assert.equal(await pending,"saved");
+    } else {
+      port1.postMessage({type:"redevplugin.bridge.response",id,ok:false,error_code:"PLUGIN_CONFIRMATION_REJECTED",error:"localized text",...(result === "cancelled" ? {error_details:{review:"dismissed"}} : {})});
+      if (result === "cancelled") assert.equal(await pending,"cancelled");
+      else await assert.rejects(pending,error => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONFIRMATION_REJECTED");
+    }
+  }
+  client.dispose();
+});
 
 test("plugin bridge classifies cancellation before and after mutation dispatch", async () => {
   const { port1: rendererPort, port2: pluginPort } = fakeChannel();
@@ -2068,6 +2099,7 @@ test("confirmation rejection waits for lease renewal before capturing the gatewa
   fetch.push({
     confirmation_id: "confirmation_renewal_1",
     confirmation_token_id: "confirmation_token_renewal_1",
+    expires_at: new Date(Date.now() + 120_000).toISOString(),
     request_hash: digest("1"),
     plan_hash: digest("2"),
   });
@@ -2371,6 +2403,7 @@ test("surface disposal aborts an unresolved confirmation handler", async () => {
   fetch.push({
     confirmation_id: "confirmation_1",
     confirmation_token_id: "confirmation_token_1",
+    expires_at: new Date(Date.now() + 120_000).toISOString(),
     request_hash: digest("1"),
     plan_hash: digest("2"),
   });
@@ -2407,6 +2440,7 @@ test("surface confirmation rejection is recorded before the plugin receives its 
   fetch.push({
     confirmation_id: "confirmation_1",
     confirmation_token_id: "confirmation_token_1",
+    expires_at: new Date(Date.now() + 120_000).toISOString(),
     request_hash: digest("1"),
     plan_hash: digest("2"),
   });

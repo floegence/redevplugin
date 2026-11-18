@@ -26,6 +26,9 @@
       "$ref": "#/$defs/response"
     },
     {
+      "$ref": "#/$defs/review"
+    },
+    {
       "$ref": "#/$defs/lifecycle"
     },
     {
@@ -63,6 +66,21 @@
     }
   ],
   "$defs": {
+    "review": {
+      "description": "Trusted parent timing for one pending method confirmation. Carries no decision or authority.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "phase", "remaining_ms"],
+      "properties": {
+        "type": { "const": "redevplugin.bridge.review" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "phase": { "enum": ["waiting", "settling"] },
+        "remaining_ms": { "type": "integer", "minimum": 0, "maximum": 300000 }
+      },
+      "if": { "properties": { "phase": { "const": "waiting" } } },
+      "then": { "properties": { "remaining_ms": { "minimum": 1 } } },
+      "else": { "properties": { "remaining_ms": { "const": 0 } } }
+    },
     "context": {
       "type": "object",
       "additionalProperties": false,

@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.36.0
+
+- Separate time spent in trusted method confirmation from bridge transport timeouts. The prepared confirmation still expires and cancellation never replays the call.
+- Expose `agent.reviewConfiguration()` for explicit saved and dismissed results. Other denials, lost responses and transport failures remain errors; existing `configure()` retains its strict completion contract.
+
 ## v3.35.0
 
 - Expose verified grantable permissions in installation review and accept explicit exact-package consent in the durable installation request.
