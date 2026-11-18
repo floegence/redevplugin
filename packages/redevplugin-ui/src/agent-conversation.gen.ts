@@ -70,6 +70,7 @@ export type AgentConversationOpenRoleResponse = {
 export type AgentConversationOpenRequest = {
   binding_id: string;
   key: string;
+  lifetime?: "persistent" | "temporary";
   title?: string;
 };
 
@@ -77,6 +78,7 @@ export type AgentConversationOpenResponse = {
   archived: boolean;
   conversation_id: string;
   key: string;
+  lifetime?: "persistent" | "temporary";
   revision: number;
   state: "idle" | "running" | "waiting" | "failed";
   title: string;
@@ -93,6 +95,7 @@ export type AgentConversationListResponse = {
     archived: boolean;
     conversation_id: string;
     key: string;
+    lifetime?: "persistent" | "temporary";
     revision: number;
     state: "idle" | "running" | "waiting" | "failed";
     title: string;
@@ -109,6 +112,7 @@ export type AgentConversationGetResponse = {
   archived: boolean;
   conversation_id: string;
   key: string;
+  lifetime?: "persistent" | "temporary";
   revision: number;
   state: "idle" | "running" | "waiting" | "failed";
   title: string;
@@ -126,6 +130,7 @@ export type AgentConversationUpdateResponse = {
   archived: boolean;
   conversation_id: string;
   key: string;
+  lifetime?: "persistent" | "temporary";
   revision: number;
   state: "idle" | "running" | "waiting" | "failed";
   title: string;
@@ -143,6 +148,7 @@ export type AgentConversationForkResponse = {
   archived: boolean;
   conversation_id: string;
   key: string;
+  lifetime?: "persistent" | "temporary";
   revision: number;
   state: "idle" | "running" | "waiting" | "failed";
   title: string;
@@ -251,7 +257,7 @@ export type AgentConversationObserveEvent = {
   conversation_id: string;
   cursor: string;
   details_json?: string;
-  kind: "snapshot" | "message" | "operation" | "input" | "approval" | "state" | "reset";
+  kind: "snapshot" | "message" | "operation" | "input" | "approval" | "state" | "reset" | "closed";
   request_id?: string;
   state?: string;
   text?: string;
@@ -259,6 +265,7 @@ export type AgentConversationObserveEvent = {
 
 export type AgentConversationClientReadRequest = {
   binding_id: string;
+  conversation_id?: string;
   input_json: string;
   operation: string;
   protocol: string;
@@ -270,6 +277,7 @@ export type AgentConversationClientReadResponse = {
 
 export type AgentConversationClientWriteRequest = {
   binding_id: string;
+  conversation_id?: string;
   input_json: string;
   operation: string;
   protocol: string;
@@ -281,6 +289,7 @@ export type AgentConversationClientWriteResponse = {
 
 export type AgentConversationClientExecuteRequest = {
   binding_id: string;
+  conversation_id?: string;
   input_json: string;
   operation: string;
   protocol: string;
@@ -292,6 +301,7 @@ export type AgentConversationClientExecuteResponse = {
 
 export type AgentConversationClientDeleteRequest = {
   binding_id: string;
+  conversation_id?: string;
   input_json: string;
   operation: string;
   protocol: string;
@@ -303,6 +313,7 @@ export type AgentConversationClientDeleteResponse = {
 
 export type AgentConversationClientObserveRequest = {
   binding_id: string;
+  conversation_id?: string;
   protocol: string;
 };
 
@@ -313,54 +324,87 @@ export type AgentConversationClientObserveEvent = {
   data_json: string;
 };
 
-export type AgentConversationBusinessErrorCode = "AGENT_ROLE_NOT_DECLARED" | "CONVERSATION_AUTHORIZATION_REQUIRED" | "CONVERSATION_CONFLICT" | "CONVERSATION_OUTCOME_UNKNOWN" | "CONVERSATION_PROTOCOL_UNSUPPORTED" | "CONVERSATION_UNAVAILABLE";
+export type AgentConversationCloseRequest = {
+  binding_id: string;
+  conversation_id: string;
+};
+
+export type AgentConversationCloseResponse = {
+};
+
+export type AgentConversationReadEventsRequest = {
+  after?: string;
+  binding_id: string;
+  conversation_id: string;
+};
+
+export type AgentConversationReadEventsResponse = {
+  events: Array<{
+    conversation_id: string;
+    cursor: string;
+    details_json?: string;
+    kind: "snapshot" | "message" | "operation" | "input" | "approval" | "state" | "reset" | "closed";
+    request_id?: string;
+    state?: string;
+    text?: string;
+  }>;
+};
+
+export type AgentConversationBusinessErrorCode = "AGENT_ROLE_NOT_DECLARED" | "CONVERSATION_AUTHORIZATION_REQUIRED" | "CONVERSATION_CLOSED" | "CONVERSATION_CONFLICT" | "CONVERSATION_OUTCOME_UNKNOWN" | "CONVERSATION_PROTOCOL_UNSUPPORTED" | "CONVERSATION_UNAVAILABLE";
 
 export type AgentConversationBusinessErrorDetails =
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.2.0";
+    capability_version: "1.3.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_UNAVAILABLE";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.2.0";
+    capability_version: "1.3.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_CONFLICT";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.2.0";
+    capability_version: "1.3.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_AUTHORIZATION_REQUIRED";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.2.0";
+    capability_version: "1.3.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_OUTCOME_UNKNOWN";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.2.0";
+    capability_version: "1.3.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_PROTOCOL_UNSUPPORTED";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.2.0";
+    capability_version: "1.3.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "AGENT_ROLE_NOT_DECLARED";
+  }
+  | {
+    capability_id: "agent.conversation";
+    capability_version: "1.3.0";
+    detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
+    business_error_code: "CONVERSATION_CLOSED";
   };
 
 export function isAgentConversationBusinessError(error: unknown): error is PluginBridgeError & { readonly details: AgentConversationBusinessErrorDetails } {
-  return isCapabilityBusinessError(error, "agent.conversation", "1.2.0", {
+  return isCapabilityBusinessError(error, "agent.conversation", "1.3.0", {
     "CONVERSATION_UNAVAILABLE": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_CONFLICT": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_AUTHORIZATION_REQUIRED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_OUTCOME_UNKNOWN": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_PROTOCOL_UNSUPPORTED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "AGENT_ROLE_NOT_DECLARED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
+    "CONVERSATION_CLOSED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
   });
 }
 
@@ -384,8 +428,8 @@ const openContract = Object.freeze({
   method: "agent.conversation.open",
   effect: "write",
   execution: "sync",
-  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["binding_id","key"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["binding_id","key"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
 } as const);
 
 const listContract = Object.freeze({
@@ -393,7 +437,7 @@ const listContract = Object.freeze({
   effect: "read",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":0,"type":"string"}},"required":["binding_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"conversations":{"items":{"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},"maxItems":100,"type":"array","uniqueItems":true},"next_cursor":{"maxLength":2048,"minLength":0,"type":"string"}},"required":["conversations","next_cursor"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"conversations":{"items":{"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},"maxItems":100,"type":"array","uniqueItems":true},"next_cursor":{"maxLength":2048,"minLength":0,"type":"string"}},"required":["conversations","next_cursor"],"type":"object"},
 } as const);
 
 const getContract = Object.freeze({
@@ -401,7 +445,7 @@ const getContract = Object.freeze({
   effect: "read",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
 } as const);
 
 const updateContract = Object.freeze({
@@ -409,7 +453,7 @@ const updateContract = Object.freeze({
   effect: "write",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["binding_id","conversation_id","revision"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
 } as const);
 
 const forkContract = Object.freeze({
@@ -417,7 +461,7 @@ const forkContract = Object.freeze({
   effect: "write",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"source_item_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id","key","request_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
 } as const);
 
 const deleteContract = Object.freeze({
@@ -491,14 +535,14 @@ const observeContract = Object.freeze({
   requestSchema: {"additionalProperties":false,"properties":{"after":{"maxLength":512,"minLength":0,"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"conversation_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["conversation_id"],"type":"object"},
   eventTypeName: "AgentConversationObserveEvent",
-  eventSchema: {"additionalProperties":false,"properties":{"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":512,"minLength":1,"type":"string"},"details_json":{"maxLength":1000000,"minLength":0,"type":"string"},"kind":{"enum":["snapshot","message","operation","input","approval","state","reset"],"type":"string"},"request_id":{"maxLength":128,"minLength":0,"type":"string"},"state":{"maxLength":64,"minLength":0,"type":"string"},"text":{"maxLength":1000000,"minLength":0,"type":"string"}},"required":["cursor","conversation_id","kind"],"type":"object"},
+  eventSchema: {"additionalProperties":false,"properties":{"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":512,"minLength":1,"type":"string"},"details_json":{"maxLength":1000000,"minLength":0,"type":"string"},"kind":{"enum":["snapshot","message","operation","input","approval","state","reset","closed"],"type":"string"},"request_id":{"maxLength":128,"minLength":0,"type":"string"},"state":{"maxLength":64,"minLength":0,"type":"string"},"text":{"maxLength":1000000,"minLength":0,"type":"string"}},"required":["cursor","conversation_id","kind"],"type":"object"},
 } as const);
 
 const clientReadContract = Object.freeze({
   method: "agent.conversation.client.read",
   effect: "read",
   execution: "sync",
-  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"input_json":{"maxLength":1500000,"minLength":0,"type":"string"},"operation":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol","operation","input_json"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"input_json":{"maxLength":1500000,"minLength":0,"type":"string"},"operation":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol","operation","input_json"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"output_json":{"maxLength":1500000,"minLength":0,"type":"string"}},"required":["output_json"],"type":"object"},
 } as const);
 
@@ -506,7 +550,7 @@ const clientWriteContract = Object.freeze({
   method: "agent.conversation.client.write",
   effect: "write",
   execution: "sync",
-  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"input_json":{"maxLength":1500000,"minLength":0,"type":"string"},"operation":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol","operation","input_json"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"input_json":{"maxLength":1500000,"minLength":0,"type":"string"},"operation":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol","operation","input_json"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"output_json":{"maxLength":1500000,"minLength":0,"type":"string"}},"required":["output_json"],"type":"object"},
 } as const);
 
@@ -514,7 +558,7 @@ const clientExecuteContract = Object.freeze({
   method: "agent.conversation.client.execute",
   effect: "execute",
   execution: "sync",
-  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"input_json":{"maxLength":1500000,"minLength":0,"type":"string"},"operation":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol","operation","input_json"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"input_json":{"maxLength":1500000,"minLength":0,"type":"string"},"operation":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol","operation","input_json"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"output_json":{"maxLength":1500000,"minLength":0,"type":"string"}},"required":["output_json"],"type":"object"},
 } as const);
 
@@ -522,7 +566,7 @@ const clientDeleteContract = Object.freeze({
   method: "agent.conversation.client.delete",
   effect: "delete",
   execution: "sync",
-  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"input_json":{"maxLength":1500000,"minLength":0,"type":"string"},"operation":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol","operation","input_json"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"input_json":{"maxLength":1500000,"minLength":0,"type":"string"},"operation":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol","operation","input_json"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"output_json":{"maxLength":1500000,"minLength":0,"type":"string"}},"required":["output_json"],"type":"object"},
 } as const);
 
@@ -530,10 +574,26 @@ const clientObserveContract = Object.freeze({
   method: "agent.conversation.client.observe",
   effect: "read",
   execution: "subscription",
-  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"protocol":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","protocol"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{},"required":[],"type":"object"},
   eventTypeName: "AgentConversationClientObserveEvent",
   eventSchema: {"additionalProperties":false,"properties":{"data_json":{"maxLength":1000000,"minLength":0,"type":"string"}},"required":["data_json"],"type":"object"},
+} as const);
+
+const closeContract = Object.freeze({
+  method: "agent.conversation.close",
+  effect: "write",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{},"required":[],"type":"object"},
+} as const);
+
+const readEventsContract = Object.freeze({
+  method: "agent.conversation.events.read",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"after":{"maxLength":512,"minLength":0,"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"events":{"items":{"additionalProperties":false,"properties":{"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":512,"minLength":1,"type":"string"},"details_json":{"maxLength":1000000,"minLength":0,"type":"string"},"kind":{"enum":["snapshot","message","operation","input","approval","state","reset","closed"],"type":"string"},"request_id":{"maxLength":128,"minLength":0,"type":"string"},"state":{"maxLength":64,"minLength":0,"type":"string"},"text":{"maxLength":1000000,"minLength":0,"type":"string"}},"required":["cursor","conversation_id","kind"],"type":"object"},"maxItems":32,"type":"array"}},"required":["events"],"type":"object"},
 } as const);
 
 export class AgentConversationClient {
@@ -727,6 +787,24 @@ export class AgentConversationClient {
     return callCapabilityStream<AgentConversationClientObserveRequest, AgentConversationClientObserveResponse, AgentConversationClientObserveEvent>(
       this.#bridge,
       clientObserveContract,
+      request,
+      options,
+    );
+  }
+
+  async close(request: AgentConversationCloseRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationCloseResponse> {
+    return callCapabilitySync<AgentConversationCloseRequest, AgentConversationCloseResponse>(
+      this.#bridge,
+      closeContract,
+      request,
+      options,
+    );
+  }
+
+  async readEvents(request: AgentConversationReadEventsRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationReadEventsResponse> {
+    return callCapabilitySync<AgentConversationReadEventsRequest, AgentConversationReadEventsResponse>(
+      this.#bridge,
+      readEventsContract,
       request,
       options,
     );

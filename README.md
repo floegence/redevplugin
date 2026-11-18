@@ -514,7 +514,7 @@ Trusted capability adapters can invoke selected native plugin methods through
 the existing authorization and confirmation pipeline. See
 [scoped Agent conversations](docs/host-agent-conversations.md).
 
-For package-defined roles, `openAgent(id)` opens the verified `agents.json` declaration without starting a conversation. Use `agent.temporary.reply({ text })` for ephemeral text, or `agent.conversations.open(...)` for saved history.
+For package-defined roles, `openAgent(id)` opens the verified `agents.json` declaration without starting a conversation. `agent.conversations.open({ key, lifetime: "temporary" })` opens a multi-turn session for this window; `conversation.close()` ends it. Omit `lifetime` for saved history, or use `agent.temporary.reply({ text })` for a single exchange.
 
 Embedded author tools can discover version-bound documentation through
 `authorguide.Catalog` and `authorguide.Read`. The Agent conversation guide derives

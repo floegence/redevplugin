@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.38.0
+
+- Add window-scoped temporary Agent conversations, explicit close and bounded event reads without a durable subscription payload. Existing saved conversations and immutable contract pins remain supported.
+- Expose the authenticated Web surface lifetime to capability adapters independently of each invocation's deadline.
+
 ## v3.37.0
 
 - Open a packaged Agent role by ID, with optional explicit adoption of its existing object key. The 1.2 conversation contract retains the exact 1.0 and 1.1 pins for existing plugins.

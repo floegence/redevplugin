@@ -17,6 +17,7 @@ import (
 
 	"github.com/floegence/redevplugin/v3/internal/resourceio"
 	"github.com/floegence/redevplugin/v3/pkg/bridge"
+	"github.com/floegence/redevplugin/v3/pkg/capability"
 	"github.com/floegence/redevplugin/v3/pkg/manifest"
 	"github.com/floegence/redevplugin/v3/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
@@ -60,6 +61,7 @@ type webSurfaceBinding struct {
 	resourceToken    string
 	entered          bool
 	gatewayReady     bool
+	bridgeChannelID  string
 	methodReceiver   *surfaceMethodReceiver
 	expiresAt        time.Time
 	pluginInstanceID string
@@ -329,7 +331,7 @@ func (h *Host) ReadWebSurfaceAsset(ctx context.Context, req ReadWebSurfaceAssetR
 
 // Resource credentials follow the existing bridge lease; there is no second
 // authorization lifetime or browser-held management token.
-func (h *Host) renewWebSurface(surfaceID string, result bridge.GatewayTokenResult) {
+func (h *Host) renewWebSurface(surfaceID, channel string, result bridge.GatewayTokenResult) {
 	h.webSurfaces.mu.Lock()
 	defer h.webSurfaces.mu.Unlock()
 	for _, binding := range h.webSurfaces.byOrigin {
@@ -338,8 +340,23 @@ func (h *Host) renewWebSurface(surfaceID string, result bridge.GatewayTokenResul
 			binding.request.AssetSessionID = result.AssetSessionID
 			binding.expiresAt = result.ExpiresAt
 			binding.gatewayReady = true
+			binding.bridgeChannelID = channel
 		}
 	}
+}
+
+func (h *Host) surfaceLifetime(b capability.ExecutionBinding) context.Context {
+	if b.SurfaceInstanceID == "" || b.BridgeChannelID == "" || h.webSurfaces == nil {
+		return nil
+	}
+	h.webSurfaces.mu.Lock()
+	defer h.webSurfaces.mu.Unlock()
+	for _, live := range h.webSurfaces.byOrigin {
+		if live.pluginInstanceID == b.PluginInstanceID && live.request.SurfaceInstanceID == b.SurfaceInstanceID && live.bridgeChannelID == b.BridgeChannelID && sameSurfaceOwner(live.owner, sessionctx.Context{OwnerSessionHash: b.OwnerSessionHash, OwnerUserHash: b.OwnerUserHash, OwnerEnvHash: b.OwnerEnvHash, SessionChannelIDHash: b.SessionChannelIDHash}) {
+			return live.ctx
+		}
+	}
+	return nil
 }
 
 func (h *Host) removeWebSurfaces(match func(*webSurfaceBinding) bool) {

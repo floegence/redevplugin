@@ -1,8 +1,52 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createAgentClient, defineAgentProfile } from "../src/agent-conversation.js";
+import { createAgentClient, defineAgentProfile, isConversationClosed } from "../src/agent-conversation.js";
 import { createPluginTestHarness } from "../src/testing.js";
 import { PluginBridgeError } from "../src/plugin.js";
+
+test("temporary observation advances the cursor and respects remote closure", async () => {
+  let reads = 0;
+  const fixture = createPluginTestHarness({ call(method, input) {
+    if (method === "agent.conversation.role.open") return { data: { binding_id: "board", revision: 1, available: true, client_protocol: "test", unavailable_reasons: [] } };
+    if (method === "agent.conversation.open") return { data: { conversation_id: "game", key: "game", lifetime: "temporary", title: "Game", archived: false, revision: 1, state: "idle" } };
+    assert.equal(method, "agent.conversation.events.read");
+    assert.equal(input!.after, reads === 0 ? undefined : "1");
+    reads++;
+    return { data: { events: [{ conversation_id: "game", cursor: String(reads), kind: reads === 1 ? "snapshot" : "closed" }] } };
+  } });
+  try {
+    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "flower" }).openAgent("opponent");
+    const game = await agent.conversations.open({ key: "game", lifetime: "temporary" });
+    const kinds = [];
+    for await (const event of game.observe()) kinds.push(event.kind);
+    assert.deepEqual(kinds, ["snapshot", "closed"]);
+    await assert.rejects(() => game.send({ requestId: "late", text: "A1" }), isConversationClosed);
+    assert.equal(reads, 2);
+  } finally { fixture.dispose(); }
+});
+
+test("temporary sessions close by identity; closing a saved handle never deletes history", async () => {
+  let generation = 1;
+  const fixture = createPluginTestHarness({ call(method, input) {
+    if (method === "agent.conversation.role.open") return { data: { binding_id: "board", revision: 1, available: true, client_protocol: "test", unavailable_reasons: [] } };
+    if (method === "agent.conversation.open") return { data: { conversation_id: `game-${generation}`, key: input!.key, lifetime: input!.lifetime ?? "persistent", title: "Game", archived: false, revision: 1, state: "idle" } };
+    assert.equal(method, "agent.conversation.close");
+    assert.equal(input!.conversation_id, `game-${generation++}`);
+    return { data: {} };
+  } });
+  try {
+    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "flower" }).openAgent("opponent");
+    const open = () => agent.conversations.open({ key: "board", lifetime: "temporary" });
+    const first = await open();
+    assert.equal(fixture.calls.at(-1)!.input!.lifetime, "temporary");
+    await first.close(); await first.close();
+    await assert.rejects(() => first.send({ requestId: "stale", text: "late move" }));
+    assert.equal((await open()).id === first.id, false);
+    const saved = await agent.conversations.open({ key: "saved" });
+    await saved.close();
+    assert.equal(fixture.calls.filter(call => call.method === "agent.conversation.close").length, 1);
+  } finally { fixture.dispose(); }
+});
 
 test("opening a packaged role and asking for temporary text never opens a saved conversation", async () => {
   const fixture = createPluginTestHarness({ call(method, input) {

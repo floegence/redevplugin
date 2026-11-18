@@ -57,7 +57,7 @@ func TestPublishedConversationAuthorityAndSDK(t *testing.T) {
 
 func TestConversationContractRetainsPublishedClientIdentity(t *testing.T) {
 	contracts, err := SupportedContracts()
-	if err != nil || len(contracts) != 3 {
+	if err != nil || len(contracts) != 4 {
 		t.Fatalf("supported contracts: %v", err)
 	}
 	registry := capabilitycontract.NewRegistry()
@@ -75,10 +75,10 @@ func TestConversationContractRetainsPublishedClientIdentity(t *testing.T) {
 	if err != nil || !bytes.Equal(raw, contractV1Artifact) {
 		t.Fatal("retained artifact changed", err)
 	}
-	if contracts[0].Pin.ContractVersion != "1.2.0" || contracts[1].Pin.ContractVersion != "1.1.0" || contracts[1].Pin.ArtifactSHA256 != "4b4275141035edfbd30e343b82fd943c2831f5a8f329d6a983f7455103e046fa" || contracts[2].Pin.ContractVersion != "1.0.0" || contracts[2].Pin.ArtifactSHA256 != fmt.Sprintf("%x", sha256.Sum256(raw)) {
+	if contracts[0].Pin.ContractVersion != "1.3.0" || contracts[1].Pin.ContractVersion != "1.2.0" || contracts[1].Pin.ArtifactSHA256 != "2f3f057e2677fa278832d61bac30db20152b7e4ec56771a34773b96b10509de8" || contracts[2].Pin.ContractVersion != "1.1.0" || contracts[2].Pin.ArtifactSHA256 != "4b4275141035edfbd30e343b82fd943c2831f5a8f329d6a983f7455103e046fa" || contracts[3].Pin.ContractVersion != "1.0.0" || contracts[3].Pin.ArtifactSHA256 != fmt.Sprintf("%x", sha256.Sum256(raw)) {
 		t.Fatal("contract versions lost their exact identity")
 	}
-	if contracts[2].Pin.ArtifactSHA256 != "2f48e3fc1bf580893a4a6bd9694cb0b95480c366d4968776c41a2924440e1d26" {
+	if contracts[3].Pin.ArtifactSHA256 != "2f48e3fc1bf580893a4a6bd9694cb0b95480c366d4968776c41a2924440e1d26" {
 		t.Fatal("the immutable 3.30 conversation contract was rewritten")
 	}
 }

@@ -20,7 +20,7 @@ import { createAgentClient } from
 const client = createAgentClient(bridge, { capabilityBinding: "agent" });
 const agent = await client.openAgent("assistant");
 // For a single ephemeral text exchange, declare client.execute and use
-// agent.temporary.reply({ text }, { signal }). Use a saved conversation for history:
+// agent.temporary.reply({ text }, { signal }). For a saved conversation:
 const conversation = await agent.conversations.open({ key: "main" });
 // From a user settings action, using the trusted host configuration panel:
 const outcome = await agent.reviewConfiguration({ area: "models", conversation });
@@ -36,6 +36,16 @@ methods the Agent may call back into. It may be empty for a text-only Agent;
 manifest capability routes still must be declared.
 
 For a custom UI, declare `.send`, `.observe`, `.receipt` and `.stop` as used.
+For a game or another session that lasts until this plugin window closes, open
+`agent.conversations.open({ key: "game", lifetime: "temporary" })` once per game.
+Declare `.events.read` for `observe()` on temporary handles and `.close` for
+`await conversation.close()`. Keep the same handle across turns and panel changes.
+Reopen the same key inside the same live window to reconnect. A closed window or
+an explicit close ends its conversation; a new open cannot reuse the old ID.
+Handle `isConversationClosed(error)` or the `closed` observation by offering a
+new game. A transport error alone does not mean the session ended. Never replay
+an uncertain send or substitute a saved chat. Closing a saved handle releases
+only the local handle; deleting history is a separate action.
 Start observation before sending. Retain each request ID and query its receipt
 when the send outcome is unknown; do not generate a replacement ID and replay.
 Observe only public semantic events. A completed stream must not be inferred

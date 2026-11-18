@@ -45,6 +45,11 @@ func generate(root, name, directory string) {
 	client = []byte(strings.Replace(string(client), "\"@floegence/redevplugin-ui/plugin\"", "\"./plugin.js\"", 1))
 	outputs := map[string][]byte{"pkg/" + directory + "/contract.gen.json": raw, "packages/redevplugin-ui/src/" + name + ".gen.ts": client}
 	if name == "agent-conversation" {
+		v12, err := os.ReadFile(filepath.Join(root, "spec/plugin/agent-conversation-1.2.0-contract.json"))
+		if err != nil {
+			panic(err)
+		}
+		outputs["pkg/"+directory+"/contract.v12.gen.json"] = v12
 		previous, err := os.ReadFile(filepath.Join(root, "spec/plugin/agent-conversation-1.1.0-contract.json"))
 		if err != nil {
 			panic(err)

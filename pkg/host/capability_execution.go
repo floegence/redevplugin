@@ -394,7 +394,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		lease.finish()
 		return capability.Invocation{}, nil, nil, err
 	}
-	executionContext := capability.ExecutionContext{ExecutionBinding: executionBinding}
+	executionContext := capability.ExecutionContext{ExecutionBinding: executionBinding, SurfaceLifetime: h.surfaceLifetime(executionBinding)}
 	if method.Execution == manifest.MethodExecutionOperation || method.Execution == manifest.MethodExecutionSubscription {
 		if h.controlStore == nil {
 			lease.finish()

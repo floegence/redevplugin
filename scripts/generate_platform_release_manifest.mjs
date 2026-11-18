@@ -11,6 +11,7 @@ const canonicalContractPaths = Object.freeze([
   "platform-release-manifest.schema.json",
   "plugin/agent-conversation-1.0.0-contract.json",
   "plugin/agent-conversation-1.1.0-contract.json",
+  "plugin/agent-conversation-1.2.0-contract.json",
   "plugin/agent-conversation-contract.json",
   "plugin/agent-work-contract.json",
   "plugin/author-bindings.schema.json",

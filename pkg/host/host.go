@@ -2287,7 +2287,7 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 	if err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
-	h.renewWebSurface(req.Handshake.SurfaceInstanceID, result)
+	h.renewWebSurface(req.Handshake.SurfaceInstanceID, req.BridgeChannelID, result)
 	return result, nil
 }
 

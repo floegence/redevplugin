@@ -20,6 +20,9 @@ var contractV1Artifact []byte
 //go:embed contract.v11.gen.json
 var contractV11Artifact []byte
 
+//go:embed contract.v12.gen.json
+var contractV12Artifact []byte
+
 func Contract() (capabilitycontract.KnownContract, error) {
 	return capabilitycontract.NewKnownContractFromArtifact(contractArtifact)
 }
@@ -27,8 +30,8 @@ func Contract() (capabilitycontract.KnownContract, error) {
 // SupportedContracts includes all immutable released pins. Hosts register each
 // with the same adapter; new authors use Contract.
 func SupportedContracts() ([]capabilitycontract.KnownContract, error) {
-	contracts := make([]capabilitycontract.KnownContract, 0, 3)
-	for _, artifact := range [][]byte{contractArtifact, contractV11Artifact, contractV1Artifact} {
+	contracts := make([]capabilitycontract.KnownContract, 0, 4)
+	for _, artifact := range [][]byte{contractArtifact, contractV12Artifact, contractV11Artifact, contractV1Artifact} {
 		known, err := capabilitycontract.NewKnownContractFromArtifact(artifact)
 		if err != nil {
 			return nil, err

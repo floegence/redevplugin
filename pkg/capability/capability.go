@@ -235,6 +235,9 @@ func (b ExecutionBinding) Surface() SurfaceScope {
 type ExecutionContext struct {
 	ExecutionBinding
 	Events ExecutionSink `json:"-"`
+	// SurfaceLifetime ends when the authenticated Web surface is retired. It is
+	// nil for calls without a live surface and is never execution authority.
+	SurfaceLifetime context.Context `json:"-"`
 }
 
 type Invocation struct {

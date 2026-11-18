@@ -149,7 +149,16 @@ with an uncertain result retain the existing `mutation.OutcomeUnknown` contract.
 
 ## Contract compatibility
 
-New clients use Agent conversation contract 1.2.0. Hosts register every result of
+Temporary conversations belong to the exact authenticated Web surface lifetime
+provided on the invocation. This process-only context is not authority: validate
+the current source and grants at admission, effects and delayed disclosure. Close
+cancels that conversation and retires its opaque ID. `events.read` returns a
+bounded page (or an empty heartbeat) before the RPC deadline. Temporary view and
+event data must not use durable subscription records. Scope client requests by
+conversation when mounting a temporary official view. A lost connection is not
+confirmation of closure and must not cause an automatic replacement or replay.
+
+New clients use Agent conversation contract 1.3.0. Hosts register every result of
 `agentconversation.SupportedContracts()` with their same adapter and official view.
 The 1.0.0 and 1.1.0 artifacts retain their exact published pins. For `agent.conversation.role.open`,
 use `Host.ResolveDeclaredAgent` with the admitted Source. Package validation checks the
