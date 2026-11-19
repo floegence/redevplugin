@@ -4,7 +4,7 @@ import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
 import {spawn,spawnSync} from "node:child_process";
 import {buildRustSourcePackages} from "./rust_source_packages.mjs";
-import {chromium} from "playwright";
+import {launchAuthorBrowser} from "./author_browser.mjs";
 const repo=resolve(import.meta.dirname,".."),cli=resolve(process.argv[2]??"dist/author-cli");
 const root=await mkdtemp(join(tmpdir(),"redevplugin-author-consumer-"));
 const version=(await readFile(join(repo,"VERSION"),"utf8")).trim();
@@ -33,7 +33,7 @@ try{
   }
   evidence.push({template,install_build_test_ms:Math.round(performance.now()-begin),stages:report.stages});
  }
- browser=await chromium.launch({headless:true});
+ browser=await launchAuthorBrowser();
  const webProject=join(root,"web"),webState=join(root,"web-state"),webURL=await start(webProject,webState);
  let page=await browser.newPage();let methodRequests=0;
  page.on("request",request=>{if(new URL(request.url()).pathname.endsWith("/_redevplugin/api/plugins/surfaces/methods"))methodRequests++});

@@ -97,37 +97,29 @@ func TestAuthorBrowserWorkflow(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	deadline := time.Now().Add(9 * time.Minute)
+	if end, ok := t.Deadline(); ok && end.Add(-15*time.Second).Before(deadline) {
+		deadline = end.Add(-15 * time.Second)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	command := exec.CommandContext(ctx, "node", "scripts/author_workflow_smoke.mjs", cli, runtimePath)
-	command.Dir = repo
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("author browser acceptance: %v\n%s", err, output)
-	}
-	consumer := exec.CommandContext(ctx, "node", "scripts/author_consumer_smoke.mjs", cli)
-	consumer.Dir = repo
-	if output, err := consumer.CombinedOutput(); err != nil {
-		t.Fatalf("external author consumer: %v\n%s", err, output)
-	}
-	embedding := exec.CommandContext(ctx, "node", "scripts/embedding_browser_smoke.mjs", "--candidate", cli)
-	embedding.Dir = repo
-	if output, err := embedding.CombinedOutput(); err != nil {
-		t.Fatalf("independent browser host: %v\n%s", err, output)
-	}
-	compileCommand := exec.CommandContext(ctx, "node", "scripts/author_bindings_compile.mjs", cli)
-	compileCommand.Dir = repo
-	if output, err := compileCommand.CombinedOutput(); err != nil {
-		t.Fatalf("generated author bindings: %v\n%s", err, output)
-	}
-	fileCommand := exec.CommandContext(ctx, "node", "scripts/author_files_smoke.mjs", cli)
-	fileCommand.Dir = repo
-	if output, err := fileCommand.CombinedOutput(); err != nil {
-		t.Fatalf("file browser acceptance: %v\n%s", err, output)
-	}
-	dataCommand := exec.CommandContext(ctx, "node", "scripts/author_data_smoke.mjs", cli)
-	dataCommand.Dir = repo
-	if output, err := dataCommand.CombinedOutput(); err != nil {
-		t.Fatalf("data browser acceptance: %v\n%s", err, output)
+	for _, args := range [][]string{
+		{"scripts/author_workflow_smoke.mjs", cli, runtimePath},
+		{"scripts/author_consumer_smoke.mjs", cli},
+		{"scripts/embedding_browser_smoke.mjs", "--candidate", cli},
+		{"scripts/author_bindings_compile.mjs", cli},
+		{"scripts/author_files_smoke.mjs", cli},
+		{"scripts/author_data_smoke.mjs", cli},
+	} {
+		command := exec.CommandContext(ctx, "node", args...)
+		command.Dir = repo
+		command.WaitDelay = 2 * time.Second
+		configureAuthorProcess(command)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			finishAuthorProcess(command)
+			t.Fatalf("%s: %v\n%s", args[0], err, output)
+		}
 	}
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chromium } from "playwright";
+import { launchAuthorBrowser } from "./author_browser.mjs";
 import Ajv2020 from "ajv/dist/2020.js";
 
 const root = resolve(import.meta.dirname, "..");
@@ -36,7 +36,7 @@ assert.equal(rejected.status,1);const rejectedReport=JSON.parse(rejected.stdout)
 child = spawn(cli,["dev",project,"--runtime",runtime,"--runtime-sha256",digest],{stdio:["ignore","pipe","pipe"]});
 let logs="";child.stdout.on("data",value=>{logs+=value});child.stderr.on("data",value=>{logs+=value});
 exited = new Promise(resolveExit=>child.once("exit",(code,signal)=>resolveExit({code,signal})));
-browser=await chromium.launch({headless:true});
+browser=await launchAuthorBrowser();
 try{
  let preview;
  for(let attempt=0;attempt<100;attempt++){preview=logs.match(/Preview: (http:\/\/localhost:\d+\/#[a-f0-9]+)/u)?.[1];if(preview)break;await new Promise(resolveWait=>setTimeout(resolveWait,100))}
@@ -86,17 +86,15 @@ try{
  assert.equal(await current.evaluate(element=>element.isConnected),true);
  console.log("Author workflow passed: real WASM call, application intent, isolated Web preview, failed-build retention, fresh reload generation, responsive layout, private API.");
 }catch(error){
- const diagnostic = page ? await page.evaluate(async () => ({ status: await (await fetch("/dev/status")).json(), text: document.body.innerText, frames: [...document.querySelectorAll("iframe")].map(frame => ({src:frame.src,hidden:frame.hidden,style:frame.getAttribute("style")})) })).catch(String) : undefined;
- throw new Error(String(error)+"\n"+JSON.stringify(diagnostic)+"\n"+logs,{cause:error});
+ throw new Error(String(error)+"\n"+logs,{cause:error});
 }
 } finally {
  try {
-  if (browser) await browser.close();
   if (child && child.exitCode === null && child.signalCode === null) {
    child.kill("SIGINT");
    let deadline;
    try { await Promise.race([exited, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("author process failed to stop")), 10000); })]); }
    finally { clearTimeout(deadline); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
   }
- } finally { await rm(directory, {recursive:true, force:true}); }
+ } finally { try { await browser?.close(); } finally { await rm(directory, {recursive:true, force:true}); } }
 }

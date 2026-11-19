@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import {chromium} from "playwright";
-const browser=await chromium.launch({headless:true});
+import {launchAuthorBrowser} from "./author_browser.mjs";
+const browser=await launchAuthorBrowser();
 try{
  const page=await browser.newPage();const errors=[];page.on("console",message=>{if(message.type()==="error")errors.push(message.text())});
  await page.goto(process.argv[2]);const frame=page.frameLocator("#stage > iframe");
