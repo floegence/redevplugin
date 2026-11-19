@@ -416,6 +416,10 @@ func TestNewStageStoreRemovesOnlyOwnedOrphanArtifacts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, tamperedName), []byte("tampered"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// This fixture must actually have non-stage permissions even under a private umask.
+	if err := os.Chmod(filepath.Join(directory, tamperedName), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	directoryName := stageFilename("00112233445566778899aabbccddeeff")
 	if err := os.Mkdir(filepath.Join(directory, directoryName), 0o700); err != nil {
 		t.Fatal(err)
