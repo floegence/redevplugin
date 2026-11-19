@@ -412,7 +412,9 @@
         "properties": {
           "agent": {
             "type": "string",
-            "enum": ["host"]
+            "enum": [
+              "host"
+            ]
           },
           "binding_id": {
             "type": "string",
@@ -2810,7 +2812,8 @@
                   "type": "string",
                   "enum": [
                     "user",
-                    "assistant"
+                    "assistant",
+                    "tool"
                   ]
                 },
                 "turn_id": {
@@ -2857,6 +2860,19 @@
                     "additionalProperties": false
                   },
                   "maxItems": 128
+                },
+                "tool_status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "running",
+                    "waiting",
+                    "success",
+                    "error",
+                    "declined",
+                    "canceled",
+                    "unknown"
+                  ]
                 }
               },
               "required": [
@@ -3233,7 +3249,8 @@
                   "type": "string",
                   "enum": [
                     "user",
-                    "assistant"
+                    "assistant",
+                    "tool"
                   ]
                 },
                 "turn_id": {
@@ -3280,6 +3297,19 @@
                     "additionalProperties": false
                   },
                   "maxItems": 128
+                },
+                "tool_status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "running",
+                    "waiting",
+                    "success",
+                    "error",
+                    "declined",
+                    "canceled",
+                    "unknown"
+                  ]
                 }
               },
               "required": [
@@ -3502,7 +3532,8 @@
                       "type": "string",
                       "enum": [
                         "user",
-                        "assistant"
+                        "assistant",
+                        "tool"
                       ]
                     },
                     "turn_id": {
@@ -3549,6 +3580,19 @@
                         "additionalProperties": false
                       },
                       "maxItems": 128
+                    },
+                    "tool_status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "running",
+                        "waiting",
+                        "success",
+                        "error",
+                        "declined",
+                        "canceled",
+                        "unknown"
+                      ]
                     }
                   },
                   "required": [
@@ -3684,7 +3728,8 @@
                       "type": "string",
                       "enum": [
                         "user",
-                        "assistant"
+                        "assistant",
+                        "tool"
                       ]
                     },
                     "turn_id": {
@@ -3731,6 +3776,19 @@
                         "additionalProperties": false
                       },
                       "maxItems": 128
+                    },
+                    "tool_status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "running",
+                        "waiting",
+                        "success",
+                        "error",
+                        "declined",
+                        "canceled",
+                        "unknown"
+                      ]
                     }
                   },
                   "required": [

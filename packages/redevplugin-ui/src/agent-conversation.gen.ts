@@ -408,7 +408,8 @@ export type AgentConversationLibraryMessagesResponse = {
     live?: boolean;
     order: number;
     preview: string;
-    role: "user" | "assistant";
+    role: "user" | "assistant" | "tool";
+    tool_status?: "pending" | "running" | "waiting" | "success" | "error" | "declined" | "canceled" | "unknown";
     turn_id?: string;
   }>;
   next_cursor?: string;
@@ -468,7 +469,8 @@ export type AgentConversationHistoryResponse = {
     live?: boolean;
     order: number;
     preview: string;
-    role: "user" | "assistant";
+    role: "user" | "assistant" | "tool";
+    tool_status?: "pending" | "running" | "waiting" | "success" | "error" | "declined" | "canceled" | "unknown";
     turn_id?: string;
   }>;
   next_cursor?: string;
@@ -507,7 +509,8 @@ export type AgentConversationWindowResponse = {
       live?: boolean;
       order: number;
       preview: string;
-      role: "user" | "assistant";
+      role: "user" | "assistant" | "tool";
+      tool_status?: "pending" | "running" | "waiting" | "success" | "error" | "declined" | "canceled" | "unknown";
       turn_id?: string;
     }>;
     state: "idle" | "running" | "waiting" | "completed" | "cancelled" | "interrupted" | "failed";
@@ -535,7 +538,8 @@ export type AgentConversationLibraryWindowResponse = {
       live?: boolean;
       order: number;
       preview: string;
-      role: "user" | "assistant";
+      role: "user" | "assistant" | "tool";
+      tool_status?: "pending" | "running" | "waiting" | "success" | "error" | "declined" | "canceled" | "unknown";
       turn_id?: string;
     }>;
     state: "idle" | "running" | "waiting" | "completed" | "cancelled" | "interrupted" | "failed";
@@ -954,7 +958,7 @@ const libraryMessagesContract = Object.freeze({
   effect: "read",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["items"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant","tool"],"type":"string"},"tool_status":{"enum":["pending","running","waiting","success","error","declined","canceled","unknown"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["items"],"type":"object"},
 } as const);
 
 const libraryBodyContract = Object.freeze({
@@ -986,7 +990,7 @@ const historyContract = Object.freeze({
   effect: "read",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"}},"required":["binding_id","conversation_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["items"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant","tool"],"type":"string"},"tool_status":{"enum":["pending","running","waiting","success","error","declined","canceled","unknown"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["items"],"type":"object"},
 } as const);
 
 const bodyContract = Object.freeze({
@@ -1002,7 +1006,7 @@ const windowContract = Object.freeze({
   effect: "read",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"after":{"maxLength":128,"minLength":1,"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"}},"required":["binding_id","conversation_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"cursor":{"maxLength":128,"minLength":1,"type":"string"},"view":{"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"state":{"enum":["idle","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"}},"required":["state","items"],"type":"object"}},"required":["cursor"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"cursor":{"maxLength":128,"minLength":1,"type":"string"},"view":{"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant","tool"],"type":"string"},"tool_status":{"enum":["pending","running","waiting","success","error","declined","canceled","unknown"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"state":{"enum":["idle","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"}},"required":["state","items"],"type":"object"}},"required":["cursor"],"type":"object"},
 } as const);
 
 const libraryWindowContract = Object.freeze({
@@ -1010,7 +1014,7 @@ const libraryWindowContract = Object.freeze({
   effect: "read",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"after":{"maxLength":128,"minLength":1,"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"cursor":{"maxLength":128,"minLength":1,"type":"string"},"view":{"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"state":{"enum":["idle","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"}},"required":["state","items"],"type":"object"}},"required":["cursor"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"cursor":{"maxLength":128,"minLength":1,"type":"string"},"view":{"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant","tool"],"type":"string"},"tool_status":{"enum":["pending","running","waiting","success","error","declined","canceled","unknown"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"state":{"enum":["idle","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"}},"required":["state","items"],"type":"object"}},"required":["cursor"],"type":"object"},
 } as const);
 
 const librarySendContract = Object.freeze({

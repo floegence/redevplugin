@@ -55,6 +55,35 @@ func TestPublishedConversationAuthorityAndSDK(t *testing.T) {
 	}
 }
 
+func TestPublicToolStatusExcludesPrivateData(t *testing.T) {
+	known, err := Contract()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range known.Contract.Methods {
+		var page map[string]any
+		item := map[string]any{"id": "item", "role": "tool", "order": float64(1), "preview": "", "tool_status": "waiting"}
+		switch method.Name {
+		case "agent.conversation.history", "agent.conversation.library.messages":
+			page = map[string]any{"items": []any{item}}
+		case "agent.conversation.window", "agent.conversation.library.window":
+			page = map[string]any{"cursor": "next", "view": map[string]any{"state": "waiting", "items": []any{item}}}
+		default:
+			continue
+		}
+		if err := capabilitycontract.ValidateValue(method.ResponseSchema, page); err != nil {
+			t.Fatalf("%s: %v", method.Name, err)
+		}
+		for _, field := range []string{"arguments", "output", "reasoning"} {
+			item[field] = "private"
+			if capabilitycontract.ValidateValue(method.ResponseSchema, page) == nil {
+				t.Fatalf("%s admitted %s", method.Name, field)
+			}
+			delete(item, field)
+		}
+	}
+}
+
 func TestOriginalSendOperationsBindRequestIdentity(t *testing.T) {
 	known, err := Contract()
 	if err != nil {
