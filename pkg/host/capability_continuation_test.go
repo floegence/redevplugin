@@ -3,6 +3,7 @@ package host
 import (
 	"errors"
 	"github.com/floegence/redevplugin/v3/pkg/capability"
+	"github.com/floegence/redevplugin/v3/pkg/sessionctx"
 	"testing"
 	"time"
 )
@@ -16,6 +17,15 @@ func TestCapabilityContinuationRechecksExactPublishedAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := adapter.last.Execution.ExecutionBinding
+	readContext := sessionctx.WithContext(t.Context(), sessionctx.Context{OwnerSessionHash: b.OwnerSessionHash, OwnerUserHash: b.OwnerUserHash, OwnerEnvHash: b.OwnerEnvHash, SessionChannelIDHash: b.SessionChannelIDHash, CanRead: true})
+	if allowed, e := h.AllowsCapabilityRead(hostTestContext(), b, b.TargetMethod); e == nil || allowed {
+		t.Fatal("caller without read authority was accepted")
+	}
+	for _, target := range []string{"undeclared.read", b.TargetMethod} {
+		if allowed, e := h.AllowsCapabilityRead(readContext, b, target); e != nil || allowed {
+			t.Fatalf("optional read admitted undeclared or mutating target %q: %t %v", target, allowed, e)
+		}
+	}
 	if err = h.ValidateCapabilityContinuation(t.Context(), b); err != nil {
 		t.Fatalf("binding %+v: %v", b, err)
 	}

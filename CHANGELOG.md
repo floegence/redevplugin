@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## v3.40.0
 
+- Add typed conversation history, public windows, per-send results, cancellation and model selection. Independent history grants let clients use an authorized host conversation without changing its identity or defaults.
 - Update the worker runtime to Wasmtime 50.0.2 for its security fixes.
 
 ## v3.38.1

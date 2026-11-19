@@ -166,6 +166,7 @@ export type AgentConversationDeleteResponse = {
 export type AgentConversationSendRequest = {
   binding_id: string;
   conversation_id: string;
+  effort?: string;
   model_id?: string;
   request_id: string;
   text: string;
@@ -350,54 +351,381 @@ export type AgentConversationReadEventsResponse = {
   }>;
 };
 
+export type AgentConversationResultRequest = {
+  binding_id: string;
+  conversation_id: string;
+  cursor?: string;
+  request_id: string;
+};
+
+export type AgentConversationResultResponse = {
+  next_cursor?: string;
+  state: "unknown" | "accepted" | "running" | "waiting" | "completed" | "cancelled" | "interrupted" | "failed";
+  text?: string;
+};
+
+export type AgentConversationCancelSendRequest = {
+  binding_id: string;
+  conversation_id: string;
+  request_id: string;
+};
+
+export type AgentConversationCancelSendResponse = {
+};
+
+export type AgentConversationLibraryListRequest = {
+  binding_id: string;
+  cursor?: string;
+  limit?: number;
+  query?: string;
+};
+
+export type AgentConversationLibraryListResponse = {
+  items: Array<{
+    id: string;
+    title: string;
+  }>;
+  next_cursor?: string;
+};
+
+export type AgentConversationLibraryMessagesRequest = {
+  binding_id: string;
+  cursor?: string;
+  limit?: number;
+  thread_id: string;
+};
+
+export type AgentConversationLibraryMessagesResponse = {
+  items: Array<{
+    attachments?: Array<{
+      media_type: string;
+      name: string;
+      size: number;
+    }>;
+    has_more_text?: boolean;
+    id: string;
+    live?: boolean;
+    order: number;
+    preview: string;
+    role: "user" | "assistant";
+    turn_id?: string;
+  }>;
+  next_cursor?: string;
+};
+
+export type AgentConversationLibraryBodyRequest = {
+  binding_id: string;
+  cursor?: string;
+  ref: string;
+  thread_id: string;
+};
+
+export type AgentConversationLibraryBodyResponse = {
+  next_cursor?: string;
+  text: string;
+};
+
+export type AgentConversationModelsRequest = {
+  binding_id: string;
+};
+
+export type AgentConversationModelsResponse = {
+  current: string;
+  models: Array<{
+    efforts: Array<string>;
+    id: string;
+    label: string;
+  }>;
+};
+
+export type AgentConversationGetLibraryThreadRequest = {
+  binding_id: string;
+  thread_id: string;
+};
+
+export type AgentConversationGetLibraryThreadResponse = {
+  id: string;
+  title: string;
+};
+
+export type AgentConversationHistoryRequest = {
+  binding_id: string;
+  conversation_id: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type AgentConversationHistoryResponse = {
+  items: Array<{
+    attachments?: Array<{
+      media_type: string;
+      name: string;
+      size: number;
+    }>;
+    has_more_text?: boolean;
+    id: string;
+    live?: boolean;
+    order: number;
+    preview: string;
+    role: "user" | "assistant";
+    turn_id?: string;
+  }>;
+  next_cursor?: string;
+};
+
+export type AgentConversationBodyRequest = {
+  binding_id: string;
+  conversation_id: string;
+  cursor?: string;
+  ref: string;
+};
+
+export type AgentConversationBodyResponse = {
+  next_cursor?: string;
+  text: string;
+};
+
+export type AgentConversationWindowRequest = {
+  after?: string;
+  binding_id: string;
+  conversation_id: string;
+  limit?: number;
+};
+
+export type AgentConversationWindowResponse = {
+  cursor: string;
+  view?: {
+    items: Array<{
+      attachments?: Array<{
+        media_type: string;
+        name: string;
+        size: number;
+      }>;
+      has_more_text?: boolean;
+      id: string;
+      live?: boolean;
+      order: number;
+      preview: string;
+      role: "user" | "assistant";
+      turn_id?: string;
+    }>;
+    state: "idle" | "running" | "waiting" | "completed" | "cancelled" | "interrupted" | "failed";
+  };
+};
+
+export type AgentConversationLibraryWindowRequest = {
+  after?: string;
+  binding_id: string;
+  limit?: number;
+  thread_id: string;
+};
+
+export type AgentConversationLibraryWindowResponse = {
+  cursor: string;
+  view?: {
+    items: Array<{
+      attachments?: Array<{
+        media_type: string;
+        name: string;
+        size: number;
+      }>;
+      has_more_text?: boolean;
+      id: string;
+      live?: boolean;
+      order: number;
+      preview: string;
+      role: "user" | "assistant";
+      turn_id?: string;
+    }>;
+    state: "idle" | "running" | "waiting" | "completed" | "cancelled" | "interrupted" | "failed";
+  };
+};
+
+export type AgentConversationLibrarySendRequest = {
+  binding_id: string;
+  effort?: string;
+  model_id?: string;
+  request_id: string;
+  text: string;
+  thread_id: string;
+};
+
+export type AgentConversationLibrarySendResponse = {
+  conversation_id: string;
+  request_id: string;
+  state: "accepted" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "unknown";
+  turn_id: string;
+};
+
+export type AgentConversationLibraryResultRequest = {
+  binding_id: string;
+  cursor?: string;
+  request_id: string;
+  thread_id: string;
+};
+
+export type AgentConversationLibraryResultResponse = {
+  next_cursor?: string;
+  state: "unknown" | "accepted" | "running" | "waiting" | "completed" | "cancelled" | "interrupted" | "failed";
+  text?: string;
+};
+
+export type AgentConversationLibraryCancelSendRequest = {
+  binding_id: string;
+  request_id: string;
+  thread_id: string;
+};
+
+export type AgentConversationLibraryCancelSendResponse = {
+};
+
+export type AgentConversationPickRequest = {
+  access: "read" | "continue";
+  binding_id: string;
+  request_id: string;
+};
+
+export type AgentConversationPickResponse = {
+  archived: boolean;
+  conversation_id: string;
+  key: string;
+  lifetime?: "persistent" | "temporary";
+  revision: number;
+  state: "idle" | "running" | "waiting" | "failed";
+  title: string;
+};
+
+export type AgentConversationCreateLibraryThreadRequest = {
+  binding_id: string;
+  request_id: string;
+  title?: string;
+};
+
+export type AgentConversationCreateLibraryThreadResponse = {
+  id: string;
+  title: string;
+};
+
+export type AgentConversationRenameLibraryThreadRequest = {
+  binding_id: string;
+  thread_id: string;
+  title: string;
+};
+
+export type AgentConversationRenameLibraryThreadResponse = {
+  id: string;
+  title: string;
+};
+
+export type AgentConversationDeleteLibraryThreadRequest = {
+  binding_id: string;
+  thread_id: string;
+};
+
+export type AgentConversationDeleteLibraryThreadResponse = {
+};
+
+export type AgentConversationLibraryAttachmentRequest = {
+  binding_id: string;
+  cursor?: string;
+  index: number;
+  ref: string;
+  thread_id: string;
+};
+
+export type AgentConversationLibraryAttachmentResponse = {
+  data: string;
+  next_cursor?: string;
+};
+
+export type AgentConversationAttachmentRequest = {
+  binding_id: string;
+  conversation_id: string;
+  cursor?: string;
+  index: number;
+  ref: string;
+};
+
+export type AgentConversationAttachmentResponse = {
+  data: string;
+  next_cursor?: string;
+};
+
+export type AgentConversationThreadsRequest = {
+  agent?: "host" | "binding";
+  binding_id: string;
+  cursor?: string;
+  limit?: number;
+  query?: string;
+};
+
+export type AgentConversationThreadsResponse = {
+  items: Array<{
+    id: string;
+    title: string;
+  }>;
+  next_cursor?: string;
+};
+
+export type AgentConversationLocateRequest = {
+  binding_id: string;
+  id: string;
+};
+
+export type AgentConversationLocateResponse = {
+  id: string;
+  origin: "host" | "binding" | "selected";
+  title: string;
+};
+
 export type AgentConversationBusinessErrorCode = "AGENT_ROLE_NOT_DECLARED" | "CONVERSATION_AUTHORIZATION_REQUIRED" | "CONVERSATION_CLOSED" | "CONVERSATION_CONFLICT" | "CONVERSATION_OUTCOME_UNKNOWN" | "CONVERSATION_PROTOCOL_UNSUPPORTED" | "CONVERSATION_UNAVAILABLE";
 
 export type AgentConversationBusinessErrorDetails =
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.3.0";
+    capability_version: "1.4.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_UNAVAILABLE";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.3.0";
+    capability_version: "1.4.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_CONFLICT";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.3.0";
+    capability_version: "1.4.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_AUTHORIZATION_REQUIRED";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.3.0";
+    capability_version: "1.4.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_OUTCOME_UNKNOWN";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.3.0";
+    capability_version: "1.4.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_PROTOCOL_UNSUPPORTED";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.3.0";
+    capability_version: "1.4.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "AGENT_ROLE_NOT_DECLARED";
   }
   | {
     capability_id: "agent.conversation";
-    capability_version: "1.3.0";
+    capability_version: "1.4.0";
     detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
     business_error_code: "CONVERSATION_CLOSED";
   };
 
 export function isAgentConversationBusinessError(error: unknown): error is PluginBridgeError & { readonly details: AgentConversationBusinessErrorDetails } {
-  return isCapabilityBusinessError(error, "agent.conversation", "1.3.0", {
+  return isCapabilityBusinessError(error, "agent.conversation", "1.4.0", {
     "CONVERSATION_UNAVAILABLE": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_CONFLICT": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
     "CONVERSATION_AUTHORIZATION_REQUIRED": { detail_schema_sha256: "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b", schema: null },
@@ -476,7 +804,7 @@ const sendContract = Object.freeze({
   method: "agent.conversation.send",
   effect: "execute",
   execution: "sync",
-  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"model_id":{"maxLength":512,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"text":{"maxLength":1000000,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id","request_id","text"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"effort":{"maxLength":32,"minLength":1,"type":"string"},"model_id":{"maxLength":512,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"text":{"maxLength":1000000,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id","request_id","text"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"state":{"enum":["accepted","running","waiting","completed","failed","cancelled","unknown"],"type":"string"},"turn_id":{"maxLength":128,"minLength":0,"type":"string"}},"required":["request_id","conversation_id","state","turn_id"],"type":"object"},
 } as const);
 
@@ -594,6 +922,182 @@ const readEventsContract = Object.freeze({
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"after":{"maxLength":512,"minLength":0,"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"events":{"items":{"additionalProperties":false,"properties":{"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":512,"minLength":1,"type":"string"},"details_json":{"maxLength":1000000,"minLength":0,"type":"string"},"kind":{"enum":["snapshot","message","operation","input","approval","state","reset","closed"],"type":"string"},"request_id":{"maxLength":128,"minLength":0,"type":"string"},"state":{"maxLength":64,"minLength":0,"type":"string"},"text":{"maxLength":1000000,"minLength":0,"type":"string"}},"required":["cursor","conversation_id","kind"],"type":"object"},"maxItems":32,"type":"array"}},"required":["events"],"type":"object"},
+} as const);
+
+const resultContract = Object.freeze({
+  method: "agent.conversation.result",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id","request_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"next_cursor":{"maxLength":128,"minLength":1,"type":"string"},"state":{"enum":["unknown","accepted","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"},"text":{"maxLength":65536,"minLength":0,"type":"string"}},"required":["state"],"type":"object"},
+} as const);
+
+const cancelSendContract = Object.freeze({
+  method: "agent.conversation.cancel_send",
+  effect: "execute",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id","request_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{},"required":[],"type":"object"},
+} as const);
+
+const listLibraryContract = Object.freeze({
+  method: "agent.conversation.library.list",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"},"query":{"maxLength":256,"minLength":0,"type":"string"}},"required":["binding_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"id":{"maxLength":128,"minLength":1,"type":"string"},"title":{"maxLength":4096,"minLength":0,"type":"string"}},"required":["id","title"],"type":"object"},"maxItems":100,"type":"array"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["items"],"type":"object"},
+} as const);
+
+const libraryMessagesContract = Object.freeze({
+  method: "agent.conversation.library.messages",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["items"],"type":"object"},
+} as const);
+
+const libraryBodyContract = Object.freeze({
+  method: "agent.conversation.library.body",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"ref":{"maxLength":2048,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id","ref"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"},"text":{"maxLength":65536,"minLength":0,"type":"string"}},"required":["text"],"type":"object"},
+} as const);
+
+const listModelsContract = Object.freeze({
+  method: "agent.conversation.models",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"current":{"maxLength":512,"minLength":0,"type":"string"},"models":{"items":{"additionalProperties":false,"properties":{"efforts":{"items":{"maxLength":32,"minLength":1,"type":"string"},"maxItems":32,"type":"array"},"id":{"maxLength":512,"minLength":1,"type":"string"},"label":{"maxLength":512,"minLength":0,"type":"string"}},"required":["id","label","efforts"],"type":"object"},"maxItems":2048,"type":"array"}},"required":["models","current"],"type":"object"},
+} as const);
+
+const getLibraryThreadContract = Object.freeze({
+  method: "agent.conversation.library.get",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"id":{"maxLength":128,"minLength":1,"type":"string"},"title":{"maxLength":4096,"minLength":0,"type":"string"}},"required":["id","title"],"type":"object"},
+} as const);
+
+const historyContract = Object.freeze({
+  method: "agent.conversation.history",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"}},"required":["binding_id","conversation_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["items"],"type":"object"},
+} as const);
+
+const bodyContract = Object.freeze({
+  method: "agent.conversation.body",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"ref":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id","ref"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"},"text":{"maxLength":65536,"minLength":0,"type":"string"}},"required":["text"],"type":"object"},
+} as const);
+
+const windowContract = Object.freeze({
+  method: "agent.conversation.window",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"after":{"maxLength":128,"minLength":1,"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"}},"required":["binding_id","conversation_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"cursor":{"maxLength":128,"minLength":1,"type":"string"},"view":{"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"state":{"enum":["idle","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"}},"required":["state","items"],"type":"object"}},"required":["cursor"],"type":"object"},
+} as const);
+
+const libraryWindowContract = Object.freeze({
+  method: "agent.conversation.library.window",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"after":{"maxLength":128,"minLength":1,"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"cursor":{"maxLength":128,"minLength":1,"type":"string"},"view":{"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"attachments":{"items":{"additionalProperties":false,"properties":{"media_type":{"maxLength":256,"minLength":0,"type":"string"},"name":{"maxLength":4096,"minLength":0,"type":"string"},"size":{"minimum":0,"type":"integer"}},"required":["name","media_type","size"],"type":"object"},"maxItems":128,"type":"array"},"has_more_text":{"type":"boolean"},"id":{"maxLength":2048,"minLength":1,"type":"string"},"live":{"type":"boolean"},"order":{"minimum":1,"type":"integer"},"preview":{"maxLength":4096,"minLength":0,"type":"string"},"role":{"enum":["user","assistant"],"type":"string"},"turn_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["id","order","role","preview"],"type":"object"},"maxItems":100,"type":"array"},"state":{"enum":["idle","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"}},"required":["state","items"],"type":"object"}},"required":["cursor"],"type":"object"},
+} as const);
+
+const librarySendContract = Object.freeze({
+  method: "agent.conversation.library.send",
+  effect: "execute",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"effort":{"maxLength":32,"minLength":1,"type":"string"},"model_id":{"maxLength":512,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"text":{"maxLength":1000000,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id","request_id","text"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"state":{"enum":["accepted","running","waiting","completed","failed","cancelled","unknown"],"type":"string"},"turn_id":{"maxLength":128,"minLength":0,"type":"string"}},"required":["request_id","conversation_id","state","turn_id"],"type":"object"},
+} as const);
+
+const libraryResultContract = Object.freeze({
+  method: "agent.conversation.library.result",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id","request_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"next_cursor":{"maxLength":128,"minLength":1,"type":"string"},"state":{"enum":["unknown","accepted","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"},"text":{"maxLength":65536,"minLength":0,"type":"string"}},"required":["state"],"type":"object"},
+} as const);
+
+const libraryCancelSendContract = Object.freeze({
+  method: "agent.conversation.library.cancel_send",
+  effect: "execute",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id","request_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{},"required":[],"type":"object"},
+} as const);
+
+const pickContract = Object.freeze({
+  method: "agent.conversation.pick",
+  effect: "write",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"access":{"enum":["read","continue"],"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","request_id","access"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
+} as const);
+
+const createLibraryThreadContract = Object.freeze({
+  method: "agent.conversation.library.create",
+  effect: "write",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"title":{"maxLength":512,"minLength":1,"type":"string"}},"required":["binding_id","request_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"id":{"maxLength":128,"minLength":1,"type":"string"},"title":{"maxLength":4096,"minLength":0,"type":"string"}},"required":["id","title"],"type":"object"},
+} as const);
+
+const renameLibraryThreadContract = Object.freeze({
+  method: "agent.conversation.library.rename",
+  effect: "write",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"},"title":{"maxLength":512,"minLength":1,"type":"string"}},"required":["binding_id","thread_id","title"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"id":{"maxLength":128,"minLength":1,"type":"string"},"title":{"maxLength":4096,"minLength":0,"type":"string"}},"required":["id","title"],"type":"object"},
+} as const);
+
+const deleteLibraryThreadContract = Object.freeze({
+  method: "agent.conversation.library.delete",
+  effect: "delete",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{},"required":[],"type":"object"},
+} as const);
+
+const libraryAttachmentContract = Object.freeze({
+  method: "agent.conversation.library.attachment",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"index":{"maximum":127,"minimum":0,"type":"integer"},"ref":{"maxLength":2048,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id","ref","index"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"data":{"maxLength":90000,"type":"string"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["data"],"type":"object"},
+} as const);
+
+const attachmentContract = Object.freeze({
+  method: "agent.conversation.attachment",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"index":{"maximum":127,"minimum":0,"type":"integer"},"ref":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id","ref","index"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"data":{"maxLength":90000,"type":"string"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["data"],"type":"object"},
+} as const);
+
+const threadsContract = Object.freeze({
+  method: "agent.conversation.threads",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"agent":{"enum":["host","binding"],"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":2048,"minLength":1,"type":"string"},"limit":{"maximum":100,"minimum":1,"type":"integer"},"query":{"maxLength":256,"minLength":0,"type":"string"}},"required":["binding_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"items":{"items":{"additionalProperties":false,"properties":{"id":{"maxLength":128,"minLength":1,"type":"string"},"title":{"maxLength":4096,"minLength":0,"type":"string"}},"required":["id","title"],"type":"object"},"maxItems":100,"type":"array"},"next_cursor":{"maxLength":2048,"minLength":1,"type":"string"}},"required":["items"],"type":"object"},
+} as const);
+
+const locateContract = Object.freeze({
+  method: "agent.conversation.locate",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"id":{"maxLength":128,"minLength":1,"type":"string"},"origin":{"enum":["host","binding","selected"],"type":"string"},"title":{"maxLength":4096,"minLength":0,"type":"string"}},"required":["id","title","origin"],"type":"object"},
 } as const);
 
 export class AgentConversationClient {
@@ -805,6 +1309,204 @@ export class AgentConversationClient {
     return callCapabilitySync<AgentConversationReadEventsRequest, AgentConversationReadEventsResponse>(
       this.#bridge,
       readEventsContract,
+      request,
+      options,
+    );
+  }
+
+  async result(request: AgentConversationResultRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationResultResponse> {
+    return callCapabilitySync<AgentConversationResultRequest, AgentConversationResultResponse>(
+      this.#bridge,
+      resultContract,
+      request,
+      options,
+    );
+  }
+
+  async cancelSend(request: AgentConversationCancelSendRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationCancelSendResponse> {
+    return callCapabilitySync<AgentConversationCancelSendRequest, AgentConversationCancelSendResponse>(
+      this.#bridge,
+      cancelSendContract,
+      request,
+      options,
+    );
+  }
+
+  async listLibrary(request: AgentConversationLibraryListRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLibraryListResponse> {
+    return callCapabilitySync<AgentConversationLibraryListRequest, AgentConversationLibraryListResponse>(
+      this.#bridge,
+      listLibraryContract,
+      request,
+      options,
+    );
+  }
+
+  async libraryMessages(request: AgentConversationLibraryMessagesRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLibraryMessagesResponse> {
+    return callCapabilitySync<AgentConversationLibraryMessagesRequest, AgentConversationLibraryMessagesResponse>(
+      this.#bridge,
+      libraryMessagesContract,
+      request,
+      options,
+    );
+  }
+
+  async libraryBody(request: AgentConversationLibraryBodyRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLibraryBodyResponse> {
+    return callCapabilitySync<AgentConversationLibraryBodyRequest, AgentConversationLibraryBodyResponse>(
+      this.#bridge,
+      libraryBodyContract,
+      request,
+      options,
+    );
+  }
+
+  async listModels(request: AgentConversationModelsRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationModelsResponse> {
+    return callCapabilitySync<AgentConversationModelsRequest, AgentConversationModelsResponse>(
+      this.#bridge,
+      listModelsContract,
+      request,
+      options,
+    );
+  }
+
+  async getLibraryThread(request: AgentConversationGetLibraryThreadRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationGetLibraryThreadResponse> {
+    return callCapabilitySync<AgentConversationGetLibraryThreadRequest, AgentConversationGetLibraryThreadResponse>(
+      this.#bridge,
+      getLibraryThreadContract,
+      request,
+      options,
+    );
+  }
+
+  async history(request: AgentConversationHistoryRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationHistoryResponse> {
+    return callCapabilitySync<AgentConversationHistoryRequest, AgentConversationHistoryResponse>(
+      this.#bridge,
+      historyContract,
+      request,
+      options,
+    );
+  }
+
+  async body(request: AgentConversationBodyRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationBodyResponse> {
+    return callCapabilitySync<AgentConversationBodyRequest, AgentConversationBodyResponse>(
+      this.#bridge,
+      bodyContract,
+      request,
+      options,
+    );
+  }
+
+  async window(request: AgentConversationWindowRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationWindowResponse> {
+    return callCapabilitySync<AgentConversationWindowRequest, AgentConversationWindowResponse>(
+      this.#bridge,
+      windowContract,
+      request,
+      options,
+    );
+  }
+
+  async libraryWindow(request: AgentConversationLibraryWindowRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLibraryWindowResponse> {
+    return callCapabilitySync<AgentConversationLibraryWindowRequest, AgentConversationLibraryWindowResponse>(
+      this.#bridge,
+      libraryWindowContract,
+      request,
+      options,
+    );
+  }
+
+  async librarySend(request: AgentConversationLibrarySendRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLibrarySendResponse> {
+    return callCapabilitySync<AgentConversationLibrarySendRequest, AgentConversationLibrarySendResponse>(
+      this.#bridge,
+      librarySendContract,
+      request,
+      options,
+    );
+  }
+
+  async libraryResult(request: AgentConversationLibraryResultRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLibraryResultResponse> {
+    return callCapabilitySync<AgentConversationLibraryResultRequest, AgentConversationLibraryResultResponse>(
+      this.#bridge,
+      libraryResultContract,
+      request,
+      options,
+    );
+  }
+
+  async libraryCancelSend(request: AgentConversationLibraryCancelSendRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLibraryCancelSendResponse> {
+    return callCapabilitySync<AgentConversationLibraryCancelSendRequest, AgentConversationLibraryCancelSendResponse>(
+      this.#bridge,
+      libraryCancelSendContract,
+      request,
+      options,
+    );
+  }
+
+  async pick(request: AgentConversationPickRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationPickResponse> {
+    return callCapabilitySync<AgentConversationPickRequest, AgentConversationPickResponse>(
+      this.#bridge,
+      pickContract,
+      request,
+      options,
+    );
+  }
+
+  async createLibraryThread(request: AgentConversationCreateLibraryThreadRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationCreateLibraryThreadResponse> {
+    return callCapabilitySync<AgentConversationCreateLibraryThreadRequest, AgentConversationCreateLibraryThreadResponse>(
+      this.#bridge,
+      createLibraryThreadContract,
+      request,
+      options,
+    );
+  }
+
+  async renameLibraryThread(request: AgentConversationRenameLibraryThreadRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationRenameLibraryThreadResponse> {
+    return callCapabilitySync<AgentConversationRenameLibraryThreadRequest, AgentConversationRenameLibraryThreadResponse>(
+      this.#bridge,
+      renameLibraryThreadContract,
+      request,
+      options,
+    );
+  }
+
+  async deleteLibraryThread(request: AgentConversationDeleteLibraryThreadRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationDeleteLibraryThreadResponse> {
+    return callCapabilitySync<AgentConversationDeleteLibraryThreadRequest, AgentConversationDeleteLibraryThreadResponse>(
+      this.#bridge,
+      deleteLibraryThreadContract,
+      request,
+      options,
+    );
+  }
+
+  async libraryAttachment(request: AgentConversationLibraryAttachmentRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLibraryAttachmentResponse> {
+    return callCapabilitySync<AgentConversationLibraryAttachmentRequest, AgentConversationLibraryAttachmentResponse>(
+      this.#bridge,
+      libraryAttachmentContract,
+      request,
+      options,
+    );
+  }
+
+  async attachment(request: AgentConversationAttachmentRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationAttachmentResponse> {
+    return callCapabilitySync<AgentConversationAttachmentRequest, AgentConversationAttachmentResponse>(
+      this.#bridge,
+      attachmentContract,
+      request,
+      options,
+    );
+  }
+
+  async threads(request: AgentConversationThreadsRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationThreadsResponse> {
+    return callCapabilitySync<AgentConversationThreadsRequest, AgentConversationThreadsResponse>(
+      this.#bridge,
+      threadsContract,
+      request,
+      options,
+    );
+  }
+
+  async locate(request: AgentConversationLocateRequest, options: PluginBridgeRequestOptions = {}): Promise<AgentConversationLocateResponse> {
+    return callCapabilitySync<AgentConversationLocateRequest, AgentConversationLocateResponse>(
+      this.#bridge,
+      locateContract,
       request,
       options,
     );

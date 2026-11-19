@@ -1,8 +1,62 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createAgentClient, defineAgentProfile, isConversationClosed } from "../src/agent-conversation.js";
+import { createAgentClient, createFlowerClient, defineAgentProfile, isConversationClosed } from "../src/agent-conversation.js";
 import { createPluginTestHarness } from "../src/testing.js";
 import { PluginBridgeError } from "../src/plugin.js";
+
+test("an authorized library thread supports browsing, window updates and request recovery without resending",async()=>{
+  const item={id:"message",role:"user",order:1,preview:"hello"};
+  const fixture=createPluginTestHarness({call(method,input){switch(method){
+    case "agent.conversation.role.open":return {data:{binding_id:"binding",revision:1,available:true,client_protocol:"test",unavailable_reasons:[]}};
+    case "agent.conversation.threads":return {data:{items:[{id:"thread",title:"Catalog"}]}};
+    case "agent.conversation.locate":return {data:{id:"thread",title:"Catalog",origin:"host"}};
+    case "agent.conversation.library.messages":return {data:{items:[item]}};
+    case "agent.conversation.library.body":return {data:{text:"hello"}};
+    case "agent.conversation.library.window":return {data:{cursor:"view",view:{state:"idle",items:[item]}}};
+    case "agent.conversation.library.attachment":return {data:{data:"AAEC"}};
+    case "agent.conversation.library.send":return {data:{request_id:input!.request_id,conversation_id:"thread",state:"accepted",turn_id:"turn"}};
+    case "agent.conversation.library.result":return {data:{state:"completed",text:""}};
+    case "agent.conversation.library.cancel_send":return {data:{}};
+    case "agent.conversation.pick":throw new PluginBridgeError("PLUGIN_CONFIRMATION_REJECTED","Dismissed",{review:"dismissed"});
+    default:throw new Error(method);
+  }}});
+  try {const flower=await createFlowerClient(new fixture.BridgeClient(),{capabilityBinding:"agent",role:"assistant"});
+    const {items}=await flower.threads.list();const chat=await flower.threads.open(items[0]!.id);
+    assert.equal((await chat.history()).items[0]!.id,"message");assert.equal((await chat.body("message")).text,"hello");assert.deepEqual((await chat.attachment("message",0)).bytes,new Uint8Array([0,1,2]));
+    for await(const view of chat.watch()){assert.equal(view.items[0]!.preview,"hello");break;}
+    const sent=await chat.send("hello",{requestId:"saved"});assert.deepEqual(await chat.findSend(sent.requestId).result(),{status:"completed",text:""});await sent.cancel();await chat.close();
+    assert.equal(fixture.calls.filter(c=>c.method==="agent.conversation.library.send").length,1);assert.equal(await flower.threads.pick(),null);
+  }finally{fixture.dispose();}
+});
+
+test("a send handle settles and cancels only the original request across reconnect", async () => {
+  let pages = 0;
+  const fixture = createPluginTestHarness({ call(method, input) {
+    switch (method) {
+      case "agent.conversation.role.open": return { data: { binding_id: "agent", revision: 1, available: true, client_protocol: "test", unavailable_reasons: [] } };
+      case "agent.conversation.open": return { data: { conversation_id: "chat", key: "main", title: "", lifetime: "temporary", archived: false, revision: 1, state: "idle" } };
+      case "agent.conversation.send": return { data: { conversation_id: "chat", request_id: input!.request_id, turn_id: "", state: "accepted" } };
+      case "agent.conversation.result":
+        if (input!.request_id === "b") return { data: { state: "completed", text: "" } };
+        assert.equal(input!.request_id, "a");
+        if (++pages === 1) return { data: { state: "accepted" } };
+        return { data: input!.cursor ? { state: "completed", text: " two" } : { state: "completed", text: "one", next_cursor: "next" } };
+      case "agent.conversation.events.read": return { data: { events: [{ kind: "snapshot", cursor: "current", conversation_id: "chat" }] } };
+      case "agent.conversation.cancel_send": assert.deepEqual(input, { binding_id: "agent", conversation_id: "chat", request_id: "a" }); return { data: {} };
+      default: throw new Error("Unexpected method: " + method);
+    }
+  } });
+  try {
+    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "agent" }).openAgent("analyst");
+    const chat = await agent.conversations.open({ key: "main", lifetime: "temporary" });
+    const first = await chat.send("first", { requestId: "a" });
+    const second = await chat.send("second", { requestId: "b" });
+    assert.deepEqual(await second.result(), { status: "completed", text: "" });
+    assert.deepEqual(await chat.findSend(first.requestId).result(), { status: "completed", text: "one two" });
+    await first.cancel();
+    assert.equal(fixture.calls.filter(call => call.method === "agent.conversation.send").length, 2);
+  } finally { fixture.dispose(); }
+});
 
 test("temporary observation advances the cursor and respects remote closure", async () => {
   let reads = 0;

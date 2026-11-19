@@ -1,10 +1,10 @@
 {
   "schema_version": "redevplugin.host_capability_contract.v1",
   "contract_id": "redevplugin.agent.conversation",
-  "contract_version": "1.3.0",
+  "contract_version": "1.4.0",
   "publisher_id": "redevplugin",
   "capability_id": "agent.conversation",
-  "capability_version": "1.3.0",
+  "capability_version": "1.4.0",
   "client_name": "AgentConversationClient",
   "methods": [
     {
@@ -1116,6 +1116,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512
+          },
+          "effort": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
           }
         },
         "required": [
@@ -2422,6 +2427,2378 @@
         },
         "required": [
           "events"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.result",
+      "client_method": "result",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "conversation_id",
+        "request_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationResultRequest",
+      "response_type_name": "AgentConversationResultResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "accepted",
+              "running",
+              "waiting",
+              "completed",
+              "cancelled",
+              "interrupted",
+              "failed"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 65536
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.cancel_send",
+      "client_method": "cancelSend",
+      "effect": "execute",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.execute"
+      ],
+      "target_fields": [
+        "binding_id",
+        "conversation_id",
+        "request_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationCancelSendRequest",
+      "response_type_name": "AgentConversationCancelSendResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.list",
+      "client_method": "listLibrary",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read"
+      ],
+      "target_fields": [
+        "binding_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLibraryListRequest",
+      "response_type_name": "AgentConversationLibraryListResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "query": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 4096
+                }
+              },
+              "required": [
+                "id",
+                "title"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.messages",
+      "client_method": "libraryMessages",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLibraryMessagesRequest",
+      "response_type_name": "AgentConversationLibraryMessagesResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "order": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "assistant"
+                  ]
+                },
+                "turn_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "preview": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 4096
+                },
+                "has_more_text": {
+                  "type": "boolean"
+                },
+                "live": {
+                  "type": "boolean"
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 4096
+                      },
+                      "media_type": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 256
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "media_type",
+                      "size"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "maxItems": 128
+                }
+              },
+              "required": [
+                "id",
+                "order",
+                "role",
+                "preview"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.body",
+      "client_method": "libraryBody",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLibraryBodyRequest",
+      "response_type_name": "AgentConversationLibraryBodyResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id",
+          "ref"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 65536
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.models",
+      "client_method": "listModels",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read"
+      ],
+      "target_fields": [
+        "binding_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationModelsRequest",
+      "response_type_name": "AgentConversationModelsResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 512
+                },
+                "efforts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "maxItems": 32
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "efforts"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 2048
+          },
+          "current": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "models",
+          "current"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.get",
+      "client_method": "getLibraryThread",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationGetLibraryThreadRequest",
+      "response_type_name": "AgentConversationGetLibraryThreadResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.history",
+      "client_method": "history",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "conversation_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationHistoryRequest",
+      "response_type_name": "AgentConversationHistoryResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "order": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "assistant"
+                  ]
+                },
+                "turn_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "preview": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 4096
+                },
+                "has_more_text": {
+                  "type": "boolean"
+                },
+                "live": {
+                  "type": "boolean"
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 4096
+                      },
+                      "media_type": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 256
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "media_type",
+                      "size"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "maxItems": 128
+                }
+              },
+              "required": [
+                "id",
+                "order",
+                "role",
+                "preview"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.body",
+      "client_method": "body",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "conversation_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationBodyRequest",
+      "response_type_name": "AgentConversationBodyResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id",
+          "ref"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 65536
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.window",
+      "client_method": "window",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "conversation_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationWindowRequest",
+      "response_type_name": "AgentConversationWindowResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "view": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "running",
+                  "waiting",
+                  "completed",
+                  "cancelled",
+                  "interrupted",
+                  "failed"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    },
+                    "turn_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "preview": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 4096
+                    },
+                    "has_more_text": {
+                      "type": "boolean"
+                    },
+                    "live": {
+                      "type": "boolean"
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 0,
+                            "maxLength": 4096
+                          },
+                          "media_type": {
+                            "type": "string",
+                            "minLength": 0,
+                            "maxLength": 256
+                          },
+                          "size": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "media_type",
+                          "size"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 128
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "order",
+                    "role",
+                    "preview"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 100
+              }
+            },
+            "required": [
+              "state",
+              "items"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "cursor"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.window",
+      "client_method": "libraryWindow",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLibraryWindowRequest",
+      "response_type_name": "AgentConversationLibraryWindowResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "view": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "running",
+                  "waiting",
+                  "completed",
+                  "cancelled",
+                  "interrupted",
+                  "failed"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    },
+                    "turn_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "preview": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 4096
+                    },
+                    "has_more_text": {
+                      "type": "boolean"
+                    },
+                    "live": {
+                      "type": "boolean"
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 0,
+                            "maxLength": 4096
+                          },
+                          "media_type": {
+                            "type": "string",
+                            "minLength": 0,
+                            "maxLength": 256
+                          },
+                          "size": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "media_type",
+                          "size"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 128
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "order",
+                    "role",
+                    "preview"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 100
+              }
+            },
+            "required": [
+              "state",
+              "items"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "cursor"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.send",
+      "client_method": "librarySend",
+      "effect": "execute",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read",
+        "agent.conversation.library.send"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLibrarySendRequest",
+      "response_type_name": "AgentConversationLibrarySendResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000000
+          },
+          "model_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "effort": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id",
+          "request_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "turn_id": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "request_id",
+          "conversation_id",
+          "state",
+          "turn_id"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 3600000
+      }
+    },
+    {
+      "name": "agent.conversation.library.result",
+      "client_method": "libraryResult",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id",
+        "request_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLibraryResultRequest",
+      "response_type_name": "AgentConversationLibraryResultResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "accepted",
+              "running",
+              "waiting",
+              "completed",
+              "cancelled",
+              "interrupted",
+              "failed"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 65536
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.cancel_send",
+      "client_method": "libraryCancelSend",
+      "effect": "execute",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read",
+        "agent.conversation.library.send"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id",
+        "request_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLibraryCancelSendRequest",
+      "response_type_name": "AgentConversationLibraryCancelSendResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.pick",
+      "client_method": "pick",
+      "effect": "write",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read"
+      ],
+      "target_fields": [
+        "binding_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationPickRequest",
+      "response_type_name": "AgentConversationPickResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "read",
+              "continue"
+            ]
+          }
+        },
+        "required": [
+          "binding_id",
+          "request_id",
+          "access"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 512
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "running",
+              "waiting",
+              "failed"
+            ]
+          },
+          "lifetime": {
+            "type": "string",
+            "enum": [
+              "persistent",
+              "temporary"
+            ]
+          }
+        },
+        "required": [
+          "conversation_id",
+          "key",
+          "title",
+          "archived",
+          "revision",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      },
+      "confirmation": {
+        "mode": "required",
+        "request_hash_fields": [
+          "binding_id",
+          "request_id",
+          "access"
+        ]
+      }
+    },
+    {
+      "name": "agent.conversation.library.create",
+      "client_method": "createLibraryThread",
+      "effect": "write",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read",
+        "agent.conversation.library.create"
+      ],
+      "target_fields": [
+        "binding_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationCreateLibraryThreadRequest",
+      "response_type_name": "AgentConversationCreateLibraryThreadResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "binding_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.rename",
+      "client_method": "renameLibraryThread",
+      "effect": "write",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read",
+        "agent.conversation.library.manage"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationRenameLibraryThreadRequest",
+      "response_type_name": "AgentConversationRenameLibraryThreadResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.library.delete",
+      "client_method": "deleteLibraryThread",
+      "effect": "delete",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read",
+        "agent.conversation.library.manage"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationDeleteLibraryThreadRequest",
+      "response_type_name": "AgentConversationDeleteLibraryThreadResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      },
+      "confirmation": {
+        "mode": "required",
+        "request_hash_fields": [
+          "binding_id",
+          "thread_id"
+        ]
+      }
+    },
+    {
+      "name": "agent.conversation.library.attachment",
+      "client_method": "libraryAttachment",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.library.read",
+        "agent.conversation.attachment.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "thread_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLibraryAttachmentRequest",
+      "response_type_name": "AgentConversationLibraryAttachmentResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 127
+          }
+        },
+        "required": [
+          "binding_id",
+          "thread_id",
+          "ref",
+          "index"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string",
+            "maxLength": 90000
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.attachment",
+      "client_method": "attachment",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read",
+        "agent.conversation.attachment.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "conversation_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationAttachmentRequest",
+      "response_type_name": "AgentConversationAttachmentResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 127
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "conversation_id",
+          "ref",
+          "index"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string",
+            "maxLength": 90000
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.threads",
+      "client_method": "threads",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read"
+      ],
+      "target_fields": [
+        "binding_id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationThreadsRequest",
+      "response_type_name": "AgentConversationThreadsResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "query": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 256
+          },
+          "agent": {
+            "type": "string",
+            "enum": [
+              "host",
+              "binding"
+            ]
+          }
+        },
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 4096
+                }
+              },
+              "required": [
+                "id",
+                "title"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "quota": {
+        "max_concurrent": 32,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "agent.conversation.locate",
+      "client_method": "locate",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": [
+        "agent.conversation.read"
+      ],
+      "target_fields": [
+        "binding_id",
+        "id"
+      ],
+      "target_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "request_type_name": "AgentConversationLocateRequest",
+      "response_type_name": "AgentConversationLocateResponse",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "binding_id",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "host",
+              "binding",
+              "selected"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "origin"
         ],
         "additionalProperties": false
       },

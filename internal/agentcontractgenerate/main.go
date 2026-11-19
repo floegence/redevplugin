@@ -15,7 +15,7 @@ func main() {
 		panic(err)
 	}
 	for {
-		if _, e := os.Stat(filepath.Join(root, "VERSION")); e == nil {
+		if marker, e := os.Stat(filepath.Join(root, "VERSION")); e == nil && marker.Mode().IsRegular() {
 			break
 		}
 		parent := filepath.Dir(root)
@@ -45,6 +45,11 @@ func generate(root, name, directory string) {
 	client = []byte(strings.Replace(string(client), "\"@floegence/redevplugin-ui/plugin\"", "\"./plugin.js\"", 1))
 	outputs := map[string][]byte{"pkg/" + directory + "/contract.gen.json": raw, "packages/redevplugin-ui/src/" + name + ".gen.ts": client}
 	if name == "agent-conversation" {
+		v13, err := os.ReadFile(filepath.Join(root, "spec/plugin/agent-conversation-1.3.0-contract.json"))
+		if err != nil {
+			panic(err)
+		}
+		outputs["pkg/"+directory+"/contract.v13.gen.json"] = v13
 		v12, err := os.ReadFile(filepath.Join(root, "spec/plugin/agent-conversation-1.2.0-contract.json"))
 		if err != nil {
 			panic(err)

@@ -49,7 +49,9 @@ export function createPluginTestHarness(options: PluginTestHarnessOptions = {}) 
     const finish = (response: Record<string, unknown>): void => { if (!pending.delete(request.id)) return; port.emit({ type: "redevplugin.bridge.response", id: request.id, ...response }); };
     const call: PluginTestCall = { method: request.method, input: request.params, cancelled: false,
       resolve: value => finish({ ok: true, data: value }),
-      reject: failure => finish({ ok: false, error_code: failure instanceof PluginBridgeError ? failure.errorCode : "PLUGIN_CAPABILITY_ERROR", error: failure.message }),
+      reject: failure => finish({ ok: false, error_code: failure instanceof PluginBridgeError ? failure.errorCode : "PLUGIN_CAPABILITY_ERROR", error: failure.message,
+        ...(failure instanceof PluginBridgeError && failure.details !== undefined ? {error_details:failure.details}:{}),
+        ...(failure instanceof PluginBridgeError && failure.mutationOutcome !== undefined ? {mutation_outcome:failure.mutationOutcome}:{}) }),
     };
     calls.push(call); pending.set(request.id, call);
     if (options.call) void Promise.resolve().then(() => options.call!(call.method, call.input)).then(call.resolve, failure => call.reject(failure instanceof Error ? failure : new Error(String(failure))));
