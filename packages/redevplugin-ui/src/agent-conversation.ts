@@ -162,7 +162,11 @@ export class BoundAgent {
     create: async (input: {agent?:"host"|"binding";key?:string; title?:string; lifetime?:"persistent"|"temporary"} = {}, options?:PluginBridgeRequestOptions) => {
       const {agent,key=crypto.randomUUID(),title,lifetime}=input;
       if(agent!=="host")return this.conversations.open({key,...optional({title,lifetime})},options);
-      if(lifetime==="temporary")throw new TypeError("Choose the bound Agent to create a temporary conversation");
+      if(lifetime==="temporary") {
+        const snapshot=await this.#client.open({binding_id:this.#binding.binding_id,agent,key,lifetime,...optional({title})},options);
+        if(snapshot.lifetime!=="temporary")throw new TypeError("Host did not open a temporary conversation");
+        return new AgentConversation(this,this.#client,snapshot);
+      }
       const item=await this.#client.createLibraryThread({binding_id:this.#binding.binding_id,request_id:key,...optional({title})},options);
       return new SharedConversation(this.#client,{binding_id:this.#binding.binding_id,thread_id:item.id},item.title);
     },

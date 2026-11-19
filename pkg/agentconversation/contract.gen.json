@@ -410,6 +410,10 @@
       "request_schema": {
         "type": "object",
         "properties": {
+          "agent": {
+            "type": "string",
+            "enum": ["host"]
+          },
           "binding_id": {
             "type": "string",
             "minLength": 1,

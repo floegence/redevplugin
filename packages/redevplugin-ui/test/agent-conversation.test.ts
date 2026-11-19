@@ -29,6 +29,23 @@ test("an authorized library thread supports browsing, window updates and request
   }finally{fixture.dispose();}
 });
 
+test("a host-persona temporary thread uses the window contract without library authority", async () => {
+  const fixture = createPluginTestHarness({call(method,input) {
+    if (method === "agent.conversation.role.open") return {data:{binding_id:"agent",revision:1,available:true,client_protocol:"test",unavailable_reasons:[]}};
+    if (method === "agent.conversation.open") {
+      assert.deepEqual(input,{binding_id:"agent",agent:"host",key:"test-window",lifetime:"temporary"});
+      return {data:{conversation_id:"tmp",key:"test-window",lifetime:"temporary",title:"",archived:false,revision:1,state:"idle"}};
+    }
+    if (method === "agent.conversation.close") return {data:{}};
+    throw new Error(method);
+  }});
+  try {
+    const flower=await createFlowerClient(new fixture.BridgeClient(),{capabilityBinding:"agent",role:"assistant"});
+    const chat=await flower.threads.create({key:"test-window",agent:"host",lifetime:"temporary"});
+    assert.equal(chat.id,"tmp");await chat.close();
+  } finally {fixture.dispose();}
+});
+
 test("a send handle settles and cancels only the original request across reconnect", async () => {
   let pages = 0;
   const fixture = createPluginTestHarness({ call(method, input) {

@@ -90,6 +90,7 @@ file access. Restart `watch` with the same handle after reconnect. A revoked
 resource requires fresh permission. Cancelling a picker returns `null`.
 
 `flower.threads.create({ key, lifetime: "temporary" })` uses the bound role.
+Add `agent: "host"` to use the host persona in the same window without reading or creating saved history. Both temporary roles use `.open` and the same thread handle.
 `flower.threads.create({ agent: "host", key })` creates a saved ordinary
 conversation with `.library.create`. The library's `.library.send`, `.library.result`
 and `.library.cancel_send` routes work with the same `send` and `findSend`

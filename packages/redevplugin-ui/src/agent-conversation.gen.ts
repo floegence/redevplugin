@@ -68,6 +68,7 @@ export type AgentConversationOpenRoleResponse = {
 };
 
 export type AgentConversationOpenRequest = {
+  agent?: "host";
   binding_id: string;
   key: string;
   lifetime?: "persistent" | "temporary";
@@ -756,7 +757,7 @@ const openContract = Object.freeze({
   method: "agent.conversation.open",
   effect: "write",
   execution: "sync",
-  requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["binding_id","key"],"type":"object"},
+  requestSchema: {"additionalProperties":false,"properties":{"agent":{"enum":["host"],"type":"string"},"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["binding_id","key"],"type":"object"},
   responseSchema: {"additionalProperties":false,"properties":{"archived":{"type":"boolean"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"key":{"maxLength":128,"minLength":1,"type":"string"},"lifetime":{"enum":["persistent","temporary"],"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["idle","running","waiting","failed"],"type":"string"},"title":{"maxLength":512,"minLength":0,"type":"string"}},"required":["conversation_id","key","title","archived","revision","state"],"type":"object"},
 } as const);
 
