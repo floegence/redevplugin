@@ -205,7 +205,10 @@ if (process.argv[2] === "--build") {
       } finally { await check.close(); }
     }
     // Full Chromium supports native pointer lock; headless-shell does not.
-    const pointerBrowser = await chromium.launch({ channel: "chromium", headless: true });
+    const pointerBrowser = await chromium.launch({ channel: "chromium", headless: true,
+      // Full Chromium on macOS uses its own override for the profile socket directory.
+      ...(process.platform === "darwin" && process.env.TMPDIR ? {env: {...process.env, MAC_CHROMIUM_TMPDIR: process.env.MAC_CHROMIUM_TMPDIR || process.env.TMPDIR}} : {}),
+    });
     const plain = await pointerBrowser.newPage();
     try {
       await plain.goto(process.argv[3] + "?mode=plain");
