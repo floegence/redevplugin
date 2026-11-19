@@ -82,7 +82,7 @@ function originalSend(requestId: string, end: AbortSignal,
         }
       };
       const immediate=await read();if(immediate)return immediate;
-      for await (const _update of updates(signal)) {const settled=await read();if(settled)return settled;}
+      for await (const update of updates(signal)) {if (update === undefined) continue; const settled=await read();if(settled)return settled;}
       signal.throwIfAborted();throw new Error("Conversation observation ended before the send settled");
     },
   });
@@ -306,8 +306,14 @@ export class AgentConversation extends ConversationReader {
   /** Address one original send, including after reconnect. No message is submitted. */
   findSend(requestId: string): ConversationSend {
     const target = () => ({ ...this.#scope(), request_id: requestId });
-    const self=this;
-    return originalSend(requestId,this.#end.signal,(cursor,signal)=>this.#client.result({...target(),...optional({cursor})},{signal}),this.#selected ? signal=>this.windows({signal}):async function* (signal) {for await(const event of self.observe({signal})) {if(event.kind==="closed")throw new ConversationClosedError();if(event.kind==="snapshot"||event.kind==="reset"||event.kind==="state")yield event;}},options=>this.#client.cancelSend(target(),options));
+    return originalSend(requestId,this.#end.signal,(cursor,signal)=>this.#client.result({...target(),...optional({cursor})},{signal}),signal => this.#selected ? this.windows({signal}) : this.#sendUpdates(signal),options=>this.#client.cancelSend(target(),options));
+  }
+
+  async *#sendUpdates(signal: AbortSignal) {
+    for await (const event of this.observe({ signal })) {
+      if (event.kind === "closed") throw new ConversationClosedError();
+      if (event.kind === "snapshot" || event.kind === "reset" || event.kind === "state") yield event;
+    }
   }
 
   receipt(requestId: string, options?: PluginBridgeRequestOptions) {
