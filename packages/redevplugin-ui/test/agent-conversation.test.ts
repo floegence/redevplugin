@@ -15,7 +15,7 @@ test("an authorized library thread supports browsing, window updates and request
     case "agent.conversation.library.window":return {data:{cursor:"view",view:{state:"idle",items:[item]}}};
     case "agent.conversation.library.attachment":return {data:{data:"AAEC"}};
     case "agent.conversation.library.send":return {data:{request_id:input!.request_id,conversation_id:"thread",state:"accepted",turn_id:"turn"}};
-    case "agent.conversation.library.result":return {data:{state:"completed",text:""}};
+    case "agent.conversation.library.result":return {data:input!.request_id==="lost"?{state:"failed",failure_code:"provider_request_rejected"}:{state:"completed",text:""}};
     case "agent.conversation.library.cancel_send":return {data:{}};
     case "agent.conversation.pick":throw new PluginBridgeError("PLUGIN_CONFIRMATION_REJECTED","Dismissed",{review:"dismissed"});
     default:throw new Error(method);
@@ -24,7 +24,8 @@ test("an authorized library thread supports browsing, window updates and request
     const {items}=await flower.threads.list();const chat=await flower.threads.open(items[0]!.id);
     assert.equal((await chat.history()).items[0]!.id,"message");assert.equal((await chat.body("message")).text,"hello");assert.deepEqual((await chat.attachment("message",0)).bytes,new Uint8Array([0,1,2]));
     for await(const view of chat.watch()){assert.equal(view.items[0]!.preview,"hello");break;}
-    const sent=await chat.send("hello",{requestId:"saved"});assert.deepEqual(await chat.findSend(sent.requestId).result(),{status:"completed",text:""});await sent.cancel();await chat.close();
+    const sent=await chat.send("hello",{requestId:"saved"});assert.deepEqual(await chat.findSend(sent.requestId).result(),{status:"completed",text:""});await sent.cancel();
+    assert.deepEqual(await chat.findSend("lost").result(),{status:"failed",failureCode:"provider_request_rejected"});await chat.close();
     assert.equal(fixture.calls.filter(c=>c.method==="agent.conversation.library.send").length,1);assert.equal(await flower.threads.pick(),null);
   }finally{fixture.dispose();}
 });
@@ -54,6 +55,7 @@ test("a send handle settles and cancels only the original request across reconne
       case "agent.conversation.open": return { data: { conversation_id: "chat", key: "main", title: "", lifetime: "temporary", archived: false, revision: 1, state: "idle" } };
       case "agent.conversation.send": return { data: { conversation_id: "chat", request_id: input!.request_id, turn_id: "", state: "accepted" } };
       case "agent.conversation.result":
+        if (input!.request_id === "lost") return { data: { state: "failed", failure_code: "context_budget_invalid" } };
         if (input!.request_id === "b") return { data: { state: "completed", text: "" } };
         assert.equal(input!.request_id, "a");
         if (++pages === 1) return { data: { state: "accepted" } };
@@ -71,6 +73,7 @@ test("a send handle settles and cancels only the original request across reconne
     assert.deepEqual(await second.result(), { status: "completed", text: "" });
     assert.deepEqual(await chat.findSend(first.requestId).result(), { status: "completed", text: "one two" });
     await first.cancel();
+    assert.deepEqual(await chat.findSend("lost").result(), { status: "failed", failureCode: "context_budget_invalid" });
     assert.equal(fixture.calls.filter(call => call.method === "agent.conversation.send").length, 2);
   } finally { fixture.dispose(); }
 });

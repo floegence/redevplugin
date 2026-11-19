@@ -6,7 +6,7 @@ import type { AgentConversationWindowResponse, AgentConversationHistoryResponse,
 
 export * from "./agent-conversation.gen.js";
 export type AgentProfile = AgentConversationBindRequest["profile"];
-export type SendResult = { status: "completed"; text: string } | { status: "failed" | "cancelled" | "interrupted" | "unknown" };
+export type SendResult = { status: "completed"; text: string } | { status: "failed"; failureCode?: string } | { status: "cancelled" | "interrupted" | "unknown" };
 export interface ConversationSend {
   readonly requestId: string;
   result(options?: PluginBridgeRequestOptions): Promise<SendResult>;
@@ -72,8 +72,12 @@ function originalSend(requestId: string, end: AbortSignal,
         for (;;) {
           signal.throwIfAborted();const next=await page(cursor,signal);
           if (next.state!=="completed") {
-            if(cursor || next.text!==undefined || next.next_cursor!==undefined)throw new TypeError("Invalid send result page");
-            switch(next.state){case "accepted":case "waiting":case "running":return undefined;default:return {status:next.state};}
+            if(cursor)throw new TypeError("Invalid send result page");
+            switch(next.state){
+              case "accepted":case "waiting":case "running":return undefined;
+              case "failed":return {status:"failed",...optional({failureCode:next.failure_code})};
+              default:return {status:next.state};
+            }
           }
           if(typeof next.text!=="string")throw new TypeError("Missing final assistant text");chunks.push(next.text);
           if(next.next_cursor===undefined)return {status:"completed",text:chunks.join("")};

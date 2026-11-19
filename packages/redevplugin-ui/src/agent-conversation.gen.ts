@@ -361,8 +361,13 @@ export type AgentConversationResultRequest = {
 
 export type AgentConversationResultResponse = {
   next_cursor?: string;
-  state: "unknown" | "accepted" | "running" | "waiting" | "completed" | "cancelled" | "interrupted" | "failed";
-  text?: string;
+  state: "completed";
+  text: string;
+} | {
+  failure_code?: string;
+  state: "failed";
+} | {
+  state: "unknown" | "accepted" | "running" | "waiting" | "cancelled" | "interrupted";
 };
 
 export type AgentConversationCancelSendRequest = {
@@ -571,8 +576,13 @@ export type AgentConversationLibraryResultRequest = {
 
 export type AgentConversationLibraryResultResponse = {
   next_cursor?: string;
-  state: "unknown" | "accepted" | "running" | "waiting" | "completed" | "cancelled" | "interrupted" | "failed";
-  text?: string;
+  state: "completed";
+  text: string;
+} | {
+  failure_code?: string;
+  state: "failed";
+} | {
+  state: "unknown" | "accepted" | "running" | "waiting" | "cancelled" | "interrupted";
 };
 
 export type AgentConversationLibraryCancelSendRequest = {
@@ -934,7 +944,7 @@ const resultContract = Object.freeze({
   effect: "read",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"conversation_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","conversation_id","request_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"next_cursor":{"maxLength":128,"minLength":1,"type":"string"},"state":{"enum":["unknown","accepted","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"},"text":{"maxLength":65536,"minLength":0,"type":"string"}},"required":["state"],"type":"object"},
+  responseSchema: {"oneOf":[{"additionalProperties":false,"properties":{"next_cursor":{"maxLength":128,"minLength":1,"type":"string"},"state":{"enum":["completed"],"type":"string"},"text":{"maxLength":65536,"minLength":0,"type":"string"}},"required":["state","text"],"type":"object"},{"additionalProperties":false,"properties":{"failure_code":{"maxLength":128,"minLength":1,"pattern":"^[a-zA-Z][a-zA-Z0-9_.-]*$","type":"string"},"state":{"enum":["failed"],"type":"string"}},"required":["state"],"type":"object"},{"additionalProperties":false,"properties":{"state":{"enum":["unknown","accepted","running","waiting","cancelled","interrupted"],"type":"string"}},"required":["state"],"type":"object"}]},
 } as const);
 
 const cancelSendContract = Object.freeze({
@@ -1030,7 +1040,7 @@ const libraryResultContract = Object.freeze({
   effect: "read",
   execution: "sync",
   requestSchema: {"additionalProperties":false,"properties":{"binding_id":{"maxLength":128,"minLength":1,"type":"string"},"cursor":{"maxLength":128,"minLength":1,"type":"string"},"request_id":{"maxLength":128,"minLength":1,"type":"string"},"thread_id":{"maxLength":128,"minLength":1,"type":"string"}},"required":["binding_id","thread_id","request_id"],"type":"object"},
-  responseSchema: {"additionalProperties":false,"properties":{"next_cursor":{"maxLength":128,"minLength":1,"type":"string"},"state":{"enum":["unknown","accepted","running","waiting","completed","cancelled","interrupted","failed"],"type":"string"},"text":{"maxLength":65536,"minLength":0,"type":"string"}},"required":["state"],"type":"object"},
+  responseSchema: {"oneOf":[{"additionalProperties":false,"properties":{"next_cursor":{"maxLength":128,"minLength":1,"type":"string"},"state":{"enum":["completed"],"type":"string"},"text":{"maxLength":65536,"minLength":0,"type":"string"}},"required":["state","text"],"type":"object"},{"additionalProperties":false,"properties":{"failure_code":{"maxLength":128,"minLength":1,"pattern":"^[a-zA-Z][a-zA-Z0-9_.-]*$","type":"string"},"state":{"enum":["failed"],"type":"string"}},"required":["state"],"type":"object"},{"additionalProperties":false,"properties":{"state":{"enum":["unknown","accepted","running","waiting","cancelled","interrupted"],"type":"string"}},"required":["state"],"type":"object"}]},
 } as const);
 
 const libraryCancelSendContract = Object.freeze({

@@ -106,6 +106,35 @@ func TestOriginalSendOperationsBindRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestOriginalSendResultDisclosesOnlyPublicTerminalFields(t *testing.T) {
+	known, err := Contract()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range known.Contract.Methods {
+		if method.ClientMethod != "result" && method.ClientMethod != "libraryResult" {
+			continue
+		}
+		for _, tc := range []struct {
+			page map[string]any
+			ok   bool
+		}{
+			{map[string]any{"state": "completed", "text": ""}, true},
+			{map[string]any{"state": "failed", "failure_code": "provider_request_rejected"}, true},
+			{map[string]any{"state": "failed"}, true},
+			{map[string]any{"state": "running", "failure_code": "not_terminal"}, false},
+			{map[string]any{"state": "failed", "text": "private provider response"}, false},
+			{map[string]any{"state": "failed", "failure_code": "private provider response"}, false},
+			{map[string]any{"state": "failed", "failure_code": strings.Repeat("x", 129)}, false},
+			{map[string]any{"state": "completed"}, false},
+		} {
+			if err := capabilitycontract.ValidateValue(method.ResponseSchema, tc.page); (err == nil) != tc.ok {
+				t.Errorf("%s: %v -> %v", method.Name, tc.page, err)
+			}
+		}
+	}
+}
+
 func TestConversationContractRetainsPublishedClientIdentity(t *testing.T) {
 	contracts, err := SupportedContracts()
 	if err != nil || len(contracts) != 5 {

@@ -46,8 +46,9 @@ if (answer.status === "completed") renderAnswer(answer.text);
 returns the selectable models and their supported reasoning levels. Keep
 provider credentials in the host. Save a stable `requestId` before a send if
 the user must resume after reconnect. To recover, call
-`conversation.findSend(requestId).result()` on the same conversation. A result
-may have empty text. Aborting the wait only detaches this reader;
+`conversation.findSend(requestId).result()` on the same conversation. Completed
+results may have empty text. Failed results may include a stable `failureCode`
+for display or diagnosis; they never contain a raw provider error. Aborting the wait only detaches this reader;
 `sent.cancel()` explicitly targets the original pending input or execution.
 Choose the lifetime by how long the user needs the history. For multi-turn
 context limited to this window, use `agent.conversations.open({ key, lifetime: "temporary" })`.
