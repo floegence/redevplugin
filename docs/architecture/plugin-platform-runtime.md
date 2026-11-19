@@ -633,7 +633,7 @@ generated types and action state without parsing historical package archives.
 
 ## macOS Runtime Signing
 
-Wasmtime 50.0.1 publishes compiled code by changing anonymous memory from writable
+Wasmtime 50.0.2 publishes compiled code by changing anonymous memory from writable
 to executable. A host that signs its runtime with the macOS hardened runtime must
 grant only that helper executable
 `com.apple.security.cs.allow-unsigned-executable-memory`. The `allow-jit`

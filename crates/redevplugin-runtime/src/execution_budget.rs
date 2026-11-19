@@ -202,7 +202,7 @@ mod contract_tests {
     fn execution_policy_matches_canonical_contract() {
         let contract: serde_json::Value =
             serde_json::from_str(include_str!("../testdata/execution-policy.json")).unwrap();
-        assert_eq!(contract["engine"], "wasmtime-50.0.1");
+        assert_eq!(contract["engine"], "wasmtime-50.0.2");
         assert_eq!(
             contract["fuel_per_remaining_millisecond"],
             FUEL_PER_MILLISECOND

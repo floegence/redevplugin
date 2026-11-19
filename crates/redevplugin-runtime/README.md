@@ -9,7 +9,7 @@ compiled runtime identity, and own product signing, packaging, and installation.
 
 ## Execution and resource limits
 
-The released runtime uses Wasmtime 50.0.1 with fuel and epoch interruption.
+The released runtime uses Wasmtime 50.0.2 with fuel and epoch interruption.
 Build the source crates with Rust 1.98.0. Validated modules and their Engine are
 shared through the bounded, single-flight module cache. Each invocation receives
 a fresh Store, instance, linear memory and hostcall state. No serialized native

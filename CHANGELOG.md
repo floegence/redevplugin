@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Update the worker runtime to Wasmtime 50.0.2 for its security fixes.
+
 ## v3.38.1
 
 - Explain how to choose Agent conversation lifetimes and diagnose plugin failures using the generated project, public SDK and host observations. The author guides no longer prescribe a particular application workflow.

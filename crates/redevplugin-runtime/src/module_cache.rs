@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-const WASM_ENGINE_VERSION: &str = "wasmtime-50.0.1";
+const WASM_ENGINE_VERSION: &str = "wasmtime-50.0.2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModuleCacheMetrics {
