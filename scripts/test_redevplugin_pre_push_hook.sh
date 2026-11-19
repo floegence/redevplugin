@@ -95,7 +95,7 @@ for key in $(git rev-parse --local-env-vars); do
     exit 1
   fi
 done
-nested=$(mktemp -d)
+nested=$(mktemp -d "${TMPDIR:-/tmp}/nested-hook-repo.XXXXXX")
 trap 'rm -rf "$nested"' EXIT
 git -C "$nested" init -q -b fixture
 git -C "$nested" config user.name Fixture
