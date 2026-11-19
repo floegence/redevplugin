@@ -1,5 +1,13 @@
 # Capability authoring
 
+Start with the generated project's README, source manifest and
+`redevplugin.project.json`. The manifest describes what the plugin requests;
+the project file identifies the build commands, generated bindings and output.
+Use the matching published SDK and the types installed in the project for call
+signatures. Private resources, reviewed connections, Worker methods and host
+capabilities have distinct declarations. Request only what the feature uses.
+Use a host capability only when its contract and adapter are available.
+
 A capability binding selects one exact published contract. It does not declare
 callable methods, grant permissions, or prove that the current host registers an
 adapter. Declare each required method separately in the source manifest's
@@ -59,6 +67,12 @@ unknown read failures as permission requests, or replay business operations.
 
 Build/package checks, install eligibility, preview admission and business
 verification are distinct evidence. Report only checks actually performed.
+For a build failure, use the first failed stage and its output to locate the
+source or project configuration to change. For a runtime failure, reproduce the
+action on the selected build and inspect the method, structured result and
+current blockers. A past rejection is not evidence of a current missing grant.
+When these public observations do not explain the failure, report what was
+observed and what is unknown; private host code is not an author dependency.
 Exercise first use with no grants, refusal, explicit authorization, configured
 operation, installation consent, opening the installed instance, revocation and
 reopen through the actual host boundary. Deterministic

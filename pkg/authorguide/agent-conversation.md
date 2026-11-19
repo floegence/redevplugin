@@ -1,11 +1,8 @@
 # Scoped Agent conversations
 
-Use `@floegence/redevplugin-ui/agent-conversation` from the platform version
-reported with this document. The returned `binding` is an exact manifest
-`capability_bindings` entry. The returned `methods` are generated from that same
-published contract: copy the needed `declaration` entries into manifest `methods`.
-If changing `binding_id`, change both the method routes and `capabilityBinding`.
-Do not add every method or grant every permission without considering usage.
+Use the SDK version reported with this guide. Copy `binding` into manifest
+`capability_bindings`, and only the needed `methods[].declaration` entries into
+`methods`. When renaming `binding_id`, update the routes and `capabilityBinding`.
 
 For a role shipped by the plugin, declare `agent.conversation.role.open` and include
 `agents.json` at the root of the built package (current templates copy `ui/agents.json` there).
@@ -36,20 +33,20 @@ methods the Agent may call back into. It may be empty for a text-only Agent;
 manifest capability routes still must be declared.
 
 For a custom UI, declare `.send`, `.observe`, `.receipt` and `.stop` as used.
-For a game or another session that lasts until this plugin window closes, open
-`agent.conversations.open({ key: "game", lifetime: "temporary" })` once per game.
+Choose the lifetime by how long the user needs the history. For multi-turn
+context limited to this window, use `agent.conversations.open({ key, lifetime: "temporary" })`.
+Omit `lifetime` for history that must survive reopening. Use `temporary.reply` for one exchange.
 Declare `.events.read` for `observe()` on temporary handles and `.close` for
 `await conversation.close()`. Keep the same handle across turns and panel changes.
 Reopen the same key inside the same live window to reconnect. A closed window or
 an explicit close ends its conversation; a new open cannot reuse the old ID.
-Handle `isConversationClosed(error)` or the `closed` observation by offering a
-new game. A transport error alone does not mean the session ended. Never replay
+Handle `isConversationClosed(error)` or the `closed` observation by releasing the
+stale handle. A transport error alone does not mean the session ended. Never replay
 an uncertain send or substitute a saved chat. Closing a saved handle releases
 only the local handle; deleting history is a separate action.
 Start observation before sending. Retain each request ID and query its receipt
 when the send outcome is unknown; do not generate a replacement ID and replay.
-Observe only public semantic events. A completed stream must not be inferred
-from an arbitrary text fragment or a timer.
+Use public events to detect completion, not text fragments or timers.
 
 For the official view, use `agent.mount(container, conversation)`. Declare the
 methods needed by its enabled controls, including `client.read`, `client.write`,
@@ -67,7 +64,6 @@ their declared routes and current permissions. Use the host's instance permissio
 review first when those permissions are missing.
 
 Render independent local content before binding or opening a conversation.
-For example, a local game board can remain usable before the Agent is available.
 Use scoped surface startup requirements as described in `capabilities`; keep
 Agent actions in an explicit setup state until the host's permission review is
 complete. Do not make a top-level rejected `bindAgent` promise erase the whole
@@ -78,7 +74,5 @@ readiness or proof of a successful response. Model selection and credentials
 belong to the host; never place credentials in plugin code or persistent context.
 The author's own chat model and permission mode are not plugin authorization.
 
-Validate declaration and authorization separately before testing the actual
-business flow. Preserve a usable configuration action when setup fails and
-report the structured blocker. Do not remove requested behavior based only on
-one backend branch or a generic permission-denied message.
+Check declarations and authorization separately, then exercise the requested
+flow. Keep configuration available when setup fails and report the structured blocker.

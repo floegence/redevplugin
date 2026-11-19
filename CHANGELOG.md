@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.38.1
+
+- Explain how to choose Agent conversation lifetimes and diagnose plugin failures using the generated project, public SDK and host observations. The author guides no longer prescribe a particular application workflow.
+
 ## v3.38.0
 
 - Add window-scoped temporary Agent conversations, explicit close and bounded event reads without a durable subscription payload. Existing saved conversations and immutable contract pins remain supported.
