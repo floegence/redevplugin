@@ -3,7 +3,7 @@ import {mkdtemp,readFile,writeFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
 import {spawn,spawnSync} from "node:child_process";
-import {launchAuthorBrowser} from "./author_browser.mjs";
+import {chromium} from "playwright";
 const cli=resolve(process.argv[2]??"dist/author-cli");
 const root=await mkdtemp(join(tmpdir(),"redevplugin-data-"));let child,browser;let logs="";
 try{
@@ -16,7 +16,7 @@ try{
  for(const command of ["doctor","check"]){result=spawnSync(cli,[command,app],{encoding:"utf8"});assert.equal(result.status,0,result.stdout+result.stderr);assert.equal(JSON.parse(result.stdout).runtime_required,false)}
  child=spawn(cli,["dev",app],{stdio:["ignore","pipe","pipe"]});child.stdout.on("data",data=>logs+=data);child.stderr.on("data",data=>logs+=data);
  let url;for(let i=0;i<150;i++){url=logs.match(/Preview: (http:\/\/localhost:\d+\/#[a-f0-9]+)/u)?.[1];if(url)break;await new Promise(resolve=>setTimeout(resolve,100))}assert.ok(url,logs);
- browser=await launchAuthorBrowser();const context=await browser.newContext();const first=await context.newPage();await first.goto(url);
+ browser=await chromium.launch({headless:true});const context=await browser.newContext();const first=await context.newPage();await first.goto(url);
  const a=first.frameLocator("#stage > iframe");await a.getByRole("heading",{name:"Document Workspace"}).waitFor();await a.getByText("Ready",{exact:true}).waitFor();
  const second=await context.newPage();await second.goto(new URL(url).origin);const b=second.frameLocator("#stage > iframe");await b.getByText("Ready",{exact:true}).waitFor();
  await b.getByLabel("Document",{exact:true}).fill("unsaved second window");

@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {build} from 'esbuild';
-import {launchAuthorBrowser} from './author_browser.mjs';
+import {chromium} from 'playwright';
 const repo=resolve(import.meta.dirname,'..');
 assert.ok(['--candidate','--published'].includes(process.argv[2]) && process.argv[3], 'usage: embedding_browser_smoke.mjs --candidate <cli> | --published <version>');
 const published=process.argv[2]==='--published';
@@ -33,7 +33,7 @@ try{
   child.stdout.on('data',data=>logs+=data);child.stderr.on('data',data=>logs+=data);exit=new Promise(done=>child.once('exit',done));
   for(let attempt=0;attempt<150;attempt++){const url=logs.match(/Reference: (http:\/\/localhost:\d+\/#[a-f0-9]+)/u)?.[1];if(url)return url;if(child.exitCode!==null)throw new Error(logs);await new Promise(done=>setTimeout(done,100))}throw new Error('reference host did not start: '+logs);
  };
- browser=await launchAuthorBrowser();
+ browser=await chromium.launch({headless:true});
  const open=async()=>{
   const url=await start();const page=await browser.newPage();await page.goto(url);
   await page.waitForFunction(()=>globalThis.referenceState?.ready||globalThis.referenceState?.error);
