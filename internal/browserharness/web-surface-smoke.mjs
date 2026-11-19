@@ -215,11 +215,17 @@ if (process.argv[2] === "--build") {
       await plain.waitForFunction(() => globalThis.testState?.ready || globalThis.testState?.error);
       assert.equal(await plain.evaluate(() => globalThis.testState.error), "");
       const application = plain.frames().find(frame => frame !== plain.mainFrame());
+      await plain.bringToFront();
       await application.locator("input").fill("No application SDK required");
       assert.equal(await application.locator("output").textContent(), "No application SDK required");
       const lock = async () => {
+        // Pointer lock belongs to the visible, focused application document.
+        await application.waitForFunction(() => document.hasFocus() && !document.hidden);
+        await application.evaluate(() => { delete globalThis.lockError; });
         await application.getByRole("button", { name: "Lock mouse" }).click();
-        await application.waitForFunction(() => !!document.pointerLockElement);
+        await application.waitForFunction(() => !!document.pointerLockElement || !!globalThis.lockError);
+        const outcome = await application.evaluate(() => ({ locked: !!document.pointerLockElement, error: globalThis.lockError, focused: document.hasFocus(), visible: document.visibilityState }));
+        assert.ok(outcome.locked, "Native pointer lock was rejected: " + JSON.stringify(outcome));
         await plain.waitForFunction(() => globalThis.testState.pointerLocks.at(-1) === true);
       };
       const released = async () => {
