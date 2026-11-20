@@ -364,35 +364,23 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	ready := make(chan struct{}, 1)
-	go func() {
-		result <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
-			Listener:          listener,
-			Output:            io.Discard,
-			RepositoryRoot:    repositoryRoot,
-			RuntimeShardCount: 1,
-			OnReady:           func(*host.Host) { ready <- struct{}{} },
-		})
-	}()
-	select {
-	case <-ready:
-	case err := <-result:
-		cancel()
-		t.Fatalf("first examples server failed before Host readiness: %v", err)
-	case <-time.After(20 * time.Second):
-		cancel()
-		t.Fatal("first examples Host did not become ready")
-	}
-	cancel()
-	select {
-	case err := <-result:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("first examples server shutdown error = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("first examples server did not stop")
+	// Cold installation prepares the fixture. Restart and browser interaction
+	// are measured separately after every package has actually been admitted.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ready := false
+	err = examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
+		Listener:          listener,
+		Output:            io.Discard,
+		RepositoryRoot:    repositoryRoot,
+		RuntimeShardCount: 1,
+		OnReady: func(*host.Host) {
+			ready = true
+			cancel()
+		},
+	})
+	if !ready || (err != nil && !errors.Is(err, context.Canceled)) {
+		t.Fatalf("prepare and close first examples Host: ready=%v err=%v", ready, err)
 	}
 }
 
