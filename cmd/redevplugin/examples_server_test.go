@@ -414,7 +414,12 @@ func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 	default:
 		t.Skipf("the current runtime contract does not support %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	cargoTargetDir := filepath.Join(t.TempDir(), "cargo-target")
+	cargoTargetDir := os.Getenv("CARGO_TARGET_DIR")
+	if cargoTargetDir == "" {
+		cargoTargetDir = filepath.Join(repositoryRoot, "target")
+	} else if !filepath.IsAbs(cargoTargetDir) {
+		cargoTargetDir = filepath.Join(repositoryRoot, cargoTargetDir)
+	}
 	command := exec.Command(cargo, "build", "--locked", "--target", target, "-p", "redevplugin-runtime")
 	command.Dir = repositoryRoot
 	command.Env = append(os.Environ(),

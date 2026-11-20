@@ -169,10 +169,14 @@ func TestHostOwnedSessionFinalizationReusesFenceCapacity(t *testing.T) {
 		// Teardown has a bounded drain interval. An acknowledged fence can
 		// finish through the maintenance API before its capacity is reclaimed.
 		if errors.Is(err, ErrSessionTeardownIncomplete) && closed.Status == SessionScopeTeardownIncomplete && closed.Teardown.Fenced && closed.Identity.Valid() {
-			closed, err = h.ResumeClosedSessionScopeTeardown(t.Context(), ResumeClosedSessionScopeTeardownRequest{Session: session, Identity: closed.Identity})
+			identity := closed.Identity
+			closed, err = h.ResumeClosedSessionScopeTeardown(t.Context(), ResumeClosedSessionScopeTeardownRequest{Session: session, Identity: identity})
+			if err != nil || !closed.Identity.Matches(identity) {
+				t.Fatalf("ResumeClosedSessionScopeTeardown(%d): status=%s fenced=%t exact_identity=%t err=%v", index, closed.Status, closed.Teardown.Fenced, closed.Identity.Matches(identity), err)
+			}
 		}
 		if err != nil {
-			t.Fatalf("CloseAuthenticatedSessionScope(%d) error = %v", index, err)
+			t.Fatalf("CloseAuthenticatedSessionScope(%d): status=%s fenced=%t valid_identity=%t err=%v", index, closed.Status, closed.Teardown.Fenced, closed.Identity.Valid(), err)
 		}
 		if closed.Status != SessionScopeTeardownComplete || !closed.Teardown.Complete {
 			t.Fatalf("teardown(%d) did not complete: %v", index, closed.Status)
