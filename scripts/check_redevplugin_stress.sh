@@ -171,6 +171,16 @@ stress_evidence_json() {
   ' "$STRESS_EVIDENCE_FILE"
 }
 
+run_core_race_tests() {
+  local capacity_test=TestHostOwnedSessionFinalizationReusesFenceCapacity
+  local capacity_pattern="^${capacity_test}$"
+  local -x GOWORK=off
+  go test -list "$capacity_pattern" ./pkg/host | grep -Fx "$capacity_test" || return 1
+  go test -p=1 -race -run "$capacity_pattern" ./pkg/host || return $?
+  go test -p=1 -race -skip "$capacity_pattern" ./pkg/host || return $?
+  go test -p=1 -race ./pkg/bridge ./pkg/connectivity ./pkg/httpadapter ./pkg/registry ./internal/runtimeclient ./pkg/storage ./pkg/stress
+}
+
 collect_stress_evidence() {
   GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE_PATH="$STRESS_EVIDENCE_FILE" go test -count=1 ./pkg/stress
   if [[ "$(uname -s)" == "Linux" ]]; then
@@ -233,7 +243,7 @@ if [[ "$MODE" != "fast" ]]; then
   }
 fi
 
-run_step go_race_core env GOWORK=off go test -p=1 -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/registry ./internal/runtimeclient ./pkg/storage ./pkg/stress || {
+run_step go_race_core run_core_race_tests || {
   write_summary
   exit "$STATUS"
 }

@@ -150,7 +150,7 @@ the next workload's deadline. The complete gate still requires both outcomes.
 `scripts/check_redevplugin_stress.sh` supports `--fast`, `--full`, `--release`,
 and `--summary PATH`.
 
-- `--fast` runs race-sensitive Go packages and `pkg/stress`.
+- `--fast` runs race-sensitive Go packages and `pkg/stress`. The Host's full fence-capacity lifecycle workload and the rest of its race tests run serially in separate processes, each with Go's standard package deadline. Every other core race package runs without a test filter.
 - `--full` starts from a clean `npm ci`, then adds browser harness, runtime
   contract, package extraction, isolated-registry, and packaged-source fake-host
   fixtures.
