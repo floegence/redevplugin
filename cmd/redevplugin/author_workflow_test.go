@@ -203,7 +203,7 @@ func TestAuthorTestHostOwnsOnlyItsVerifiedRuntime(t *testing.T) {
 	ctx := context.Background()
 	newModule := func() *host.RuntimeModule {
 		t.Helper()
-		module, err := newCommandRuntimeModule(ctx, runtimePath, t.TempDir(), identity, 15*time.Second)
+		module, err := newCommandRuntimeModule(ctx, runtimePath, privateRuntimeTestDir(t), identity, 15*time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}

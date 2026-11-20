@@ -168,7 +168,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	repoRoot := cliRepoRoot(t)
 	runtimePath := buildExamplesRuntime(t, repoRoot)
 
-	dir := t.TempDir()
+	dir := privateRuntimeTestDir(t)
 	scaffoldDir := filepath.Join(dir, "generated-runtime")
 	packageFile := filepath.Join(dir, "generated-runtime.redevplugin")
 	if _, err := captureCLIOutput(t, "scaffold", "com-example-generated-runtime", "Generated Runtime Plugin", scaffoldDir); err != nil {
@@ -327,7 +327,7 @@ func TestCommandRuntimeModuleRejectsBinaryReplacedAfterInspection(t *testing.T) 
 	if goruntime.GOOS != "linux" && goruntime.GOOS != "darwin" {
 		t.Skip("verified runtime executable admission is unsupported on this platform")
 	}
-	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
+	runtimePath := filepath.Join(privateRuntimeTestDir(t), "redevplugin-runtime")
 	original, err := os.ReadFile(buildExamplesRuntime(t, cliRepoRoot(t)))
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func TestCommandRuntimeModuleRejectsBinaryReplacedAfterInspection(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	module, err := newCommandRuntimeModule(context.Background(), runtimePath, t.TempDir(), identity, time.Second)
+	module, err := newCommandRuntimeModule(context.Background(), runtimePath, privateRuntimeTestDir(t), identity, time.Second)
 	if err != nil {
 		t.Fatalf("newCommandRuntimeModule(original binary) error = %v", err)
 	}
@@ -349,7 +349,7 @@ func TestCommandRuntimeModuleRejectsBinaryReplacedAfterInspection(t *testing.T) 
 	if err := os.WriteFile(runtimePath, append(original, '\n'), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err = newCommandRuntimeModule(context.Background(), runtimePath, t.TempDir(), identity, time.Second)
+	_, err = newCommandRuntimeModule(context.Background(), runtimePath, privateRuntimeTestDir(t), identity, time.Second)
 	if !errors.Is(err, host.ErrRuntimeArtifactIdentityMismatch) {
 		t.Fatalf("newCommandRuntimeModule(replaced binary) error = %v, want %v", err, host.ErrRuntimeArtifactIdentityMismatch)
 	}
@@ -368,9 +368,6 @@ func TestInspectCommandRuntimeArtifactRejectsUnsupportedTarget(t *testing.T) {
 
 func newTestEphemeralCLIAdapters(t *testing.T, ctx context.Context, stateRoot string) host.Config {
 	t.Helper()
-	if err := os.Chmod(stateRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	config, err := newEphemeralCLIAdapters(stateRoot)
 	if err != nil {
 		t.Fatal(err)

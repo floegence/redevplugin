@@ -129,7 +129,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	serverResult := make(chan error, 1)
 	hostReady := make(chan *host.Host, 1)
 	go func() {
-		serverResult <- examplesServerWithOptions(ctx, privateExamplesStateRoot(t), runtimePath, examplesServerOptions{
+		serverResult <- examplesServerWithOptions(ctx, privateRuntimeTestDir(t), runtimePath, examplesServerOptions{
 			Listener:          listener,
 			Output:            io.Discard,
 			RepositoryRoot:    repositoryRoot,
@@ -292,7 +292,7 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	}
 	repositoryRoot := cliRepoRoot(t)
 	runtimePath := buildExamplesRuntime(t, repositoryRoot)
-	stateRoot := privateExamplesStateRoot(t)
+	stateRoot := privateRuntimeTestDir(t)
 	primeExamplesPersistentState(t, stateRoot, runtimePath, repositoryRoot)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -349,13 +349,13 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	}
 }
 
-func privateExamplesStateRoot(t *testing.T) string {
+func privateRuntimeTestDir(t *testing.T) string {
 	t.Helper()
-	stateRoot := filepath.Join(t.TempDir(), "state")
-	if err := os.Mkdir(stateRoot, 0o700); err != nil {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return stateRoot
+	return dir
 }
 
 func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath string, repositoryRoot string) {
@@ -439,7 +439,7 @@ func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 		t.Fatal(err)
 	}
 	defer source.Close()
-	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
+	runtimePath := filepath.Join(privateRuntimeTestDir(t), "redevplugin-runtime")
 	destination, err := os.OpenFile(runtimePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o500)
 	if err != nil {
 		t.Fatal(err)
