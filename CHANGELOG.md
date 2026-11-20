@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.40.1
+
+- Validate pinned capability result responses with disjoint closed object variants during host dispatch, including private and shared original-send results.
+
 ## v3.40.0
 
 - Add typed conversation history, public windows, per-send results, cancellation and model selection. Independent history grants let clients use an authorized host conversation without changing its identity or defaults.

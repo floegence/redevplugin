@@ -50,11 +50,11 @@ func (e methodSchemaError) Error() string {
 // and cannot perform network I/O. Successfully compiled content is reused in a
 // bounded process-wide cache; every call still validates the supplied schemas.
 func CompileMethodSchemas(method MethodSpec) (*CompiledMethodSchemas, error) {
-	request, err := compileClosedObjectSchema("request_schema", method.RequestSchema)
+	request, err := compileClosedObjectSchema("request_schema", method.RequestSchema, false)
 	if err != nil {
 		return nil, err
 	}
-	response, err := compileClosedObjectSchema("response_schema", method.ResponseSchema)
+	response, err := compileClosedObjectSchema("response_schema", method.ResponseSchema, method.Route.Kind == MethodRouteCapability)
 	if err != nil {
 		return nil, err
 	}
@@ -72,11 +72,25 @@ func (s *CompiledMethodSchemas) ValidateResponse(value any) error {
 	return s.response.Validate(value)
 }
 
-func compileClosedObjectSchema(name string, schema map[string]any) (*jsonschema.Schema, error) {
+func isClosedObjectUnion(schema map[string]any) bool {
+	variants, ok := schema["oneOf"].([]any)
+	if len(schema) != 1 || !ok || len(variants) == 0 || len(variants) > maxMethodSchemaNodes {
+		return false
+	}
+	for _, variant := range variants {
+		object, ok := variant.(map[string]any)
+		if !ok || object["type"] != "object" || object["additionalProperties"] != false {
+			return false
+		}
+	}
+	return true
+}
+
+func compileClosedObjectSchema(name string, schema map[string]any, allowObjectUnion bool) (*jsonschema.Schema, error) {
 	if schema == nil {
 		return nil, methodSchemaError{path: name, message: "is required"}
 	}
-	if schemaType, ok := schema["type"].(string); !ok || schemaType != "object" {
+	if schema["type"] != "object" && (!allowObjectUnion || !isClosedObjectUnion(schema)) {
 		return nil, methodSchemaError{path: name + ".type", message: "must be object"}
 	}
 

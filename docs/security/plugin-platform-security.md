@@ -43,7 +43,10 @@ ReDevPlugin rejects:
 - package sizes and paths that exceed configured limits.
 
 Every manifest v9 method must provide request and response JSON Schemas whose
-root is a closed object. Every nested schema that declares `type: object` must
+root is a closed object. A resolved capability response may also use a root
+`oneOf` of explicit closed objects; the selected variant still rejects unknown
+fields. This does not extend plugin-authored schemas or request schemas.
+Every nested schema that declares `type: object` must
 also set `additionalProperties: false`. ReDevPlugin rejects remote `$ref`
 resources, schema documents over 256 KiB, excessive schema depth/node counts,
 and schemas that do not compile as draft 2020-12. The Host validates requests
