@@ -78,15 +78,15 @@ async function watch() {
   watching = true;
   try {
     for await (const change of notes.watch("draft", { cursor: etag, signal: lifetime.signal })) {
-      if (change.cursor === etag) continue;
-      if (dirty || pending || uncertain) {
+      if (change.cursor === etag || uncertain) continue;
+      if (dirty || pending) {
         status.textContent = "A newer saved version is available. Your unsaved changes are kept here.";
         continue;
       }
       editor.value = change.value?.message ?? ""; etag = change.cursor; revision++; beforeAction = undefined; controls();
       status.textContent = "Updated from another window";
     }
-  } catch (error) { failure(error); }
+  } catch (error) { if (!uncertain) failure(error); }
 }
 void bridge.ready().then(async () => {
   await Promise.all([

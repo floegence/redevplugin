@@ -112,12 +112,24 @@ try{
  })().catch(error=>{interceptionError=error;});});
  await network.send("Fetch.enable",{patterns:[{urlPattern:"*/_redevplugin_web/resource",requestStage:"Response"}]});
  await b.getByRole("button",{name:"Save",exact:true}).click();
- await b.getByText("The save result is unknown. Your changes are kept here. Reload the saved version before saving again.",{exact:true}).waitFor();
+ const unknownSave="The save result is unknown. Your changes are kept here. Reload the saved version before saving again.";
+ await b.getByText(unknownSave,{exact:true}).waitFor();
  assert.equal(await b.getByLabel("Document",{exact:true}).inputValue(),"save response lost");
  assert.equal(await b.getByRole("button",{name:"Save",exact:true}).isDisabled(),true);assert.equal(lostWrites,1);assert.ifError(interceptionError);assert.equal(lostSave.status,200,JSON.stringify(lostSave));assert.equal(JSON.parse(lostSave.body).ok,true);
  await network.send("Fetch.disable");await network.detach();
- await b.getByRole("button",{name:"Reload saved version",exact:true}).click();await b.getByRole("button",{name:"Confirm reload — replace unsaved changes",exact:true}).click();await b.getByText("Ready",{exact:true}).waitFor();
+ const sibling=await context.newPage();await sibling.goto(new URL(url).origin);
+ const editor=sibling.frameLocator("#stage > iframe");await editor.getByText("Ready",{exact:true}).waitFor();
+ assert.equal(await editor.getByLabel("Document",{exact:true}).inputValue(),"save response lost");
+ await editor.getByLabel("Document",{exact:true}).fill("newer sibling save");
+ const operation=request=>new URL(request.url()).pathname==="/_redevplugin_web/resource"?request.postDataJSON()?.arguments:undefined;
+ const siblingWrite=sibling.waitForResponse(response=>operation(response.request())?.operation==="put").then(response=>response.json());
+ const observed=second.waitForRequest(async request=>{const args=operation(request);return args?.operation==="watch"&&args.cursor===(await siblingWrite).data.etag;});
+ await Promise.all([editor.getByRole("button",{name:"Save",exact:true}).click(),observed]);
+ assert.equal(await b.getByRole("status").textContent(),unknownSave);
  assert.equal(await b.getByLabel("Document",{exact:true}).inputValue(),"save response lost");
+ assert.equal(await b.getByRole("button",{name:"Save",exact:true}).isDisabled(),true);
+ await b.getByRole("button",{name:"Reload saved version",exact:true}).click();await b.getByRole("button",{name:"Confirm reload — replace unsaved changes",exact:true}).click();await b.getByText("Ready",{exact:true}).waitFor();
+ assert.equal(await b.getByLabel("Document",{exact:true}).inputValue(),"newer sibling save");
  console.log("Data author acceptance passed: no runtime, close cancellation, independent windows, CAS conflict, committed response loss, explicit uncertain-action review, single-flight actions, draft form refresh, sibling isolation and persistent data.");
 } catch(error){throw new Error(String(error)+"\n"+logs,{cause:error})}finally{
  if(browser)await browser.close();if(child&&child.exitCode===null){child.kill("SIGINT");await Promise.race([new Promise(resolve=>child.once("exit",resolve)),new Promise(resolve=>setTimeout(resolve,5000))]);if(child.exitCode===null)child.kill("SIGKILL")};await rm(root,{recursive:true,force:true});
