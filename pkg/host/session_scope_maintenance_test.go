@@ -166,8 +166,16 @@ func TestHostOwnedSessionFinalizationReusesFenceCapacity(t *testing.T) {
 			OwnerEnvHash: "env_" + suffix, SessionChannelIDHash: "channel_" + suffix,
 		}
 		closed, err := h.CloseAuthenticatedSessionScope(context.Background(), CloseAuthenticatedSessionScopeRequest{Session: session})
+		// Teardown has a bounded drain interval. An acknowledged fence can
+		// finish through the maintenance API before its capacity is reclaimed.
+		if errors.Is(err, ErrSessionTeardownIncomplete) && closed.Status == SessionScopeTeardownIncomplete && closed.Teardown.Fenced && closed.Identity.Valid() {
+			closed, err = h.ResumeClosedSessionScopeTeardown(t.Context(), ResumeClosedSessionScopeTeardownRequest{Session: session, Identity: closed.Identity})
+		}
 		if err != nil {
 			t.Fatalf("CloseAuthenticatedSessionScope(%d) error = %v", index, err)
+		}
+		if closed.Status != SessionScopeTeardownComplete || !closed.Teardown.Complete {
+			t.Fatalf("teardown(%d) did not complete: %v", index, closed.Status)
 		}
 		finalized, err := h.FinalizeClosedSessionScope(context.Background(), FinalizeClosedSessionScopeRequest{Session: session, Identity: closed.Identity})
 		if err != nil || finalized.Status != SessionScopeFinalized {
