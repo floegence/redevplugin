@@ -6,6 +6,7 @@
 - Public history and windows expose tool status without disclosing arguments, output, or private reasoning.
 - Update the worker runtime to Wasmtime 50.0.2 for its security fixes.
 - Recheck the content digest of hashed plugin data snapshots before publication, including on filesystems where consecutive writes share a modification time.
+- Finish an acknowledged session teardown on preview shutdown or restart using its original session identity.
 
 ## v3.38.1
 

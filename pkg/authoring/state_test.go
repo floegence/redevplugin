@@ -3,6 +3,7 @@ package authoring
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -181,6 +182,38 @@ func TestAuthorSessionCleanupIsRepeatableAcrossRestart(t *testing.T) {
 	}
 	if err := CloseSession(context.Background(), h.Host(), fresh); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAuthorCleanupResumesOnlyItsAcknowledgedFence(t *testing.T) {
+	h, err := testhost.Open(t.Context(), authorHostOptions(t.TempDir(), "http://localhost:12345", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	session := h.Session()
+	closed, err := h.Host().CloseAuthenticatedSessionScope(t.Context(), host.CloseAuthenticatedSessionScopeRequest{Session: session})
+	if err != nil || !closed.Identity.Valid() || !closed.Teardown.Fenced {
+		t.Fatalf("establish exact teardown: %v, %v", closed.Status, err)
+	}
+	// The retained Host record has completed but the caller only saw an incomplete receipt.
+	closed.Status, closed.Teardown.Complete = host.SessionScopeTeardownIncomplete, false
+	other := session
+	other.SessionChannelIDHash += "-other"
+	if err := finishSessionCleanup(t.Context(), h.Host(), other, closed, host.ErrSessionTeardownIncomplete); err == nil {
+		t.Fatal("resumed a different session")
+	}
+	closed.Teardown.Fenced = false
+	if err := finishSessionCleanup(t.Context(), h.Host(), session, closed, host.ErrSessionTeardownIncomplete); !errors.Is(err, host.ErrSessionTeardownIncomplete) {
+		t.Fatalf("unacknowledged close: %v", err)
+	}
+	closed.Teardown.Fenced = true
+	if err := finishSessionCleanup(t.Context(), h.Host(), session, closed, host.ErrSessionTeardownIncomplete); err != nil {
+		t.Fatal(err)
+	}
+	final, err := h.Host().FinalizeClosedSessionScope(t.Context(), host.FinalizeClosedSessionScopeRequest{Session: session, Identity: closed.Identity})
+	if err != nil || final.Status != host.SessionScopeFinalizationAbsent {
+		t.Fatalf("retained fence after close: %v, %v", final.Status, err)
 	}
 }
 

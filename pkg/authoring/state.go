@@ -158,10 +158,19 @@ func (s *State) Close() error {
 }
 func CloseSession(ctx context.Context, h *host.Host, session sessionctx.Context) error {
 	result, err := h.CloseAuthenticatedSessionScope(ctx, host.CloseAuthenticatedSessionScopeRequest{Session: session})
+	return finishSessionCleanup(ctx, h, session, result, err)
+}
+
+func finishSessionCleanup(ctx context.Context, h *host.Host, session sessionctx.Context, result host.SessionScopeTeardownMaintenanceResult, err error) error {
+	// A committed fence keeps the session closed while its bounded drain finishes.
+	// Resume only that acknowledged operation; never issue a second close.
+	if errors.Is(err, host.ErrSessionTeardownIncomplete) && result.Status == host.SessionScopeTeardownIncomplete && result.Teardown.Fenced && result.Identity.Valid() && ctx.Err() == nil {
+		result, err = h.ResumeClosedSessionScopeTeardown(ctx, host.ResumeClosedSessionScopeTeardownRequest{Session: session, Identity: result.Identity})
+	}
 	if err != nil {
 		return err
 	}
-	if result.Status != host.SessionScopeTeardownComplete {
+	if result.Status != host.SessionScopeTeardownComplete || !result.Teardown.Complete {
 		return fmt.Errorf("development session cleanup incomplete: %s", result.Status)
 	}
 	_, err = h.FinalizeClosedSessionScope(ctx, host.FinalizeClosedSessionScopeRequest{Session: session, Identity: result.Identity})
