@@ -14,7 +14,13 @@ export async function measureWebPerformance(url) {
   const contract = JSON.parse(await readFile(new URL('../../testdata/quality/performance.json', import.meta.url), 'utf8'));
   const specifications = contract.scenarios.filter(item => item.id.startsWith('ui.'));
   const samples = new Map(specifications.map(item => [item.id, []]));
-  const browser = await chromium.launch({ headless: true });
+  // The macOS headless shell's GPU helper cannot always locate its ICU data.
+  // Measure with the matching complete browser and its normal GPU process.
+  const fullChromium = process.platform === 'darwin';
+  const browser = await chromium.launch({ headless: true, ...(fullChromium ? {
+    channel: 'chromium',
+    ...(process.env.TMPDIR ? {env: {...process.env, MAC_CHROMIUM_TMPDIR: process.env.MAC_CHROMIUM_TMPDIR || process.env.TMPDIR}} : {}),
+  } : {}) });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -109,7 +115,7 @@ export async function measureWebPerformance(url) {
       source_diff_sha256: createHash('sha256').update(execFileSync('git', ['diff', 'HEAD', '--'])).digest('hex'),
       platform_version: (await readFile(new URL('../../VERSION', import.meta.url), 'utf8')).trim(),
       generated_at: new Date().toISOString(), gate,
-      environment: { os: os.platform(), arch: os.arch(), node: process.version, chromium: browser.version() },
+      environment: { os: os.platform(), arch: os.arch(), node: process.version, chromium: browser.version(), chromium_channel: fullChromium ? 'chromium' : 'headless-shell' },
       web_traffic: traffic, observation_ms_per_phase: 1500, initial_surface_count: 2, final_surface_count: 1,
       plain_opening_ms: { host_ready: plainHostReadyMs, first_verified_input: plainInteractiveMs },
       raw_gate_samples: Object.fromEntries(samples), profiles: [],
@@ -118,6 +124,8 @@ export async function measureWebPerformance(url) {
     await plainPage.close();
     for (const requestDelayMs of [0, 40]) diagnostic.profiles.push(await observeApplicationCosts(browser, url, requestDelayMs));
     assert.deepEqual(errors, []);
+    const diagnosticPath = process.env.REDEVPLUGIN_WEB_PERFORMANCE_DIAGNOSTIC || output + '.web-diagnostic.json';
+    await writeFile(diagnosticPath, JSON.stringify(diagnostic, null, 2) + '\n', { mode: 0o600 });
     for (const specification of specifications) {
       const values = [...samples.get(specification.id)].sort((left, right) => left - right);
       assert.equal(values.length, specification.sample_count);
@@ -128,8 +136,6 @@ export async function measureWebPerformance(url) {
       }
       await appendFile(output, JSON.stringify({ id: specification.id, gate, status: 'pass', sample_count: values.length, metrics }) + '\n', { mode: 0o600 });
     }
-    const diagnosticPath = process.env.REDEVPLUGIN_WEB_PERFORMANCE_DIAGNOSTIC || output + '.web-diagnostic.json';
-    await writeFile(diagnosticPath, JSON.stringify(diagnostic, null, 2) + '\n', { mode: 0o600 });
     console.log(JSON.stringify({ web_performance_diagnostic: diagnosticPath, profiles: diagnostic.profiles.map(profile => ({ request_delay_ms: profile.request_delay_ms, method_samples: profile.method_roundtrip_ms.length, resource_samples: profile.resource_roundtrip_ms.length, closed_surface_count: profile.closed_surface_count })) }));
   } finally { await page.close(); await browser.close(); }
 }
