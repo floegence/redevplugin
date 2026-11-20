@@ -238,10 +238,11 @@ type rootedTreeEntry struct {
 }
 
 type rootedTreeSnapshot struct {
-	contentHash string
-	sizeBytes   int64
-	rootInfo    fs.FileInfo
-	entries     []rootedTreeEntry
+	contentHash      string
+	excludedRootFile string
+	sizeBytes        int64
+	rootInfo         fs.FileInfo
+	entries          []rootedTreeEntry
 }
 
 // sanitizeFilesystemPath is the single boundary for paths that reach the OS.
@@ -438,7 +439,7 @@ func snapshotRootedTree(path string, options rootedTreeSnapshotOptions) (rootedT
 		}
 	}
 
-	snapshot := rootedTreeSnapshot{sizeBytes: sizeBytes, rootInfo: namedRoot, entries: entries}
+	snapshot := rootedTreeSnapshot{sizeBytes: sizeBytes, rootInfo: namedRoot, entries: entries, excludedRootFile: options.excludedRootFile}
 	if hasher != nil {
 		snapshot.contentHash = hex.EncodeToString(hasher.Sum(nil))
 	}
@@ -459,38 +460,23 @@ func (snapshot rootedTreeSnapshot) validateRoot(path string) error {
 }
 
 func (snapshot rootedTreeSnapshot) revalidate(path string) error {
-	var err error
-	path, err = sanitizeFilesystemPath(path)
-	if err != nil {
-		return err
-	}
 	if err := snapshot.validateRoot(path); err != nil {
 		return err
 	}
-	root, err := os.OpenRoot(path)
+	// Filesystems need not advance their modification clock on each write.
+	// Re-read the same hash domain before publishing a content-bound snapshot.
+	current, err := snapshotRootedTree(path, rootedTreeSnapshotOptions{hashContents: snapshot.contentHash != "", excludedRootFile: snapshot.excludedRootFile})
 	if err != nil {
 		return err
 	}
-	defer root.Close()
-	openedRoot, err := root.Lstat(".")
-	if err != nil || !sameSnapshotInfo(snapshot.rootInfo, openedRoot) {
-		return fmt.Errorf("%w: dataset root changed while revalidating", ErrUnsafeFilesystem)
+	if !sameSnapshotInfo(snapshot.rootInfo, current.rootInfo) || len(snapshot.entries) != len(current.entries) || snapshot.contentHash != current.contentHash {
+		return fmt.Errorf("%w: dataset changed after snapshot", ErrUnsafeFilesystem)
 	}
-	for _, entry := range snapshot.entries {
-		current, err := root.Lstat(entry.path)
-		if err != nil || !sameSnapshotInfo(entry.info, current) {
+	for i, entry := range snapshot.entries {
+		other := current.entries[i]
+		if entry.path != other.path || !sameSnapshotInfo(entry.info, other.info) {
 			return fmt.Errorf("%w: entry %s changed after snapshot", ErrUnsafeFilesystem, entry.path)
 		}
-		if current.IsDir() {
-			continue
-		}
-		if !validRootRegular(root, entry.path, current) {
-			return fmt.Errorf("%w: unsafe entry %s after snapshot", ErrUnsafeFilesystem, entry.path)
-		}
-	}
-	currentRoot, err := os.Lstat(path)
-	if err != nil || !sameSnapshotInfo(snapshot.rootInfo, currentRoot) {
-		return fmt.Errorf("%w: dataset root changed after revalidation", ErrUnsafeFilesystem)
 	}
 	return nil
 }

@@ -126,6 +126,11 @@ func TestRootedTreeSnapshotRejectsFileMutationAfterHash(t *testing.T) {
 	if err := os.WriteFile(path, after, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Some filesystems report the same mtime for two successive writes.
+	stamp := snapshot.entries[0].info.ModTime()
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
 	if err := snapshot.revalidate(root); !errors.Is(err, ErrUnsafeFilesystem) {
 		t.Fatalf("revalidate() error = %v, want ErrUnsafeFilesystem", err)
 	}
