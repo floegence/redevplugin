@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v3.41.0
 
 - Add metadata-only package previews, session-scoped download progress and cancellation. Checking a source does not require downloading its package.
 - Stream remote packages and bulk assets into file-backed storage without a fixed 256 MiB download ceiling. Downloads respect available disk space, explicit storage quotas and idle timeouts; inspection approval starts after verification.
