@@ -742,6 +742,21 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"inspectExternalPackage(request: PluginInspectExternalPackageRequest", `"POST", "/_redevplugin/api/plugins/external-packages/inspect"`},
 		},
 		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/preview/query"},
+			Owner:        "PluginPlatformClient.previewExternalPackage",
+			Snippets:     []string{"previewExternalPackage(request:", `#requestQuery("/_redevplugin/api/plugins/external-packages/preview/query"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/transfer/query"},
+			Owner:        "PluginPlatformClient.getPackageTransferProgress",
+			Snippets:     []string{"getPackageTransferProgress(request:", `#requestQuery("/_redevplugin/api/plugins/external-packages/transfer/query"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/transfer/cancel"},
+			Owner:        "PluginPlatformClient.cancelPackageTransfer",
+			Snippets:     []string{"cancelPackageTransfer(request:", `"POST", "/_redevplugin/api/plugins/external-packages/transfer/cancel"`},
+		},
+		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/upload/inspect"},
 			Owner:        "PluginPlatformClient.inspectUploadedExternalPackage install",
 			Snippets:     []string{"inspectUploadedExternalPackage(", `"/_redevplugin/api/plugins/external-packages/upload/inspect"`},

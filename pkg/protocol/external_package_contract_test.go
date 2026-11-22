@@ -100,7 +100,8 @@ func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 		schema     string
 		properties []string
 	}{
-		{schema: "InspectExternalPackageRequest", properties: []string{"expected_contract_set_sha256", "expected_package_sha256", "expected_plugin_id", "expected_publisher_id", "expected_security_summary_sha256", "expected_version", "intent", "source"}},
+		{schema: "InspectExternalPackageRequest", properties: []string{"expected_archive_sha256", "expected_contract_set_sha256", "expected_package_sha256", "expected_plugin_id", "expected_publisher_id", "expected_security_summary_sha256", "expected_version", "intent", "source", "transfer_id"}},
+		{schema: "PackageTransferRequest", properties: []string{"transfer_id"}},
 		{schema: "StartInspectedInstallRequest", properties: []string{"approved_permissions", "automatic", "expected_package_sha256", "inspection_id", "request_id"}},
 	}
 	for _, tt := range tests {
@@ -122,6 +123,12 @@ func TestExternalPackageRequestsExposeOnlyCallerControlledInputs(t *testing.T) {
 		}
 	}
 
+	preview := openAPISchemaBlock(t, source, "PreviewPackageRequest")
+	for _, snippet := range []string{"oneOf:", "additionalProperties: false", "required: [source]", `source: { $ref: "#/components/schemas/ExternalPackageSource" }`, `- $ref: "#/components/schemas/InspectPluginUpdateRequest"`} {
+		if !strings.Contains(preview, snippet) {
+			t.Fatalf("PreviewPackageRequest is missing %q", snippet)
+		}
+	}
 	intent := openAPISchemaBlock(t, source, "ExternalPackageIntent")
 	for _, snippet := range []string{"action: { const: install }", "action: { const: update }", "plugin_instance_id:", "expected_management_revision:"} {
 		if !strings.Contains(intent, snippet) {
