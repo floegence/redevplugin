@@ -75,7 +75,11 @@ func TestMultiGiBHTTPSPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stage.Remove(result.Artifact)
+	defer func() {
+		if err := stage.Remove(result.Artifact); err != nil {
+			t.Error(err)
+		}
+	}()
 	if received <= size || result.Artifact.Size != received || requests.Load() != 1 {
 		t.Fatalf("received=%d staged=%d requests=%d", received, result.Artifact.Size, requests.Load())
 	}
