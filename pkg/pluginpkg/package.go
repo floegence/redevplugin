@@ -67,7 +67,10 @@ type Package struct {
 	EntriesHash            string            `json:"entries_hash"`
 	// Files contains owned materialized bytes. Borrowing APIs do
 	// not mutate them; AssetStore.PutOwnedPackage transfers and clears them.
-	Files map[string][]byte `json:"-"`
+	Files            map[string][]byte `json:"-"`
+	archiveFiles     map[string]*zip.File
+	reopenArchive    func(context.Context) (*os.File, error)
+	presentationIcon []byte
 }
 
 // ReadLimits is an immutable set of resource limits for package archives.
@@ -271,8 +274,29 @@ func writePackageZip(ctx context.Context, w io.Writer, pkg Package) error {
 }
 
 func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Package, error) {
+	return readArchive(ctx, r, size, limits, false)
+}
+
+func ReadStreamed(ctx context.Context, r io.ReaderAt, size, availableBytes int64, reopen func(context.Context) (*os.File, error)) (Package, error) {
+	limits := DefaultReadLimits()
+	limits.maxEntryBytes = availableBytes
+	limits.maxUncompressedBytes = availableBytes
+	pkg, err := readArchive(ctx, r, size, limits, true)
+	if err == nil && reopen != nil {
+		pkg.archiveFiles = nil
+		pkg.reopenArchive = reopen
+	}
+	return pkg, err
+}
+
+func readArchive(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits, streamed bool) (Package, error) {
 	if err := limits.validate(); err != nil {
 		return Package{}, err
+	}
+	if streamed {
+		if err := checkArchiveDirectory(r, size, limits); err != nil {
+			return Package{}, err
+		}
 	}
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
@@ -283,6 +307,18 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Pa
 	}
 
 	files := map[string][]byte{}
+	var archiveFiles map[string]*zip.File
+	var entries []Entry
+	var materialized int64
+	var validationPaths map[string]bool
+	if streamed {
+		validationPaths, err = fullValidationPaths(zr)
+		if err != nil {
+			return Package{}, err
+		}
+		archiveFiles = make(map[string]*zip.File, len(zr.File))
+		entries = make([]Entry, 0, len(zr.File))
+	}
 	seenPaths := map[string]struct{}{}
 	securityPaths := map[string]string{}
 	var total int64
@@ -328,6 +364,23 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Pa
 			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "total_uncompressed_bytes", "", "", "package too large")
 		}
 		total += entryBytes
+		if streamed {
+			archiveFiles[entryPath] = file
+			if !validationPaths[entryPath] && path.Base(entryPath) != "package.json" && !strings.EqualFold(path.Base(entryPath), "Cargo.toml") {
+				entry, prefix, err := streamZipEntry(ctx, file, io.Discard)
+				if err != nil {
+					return Package{}, err
+				}
+				entries = append(entries, entry)
+				files[entryPath] = prefix
+				continue
+			}
+			memory := DefaultReadLimits()
+			if entryBytes > memory.maxEntryBytes || entryBytes > memory.maxUncompressedBytes-materialized {
+				return Package{}, validationErrorf(ValidationCodePackageTooLarge, "validation_bytes", entryPath, "", "validation document exceeds memory budget")
+			}
+			materialized += entryBytes
+		}
 		rc, err := file.Open()
 		if err != nil {
 			return Package{}, wrapValidationError(ValidationCodePackageInvalid, "entry_open_failed", entryPath, "", err)
@@ -358,8 +411,26 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Pa
 			return Package{}, validationErrorf(ValidationCodePackageInvalid, "entry_size_mismatch", entryPath, "", "entry %q size mismatch", entryPath)
 		}
 		files[entryPath] = content
+		if streamed {
+			entry, err := makeEntry(entryPath, content)
+			if err != nil {
+				return Package{}, err
+			}
+			entries = append(entries, entry)
+		}
 	}
 
+	if streamed {
+		pkg, err := packageMetadata(ctx, files, entries)
+		if err != nil {
+			return Package{}, err
+		}
+		pkg.archiveFiles = archiveFiles
+		if icon := pkg.Manifest.Presentation.Icon; icon != nil {
+			pkg.presentationIcon = files[icon.Path]
+		}
+		return pkg, nil
+	}
 	return packageFromOwnedFiles(ctx, files)
 }
 
@@ -388,6 +459,10 @@ func packageFromOwnedFiles(ctx context.Context, files map[string][]byte) (Packag
 
 // packageMetadataFromFiles borrows the map for the duration of the call.
 func packageMetadataFromFiles(ctx context.Context, files map[string][]byte) (Package, error) {
+	return packageMetadata(ctx, files, nil)
+}
+
+func packageMetadata(ctx context.Context, files map[string][]byte, entries []Entry) (Package, error) {
 	manifestBytes, ok := files["manifest.json"]
 	if !ok {
 		return Package{}, validationErrorf(ValidationCodeManifestInvalid, "manifest_missing", "manifest.json", "", "manifest.json is required")
@@ -405,13 +480,15 @@ func packageMetadataFromFiles(ctx context.Context, files map[string][]byte) (Pac
 	if err := validatePackageAssetSecurity(decodedManifest, files); err != nil {
 		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_asset_security")
 	}
-	entries := make([]Entry, 0, len(files))
-	for entryPath, content := range files {
-		entry, err := makeEntry(entryPath, content)
-		if err != nil {
-			return Package{}, ensurePackageValidationError(err, ValidationCodePackagePathForbidden, "entry_path")
+	if entries == nil {
+		entries = make([]Entry, 0, len(files))
+		for entryPath, content := range files {
+			entry, err := makeEntry(entryPath, content)
+			if err != nil {
+				return Package{}, ensurePackageValidationError(err, ValidationCodePackagePathForbidden, "entry_path")
+			}
+			entries = append(entries, entry)
 		}
-		entries = append(entries, entry)
 	}
 	sortEntries(entries)
 	manifestHash := sha256String(canonicalManifest)
@@ -826,7 +903,11 @@ func ReadPresentationIcon(pkg Package) (PresentationIconAsset, []byte, error) {
 	if pkg.Manifest.Presentation.Icon == nil {
 		return PresentationIconAsset{}, nil, ErrPresentationIconUnavailable
 	}
-	evidence, content, err := readPresentationIconAsset(pkg.Manifest.Presentation.Icon.Path, pkg.Files)
+	files := pkg.Files
+	if pkg.archiveFiles != nil || pkg.reopenArchive != nil {
+		files = map[string][]byte{pkg.Manifest.Presentation.Icon.Path: pkg.presentationIcon}
+	}
+	evidence, content, err := readPresentationIconAsset(pkg.Manifest.Presentation.Icon.Path, files)
 	if err != nil {
 		return PresentationIconAsset{}, nil, err
 	}

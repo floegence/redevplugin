@@ -2097,6 +2097,24 @@ test("inspected installs retain a stable request and query through POST", async 
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { request_id: request.request_id });
 });
 
+test("remote previews and transfer progress do not dispatch a package inspection", async () => {
+  const fetch = new FakeFetch();
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const source = { kind: "package_url" as const, url: "https://plugins.example.test/test.redevplugin" };
+  const transfer = { transfer_id: "transfer_0123456789abcdef" };
+  fetch.push({ ok: true, data: { kind: "package_url" } });
+  assert.deepEqual(await client.previewExternalPackage({ source }), { kind: "package_url" });
+  fetch.push({ ok: true, data: { stage: "downloading", received_bytes: 123 } });
+  assert.deepEqual(await client.getPackageTransferProgress(transfer), { stage: "downloading", received_bytes: 123 });
+  fetch.push({ ok: true, data: { stage: "inactive", received_bytes: 0 } });
+  await client.cancelPackageTransfer(transfer);
+  assert.deepEqual(fetch.calls.map((call) => call.input), [
+    "/_redevplugin/api/plugins/external-packages/preview/query",
+    "/_redevplugin/api/plugins/external-packages/transfer/query",
+    "/_redevplugin/api/plugins/external-packages/transfer/cancel",
+  ]);
+});
+
 test("repository discovery uses the shared query contract", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: [{ plugin_id: "example.app", path: ".", manifest: "manifest.json", release: { tag_template: "app-v{version}", package_asset_template: "plugin.redevplugin" } }] });

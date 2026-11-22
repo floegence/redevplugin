@@ -31,7 +31,12 @@ func (h *Host) preparePackageAssets(ctx context.Context, pkg *pluginpkg.Package)
 		}
 		// Validate retained bytes before reusing them; never overwrite corrupt state.
 		for _, entry := range entries {
-			if _, err = h.adapters.Assets.ReadAsset(ctx, hash, entry.Path); err != nil {
+			if store, ok := h.adapters.Assets.(*pluginpkg.FileAssetStore); ok {
+				err = store.VerifyAsset(ctx, hash, entry.Path)
+			} else {
+				_, err = h.adapters.Assets.ReadAsset(ctx, hash, entry.Path)
+			}
+			if err != nil {
 				unlock()
 				return nil, err
 			}

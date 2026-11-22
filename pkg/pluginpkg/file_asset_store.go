@@ -1,6 +1,7 @@
 package pluginpkg
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -110,9 +112,41 @@ func (s *FileAssetStore) PutOwnedPackage(ctx context.Context, pkg *Package) erro
 	if s == nil {
 		return errors.New("package asset store is nil")
 	}
-	files, err := takePackageFiles(pkg)
-	if err != nil {
-		return err
+	if pkg == nil {
+		return errors.New("package is required")
+	}
+	archive := pkg.archiveFiles
+	pkg.archiveFiles = nil
+	if reopen := pkg.reopenArchive; reopen != nil {
+		pkg.reopenArchive = nil
+		file, err := reopen(ctx)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		reader, err := zip.NewReader(file, info.Size())
+		if err != nil {
+			return err
+		}
+		if len(reader.File) != len(pkg.Entries) {
+			return ErrPackageAssetNotFound
+		}
+		archive = make(map[string]*zip.File, len(reader.File))
+		for _, part := range reader.File {
+			archive[part.Name] = part
+		}
+	}
+	var files map[string][]byte
+	if archive == nil {
+		var err error
+		files, err = takePackageFiles(pkg)
+		if err != nil {
+			return err
+		}
 	}
 	release, err := s.acquire()
 	if err != nil {
@@ -129,7 +163,7 @@ func (s *FileAssetStore) PutOwnedPackage(ctx context.Context, pkg *Package) erro
 	if len(manifest.Entries) == 0 {
 		return fmt.Errorf("%w: package entries are required", ErrInvalidAssetPath)
 	}
-	if len(files) != len(manifest.Entries) {
+	if len(files)+len(archive) != len(manifest.Entries) {
 		return fmt.Errorf("%w: package files do not match entries", ErrPackageAssetNotFound)
 	}
 	index, err := newFileAssetManifestIndex(manifest, manifest.PackageHash)
@@ -143,6 +177,12 @@ func (s *FileAssetStore) PutOwnedPackage(ctx context.Context, pkg *Package) erro
 		entryPath, err := validateServableAssetPath(entry.Path)
 		if err != nil {
 			return err
+		}
+		if archive != nil {
+			if archive[entryPath] == nil {
+				return ErrPackageAssetNotFound
+			}
+			continue
 		}
 		content, ok := files[entryPath]
 		if !ok {
@@ -178,7 +218,19 @@ func (s *FileAssetStore) PutOwnedPackage(ctx context.Context, pkg *Package) erro
 		if err := tmpRoot.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
-		if err := tmpRoot.WriteFile(target, files[entry.Path], 0o600); err != nil {
+		if archive != nil {
+			out, err := tmpRoot.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if err != nil {
+				return err
+			}
+			written, _, err := streamZipEntry(ctx, archive[entry.Path], out)
+			if err := errors.Join(err, out.Close()); err != nil {
+				return err
+			}
+			if written != entry {
+				return fmt.Errorf("%w: asset %q changed during installation", ErrPackageAssetNotFound, entry.Path)
+			}
+		} else if err := tmpRoot.WriteFile(target, files[entry.Path], 0o600); err != nil {
 			return err
 		}
 	}
@@ -215,6 +267,15 @@ func (s *FileAssetStore) PutOwnedPackage(ctx context.Context, pkg *Package) erro
 }
 
 func (s *FileAssetStore) ReadAsset(ctx context.Context, packageHash string, assetPath string) (Asset, error) {
+	return s.readAsset(ctx, packageHash, assetPath, false)
+}
+
+func (s *FileAssetStore) VerifyAsset(ctx context.Context, packageHash string, assetPath string) error {
+	_, err := s.readAsset(ctx, packageHash, assetPath, true)
+	return err
+}
+
+func (s *FileAssetStore) readAsset(ctx context.Context, packageHash string, assetPath string, verifyOnly bool) (Asset, error) {
 	if s == nil {
 		return Asset{}, errors.New("package asset store is nil")
 	}
@@ -273,6 +334,20 @@ func (s *FileAssetStore) ReadAsset(ctx context.Context, packageHash string, asse
 	}
 	s.state.mu.RUnlock()
 	defer file.Close()
+	if verifyOnly {
+		hash := sha256.New()
+		count, err := io.Copy(hash, contextPackageReader{ctx, io.LimitReader(file, entry.Size+1)})
+		if err != nil {
+			return Asset{}, err
+		}
+		if count != entry.Size || "sha256:"+hex.EncodeToString(hash.Sum(nil)) != entry.SHA256 {
+			return Asset{}, ErrPackageAssetNotFound
+		}
+		return Asset{Entry: entry}, nil
+	}
+	if entry.Size > DefaultReadLimits().maxEntryBytes {
+		return Asset{}, validationErrorf(ValidationCodePackageTooLarge, "entry_bytes", entry.Path, "", "asset exceeds in-memory read budget")
+	}
 	content, err := io.ReadAll(io.LimitReader(file, entry.Size+1))
 	if err != nil {
 		return Asset{}, err
@@ -509,7 +584,7 @@ func newFileAssetManifestIndex(manifest fileAssetManifest, expectedPackageHash s
 		if err := validateEntryPathLength(entry.Path, limits.maxPathBytes); err != nil {
 			return nil, err
 		}
-		if entry.Size < 0 || entry.Size > limits.maxEntryBytes || total > limits.maxUncompressedBytes-entry.Size {
+		if entry.Size < 0 || entry.Size >= math.MaxInt64-total {
 			return nil, fmt.Errorf("%w: asset manifest entry size is invalid", ErrInvalidAssetPath)
 		}
 		if _, exists := entriesByPath[entry.Path]; exists {

@@ -880,6 +880,9 @@ func (e *jsonLimitError) status() int {
 
 var routes = []routeSpec{
 	queryRoute("/_redevplugin/api/plugins/repository/plugins/query", host.ManagementActionListRepositoryPlugins, func(h *Handler) http.HandlerFunc { return h.handleListRepositoryPlugins }),
+	queryRoute("/_redevplugin/api/plugins/external-packages/preview/query", host.ManagementActionListRepositoryPlugins, func(h *Handler) http.HandlerFunc { return h.handlePreviewExternalPackage }),
+	queryRoute("/_redevplugin/api/plugins/external-packages/transfer/query", host.ManagementActionListRepositoryPlugins, func(h *Handler) http.HandlerFunc { return h.handlePackageTransfer(false) }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/transfer/cancel", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handlePackageTransfer(true) }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/updates/preferences", host.ManagementActionSetAutomaticUpdates, func(h *Handler) http.HandlerFunc { return h.handleSetAutomaticUpdates }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/updates/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectPluginUpdate }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
@@ -4181,6 +4184,55 @@ func (h Handler) handleInspectPluginUpdate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeMutationSuccess(w, result)
+}
+
+func (h Handler) handlePackageTransfer(cancel bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request host.PackageTransferRequest
+		if err := decodeJSON(r, &request); err != nil {
+			if cancel {
+				writeMutationInvalidRequestError(w, err)
+			} else {
+				writeInvalidRequestError(w, err)
+			}
+			return
+		}
+		read := h.host.PackageTransferProgress
+		if cancel {
+			read = h.host.CancelPackageTransfer
+		}
+		result, err := read(r.Context(), request)
+		if err != nil {
+			code := errorCodeForManagementError(err)
+			message := h.publicFailureMessage(r.Context(), "external-package.transfer", code, err)
+			if cancel {
+				writeMutationError(w, httpStatusForManagementError(err), code, message, errorDetailsForManagementError(err), mutation.ForError(err))
+			} else {
+				writeError(w, httpStatusForManagementError(err), code, message, errorDetailsForManagementError(err))
+			}
+			return
+		}
+		if cancel {
+			writeMutationSuccess(w, result)
+		} else {
+			writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
+		}
+	}
+}
+
+func (h Handler) handlePreviewExternalPackage(w http.ResponseWriter, r *http.Request) {
+	var request host.PreviewPackageRequest
+	if err := decodeJSON(r, &request); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.PreviewExternalPackage(r.Context(), request)
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.preview", code, err), errorDetailsForManagementError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
 }
 
 func (h Handler) handleListRepositoryPlugins(w http.ResponseWriter, r *http.Request) {

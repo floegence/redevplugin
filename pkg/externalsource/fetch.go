@@ -70,6 +70,7 @@ type RedirectHop struct {
 type FetchRequest struct {
 	URL      string
 	QuotaKey string
+	Progress func(completed, total int64)
 }
 
 type FetchResult struct {
@@ -122,11 +123,8 @@ func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 		return nil, invalidSource("new_fetcher", "stage store is required")
 	}
 	totalTimeout := options.TotalTimeout
-	if totalTimeout == 0 {
-		totalTimeout = defaultTotalTimeout
-	}
-	if totalTimeout <= 0 {
-		return nil, invalidSource("new_fetcher", "total timeout must be positive")
+	if totalTimeout < 0 {
+		return nil, invalidSource("new_fetcher", "total timeout cannot be negative")
 	}
 	transport, err := prepareHostTransport(options.Transport)
 	if err != nil {
@@ -140,7 +138,7 @@ func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 		sourceID:     strings.TrimSpace(options.SourceID),
 		totalTimeout: totalTimeout,
 		maxRedirects: defaultMaxRedirects,
-		maxBytes:     MaxArtifactBytes,
+		maxBytes:     maxStreamBytes,
 		transports:   make(map[string]*http.Transport),
 	}
 	fetcher.roundTrip = fetcher.secureRoundTrip
@@ -148,7 +146,7 @@ func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 }
 
 func (fetcher *Fetcher) FetchPackage(ctx context.Context, request FetchRequest) (FetchResult, error) {
-	return fetcher.fetchPackage(ctx, request.URL, request.QuotaKey, false)
+	return fetcher.fetchPackage(ctx, request.URL, request.QuotaKey, false, 0, request.Progress)
 }
 
 // CloseIdleConnections releases connections owned by this fetcher without
@@ -206,11 +204,11 @@ func (fetcher *Fetcher) FetchArtifact(ctx context.Context, request ArtifactFetch
 	return ArtifactFetchResult{Bytes: value, Source: fetched.Source, Final: fetched.Final, Redirects: fetched.Redirects}, nil
 }
 
-func (fetcher *Fetcher) fetchPackage(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool) (FetchResult, error) {
+func (fetcher *Fetcher) fetchPackage(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool, expectedSize int64, progress func(completed, total int64)) (FetchResult, error) {
 	if fetcher == nil {
 		return FetchResult{}, invalidSource("fetch", "fetcher is not initialized")
 	}
-	return fetcher.fetchStaged(ctx, rawURL, quotaKey, allowInitialQuery, fetcher.maxBytes, nil, 0, nil)
+	return fetcher.fetchStaged(ctx, rawURL, quotaKey, allowInitialQuery, fetcher.maxBytes, nil, expectedSize, progress)
 }
 
 func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool, maxBytes int64, allowedHosts map[string]struct{}, expectedSize int64, progress func(completed, total int64)) (FetchResult, error) {
@@ -227,8 +225,17 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 		return FetchResult{}, err
 	}
 	sourceDisplay := current.DisplayURL()
-	ctx, cancel := context.WithTimeout(ctx, fetcher.totalTimeout)
-	defer cancel()
+	deadline := fetcher.totalTimeout
+	if deadline == 0 && allowedHosts != nil {
+		deadline = defaultTotalTimeout
+	}
+	if deadline > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, deadline)
+		defer cancel()
+	}
+	ctx, touch, stop := downloadIdleContext(ctx, defaultTotalTimeout)
+	defer stop()
 	redirects := make([]RedirectHop, 0, fetcher.maxRedirects)
 	visited := map[string]struct{}{current.requestURL().String(): {}}
 
@@ -261,6 +268,7 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 			return FetchResult{}, externalError(ErrorRedirectDenied, "fetch", current.DisplayURL(), fmt.Errorf("host transport followed a redirect"))
 		}
 		if isRedirectStatus(response.StatusCode) {
+			touch()
 			next, redirectErr := redirectTarget(current, response)
 			_ = response.Body.Close()
 			if redirectErr != nil {
@@ -292,11 +300,14 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 			_ = response.Body.Close()
 			return FetchResult{}, externalError(ErrorArtifactTooLarge, "fetch", current.DisplayURL(), fmt.Errorf("content length exceeds limit"))
 		}
-		body := response.Body
-		if progress != nil {
-			body = &progressReadCloser{ReadCloser: response.Body, total: expectedSize, observe: progress}
+		total := expectedSize
+		if total == 0 {
+			total = max(response.ContentLength, 0)
 		}
-		artifact, stageErr := fetcher.stage.stageWithLimitForOwner(ctx, quotaKey, body, maxBytes)
+		touch()
+		body := &progressReadCloser{ReadCloser: response.Body, total: total, observe: progress, touch: touch}
+		reservation := max(expectedSize, response.ContentLength, 0)
+		artifact, stageErr := fetcher.stage.stageWithReservationForOwner(ctx, quotaKey, body, maxBytes, reservation)
 		closeErr := response.Body.Close()
 		if stageErr != nil {
 			return FetchResult{}, stageErr
@@ -314,15 +325,54 @@ type progressReadCloser struct {
 	total     int64
 	completed int64
 	observe   func(completed, total int64)
+	touch     func()
 }
 
 func (reader *progressReadCloser) Read(value []byte) (int, error) {
 	read, err := reader.ReadCloser.Read(value)
 	if read > 0 {
+		reader.touch()
 		reader.completed += int64(read)
-		reader.observe(reader.completed, reader.total)
+		if reader.observe != nil {
+			reader.observe(reader.completed, reader.total)
+		}
 	}
 	return read, err
+}
+
+func downloadIdleContext(parent context.Context, idle time.Duration) (context.Context, func(), func()) {
+	ctx, cancel := context.WithCancelCause(parent)
+	var mu sync.Mutex
+	last := time.Now()
+	touch := func() {
+		mu.Lock()
+		last = time.Now()
+		mu.Unlock()
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		timer := time.NewTimer(idle)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				mu.Lock()
+				remaining := idle - time.Since(last)
+				if remaining <= 0 {
+					cancel(context.DeadlineExceeded)
+				}
+				mu.Unlock()
+				if remaining <= 0 {
+					return
+				}
+				timer.Reset(remaining)
+			}
+		}
+	}()
+	return ctx, touch, func() { cancel(context.Canceled); <-done }
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {

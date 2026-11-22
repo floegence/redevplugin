@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -65,6 +66,8 @@ type ExternalPackageSource struct {
 }
 
 type InspectExternalPackageRequest struct {
+	ExpectedArchiveSHA256         string                `json:"expected_archive_sha256,omitempty"`
+	TransferID                    string                `json:"transfer_id,omitempty"`
 	ExpectedSecuritySummarySHA256 string                `json:"expected_security_summary_sha256,omitempty"`
 	ExpectedContractSetSHA256     string                `json:"expected_contract_set_sha256,omitempty"`
 	ExpectedPublisherID           string                `json:"expected_publisher_id,omitempty"`
@@ -112,12 +115,13 @@ type externalPackagePendingInspection struct {
 }
 
 type externalPackageInspectionStore struct {
-	mu      sync.Mutex
-	records map[string]externalPackagePendingInspection
+	transfers map[transferKey]*packageTransfer
+	mu        sync.Mutex
+	records   map[string]externalPackagePendingInspection
 }
 
 func newExternalPackageInspectionStore() *externalPackageInspectionStore {
-	return &externalPackageInspectionStore{records: make(map[string]externalPackagePendingInspection)}
+	return &externalPackageInspectionStore{records: make(map[string]externalPackagePendingInspection), transfers: make(map[transferKey]*packageTransfer)}
 }
 
 func (s *externalPackageInspectionStore) put(record externalPackagePendingInspection) {
@@ -278,12 +282,35 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 	if err := h.removeExpiredExternalPackageInspectionArtifacts(now); err != nil {
 		return ExternalPackageInspection{}, err
 	}
+	if req.ExpectedArchiveSHA256 != "" {
+		decoded, err := hex.DecodeString(req.ExpectedArchiveSHA256)
+		if err != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != req.ExpectedArchiveSHA256 {
+			return ExternalPackageInspection{}, ErrExternalPackageRequestInvalid
+		}
+	}
 
-	fetched, provenance, selectedPlugin, selectedVersion, err := h.fetchExternalPackage(ctx, req.Source, scope.OwnerEnvHash, now)
+	var progress func(int64, int64)
+	if req.TransferID != "" {
+		var transfer *packageTransfer
+		var finish func()
+		ctx, transfer, finish, err = h.externalInspections.beginTransfer(ctx, scope, req.TransferID)
+		if err != nil {
+			return ExternalPackageInspection{}, err
+		}
+		defer finish()
+		progress = transfer.observe
+	}
+	fetched, provenance, selectedPlugin, selectedVersion, err := h.fetchExternalPackage(ctx, req.Source, scope.OwnerEnvHash, now, progress)
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
-	inspection, err := h.inspectStagedExternalPackage(ctx, scope, intent, fetched.Artifact, provenance, now)
+	if req.ExpectedArchiveSHA256 != "" && fetched.Artifact.SHA256 != req.ExpectedArchiveSHA256 {
+		return ExternalPackageInspection{}, errors.Join(ErrExternalPackageConfirmation, h.adapters.ExternalPackageStageStore.Remove(fetched.Artifact))
+	}
+	if req.TransferID != "" {
+		h.externalInspections.verifyingTransfer(scope, req.TransferID)
+	}
+	inspection, err := h.inspectStagedExternalPackage(ctx, scope, intent, fetched.Artifact, provenance, req.Now.UTC())
 	if err != nil {
 		return inspection, err
 	}
@@ -361,7 +388,7 @@ func (h *Host) InspectUploadedExternalPackage(ctx context.Context, req InspectUp
 	}
 	return h.inspectStagedExternalPackage(ctx, scope, intent, artifact, registry.PackageSourceProvenance{
 		Kind: registry.PackageSourcePackageUpload, UploadID: uploadID, RetrievedAt: now,
-	}, now)
+	}, req.Now.UTC())
 }
 
 func (h *Host) inspectStagedExternalPackage(
@@ -382,9 +409,14 @@ func (h *Host) inspectStagedExternalPackage(
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
-	pkg, err := h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, artifact, pluginpkg.DefaultReadLimits())
+	pkg, err := h.verifyExternalPackage(ctx, artifact)
 	if err != nil {
 		return ExternalPackageInspection{}, err
+	}
+	issuedAt := func() time.Time { return now }
+	if now.IsZero() {
+		issuedAt = func() time.Time { return time.Now().UTC() }
+		now = issuedAt()
 	}
 	if provenance.Kind == registry.PackageSourceGitHubRepository {
 		repositoryID, parseErr := strconv.ParseInt(provenance.GitHubRepositoryID, 10, 64)
@@ -482,7 +514,7 @@ func (h *Host) inspectStagedExternalPackage(
 	}
 	inspection := ExternalPackageInspection{
 		GrantablePermissions: grantable,
-		InspectionID:         inspectionID, ExpiresAt: now.Add(externalPackageInspectionTTL), Intent: intent,
+		InspectionID:         inspectionID, ExpiresAt: issuedAt().Add(externalPackageInspectionTTL), Intent: intent,
 		PublisherID: record.PublisherID, PluginID: record.PluginID, Version: record.Version,
 		Presentation: presentation, PresentationSHA256: presentationSHA256,
 		InspectedHashes:   packageHashSetForPackage(pkg),
@@ -579,7 +611,7 @@ func (h *Host) installInspectedPackage(ctx context.Context, req installInspected
 		}
 	}
 	// Reopen and parse the staged artifact immediately before install.
-	pkg, err := h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, pending.Artifact, pluginpkg.DefaultReadLimits())
+	pkg, err := h.verifyExternalPackage(ctx, pending.Artifact)
 	if err != nil {
 		return installedExternalPackageResult{}, h.failExternalPackageInspection(pending, err)
 	}
@@ -690,6 +722,14 @@ func (h *Host) installInspectedPackage(ctx context.Context, req installInspected
 	return result, nil
 }
 
+func (h *Host) verifyExternalPackage(ctx context.Context, artifact externalsource.StagedArtifact) (pluginpkg.Package, error) {
+	stage, stageOK := h.adapters.ExternalPackageStageStore.(*externalsource.StageStore)
+	if _, diskStore := h.adapters.Assets.(*pluginpkg.FileAssetStore); diskStore && stageOK {
+		return stage.VerifyFileBackedPackage(ctx, artifact)
+	}
+	return h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, artifact, pluginpkg.DefaultReadLimits())
+}
+
 func (h *Host) updateExternalPackageRecord(ctx context.Context, session sessionctx.Context, req registry.InstallExternalPackageRequest, grants ...permissions.Record) (registry.PluginRecord, error) {
 	if h.controlStore == nil {
 		return registry.PluginRecord{}, ErrControlStoreRequired
@@ -787,20 +827,20 @@ func (h *Host) removeExpiredExternalPackageInspectionArtifacts(now time.Time) er
 	return h.cleanupExternalPackageInspectionArtifacts(nil, &now)
 }
 
-func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageSource, quotaKey string, now time.Time) (externalsource.FetchResult, registry.PackageSourceProvenance, string, string, error) {
+func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageSource, quotaKey string, now time.Time, progress func(int64, int64)) (externalsource.FetchResult, registry.PackageSourceProvenance, string, string, error) {
 	switch strings.TrimSpace(source.Kind) {
 	case string(registry.PackageSourcePackageURL):
 		if strings.TrimSpace(source.Tag) != "" || source.RepositoryID != "" || source.ReleaseID != "" || source.AssetID != "" || source.Host != "" || source.PluginID != "" {
 			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", fmt.Errorf("%w: tag is valid only for GitHub repository sources", ErrExternalPackageRequestInvalid)
 		}
-		fetched, err := h.adapters.ExternalPackageFetcher.FetchPackage(ctx, externalsource.FetchRequest{URL: source.URL, QuotaKey: quotaKey})
+		fetched, err := h.adapters.ExternalPackageFetcher.FetchPackage(ctx, externalsource.FetchRequest{URL: source.URL, QuotaKey: quotaKey, Progress: progress})
 		if err != nil {
 			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", err
 		}
 		provenance, err := directExternalPackageProvenance(fetched, now)
 		return fetched, provenance, "", "", err
 	case string(registry.PackageSourceGitHubRepository):
-		resolved, err := h.adapters.ExternalPackageGitHubResolver.ResolvePackage(ctx, externalsource.GitHubRepositorySource{RepositoryURL: source.URL, Tag: source.Tag, QuotaKey: quotaKey, Host: source.Host, PluginID: source.PluginID})
+		resolved, err := h.adapters.ExternalPackageGitHubResolver.ResolvePackage(ctx, externalsource.GitHubRepositorySource{RepositoryURL: source.URL, Tag: source.Tag, QuotaKey: quotaKey, Host: source.Host, PluginID: source.PluginID, Progress: progress})
 		if err != nil {
 			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", err
 		}

@@ -2,7 +2,12 @@
 
 package externalsource
 
-import "os"
+import (
+	"errors"
+	"os"
+)
+
+func stageFreeBytes(*os.Root) (int64, error) { return 0, errors.ErrUnsupported }
 
 // Unknown platforms fail closed until they provide a trustworthy link count.
 func stageLinkCount(os.FileInfo) uint64 { return 0 }

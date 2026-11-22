@@ -3491,6 +3491,15 @@ var PluginPlatformClient = class {
   features(options = {}) {
     return this.#requestQuery("/_redevplugin/api/plugins/features/query", {}, options);
   }
+  previewExternalPackage(request, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/preview/query", request, options);
+  }
+  getPackageTransferProgress(request, options = {}) {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/transfer/query", request, options);
+  }
+  cancelPackageTransfer(request, options = {}) {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/external-packages/transfer/cancel", request, options);
+  }
   async inspectExternalPackage(request, options = {}) {
     const inspection = await this.#requestMutation(
       "POST",

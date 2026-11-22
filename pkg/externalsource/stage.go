@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"strings"
@@ -22,8 +23,9 @@ const MaxArtifactBytes int64 = 256 << 20
 const (
 	defaultMaxConcurrentFetches            = 8
 	defaultMaxOwnerConcurrentFetches       = 2
-	defaultMaxStagedBytes            int64 = 4 * MaxArtifactBytes
-	defaultMaxOwnerStagedBytes       int64 = 2 * MaxArtifactBytes
+	maxStreamBytes                   int64 = math.MaxInt64 - 1
+	stageSpaceReserve                int64 = 64 << 20
+	stageSpaceCheckInterval          int64 = 4 << 20
 )
 
 var stageIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -61,10 +63,11 @@ type stageArtifactQuota struct {
 
 // StageStore owns external artifacts in a host-selected private directory.
 type StageStore struct {
-	root    *os.Root
-	options StageStoreOptions
-	mu      sync.Mutex
-	quota   stageQuotaState
+	root      *os.Root
+	freeBytes func(*os.Root) (int64, error)
+	options   StageStoreOptions
+	mu        sync.Mutex
+	quota     stageQuotaState
 }
 
 func NewStageStore(directory string) (*StageStore, error) {
@@ -104,7 +107,7 @@ func NewStageStoreWithOptions(directory string, options StageStoreOptions) (*Sta
 		return nil, err
 	}
 	return &StageStore{
-		root: root, options: options,
+		root: root, options: options, freeBytes: stageFreeBytes,
 		quota: stageQuotaState{
 			ownerActiveFetches: make(map[string]int), ownerStagedBytes: make(map[string]int64),
 			ownerReservedBytes: make(map[string]int64), artifacts: make(map[string]stageArtifactQuota),
@@ -120,10 +123,10 @@ func normalizeStageStoreOptions(options StageStoreOptions) (StageStoreOptions, e
 		options.MaxOwnerConcurrentFetches = min(defaultMaxOwnerConcurrentFetches, options.MaxConcurrentFetches)
 	}
 	if options.MaxStagedBytes == 0 {
-		options.MaxStagedBytes = defaultMaxStagedBytes
+		options.MaxStagedBytes = maxStreamBytes
 	}
 	if options.MaxOwnerStagedBytes == 0 {
-		options.MaxOwnerStagedBytes = min(defaultMaxOwnerStagedBytes, options.MaxStagedBytes)
+		options.MaxOwnerStagedBytes = options.MaxStagedBytes
 	}
 	if options.MaxConcurrentFetches < 1 || options.MaxOwnerConcurrentFetches < 1 ||
 		options.MaxOwnerConcurrentFetches > options.MaxConcurrentFetches ||
@@ -223,13 +226,16 @@ func (store *StageStore) stageWithLimitForOwner(ctx context.Context, ownerKey st
 }
 
 func (store *StageStore) stageWithReservationForOwner(ctx context.Context, ownerKey string, source io.Reader, limit, initialReservation int64) (StagedArtifact, error) {
-	if store == nil || store.root == nil || source == nil || limit <= 0 || limit > MaxArtifactBytes {
+	if store == nil || store.root == nil || source == nil || limit <= 0 || limit > maxStreamBytes {
 		return StagedArtifact{}, externalError(ErrorStageInvalid, "stage", "", fmt.Errorf("stage request is invalid"))
 	}
 	if initialReservation < 0 || initialReservation > limit {
 		return StagedArtifact{}, externalError(ErrorStageInvalid, "stage", "", fmt.Errorf("stage reservation is invalid"))
 	}
 	ownerKey = normalizeStageOwnerKey(ownerKey)
+	if err := store.checkSpace(initialReservation); err != nil {
+		return StagedArtifact{}, err
+	}
 	if err := store.reserveStageBytes(ownerKey, initialReservation); err != nil {
 		return StagedArtifact{}, err
 	}
@@ -257,7 +263,7 @@ func (store *StageStore) stageWithReservationForOwner(ctx context.Context, owner
 	hash := sha256.New()
 	quotaWriter := &stageQuotaWriter{
 		store: store, ownerKey: ownerKey, destination: io.MultiWriter(file, hash),
-		limit: limit, reserved: &reserved,
+		limit: limit, reserved: &reserved, spaceCheckedUntil: min(stageSpaceCheckInterval, initialReservation),
 	}
 	written, err := copyContext(ctx, quotaWriter, io.LimitReader(source, limit+1))
 	if err != nil {
@@ -297,15 +303,22 @@ func (store *StageStore) stageWithReservationForOwner(ctx context.Context, owner
 // within limit. The single limit-probe byte is never retained: it exists only
 // long enough to classify an oversized stream and is removed on that error.
 type stageQuotaWriter struct {
-	store       *StageStore
-	ownerKey    string
-	destination io.Writer
-	limit       int64
-	written     int64
-	reserved    *int64
+	store             *StageStore
+	ownerKey          string
+	destination       io.Writer
+	limit             int64
+	written           int64
+	reserved          *int64
+	spaceCheckedUntil int64
 }
 
 func (writer *stageQuotaWriter) Write(value []byte) (int, error) {
+	if int64(len(value)) > writer.spaceCheckedUntil-writer.written {
+		if err := writer.store.checkSpace(max(int64(len(value)), min(stageSpaceCheckInterval, writer.limit-writer.written))); err != nil {
+			return 0, err
+		}
+		writer.spaceCheckedUntil = writer.written + min(stageSpaceCheckInterval, writer.limit-writer.written)
+	}
 	retainedAfterWrite := min(writer.written+int64(len(value)), writer.limit)
 	if additional := retainedAfterWrite - *writer.reserved; additional > 0 {
 		if err := writer.store.reserveStageBytes(writer.ownerKey, additional); err != nil {
@@ -318,17 +331,59 @@ func (writer *stageQuotaWriter) Write(value []byte) (int, error) {
 	return written, err
 }
 
+func (store *StageStore) checkSpace(bytes int64) error {
+	free, err := store.freeBytes(store.root)
+	if err != nil {
+		return externalError(ErrorStageInvalid, "stage_space", "", fmt.Errorf("cannot determine free disk space: %w", err))
+	}
+	if bytes > free-stageSpaceReserve {
+		return externalError(ErrorQuotaExceeded, "stage_space", "", fmt.Errorf("insufficient free disk space"))
+	}
+	return nil
+}
+
+func stageBlockBytes(blocks, blockSize uint64) int64 {
+	if blockSize == 0 || blocks == 0 {
+		return 0
+	}
+	if blocks > uint64(maxStreamBytes)/blockSize {
+		return maxStreamBytes
+	}
+	return int64(blocks * blockSize)
+}
+
 // VerifyPackage safely reopens, rehashes, reparses, and rehashes the same file
 // descriptor before returning a package. The second hash detects mutation that
 // overlaps package parsing.
 func (store *StageStore) VerifyPackage(ctx context.Context, artifact StagedArtifact, limits pluginpkg.ReadLimits) (pluginpkg.Package, error) {
+	return store.verifyPackage(ctx, artifact, limits, false)
+}
+
+func (store *StageStore) VerifyFileBackedPackage(ctx context.Context, artifact StagedArtifact) (pluginpkg.Package, error) {
+	return store.verifyPackage(ctx, artifact, pluginpkg.DefaultReadLimits(), true)
+}
+
+func (store *StageStore) verifyPackage(ctx context.Context, artifact StagedArtifact, limits pluginpkg.ReadLimits, fileBacked bool) (pluginpkg.Package, error) {
 	file, err := store.openVerified(ctx, artifact)
 	if err != nil {
 		return pluginpkg.Package{}, err
 	}
 	defer file.Close()
 
-	pkg, parseErr := pluginpkg.Read(ctx, file, artifact.Size, limits)
+	var pkg pluginpkg.Package
+	var parseErr error
+	if fileBacked {
+		free, err := store.freeBytes(store.root)
+		if err != nil {
+			return pluginpkg.Package{}, err
+		}
+		if free <= stageSpaceReserve {
+			return pluginpkg.Package{}, externalError(ErrorQuotaExceeded, "stage_space", "", fmt.Errorf("insufficient free disk space"))
+		}
+		pkg, parseErr = pluginpkg.ReadStreamed(ctx, file, artifact.Size, free-stageSpaceReserve, func(ctx context.Context) (*os.File, error) { return store.openVerified(ctx, artifact) })
+	} else {
+		pkg, parseErr = pluginpkg.Read(ctx, file, artifact.Size, limits)
+	}
 	if parseErr != nil {
 		return pluginpkg.Package{}, parseErr
 	}
@@ -465,8 +520,8 @@ func (store *StageStore) reserveStageBytes(ownerKey string, bytes int64) error {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.quota.stagedBytes+store.quota.reservedBytes+bytes > store.options.MaxStagedBytes ||
-		store.quota.ownerStagedBytes[ownerKey]+store.quota.ownerReservedBytes[ownerKey]+bytes > store.options.MaxOwnerStagedBytes {
+	if bytes > store.options.MaxStagedBytes-store.quota.stagedBytes-store.quota.reservedBytes ||
+		bytes > store.options.MaxOwnerStagedBytes-store.quota.ownerStagedBytes[ownerKey]-store.quota.ownerReservedBytes[ownerKey] {
 		return externalError(ErrorQuotaExceeded, "stage_quota", "", fmt.Errorf("staged byte quota exceeded"))
 	}
 	store.quota.reservedBytes += bytes
@@ -525,7 +580,7 @@ func randomStageID() (string, error) {
 func stageFilename(id string) string { return id + ".artifact" }
 
 func validStagedArtifact(artifact StagedArtifact) bool {
-	if !stageIDPattern.MatchString(artifact.ID) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes || len(artifact.SHA256) != sha256.Size*2 {
+	if !stageIDPattern.MatchString(artifact.ID) || artifact.Size <= 0 || artifact.Size > maxStreamBytes || len(artifact.SHA256) != sha256.Size*2 {
 		return false
 	}
 	decoded, err := hex.DecodeString(artifact.SHA256)

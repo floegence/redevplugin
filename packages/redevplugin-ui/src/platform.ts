@@ -296,6 +296,15 @@ export class PluginPlatformClient {
 
   catalog(options: PluginRequestOptions = {}): Promise<PluginCatalogResult> { return this.#requestQuery("/_redevplugin/api/plugins/catalog/query", {}, options); }
   features(options: PluginRequestOptions = {}): Promise<PluginFeatures> { return this.#requestQuery("/_redevplugin/api/plugins/features/query", {}, options); }
+  previewExternalPackage(request: PlatformSchemas["PreviewPackageRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["PackagePreview"]> {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/preview/query", request, options);
+  }
+  getPackageTransferProgress(request: PlatformSchemas["PackageTransferRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["PackageTransferProgress"]> {
+    return this.#requestQuery("/_redevplugin/api/plugins/external-packages/transfer/query", request, options);
+  }
+  cancelPackageTransfer(request: PlatformSchemas["PackageTransferRequest"], options: PluginRequestOptions = {}): Promise<PlatformSchemas["PackageTransferProgress"]> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/external-packages/transfer/cancel", request, options);
+  }
   async inspectExternalPackage(request: PluginInspectExternalPackageRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageInspection> {
     const inspection = await this.#requestMutation<PluginExternalPackageInspection>(
       "POST", "/_redevplugin/api/plugins/external-packages/inspect", request, options,

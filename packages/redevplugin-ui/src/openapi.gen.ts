@@ -230,6 +230,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/_redevplugin/api/plugins/external-packages/transfer/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["getPackageTransferProgress"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/external-packages/transfer/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelPackageTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/external-packages/preview/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reads source metadata without downloading package bytes or issuing an installation approval. A missing size means unknown. */
+        post: operations["previewExternalPackage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_redevplugin/api/plugins/external-packages/inspect": {
         parameters: {
             query?: never;
@@ -2056,6 +2105,29 @@ export interface components {
             /** @description Explicit user consent to replacing the installed source. */
             allow_source_change?: boolean;
         };
+        PackageTransferRequest: {
+            transfer_id: string;
+        };
+        PackageTransferProgress: {
+            /** @enum {string} */
+            stage: "inactive" | "connecting" | "downloading" | "verifying";
+            received_bytes: number;
+            total_bytes?: number;
+        };
+        PreviewPackageRequest: {
+            source: components["schemas"]["ExternalPackageSource"];
+        } | components["schemas"]["InspectPluginUpdateRequest"];
+        PackagePreview: {
+            /** @enum {string} */
+            kind: "package_url" | "github_repository";
+            plugin_id?: string;
+            version?: string;
+            tag?: string;
+            repository_id?: string;
+            release_id?: string;
+            asset_id?: string;
+            size?: number;
+        };
         /** @description Caller-selected external source. Redirect resolution, package hashes, identity, and provenance are derived by the platform. */
         ExternalPackageSource: {
             /** @constant */
@@ -2077,6 +2149,8 @@ export interface components {
         };
         /** @description Inspects a package. Optional expected identity and digest assert a catalog selection; they never override the parsed package. */
         InspectExternalPackageRequest: {
+            expected_archive_sha256?: string;
+            transfer_id?: string;
             intent: components["schemas"]["ExternalPackageIntentRequest"];
             source: components["schemas"]["ExternalPackageSource"];
             expected_publisher_id?: string;
@@ -4625,6 +4699,19 @@ export interface components {
                 "application/json": components["schemas"]["SettingsSnapshotSuccessResponse"];
             };
         };
+        /** @description Live received bytes for the exact authenticated session. Inactive means no active transfer, not successful installation. */
+        PackageTransferResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    /** @constant */
+                    ok: true;
+                    data: components["schemas"]["PackageTransferProgress"];
+                };
+            };
+        };
         /** @description Validated plugin declarations from the repository index, sorted by plugin ID. */
         ListRepositoryPluginsResponse: {
             headers: {
@@ -4643,6 +4730,11 @@ export interface components {
         SurfaceInstanceID: string;
     };
     requestBodies: {
+        PackageTransferRequest: {
+            content: {
+                "application/json": components["schemas"]["PackageTransferRequest"];
+            };
+        };
         InspectExternalPackageRequest: {
             content: {
                 "application/json": components["schemas"]["InspectExternalPackageRequest"];
@@ -5216,6 +5308,61 @@ export interface operations {
         responses: {
             200: components["responses"]["PluginRecordResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    getPackageTransferProgress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["PackageTransferRequest"];
+        responses: {
+            200: components["responses"]["PackageTransferResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
+        };
+    };
+    cancelPackageTransfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["PackageTransferRequest"];
+        responses: {
+            200: components["responses"]["PackageTransferResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    previewExternalPackage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewPackageRequest"];
+            };
+        };
+        responses: {
+            /** @description Selected release metadata only. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        data: components["schemas"]["PackagePreview"];
+                    };
+                };
+            };
+            default: components["responses"]["PlatformErrorResponse"];
         };
     };
     inspectExternalPackage: {

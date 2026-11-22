@@ -28,6 +28,7 @@ type GitHubRepositorySource struct {
 	QuotaKey      string
 	Host          string
 	PluginID      string
+	Progress      func(completed, total int64)
 }
 
 // GitHubReleaseClient owns GitHub API authentication and returns stable GitHub
@@ -54,6 +55,25 @@ type GitHubReleaseAsset struct {
 	Name        string
 	DownloadURL string
 	Size        int64
+}
+
+type GitHubPackagePreview struct {
+	PluginID          string
+	Version           string
+	RepositoryURL     string
+	RepositoryID      int64
+	ReleaseID         int64
+	Tag               string
+	ResolvedCommitSHA string
+	AssetID           int64
+	AssetName         string
+	DeclaredSize      int64
+}
+
+type githubPackageSelection struct {
+	GitHubPackagePreview
+	owner, repository string
+	asset             GitHubReleaseAsset
 }
 
 // ResolvedGitHubAsset binds downloaded bytes to immutable GitHub release and
@@ -100,105 +120,103 @@ func (resolver *GitHubReleaseResolver) CloseIdleConnections() {
 // through the same HTTPS, redirect, host network, and staging policy as a direct
 // URL. Signed download query parameters are accepted but never exposed.
 func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, source GitHubRepositorySource) (ResolvedGitHubAsset, error) {
+	selected, err := resolver.selectPackage(ctx, source)
+	if err != nil {
+		return ResolvedGitHubAsset{}, err
+	}
+	if selected.DeclaredSize > resolver.fetcher.maxBytes {
+		return ResolvedGitHubAsset{}, externalError(ErrorArtifactTooLarge, "resolve_github", selected.RepositoryURL, fmt.Errorf("asset size exceeds limit"))
+	}
+	fetched, err := resolver.fetcher.fetchPackage(ctx, selected.asset.DownloadURL, source.QuotaKey, true, selected.DeclaredSize, source.Progress)
+	if err != nil {
+		return ResolvedGitHubAsset{}, err
+	}
+	if selected.DeclaredSize > 0 && fetched.Artifact.Size != selected.DeclaredSize {
+		return ResolvedGitHubAsset{}, externalError(ErrorStageIntegrity, "resolve_github", selected.RepositoryURL, errors.Join(fmt.Errorf("downloaded asset size does not match release metadata"), resolver.fetcher.stage.Remove(fetched.Artifact)))
+	}
+	observed, err := resolver.client.ReleaseByTag(ctx, selected.owner, selected.repository, selected.Tag)
+	if err == nil {
+		asset, matchErr := selectNamedPluginAsset(observed.Assets, selected.AssetName, selected.RepositoryURL)
+		if observed.RepositoryID != selected.RepositoryID || observed.ReleaseID != selected.ReleaseID || observed.Tag != selected.Tag || observed.ResolvedCommitSHA != selected.ResolvedCommitSHA || matchErr != nil || asset != selected.asset {
+			err = fmt.Errorf("release identity changed during download")
+		}
+	}
+	if err != nil {
+		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", selected.RepositoryURL, errors.Join(err, resolver.fetcher.stage.Remove(fetched.Artifact)))
+	}
+	return ResolvedGitHubAsset{PluginID: selected.PluginID, Version: selected.Version, RepositoryURL: selected.RepositoryURL, RepositoryID: selected.RepositoryID, ReleaseID: selected.ReleaseID, Tag: selected.Tag, ResolvedCommitSHA: selected.ResolvedCommitSHA, AssetID: selected.AssetID, AssetName: selected.AssetName, DeclaredSize: selected.DeclaredSize, Fetch: fetched}, nil
+}
+
+func (resolver *GitHubReleaseResolver) PreviewPackage(ctx context.Context, source GitHubRepositorySource) (GitHubPackagePreview, error) {
+	selected, err := resolver.selectPackage(ctx, source)
+	return selected.GitHubPackagePreview, err
+}
+
+func (resolver *GitHubReleaseResolver) selectPackage(ctx context.Context, source GitHubRepositorySource) (githubPackageSelection, error) {
 	if resolver == nil || resolver.client == nil || resolver.fetcher == nil {
-		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "GitHub resolver is not initialized")
+		return githubPackageSelection{}, invalidSource("resolve_github", "GitHub resolver is not initialized")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	owner, repository, repositoryURL, err := parseGitHubRepositoryURL(source.RepositoryURL)
 	if err != nil {
-		return ResolvedGitHubAsset{}, err
+		return githubPackageSelection{}, err
 	}
 	tag := strings.TrimSpace(source.Tag)
 	if tag != source.Tag || containsControl(tag) || len(tag) > 255 {
-		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "GitHub release tag is invalid")
+		return githubPackageSelection{}, invalidSource("resolve_github", "GitHub release tag is invalid")
 	}
 
 	index, err := resolver.client.RepositoryIndex(ctx, owner, repository)
 	if err != nil {
-		return ResolvedGitHubAsset{}, err
+		return githubPackageSelection{}, err
 	}
 	plugin, err := selectRepositoryPlugin(index, source.Host, source.PluginID)
 	if err != nil {
-		return ResolvedGitHubAsset{}, err
+		return githubPackageSelection{}, err
 	}
 	if tag == "" {
 		tags, e := resolver.client.ReleaseTags(ctx, owner, repository)
 		if e != nil {
-			return ResolvedGitHubAsset{}, e
+			return githubPackageSelection{}, e
 		}
 		tag, err = selectPluginTag(plugin, tags)
 		if err != nil {
-			return ResolvedGitHubAsset{}, err
+			return githubPackageSelection{}, err
 		}
 	}
 	selectedVersion, err := repositoryindex.VersionFromTag(plugin.Release.TagTemplate, tag)
 	if err != nil {
-		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "release tag does not match selected plugin")
+		return githubPackageSelection{}, invalidSource("resolve_github", "release tag does not match selected plugin")
 	}
 	release, err := resolver.client.ReleaseByTag(ctx, owner, repository, tag)
 	if err != nil {
-		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, err)
+		return githubPackageSelection{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, err)
 	}
 	if release.RepositoryID <= 0 || release.ReleaseID <= 0 || release.Tag == "" || strings.TrimSpace(release.Tag) != release.Tag || containsControl(release.Tag) || len(release.Tag) > 255 || (tag != "" && release.Tag != tag) || !isGitCommitSHA(release.ResolvedCommitSHA) {
-		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, fmt.Errorf("release identity is invalid"))
+		return githubPackageSelection{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, fmt.Errorf("release identity is invalid"))
 	}
 
 	if index.RepositoryID != release.RepositoryID {
-		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "repository identity changed since index resolution")
+		return githubPackageSelection{}, invalidSource("resolve_github", "repository identity changed since index resolution")
 	}
 	identity, err := pluginidentity.GitHub(release.RepositoryID, plugin.Slug)
 	if err != nil {
-		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "%v", err)
+		return githubPackageSelection{}, invalidSource("resolve_github", "%v", err)
 	}
 	if err := pluginidentity.ValidateGitHub(release.RepositoryID, identity.PublisherID, plugin.PluginID); err != nil {
-		return ResolvedGitHubAsset{}, invalidSource("resolve_github", "%v", err)
+		return githubPackageSelection{}, invalidSource("resolve_github", "%v", err)
 	}
 
 	assetName, err := repositoryindex.Render(plugin.Release.PackageAssetTemplate, selectedVersion)
 	if err != nil {
-		return ResolvedGitHubAsset{}, err
+		return githubPackageSelection{}, err
 	}
-	matches := []GitHubReleaseAsset{}
-	for _, asset := range release.Assets {
-		if asset.Name == assetName {
-			matches = append(matches, asset)
-		}
-	}
-	asset, err := uniquePluginAsset(matches, repositoryURL)
+	asset, err := selectNamedPluginAsset(release.Assets, assetName, repositoryURL)
 	if err != nil {
-		return ResolvedGitHubAsset{}, err
+		return githubPackageSelection{}, err
 	}
-	if asset.Size > MaxArtifactBytes {
-		return ResolvedGitHubAsset{}, externalError(ErrorArtifactTooLarge, "resolve_github", repositoryURL, fmt.Errorf("asset size exceeds limit"))
-	}
-	fetched, err := resolver.fetcher.fetchPackage(ctx, asset.DownloadURL, source.QuotaKey, true)
-	if err != nil {
-		return ResolvedGitHubAsset{}, err
-	}
-	if asset.Size > 0 && fetched.Artifact.Size != asset.Size {
-		return ResolvedGitHubAsset{}, externalError(ErrorStageIntegrity, "resolve_github", repositoryURL, errors.Join(fmt.Errorf("downloaded asset size does not match release metadata"), resolver.fetcher.stage.Remove(fetched.Artifact)))
-	}
-	// GitHub releases need not enable immutable-release publishing. Re-resolve
-	// the selected identity after downloading so replaced assets and moved tags
-	// cannot be attached to the preceding source observation. Unrelated assets
-	// may change without invalidating this package.
-	observed, err := resolver.client.ReleaseByTag(ctx, owner, repository, tag)
-	if err == nil {
-		var selected []GitHubReleaseAsset
-		for _, candidate := range observed.Assets {
-			if candidate.Name == assetName {
-				selected = append(selected, candidate)
-			}
-		}
-		if observed.RepositoryID != release.RepositoryID || observed.ReleaseID != release.ReleaseID || observed.Tag != release.Tag || observed.ResolvedCommitSHA != release.ResolvedCommitSHA || len(selected) != 1 || selected[0] != asset {
-			err = fmt.Errorf("release identity changed during download")
-		}
-	}
-	if err != nil {
-		return ResolvedGitHubAsset{}, externalError(ErrorGitHubRelease, "resolve_github", repositoryURL, errors.Join(err, resolver.fetcher.stage.Remove(fetched.Artifact)))
-	}
-	return ResolvedGitHubAsset{
+	return githubPackageSelection{owner: owner, repository: repository, asset: asset, GitHubPackagePreview: GitHubPackagePreview{
 		PluginID: plugin.PluginID, Version: selectedVersion,
 		RepositoryURL:     repositoryURL,
 		RepositoryID:      release.RepositoryID,
@@ -208,8 +226,17 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 		AssetID:           asset.AssetID,
 		AssetName:         asset.Name,
 		DeclaredSize:      asset.Size,
-		Fetch:             fetched,
-	}, nil
+	}}, nil
+}
+
+func selectNamedPluginAsset(assets []GitHubReleaseAsset, name, repositoryURL string) (GitHubReleaseAsset, error) {
+	var matches []GitHubReleaseAsset
+	for _, asset := range assets {
+		if asset.Name == name {
+			matches = append(matches, asset)
+		}
+	}
+	return uniquePluginAsset(matches, repositoryURL)
 }
 
 func isGitCommitSHA(value string) bool {

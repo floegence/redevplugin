@@ -94,8 +94,17 @@ and marked that exact asset session prepared.
 - `pkg/releasepublisher` inspects ordinary packages and extracts validated
   presentation icons. It uses the same package parser and exact capability
   contracts as the Host. Authors publish the package and repository index.
-- `pkg/externalsource` resolves a selected index entry and stable SemVer tag,
-  downloads the exact asset with bounded HTTPS retrieval, and stages its bytes.
+- A package preview reads the selected GitHub release metadata only. For a
+  direct package URL it validates the locator and leaves the size unknown.
+  A preview cannot install a package, issue an inspection ID, or grant access.
+  Consumers with a market preview can display it without a request.
+- Explicit package downloads stream to private disk under retained-space and
+  concurrency controls. A transfer ID exposes received bytes to the originating
+  session during the request; absent total bytes means unknown. Canceling the
+  transfer does not uninstall or cancel a sibling operation. An inactive
+  progress result is not proof of a successful download or installation.
+  File-backed installations stream bulk resources, retain structured validation
+  budgets and verify content hashes again when publishing to the asset store.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, Execution/Event reads and cancellation, surface
   prepare/token/dispose, parent-only POST asset transport, and

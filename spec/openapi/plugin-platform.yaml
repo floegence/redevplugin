@@ -247,6 +247,47 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/transfer/query:
+    post:
+      operationId: getPackageTransferProgress
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/PackageTransferRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PackageTransferResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/transfer/cancel:
+    post:
+      operationId: cancelPackageTransfer
+      x-redevplugin-route-effect: mutation
+      requestBody:
+        $ref: "#/components/requestBodies/PackageTransferRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PackageTransferResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/preview/query:
+    post:
+      operationId: previewExternalPackage
+      x-redevplugin-route-effect: query
+      description: Reads source metadata without downloading package bytes or issuing an installation approval. A missing size means unknown.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreviewPackageRequest" }
+      responses:
+        "200":
+          description: Selected release metadata only.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, data]
+                properties:
+                  ok: { const: true }
+                  data: { $ref: "#/components/schemas/PackagePreview" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/external-packages/inspect:
     post:
       operationId: inspectExternalPackage
@@ -1197,6 +1238,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/SettingsSnapshotSuccessResponse"
+    PackageTransferResponse:
+      description: Live received bytes for the exact authenticated session. Inactive means no active transfer, not successful installation.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok, data]
+            additionalProperties: false
+            properties:
+              ok: { const: true }
+              data: { $ref: "#/components/schemas/PackageTransferProgress" }
     ListRepositoryPluginsResponse:
       description: Validated plugin declarations from the repository index, sorted by plugin ID.
       content:
@@ -1204,6 +1256,11 @@ components:
           schema:
             $ref: "#/components/schemas/ListRepositoryPluginsSuccessResponse"
   requestBodies:
+    PackageTransferRequest:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/PackageTransferRequest" }
     InspectExternalPackageRequest:
       required: true
       content:
@@ -2825,6 +2882,41 @@ components:
             allow_source_change:
               type: boolean
               description: Explicit user consent to replacing the installed source.
+    PackageTransferRequest:
+      type: object
+      required: [transfer_id]
+      additionalProperties: false
+      properties:
+        transfer_id: { type: string, pattern: '^[a-zA-Z0-9_-]{16,96}$' }
+    PackageTransferProgress:
+      type: object
+      required: [stage, received_bytes]
+      additionalProperties: false
+      properties:
+        stage: { type: string, enum: [inactive, connecting, downloading, verifying] }
+        received_bytes: { type: integer, minimum: 0 }
+        total_bytes: { type: integer, minimum: 1 }
+    PreviewPackageRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [source]
+          properties:
+            source: { $ref: "#/components/schemas/ExternalPackageSource" }
+        - $ref: "#/components/schemas/InspectPluginUpdateRequest"
+    PackagePreview:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [package_url, github_repository] }
+        plugin_id: { type: string }
+        version: { type: string }
+        tag: { type: string }
+        repository_id: { type: string }
+        release_id: { type: string }
+        asset_id: { type: string }
+        size: { type: integer, minimum: 1 }
     ExternalPackageSource:
       description: Caller-selected external source. Redirect resolution, package hashes, identity, and provenance are derived by the platform.
       oneOf:
@@ -2871,6 +2963,8 @@ components:
       required: [intent, source]
       additionalProperties: false
       properties:
+        expected_archive_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        transfer_id: { type: string, pattern: '^[a-zA-Z0-9_-]{16,96}$' }
         intent: { $ref: "#/components/schemas/ExternalPackageIntentRequest" }
         source: { $ref: "#/components/schemas/ExternalPackageSource" }
         expected_publisher_id:

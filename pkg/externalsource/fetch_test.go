@@ -172,7 +172,6 @@ func TestFetcherEnforcesStreamingLimitAndCleansStage(t *testing.T) {
 func TestFetcherEnforcesOwnerAndGlobalConcurrencyQuotas(t *testing.T) {
 	stage, err := NewStageStoreWithOptions(t.TempDir(), StageStoreOptions{
 		MaxConcurrentFetches: 2, MaxOwnerConcurrentFetches: 1,
-		MaxStagedBytes: defaultMaxStagedBytes, MaxOwnerStagedBytes: defaultMaxOwnerStagedBytes,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -92,6 +92,14 @@ func (h *Host) InspectPluginUpdate(ctx context.Context, req InspectPluginUpdateR
 	if err = requireManagementRevision(current, req.ExpectedManagementRevision); err != nil {
 		return ExternalPackageInspection{}, err
 	}
+	source, err := installedUpdateSource(current)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	return h.InspectExternalPackage(ctx, InspectExternalPackageRequest{Intent: ExternalPackageIntent{Action: "update", PluginInstanceID: current.PluginInstanceID, ExpectedManagementRevision: current.ManagementRevision}, Source: source, ExpectedPublisherID: current.PublisherID, ExpectedPluginID: current.PluginID})
+}
+
+func installedUpdateSource(current registry.PluginRecord) (ExternalPackageSource, error) {
 	source := ExternalPackageSource{Kind: string(current.PackageSourceProvenance.Kind)}
 	switch current.PackageSourceProvenance.Kind {
 	case registry.PackageSourceGitHubRepository:
@@ -101,9 +109,9 @@ func (h *Host) InspectPluginUpdate(ctx context.Context, req InspectPluginUpdateR
 	case registry.PackageSourcePackageURL:
 		source.URL = current.PackageSourceProvenance.SourceURL
 	default:
-		return ExternalPackageInspection{}, fmt.Errorf("%w: select a package source explicitly", ErrExternalPackageRequestInvalid)
+		return ExternalPackageSource{}, fmt.Errorf("%w: select a package source explicitly", ErrExternalPackageRequestInvalid)
 	}
-	return h.InspectExternalPackage(ctx, InspectExternalPackageRequest{Intent: ExternalPackageIntent{Action: "update", PluginInstanceID: current.PluginInstanceID, ExpectedManagementRevision: current.ManagementRevision}, Source: source, ExpectedPublisherID: current.PublisherID, ExpectedPluginID: current.PluginID})
+	return source, nil
 }
 
 func retrievableUpdateSource(source registry.PackageSourceProvenance) bool {
