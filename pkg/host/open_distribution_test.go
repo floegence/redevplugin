@@ -177,6 +177,9 @@ func TestOpenDistributionAutomaticPreferencePersistsOnInstallation(t *testing.T)
 		t.Fatalf("preference change invalidated an open Surface: %v", err)
 	}
 	stage.setPackage(readTestPackage(t, buildVersionedLifecyclePackage(t, "1.1.0", "Original")))
+	if _, err := h.InspectPluginUpdate(ctx, InspectPluginUpdateRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision, TransferID: "invalid"}); !errors.Is(err, ErrExternalPackageRequestInvalid) {
+		t.Fatalf("update did not bind the transfer: %v", err)
+	}
 	next, err := h.InspectPluginUpdate(ctx, InspectPluginUpdateRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision})
 	if err != nil {
 		t.Fatal(err)

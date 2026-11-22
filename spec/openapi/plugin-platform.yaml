@@ -2903,7 +2903,12 @@ components:
           required: [source]
           properties:
             source: { $ref: "#/components/schemas/ExternalPackageSource" }
-        - $ref: "#/components/schemas/InspectPluginUpdateRequest"
+        - type: object
+          additionalProperties: false
+          required: [plugin_instance_id, expected_management_revision]
+          properties:
+            plugin_instance_id: { type: string, minLength: 1 }
+            expected_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     PackagePreview:
       type: object
       additionalProperties: false
@@ -4380,6 +4385,7 @@ components:
         - plugin_instance_id
         - expected_management_revision
       properties:
+        transfer_id: { type: string, pattern: '^[a-zA-Z0-9_-]{16,96}$' }
         plugin_instance_id:
           type: string
           minLength: 1

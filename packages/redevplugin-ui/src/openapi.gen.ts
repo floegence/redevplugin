@@ -2116,7 +2116,10 @@ export interface components {
         };
         PreviewPackageRequest: {
             source: components["schemas"]["ExternalPackageSource"];
-        } | components["schemas"]["InspectPluginUpdateRequest"];
+        } | {
+            plugin_instance_id: string;
+            expected_management_revision: number;
+        };
         PackagePreview: {
             /** @enum {string} */
             kind: "package_url" | "github_repository";
@@ -2991,6 +2994,7 @@ export interface components {
             enabled: boolean;
         };
         InspectPluginUpdateRequest: {
+            transfer_id?: string;
             plugin_instance_id: string;
             expected_management_revision: number;
         };

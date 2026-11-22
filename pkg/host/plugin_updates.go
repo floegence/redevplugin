@@ -22,6 +22,7 @@ type SetAutomaticUpdatesRequest struct {
 type InspectPluginUpdateRequest struct {
 	PluginInstanceID           string `json:"plugin_instance_id"`
 	ExpectedManagementRevision uint64 `json:"expected_management_revision"`
+	TransferID                 string `json:"transfer_id,omitempty"`
 }
 
 // SetAutomaticUpdates stores the user's preference on the existing installation.
@@ -72,7 +73,7 @@ func (h *Host) SetAutomaticUpdates(ctx context.Context, req SetAutomaticUpdatesR
 }
 
 // InspectPluginUpdate resolves only the installation's original source. Hosts
-// call this API for both manual checks and user-enabled background checks.
+// call this API to download a selected update, not to check for one.
 func (h *Host) InspectPluginUpdate(ctx context.Context, req InspectPluginUpdateRequest) (ExternalPackageInspection, error) {
 	release, err := h.ensureOpen()
 	if err != nil {
@@ -96,7 +97,7 @@ func (h *Host) InspectPluginUpdate(ctx context.Context, req InspectPluginUpdateR
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
-	return h.InspectExternalPackage(ctx, InspectExternalPackageRequest{Intent: ExternalPackageIntent{Action: "update", PluginInstanceID: current.PluginInstanceID, ExpectedManagementRevision: current.ManagementRevision}, Source: source, ExpectedPublisherID: current.PublisherID, ExpectedPluginID: current.PluginID})
+	return h.InspectExternalPackage(ctx, InspectExternalPackageRequest{Intent: ExternalPackageIntent{Action: "update", PluginInstanceID: current.PluginInstanceID, ExpectedManagementRevision: current.ManagementRevision}, Source: source, ExpectedPublisherID: current.PublisherID, ExpectedPluginID: current.PluginID, TransferID: req.TransferID})
 }
 
 func installedUpdateSource(current registry.PluginRecord) (ExternalPackageSource, error) {
