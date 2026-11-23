@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v3.43.0
 
 - Authors rebuilding source that imported `createFlowerClient` should use
   `createAgentClient(bridge, { capabilityBinding }).openAgent(role)` instead.
