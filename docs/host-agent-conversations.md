@@ -27,25 +27,19 @@ and serializes it with Apply/Close. Do not turn a failed query into empty grants
 or describe no admission blockers as a model/business verification result.
 
 ```ts
-import { createAgentClient, defineAgentProfile } from "@floegence/redevplugin-ui/agent-conversation";
+import { createAgentClient } from "@floegence/redevplugin-ui/agent-conversation";
 
 const agents = createAgentClient(bridge, { capabilityBinding: "agent" });
-const agent = await agents.bindAgent({
-  objectKey: selectedObject.id,
-  profile: defineAgentProfile({
-    id: "assistant",
-    instructions: "Help the user operate the selected object.",
-    methods: ["document.read", "document.apply"],
-  }),
-});
-const conversation = await agent.conversations.open({ key: "main" });
+const agent = await agents.openAgent("assistant"); // Role from agents.json
+const conversation = await agent.conversations.open({ key: "main" }); // Typed plugin conversation for mount
 const view = await agent.mount(container, conversation);
 // Later: view.dispose() detaches presentation without stopping accepted work.
 ```
 
-Custom UI uses `conversation.send({ requestId, text })` and
-`conversation.observe({ after, signal })`. Keep the request ID until its receipt
-is resolved. An uncertain response must be queried with `receipt(requestId)`;
+Use `bindAgent` with a revision for runtime-edited profiles. A custom UI uses
+`conversation.send(text, { requestId })` and `conversation.watch({ signal })`.
+Keep the request ID until its final result is resolved. An uncertain response
+can be queried with `conversation.findSend(requestId).result()`;
 neither the SDK nor the host may invent a replacement request and replay work.
 Profiles request methods, skills, host tools and MCP connection slots. They do
 not grant any resources. Method schemas come from the installed manifest.

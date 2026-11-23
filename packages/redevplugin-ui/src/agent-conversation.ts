@@ -130,11 +130,7 @@ export interface AgentClientOptions {
   capabilityBinding: string;
 }
 
-/** Opens the packaged role whose installation and user grants scope this client. */
-export async function createFlowerClient(bridge:PluginBridgeClient,options:AgentClientOptions & {role:string},request?:PluginBridgeRequestOptions){
-  return createAgentClient(bridge,options).openAgent(options.role,request);
-}
-
+/** Open a packaged role with openAgent, or bind a runtime-edited profile with bindAgent. */
 export function createAgentClient(bridge: PluginBridgeClient, options: AgentClientOptions) {
   const client = new AgentConversationClient(bridge);
   const openAgent=async(roleID:string,requestOptions?:PluginBridgeRequestOptions)=>{const binding=await client.openRole({role_id:roleID},requestOptions);return new BoundAgent(bridge,client,options.capabilityBinding,binding);};

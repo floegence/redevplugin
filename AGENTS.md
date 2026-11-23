@@ -262,6 +262,11 @@ must not become the committed integration contract.
 
 ## Boundary Enforcement Checklist
 
+- Name published SDK entry points, author examples and method contracts for the
+  reusable capability. They must make sense in an independent host. Product
+  vocabulary, setup, model preferences and product-specific recipes belong in
+  the consuming host's version-bound author guide, not an SDK convenience alias.
+
 Use this checklist whenever adding or reviewing ReDevPlugin code:
 
 - If the code imports Redeven, Env App, Workbench, Flower, Floret, Desktop, or a

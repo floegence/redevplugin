@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Authors rebuilding source that imported `createFlowerClient` should use
+  `createAgentClient(bridge, { capabilityBinding }).openAgent(role)` instead.
+  This removes a host-branded SDK export. The bridge contract, packaged roles,
+  installed plugin bundles, grants and saved conversations are unchanged.
+
 ## v3.42.0
 
 - Resume interrupted remote package downloads during the same transfer with bounded reconnects. A validated byte range continues the original file, a full response starts fresh, and an invalid range never reaches package inspection. Cancellation and process exit discard partial downloads.

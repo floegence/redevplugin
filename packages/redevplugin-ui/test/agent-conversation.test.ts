@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createAgentClient, createFlowerClient, defineAgentProfile, isConversationClosed } from "../src/agent-conversation.js";
+import { createAgentClient, defineAgentProfile, isConversationClosed } from "../src/agent-conversation.js";
 import { createPluginTestHarness } from "../src/testing.js";
 import { PluginBridgeError } from "../src/plugin.js";
 
@@ -20,13 +20,13 @@ test("an authorized library thread supports browsing, window updates and request
     case "agent.conversation.pick":throw new PluginBridgeError("PLUGIN_CONFIRMATION_REJECTED","Dismissed",{review:"dismissed"});
     default:throw new Error(method);
   }}});
-  try {const flower=await createFlowerClient(new fixture.BridgeClient(),{capabilityBinding:"agent",role:"assistant"});
-    const {items}=await flower.threads.list();const chat=await flower.threads.open(items[0]!.id);
+  try {const agent=await createAgentClient(new fixture.BridgeClient(),{capabilityBinding:"agent"}).openAgent("assistant");
+    const {items}=await agent.threads.list();const chat=await agent.threads.open(items[0]!.id);
     assert.equal((await chat.history()).items[0]!.id,"message");assert.equal((await chat.body("message")).text,"hello");assert.deepEqual((await chat.attachment("message",0)).bytes,new Uint8Array([0,1,2]));
     for await(const view of chat.watch()){assert.equal(view.items[0]!.preview,"hello");break;}
     const sent=await chat.send("hello",{requestId:"saved"});assert.deepEqual(await chat.findSend(sent.requestId).result(),{status:"completed",text:""});await sent.cancel();
     assert.deepEqual(await chat.findSend("lost").result(),{status:"failed",failureCode:"provider_request_rejected"});await chat.close();
-    assert.equal(fixture.calls.filter(c=>c.method==="agent.conversation.library.send").length,1);assert.equal(await flower.threads.pick(),null);
+    assert.equal(fixture.calls.filter(c=>c.method==="agent.conversation.library.send").length,1);assert.equal(await agent.threads.pick(),null);
   }finally{fixture.dispose();}
 });
 
@@ -41,8 +41,8 @@ test("a host-persona temporary thread uses the window contract without library a
     throw new Error(method);
   }});
   try {
-    const flower=await createFlowerClient(new fixture.BridgeClient(),{capabilityBinding:"agent",role:"assistant"});
-    const chat=await flower.threads.create({key:"test-window",agent:"host",lifetime:"temporary"});
+    const agent=await createAgentClient(new fixture.BridgeClient(),{capabilityBinding:"agent"}).openAgent("assistant");
+    const chat=await agent.threads.create({key:"test-window",agent:"host",lifetime:"temporary"});
     assert.equal(chat.id,"tmp");await chat.close();
   } finally {fixture.dispose();}
 });
@@ -89,7 +89,7 @@ test("temporary observation advances the cursor and respects remote closure", as
     return { data: { events: [{ conversation_id: "game", cursor: String(reads), kind: reads === 1 ? "snapshot" : "closed" }] } };
   } });
   try {
-    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "flower" }).openAgent("opponent");
+    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "agent" }).openAgent("opponent");
     const game = await agent.conversations.open({ key: "game", lifetime: "temporary" });
     const kinds = [];
     for await (const event of game.observe()) kinds.push(event.kind);
@@ -109,7 +109,7 @@ test("temporary sessions close by identity; closing a saved handle never deletes
     return { data: {} };
   } });
   try {
-    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "flower" }).openAgent("opponent");
+    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "agent" }).openAgent("opponent");
     const open = () => agent.conversations.open({ key: "board", lifetime: "temporary" });
     const first = await open();
     assert.equal(fixture.calls.at(-1)!.input!.lifetime, "temporary");
@@ -133,7 +133,7 @@ test("opening a packaged role and asking for temporary text never opens a saved 
     return { data: { output_json: '{"text":"D4"}' } };
   } });
   try {
-    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "flower" }).openAgent("opponent");
+    const agent = await createAgentClient(new fixture.BridgeClient(), { capabilityBinding: "agent" }).openAgent("opponent");
     assert.deepEqual(await agent.temporary.reply({ text: "next move" }), { text: "D4" });
     assert.equal(fixture.calls.length, 2);
   } finally { fixture.dispose(); }

@@ -33,7 +33,8 @@ methods the Agent may call back into. It may be empty for a text-only Agent;
 manifest capability routes still must be declared.
 
 For a custom UI or a headless Agent, declare `.send`, `.result` and the
-observation method for the selected lifetime. Declare `.cancel_send` only if
+method used to wait for a private conversation: `.observe` for saved or
+`.events.read` for temporary. Declare `.cancel_send` only if
 the user should be able to cancel submitted work. For example:
 
 ```ts
@@ -51,7 +52,7 @@ results may have empty text. Failed results may include a stable `failureCode`
 for display or diagnosis; they never contain a raw provider error. Aborting the wait only detaches this reader;
 `sent.cancel()` explicitly targets the original pending input or execution.
 Choose the lifetime by how long the user needs the history. For multi-turn
-context limited to this window, use `agent.conversations.open({ key, lifetime: "temporary" })`.
+context limited to this window, use `agent.threads.create({ key, lifetime: "temporary" })`.
 Omit `lifetime` for history that must survive reopening. Use `temporary.reply` for one exchange.
 Declare `.events.read` for `observe()` on temporary handles and `.close` for
 `await conversation.close()`. Keep the same handle across turns and panel changes.
@@ -74,25 +75,24 @@ ordinary conversations in the authorized environment. Prefer `.pick` when the
 user only needs to share one conversation. An identifier never grants access.
 
 ```ts
-import { createFlowerClient } from "@floegence/redevplugin-ui/agent-conversation";
-const flower = await createFlowerClient(bridge, { capabilityBinding: "agent", role: "assistant" });
-const page = await flower.threads.list({ limit: 30 });
-const selected = await flower.threads.pick({ access: "read" });
+// Reuse the agent returned by client.openAgent("assistant") above.
+const page = await agent.threads.list({ limit: 30 });
+const selected = await agent.threads.pick({ access: "read" });
 if (selected) {
   for await (const view of selected.watch({ signal })) render(view.items);
 }
 ```
 
-Open a listed ID using `flower.threads.open(id)`. `history` returns ordered
+Open a listed ID using `agent.threads.open(id)`. `history` returns ordered
 messages and `nextCursor`; `body(item.id, { cursor })` reads complete text in
 pages. `attachment(item.id, index, { cursor })` additionally requires the
 separate original-file grant; names, media types and sizes alone do not grant
 file access. Restart `watch` with the same handle after reconnect. A revoked
 resource requires fresh permission. Cancelling a picker returns `null`.
 
-`flower.threads.create({ key, lifetime: "temporary" })` uses the bound role.
+`agent.threads.create({ key, lifetime: "temporary" })` uses the bound role.
 Add `agent: "host"` to use the host persona in the same window without reading or creating saved history. Both temporary roles use `.open` and the same thread handle.
-`flower.threads.create({ agent: "host", key })` creates a saved ordinary
+`agent.threads.create({ agent: "host", key })` creates a saved ordinary
 conversation with `.library.create`. The library's `.library.send`, `.library.result`
 and `.library.cancel_send` routes work with the same `send` and `findSend`
 handles. Reading the library does not authorize sending or management. A
