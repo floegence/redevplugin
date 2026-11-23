@@ -551,7 +551,7 @@ func (a *connectionAuthority) acquire(ctx context.Context, inv resourceio.Invoca
 	if snapshot.Plugin.ActiveFingerprint != record.ActiveFingerprint || registry.AuthorizationRevisionsFromRecord(snapshot.Plugin) != registry.AuthorizationRevisionsFromRecord(record) {
 		return connectionLease{}, ErrConnectionUnavailable
 	}
-	allowed, _, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{PluginInstanceID: inv.Plugin.InstanceID, PermissionIDs: []string{string(manifest.PermissionNetworkClient)}, Now: time.Now()})
+	allowed, _, err := a.host.checkAccess(snapshot, []string{string(manifest.PermissionNetworkClient)})
 	if err != nil {
 		return connectionLease{}, err
 	}

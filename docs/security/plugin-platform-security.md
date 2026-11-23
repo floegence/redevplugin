@@ -519,3 +519,14 @@ plugin namespaces. Existing response, cell, storage and timeout limits remain.
 These bounds constrain allocations before result serialization; they do not
 claim an operating-system memory sandbox for the entire Go Host. Ordinary SQL
 and Web application packaging require no extra configuration.
+
+### Author workspace resources
+
+An embedding product may supply `authoring.EnvironmentOptions.DevelopmentPermissions`
+only with adapters scoped to the development workspace. The host compares the
+permissions resolved from each declared method with that resource list. It does
+not approve a package, persist a grant, override policy, or transfer access to an
+installation. File selection, connection review and per-operation confirmations
+still bind their exact resources. A regular Host continues to evaluate stored
+installation grants. Never point development file, process or library adapters
+at private resources merely because a draft declares a permission.

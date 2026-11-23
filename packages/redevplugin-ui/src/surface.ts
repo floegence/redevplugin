@@ -2070,6 +2070,9 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         return;
       }
       this.#postError(request.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
+      // A rejected gateway lease cannot serve subsequent calls. Notify the
+      // owning placement; never resubmit the request on a replacement surface.
+      if (bridgeError.errorCode === "PLUGIN_GATEWAY_TOKEN_INVALID") await this.#failSurface(bridgeError);
     } finally {
       if (this.#pendingRequestControllers.get(request.id) === controller) this.#pendingRequestControllers.delete(request.id);
     }

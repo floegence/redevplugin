@@ -1708,6 +1708,38 @@ test("surface host dispose sends a keepalive revocation before local teardown", 
   assert.equal(frame.src, "about:blank");
 });
 
+test("a rejected gateway lease retires a ready placement without replaying the call", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  const errors: PluginBridgeError[] = [];
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap, bridgeChannelId: "bridge_12345678", testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }), onError: error => errors.push(error),
+  });
+  try {
+    const opening = host.open();
+    frame.load();
+    await waitFor(() => frame.transferred.length === 1);
+    channel.port2.applicationReady();
+    await opening;
+    fetch.push({ ok: false, error: { code: "PLUGIN_GATEWAY_TOKEN_INVALID", message: "invalid lease", details: {}, mutation_outcome: "not_committed" } }, 403);
+    fetch.push(surfaceRevocation());
+    channel.port2.postMessage({ type: "redevplugin.bridge.call", request: { id: "rpc_1", method: "echo.ping", params: {} } });
+    await waitFor(() => channel.port1.sent.some(value => (value as { id?: string }).id === "rpc_1"));
+    const result = channel.port1.sent.find(value => (value as { id?: string }).id === "rpc_1") as { error_code?: string };
+    assert.equal(result.error_code, "PLUGIN_GATEWAY_TOKEN_INVALID");
+    assert.equal(channel.port1.closed, true);
+    assert.deepEqual(errors.map(e => e.errorCode), ["PLUGIN_GATEWAY_TOKEN_INVALID"]);
+    assert.equal(fetch.calls.length, 4);
+    assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+  } finally {
+    host.dispose();
+  }
+});
+
 test("post-ready renderer failure revokes the surface and blocks later RPC", async () => {
   const frame = new FakeFrame();
   const fetch = new FakeFetch();

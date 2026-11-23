@@ -3198,6 +3198,7 @@ var PluginSurfaceHostImplementation = class {
         return;
       }
       this.#postError(request2.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
+      if (bridgeError.errorCode === "PLUGIN_GATEWAY_TOKEN_INVALID") await this.#failSurface(bridgeError);
     } finally {
       if (this.#pendingRequestControllers.get(request2.id) === controller) this.#pendingRequestControllers.delete(request2.id);
     }

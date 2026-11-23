@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.44.0
+
+- Author environments can use host-provided development resources without installation grants. The host chooses their permission ceiling and supplies isolated adapters. Opening an ordinary Host still requires installation grants. A rejected gateway lease now retires the surface without replaying the call.
+
 ## v3.43.0
 
 - Authors rebuilding source that imported `createFlowerClient` should use

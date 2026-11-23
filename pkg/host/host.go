@@ -422,6 +422,7 @@ type PluginData interface {
 }
 
 type Host struct {
+	developmentAccess     map[string]bool
 	environmentLock       environmentRootLock
 	controlStore          *controlstore.Store
 	adapters              normalizedAdapters
@@ -1229,6 +1230,21 @@ func openPluginDataStore(ctx context.Context, config Config, catalog plugindata.
 }
 
 func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
+	return openHost(ctx, config, nil)
+}
+
+// OpenDevelopment opens an isolated development root. Its operator supplies the
+// permissions backed by development resources; install-time grants are neither
+// created nor consulted. Never pass the installed Host's root or private adapters.
+func OpenDevelopment(ctx context.Context, config Config, permissions []string) (*Host, error) {
+	access := make(map[string]bool, len(permissions))
+	for _, id := range permissions {
+		access[id] = true
+	}
+	return openHost(ctx, config, access)
+}
+
+func openHost(ctx context.Context, config Config, developmentAccess map[string]bool) (openedHost *Host, retErr error) {
 	if ctx == nil {
 		return nil, errors.New("context is required")
 	}
@@ -1325,6 +1341,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		return nil, fmt.Errorf("open runtime I/O broker: %w", err)
 	}
 	host := &Host{
+		developmentAccess:    developmentAccess,
 		environmentLock:      environmentLock,
 		controlStore:         control,
 		adapters:             adapters,
@@ -4071,7 +4088,7 @@ func (h *Host) authorizePlugin(ctx context.Context, req registry.AuthorizeReques
 	if err != nil {
 		return registry.AuthorizationDecision{}, err
 	}
-	return registry.EvaluateAuthorizationSnapshot(snapshot, req)
+	return h.evaluateMethodAccess(snapshot, req)
 }
 
 func (h *Host) grantPluginPermission(ctx context.Context, req permissions.GrantRequest, expected registry.AuthorizationRevisions) (registry.AuthorizationSnapshot, error) {
@@ -4370,6 +4387,9 @@ func (h *Host) refreshEnabledPlugins(ctx context.Context) ([]refreshEnabledPlugi
 }
 
 func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) (result PermissionMutationResult, retErr error) {
+	if h.developmentAccess != nil {
+		return PermissionMutationResult{}, ErrActionDenied
+	}
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	req.PermissionID = strings.TrimSpace(req.PermissionID)
 	authorization, err := h.authorizeManagement(ctx, ManagementActionGrantPermission,
@@ -4410,6 +4430,9 @@ func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) 
 }
 
 func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest) (result PermissionMutationResult, retErr error) {
+	if h.developmentAccess != nil {
+		return PermissionMutationResult{}, ErrActionDenied
+	}
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	req.PermissionID = strings.TrimSpace(req.PermissionID)
 	authorization, err := h.authorizeManagement(ctx, ManagementActionRevokePermission,
@@ -6758,10 +6781,7 @@ func (h *Host) requireCurrentPermissionGrants(ctx context.Context, pluginInstanc
 	if err != nil {
 		return err
 	}
-	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
-		PluginInstanceID: pluginInstanceID,
-		PermissionIDs:    permissions.MethodGrantIDs(required),
-	})
+	granted, missing, err := h.checkAccess(snapshot, required)
 	if err != nil {
 		return err
 	}

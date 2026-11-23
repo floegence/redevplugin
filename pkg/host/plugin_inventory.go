@@ -297,10 +297,7 @@ func (h *Host) authorizePermissionRequirements(ctx context.Context, record regis
 			return fmt.Errorf("%w: method %q", security.ErrPolicyDenied, method.method)
 		}
 	}
-	granted, missing, err := permissions.Evaluate(snapshot.Grants, permissions.CheckRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		PermissionIDs:    permissions.MethodGrantIDs(requirements.requiredPermissions),
-	})
+	granted, missing, err := h.checkAccess(snapshot, requirements.requiredPermissions)
 	if err != nil {
 		return err
 	}

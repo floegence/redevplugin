@@ -172,6 +172,7 @@ export function verifyBaselines(root) {
 }
 export function executionEnvironment(input) {
   const names = new Set(["HOME", "PATH", "SHELL", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP", "LANG", "LANGUAGE", "TZ", "CC", "CXX", "AR", "CFLAGS", "CPPFLAGS", "CXXFLAGS", "LDFLAGS", "PKG_CONFIG_PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "CI", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]);
+  for (const key of ["XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "COREPACK_HOME"]) names.add(key);
   return Object.fromEntries(Object.entries(input).filter(([key]) => names.has(key) || /^(?:GO[A-Z_]|CGO_|RUST|CARGO_|NODE_|npm_config_|NPM_CONFIG_|REDEVPLUGIN_|PLAYWRIGHT_|LC_|DOCKER_)/.test(key)).sort(([a], [b]) => a.localeCompare(b)));
 }
 export function normalizedGoConfiguration(configuration) {
@@ -264,14 +265,15 @@ async function main() {
   verifyBaselines(repository);
   if (args.includes("--preflight")) return;
   if (args.includes("--resources")) { await prepareResources(repository); return; }
-  const cache = join(command(repository, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "redevplugin-gate");
+  const lockDirectory = join(command(repository, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "redevplugin-gate");
+  const cache = process.env.REDEVPLUGIN_GATE_EVIDENCE_DIR || lockDirectory;
   const waiting = new AbortController();
   const cancelWait = () => waiting.abort(new Error("gate lock wait interrupted"));
   process.once("SIGINT", cancelWait);
   process.once("SIGTERM", cancelWait);
   let unlock;
   try {
-    unlock = await waitForLock(cache, { timeoutMs: waitMs, signal: waiting.signal, onWait: message => console.log(message + "; waiting up to " + waitMs / 1000 + " seconds") });
+    unlock = await waitForLock(lockDirectory, { timeoutMs: waitMs, signal: waiting.signal, onWait: message => console.log(message + "; waiting up to " + waitMs / 1000 + " seconds") });
   } finally {
     process.removeListener("SIGINT", cancelWait);
     process.removeListener("SIGTERM", cancelWait);

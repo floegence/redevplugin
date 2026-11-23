@@ -102,7 +102,7 @@ func (h *Host) InspectPluginCapabilities(ctx context.Context, req GetPermissionR
 				if !view.Declared {
 					view.Blockers = append(view.Blockers, "method_not_declared")
 				} else {
-					decision, err := registry.EvaluateAuthorizationSnapshot(snapshot, registry.AuthorizeRequest{
+					decision, err := h.evaluateMethodAccess(snapshot, registry.AuthorizeRequest{
 						PluginInstanceID: record.PluginInstanceID, Method: method.Name, PermissionIDs: method.RequiredPermissions, Expected: result.Revisions, Now: result.ObservedAt})
 					if err != nil {
 						return CapabilityInspection{}, err

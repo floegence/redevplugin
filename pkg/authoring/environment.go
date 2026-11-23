@@ -23,9 +23,13 @@ import (
 // chooses StateRoot and the package asset store; Configure must leave them empty.
 // Commands and grants are never executed or approved while opening an environment.
 type EnvironmentOptions struct {
-	Configure func(context.Context, string) (host.Config, func() error, error)
-	Guard     websecurity.Guard
-	Router    *SurfaceRouter
+	// DevelopmentPermissions names resources supplied by the host in this workspace.
+	// A non-nil list uses declarations without install grants. Nil retains ordinary
+	// grant-backed access for embedders using their installed resource adapters.
+	DevelopmentPermissions []string
+	Configure              func(context.Context, string) (host.Config, func() error, error)
+	Guard                  websecurity.Guard
+	Router                 *SurfaceRouter
 }
 
 type Environment struct {
@@ -102,7 +106,11 @@ func (s *WorkspaceStore) OpenEnvironment(ctx context.Context, owner Owner, id st
 	config.Core.Assets = assets
 	origins := config.Web.Origins
 	config.Web = &host.WebModule{Origins: environmentOrigins{environment: env, delegate: origins}}
-	env.host, err = host.Open(ctx, config)
+	if options.DevelopmentPermissions != nil {
+		env.host, err = host.OpenDevelopment(ctx, config, options.DevelopmentPermissions)
+	} else {
+		env.host, err = host.Open(ctx, config)
+	}
 	if err != nil {
 		_ = assets.Close()
 		return nil, err

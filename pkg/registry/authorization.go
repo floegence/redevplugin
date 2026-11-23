@@ -351,6 +351,27 @@ func EvaluateAuthorizationSnapshot(snapshot AuthorizationSnapshot, req Authorize
 	return evaluateAuthorization(authorizationStateFromRecord(snapshot.Plugin), snapshot.Grants, snapshot.Policy, req)
 }
 
+// EvaluateDevelopmentAuthorization checks the same revisions and policy as an
+// installed method, but against the host's workspace resources instead of grants.
+func EvaluateDevelopmentAuthorization(snapshot AuthorizationSnapshot, req AuthorizeRequest, resources map[string]bool) (AuthorizationDecision, error) {
+	if err := ensureAuthorizationRevisions(req.PluginInstanceID, req.Expected, snapshot.Plugin); err != nil {
+		return AuthorizationDecision{}, err
+	}
+	policy, err := security.Evaluate(snapshot.Policy, security.EvaluatePolicyRequest{PluginInstanceID: req.PluginInstanceID, Method: req.Method, RequiredPermissions: req.PermissionIDs})
+	if err != nil {
+		return AuthorizationDecision{}, err
+	}
+	if policy.Allowed {
+		for _, id := range req.PermissionIDs {
+			if !resources[id] {
+				policy = security.PolicyEvaluation{Reason: security.PolicyDenyReasonPermissionNotAllowed, MissingPermissions: []string{id}}
+				break
+			}
+		}
+	}
+	return AuthorizationDecision{State: authorizationStateFromRecord(snapshot.Plugin), Allowed: policy.Allowed, PolicyEvaluation: policy}, nil
+}
+
 func PrepareGrantPermission(snapshot AuthorizationSnapshot, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
 	if err := ensureAuthorizationRevisions(req.PluginInstanceID, expected, snapshot.Plugin); err != nil {
 		return AuthorizationSnapshot{}, err
