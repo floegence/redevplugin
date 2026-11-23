@@ -29,6 +29,7 @@ type GitHubRepositorySource struct {
 	Host          string
 	PluginID      string
 	Progress      func(completed, total int64)
+	Reconnecting  func(completed, total int64)
 }
 
 // GitHubReleaseClient owns GitHub API authentication and returns stable GitHub
@@ -127,7 +128,7 @@ func (resolver *GitHubReleaseResolver) ResolvePackage(ctx context.Context, sourc
 	if selected.DeclaredSize > resolver.fetcher.maxBytes {
 		return ResolvedGitHubAsset{}, externalError(ErrorArtifactTooLarge, "resolve_github", selected.RepositoryURL, fmt.Errorf("asset size exceeds limit"))
 	}
-	fetched, err := resolver.fetcher.fetchPackage(ctx, selected.asset.DownloadURL, source.QuotaKey, true, selected.DeclaredSize, source.Progress)
+	fetched, err := resolver.fetcher.fetchPackage(ctx, selected.asset.DownloadURL, source.QuotaKey, true, selected.DeclaredSize, source.Progress, source.Reconnecting)
 	if err != nil {
 		return ResolvedGitHubAsset{}, err
 	}

@@ -2108,6 +2108,7 @@ export interface components {
         PackageTransferRequest: {
             transfer_id: string;
         };
+        /** @description While reconnecting an interrupted download, connecting retains the received byte count. A full replacement starts a new count at zero. */
         PackageTransferProgress: {
             /** @enum {string} */
             stage: "inactive" | "connecting" | "downloading" | "verifying";

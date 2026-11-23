@@ -68,9 +68,10 @@ type RedirectHop struct {
 }
 
 type FetchRequest struct {
-	URL      string
-	QuotaKey string
-	Progress func(completed, total int64)
+	URL          string
+	QuotaKey     string
+	Progress     func(completed, total int64)
+	Reconnecting func(completed, total int64)
 }
 
 type FetchResult struct {
@@ -146,7 +147,7 @@ func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 }
 
 func (fetcher *Fetcher) FetchPackage(ctx context.Context, request FetchRequest) (FetchResult, error) {
-	return fetcher.fetchPackage(ctx, request.URL, request.QuotaKey, false, 0, request.Progress)
+	return fetcher.fetchPackage(ctx, request.URL, request.QuotaKey, false, 0, request.Progress, request.Reconnecting)
 }
 
 // CloseIdleConnections releases connections owned by this fetcher without
@@ -180,7 +181,7 @@ func (fetcher *Fetcher) FetchArtifact(ctx context.Context, request ArtifactFetch
 	if err != nil {
 		return ArtifactFetchResult{}, err
 	}
-	fetched, err := fetcher.fetchStaged(ctx, request.URL, request.QuotaKey, false, request.MaxBytes, allowed, request.ExpectedSize, request.Progress)
+	fetched, err := fetcher.fetchStaged(ctx, request.URL, request.QuotaKey, false, request.MaxBytes, allowed, request.ExpectedSize, request.Progress, nil)
 	if err != nil {
 		return ArtifactFetchResult{}, err
 	}
@@ -204,14 +205,14 @@ func (fetcher *Fetcher) FetchArtifact(ctx context.Context, request ArtifactFetch
 	return ArtifactFetchResult{Bytes: value, Source: fetched.Source, Final: fetched.Final, Redirects: fetched.Redirects}, nil
 }
 
-func (fetcher *Fetcher) fetchPackage(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool, expectedSize int64, progress func(completed, total int64)) (FetchResult, error) {
+func (fetcher *Fetcher) fetchPackage(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool, expectedSize int64, progress, reconnecting func(completed, total int64)) (FetchResult, error) {
 	if fetcher == nil {
 		return FetchResult{}, invalidSource("fetch", "fetcher is not initialized")
 	}
-	return fetcher.fetchStaged(ctx, rawURL, quotaKey, allowInitialQuery, fetcher.maxBytes, nil, expectedSize, progress)
+	return fetcher.fetchStaged(ctx, rawURL, quotaKey, allowInitialQuery, fetcher.maxBytes, nil, expectedSize, progress, reconnecting)
 }
 
-func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool, maxBytes int64, allowedHosts map[string]struct{}, expectedSize int64, progress func(completed, total int64)) (FetchResult, error) {
+func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool, maxBytes int64, allowedHosts map[string]struct{}, expectedSize int64, progress, reconnecting func(completed, total int64)) (FetchResult, error) {
 	if fetcher == nil || fetcher.stage == nil || fetcher.roundTrip == nil {
 		return FetchResult{}, invalidSource("fetch", "fetcher is not initialized")
 	}
@@ -245,27 +246,9 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 				return FetchResult{}, externalError(ErrorTargetBlocked, "fetch", current.DisplayURL(), fmt.Errorf("artifact host is not allowed"))
 			}
 		}
-		var addresses []netip.Addr
-		if fetcher.transport == nil {
-			addresses, err = ResolvePublicAddresses(ctx, fetcher.resolver, current)
-			if err != nil {
-				return FetchResult{}, err
-			}
-		}
-		headers, err := fetcher.credentialHeaders(ctx, current.origin)
+		response, err := fetcher.fetchHop(ctx, current, 0, "")
 		if err != nil {
 			return FetchResult{}, err
-		}
-		response, err := fetcher.roundTrip(ctx, current, addresses, headers)
-		if err != nil {
-			return FetchResult{}, externalError(ErrorTransport, "fetch", current.DisplayURL(), err)
-		}
-		if response == nil || response.Body == nil {
-			return FetchResult{}, externalError(ErrorTransport, "fetch", current.DisplayURL(), fmt.Errorf("response is missing"))
-		}
-		if response.Request != nil && (response.Request.URL == nil || response.Request.URL.String() != current.requestURL().String()) {
-			_ = response.Body.Close()
-			return FetchResult{}, externalError(ErrorRedirectDenied, "fetch", current.DisplayURL(), fmt.Errorf("host transport followed a redirect"))
 		}
 		if isRedirectStatus(response.StatusCode) {
 			touch()
@@ -290,6 +273,13 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now())
 			_ = response.Body.Close()
 			return FetchResult{}, externalHTTPError("fetch", current.DisplayURL(), response.StatusCode, retryAfter, fmt.Errorf("unexpected HTTP status %d", response.StatusCode))
+		}
+		if allowedHosts == nil {
+			artifact, err := fetcher.stageRemotePackage(ctx, current, response, quotaKey, maxBytes, expectedSize, progress, reconnecting, touch)
+			if err != nil {
+				return FetchResult{}, err
+			}
+			return FetchResult{Artifact: artifact, Source: sourceDisplay, Final: current.DisplayURL(), Redirects: redirects}, nil
 		}
 		encoding := strings.TrimSpace(strings.ToLower(response.Header.Get("Content-Encoding")))
 		if encoding != "" && encoding != "identity" {
@@ -318,6 +308,37 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 		}
 		return FetchResult{Artifact: artifact, Source: sourceDisplay, Final: current.DisplayURL(), Redirects: redirects}, nil
 	}
+}
+
+func (fetcher *Fetcher) fetchHop(ctx context.Context, current PackageURL, offset int64, validator string) (*http.Response, error) {
+	var addresses []netip.Addr
+	var err error
+	if fetcher.transport == nil {
+		addresses, err = ResolvePublicAddresses(ctx, fetcher.resolver, current)
+		if err != nil {
+			return nil, err
+		}
+	}
+	headers, err := fetcher.credentialHeaders(ctx, current.origin)
+	if err != nil {
+		return nil, err
+	}
+	if offset > 0 {
+		headers.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+		headers.Set("If-Range", validator)
+	}
+	response, err := fetcher.roundTrip(ctx, current, addresses, headers)
+	if err != nil {
+		return nil, externalError(ErrorTransport, "fetch", current.DisplayURL(), err)
+	}
+	if response == nil || response.Body == nil {
+		return nil, externalError(ErrorTransport, "fetch", current.DisplayURL(), fmt.Errorf("response is missing"))
+	}
+	if response.Request != nil && (response.Request.URL == nil || response.Request.URL.String() != current.requestURL().String()) {
+		_ = response.Body.Close()
+		return nil, externalError(ErrorRedirectDenied, "fetch", current.DisplayURL(), fmt.Errorf("host transport followed a redirect"))
+	}
+	return response, nil
 }
 
 type progressReadCloser struct {
@@ -459,7 +480,7 @@ func validCredentialHeaderName(name string) bool {
 		return false
 	}
 	switch name {
-	case "Host", "Accept-Encoding", "Connection", "Content-Length", "Expect", "Keep-Alive", "Proxy-Authorization", "Proxy-Connection", "Range", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+	case "Host", "Accept-Encoding", "Connection", "Content-Length", "Expect", "If-Range", "Keep-Alive", "Proxy-Authorization", "Proxy-Connection", "Range", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
 		return false
 	default:
 		return true

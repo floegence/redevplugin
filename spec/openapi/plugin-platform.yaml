@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: 3.41.0
+  version: 3.42.0
   description: Host-neutral plugin lifecycle, inspection, execution, data, and sandbox routes. All distributed plugins use ordinary packages and one exact-digest inspected-install Execution. Explicit reviewed method permissions may commit atomically with installation; omission grants nothing. Automatic updates require the saved user preference, original source, a newer immutable version, and unchanged capabilities, and grant nothing new.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -2889,6 +2889,7 @@ components:
       properties:
         transfer_id: { type: string, pattern: '^[a-zA-Z0-9_-]{16,96}$' }
     PackageTransferProgress:
+      description: While reconnecting an interrupted download, connecting retains the received byte count. A full replacement starts a new count at zero.
       type: object
       required: [stage, received_bytes]
       additionalProperties: false

@@ -30,8 +30,16 @@ type packageTransfer struct {
 }
 
 func (transfer *packageTransfer) observe(received, total int64) {
+	transfer.update("downloading", received, total)
+}
+
+func (transfer *packageTransfer) reconnecting(received, total int64) {
+	transfer.update("connecting", received, total)
+}
+
+func (transfer *packageTransfer) update(stage string, received, total int64) {
 	transfer.mu.Lock()
-	transfer.progress = PackageTransferProgress{Stage: "downloading", ReceivedBytes: received, TotalBytes: total}
+	transfer.progress = PackageTransferProgress{Stage: stage, ReceivedBytes: received, TotalBytes: total}
 	transfer.mu.Unlock()
 }
 

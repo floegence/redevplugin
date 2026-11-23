@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.42.0
+
+- Resume interrupted remote package downloads during the same transfer with bounded reconnects. A validated byte range continues the original file, a full response starts fresh, and an invalid range never reaches package inspection. Cancellation and process exit discard partial downloads.
+
 ## v3.41.0
 
 - Add metadata-only package previews, session-scoped download progress and cancellation. Checking a source does not require downloading its package.

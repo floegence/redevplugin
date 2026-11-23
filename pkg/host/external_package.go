@@ -289,7 +289,7 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 		}
 	}
 
-	var progress func(int64, int64)
+	var progress, reconnecting func(int64, int64)
 	if req.TransferID != "" {
 		var transfer *packageTransfer
 		var finish func()
@@ -299,8 +299,9 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 		}
 		defer finish()
 		progress = transfer.observe
+		reconnecting = transfer.reconnecting
 	}
-	fetched, provenance, selectedPlugin, selectedVersion, err := h.fetchExternalPackage(ctx, req.Source, scope.OwnerEnvHash, now, progress)
+	fetched, provenance, selectedPlugin, selectedVersion, err := h.fetchExternalPackage(ctx, req.Source, scope.OwnerEnvHash, now, progress, reconnecting)
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
@@ -827,20 +828,20 @@ func (h *Host) removeExpiredExternalPackageInspectionArtifacts(now time.Time) er
 	return h.cleanupExternalPackageInspectionArtifacts(nil, &now)
 }
 
-func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageSource, quotaKey string, now time.Time, progress func(int64, int64)) (externalsource.FetchResult, registry.PackageSourceProvenance, string, string, error) {
+func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageSource, quotaKey string, now time.Time, progress, reconnecting func(int64, int64)) (externalsource.FetchResult, registry.PackageSourceProvenance, string, string, error) {
 	switch strings.TrimSpace(source.Kind) {
 	case string(registry.PackageSourcePackageURL):
 		if strings.TrimSpace(source.Tag) != "" || source.RepositoryID != "" || source.ReleaseID != "" || source.AssetID != "" || source.Host != "" || source.PluginID != "" {
 			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", fmt.Errorf("%w: tag is valid only for GitHub repository sources", ErrExternalPackageRequestInvalid)
 		}
-		fetched, err := h.adapters.ExternalPackageFetcher.FetchPackage(ctx, externalsource.FetchRequest{URL: source.URL, QuotaKey: quotaKey, Progress: progress})
+		fetched, err := h.adapters.ExternalPackageFetcher.FetchPackage(ctx, externalsource.FetchRequest{URL: source.URL, QuotaKey: quotaKey, Progress: progress, Reconnecting: reconnecting})
 		if err != nil {
 			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", err
 		}
 		provenance, err := directExternalPackageProvenance(fetched, now)
 		return fetched, provenance, "", "", err
 	case string(registry.PackageSourceGitHubRepository):
-		resolved, err := h.adapters.ExternalPackageGitHubResolver.ResolvePackage(ctx, externalsource.GitHubRepositorySource{RepositoryURL: source.URL, Tag: source.Tag, QuotaKey: quotaKey, Host: source.Host, PluginID: source.PluginID, Progress: progress})
+		resolved, err := h.adapters.ExternalPackageGitHubResolver.ResolvePackage(ctx, externalsource.GitHubRepositorySource{RepositoryURL: source.URL, Tag: source.Tag, QuotaKey: quotaKey, Host: source.Host, PluginID: source.PluginID, Progress: progress, Reconnecting: reconnecting})
 		if err != nil {
 			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, "", "", err
 		}

@@ -837,6 +837,8 @@ Rules:
 
 ## Temporary Work Documents
 
+Local test runs, build intermediates, writable tool caches, and reports must be attributable to ReDevPlugin by directory. Use its project-specific test storage or its own task worktree; do not write to anonymous shared test directories or another project's caches. Verify external daemon storage separately and keep machine-specific paths in local configuration only.
+
 Temporary design notes, investigation scratchpads, review checklists, and
 handoff notes must not be committed as maintained repository documents. Prefer
 placing them outside the repository. If a temporary file must live inside the
