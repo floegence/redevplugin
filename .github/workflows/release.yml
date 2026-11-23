@@ -218,7 +218,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
       - run: rustup show
@@ -497,7 +497,7 @@ jobs:
                   raise SystemExit(f"Rust publication dependency metadata mismatch for {name}")
           print("verified immutable Rust package bytes")
           PY
-      - uses: rust-lang/crates-io-auth-action@d6b091a10d7f9b30e4c05478289e94fb309882c5 # main
+      - uses: rust-lang/crates-io-auth-action@dc10531605597d48d51c6d1005a2b3861698940b # main
         id: crates-auth
       - name: Publish exact crate graph in dependency order
         env:
@@ -786,7 +786,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
       - name: Read back module source and sums
